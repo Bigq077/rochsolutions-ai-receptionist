@@ -1,20 +1,20 @@
 fastapi
 uvicorn
 gunicorn
-
-# Twilio
 twilio
+pydantic
+python-dotenv
 
-# Database
 sqlalchemy
 psycopg2-binary
 
-# Cache / session state
 redis
 
-# Google Calendar
 google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
+
+httpx
+
 
