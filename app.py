@@ -1,70 +1,64 @@
-from flask import Flask, request
+
+
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route("/")
+BASE_URL = "https://rochsolutions-ai-receptionist.onrender.com"
+
+# ---------- Health check ----------
+@app.get("/")
 def health():
-    return "RochSolutions AI Receptionist is running."
+    return {"status": "RochSolutions AI Receptionist running"}
 
-@app.route("/twilio/voice", methods=["POST", "GET"])
-def voice():
+# ---------- Twilio entrypoint ----------
+@app.api_route("/twilio/voice", methods=["GET", "POST"])
+def twilio_voice(request: Request):
     vr = VoiceResponse()
 
     vr.say(
         "Hello. Welcome to Roch Solutions. "
         "Please tell me what you need help with today. "
-        "For example: booking an appointment, rescheduling, or asking about prices.",
-        voice="alice",
+        "For example, booking an appointment, rescheduling, or asking about prices.",
         language="en-GB",
     )
 
     gather = Gather(
         input="speech",
-        action="/twilio/process",
+        action=f"{BASE_URL}/twilio/turn",
         method="POST",
         language="en-GB",
         speech_timeout="auto",
     )
-    gather.say("Go ahead after the beep.", voice="alice", language="en-GB")
+    gather.say("Go ahead.", language="en-GB")
     vr.append(gather)
 
-    # If they say nothing, loop politely
-    vr.say("Sorry, I didn't catch that. Let's try again.", voice="alice", language="en-GB")
-    vr.redirect("/twilio/voice")
+    vr.say("Sorry, I didn't catch that. Let's try again.")
+    vr.redirect(f"{BASE_URL}/twilio/voice")
 
-    return str(vr)
+    return PlainTextResponse(str(vr), media_type="application/xml")
 
-@app.route("/twilio/process", methods=["POST"])
-def process():
-    user_said = (request.form.get("SpeechResult") or "").strip()
+
+# ---------- Conversation turn ----------
+@app.api_route("/twilio/turn", methods=["POST"])
+async def twilio_turn(request: Request):
+    form = await request.form()
+    user_said = (form.get("SpeechResult") or "").strip()
 
     vr = VoiceResponse()
 
     if not user_said:
-        vr.say("I didn't hear anything. Please try again.", voice="alice", language="en-GB")
-        vr.redirect("/twilio/voice")
-        return str(vr)
+        vr.say("I didn't hear anything. Please try again.", language="en-GB")
+        vr.redirect(f"{BASE_URL}/twilio/voice")
+        return PlainTextResponse(str(vr), media_type="application/xml")
 
-    # For now: simple response (we'll replace this with LLM + state machine next)
-    vr.say(f"Thanks. You said: {user_said}.", voice="alice", language="en-GB")
-    vr.say("This is the next question: are you a new patient or a returning patient?", voice="alice", language="en-GB")
-
-    gather = Gather(
-        input="speech",
-        action="/twilio/process",
-        method="POST",
+    vr.say(f"Thanks. You said: {user_said}.", language="en-GB")
+    vr.say(
+        "This is where the intelligent booking logic will run next.",
         language="en-GB",
-        speech_timeout="auto",
     )
-    gather.say("Please say new patient or returning patient.", voice="alice", language="en-GB")
-    vr.append(gather)
 
-    vr.say("Sorry, I didn't catch that. Let's try again.", voice="alice", language="en-GB")
-    vr.redirect("/twilio/voice")
-
-    return str(vr)
-
-if __name__ == "__main__":
-    app.run()
-
+    vr.redirect(f"{BASE_URL}/twilio/voice")
+    return PlainTextResponse(str(vr), media_type="application/xml")
