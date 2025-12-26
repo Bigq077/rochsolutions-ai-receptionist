@@ -37,4 +37,26 @@ async def save_session(call_sid: str, session: Dict[str, Any]) -> None:
         return
     key = f"call:{call_sid}"
     await redis_client.set(key, json.dumps(session), ex=60 * 30)  # 30 min TTL
+    # --- Generic helpers for storing arbitrary JSON (used for Google OAuth) ---
+
+async def redis_set_json(key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> None:
+    if not redis_client:
+        return
+    payload = json.dumps(value)
+    if ttl_seconds:
+        await redis_client.set(key, payload, ex=ttl_seconds)
+    else:
+        await redis_client.set(key, payload)
+
+async def redis_get_json(key: str) -> Optional[Dict[str, Any]]:
+    if not redis_client:
+        return None
+    raw = await redis_client.get(key)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
 
