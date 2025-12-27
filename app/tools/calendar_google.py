@@ -53,11 +53,11 @@ def get_auth_url(redirect_uri: str, state: str) -> str:
     """
     flow = build_flow(redirect_uri)
     auth_url, _ = flow.authorization_url(
-        access_type="offline",          # ensures refresh_token on first consent
-        include_granted_scopes="true",
-        prompt="consent",               # forces refresh_token issuance more reliably
-        state=state,
-        response_type="code"
+    access_type="offline",
+    include_granted_scopes="true",
+    prompt="consent",
+    state=state,
+
     )
     return auth_url
 
