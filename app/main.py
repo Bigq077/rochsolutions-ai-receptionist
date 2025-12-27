@@ -15,3 +15,7 @@ app.include_router(google_calendar_router)
 @app.get("/")
 def health():
     return {"status": "ok", "service": "rochsolutions-ai-receptionist"}
+
+from app.routes.redis_debug import router as redis_debug_router
+app.include_router(redis_debug_router)
+
