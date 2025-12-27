@@ -12,7 +12,8 @@ TOKENS_KEY = "google_tokens"
 
 
 def _base_url(request: Request) -> str:
-    return os.getenv("BASE_URL") or str(request.base_url).rstrip("/")
+    base = os.getenv("BASE_URL") or str(request.base_url)
+    return base.strip().rstrip("/")
 
 
 @router.get("/auth/google/start")
