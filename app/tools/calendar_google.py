@@ -57,6 +57,7 @@ def get_auth_url(redirect_uri: str, state: str) -> str:
         include_granted_scopes="true",
         prompt="consent",               # forces refresh_token issuance more reliably
         state=state,
+        response_type="code"
     )
     return auth_url
 
