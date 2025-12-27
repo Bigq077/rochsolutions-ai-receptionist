@@ -21,7 +21,8 @@ def _require_env(name: str) -> str:
     v = os.getenv(name)
     if not v:
         raise RuntimeError(f"Missing environment variable: {name}")
-    return v
+    return v.strip()
+
 
 
 def build_flow(redirect_uri: str) -> Flow:
