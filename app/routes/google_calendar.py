@@ -30,29 +30,39 @@ async def google_start(request: Request):
 
 
 @router.get("/auth/google/callback")
-async def google_callback(request: Request, code: str = "", state: str = ""):
+async def google_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+):
+    # Print the full callback URL so we can see EXACTLY what Google sent back
     print("CALLBACK URL:", str(request.url))
-    saved = await redis_get_json("google_oauth_state") or {}
 
-    # DEBUG (temporary): print what we received and what Redis has
-    print(
-        "OAUTH CALLBACK ->",
-        "code_present:", bool(code),
-        "state:", state,
-        "saved_state:", saved.get("state"),
-    )
+    if error:
+        return JSONResponse(
+            {
+                "error": error,
+                "error_description": error_description,
+                "hint": "Google returned an OAuth error instead of a code. See the values above.",
+            },
+            status_code=400,
+        )
 
     if not code:
-        return JSONResponse({"error": "Missing code from Google"}, status_code=400)
-
-    # TEMPORARY: do NOT block on state mismatch while debugging
-    # We'll re-enable strict state checking once it works end-to-end.
+        return JSONResponse(
+            {
+                "error": "Missing code from Google",
+                "hint": "If CALLBACK URL contains error=..., that's the real reason. Check Render logs.",
+            },
+            status_code=400,
+        )
 
     base = _base_url(request)
     redirect_uri = f"{base}/auth/google/callback"
 
     token_data = exchange_code_for_tokens(redirect_uri=redirect_uri, code=code)
-
     await redis_set_json(TOKENS_KEY, token_data, ttl_seconds=60 * 60 * 24 * 365)
 
     return JSONResponse({"status": "connected", "message": "Google Calendar connected successfully ✅"})
