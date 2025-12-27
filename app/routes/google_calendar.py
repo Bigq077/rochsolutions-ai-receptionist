@@ -30,6 +30,7 @@ async def google_start(request: Request):
 
 @router.get("/auth/google/callback")
 async def google_callback(request: Request, code: str = "", state: str = ""):
+    print("CALLBACK URL:", str(request.url))
     saved = await redis_get_json("google_oauth_state") or {}
 
     # DEBUG (temporary): print what we received and what Redis has
