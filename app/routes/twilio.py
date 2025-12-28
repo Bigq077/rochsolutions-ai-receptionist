@@ -34,9 +34,51 @@ async def voice(_: Request):
 
 @router.api_route("/turn", methods=["POST"])
 async def turn(request: Request):
-    form = await request.form()
-    call_sid = (form.get("CallSid") or "").strip()
-    user_said = (form.get("SpeechResult") or "").strip()
+    vr = VoiceResponse()
+
+    try:
+        form = await request.form()
+        call_sid = (form.get("CallSid") or "").strip()
+        user_said = (form.get("SpeechResult") or "").strip()
+
+        # Load session
+        session = await get_session(call_sid)
+
+        # Run triage logic (async)
+        reply_text, session = await triage_turn(user_said, session)
+
+        # Save session back
+        await save_session(call_sid, session)
+
+        vr.say(reply_text, language="en-GB")
+
+        # Keep the conversation going
+        g = Gather(
+            input="speech",
+            action="/twilio/turn",
+            method="POST",
+            language="en-GB",
+            speech_timeout="auto",
+        )
+        g.say("What would you like to do next?", language="en-GB")
+        vr.append(g)
+
+        vr.say("Sorry, I didn't catch that. Let's try again.", language="en-GB")
+        vr.redirect("/twilio/voice")
+        return xml(vr)
+
+    except Exception as e:
+        # Log the real error in Render logs
+        print("ERROR in /twilio/turn:", repr(e))
+
+        # IMPORTANT: still return valid TwiML so Twilio doesn't hang up
+        vr.say(
+            "Sorry, there was a technical issue. Please try again in a moment.",
+            language="en-GB",
+        )
+        vr.redirect("/twilio/voice")
+        return xml(vr)
+
 
     # Load session (memory). If Redis not set yet, it still works.
     session = await get_session(call_sid)
