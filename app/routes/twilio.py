@@ -39,7 +39,7 @@ async def turn(request: Request):
     session = await get_session(call_sid)
 
     # Run triage logic (final product will expand this)
-    reply_text, session = triage_turn(user_said, session)
+   reply_text, session = await triage_turn(user_said, session)
 
     # Save session back
     await save_session(call_sid, session)
