@@ -4,7 +4,13 @@ from datetime import datetime
 import pytz
 
 from app.storage.redis_store import redis_get_json
-from app.tools.calendar_google import create_event, freebusy
+from app.tools.calendar_google import (
+    create_event,
+    freebusy,
+    list_upcoming_events,   # ✅ Step 5
+    patch_event_time,       # ✅ Step 5
+    delete_event,           # ✅ Step 5
+)
 from app.tools.slots import (
     next_7_days_window,
     generate_candidate_slots,
@@ -46,6 +52,10 @@ def _norm(t: str) -> str:
 
 def _contains_any(t: str, keywords: list[str]) -> bool:
     return any(k in t for k in keywords)
+
+
+def _digits_only(s: str) -> str:
+    return re.sub(r"\D", "", s or "")
 
 
 def detect_intent(text: str) -> str:
@@ -125,8 +135,15 @@ BOOK_OFFER_SLOTS = "BOOK_OFFER_SLOTS"
 BOOK_PICK_SLOT = "BOOK_PICK_SLOT"
 BOOK_CONFIRM_SLOT = "BOOK_CONFIRM_SLOT"
 
-# Reschedule (demo stub)
-RESCH_START = "RESCH_START"
+# Reschedule / Cancel (Step 5)
+RESCH_CHOICE = "RESCH_CHOICE"          # ask reschedule or cancel
+RESCH_NAME = "RESCH_NAME"
+RESCH_PHONE = "RESCH_PHONE"
+RESCH_FIND = "RESCH_FIND"
+RESCH_OFFER_SLOTS = "RESCH_OFFER_SLOTS"
+RESCH_PICK_SLOT = "RESCH_PICK_SLOT"
+RESCH_CONFIRM = "RESCH_CONFIRM"
+CANCEL_CONFIRM = "CANCEL_CONFIRM"
 
 # Session keys
 LAST_OFFERED_SLOTS_KEY = "last_offered_slots"
@@ -141,7 +158,6 @@ async def suggest_top_slots(duration_min: int = 30, pref_text: str | None = None
 
     w_start, w_end = next_7_days_window()
 
-    # Preference filtering by hours (demo)
     win = preference_window(pref_text or "")
     if win:
         day_start_h, day_end_h = win
@@ -162,11 +178,8 @@ async def suggest_top_slots(duration_min: int = 30, pref_text: str | None = None
     free_slots = filter_free_slots(candidates, busy_blocks)
     top3 = pick_first_n(free_slots, 3)
 
-    # If preference window is too strict, fall back to normal clinic hours for demo
     if not top3 and win:
-        candidates2 = generate_candidate_slots(
-            w_start, w_end, duration_min=duration_min, day_start_h=9, day_end_h=18
-        )
+        candidates2 = generate_candidate_slots(w_start, w_end, duration_min=duration_min, day_start_h=9, day_end_h=18)
         free_slots2 = filter_free_slots(candidates2, busy_blocks)
         top3 = pick_first_n(free_slots2, 3)
 
@@ -176,6 +189,26 @@ async def suggest_top_slots(duration_min: int = 30, pref_text: str | None = None
     raw_slots = [{"start": s.isoformat(), "end": e.isoformat()} for s, e in top3]
     labels = [format_slot((s, e)) for s, e in top3]
     return raw_slots, labels, None
+
+
+# ---------- RESCHEDULE HELPERS ----------
+async def find_event_for_patient(tokens: Dict[str, Any], phone: str) -> Dict[str, Any] | None:
+    """
+    Demo approach:
+    - Look at upcoming events (next 30 days)
+    - Match if the digits of the phone appear in the event description
+      (your Step 4 booking writes Phone: ... in description)
+    """
+    target = _digits_only(phone)
+    if not target:
+        return None
+
+    events = list_upcoming_events(tokens, days_ahead=30, max_results=25)
+    for ev in events:
+        desc = ev.get("description") or ""
+        if target in _digits_only(desc):
+            return ev
+    return None
 
 
 # ---------- FAQ ----------
@@ -279,9 +312,154 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["collected"] = {}
         session[LAST_OFFERED_SLOTS_KEY] = None
         session[SELECTED_SLOT_KEY] = None
+        session.pop("resch_event_id", None)
+        session.pop("resch_event_summary", None)
         return "Okay — starting over. What would you like to do?", session
 
-    # ===== BOOKING FLOW (Step 4: collect details) =====
+    # ======================================================================
+    # STEP 5 — RESCHEDULE / CANCEL FLOW
+    # ======================================================================
+    if state == RESCH_CHOICE:
+        t = _norm(user_said)
+        # if they say "cancel" anywhere -> cancel, else default to reschedule
+        if "cancel" in t:
+            collected["resch_action"] = "CANCEL"
+            session["state"] = RESCH_NAME
+            return "Okay — to cancel, I just need to confirm who you are. What's your full name?", session
+        collected["resch_action"] = "RESCHEDULE"
+        session["state"] = RESCH_NAME
+        return "Okay — to reschedule, I just need to confirm who you are. What's your full name?", session
+
+    if state == RESCH_NAME:
+        collected["name"] = user_said.strip()
+        session["state"] = RESCH_PHONE
+        return "Thanks. What's the phone number used for the booking?", session
+
+    if state == RESCH_PHONE:
+        collected["phone"] = user_said.strip()
+        session["state"] = RESCH_FIND
+        return "Okay — one moment while I look up your appointment.", session
+
+    if state == RESCH_FIND:
+        tokens = await redis_get_json(TOKENS_KEY)
+        if not tokens:
+            session["state"] = TRIAGE
+            return "Google Calendar is not connected. Please connect it first.", session
+
+        ev = await find_event_for_patient(tokens, collected.get("phone", ""))
+        if not ev:
+            session["state"] = TRIAGE
+            return (
+                "I couldn’t find a matching appointment in the next 30 days. "
+                "For the demo, please book first and then try reschedule.",
+                session,
+            )
+
+        session["resch_event_id"] = ev.get("id")
+        session["resch_event_summary"] = ev.get("summary", "Appointment")
+
+        if collected.get("resch_action") == "CANCEL":
+            session["state"] = CANCEL_CONFIRM
+            return f"I found your appointment: {session['resch_event_summary']}. Do you want to cancel it? Say yes or no.", session
+
+        session["state"] = RESCH_OFFER_SLOTS
+        return "I found your appointment. Let me check new availability.", session
+
+    if state == RESCH_OFFER_SLOTS:
+        raw_slots, labels, err = await suggest_top_slots(duration_min=DEFAULT_DURATION_MIN, pref_text="")
+        if err:
+            session["state"] = TRIAGE
+            return err, session
+
+        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+        session["state"] = RESCH_PICK_SLOT
+        return f"I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.", session
+
+    if state == RESCH_PICK_SLOT:
+        m = re.search(r"\b(1|2|3)\b", _norm(user_said))
+        if not m:
+            return "Please say 1, 2, or 3.", session
+
+        idx = int(m.group(1)) - 1
+        slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
+        if idx < 0 or idx >= len(slots):
+            return "Please say 1, 2, or 3.", session
+
+        session[SELECTED_SLOT_KEY] = slots[idx]
+        session["state"] = RESCH_CONFIRM
+        return f"Great. Please confirm rescheduling to option {idx + 1}. Say yes or no.", session
+
+    if state == RESCH_CONFIRM:
+        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
+            session["state"] = TRIAGE
+            session["collected"] = {}
+            session[LAST_OFFERED_SLOTS_KEY] = None
+            session[SELECTED_SLOT_KEY] = None
+            session.pop("resch_event_id", None)
+            session.pop("resch_event_summary", None)
+            return "No problem. What would you like to do instead?", session
+
+        tokens = await redis_get_json(TOKENS_KEY)
+        if not tokens:
+            session["state"] = TRIAGE
+            return "Google Calendar is not connected. Please connect it first.", session
+
+        event_id = session.get("resch_event_id")
+        chosen = session.get(SELECTED_SLOT_KEY)
+        if not event_id or not chosen:
+            session["state"] = TRIAGE
+            return "Something went wrong rescheduling. Please try again.", session
+
+        start = datetime.fromisoformat(chosen["start"])
+        end = datetime.fromisoformat(chosen["end"])
+
+        patch_event_time(
+            stored_tokens=tokens,
+            event_id=event_id,
+            start_dt=start,
+            end_dt=end,
+            calendar_id="primary",
+        )
+
+        session["state"] = TRIAGE
+        session["collected"] = {}
+        session[LAST_OFFERED_SLOTS_KEY] = None
+        session[SELECTED_SLOT_KEY] = None
+        session.pop("resch_event_id", None)
+        session.pop("resch_event_summary", None)
+
+        return "All set — your appointment has been rescheduled.", session
+
+    if state == CANCEL_CONFIRM:
+        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
+            session["state"] = TRIAGE
+            session["collected"] = {}
+            session.pop("resch_event_id", None)
+            session.pop("resch_event_summary", None)
+            return "Okay — I won’t cancel it. What would you like to do instead?", session
+
+        tokens = await redis_get_json(TOKENS_KEY)
+        if not tokens:
+            session["state"] = TRIAGE
+            return "Google Calendar is not connected. Please connect it first.", session
+
+        event_id = session.get("resch_event_id")
+        if not event_id:
+            session["state"] = TRIAGE
+            return "I couldn’t identify the appointment to cancel. Please try again.", session
+
+        delete_event(stored_tokens=tokens, event_id=event_id, calendar_id="primary")
+
+        session["state"] = TRIAGE
+        session["collected"] = {}
+        session.pop("resch_event_id", None)
+        session.pop("resch_event_summary", None)
+
+        return "Done — your appointment has been cancelled.", session
+
+    # ======================================================================
+    # STEP 4 — BOOKING FLOW
+    # ======================================================================
     if state == BOOK_PATIENT_TYPE:
         collected["patient_type"] = user_said.strip()
         session["state"] = BOOK_NAME
@@ -307,7 +485,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["state"] = BOOK_OFFER_SLOTS
         return "Great — let me check availability.", session
 
-    # ===== Offer slots =====
     if state == BOOK_OFFER_SLOTS:
         pref = collected.get("time_pref", "")
         raw_slots, labels, err = await suggest_top_slots(duration_min=DEFAULT_DURATION_MIN, pref_text=pref)
@@ -324,7 +501,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-    # ===== Pick slot =====
     if state == BOOK_PICK_SLOT:
         choice = _norm(user_said)
         if choice in ("repeat", "again", "say again"):
@@ -343,7 +519,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["state"] = BOOK_CONFIRM_SLOT
         return f"Great. Please confirm booking for option {idx + 1}. Say yes or no.", session
 
-    # ===== Confirm + create calendar event =====
     if state == BOOK_CONFIRM_SLOT:
         if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
             session["state"] = TRIAGE
@@ -393,7 +568,9 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         return "You’re booked. See you then.", session
 
-    # ===== TRIAGE / FAQ / OTHER =====
+    # ======================================================================
+    # TRIAGE / FAQ / OTHER
+    # ======================================================================
     intent = detect_intent(user_said)
     session["intent"] = intent
 
@@ -401,16 +578,19 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["collected"] = {}
         session[LAST_OFFERED_SLOTS_KEY] = None
         session[SELECTED_SLOT_KEY] = None
+        session.pop("resch_event_id", None)
+        session.pop("resch_event_summary", None)
         session["state"] = BOOK_PATIENT_TYPE
         return "Sure — are you a new or returning patient?", session
 
     if intent == "RESCHEDULE":
-        # Step 5 will implement true reschedule. Keep demo-safe.
-        session["state"] = TRIAGE
-        return (
-            "I can help with rescheduling in the full version. For the demo, please contact the clinic directly to change an appointment.",
-            session,
-        )
+        session["collected"] = {}
+        session[LAST_OFFERED_SLOTS_KEY] = None
+        session[SELECTED_SLOT_KEY] = None
+        session.pop("resch_event_id", None)
+        session.pop("resch_event_summary", None)
+        session["state"] = RESCH_CHOICE
+        return "Sure — do you want to reschedule or cancel your appointment?", session
 
     if intent.startswith("FAQ_"):
         return faq_answer(intent, user_said), session
@@ -419,7 +599,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         return "Okay. Please tell me your name and phone number and the clinic will call you back.", session
 
     return (
-        "I can help with booking, prices, insurance, opening hours, location, or general questions. "
+        "I can help with booking, rescheduling or cancelling, prices, insurance, opening hours, location, or general questions. "
         "What would you like to do?",
         session,
     )
