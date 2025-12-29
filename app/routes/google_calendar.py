@@ -1,3 +1,4 @@
+from app.tools.calendar_google import list_upcoming_events, patch_event_time, delete_event
 import os
 import secrets
 from datetime import datetime, timedelta
@@ -151,3 +152,27 @@ async def calendar_test_slots():
         "suggestions": [format_slot(s) for s in top3],
         "free_slots_found": len(free_slots),
     }
+@router.get("/calendar/test/reschedule-first")
+async def calendar_test_reschedule_first():
+    tokens = await redis_get_json(TOKENS_KEY)
+    if not tokens:
+        return JSONResponse({"error": "Google not connected."}, status_code=400)
+
+    events = list_upcoming_events(tokens, days_ahead=30, max_results=10)
+    if not events:
+        return {"ok": False, "error": "No upcoming events found to reschedule."}
+
+    ev = events[0]
+    event_id = ev["id"]
+
+    # move it by +1 hour (demo)
+    start_str = ev["start"].get("dateTime")
+    end_str = ev["end"].get("dateTime")
+    if not start_str or not end_str:
+        return {"ok": False, "error": "Event has no dateTime (all-day event?)"}
+
+    start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00")) + timedelta(hours=1)
+    end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00")) + timedelta(hours=1)
+
+    updated = patch_event_time(tokens, event_id=event_id, start_dt=start_dt, end_dt=end_dt)
+    return {"ok": True, "event_id": event_id, "new_start": updated["start"], "new_end": updated["end"]}
