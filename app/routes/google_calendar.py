@@ -1,3 +1,5 @@
+from app.tools.slots import next_7_days_window, generate_candidate_slots, parse_busy, filter_free_slots, pick_first_n, format_slot
+
 import os
 import secrets
 from datetime import datetime, timedelta
