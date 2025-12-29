@@ -146,6 +146,81 @@ def create_event(
         "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
         "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
     }
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+
+# You should already have something like this in your file:
+# from googleapiclient.discovery import build
+# and a helper that returns an authorized service from stored_tokens.
+#
+# I’ll assume you already have a pattern like:
+# service = build("calendar", "v3", credentials=creds)
+#
+# If you already have a get_service(stored_tokens) helper, use it below.
+
+def list_upcoming_events(
+    stored_tokens: Dict[str, Any],
+    calendar_id: str = "primary",
+    days_ahead: int = 30,
+    max_results: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Returns upcoming events for the next N days.
+    """
+    service = _get_calendar_service(stored_tokens)  # <-- use your existing service builder
+    now = datetime.utcnow().isoformat() + "Z"
+    end = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat() + "Z"
+
+    resp = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=now,
+            timeMax=end,
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=max_results,
+        )
+        .execute()
+    )
+    return resp.get("items", [])
+
+
+def patch_event_time(
+    stored_tokens: Dict[str, Any],
+    event_id: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    calendar_id: str = "primary",
+) -> Dict[str, Any]:
+    """
+    Updates an existing event’s start/end time.
+    """
+    service = _get_calendar_service(stored_tokens)
+
+    body = {
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": end_dt.isoformat()},
+    }
+
+    return (
+        service.events()
+        .patch(calendarId=calendar_id, eventId=event_id, body=body)
+        .execute()
+    )
+
+
+def delete_event(
+    stored_tokens: Dict[str, Any],
+    event_id: str,
+    calendar_id: str = "primary",
+) -> bool:
+    """
+    Deletes an event. Returns True if no error.
+    """
+    service = _get_calendar_service(stored_tokens)
+    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+    return True
 
     created = service.events().insert(calendarId=calendar_id, body=event).execute()
     return created
