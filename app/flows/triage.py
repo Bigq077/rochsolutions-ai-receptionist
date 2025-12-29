@@ -4,7 +4,15 @@ from datetime import datetime, timedelta
 import pytz
 
 from app.storage.redis_store import redis_get_json
-from app.tools.calendar_google import create_event
+from app.tools.calendar_google import create_event, freebusy
+from app.tools.slots import (
+    next_7_days_window,
+    generate_candidate_slots,
+    parse_busy,
+    filter_free_slots,
+    pick_first_n,
+    format_slot,
+)
 
 # ---------- CONFIG ----------
 TOKENS_KEY = "google_tokens"
@@ -24,9 +32,7 @@ DEMO_CLINIC = {
         "Many clinics can provide receipts for you to claim back from your insurer. "
         "Coverage depends on your policy and whether your plan requires a referral."
     ),
-    "common_insurers_uk": [
-        "Bupa", "AXA Health", "Vitality", "Aviva", "WPA", "Cigna", "Simplyhealth"
-    ],
+    "common_insurers_uk": ["Bupa", "AXA Health", "Vitality", "Aviva", "WPA", "Cigna", "Simplyhealth"],
     "payment_methods": "Most clinics accept card payments. Some also accept bank transfer. We’ll confirm for your clinic.",
 }
 
@@ -43,10 +49,6 @@ def _contains_any(t: str, keywords: list[str]) -> bool:
 
 
 def detect_intent(text: str) -> str:
-    """
-    Returns a high-level intent label.
-    Keep it deterministic: keyword-based.
-    """
     t = _norm(text)
     if not t:
         return "UNKNOWN"
@@ -71,7 +73,9 @@ def detect_intent(text: str) -> str:
         return "FAQ_LOCATION"
 
     # Insurance
-    if _contains_any(t, ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"]):
+    if _contains_any(
+        t, ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"]
+    ):
         return "FAQ_INSURANCE"
 
     # Services / what you treat
@@ -79,7 +83,9 @@ def detect_intent(text: str) -> str:
         return "FAQ_SERVICES"
 
     # Conditions
-    if _contains_any(t, ["back pain", "neck", "shoulder", "knee", "ankle", "hip", "sciatica", "sprain", "strain", "tendon", "post op", "surgery"]):
+    if _contains_any(
+        t, ["back pain", "neck", "shoulder", "knee", "ankle", "hip", "sciatica", "sprain", "strain", "tendon", "post op", "surgery"]
+    ):
         return "FAQ_CONDITIONS"
 
     # Referrals / GP / NHS
@@ -108,17 +114,20 @@ def detect_intent(text: str) -> str:
 # ---------- STATES ----------
 TRIAGE = "TRIAGE"
 
-# (You defined these, but your current booking flow uses BOOKING_START/BOOK_DATE/BOOK_TIME/BOOK_DURATION.)
-# Keep them here for later expansion; we won't break your current flow.
+# Booking (slot-based) states
+BOOK_OFFER_SLOTS = "BOOK_OFFER_SLOTS"
+BOOK_PICK_SLOT = "BOOK_PICK_SLOT"
+BOOK_CONFIRM_SLOT = "BOOK_CONFIRM_SLOT"
+
+# (Keep these for later expansion if you want richer booking data collection)
 BOOK_START = "BOOK_START"
 BOOK_PATIENT_TYPE = "BOOK_PATIENT_TYPE"
 BOOK_NAME = "BOOK_NAME"
 BOOK_PHONE = "BOOK_PHONE"
 BOOK_REASON = "BOOK_REASON"
 BOOK_TIME_PREF = "BOOK_TIME_PREF"
-BOOK_OFFER_SLOTS = "BOOK_OFFER_SLOTS"
-BOOK_CONFIRM = "BOOK_CONFIRM"
 
+# Reschedule states (demo stub for now)
 RESCH_START = "RESCH_START"
 RESCH_NAME = "RESCH_NAME"
 RESCH_PHONE = "RESCH_PHONE"
@@ -127,39 +136,40 @@ RESCH_OFFER_SLOTS = "RESCH_OFFER_SLOTS"
 RESCH_CONFIRM = "RESCH_CONFIRM"
 
 
-# ---------- CALENDAR BOOKING ----------
-async def book_calendar_event(collected: Dict[str, Any]) -> Dict[str, Any]:
+# ---------- SLOT SUGGESTION ----------
+async def suggest_top_slots(duration_min: int = 30) -> tuple[list[dict], list[str], str | None]:
+    """
+    Returns:
+      - raw_slots: [{"start": iso, "end": iso}, ...]
+      - labels: ["Tue 02 Jan at 10:00", ...] (spoken options)
+      - error: optional string
+    """
     tokens = await redis_get_json(TOKENS_KEY)
     if not tokens:
-        return {"ok": False, "error": "Google Calendar is not connected."}
+        return [], [], "Google Calendar is not connected."
 
-    try:
-        start_naive = datetime.strptime(
-            f"{collected['date']} {collected['time']}",
-            "%Y-%m-%d %H:%M",
-        )
-        start = TZ.localize(start_naive)
-    except Exception:
-        return {"ok": False, "error": "Invalid date or time format."}
+    w_start, w_end = next_7_days_window()
 
-    duration = int(collected.get("duration_min", DEFAULT_DURATION_MIN))
-    end = start + timedelta(minutes=duration)
-
-    event = create_event(
-        stored_tokens=tokens,
-        start_dt=start,
-        end_dt=end,
-        summary="RochSolutions Appointment",
-        description="Booked via AI receptionist",
-        calendar_id="primary",
+    candidates = generate_candidate_slots(
+        w_start,
+        w_end,
+        duration_min=duration_min,
+        day_start_h=9,
+        day_end_h=18,
     )
 
-    return {
-        "ok": True,
-        "start": start.isoformat(),
-        "event_id": event.get("id"),
-        "event_link": event.get("htmlLink"),
-    }
+    busy = freebusy(tokens, time_min=w_start, time_max=w_end, calendar_id="primary")
+    busy_blocks = parse_busy(busy)
+
+    free_slots = filter_free_slots(candidates, busy_blocks)
+    top3 = pick_first_n(free_slots, 3)
+
+    if not top3:
+        return [], [], "I couldn’t find any free slots in the next 7 days."
+
+    raw_slots = [{"start": s.isoformat(), "end": e.isoformat()} for s, e in top3]
+    labels = [format_slot((s, e)) for s, e in top3]
+    return raw_slots, labels, None
 
 
 # ---------- FAQ RESPONSES ----------
@@ -173,7 +183,6 @@ def faq_answer(intent: str, user_said: str) -> str:
         )
 
     if intent == "FAQ_HOURS":
-        # Handle common variants
         if "weekend" in t or "saturday" in t or "sunday" in t:
             return (
                 "Weekend availability depends on the clinic. "
@@ -188,7 +197,6 @@ def faq_answer(intent: str, user_said: str) -> str:
         return DEMO_CLINIC["hours_summary"]
 
     if intent == "FAQ_LOCATION":
-        # Demo-safe answer
         if "parking" in t:
             return (
                 "Parking depends on the clinic site. Many have nearby paid parking or short-stay street parking. "
@@ -205,7 +213,6 @@ def faq_answer(intent: str, user_said: str) -> str:
         )
 
     if intent == "FAQ_INSURANCE":
-        # Do NOT claim contracts; give realistic guidance
         insurers = ", ".join(DEMO_CLINIC["common_insurers_uk"])
         return (
             f"{DEMO_CLINIC['insurance_note']} "
@@ -256,57 +263,89 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         return "I didn’t catch that. What would you like to do?", session
 
     state = session.get("state", TRIAGE)
-    collected = session.setdefault("collected", {})
+    session.setdefault("collected", {})  # keep for future; not required for demo booking
+    session.setdefault("last_offered_slots", None)
+    session.setdefault("selected_slot", None)
 
-    # ===== BOOKING FLOW (keep your current flow as-is) =====
-    if state == "BOOKING_START":
-        session["state"] = "BOOK_DATE"
-        return "Sure. What date would you like? Please say it like 2025-12-30.", session
+    # ===== BOOKING FLOW (slot offering) =====
+    if state == BOOK_OFFER_SLOTS:
+        raw_slots, labels, err = await suggest_top_slots(duration_min=30)
+        if err:
+            session["state"] = TRIAGE
+            return err, session
 
-    if state == "BOOK_DATE":
-        collected["date"] = user_said.strip()
-        session["state"] = "BOOK_TIME"
-        return "Thanks. What time? Please use 24 hour format, for example 14:30.", session
+        session["last_offered_slots"] = raw_slots
+        session["state"] = BOOK_PICK_SLOT
 
-    if state == "BOOK_TIME":
-        collected["time"] = user_said.strip()
-        session["state"] = "BOOK_DURATION"
-        return "How long should the appointment be? Say 30 or 60 minutes.", session
-
-    if state == "BOOK_DURATION":
-        collected["duration_min"] = user_said.strip()
-        session["state"] = "BOOK_CONFIRM"
+        # Speak 3 options
         return (
-            f"Just to confirm: {collected['date']} at {collected['time']} "
-            f"for {collected['duration_min']} minutes. Say yes or no.",
+            f"I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. "
+            "Say 1, 2, or 3.",
             session,
         )
 
-    if state == "BOOK_CONFIRM":
-        if user_said.lower() not in ("yes", "y", "yeah", "confirm", "ok"):
+    if state == BOOK_PICK_SLOT:
+        choice = _norm(user_said)
+        m = re.search(r"\b(1|2|3)\b", choice)
+        if not m:
+            return "Please say 1, 2, or 3.", session
+
+        idx = int(m.group(1)) - 1
+        slots = session.get("last_offered_slots") or []
+        if idx < 0 or idx >= len(slots):
+            return "Please say 1, 2, or 3.", session
+
+        session["selected_slot"] = slots[idx]
+        session["state"] = BOOK_CONFIRM_SLOT
+        return f"Great. Please confirm booking for option {idx + 1}. Say yes or no.", session
+
+    if state == BOOK_CONFIRM_SLOT:
+        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
             session["state"] = TRIAGE
-            session["collected"] = {}
+            session["last_offered_slots"] = None
+            session["selected_slot"] = None
             return "No problem. What would you like to do instead?", session
 
-        result = await book_calendar_event(collected)
+        tokens = await redis_get_json(TOKENS_KEY)
+        if not tokens:
+            session["state"] = TRIAGE
+            return "Google Calendar is not connected. Please connect it first.", session
+
+        chosen = session.get("selected_slot")
+        if not chosen:
+            session["state"] = TRIAGE
+            return "Something went wrong selecting the slot. Please try again.", session
+
+        # ISO → datetime (already includes tz offset)
+        start = datetime.fromisoformat(chosen["start"])
+        end = datetime.fromisoformat(chosen["end"])
+
+        event = create_event(
+            stored_tokens=tokens,
+            start_dt=start,
+            end_dt=end,
+            summary="RochSolutions Appointment (Demo)",
+            description="Booked via AI receptionist demo",
+            calendar_id="primary",
+        )
+
         session["state"] = TRIAGE
-        session["collected"] = {}
+        session["last_offered_slots"] = None
+        session["selected_slot"] = None
 
-        if not result["ok"]:
-            return f"I couldn’t book that. {result['error']}", session
+        if not event or not event.get("id"):
+            return "I couldn’t create the booking. Please try again.", session
 
-        return "Your appointment is booked. You’ll see it in the calendar. See you then.", session
+        return "You’re booked. See you then.", session
 
     # ===== TRIAGE / FAQ / OTHER =====
     intent = detect_intent(user_said)
     session["intent"] = intent
 
-    # Booking trigger
     if intent == "BOOK":
-        session["state"] = "BOOKING_START"
-        return "Sure — I can help you book an appointment.", session
+        session["state"] = BOOK_OFFER_SLOTS
+        return "Sure — let me check availability.", session
 
-    # Reschedule trigger (demo: deterministic but not implemented yet)
     if intent == "RESCHEDULE":
         return (
             "I can help with rescheduling in the full version. For the demo, I can take your name and number and the clinic will confirm changes. "
@@ -314,16 +353,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-    # FAQ intents
     if intent.startswith("FAQ_"):
-        # One-turn FAQ: answer and stay in TRIAGE
         return faq_answer(intent, user_said), session
 
-    # Human handoff
     if intent == "HUMAN":
         return "Okay. Please say your name and phone number and someone will call you back.", session
 
-    # Generic fallback
     return (
         "I can help with booking, rescheduling, prices, insurance, opening hours, location, or general questions. "
         "What would you like to do?",
