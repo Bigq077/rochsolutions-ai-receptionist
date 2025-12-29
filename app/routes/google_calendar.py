@@ -1,5 +1,3 @@
-from app.tools.slots import next_7_days_window, generate_candidate_slots, parse_busy, filter_free_slots, pick_first_n, format_slot
-
 import os
 import secrets
 from datetime import datetime, timedelta
@@ -9,7 +7,20 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 
 from app.storage.redis_store import redis_get_json, redis_set_json
-from app.tools.calendar_google import get_auth_url, exchange_code_for_tokens, freebusy, create_event
+from app.tools.calendar_google import (
+    get_auth_url,
+    exchange_code_for_tokens,
+    freebusy,
+    create_event,
+)
+from app.tools.slots import (
+    next_7_days_window,
+    generate_candidate_slots,
+    parse_busy,
+    filter_free_slots,
+    pick_first_n,
+    format_slot,
+)
 
 router = APIRouter()
 
@@ -28,6 +39,7 @@ async def google_start(request: Request):
     base = _base_url(request)
     redirect_uri = f"{base}/auth/google/callback"
 
+    # Save state for 10 minutes
     await redis_set_json("google_oauth_state", {"state": state}, ttl_seconds=600)
 
     url = get_auth_url(redirect_uri=redirect_uri, state=state)
@@ -70,7 +82,10 @@ async def google_callback(
 async def calendar_test_freebusy():
     tokens = await redis_get_json(TOKENS_KEY)
     if not tokens:
-        return JSONResponse({"error": "Google not connected. Run /auth/google/start first."}, status_code=400)
+        return JSONResponse(
+            {"error": "Google not connected. Run /auth/google/start first."},
+            status_code=400,
+        )
 
     now = datetime.now(TZ)
     end = now + timedelta(days=7)
@@ -83,7 +98,10 @@ async def calendar_test_freebusy():
 async def calendar_test_create_event():
     tokens = await redis_get_json(TOKENS_KEY)
     if not tokens:
-        return JSONResponse({"error": "Google not connected. Run /auth/google/start first."}, status_code=400)
+        return JSONResponse(
+            {"error": "Google not connected. Run /auth/google/start first."},
+            status_code=400,
+        )
 
     start = datetime.now(TZ) + timedelta(minutes=5)
     end = start + timedelta(minutes=30)
@@ -98,3 +116,38 @@ async def calendar_test_create_event():
     )
 
     return {"ok": True, "event_id": event.get("id"), "event_link": event.get("htmlLink")}
+
+
+@router.get("/calendar/test/slots")
+async def calendar_test_slots():
+    tokens = await redis_get_json(TOKENS_KEY)
+    if not tokens:
+        return JSONResponse(
+            {"error": "Google not connected. Run /auth/google/start first."},
+            status_code=400,
+        )
+
+    w_start, w_end = next_7_days_window()
+
+    # Generate candidate slots (Mon–Fri, 9–18, 30 min)
+    candidates = generate_candidate_slots(
+        w_start,
+        w_end,
+        duration_min=30,
+        day_start_h=9,
+        day_end_h=18,
+    )
+
+    # Busy from Google Calendar
+    busy = freebusy(tokens, time_min=w_start, time_max=w_end, calendar_id="primary")
+    busy_blocks = parse_busy(busy)
+
+    # Filter out busy slots
+    free_slots = filter_free_slots(candidates, busy_blocks)
+    top3 = pick_first_n(free_slots, 3)
+
+    return {
+        "ok": True,
+        "suggestions": [format_slot(s) for s in top3],
+        "free_slots_found": len(free_slots),
+    }
