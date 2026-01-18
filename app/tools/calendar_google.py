@@ -1,8 +1,8 @@
 # app/tools/calendar_google.py
 
 import os
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
 
 import pytz
 from google.oauth2.credentials import Credentials
@@ -24,11 +24,9 @@ def _require_env(name: str) -> str:
     return v.strip()
 
 
-
 def build_flow(redirect_uri: str) -> Flow:
     """
-    Uses 'installed app' style secrets from env vars (client_id/client_secret)
-    and creates a Flow for web auth.
+    Uses web-style secrets from env vars and creates a Flow for OAuth.
     """
     client_id = _require_env("GOOGLE_CLIENT_ID")
     client_secret = _require_env("GOOGLE_CLIENT_SECRET")
@@ -53,11 +51,10 @@ def get_auth_url(redirect_uri: str, state: str) -> str:
     """
     flow = build_flow(redirect_uri)
     auth_url, _ = flow.authorization_url(
-    access_type="offline",
-    include_granted_scopes="true",
-    prompt="consent",
-    state=state,
-
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=state,
     )
     return auth_url
 
@@ -98,6 +95,16 @@ def get_calendar_service(stored_tokens: Dict[str, Any]):
     return build("calendar", "v3", credentials=creds)
 
 
+def _ensure_tz(dt: datetime) -> datetime:
+    """
+    Ensure dt is timezone-aware in Europe/London.
+    If dt already has tzinfo, convert to London time.
+    """
+    if dt.tzinfo is None:
+        return LONDON_TZ.localize(dt)
+    return dt.astimezone(LONDON_TZ)
+
+
 def freebusy(
     stored_tokens: Dict[str, Any],
     time_min: datetime,
@@ -109,19 +116,17 @@ def freebusy(
     """
     service = get_calendar_service(stored_tokens)
 
-    # Ensure timezone aware ISO strings
-    if time_min.tzinfo is None:
-        time_min = LONDON_TZ.localize(time_min)
-    if time_max.tzinfo is None:
-        time_max = LONDON_TZ.localize(time_max)
+    time_min = _ensure_tz(time_min)
+    time_max = _ensure_tz(time_max)
 
     body = {
         "timeMin": time_min.isoformat(),
         "timeMax": time_max.isoformat(),
         "items": [{"id": calendar_id}],
     }
+
     resp = service.freebusy().query(body=body).execute()
-    busy = resp["calendars"][calendar_id].get("busy", [])
+    busy = resp.get("calendars", {}).get(calendar_id, {}).get("busy", [])
     return busy
 
 
@@ -133,12 +138,13 @@ def create_event(
     description: str = "",
     calendar_id: str = "primary",
 ) -> Dict[str, Any]:
+    """
+    Creates a calendar event and returns the created event object.
+    """
     service = get_calendar_service(stored_tokens)
 
-    if start_dt.tzinfo is None:
-        start_dt = LONDON_TZ.localize(start_dt)
-    if end_dt.tzinfo is None:
-        end_dt = LONDON_TZ.localize(end_dt)
+    start_dt = _ensure_tz(start_dt)
+    end_dt = _ensure_tz(end_dt)
 
     event = {
         "summary": summary,
@@ -146,28 +152,22 @@ def create_event(
         "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
         "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
     }
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
 
-# You should already have something like this in your file:
-# from googleapiclient.discovery import build
-# and a helper that returns an authorized service from stored_tokens.
-#
-# I’ll assume you already have a pattern like:
-# service = build("calendar", "v3", credentials=creds)
-#
-# If you already have a get_service(stored_tokens) helper, use it below.
+    created = service.events().insert(calendarId=calendar_id, body=event).execute()
+    return created
+
 
 def list_upcoming_events(
     stored_tokens: Dict[str, Any],
-    calendar_id: str = "primary",
     days_ahead: int = 30,
-    max_results: int = 20,
+    max_results: int = 25,
+    calendar_id: str = "primary",
 ) -> List[Dict[str, Any]]:
     """
     Returns upcoming events for the next N days.
     """
-    service = _get_calendar_service(stored_tokens)  # <-- use your existing service builder
+    service = get_calendar_service(stored_tokens)
+
     now = datetime.utcnow().isoformat() + "Z"
     end = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat() + "Z"
 
@@ -196,18 +196,18 @@ def patch_event_time(
     """
     Updates an existing event’s start/end time.
     """
-    service = _get_calendar_service(stored_tokens)
+    service = get_calendar_service(stored_tokens)
+
+    start_dt = _ensure_tz(start_dt)
+    end_dt = _ensure_tz(end_dt)
 
     body = {
-        "start": {"dateTime": start_dt.isoformat()},
-        "end": {"dateTime": end_dt.isoformat()},
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
     }
 
-    return (
-        service.events()
-        .patch(calendarId=calendar_id, eventId=event_id, body=body)
-        .execute()
-    )
+    updated = service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
+    return updated
 
 
 def delete_event(
@@ -218,10 +218,8 @@ def delete_event(
     """
     Deletes an event. Returns True if no error.
     """
-    service = _get_calendar_service(stored_tokens)
+    service = get_calendar_service(stored_tokens)
     service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
     return True
 
-    created = service.events().insert(calendarId=calendar_id, body=event).execute()
-    return created
 
