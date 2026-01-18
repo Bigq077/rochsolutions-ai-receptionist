@@ -1,10 +1,11 @@
+# app/flows/triage.py
 from typing import Dict, Any, Tuple
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from app.storage.redis_store import redis_get_json
-from app.clinic_config import CLINICS  # ✅ Step 6: config-driven clinics
+from app.clinic_config import CLINICS  # config-driven clinics
 from app.tools.calendar_google import (
     create_event,
     freebusy,
@@ -47,7 +48,7 @@ def _digits_only(s: str) -> str:
 
 def get_clinic(session: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Step 6: All clinic data comes from clinic_config.py so you can swap clinics without changing code.
+    All clinic data comes from clinic_config.py so you can swap clinics without changing code.
     """
     key = session.get(ACTIVE_CLINIC_KEY, "demo")
     return CLINICS.get(key, CLINICS["demo"])
@@ -84,17 +85,64 @@ def is_valid_phone(phone: str) -> bool:
     return 10 <= len(p) <= 15
 
 
+def parse_patient_type(text: str) -> str | None:
+    """
+    Robust handling for 'new' vs 'returning/existing/coming back'.
+    """
+    t = _norm(text)
+    returning = [
+        "returning",
+        "existing",
+        "come back",
+        "coming back",
+        "been before",
+        "follow up",
+        "follow-up",
+        "followup",
+        "i've been",
+        "i have been",
+        "already a patient",
+        "return patient",
+    ]
+    new = [
+        "new",
+        "first time",
+        "never been",
+        "not been before",
+        "initial",
+        "first visit",
+        "new patient",
+    ]
+
+    if any(k in t for k in returning):
+        return "RETURNING"
+    if any(k in t for k in new):
+        return "NEW"
+
+    # Don't guess on vague answers
+    if t in ("yes", "yeah", "yep", "ok", "okay", "sure"):
+        return None
+    return None
+
+
 def detect_intent(text: str) -> str:
     t = _norm(text)
     if not t:
         return "UNKNOWN"
 
+    # Booking
     if _contains_any(t, ["book", "booking", "appointment", "schedule", "available", "slot", "availability"]):
         return "BOOK"
 
-    if _contains_any(t, ["reschedule", "change", "move", "cancel", "cancellation", "rebook", "postpone"]):
+    # Cancel explicitly
+    if _contains_any(t, ["cancel", "cancellation", "call it off"]):
         return "RESCHEDULE"
 
+    # Reschedule explicitly (avoid generic "change" triggering too often)
+    if _contains_any(t, ["reschedule", "move", "rebook", "postpone", "change my appointment", "change my booking"]):
+        return "RESCHEDULE"
+
+    # FAQs
     if _contains_any(t, ["price", "cost", "fee", "how much", "charge", "rates", "pricing", "payment", "pay"]):
         return "FAQ_PRICES"
 
@@ -107,7 +155,7 @@ def detect_intent(text: str) -> str:
     if _contains_any(t, ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"]):
         return "FAQ_INSURANCE"
 
-    if _contains_any(t, ["physio", "physiotherapy", "chiro", "chiropractor", "massage", "sports therapy", "rehab", "pain", "injury"]):
+    if _contains_any(t, ["physio", "physiotherapy", "chiro", "chiropractor", "massage", "sports therapy", "rehab", "pain", "injury", "shockwave"]):
         return "FAQ_SERVICES"
 
     if _contains_any(t, ["back pain", "neck", "shoulder", "knee", "ankle", "hip", "sciatica", "sprain", "strain", "tendon", "post op", "surgery"]):
@@ -148,20 +196,66 @@ def preference_window(pref: str) -> tuple[int, int] | None:
     return None
 
 
+WEEKDAYS = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+
+def parse_specific_day_window(text: str, tz) -> tuple[datetime, datetime] | None:
+    """
+    Demo parser:
+    - supports: today, tomorrow, weekdays (tuesday), "next tuesday"
+    - returns a day window (00:00 to 23:59 local)
+    """
+    t = _norm(text)
+    now = datetime.now(tz)
+
+    if "today" in t:
+        day = now
+    elif "tomorrow" in t:
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day = base + timedelta(days=1)
+    else:
+        wd = None
+        for k, v in WEEKDAYS.items():
+            if re.search(rf"\b{k}\b", t):
+                wd = v
+                break
+        if wd is None:
+            return None
+
+        days_ahead = (wd - now.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7 if "next" in t else 0
+
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day = base + timedelta(days=days_ahead)
+
+    start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = day.replace(hour=23, minute=59, second=59, microsecond=0)
+    return start, end
+
+
 # ---------- STATES ----------
 TRIAGE = "TRIAGE"
 
-# Booking (Step 4)
+# Booking
 BOOK_PATIENT_TYPE = "BOOK_PATIENT_TYPE"
-BOOK_NAME = "BOOK_NAME"
-BOOK_PHONE = "BOOK_PHONE"
 BOOK_REASON = "BOOK_REASON"
 BOOK_TIME_PREF = "BOOK_TIME_PREF"
 BOOK_OFFER_SLOTS = "BOOK_OFFER_SLOTS"
 BOOK_PICK_SLOT = "BOOK_PICK_SLOT"
+BOOK_NAME = "BOOK_NAME"
+BOOK_PHONE = "BOOK_PHONE"
 BOOK_CONFIRM_SLOT = "BOOK_CONFIRM_SLOT"
 
-# Reschedule / Cancel (Step 5)
+# Reschedule / Cancel
 RESCH_CHOICE = "RESCH_CHOICE"
 RESCH_NAME = "RESCH_NAME"
 RESCH_PHONE = "RESCH_PHONE"
@@ -176,12 +270,12 @@ CANCEL_CONFIRM = "CANCEL_CONFIRM"
 async def suggest_top_slots(
     session: Dict[str, Any],
     duration_min: int | None = None,
-    pref_text: str | None = None
+    pref_text: str | None = None,
+    day_window: tuple[datetime, datetime] | None = None,
 ) -> tuple[list[dict], list[str], str | None]:
     clinic = get_clinic(session)
     tz = get_tz(clinic)
 
-    # slot length: clinic config wins
     slot_minutes = int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN))
     duration_min = int(duration_min or slot_minutes)
 
@@ -189,9 +283,13 @@ async def suggest_top_slots(
     if not tokens:
         return [], [], "The clinic calendar is currently offline. Please try again shortly."
 
-    w_start, w_end = next_7_days_window()  # should already be tz-aware or UTC; your pipeline handles it
+    w_start, w_end = next_7_days_window()
 
-    # Start with preference window
+    # If user asked for a specific day (Tuesday/tomorrow/etc), clamp window to that day
+    if day_window:
+        w_start, w_end = day_window
+
+    # Time-of-day preference window (morning/afternoon/evening)
     win = preference_window(pref_text or "")
     if win:
         day_start_h, day_end_h = win
@@ -215,7 +313,13 @@ async def suggest_top_slots(
     # If preference window too strict, fall back to clinic default hours
     if not top3 and win:
         day_start_h2, day_end_h2 = clinic_default_hours(clinic)
-        candidates2 = generate_candidate_slots(w_start, w_end, duration_min=duration_min, day_start_h=day_start_h2, day_end_h=day_end_h2)
+        candidates2 = generate_candidate_slots(
+            w_start,
+            w_end,
+            duration_min=duration_min,
+            day_start_h=day_start_h2,
+            day_end_h=day_end_h2,
+        )
         free_slots2 = filter_free_slots(candidates2, busy_blocks)
         top3 = pick_first_n(free_slots2, 3)
 
@@ -256,73 +360,56 @@ def faq_answer(intent: str, user_said: str, clinic: Dict[str, Any]) -> str:
     t = _norm(user_said)
 
     if intent == "FAQ_PRICES":
-        return (
-            f"{clinic.get('pricing_summary', 'Pricing varies by clinic and appointment type.')}"
-            " If you tell me whether it’s an initial assessment or a follow-up, I can give a clearer estimate."
+        # Prefer clinic_config demo strings. Avoid "varies" wording in a demo.
+        return clinic.get(
+            "pricing_summary",
+            "Initial assessment £65 (45 minutes). Follow-up £45 (30 minutes). Sports massage £40 (30 minutes) or £70 (60 minutes). Shockwave £55 (15 minutes).",
         )
 
     if intent == "FAQ_HOURS":
-        if "weekend" in t or "saturday" in t or "sunday" in t:
-            return (
-                "Weekend availability depends on the clinic. "
-                "Many are Monday to Friday 9am–6pm, and some offer Saturday mornings. "
-                "Tell me your preferred day and I’ll check availability."
-            )
-        if "evening" in t or "late" in t or "after work" in t:
-            return (
-                "Some clinics offer early morning or evening appointments, but it varies by location. "
-                "Tell me what time you’re aiming for and I’ll try to find the closest match."
-            )
-        return clinic.get("hours_summary", "Opening hours vary by clinic. Many are Mon–Fri 9am–6pm.")
+        # Prefer exact clinic hours summary
+        return clinic.get("hours_summary", "We’re open Monday to Friday 8am to 7pm, Saturday 9am to 2pm, and closed Sunday.")
 
     if intent == "FAQ_LOCATION":
-        address = clinic.get("address", "Address depends on the clinic location.")
+        address = clinic.get("address", "Roch Physio Clinic, 12 High Street, Coventry, CV1 — near Coventry Station.")
         parking = clinic.get("parking", "")
         if "parking" in t and parking:
             return f"{address}. Parking: {parking}"
-        if "wheelchair" in t or "accessible" in t:
-            return (
-                "Most clinics can accommodate accessibility needs. Tell me what you need and we’ll confirm."
-            )
         return address
 
     if intent == "FAQ_INSURANCE":
-        insurers = ", ".join(clinic.get("common_insurers", [])) or "Bupa, AXA Health, Vitality, Aviva"
-        note = clinic.get("insurance_note", "Coverage depends on your policy.")
-        return (
-            f"{note} Common insurers people use in the UK include {insurers}. "
-            "If you tell me your insurer name and whether you have a membership or policy number, I can note it for the clinic."
+        note = clinic.get(
+            "insurance_note",
+            "We accept Bupa, AXA Health, Vitality, Aviva and WPA. If you’re with another provider, we can treat you self-pay and provide an invoice for reimbursement if your insurer allows it.",
         )
+        return note
 
     if intent == "FAQ_SERVICES":
         services = clinic.get("services", [])
         if services:
-            return "This clinic typically offers: " + ", ".join(services) + ". What would you like help with?"
-        return (
-            "Most MSK clinics help with assessment and treatment plans for pain and injuries. "
-            "If you tell me what’s going on, I can book the right appointment type."
-        )
+            return "We offer: " + ", ".join(services) + ". What would you like help with?"
+        return "We offer physiotherapy assessment and treatment, follow-ups, sports massage, and rehab plans. What would you like help with?"
 
     if intent == "FAQ_CONDITIONS":
         return (
-            "Clinics commonly see issues like back pain, neck/shoulder pain, sports injuries, joint pain, and post-operative rehab. "
-            "If you tell me where it hurts and how long it’s been going on, I can help you book."
+            "We commonly help with back pain, neck or shoulder pain, sports injuries, joint pain, and post-operative rehab. "
+            "If you tell me what’s going on, I can help you book the right appointment type."
         )
 
     if intent == "FAQ_REFERRAL":
         return (
-            "A GP referral isn’t always required for private appointments, but some insurance policies do require one. "
+            "A GP referral isn’t usually required for private appointments, but some insurance policies do require one. "
             "If you’re using insurance, it’s worth checking your policy conditions."
         )
 
     if intent == "FAQ_FIRST_VISIT":
         return (
-            f"For a first visit: {clinic.get('what_to_bring', 'Bring photo ID and any relevant notes/scans.')}"
-            " Arriving 5–10 minutes early is ideal."
+            f"For a first visit: {clinic.get('what_to_bring', 'Wear comfortable clothing and bring any relevant scans or notes.')}"
+            " Arriving 5 to 10 minutes early is ideal."
         )
 
     if intent == "FAQ_POLICIES":
-        return clinic.get("cancellation_policy", "Cancellation policy varies by clinic.")
+        return clinic.get("cancellation_policy", "If you need to cancel or move your appointment, please give at least 24 hours’ notice.")
 
     if intent == "FAQ_PRIVACY":
         return (
@@ -333,10 +420,21 @@ def faq_answer(intent: str, user_said: str, clinic: Dict[str, Any]) -> str:
     return "Sure — can you tell me a bit more about what you need so I can help accurately?"
 
 
+def _reset_to_triage(session: Dict[str, Any]) -> Dict[str, Any]:
+    session["state"] = TRIAGE
+    session["collected"] = {}
+    session[LAST_OFFERED_SLOTS_KEY] = None
+    session[SELECTED_SLOT_KEY] = None
+    session.pop("resch_event_id", None)
+    session.pop("resch_event_summary", None)
+    return session
+
+
 # ---------- MAIN STATE MACHINE ----------
 async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    # NOTE: Twilio layer now handles empty speech better, but keep this safe fallback.
     if not user_said:
-        return "I didn’t catch that. What would you like to do?", session
+        return "Sorry — I didn’t catch that. Could you repeat?", session
 
     clinic = get_clinic(session)
 
@@ -347,12 +445,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
     # --- global demo commands ---
     if _norm(user_said) in ("restart", "start over", "reset"):
-        session["state"] = TRIAGE
-        session["collected"] = {}
-        session[LAST_OFFERED_SLOTS_KEY] = None
-        session[SELECTED_SLOT_KEY] = None
-        session.pop("resch_event_id", None)
-        session.pop("resch_event_summary", None)
+        session = _reset_to_triage(session)
         return "Okay — starting over. What would you like to do?", session
 
     # --- global repeat helper ---
@@ -360,22 +453,23 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         return "Sure. Please say 1, 2, or 3.", session
 
     # ======================================================================
-    # STEP 5 — RESCHEDULE / CANCEL FLOW
+    # RESCHEDULE / CANCEL FLOW
     # ======================================================================
     if state == RESCH_CHOICE:
         t = _norm(user_said)
-        if "cancel" in t:
+        if any(k in t for k in ["cancel", "cancellation", "call it off"]):
             collected["resch_action"] = "CANCEL"
             session["state"] = RESCH_NAME
-            return "Okay — to cancel, I just need to confirm who you are. What's your full name?", session
+            return "Okay — to cancel, what’s your full name?", session
+
         collected["resch_action"] = "RESCHEDULE"
         session["state"] = RESCH_NAME
-        return "Okay — to reschedule, I just need to confirm who you are. What's your full name?", session
+        return "Okay — to reschedule, what’s your full name?", session
 
     if state == RESCH_NAME:
         collected["name"] = user_said.strip()
         session["state"] = RESCH_PHONE
-        return "Thanks. What's the phone number used for the booking?", session
+        return "Thanks. What’s the phone number used for the booking?", session
 
     if state == RESCH_PHONE:
         phone_raw = user_said.strip()
@@ -388,12 +482,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     if state == RESCH_FIND:
         tokens = await redis_get_json(TOKENS_KEY)
         if not tokens:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "The clinic calendar is currently offline. Please try again shortly.", session
 
         ev = await find_event_for_patient(session, collected.get("phone", ""))
         if not ev:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return (
                 "I couldn’t find a matching appointment in the next 30 days. "
                 "For the demo, please book first and then try reschedule.",
@@ -411,9 +505,13 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         return "I found your appointment. Let me check new availability.", session
 
     if state == RESCH_OFFER_SLOTS:
-        raw_slots, labels, err = await suggest_top_slots(session, duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)), pref_text="")
+        raw_slots, labels, err = await suggest_top_slots(
+            session,
+            duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
+            pref_text="",
+        )
         if err:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return err, session
 
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
@@ -435,24 +533,19 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         return f"Great. Please confirm rescheduling to option {idx + 1}. Say yes or no.", session
 
     if state == RESCH_CONFIRM:
-        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
-            session["state"] = TRIAGE
-            session["collected"] = {}
-            session[LAST_OFFERED_SLOTS_KEY] = None
-            session[SELECTED_SLOT_KEY] = None
-            session.pop("resch_event_id", None)
-            session.pop("resch_event_summary", None)
+        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok", "okay"):
+            session = _reset_to_triage(session)
             return "No problem. What would you like to do instead?", session
 
         tokens = await redis_get_json(TOKENS_KEY)
         if not tokens:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "The clinic calendar is currently offline. Please try again shortly.", session
 
         event_id = session.get("resch_event_id")
         chosen = session.get(SELECTED_SLOT_KEY)
         if not event_id or not chosen:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "Something went wrong rescheduling. Please try again.", session
 
         start = datetime.fromisoformat(chosen["start"])
@@ -466,31 +559,22 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             calendar_id=clinic.get("calendar_id", "primary"),
         )
 
-        session["state"] = TRIAGE
-        session["collected"] = {}
-        session[LAST_OFFERED_SLOTS_KEY] = None
-        session[SELECTED_SLOT_KEY] = None
-        session.pop("resch_event_id", None)
-        session.pop("resch_event_summary", None)
-
+        session = _reset_to_triage(session)
         return "All set — your appointment has been rescheduled.", session
 
     if state == CANCEL_CONFIRM:
-        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
-            session["state"] = TRIAGE
-            session["collected"] = {}
-            session.pop("resch_event_id", None)
-            session.pop("resch_event_summary", None)
+        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok", "okay"):
+            session = _reset_to_triage(session)
             return "Okay — I won’t cancel it. What would you like to do instead?", session
 
         tokens = await redis_get_json(TOKENS_KEY)
         if not tokens:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "The clinic calendar is currently offline. Please try again shortly.", session
 
         event_id = session.get("resch_event_id")
         if not event_id:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "I couldn’t identify the appointment to cancel. Please try again.", session
 
         delete_event(
@@ -499,49 +583,58 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             calendar_id=clinic.get("calendar_id", "primary"),
         )
 
-        session["state"] = TRIAGE
-        session["collected"] = {}
-        session.pop("resch_event_id", None)
-        session.pop("resch_event_summary", None)
-
+        session = _reset_to_triage(session)
         return "Done — your appointment has been cancelled.", session
 
     # ======================================================================
-    # STEP 4 — BOOKING FLOW
+    # BOOKING FLOW (improved order: type -> reason -> time -> slot -> name -> phone -> confirm)
     # ======================================================================
     if state == BOOK_PATIENT_TYPE:
-        collected["patient_type"] = user_said.strip()
-        session["state"] = BOOK_NAME
-        return "Thanks. What's your full name?", session
-
-    if state == BOOK_NAME:
-        collected["name"] = user_said.strip()
-        session["state"] = BOOK_PHONE
-        return "And what's the best phone number for the appointment?", session
-
-    if state == BOOK_PHONE:
-        phone_raw = user_said.strip()
-        if not is_valid_phone(phone_raw):
-            return "Sorry — I didn’t catch a valid phone number. Please say the phone number again.", session
-        collected["phone"] = normalize_phone(phone_raw)
+        pt = parse_patient_type(user_said)
+        if not pt:
+            return "No problem — are you a new patient, or have you been here before?", session
+        collected["patient_type"] = pt
         session["state"] = BOOK_REASON
-        return "What is the appointment for? For example back pain, knee injury, or a follow-up.", session
+        return "Thanks. What’s the appointment for — for example assessment, follow-up, massage, or shockwave?", session
 
     if state == BOOK_REASON:
         collected["reason"] = user_said.strip()
         session["state"] = BOOK_TIME_PREF
-        return "When would you prefer? You can say tomorrow morning, Friday afternoon, or next week.", session
+        return "When would you prefer? You can say tomorrow morning, Tuesday afternoon, or next week.", session
 
     if state == BOOK_TIME_PREF:
-        collected["time_pref"] = user_said.strip()
+        pref_text = user_said.strip()
+        collected["time_pref"] = pref_text
+
+        tz = get_tz(clinic)
+        dw = parse_specific_day_window(pref_text, tz)
+        if dw:
+            collected["day_window_start"] = dw[0].isoformat()
+            collected["day_window_end"] = dw[1].isoformat()
+        else:
+            collected.pop("day_window_start", None)
+            collected.pop("day_window_end", None)
+
         session["state"] = BOOK_OFFER_SLOTS
         return "Great — let me check availability.", session
 
     if state == BOOK_OFFER_SLOTS:
         pref = collected.get("time_pref", "")
-        raw_slots, labels, err = await suggest_top_slots(session, duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)), pref_text=pref)
+        dw = None
+        if collected.get("day_window_start") and collected.get("day_window_end"):
+            dw = (
+                datetime.fromisoformat(collected["day_window_start"]),
+                datetime.fromisoformat(collected["day_window_end"]),
+            )
+
+        raw_slots, labels, err = await suggest_top_slots(
+            session,
+            duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
+            pref_text=pref,
+            day_window=dw,
+        )
         if err:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return err, session
 
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
@@ -564,35 +657,44 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             return "Please say 1, 2, or 3.", session
 
         session[SELECTED_SLOT_KEY] = slots[idx]
+        session["state"] = BOOK_NAME
+        return "Great. What’s your full name for the booking?", session
+
+    if state == BOOK_NAME:
+        collected["name"] = user_said.strip()
+        session["state"] = BOOK_PHONE
+        return "Thanks. Could I take a mobile number for the booking confirmation?", session
+
+    if state == BOOK_PHONE:
+        phone_raw = user_said.strip()
+        if not is_valid_phone(phone_raw):
+            return "Sorry — I didn’t catch a valid phone number. Please say the phone number again.", session
+        collected["phone"] = normalize_phone(phone_raw)
         session["state"] = BOOK_CONFIRM_SLOT
-        return f"Great. Please confirm booking for option {idx + 1}. Say yes or no.", session
+        return "Perfect. Please say yes to confirm the booking, or no to cancel.", session
 
     if state == BOOK_CONFIRM_SLOT:
-        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok"):
-            session["state"] = TRIAGE
-            session["collected"] = {}
-            session[LAST_OFFERED_SLOTS_KEY] = None
-            session[SELECTED_SLOT_KEY] = None
+        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok", "okay"):
+            session = _reset_to_triage(session)
             return "No problem. What would you like to do instead?", session
 
         tokens = await redis_get_json(TOKENS_KEY)
         if not tokens:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "The clinic calendar is currently offline. Please try again shortly.", session
 
         chosen = session.get(SELECTED_SLOT_KEY)
         if not chosen:
-            session["state"] = TRIAGE
+            session = _reset_to_triage(session)
             return "Something went wrong selecting the slot. Please try again.", session
 
         start = datetime.fromisoformat(chosen["start"])
         end = datetime.fromisoformat(chosen["end"])
 
-        # Step 6: clinic-specific calendar + richer metadata
         calendar_id = clinic.get("calendar_id", "primary")
         summary = f"{collected.get('name', 'Patient')} – {collected.get('reason', 'Appointment')}"
         description = (
-            f"Clinic: {clinic.get('display_name', clinic.get('display_name', 'Clinic'))}\n"
+            f"Clinic: {clinic.get('display_name', 'Clinic')}\n"
             f"Patient type: {collected.get('patient_type', '')}\n"
             f"Phone: {collected.get('phone', '')}\n"
             f"Reason: {collected.get('reason', '')}\n"
@@ -609,10 +711,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             calendar_id=calendar_id,
         )
 
-        session["state"] = TRIAGE
-        session["collected"] = {}
-        session[LAST_OFFERED_SLOTS_KEY] = None
-        session[SELECTED_SLOT_KEY] = None
+        session = _reset_to_triage(session)
 
         if not event or not event.get("id"):
             return "I couldn’t create the booking. Please try again.", session
@@ -626,20 +725,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     session["intent"] = intent
 
     if intent == "BOOK":
-        session["collected"] = {}
-        session[LAST_OFFERED_SLOTS_KEY] = None
-        session[SELECTED_SLOT_KEY] = None
-        session.pop("resch_event_id", None)
-        session.pop("resch_event_summary", None)
+        session = _reset_to_triage(session)
         session["state"] = BOOK_PATIENT_TYPE
-        return "Sure — are you a new or returning patient?", session
+        return "Sure — are you a new patient, or have you been here before?", session
 
     if intent == "RESCHEDULE":
-        session["collected"] = {}
-        session[LAST_OFFERED_SLOTS_KEY] = None
-        session[SELECTED_SLOT_KEY] = None
-        session.pop("resch_event_id", None)
-        session.pop("resch_event_summary", None)
+        session = _reset_to_triage(session)
         session["state"] = RESCH_CHOICE
         return "Sure — do you want to reschedule or cancel your appointment?", session
 
@@ -654,3 +745,4 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         "What would you like to do?",
         session,
     )
+
