@@ -1,33 +1,97 @@
+# app/clinic_config.py
+
 CLINICS = {
     "demo": {
-        "display_name": "RochSolutions Clinic (Demo)",
+        # ------------------------------------------------------------------
+        # BASIC INFO
+        # ------------------------------------------------------------------
+        "display_name": "Roch Physio Clinic (Demo)",
         "timezone": "Europe/London",
         "calendar_id": "primary",
 
-        # booking rules
+        # ------------------------------------------------------------------
+        # BOOKING RULES
+        # ------------------------------------------------------------------
         "slot_minutes": 30,
         "days_ahead": 7,
         "working_hours": {
-            "mon": (9, 18),
-            "tue": (9, 18),
-            "wed": (9, 18),
-            "thu": (9, 18),
-            "fri": (9, 18),
-            "sat": None,
+            "mon": (8, 19),
+            "tue": (8, 19),
+            "wed": (8, 19),
+            "thu": (8, 19),
+            "fri": (8, 19),
+            "sat": (9, 14),
             "sun": None,
         },
 
-        # FAQ / info
-        "address": "Demo address — set per clinic",
-        "parking": "Demo parking — set per clinic",
-        "hours_summary": "Mon–Fri 9am–6pm",
-        "pricing_summary": "Initial £50–£90, follow-up £40–£75 (varies by clinic).",
-        "services": ["Physiotherapy", "Sports therapy", "MSK rehab", "Injury assessment"],
-        "insurance_note": "Most clinics provide receipts for insurance claims; coverage depends on your policy.",
-        "common_insurers": ["Bupa", "AXA Health", "Vitality", "Aviva", "WPA", "Cigna", "Simplyhealth"],
+        # ------------------------------------------------------------------
+        # LOCATION
+        # ------------------------------------------------------------------
+        "address": (
+            "Roch Physio Clinic, 12 High Street, Coventry, CV1. "
+            "Two minutes’ walk from Coventry Station."
+        ),
+        "parking": (
+            "Paid on-street parking is available nearby, "
+            "and there is a public car park opposite the clinic."
+        ),
 
-        # policies
-        "cancellation_policy": "Please give 24h notice to avoid late cancellation fees (varies by clinic).",
-        "what_to_bring": "Photo ID, any scans/reports, and comfortable clothing.",
+        # ------------------------------------------------------------------
+        # OPENING HOURS (spoken summary)
+        # ------------------------------------------------------------------
+        "hours_summary": (
+            "We’re open Monday to Friday from 8am to 7pm, "
+            "Saturday from 9am to 2pm, and closed on Sundays."
+        ),
+
+        # ------------------------------------------------------------------
+        # PRICING (VERY IMPORTANT FOR DEMO CLARITY)
+        # ------------------------------------------------------------------
+        "pricing_summary": (
+            "Initial assessment is £65 for 45 minutes. "
+            "Follow-up appointments are £45 for 30 minutes. "
+            "Sports massage is £40 for 30 minutes or £70 for 60 minutes. "
+            "Shockwave therapy sessions are £55."
+        ),
+
+        # ------------------------------------------------------------------
+        # SERVICES
+        # ------------------------------------------------------------------
+        "services": [
+            "Initial physiotherapy assessment",
+            "Follow-up physiotherapy sessions",
+            "Sports massage",
+            "Shockwave therapy",
+            "Rehabilitation and strength programmes",
+        ],
+
+        # ------------------------------------------------------------------
+        # INSURANCE (CLEAR, NOT VAGUE)
+        # ------------------------------------------------------------------
+        "insurance_note": (
+            "We accept Bupa, AXA Health, Vitality, Aviva and WPA. "
+            "If you’re with another insurer, we can treat you on a self-pay basis "
+            "and provide an invoice for reimbursement if your policy allows."
+        ),
+        "common_insurers": [
+            "Bupa",
+            "AXA Health",
+            "Vitality",
+            "Aviva",
+            "WPA",
+        ],
+
+        # ------------------------------------------------------------------
+        # POLICIES / FIRST VISIT INFO
+        # ------------------------------------------------------------------
+        "cancellation_policy": (
+            "If you need to cancel or reschedule, please give at least "
+            "24 hours’ notice to avoid a late cancellation fee."
+        ),
+        "what_to_bring": (
+            "Please wear comfortable clothing and bring any relevant scans, "
+            "reports, or referral letters if you have them."
+        ),
     }
 }
+
