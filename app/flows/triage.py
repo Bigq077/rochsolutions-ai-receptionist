@@ -945,18 +945,19 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     if intent.startswith("FAQ_"):
         return _reply(session, faq_answer(intent, user_said, clinic))
 
-if intent == "HUMAN":
-    send_to_sheet(
-        name=collected.get("name", ""),
-        phone=collected.get("phone", ""),
-        intent="CALLBACK",
-        message=user_said,
-        call_sid=session.get("call_sid", ""),
-    )
-    return (
-        "No problem. I’ve passed this to the clinic and someone will call you back shortly.",
-        session,
-    )
+        if intent == "HUMAN":
+        send_to_sheet(
+            name=collected.get("name", ""),
+            phone=collected.get("phone", ""),
+            intent="CALLBACK",
+            message=user_said,
+            call_sid=session.get("call_sid", ""),
+        )
+        return (
+            "No problem. I’ve passed this to the clinic and someone will call you back shortly.",
+            session,
+        )
+
 
     # ✅ NEW: If we don’t recognise it, let OpenAI route + answer safely
     if intent in ("UNKNOWN", "OTHER"):
