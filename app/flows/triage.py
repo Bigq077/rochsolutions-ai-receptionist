@@ -3,7 +3,7 @@ from typing import Dict, Any, Tuple
 import re
 from datetime import datetime, timedelta
 import pytz
-
+from app.tools.handoff import send_to_sheet
 from app.storage.redis_store import redis_get_json
 from app.clinic_config import CLINICS  # config-driven clinics
 from app.tools.calendar_google import (
@@ -945,8 +945,18 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     if intent.startswith("FAQ_"):
         return _reply(session, faq_answer(intent, user_said, clinic))
 
-    if intent == "HUMAN":
-        return _reply(session, "Okay. Please tell me your name and phone number and the clinic will call you back.")
+if intent == "HUMAN":
+    send_to_sheet(
+        name=collected.get("name", ""),
+        phone=collected.get("phone", ""),
+        intent="CALLBACK",
+        message=user_said,
+        call_sid=session.get("call_sid", ""),
+    )
+    return (
+        "No problem. I’ve passed this to the clinic and someone will call you back shortly.",
+        session,
+    )
 
     # ✅ NEW: If we don’t recognise it, let OpenAI route + answer safely
     if intent in ("UNKNOWN", "OTHER"):
