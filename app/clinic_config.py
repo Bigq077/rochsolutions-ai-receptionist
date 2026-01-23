@@ -2,7 +2,7 @@
 
 CLINICS = {
     "demo": {
-        "display_name": "Roch Physio Clinic (Demo)",
+        "display_name": "Roch Physio Clinic",
         "timezone": "Europe/London",
         "calendar_id": "primary",
 
@@ -22,7 +22,7 @@ CLINICS = {
         # FAQ / info
         "address": (
             "Roch Physio is located at 12 High Street, Coventry, CV1 — "
-            "which is a two minutes’ walk from Coventry Station."
+            "a two minutes’ walk from Coventry Station."
         ),
         "parking": (
             "Paid on-street parking is available nearby, and there is a public car park opposite the clinic."
@@ -45,7 +45,7 @@ CLINICS = {
         ],
         "insurance_note": (
             "We accept Bupa, AXA Health, Vitality, Aviva and WPA. "
-            "If you’re with another insurer, we offer self-pay and then provide an invoice for reimbursement if your policy allows."
+            "If you’re with another insurer, we offer self-pay and can provide an invoice for reimbursement if your policy allows."
         ),
         "common_insurers": ["Bupa", "AXA Health", "Vitality", "Aviva", "WPA"],
 
