@@ -17,7 +17,7 @@ google-auth-httplib2
 
 httpx
 pytz
+python-dateutil
 
 python-multipart
 openai>=1.0.0
-
