@@ -8,8 +8,10 @@ import pytz
 
 from app.storage.redis_store import redis_get_json
 from app.clinic_config import CLINICS
+
 from app.tools.llm_router import route_and_answer
 from app.tools.knowledge import retrieve_knowledge
+
 from app.tools.calendar_google import (
     create_event,
     freebusy,
@@ -17,6 +19,7 @@ from app.tools.calendar_google import (
     patch_event_time,
     delete_event,
 )
+
 from app.tools.slots import (
     next_7_days_window,
     generate_candidate_slots,
@@ -25,9 +28,6 @@ from app.tools.slots import (
     pick_first_n,
     format_slot,
 )
-
-from app.tools.llm_router import route_and_answer
-
 
 # Optional: Google Sheet handoff (won't crash if you haven't set it up yet)
 try:
@@ -43,9 +43,11 @@ DEFAULT_DURATION_MIN = 30
 ACTIVE_CLINIC_KEY = "active_clinic"
 LAST_OFFERED_SLOTS_KEY = "last_offered_slots"
 SELECTED_SLOT_KEY = "selected_slot"
+
 SLOT_LABELS_KEY = "slot_labels"
 SELECTED_SLOT_LABEL_KEY = "selected_slot_label"
 LAST_BOT_PROMPT_KEY = "last_bot_prompt"
+LAST_USER_TEXT_KEY = "last_user_text"
 
 
 # ---------- HELPERS ----------
@@ -75,7 +77,6 @@ def get_clinic(session: Dict[str, Any]) -> Dict[str, Any]:
         return CLINICS[key]
     if "demo" in CLINICS:
         return CLINICS["demo"]
-    # fallback: first clinic
     return next(iter(CLINICS.values()))
 
 
@@ -109,12 +110,58 @@ def parse_patient_type(text: str) -> Optional[str]:
     ]
     new = [
         "new", "first time", "never been", "not been before", "initial", "first visit",
+        "new patient",
     ]
     if any(k in t for k in returning):
         return "RETURNING"
     if any(k in t for k in new):
         return "NEW"
     return None
+
+
+def _is_interrupt(text: str) -> bool:
+    """
+    Allows caller to cut the receptionist off.
+    Keep this strict to avoid accidental triggers.
+    """
+    t = _norm(text)
+    if not t:
+        return False
+    return t in {
+        "stop",
+        "cancel",
+        "wait",
+        "hold on",
+        "hang on",
+        "one second",
+        "a second",
+        "pause",
+        "restart",
+        "start over",
+        "reset",
+        "go back",
+        "back",
+        "main menu",
+        "menu",
+    }
+
+
+def _interrupt_reply(text: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """
+    Friendly + professional interruption handling.
+    """
+    t = _norm(text)
+    if t in {"restart", "start over", "reset"}:
+        session = _reset_to_triage(session)
+        return _say("Okay — starting over. What would you like to do?", session)
+    if t in {"main menu", "menu", "go back", "back"}:
+        session = _reset_to_triage(session)
+        return _say("No problem — what would you like to do: book, reschedule, or ask a question?", session)
+    if t in {"stop", "cancel"}:
+        session = _reset_to_triage(session)
+        return _say("No problem. What would you like to do instead?", session)
+    # generic pause / wait / hold on
+    return _say("Of course. When you’re ready, tell me what you’d like to do.", session)
 
 
 def detect_intent(text: str) -> str:
@@ -128,7 +175,7 @@ def detect_intent(text: str) -> str:
     if _contains_any(t, ["reschedule", "move", "rebook", "postpone", "change my appointment", "change my booking"]):
         return "RESCHEDULE"
 
-    if _contains_any(t, ["cancel", "cancellation", "call it off"]):
+    if _contains_any(t, ["cancel appointment", "cancel my appointment", "cancel", "cancellation", "call it off"]):
         return "CANCEL"
 
     if _contains_any(t, ["price", "cost", "fee", "how much", "charge", "rates", "pricing", "payment", "pay"]):
@@ -143,19 +190,19 @@ def detect_intent(text: str) -> str:
     if _contains_any(t, ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"]):
         return "FAQ_INSURANCE"
 
-    if _contains_any(t, ["physio", "physiotherapy", "massage", "sports therapy", "rehab", "shockwave"]):
+    if _contains_any(t, ["treatments", "treatment", "services", "physio", "physiotherapy", "massage", "sports therapy", "rehab", "shockwave"]):
         return "FAQ_SERVICES"
 
     if _contains_any(t, ["cancel policy", "cancellation policy", "late fee", "refund", "missed appointment"]):
         return "FAQ_POLICIES"
 
-    if _contains_any(t, ["what should i bring", "what do i wear", "arrive", "late"]):
+    if _contains_any(t, ["first visit", "what should i bring", "what do i wear", "arrive", "late"]):
         return "FAQ_FIRST_VISIT"
 
     if _contains_any(t, ["privacy", "data", "gdpr", "recording", "confidential"]):
         return "FAQ_PRIVACY"
 
-    if _contains_any(t, ["human", "person", "receptionist", "someone", "call me back", "speak to"]):
+    if _contains_any(t, ["human", "person", "receptionist", "someone", "call me back", "speak to", "call back"]):
         return "HUMAN"
 
     return "OTHER"
@@ -248,7 +295,7 @@ BOOK_NAME = "BOOK_NAME"
 BOOK_PHONE = "BOOK_PHONE"
 BOOK_CONFIRM = "BOOK_CONFIRM"
 
-# Reschedule / Cancel
+# Reschedule
 RESCH_NAME = "RESCH_NAME"
 RESCH_ORIGINAL = "RESCH_ORIGINAL"
 RESCH_NEW_PREF = "RESCH_NEW_PREF"
@@ -256,7 +303,6 @@ RESCH_OFFER_SLOTS = "RESCH_OFFER_SLOTS"
 RESCH_PICK_SLOT = "RESCH_PICK_SLOT"
 RESCH_CONFIRM = "RESCH_CONFIRM"
 RESCH_PHONE_FALLBACK = "RESCH_PHONE_FALLBACK"
-CANCEL_CONFIRM = "CANCEL_CONFIRM"
 
 
 # ---------- SLOT SUGGESTION ----------
@@ -287,7 +333,6 @@ async def suggest_top_slots(
 
     tokens = await redis_get_json(TOKENS_KEY)
 
-    # DEMO fallback if calendar not connected
     candidates = generate_candidate_slots(
         w_start, w_end,
         duration_min=duration_min,
@@ -295,6 +340,7 @@ async def suggest_top_slots(
         day_end_h=day_end_h,
     )
 
+    # Demo fallback if calendar not connected
     if not tokens:
         top3 = pick_first_n(candidates, 3)
         if not top3:
@@ -332,7 +378,7 @@ def _safe_parse_user_datetime(text: str, tz) -> Optional[datetime]:
     """
     Parses user-provided datetime like:
     '25 Jan 3pm', 'next Tuesday at 10', etc.
-    Requires python-dateutil (added in requirements.txt).
+    Requires python-dateutil in requirements.txt.
     """
     try:
         from dateutil import parser as dtparser  # type: ignore
@@ -404,14 +450,13 @@ async def find_event_by_name_and_time(
     return best
 
 
-# ---------- FAQ (deterministic fallback; LLM handles most in TRIAGE) ----------
+# ---------- FAQ (deterministic fallback) ----------
 def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
     if intent == "FAQ_PRICES":
         return clinic.get("pricing_summary", "Please ask the clinic for pricing.")
     if intent == "FAQ_HOURS":
         return clinic.get("hours_summary", "Please ask the clinic for opening hours.")
     if intent == "FAQ_LOCATION":
-        # Requirement: must start like "Roch Physio is located at..."
         return clinic.get("address", "Roch Physio is located at ...")
     if intent == "FAQ_INSURANCE":
         return clinic.get("insurance_note", "Please ask the clinic about insurance.")
@@ -429,6 +474,10 @@ def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
 
 # ---------- MAIN STATE MACHINE ----------
 async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    # Allow user to cut the receptionist off at any time
+    if _is_interrupt(user_said):
+        return _interrupt_reply(user_said, session)
+
     if not user_said:
         return _say("Sorry — I didn’t catch that. Could you repeat?", session)
 
@@ -440,26 +489,28 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     session.setdefault(LAST_OFFERED_SLOTS_KEY, None)
     session.setdefault(SELECTED_SLOT_KEY, None)
 
-    # global commands
-    if _norm(user_said) in ("restart", "start over", "reset"):
-        session = _reset_to_triage(session)
-        return _say("Okay — starting over. How can I help?", session)
+    session[LAST_USER_TEXT_KEY] = user_said
 
-    if _norm(user_said) in ("stop", "goodbye", "bye"):
-        session = _reset_to_triage(session)
-        return _say("Okay. Goodbye.", session)
-
-    # repeat helper
+    # Repeat helper
     if _norm(user_said) in ("repeat", "say again") and state in (BOOK_PICK_SLOT, RESCH_PICK_SLOT):
         return _say("Sure. Please say 1, 2, or 3.", session)
 
     # ==========================================================
-    # COMMIT 3: LLM Router ONLY IN TRIAGE (human-like responses)
+    # TRIAGE: LLM + knowledge retrieval (professional responses)
     # ==========================================================
     if state == TRIAGE:
+        # 1) Knowledge retrieval first (for "tell me more about treatments", etc.)
+        try:
+            kb = retrieve_knowledge(user_said, clinic=clinic)  # should return string (best passage)
+        except Exception:
+            kb = ""
+
+        # 2) LLM router to decide intent and produce concise answer
         try:
             llm = route_and_answer(
-                user_text=user_said,
+                user_text=(
+                    (f"KNOWLEDGE:\n{kb}\n\n" if kb else "") + user_said
+                ),
                 clinic=clinic,
                 current_state=state,
                 last_bot_prompt=session.get(LAST_BOT_PROMPT_KEY, ""),
@@ -469,7 +520,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             reply = (llm.get("reply") or "").strip()
             follow = (llm.get("follow_up_question") or "").strip()
 
-            # If confident, let it route/answer
+            # If confident, route/answer
             if conf >= 0.55:
                 if llm_intent == "BOOK":
                     session = _reset_to_triage(session)
@@ -482,13 +533,24 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                     return _say("Sure — to reschedule, what’s your full name?", session)
 
                 if llm_intent == "HUMAN":
-                    session = _reset_to_triage(session)
-                    session["state"] = TRIAGE
+                    # Optional sheet handoff if set up
+                    if send_to_sheet is not None:
+                        try:
+                            send_to_sheet(
+                                name=collected.get("name", ""),
+                                phone=collected.get("phone", ""),
+                                intent="CALLBACK",
+                                message=user_said,
+                                call_sid=session.get("call_sid", ""),
+                            )
+                        except Exception:
+                            pass
                     return _say(
                         "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
                         session,
                     )
 
+                # FAQ / OTHER / MESSAGE => answer directly
                 if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
                     if reply:
                         if follow:
@@ -496,12 +558,22 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                         return _say(reply, session)
 
         except Exception:
-            # LLM failed => deterministic fallback below
+            # If LLM fails, continue to deterministic fallback below
             pass
 
+        # Deterministic fallback if LLM didn't return something useful
+        intent = detect_intent(user_said)
+        if intent.startswith("FAQ_"):
+            return _say(faq_answer(intent, clinic), session)
+
+        # Professional generic prompt (NO “anything else I can help with”)
+        return _say(
+            "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
+            session,
+        )
+
     # ======================================================================
-    # RESCHEDULE FLOW (requested): name -> original appt -> desired new time -> offer -> pick -> confirm
-    # If calendar lookup fails, we ask phone as fallback.
+    # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
     if state == RESCH_NAME:
         collected["name"] = user_said.strip()
@@ -519,7 +591,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session["state"] = RESCH_NEW_PREF
             return _say("Thanks. What day or time would you like to move it to?", session)
 
-        # If we have tokens but couldn't match, ask phone as a fallback
+        # If we have tokens but couldn't match, ask phone as fallback
         tokens = await redis_get_json(TOKENS_KEY)
         if tokens:
             session["state"] = RESCH_PHONE_FALLBACK
@@ -535,12 +607,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             return _say("Sorry — I didn’t catch a valid phone number. Please say the phone number again.", session)
         collected["phone"] = normalize_phone(phone_raw)
 
-        # Find by phone digits in description
         tokens = await redis_get_json(TOKENS_KEY)
         if tokens:
             ev = None
-            clinic2 = get_clinic(session)
-            events = list_upcoming_events(tokens, calendar_id=clinic2.get("calendar_id", "primary"), days_ahead=60, max_results=50)
+            events = list_upcoming_events(tokens, calendar_id=clinic.get("calendar_id", "primary"), days_ahead=60, max_results=50)
             target = collected["phone"]
             for e in events:
                 desc = _digits_only((e.get("description") or ""))
@@ -614,7 +684,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         chosen = session.get(SELECTED_SLOT_KEY)
         label = session.get(SELECTED_SLOT_LABEL_KEY) or "the new time"
 
-        # If we have calendar + matched event, patch it
         event_id = session.get("resch_event_id")
         if tokens and event_id and chosen:
             start = datetime.fromisoformat(chosen["start"])
@@ -629,7 +698,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session = _reset_to_triage(session)
             return _say(f"Confirmed — you’re rescheduled to {label}.", session)
 
-        # Demo / no matched event: still confirm cleanly
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you’re rescheduled to {label}.", session)
 
@@ -759,45 +827,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         return _say(f"Confirmed — you’re booked for {label}.", session)
 
     # ======================================================================
-    # TRIAGE / deterministic fallback if not TRIAGE (rare)
+    # If we reach here, reset safely
     # ======================================================================
-    intent = detect_intent(user_said)
-    session["intent"] = intent
-
-    if intent == "BOOK":
-        session = _reset_to_triage(session)
-        session["state"] = BOOK_PATIENT_TYPE
-        return _say("Sure — are you a new patient, or have you been here before?", session)
-
-    if intent == "RESCHEDULE":
-        session = _reset_to_triage(session)
-        session["state"] = RESCH_NAME
-        return _say("Sure — to reschedule, what’s your full name?", session)
-
-    if intent == "CANCEL":
-        session = _reset_to_triage(session)
-        session["state"] = CANCEL_CONFIRM
-        return _say("Okay — do you want to cancel your appointment? Say yes or no.", session)
-
-    if intent.startswith("FAQ_"):
-        return _say(faq_answer(intent, clinic), session)
-
-    if intent == "HUMAN":
-        # Best effort: write to sheet if configured
-        if send_to_sheet is not None:
-            try:
-                send_to_sheet(
-                    name=collected.get("name", ""),
-                    phone=collected.get("phone", ""),
-                    intent="CALLBACK",
-                    message=user_said,
-                    call_sid=session.get("call_sid", ""),
-                )
-            except Exception:
-                pass
-        return _say("No problem — please say your name, number, and what you need help with, and the clinic will call you back.", session)
-
+    session = _reset_to_triage(session)
     return _say(
-        "I can help with booking, rescheduling, prices, opening hours, location, or insurance. What would you like to do?",
+        "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
         session,
     )
