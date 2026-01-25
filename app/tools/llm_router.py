@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, TypedDict
+import re
+from typing import Any, Dict, Optional, TypedDict, List
 
 from openai import OpenAI
 
@@ -10,7 +11,7 @@ from openai import OpenAI
 class LLMEntities(TypedDict, total=False):
     name: str
     phone: str
-    patient_type: str           # NEW / RETURNING
+    patient_type: str
     reason: str
     time_pref: str
     original_appt: str
@@ -19,18 +20,15 @@ class LLMEntities(TypedDict, total=False):
 
 
 class LLMResult(TypedDict, total=False):
-    intent: str                 # BOOK / RESCHEDULE / FAQ / HUMAN / MESSAGE / OTHER
-    faq_topic: str              # prices / hours / location / insurance / services / policies / first_visit / other
-    confidence: float           # 0..1
+    intent: str
+    faq_topic: str
+    confidence: float
     entities: LLMEntities
-    reply: str                  # what to say to user (1-2 sentences max)
-    follow_up_question: str     # if missing info, ask ONE question
+    reply: str
+    follow_up_question: str
 
 
 def _clinic_context(clinic: Dict[str, Any]) -> str:
-    """
-    Keep this short. The model should only answer using this info.
-    """
     services = clinic.get("services", [])
     insurers = clinic.get("common_insurers", [])
     return "\n".join([
@@ -48,23 +46,14 @@ def _clinic_context(clinic: Dict[str, Any]) -> str:
 
 
 def _schema() -> Dict[str, Any]:
-    """
-    OpenAI Structured Outputs JSON Schema.
-    """
     return {
         "name": "receptionist_router",
         "schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "intent": {
-                    "type": "string",
-                    "enum": ["BOOK", "RESCHEDULE", "FAQ", "HUMAN", "MESSAGE", "OTHER"],
-                },
-                "faq_topic": {
-                    "type": "string",
-                    "enum": ["prices", "hours", "location", "insurance", "services", "policies", "first_visit", "other"],
-                },
+                "intent": {"type": "string", "enum": ["BOOK", "RESCHEDULE", "FAQ", "HUMAN", "MESSAGE", "OTHER"]},
+                "faq_topic": {"type": "string", "enum": ["prices", "hours", "location", "insurance", "services", "policies", "first_visit", "other"]},
                 "confidence": {"type": "number"},
                 "entities": {
                     "type": "object",
@@ -99,30 +88,65 @@ def _client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
+def _looks_like_facty_detail(text: str) -> bool:
+    """
+    Cheap heuristics: block replies containing specific amounts/times/addresses
+    unless they appear in the provided context.
+    """
+    if not text:
+        return False
+    # money, times, postcode-ish tokens
+    if re.search(r"£\s*\d", text):
+        return True
+    if re.search(r"\b\d{1,2}(:\d{2})\b", text):  # 14:30
+        return True
+    if re.search(r"\b\d{1,2}\s*(am|pm)\b", text.lower()):
+        return True
+    return False
+
+
+def _guardrail_reply(reply: str, allowed_context: str) -> str:
+    """
+    If model tries to include precise clinic-specific facts that aren't in context,
+    replace with a safe receptionist-style response.
+    """
+    if not reply:
+        return "I can help with that — what would you like to know?"
+    if not _looks_like_facty_detail(reply):
+        return reply
+
+    # If the exact token exists in context, allow it.
+    # (Simple check: if reply contains £ or time, ensure that substring appears somewhere in context)
+    if "£" in reply and "£" not in allowed_context:
+        return "I can explain how it works, and I can confirm exact pricing with the clinic."
+    if re.search(r"\b\d{1,2}(:\d{2})\b", reply) and not re.search(r"\b\d{1,2}(:\d{2})\b", allowed_context):
+        return "I can help with that — what day and time are you aiming for?"
+    return reply
+
+
 def route_and_answer(
     user_text: str,
     clinic: Dict[str, Any],
     current_state: str,
     last_bot_prompt: str = "",
+    knowledge_snippets: Optional[List[str]] = None,
 ) -> LLMResult:
-    """
-    One call that (a) routes intent, (b) extracts entities, (c) gives a short reply.
-    Uses Structured Outputs so parsing is reliable. :contentReference[oaicite:4]{index=4}
-    """
     ctx = _clinic_context(clinic)
+    kb = "\n\n".join(knowledge_snippets or [])
 
     system = (
         "You are a helpful UK physiotherapy clinic receptionist.\n"
-        "Rules:\n"
-        "1) Be concise: 1-2 sentences max.\n"
-        "2) Only answer using the clinic context provided. If unknown, say you can confirm with the clinic.\n"
-        "3) If the user is trying to book/reschedule, set intent accordingly and extract any useful details.\n"
-        "4) If info is missing, ask ONE follow-up question only.\n"
-        "5) Never invent addresses, prices, or hours not in context.\n"
+        "Hard rules:\n"
+        "1) Be concise: 1–2 sentences max.\n"
+        "2) You MUST only use the provided context (clinic context + knowledge snippets).\n"
+        "3) If a detail is not explicitly in the provided context, say you can confirm with the clinic.\n"
+        "4) No medical diagnosis. No guaranteed outcomes. Encourage booking for clinical assessment.\n"
+        "5) Ask ONE follow-up question if needed.\n"
     )
 
     user = (
         f"CLINIC CONTEXT:\n{ctx}\n\n"
+        f"KNOWLEDGE SNIPPETS:\n{kb}\n\n"
         f"CURRENT STATE: {current_state}\n"
         f"LAST BOT PROMPT: {last_bot_prompt}\n\n"
         f"USER SAID: {user_text}\n\n"
@@ -130,11 +154,8 @@ def route_and_answer(
     )
 
     client = _client()
-    model = _model_name()
-
-    # Responses API (recommended modern endpoint) :contentReference[oaicite:5]{index=5}
     resp = client.responses.create(
-        model=model,
+        model=_model_name(),
         input=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -148,8 +169,6 @@ def route_and_answer(
         },
     )
 
-    # The SDK returns the parsed JSON as text in output; we read it safely.
-    # Different SDK versions surface it slightly differently, so we extract robustly.
     out_text = ""
     for item in resp.output:
         if item.type == "message":
@@ -157,13 +176,12 @@ def route_and_answer(
                 if c.type == "output_text":
                     out_text += c.text
 
-    # With strict json_schema, out_text is guaranteed valid JSON matching schema.
     import json
     data = json.loads(out_text)
 
-    # Defensive cleanup
+    allowed = f"{ctx}\n\n{kb}"
+    data["reply"] = _guardrail_reply(data.get("reply", ""), allowed)
     data["confidence"] = float(data.get("confidence") or 0.0)
     if not isinstance(data.get("entities"), dict):
         data["entities"] = {}
     return data  # type: ignore[return-value]
-
