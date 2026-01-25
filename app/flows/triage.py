@@ -8,6 +8,8 @@ import pytz
 
 from app.storage.redis_store import redis_get_json
 from app.clinic_config import CLINICS
+from app.tools.llm_router import route_and_answer
+from app.tools.knowledge import retrieve_knowledge
 from app.tools.calendar_google import (
     create_event,
     freebusy,
