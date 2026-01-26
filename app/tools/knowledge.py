@@ -1,97 +1,97 @@
 # app/tools/knowledge.py
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import List
+from typing import Optional, List, Tuple
+import re
 
 
 DEFAULT_KNOWLEDGE_PATH = Path("app/knowledge/clinic.md")
 
 
-def _read_text_file(path: Path) -> str:
-    """
-    Safe UTF-8 reader. Won't crash on missing file.
-    """
-    try:
-        if not path.exists():
-            return ""
-        return path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return ""
+def _read_text(path: Path) -> str:
+    # Read as UTF-8 and ignore weird characters rather than crashing deploy
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def _simple_chunk(text: str, max_chars: int = 1200) -> List[str]:
+def _chunk(text: str, max_chars: int = 900) -> List[str]:
     """
-    Very simple chunker:
-    - splits on blank lines
-    - merges into chunks <= max_chars
+    Split into small chunks so retrieval is stable.
+    We chunk on blank lines first, then fallback to hard split.
     """
-    if not text.strip():
-        return []
-
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
     chunks: List[str] = []
     buf = ""
-
-    for p in paragraphs:
-        if not buf:
-            buf = p
-            continue
-
-        if len(buf) + 2 + len(p) <= max_chars:
-            buf = buf + "\n\n" + p
+    for b in blocks:
+        if len(buf) + len(b) + 2 <= max_chars:
+            buf = (buf + "\n\n" + b).strip()
         else:
-            chunks.append(buf)
-            buf = p
-
+            if buf:
+                chunks.append(buf)
+            if len(b) <= max_chars:
+                buf = b
+            else:
+                # hard split long block
+                for i in range(0, len(b), max_chars):
+                    chunks.append(b[i : i + max_chars])
+                buf = ""
     if buf:
         chunks.append(buf)
-
     return chunks
 
 
-def _score(query: str, chunk: str) -> int:
+def _score(query: str, chunk: str) -> float:
     """
-    Naive keyword overlap scorer.
-    Good enough for a demo.
+    Very simple keyword score (no embeddings).
+    Good enough for a demo knowledge base.
     """
     q = query.lower()
     c = chunk.lower()
 
-    # lightweight tokenisation
-    q_words = {w for w in q.replace(",", " ").replace(".", " ").split() if len(w) > 2}
+    # keywords = words longer than 2 chars
+    q_words = [w for w in re.findall(r"[a-z0-9]+", q) if len(w) > 2]
     if not q_words:
-        return 0
+        return 0.0
 
-    score = 0
-    for w in q_words:
-        if w in c:
-            score += 1
+    hits = sum(1 for w in q_words if w in c)
 
-    return score
+    # bonus if query contains bigrams that appear in chunk
+    bigrams = [" ".join(q_words[i : i + 2]) for i in range(len(q_words) - 1)]
+    bonus = sum(1 for b in bigrams if b in c)
+
+    return float(hits + 2 * bonus)
 
 
 def retrieve_knowledge(
     query: str,
+    path: Path = DEFAULT_KNOWLEDGE_PATH,
     top_k: int = 3,
-    path: str | None = None,
 ) -> str:
     """
-    Returns top_k relevant chunks from clinic.md as a single string.
-    If no knowledge is available, returns an empty string.
+    Returns up to top_k relevant chunks from clinic.md.
+    If file missing, returns empty string (safe).
     """
-    knowledge_path = Path(path) if path else DEFAULT_KNOWLEDGE_PATH
-    text = _read_text_file(knowledge_path)
-    chunks = _simple_chunk(text)
+    try:
+        if not path.exists():
+            return ""
+        text = _read_text(path).strip()
+        if not text:
+            return ""
 
-    if not chunks:
+        chunks = _chunk(text)
+        scored: List[Tuple[float, str]] = [( _score(query, ch), ch) for ch in chunks]
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        best = [ch for s, ch in scored if s > 0][:top_k]
+        if not best:
+            return ""
+
+        # Keep short-ish so it fits into LLM context
+        out = "\n\n---\n\n".join(best)
+        return out[:2200]
+    except Exception:
         return ""
 
-    ranked = sorted(chunks, key=lambda ch: _score(query, ch), reverse=True)
-    picked = [ch for ch in ranked[:top_k] if ch.strip()]
-
-    return "\n\n---\n\n".join(picked)
 
 
 
