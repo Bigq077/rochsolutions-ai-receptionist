@@ -12,18 +12,25 @@ def xml(resp: VoiceResponse) -> PlainTextResponse:
     return PlainTextResponse(str(resp), media_type="application/xml")
 
 
-def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
+TURN_PATH = "/twilio/turn"
+
+
+def gather_speech(prompt: str | None = None) -> Gather:
     """
-    Gather with barge-in enabled so callers can cut off the assistant.
+    Gather with barge-in so callers can interrupt/cut off the assistant.
+    Uses relative action path to avoid proxy/http issues on Render.
     """
     g = Gather(
         input="speech",
-        action=action_url,
+        action=TURN_PATH,
         method="POST",
         language="en-GB",
         speech_timeout="auto",
+        timeout=6,                 # wait for speech to start
         action_on_empty_result=True,
-        barge_in=True,  # ✅ allow interrupt / cut-off
+        barge_in=True,             # allow interrupt
+        enhanced=True,             # better recognition (Twilio feature)
+        speech_model="phone_call", # tuned model
     )
     if prompt:
         g.say(prompt, language="en-GB")
@@ -33,15 +40,12 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
 @router.api_route("/voice", methods=["GET", "POST"])
 async def voice(request: Request):
     vr = VoiceResponse()
-    action_url = str(request.url_for("turn"))
 
-    # Keep greeting short, inside Gather so it can be interrupted.
-    vr.append(
-        gather_speech(
-            action_url,
-            "Hi, Roch Physio speaking. How can I help today?",
-        )
-    )
+    # Put greeting inside Gather so user can speak immediately (interruptible)
+    vr.append(gather_speech("Hi, Roch Physio speaking. How can I help today?"))
+
+    # If Twilio ever returns here without hitting /turn, give a fallback
+    vr.say("Sorry — please call again.", language="en-GB")
     return xml(vr)
 
 
@@ -50,31 +54,31 @@ async def turn(request: Request):
     vr = VoiceResponse()
     form = await request.form()
 
+    # ✅ Debug: print everything Twilio sent (remove once fixed)
+    print("TWILIO FORM:", dict(form))
+
     call_sid = (form.get("CallSid") or "").strip()
     user_said = (form.get("SpeechResult") or "").strip()
 
     session = await get_session(call_sid) or {}
-    session["call_sid"] = call_sid  # ✅ ensure available for sheet handoff, logging, etc.
+    session["call_sid"] = call_sid
     miss = int(session.get("miss_count", 0))
 
-    action_url = str(request.url_for("turn"))
-
     try:
-        # No speech => progressive short fallbacks (no reset)
         if not user_said:
             miss += 1
             session["miss_count"] = miss
             await save_session(call_sid, session)
 
             if miss == 1:
-                vr.append(gather_speech(action_url, "Sorry — I didn’t catch that. Could you repeat?"))
+                vr.append(gather_speech("Sorry — I didn’t catch that. Could you repeat?"))
                 return xml(vr)
 
             if miss == 2:
-                vr.append(gather_speech(action_url, "No problem. Are you looking to book, reschedule, or ask about prices or opening hours?"))
+                vr.append(gather_speech("No problem. Are you looking to book, reschedule, or ask about prices or opening hours?"))
                 return xml(vr)
 
-            vr.append(gather_speech(action_url, "I can take a message. Please say your name, number, and what you need help with."))
+            vr.append(gather_speech("I can take a message. Please say your name, number, and what you need help with."))
             return xml(vr)
 
         # user spoke
@@ -83,14 +87,11 @@ async def turn(request: Request):
         reply_text, session = await triage_turn(user_said, session)
         await save_session(call_sid, session)
 
-        # Put the bot reply inside Gather so the caller can cut it off
-        vr.append(gather_speech(action_url, reply_text))
+        # Reply inside Gather so user can cut it off
+        vr.append(gather_speech(reply_text))
         return xml(vr)
 
     except Exception as e:
         print("ERROR in /twilio/turn:", repr(e))
-        vr.append(gather_speech(action_url, "Sorry, there was a technical issue. Please try again."))
+        vr.append(gather_speech("Sorry, there was a technical issue. Please try again."))
         return xml(vr)
-
-
-
