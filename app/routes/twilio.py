@@ -1,10 +1,10 @@
-# app/routes/twilio.py
+from __future__ import annotations
+
 import os
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
-from app.flows.triage import triage_turn
 from app.storage.redis_store import get_session, save_session
 
 router = APIRouter(prefix="/twilio")
@@ -14,28 +14,24 @@ def xml(resp: VoiceResponse) -> PlainTextResponse:
     return PlainTextResponse(str(resp), media_type="application/xml")
 
 
-def public_url(path: str) -> str:
-    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-    if not base:
-        # fallback: best effort (but you should set PUBLIC_BASE_URL)
-        return path
-    if not path.startswith("/"):
-        path = "/" + path
-    return base + path
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://rochsolutions-ai-receptionist.onrender.com",
+).rstrip("/")
 
 
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
+    """
+    Gather with barge-in enabled so callers can cut off the assistant.
+    """
     g = Gather(
         input="speech",
-        action=action_url,
+        action=action_url,   # MUST be absolute for Twilio reliability
         method="POST",
         language="en-GB",
-        timeout=6,
         speech_timeout="auto",
         action_on_empty_result=True,
         barge_in=True,
-        enhanced=True,
-        speech_model="phone_call",
     )
     if prompt:
         g.say(prompt, language="en-GB")
@@ -46,14 +42,14 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
 async def voice(request: Request):
     vr = VoiceResponse()
 
-    action_url = public_url("/twilio/turn")
+    # Absolute URL so Twilio never deals with relative paths
+    action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
-    # Put greeting inside Gather so it can be interrupted
+    # Short greeting inside Gather (interruptible)
     vr.append(gather_speech(action_url, "Hi, Roch Physio speaking. How can I help today?"))
 
-    # IMPORTANT: if Twilio fails to hit the action for any reason, keep the call alive and retry
-    vr.redirect(action_url, method="POST")
-
+    # If user says nothing, Twilio will continue after timeout:
+    vr.say("Sorry — please call again.", language="en-GB")
     return xml(vr)
 
 
@@ -65,22 +61,29 @@ async def turn(request: Request):
     call_sid = (form.get("CallSid") or "").strip()
     user_said = (form.get("SpeechResult") or "").strip()
 
-    # Debug logging (shows in Render logs)
-    print("TURN webhook hit ✅ call_sid=", call_sid)
-    print("SpeechResult=", repr(user_said))
-    print("Confidence=", form.get("Confidence"))
+    # Important: lazy import so /voice stays fast
+    from app.flows.triage import triage_turn
 
-    session = await get_session(call_sid) or {}
+    # Redis: fail-safe so a Redis blip doesn't kill the call
+    try:
+        session = await get_session(call_sid) or {}
+    except Exception as e:
+        print("Redis get_session error:", repr(e))
+        session = {}
+
     session["call_sid"] = call_sid
-
     miss = int(session.get("miss_count", 0))
-    action_url = public_url("/twilio/turn")
+
+    action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
     try:
         if not user_said:
             miss += 1
             session["miss_count"] = miss
-            await save_session(call_sid, session)
+            try:
+                await save_session(call_sid, session)
+            except Exception as e:
+                print("Redis save_session error:", repr(e))
 
             if miss == 1:
                 vr.append(gather_speech(action_url, "Sorry — I didn’t catch that. Could you repeat?"))
@@ -96,7 +99,11 @@ async def turn(request: Request):
         session["miss_count"] = 0
 
         reply_text, session = await triage_turn(user_said, session)
-        await save_session(call_sid, session)
+
+        try:
+            await save_session(call_sid, session)
+        except Exception as e:
+            print("Redis save_session error:", repr(e))
 
         vr.append(gather_speech(action_url, reply_text))
         return xml(vr)
