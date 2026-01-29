@@ -7,6 +7,14 @@ from app.routes.google_calendar import router as google_calendar_router
 
 app = FastAPI()
 
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
 # Routers
 app.include_router(twilio_router)
 app.include_router(google_calendar_router)
