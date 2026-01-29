@@ -23,22 +23,20 @@ PUBLIC_BASE_URL = os.getenv(
 
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     """
-    Gather with barge-in enabled so callers can cut off the assistant.
-    Tuned for short intent words like "booking" / "reschedule".
+    Safe Gather config (works with Twilio helper versions reliably).
+    - barge_in=True => caller can interrupt
+    - timeout=10 => fixes short intent words being missed
+    - action_on_empty_result=True => always hits /turn even if no speech
     """
     g = Gather(
         input="speech",
-        action=action_url,          # MUST be absolute for reliability
+        action=action_url,                # absolute URL
         method="POST",
         language="en-GB",
         speech_timeout="auto",
-        timeout=10,                 # ✅ more time than 6s
+        timeout=10,                       # ✅ more time than 6s
         action_on_empty_result=True,
-        barge_in=True,              # ✅ allow interrupt / cut-off
-        enhanced=True,
-        speech_model="phone_call",
-        # ✅ Nudge recognition toward core intents / words
-        hints="book,booking,appointment,availability,slot,reschedule,rescheduling,change,cancel,move my appointment,prices,cost,opening hours,location,address,insurance",
+        barge_in=True,
     )
     if prompt:
         g.say(prompt, language="en-GB")
@@ -50,10 +48,10 @@ async def voice(request: Request):
     vr = VoiceResponse()
     action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
-    # Short greeting inside Gather (interruptible)
+    # Put greeting inside Gather so it can be interrupted
     vr.append(gather_speech(action_url, "Hi, Roch Physio speaking. How can I help today?"))
 
-    # If they say nothing, ask again (more natural than "call again")
+    # If they say nothing, ask again (keeps call alive)
     vr.append(gather_speech(action_url, "Sorry — I didn’t catch that. Could you repeat?"))
     return xml(vr)
 
@@ -63,19 +61,21 @@ async def turn(request: Request):
     vr = VoiceResponse()
     form = await request.form()
 
-    # ✅ Debug: shows what Twilio is actually sending you (check Render logs)
+    # ✅ Debug: check Render logs to see what Twilio is sending
     try:
-        print("Twilio fields:", list(form.keys()))
+        print("---- TWILIO TURN ----")
+        print("keys:", list(form.keys()))
+        print("CallSid:", form.get("CallSid"))
         print("SpeechResult:", repr(form.get("SpeechResult")))
         print("UnstableSpeechResult:", repr(form.get("UnstableSpeechResult")))
-        print("RecognitionStatus:", repr(form.get("RecognitionStatus")))
         print("Confidence:", repr(form.get("Confidence")))
+        print("RecognitionStatus:", repr(form.get("RecognitionStatus")))
     except Exception:
         pass
 
     call_sid = (form.get("CallSid") or "").strip()
 
-    # ✅ IMPORTANT: read SpeechResult, but fallback to UnstableSpeechResult
+    # ✅ SpeechResult sometimes empty; UnstableSpeechResult often contains the transcript
     user_said = (form.get("SpeechResult") or "").strip()
     if not user_said:
         user_said = (form.get("UnstableSpeechResult") or "").strip()
@@ -83,7 +83,7 @@ async def turn(request: Request):
     # Lazy import so /voice stays fast
     from app.flows.triage import triage_turn
 
-    # Redis fail-safe
+    # Redis: fail-safe so Redis blip doesn't kill the call
     try:
         session = await get_session(call_sid) or {}
     except Exception as e:
@@ -96,7 +96,7 @@ async def turn(request: Request):
     action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
     try:
-        # No speech detected => progressive fallbacks
+        # No speech => progressive fallbacks
         if not user_said:
             miss += 1
             session["miss_count"] = miss
@@ -131,7 +131,7 @@ async def turn(request: Request):
         except Exception as e:
             print("Redis save_session error:", repr(e))
 
-        # Put reply inside Gather so caller can cut it off
+        # Reply inside Gather so caller can cut it off
         vr.append(gather_speech(action_url, reply_text))
         return xml(vr)
 
