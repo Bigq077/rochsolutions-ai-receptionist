@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import urlsplit
-
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -17,48 +15,30 @@ def xml(resp: VoiceResponse) -> PlainTextResponse:
     return PlainTextResponse(str(resp), media_type="application/xml")
 
 
-def _normalize_public_base_url(raw: str) -> str:
-    """
-    Render env vars sometimes get set to a full path by mistake.
-    We force PUBLIC_BASE_URL to be scheme://host (no path, no query).
-    Examples:
-      - https://example.com/twilio/voice  -> https://example.com
-      - http://example.com               -> http://example.com
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return "https://rochsolutions-ai-receptionist.onrender.com"
-
-    parts = urlsplit(raw)
-    if not parts.scheme or not parts.netloc:
-        # If someone set it like "rochsolutions-ai-receptionist.onrender.com/twilio/voice"
-        # we fallback to the default host.
-        return "https://rochsolutions-ai-receptionist.onrender.com"
-
-    return f"{parts.scheme}://{parts.netloc}"
-
-
-PUBLIC_BASE_URL = _normalize_public_base_url(
-    os.getenv("PUBLIC_BASE_URL", "https://rochsolutions-ai-receptionist.onrender.com")
-)
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://rochsolutions-ai-receptionist.onrender.com",
+).rstrip("/")
 
 
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     """
     Gather with barge-in enabled so callers can cut off the assistant.
-    IMPORTANT: action_url MUST be absolute and must point to /twilio/turn.
+    Tuned for short intent words like "booking" / "reschedule".
     """
     g = Gather(
         input="speech",
-        action=action_url,
+        action=action_url,          # MUST be absolute for reliability
         method="POST",
         language="en-GB",
         speech_timeout="auto",
-        timeout=6,
+        timeout=10,                 # ✅ more time than 6s
         action_on_empty_result=True,
-        barge_in=True,
+        barge_in=True,              # ✅ allow interrupt / cut-off
         enhanced=True,
         speech_model="phone_call",
+        # ✅ Nudge recognition toward core intents / words
+        hints="book,booking,appointment,availability,slot,reschedule,rescheduling,change,cancel,move my appointment,prices,cost,opening hours,location,address,insurance",
     )
     if prompt:
         g.say(prompt, language="en-GB")
@@ -68,14 +48,13 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
 @router.api_route("/voice", methods=["GET", "POST"])
 async def voice(request: Request):
     vr = VoiceResponse()
-
-    # Always absolute; never derived from request.url (prevents /twilio/voice/twilio/turn bugs)
     action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
+    # Short greeting inside Gather (interruptible)
     vr.append(gather_speech(action_url, "Hi, Roch Physio speaking. How can I help today?"))
 
-    # Only plays if Gather finishes and no further verbs are appended
-    vr.say("Sorry — please call again.", language="en-GB")
+    # If they say nothing, ask again (more natural than "call again")
+    vr.append(gather_speech(action_url, "Sorry — I didn’t catch that. Could you repeat?"))
     return xml(vr)
 
 
@@ -84,19 +63,27 @@ async def turn(request: Request):
     vr = VoiceResponse()
     form = await request.form()
 
-    # Debug: helps you verify Twilio is actually sending SpeechResult
-    # (View in Render logs)
-    # print("TWILIO FORM KEYS:", list(form.keys()))
-    # print("SpeechResult:", form.get("SpeechResult"))
-    # print("Confidence:", form.get("Confidence"))
+    # ✅ Debug: shows what Twilio is actually sending you (check Render logs)
+    try:
+        print("Twilio fields:", list(form.keys()))
+        print("SpeechResult:", repr(form.get("SpeechResult")))
+        print("UnstableSpeechResult:", repr(form.get("UnstableSpeechResult")))
+        print("RecognitionStatus:", repr(form.get("RecognitionStatus")))
+        print("Confidence:", repr(form.get("Confidence")))
+    except Exception:
+        pass
 
     call_sid = (form.get("CallSid") or "").strip()
-    user_said = (form.get("SpeechResult") or "").strip()
 
-    # Lazy import keeps /voice fast
+    # ✅ IMPORTANT: read SpeechResult, but fallback to UnstableSpeechResult
+    user_said = (form.get("SpeechResult") or "").strip()
+    if not user_said:
+        user_said = (form.get("UnstableSpeechResult") or "").strip()
+
+    # Lazy import so /voice stays fast
     from app.flows.triage import triage_turn
 
-    # Redis fail-safe (never kill the call because Redis blipped)
+    # Redis fail-safe
     try:
         session = await get_session(call_sid) or {}
     except Exception as e:
@@ -109,10 +96,10 @@ async def turn(request: Request):
     action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
     try:
+        # No speech detected => progressive fallbacks
         if not user_said:
             miss += 1
             session["miss_count"] = miss
-
             try:
                 await save_session(call_sid, session)
             except Exception as e:
@@ -126,17 +113,12 @@ async def turn(request: Request):
                 vr.append(
                     gather_speech(
                         action_url,
-                        "No problem. Are you looking to book, reschedule, or ask about prices or opening hours?",
+                        "No problem. Are you looking to book, reschedule, or ask about prices, location, or opening hours?",
                     )
                 )
                 return xml(vr)
 
-            vr.append(
-                gather_speech(
-                    action_url,
-                    "I can take a message. Please say your name, number, and what you need help with.",
-                )
-            )
+            vr.append(gather_speech(action_url, "I can take a message. Please say your name, number, and what you need help with."))
             return xml(vr)
 
         # user spoke
@@ -149,7 +131,7 @@ async def turn(request: Request):
         except Exception as e:
             print("Redis save_session error:", repr(e))
 
-        # Put reply inside Gather so caller can interrupt
+        # Put reply inside Gather so caller can cut it off
         vr.append(gather_speech(action_url, reply_text))
         return xml(vr)
 
