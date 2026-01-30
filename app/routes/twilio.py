@@ -23,18 +23,18 @@ PUBLIC_BASE_URL = os.getenv(
 
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     """
-    Safe Gather config (works with Twilio helper versions reliably).
+    Safe Gather config (Twilio-reliable).
     - barge_in=True => caller can interrupt
-    - timeout=10 => fixes short intent words being missed
-    - action_on_empty_result=True => always hits /turn even if no speech
+    - timeout=10 => short words like "book" are captured
+    - action_on_empty_result=True => always posts to /turn
     """
     g = Gather(
         input="speech",
-        action=action_url = f"{PUBLIC_BASE_URL}/twilio/turn",                # absolute URL
+        action=action_url,      # ✅ USE the passed-in URL ONLY
         method="POST",
         language="en-GB",
         speech_timeout="auto",
-        timeout=10,                       # ✅ more time than 6s
+        timeout=10,
         action_on_empty_result=True,
         barge_in=True,
     )
