@@ -595,10 +595,15 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
-    if state == RESCH_NAME:
-        collected["name"] = user_said.strip()
-        session["state"] = RESCH_ORIGINAL
-        return _say("Thanks. What was the date and time of your original appointment?", session)
+   if state == RESCH_NAME:
+    # If they just say “reschedule” again, re-ask
+    intent_check = detect_intent(user_said)
+    if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
+        return _say("Sure — what’s your full name?", session)
+
+    collected["name"] = user_said.strip()
+    session["state"] = RESCH_ORIGINAL
+    return _say("Thanks. What was the date and time of your original appointment?", session)
 
     if state == RESCH_ORIGINAL:
         collected["original_appt"] = user_said.strip()
@@ -724,19 +729,29 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # BOOKING FLOW (type -> reason -> time -> offer -> pick -> name -> phone -> confirm)
     # ======================================================================
+
     if state == BOOK_PATIENT_TYPE:
-        pt = parse_patient_type(user_said)
-        if not pt:
-            return _say("No problem — are you a new patient, or have you been here before?", session)
-        collected["patient_type"] = pt
-        session["state"] = BOOK_REASON
-        return _say("Thanks. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?", session)
+    # If user repeats "booking"/"reschedule", just re-ask clearly
+    intent_check = detect_intent(user_said)
+    if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
+        return _say("Sure — are you a new patient, or have you been here before?", session)
 
-    if state == BOOK_REASON:
-        collected["reason"] = user_said.strip()
-        session["state"] = BOOK_TIME_PREF
-        return _say("When would you prefer? For example tomorrow morning or Tuesday afternoon.", session)
+    # If they give their name here, store it and continue
+    if looks_like_name(user_said) and not collected.get("name"):
+        collected["name"] = user_said.strip()
+        return _say("Thanks. And are you a new patient, or have you been here before?", session)
 
+    pt = parse_patient_type(user_said)
+    if not pt:
+        return _say("No problem — are you a new patient, or have you been here before?", session)
+
+    collected["patient_type"] = pt
+    session["state"] = BOOK_REASON
+    return _say(
+        "Thanks. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?",
+        session,
+    )
+    
     if state == BOOK_TIME_PREF:
         collected["time_pref"] = user_said.strip()
 
