@@ -680,7 +680,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
-     if state == RESCH_NAME:
+   if state == RESCH_NAME:
     # If they just say “reschedule” again, re-ask
     intent_check = detect_intent(user_said)
     if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
@@ -694,126 +694,165 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     )
 
 
-    if state == RESCH_ORIGINAL:
-        collected["original_appt"] = user_said.strip()
+if state == RESCH_ORIGINAL:
+    collected["original_appt"] = user_said.strip()
 
-        # Try calendar match by name + time
-        ev = await find_event_by_name_and_time(session, collected.get("name", ""), collected.get("original_appt", ""))
+    # Try calendar match by name + time
+    ev = await find_event_by_name_and_time(
+        session,
+        collected.get("name", ""),
+        collected.get("original_appt", ""),
+    )
+    if ev:
+        session["resch_event_id"] = ev.get("id")
+        session["resch_event_summary"] = ev.get("summary", "Appointment")
+        session["state"] = RESCH_NEW_PREF
+        return _say(
+            "Thanks. What day or time would you like to move it to?",
+            session,
+        )
+
+    # If we have tokens but couldn't match, ask phone as fallback
+    tokens = await redis_get_json(TOKENS_KEY)
+    if tokens:
+        session["state"] = RESCH_PHONE_FALLBACK
+        return _say(
+            "Thanks. To find it quickly, what phone number was used for the booking?",
+            session,
+        )
+
+    # No tokens => demo reschedule
+    session["state"] = RESCH_NEW_PREF
+    return _say(
+        "Thanks. What day or time would you like to move it to?",
+        session,
+    )
+
+
+if state == RESCH_PHONE_FALLBACK:
+    phone_raw = user_said.strip()
+    if not is_valid_phone(phone_raw):
+        return _say(
+            "Sorry — I didn’t catch a valid phone number. Please say it again.",
+            session,
+        )
+
+    collected["phone"] = normalize_phone(phone_raw)
+
+    tokens = await redis_get_json(TOKENS_KEY)
+    if tokens:
+        ev = None
+        events = list_upcoming_events(
+            tokens,
+            calendar_id=clinic.get("calendar_id", "primary"),
+            days_ahead=60,
+            max_results=50,
+        )
+        target = collected["phone"]
+        for e in events:
+            desc = _digits_only((e.get("description") or ""))
+            if target and target in desc:
+                ev = e
+                break
+
         if ev:
             session["resch_event_id"] = ev.get("id")
             session["resch_event_summary"] = ev.get("summary", "Appointment")
-            session["state"] = RESCH_NEW_PREF
-            return _say("Thanks. What day or time would you like to move it to?", session)
 
-        # If we have tokens but couldn't match, ask phone as fallback
-        tokens = await redis_get_json(TOKENS_KEY)
-        if tokens:
-            session["state"] = RESCH_PHONE_FALLBACK
-            return _say("Thanks. To find it quickly, what phone number was used for the booking?", session)
+    session["state"] = RESCH_NEW_PREF
+    return _say(
+        "Thanks. What day or time would you like to move it to?",
+        session,
+    )
 
-        # No tokens => demo reschedule: continue without lookup
-        session["state"] = RESCH_NEW_PREF
-        return _say("Thanks. What day or time would you like to move it to?", session)
 
-    if state == RESCH_PHONE_FALLBACK:
-        phone_raw = user_said.strip()
-        if not is_valid_phone(phone_raw):
-            return _say("Sorry — I didn’t catch a valid phone number. Please say the phone number again.", session)
-        collected["phone"] = normalize_phone(phone_raw)
+if state == RESCH_NEW_PREF:
+    collected["time_pref"] = user_said.strip()
 
-        tokens = await redis_get_json(TOKENS_KEY)
-        if tokens:
-            ev = None
-            events = list_upcoming_events(tokens, calendar_id=clinic.get("calendar_id", "primary"), days_ahead=60, max_results=50)
-            target = collected["phone"]
-            for e in events:
-                desc = _digits_only((e.get("description") or ""))
-                if target and target in desc:
-                    ev = e
-                    break
-            if ev:
-                session["resch_event_id"] = ev.get("id")
-                session["resch_event_summary"] = ev.get("summary", "Appointment")
+    dw = parse_specific_day_window(collected["time_pref"], tz)
+    if dw:
+        collected["day_window_start"] = dw[0].isoformat()
+        collected["day_window_end"] = dw[1].isoformat()
+    else:
+        collected.pop("day_window_start", None)
+        collected.pop("day_window_end", None)
 
-        session["state"] = RESCH_NEW_PREF
-        return _say("Thanks. What day or time would you like to move it to?", session)
+    session["state"] = RESCH_OFFER_SLOTS
+    return _say("Okay — let me check availability.", session)
 
-    if state == RESCH_NEW_PREF:
-        collected["time_pref"] = user_said.strip()
 
-        dw = parse_specific_day_window(collected["time_pref"], tz)
-        if dw:
-            collected["day_window_start"] = dw[0].isoformat()
-            collected["day_window_end"] = dw[1].isoformat()
-        else:
-            collected.pop("day_window_start", None)
-            collected.pop("day_window_end", None)
-
-        session["state"] = RESCH_OFFER_SLOTS
-        return _say("Okay — let me check availability.", session)
-
-    if state == RESCH_OFFER_SLOTS:
-        dw = None
-        if collected.get("day_window_start") and collected.get("day_window_end"):
-            dw = (datetime.fromisoformat(collected["day_window_start"]), datetime.fromisoformat(collected["day_window_end"]))
-
-        raw_slots, labels, err = await suggest_top_slots(
-            session,
-            duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
-            pref_text=collected.get("time_pref", ""),
-            day_window=dw,
+if state == RESCH_OFFER_SLOTS:
+    dw = None
+    if collected.get("day_window_start") and collected.get("day_window_end"):
+        dw = (
+            datetime.fromisoformat(collected["day_window_start"]),
+            datetime.fromisoformat(collected["day_window_end"]),
         )
-        if err:
-            session = _reset_to_triage(session)
-            return _say(err, session)
 
-        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
-        session[SLOT_LABELS_KEY] = labels
-        session["state"] = RESCH_PICK_SLOT
-        return _say(f"I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.", session)
+    raw_slots, labels, err = await suggest_top_slots(
+        session,
+        duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
+        pref_text=collected.get("time_pref", ""),
+        day_window=dw,
+    )
 
-    if state == RESCH_PICK_SLOT:
-        m = re.search(r"\b(1|2|3)\b", _norm(user_said))
-        if not m:
-            return _say("Please say 1, 2, or 3.", session)
-
-        idx = int(m.group(1)) - 1
-        slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
-        labels = session.get(SLOT_LABELS_KEY) or []
-        if idx < 0 or idx >= len(slots):
-            return _say("Please say 1, 2, or 3.", session)
-
-        session[SELECTED_SLOT_KEY] = slots[idx]
-        if idx < len(labels):
-            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
-        session["state"] = RESCH_CONFIRM
-        return _say("Please say yes to confirm, or no to cancel.", session)
-
-    if state == RESCH_CONFIRM:
-        if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok", "okay"):
-            session = _reset_to_triage(session)
-            return _say("No problem. What would you like to do instead?", session)
-
-        tokens = await redis_get_json(TOKENS_KEY)
-        chosen = session.get(SELECTED_SLOT_KEY)
-        label = session.get(SELECTED_SLOT_LABEL_KEY) or "the new time"
-
-        event_id = session.get("resch_event_id")
-        if tokens and event_id and chosen:
-            start = datetime.fromisoformat(chosen["start"])
-            end = datetime.fromisoformat(chosen["end"])
-            patch_event_time(
-                stored_tokens=tokens,
-                event_id=event_id,
-                start_dt=start,
-                end_dt=end,
-                calendar_id=clinic.get("calendar_id", "primary"),
-            )
-            session = _reset_to_triage(session)
-            return _say(f"Confirmed — you’re rescheduled to {label}.", session)
-
+    if err:
         session = _reset_to_triage(session)
-        return _say(f"Confirmed — you’re rescheduled to {label}.", session)
+        return _say(err, session)
+
+    session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+    session[SLOT_LABELS_KEY] = labels
+    session["state"] = RESCH_PICK_SLOT
+    return _say(
+        f"I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
+        session,
+    )
+
+
+if state == RESCH_PICK_SLOT:
+    m = re.search(r"\b(1|2|3)\b", _norm(user_said))
+    if not m:
+        return _say("Please say 1, 2, or 3.", session)
+
+    idx = int(m.group(1)) - 1
+    slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
+    labels = session.get(SLOT_LABELS_KEY) or []
+
+    if idx < 0 or idx >= len(slots):
+        return _say("Please say 1, 2, or 3.", session)
+
+    session[SELECTED_SLOT_KEY] = slots[idx]
+    if idx < len(labels):
+        session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+
+    session["state"] = RESCH_CONFIRM
+    return _say("Please say yes to confirm, or no to cancel.", session)
+
+
+if state == RESCH_CONFIRM:
+    if _norm(user_said) not in ("yes", "y", "yeah", "confirm", "ok", "okay"):
+        session = _reset_to_triage(session)
+        return _say("No problem. What would you like to do instead?", session)
+
+    tokens = await redis_get_json(TOKENS_KEY)
+    chosen = session.get(SELECTED_SLOT_KEY)
+    label = session.get(SELECTED_SLOT_LABEL_KEY) or "the new time"
+
+    event_id = session.get("resch_event_id")
+    if tokens and event_id and chosen:
+        start = datetime.fromisoformat(chosen["start"])
+        end = datetime.fromisoformat(chosen["end"])
+
+        patch_event_time(
+            stored_tokens=tokens,
+            event_id=event_id,
+            start_dt=start,
+            end_dt=end,
+            calendar_id=clinic.get("calendar_id", "primary"),
+        )
+
+    session = _reset_to_triage(session)
+    return _say(f"Confirmed — you’re rescheduled to {label}.", session)
 
     # ======================================================================
     # BOOKING FLOW (type -> reason -> time -> offer -> pick -> name -> phone -> confirm)
