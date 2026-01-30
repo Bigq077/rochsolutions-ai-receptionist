@@ -56,6 +56,26 @@ def _norm(t: str) -> str:
     t = re.sub(r"\s+", " ", t)
     return t
 
+def looks_like_name(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 2 or len(t) > 60:
+        return False
+    # Has letters, not mostly numbers
+    letters = re.findall(r"[A-Za-z]", t)
+    digits = re.findall(r"\d", t)
+    if len(letters) < 2:
+        return False
+    if len(digits) > 3:
+        return False
+    # Avoid treating intent words as a name
+    if _norm(t) in ("booking", "book", "reschedule", "cancel", "appointment"):
+        return False
+    return True
+
+
+def is_yes(text: str) -> bool:
+    return _norm(text) in ("yes", "y", "yeah", "yep", "confirm", "ok", "okay", "sure")
+
 
 def _contains_any(t: str, keywords: list[str]) -> bool:
     return any(k in t for k in keywords)
