@@ -680,7 +680,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
-   if state == RESCH_NAME:
+     if state == RESCH_NAME:
     # If they just say “reschedule” again, re-ask
     intent_check = detect_intent(user_said)
     if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
@@ -688,7 +688,11 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
     collected["name"] = user_said.strip()
     session["state"] = RESCH_ORIGINAL
-    return _say("Thanks. What was the date and time of your original appointment?", session)
+    return _say(
+        "Thanks. What was the date and time of your original appointment?",
+        session,
+    )
+
 
     if state == RESCH_ORIGINAL:
         collected["original_appt"] = user_said.strip()
