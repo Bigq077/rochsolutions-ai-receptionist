@@ -46,7 +46,7 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
 @router.api_route("/voice", methods=["GET", "POST"])
 async def voice(request: Request):
     vr = VoiceResponse()
-    action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
+    action_url = f"{PUBLIC_BASE_URL}"
 
     # Put greeting inside Gather so it can be interrupted
     vr.append(gather_speech(action_url, "Hi, Roch Physio speaking. How can I help today?"))
