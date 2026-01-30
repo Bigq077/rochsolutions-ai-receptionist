@@ -35,6 +35,91 @@ try:
 except Exception:
     send_to_sheet = None  # type: ignore
 
+import random
+import re
+from typing import Dict, Any, Tuple
+
+# -----------------------------
+# Friendly tone engine
+# -----------------------------
+
+FRIENDLY_ACK = [
+    "No problem.",
+    "Of course.",
+    "Sure thing.",
+    "Absolutely.",
+    "Got it.",
+    "That’s fine.",
+]
+
+FRIENDLY_CHECKING = [
+    "Let me check that for you.",
+    "One moment while I check.",
+    "Just a second — I’ll check now.",
+    "Okay — let me take a quick look.",
+]
+
+FRIENDLY_REASSURE = [
+    "No worries.",
+    "That’s totally fine.",
+    "We can sort that out.",
+]
+
+def _clean(text: str) -> str:
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+def _maybe_prefix(text: str) -> str:
+    """
+    Adds light friendliness sometimes, not always,
+    so it doesn't sound robotic.
+    """
+    if not text:
+        return text
+
+    lower = text.lower()
+
+    # Don't mess with apologies or confirmations
+    if lower.startswith((
+        "sorry",
+        "perfect",
+        "thanks",
+        "confirmed",
+        "all done",
+        "you’re",
+        "you're",
+    )):
+        return text
+
+    if random.random() < 0.4:
+        return f"{random.choice(FRIENDLY_ACK)} {text}"
+
+    return text
+
+def _maybe_suffix(text: str) -> str:
+    if random.random() < 0.3:
+        return f"{text} {random.choice(FRIENDLY_REASSURE)}"
+    return text
+
+def _friendly(text: str) -> str:
+    text = _clean(text)
+    text = _maybe_prefix(text)
+    text = _maybe_suffix(text)
+    return _clean(text)
+
+# -----------------------------
+# DROP-IN REPLACEMENT FOR _say
+# -----------------------------
+
+def _say(text: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """
+    Centralised response function.
+    Every reply passes through friendly tone logic.
+    """
+    friendly_text = _friendly(text)
+    session["last_bot_prompt"] = friendly_text
+    return friendly_text, session
+
 
 # ---------- CONFIG ----------
 TOKENS_KEY = "google_tokens"
