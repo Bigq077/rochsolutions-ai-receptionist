@@ -30,7 +30,7 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     """
     g = Gather(
         input="speech",
-        action=action_url,                # absolute URL
+        action=action_url = f"{PUBLIC_BASE_URL}/twilio/turn",                # absolute URL
         method="POST",
         language="en-GB",
         speech_timeout="auto",
