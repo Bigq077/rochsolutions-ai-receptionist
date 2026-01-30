@@ -1,7 +1,6 @@
 # app/routes/twilio.py
 from __future__ import annotations
 
-import os
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -15,22 +14,30 @@ def xml(resp: VoiceResponse) -> PlainTextResponse:
     return PlainTextResponse(str(resp), media_type="application/xml")
 
 
-PUBLIC_BASE_URL = os.getenv(
-    "PUBLIC_BASE_URL",
-    "https://rochsolutions-ai-receptionist.onrender.com",
-).rstrip("/")
+def _abs_url(request: Request, path: str) -> str:
+    """
+    Build a reliable absolute URL like:
+    https://rochsolutions-ai-receptionist.onrender.com/twilio/turn
+
+    Uses request.base_url so it cannot accidentally become relative
+    and cannot accidentally include /twilio/voice.
+    """
+    base = str(request.base_url).rstrip("/")  # e.g. https://host
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
 
 
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     """
-    Safe Gather config (Twilio-reliable).
+    Safe Gather config.
     - barge_in=True => caller can interrupt
-    - timeout=10 => short words like "book" are captured
-    - action_on_empty_result=True => always posts to /turn
+    - timeout=10 => helps short words like "book"
+    - action_on_empty_result=True => always posts even if silence
     """
     g = Gather(
         input="speech",
-        action=action_url,      # ✅ USE the passed-in URL ONLY
+        action=action_url,  # MUST be absolute
         method="POST",
         language="en-GB",
         speech_timeout="auto",
@@ -43,16 +50,30 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     return g
 
 
+def _append_turn(session: dict, role: str, text: str) -> dict:
+    if not text:
+        return session
+    turns = session.get("turns", [])
+    turns.append({"role": role, "text": text})
+    session["turns"] = turns
+    return session
+
+
 @router.api_route("/voice", methods=["GET", "POST"])
 async def voice(request: Request):
     vr = VoiceResponse()
-    action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
 
-    # Put greeting inside Gather so it can be interrupted
-    vr.append(gather_speech(action_url, "Hi, Roch Physio speaking. How can I help today?"))
+    # ✅ Absolute URL for Twilio to post speech results to
+    turn_url = _abs_url(request, "/twilio/turn")
+    voice_url = _abs_url(request, "/twilio/voice")
 
-    # If they say nothing, ask again (keeps call alive)
-    vr.append(gather_speech(action_url, "Sorry — I didn’t catch that. Could you repeat?"))
+    # 1) Gather user speech
+    vr.append(gather_speech(turn_url, "Hi, Roch Physio speaking. How can I help today?"))
+
+    # 2) If no speech / timeout: say something and loop back to /voice
+    vr.say("Sorry — I didn’t catch that.", language="en-GB")
+    vr.redirect(voice_url, method="POST")
+
     return xml(vr)
 
 
@@ -75,12 +96,12 @@ async def turn(request: Request):
 
     call_sid = (form.get("CallSid") or "").strip()
 
-    # ✅ SpeechResult sometimes empty; UnstableSpeechResult often contains the transcript
+    # SpeechResult sometimes empty; UnstableSpeechResult often contains the transcript
     user_said = (form.get("SpeechResult") or "").strip()
     if not user_said:
         user_said = (form.get("UnstableSpeechResult") or "").strip()
 
-    # Lazy import so /voice stays fast
+    # Lazy import so startup stays fast
     from app.flows.triage import triage_turn
 
     # Redis: fail-safe so Redis blip doesn't kill the call
@@ -93,7 +114,8 @@ async def turn(request: Request):
     session["call_sid"] = call_sid
     miss = int(session.get("miss_count", 0))
 
-    action_url = f"{PUBLIC_BASE_URL}/twilio/turn"
+    turn_url = _abs_url(request, "/twilio/turn")
+    voice_url = _abs_url(request, "/twilio/voice")
 
     try:
         # No speech => progressive fallbacks
@@ -106,25 +128,30 @@ async def turn(request: Request):
                 print("Redis save_session error:", repr(e))
 
             if miss == 1:
-                vr.append(gather_speech(action_url, "Sorry — I didn’t catch that. Could you repeat?"))
+                vr.append(gather_speech(turn_url, "Sorry — I didn’t catch that. Could you repeat?"))
                 return xml(vr)
 
             if miss == 2:
                 vr.append(
                     gather_speech(
-                        action_url,
+                        turn_url,
                         "No problem. Are you looking to book, reschedule, or ask about prices, location, or opening hours?",
                     )
                 )
                 return xml(vr)
 
-            vr.append(gather_speech(action_url, "I can take a message. Please say your name, number, and what you need help with."))
+            # 3rd miss: offer message then loop
+            vr.append(gather_speech(turn_url, "I can take a message. Please say your name, number, and what you need help with."))
+            vr.say("If you prefer, you can call back at any time.", language="en-GB")
+            vr.redirect(voice_url, method="POST")
             return xml(vr)
 
         # user spoke
         session["miss_count"] = 0
 
+        session = _append_turn(session, "caller", user_said)
         reply_text, session = await triage_turn(user_said, session)
+        session = _append_turn(session, "assistant", reply_text)
 
         try:
             await save_session(call_sid, session)
@@ -132,10 +159,10 @@ async def turn(request: Request):
             print("Redis save_session error:", repr(e))
 
         # Reply inside Gather so caller can cut it off
-        vr.append(gather_speech(action_url, reply_text))
+        vr.append(gather_speech(turn_url, reply_text))
         return xml(vr)
 
     except Exception as e:
         print("ERROR in /twilio/turn:", repr(e))
-        vr.append(gather_speech(action_url, "Sorry, there was a technical issue. Please try again."))
+        vr.append(gather_speech(turn_url, "Sorry, there was a technical issue. Please try again."))
         return xml(vr)
