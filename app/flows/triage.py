@@ -627,7 +627,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ==========================================================
     # TRIAGE: LLM + knowledge retrieval (professional responses)
     # ==========================================================
-    if state == TRIAGE:
+        if state == TRIAGE:
         # 1) Knowledge retrieval first (for "tell me more about treatments", etc.)
         try:
             kb = retrieve_knowledge(user_said, clinic=clinic)  # should return string (best passage)
@@ -688,8 +688,27 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             # If LLM fails, continue to deterministic fallback below
             pass
 
-        # Deterministic fallback if LLM didn't return something useful
+        # ✅ Deterministic fallback if LLM didn't return something useful
         intent = detect_intent(user_said)
+
+        # ✅ Always route core intents deterministically (fixes booking/reschedule not triggering)
+        if intent == "BOOK":
+            session = _reset_to_triage(session)
+            session["state"] = BOOK_PATIENT_TYPE
+            return _say("Sure — are you a new patient, or have you been here before?", session)
+
+        if intent == "RESCHEDULE":
+            session = _reset_to_triage(session)
+            session["state"] = RESCH_NAME
+            return _say("Sure — to reschedule, what’s your full name?", session)
+
+        if intent == "CANCEL":
+            session = _reset_to_triage(session)
+            return _say(
+                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
+                session,
+            )
+
         if intent.startswith("FAQ_"):
             return _say(faq_answer(intent, clinic), session)
 
