@@ -448,6 +448,13 @@ async def suggest_top_slots(
 
     tokens = await redis_get_json(TOKENS_KEY)
 
+    print("CALENDAR TOKENS PRESENT:", bool(tokens))
+    if tokens:
+        try:
+            print("TOKENS KEYS:", list(tokens.keys()))
+        except Exception:
+            print("TOKENS KEYS: (not a dict)")
+
     candidates = generate_candidate_slots(
         w_start,
         w_end,
