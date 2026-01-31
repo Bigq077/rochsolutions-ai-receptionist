@@ -671,7 +671,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         if intent.startswith("FAQ_"):
             return _say(faq_answer(intent, clinic), session)
 
-        # Professional generic prompt (NO “anything else I can help with”)
+       # Professional generic prompt (NO “anything else I can help with”)
         return _say(
             "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
             session,
@@ -680,37 +680,36 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
-   if state == RESCH_NAME:
-    # If they just say “reschedule” again, re-ask
-    intent_check = detect_intent(user_said)
-    if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
-        return _say("Sure — what’s your full name?", session)
+    if state == RESCH_NAME:
+        # If they just say “reschedule” again, re-ask
+        intent_check = detect_intent(user_said)
+        if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
+            return _say("Sure — what’s your full name?", session)
 
-    collected["name"] = user_said.strip()
-    session["state"] = RESCH_ORIGINAL
-    return _say(
-        "Thanks. What was the date and time of your original appointment?",
-        session,
-    )
-
-
-if state == RESCH_ORIGINAL:
-    collected["original_appt"] = user_said.strip()
-
-    # Try calendar match by name + time
-    ev = await find_event_by_name_and_time(
-        session,
-        collected.get("name", ""),
-        collected.get("original_appt", ""),
-    )
-    if ev:
-        session["resch_event_id"] = ev.get("id")
-        session["resch_event_summary"] = ev.get("summary", "Appointment")
-        session["state"] = RESCH_NEW_PREF
+        collected["name"] = user_said.strip()
+        session["state"] = RESCH_ORIGINAL
         return _say(
-            "Thanks. What day or time would you like to move it to?",
+            "Thanks. What was the date and time of your original appointment?",
             session,
         )
+
+    if state == RESCH_ORIGINAL:
+        collected["original_appt"] = user_said.strip()
+
+        # Try calendar match by name + time
+        ev = await find_event_by_name_and_time(
+            session,
+            collected.get("name", ""),
+            collected.get("original_appt", ""),
+        )
+        if ev:
+            session["resch_event_id"] = ev.get("id")
+            session["resch_event_summary"] = ev.get("summary", "Appointment")
+            session["state"] = RESCH_NEW_PREF
+            return _say(
+                "Thanks. What day or time would you like to move it to?",
+                session,
+            )
 
     # If we have tokens but couldn't match, ask phone as fallback
     tokens = await redis_get_json(TOKENS_KEY)
