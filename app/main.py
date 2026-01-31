@@ -11,6 +11,9 @@ from app.routes.google_calendar import router as google_calendar_router
 from app.routes.redis_debug import router as redis_debug_router
 from app.routes.avatar import router as avatar_router
 
+# ✅ NEW: admin route (temporary, for clearing google_tokens)
+from app.routes.admin import router as admin_router
+
 app = FastAPI()
 
 # ✅ CORS — REQUIRED for browser (Netlify) → Render calls
@@ -46,3 +49,6 @@ app.include_router(twilio_router)
 app.include_router(google_calendar_router)
 app.include_router(redis_debug_router)
 app.include_router(avatar_router)
+
+# ✅ NEW: admin router (temporary)
+app.include_router(admin_router)
