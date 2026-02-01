@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
@@ -73,7 +73,7 @@ async def avatar_voice_turn(
     audio: UploadFile = File(...),
 ):
     """
-    Receives an audio blob from the browser, transcribes it (STT),
+    Receives an audio blob from the browser, transcribes it (STT via Deepgram),
     then runs the same AI brain as Twilio, returns transcript + reply.
     """
     if not clinic_id.strip() or not session_id.strip():
@@ -82,7 +82,7 @@ async def avatar_voice_turn(
     if not audio:
         raise HTTPException(status_code=400, detail="audio file is required")
 
-    # Save audio to a temp file (many STT SDKs want a file path)
+    # Save audio to a temp file (we send bytes to Deepgram, but temp file helps debug)
     suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp_path = tmp.name
@@ -90,7 +90,7 @@ async def avatar_voice_turn(
         tmp.write(content)
 
     try:
-        # 1) Transcribe
+        # 1) Transcribe (Deepgram)
         transcript = await transcribe_audio_file(tmp_path)
         transcript = (transcript or "").strip()
         if not transcript:
@@ -132,16 +132,46 @@ async def avatar_voice_turn(
 
 
 # -----------------------------
-# STT provider plug-in point
+# Deepgram STT
 # -----------------------------
 async def transcribe_audio_file(path: str) -> str:
     """
-    Replace this with your STT provider call.
-    For now this raises so you remember to plug it in.
+    Transcribe an audio file using Deepgram's prerecorded endpoint (/v1/listen).
+    Expects DEEPGRAM_API_KEY to be set in Render environment variables.
     """
-    # ✅ TEMP: return a fake transcript so you can test end-to-end
-    # return "What are your opening hours?"
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing DEEPGRAM_API_KEY env var")
 
-    raise RuntimeError(
-        "STT not configured yet. Plug in a speech-to-text provider inside transcribe_audio_file()."
-    )
+    url = "https://api.deepgram.com/v1/listen"
+    params = {
+        "model": "nova-2",
+        "smart_format": "true",
+        "punctuate": "true",
+        "language": "en-GB",
+    }
+
+    with open(path, "rb") as f:
+        audio_bytes = f.read()
+
+    headers = {
+        "Authorization": f"Token {api_key}",
+        # Deepgram can often infer content type; you can optionally set:
+        # "Content-Type": "audio/webm",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(url, params=params, headers=headers, content=audio_bytes)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Deepgram error {resp.status_code}: {resp.text}")
+
+    data = resp.json()
+
+    # Deepgram response: results -> channels[0] -> alternatives[0] -> transcript
+    try:
+        transcript = data["results"]["channels"][0]["alternatives"][0].get("transcript", "")
+    except Exception:
+        transcript = ""
+
+    return transcript or ""
