@@ -931,6 +931,44 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             collected.pop("day_window_start", None)
             collected.pop("day_window_end", None)
 
+        # ✅ Immediately compute and offer slots (no “checking availability” dead-air)
+        dw_parsed = None
+        if collected.get("day_window_start") and collected.get("day_window_end"):
+        dw_parsed = (
+            datetime.fromisoformat(collected["day_window_start"]),
+            datetime.fromisoformat(collected["day_window_end"]),
+        )
+
+        raw_slots, labels, err = await suggest_top_slots(
+        session,
+        duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
+        pref_text=collected.get("time_pref", ""),
+        day_window=dw_parsed,
+    )
+
+    if err:
+        # stay in BOOK_TIME_PREF so they can try another preference
+        session["state"] = BOOK_TIME_PREF
+        return _say(err, session)
+
+    session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+    session[SLOT_LABELS_KEY] = labels
+    session["state"] = BOOK_PICK_SLOT
+
+    return _say(
+        f"I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
+        session,
+    )
+
+
+        dw = parse_specific_day_window(collected["time_pref"], tz)
+        if dw:
+            collected["day_window_start"] = dw[0].isoformat()
+            collected["day_window_end"] = dw[1].isoformat()
+        else:
+            collected.pop("day_window_start", None)
+            collected.pop("day_window_end", None)
+
         session["state"] = BOOK_OFFER_SLOTS
         return _say("Okay — let me check availability.", session)
 
