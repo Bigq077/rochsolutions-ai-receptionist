@@ -817,37 +817,35 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             collected.pop("day_window_start", None)
             collected.pop("day_window_end", None)
 
-        session["state"] = RESCH_OFFER_SLOTS
-        return _say("Okay — let me check availability.", session)
-
-    if state == RESCH_OFFER_SLOTS:
-        dw = None
+        # ✅ Immediately compute and offer slots (no dead-air)
+        dw_parsed = None
         if collected.get("day_window_start") and collected.get("day_window_end"):
-            dw = (
+            dw_parsed = (
                 datetime.fromisoformat(collected["day_window_start"]),
                 datetime.fromisoformat(collected["day_window_end"]),
-            )
+        )
 
         raw_slots, labels, err = await suggest_top_slots(
             session,
             duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
             pref_text=collected.get("time_pref", ""),
-            day_window=dw,
+            day_window=dw_parsed,
         )
 
         if err:
-            session = _reset_to_triage(session)
+            session["state"] = RESCH_NEW_PREF
             return _say(err, session)
 
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
         session[SLOT_LABELS_KEY] = labels
         session["state"] = RESCH_PICK_SLOT
+
         return _say(
             f"I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
             session,
         )
 
-    if state == RESCH_PICK_SLOT:
+     if state == RESCH_PICK_SLOT:
         m = re.search(r"\b(1|2|3)\b", _norm(user_said))
         if not m:
             return _say("Please say 1, 2, or 3.", session)
