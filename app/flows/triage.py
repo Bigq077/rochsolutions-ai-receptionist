@@ -841,14 +841,34 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             day_window=dw_parsed,
         )
 
+        # ✅ Calendar unavailable (or any freebusy error) → switch to manual booking request flow
         if err:
-            session["state"] = BOOK_TIME_PREF
-            return _say(err, session)
+            session["manual_booking"] = True
+            session["manual_reason"] = "calendar_unavailable"
+            session["state"] = BOOK_NAME
+            return _say(
+                f"{err} To get that sorted, what’s your full name?",
+                session,
+            )
+
+        # ✅ Safety: if we didn't get 3 labels for any reason, also go manual
+        if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
+            session["manual_booking"] = True
+            session["manual_reason"] = "no_slots_returned"
+            session["state"] = BOOK_NAME
+            return _say(
+                "No problem — I can’t see clear availability right now. What’s your full name so I can log a booking request?",
+                session,
+            )
 
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
         session[SLOT_LABELS_KEY] = labels
         session["state"] = BOOK_PICK_SLOT
-        return _say(f"{random.choice(FRIENDLY_CHECKING)} I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.", session)
+
+        return _say(
+            f"{random.choice(FRIENDLY_CHECKING)} I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
+            session,
+        )
 
     if state == BOOK_PICK_SLOT:
         m = re.search(r"\b(1|2|3)\b", _norm(user_said))
