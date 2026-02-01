@@ -22,11 +22,11 @@ DEFAULT_SESSION: Dict[str, Any] = {
 }
 
 
+# ============================
+# Call session helpers
+# ============================
 async def get_session(call_sid: str) -> Dict[str, Any]:
-    if not call_sid:
-        return DEFAULT_SESSION.copy()
-
-    if not redis_client:
+    if not call_sid or not redis_client:
         return DEFAULT_SESSION.copy()
 
     key = f"call:{call_sid}"
@@ -39,7 +39,6 @@ async def get_session(call_sid: str) -> Dict[str, Any]:
         if not isinstance(data, dict):
             return DEFAULT_SESSION.copy()
 
-        # fill missing defaults
         for k, v in DEFAULT_SESSION.items():
             data.setdefault(k, v)
 
@@ -56,8 +55,14 @@ async def save_session(call_sid: str, session: Dict[str, Any]) -> None:
     await redis_client.set(key, json.dumps(session), ex=60 * 30)  # 30 min TTL
 
 
-# --- Generic helpers for storing arbitrary JSON (used for Google OAuth) ---
-async def redis_set_json(key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> None:
+# ============================
+# Generic JSON helpers (OAuth, etc.)
+# ============================
+async def redis_set_json(
+    key: str,
+    value: Dict[str, Any],
+    ttl_seconds: Optional[int] = None,
+) -> None:
     if not redis_client:
         return
 
@@ -83,9 +88,13 @@ async def redis_get_json(key: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def redis_delete_key(key: str) -> None:
+# ============================
+# DELETE helper (IMPORTANT)
+# ============================
+async def redis_delete(key: str) -> None:
     """
-    Delete a key from Redis (used to wipe broken google_tokens, etc.)
+    Delete a key from Redis.
+    Used to wipe broken google_tokens, sessions, etc.
     Safe no-op if Redis isn't configured.
     """
     if not redis_client:
@@ -94,6 +103,8 @@ async def redis_delete_key(key: str) -> None:
     try:
         await redis_client.delete(key)
     except Exception:
-        return
+        pass
 
 
+# Backwards-compatible alias (optional but safe)
+redis_delete_key = redis_delete
