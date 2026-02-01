@@ -400,11 +400,27 @@ async def suggest_top_slots(
         labels = [format_slot((s, e)) for s, e in top3]
         return raw, labels, None
 
-    # Live calendar
-    busy = freebusy(tokens, time_min=w_start, time_max=w_end, calendar_id=clinic.get("calendar_id", "primary"))
-    busy_blocks = parse_busy(busy)
+       # Live calendar (safe)
+    try:
+        busy = freebusy(
+            tokens,
+            time_min=w_start,
+            time_max=w_end,
+            calendar_id=clinic.get("calendar_id", "primary"),
+        )
+    except Exception as e:
+        # Calendar unavailable → do NOT invent availability
+        print("CALENDAR ERROR (freebusy):", repr(e))
+
+        return [], [], (
+            "No problem — I’m having trouble checking the live calendar right now. "
+            "Tell me your preferred day or time, and I’ll log a booking request for the clinic to confirm."
+        )
+
+    busy_blocks = parse_busy(busy or [])
     free_slots = filter_free_slots(candidates, busy_blocks)
     top3 = pick_first_n(free_slots, 3)
+
 
     # If preference window is too strict, widen to clinic hours
     if not top3 and win:
