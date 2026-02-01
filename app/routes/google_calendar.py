@@ -84,7 +84,6 @@ def _parse_expiry(expiry: Optional[str]) -> Optional[datetime]:
     if not expiry:
         return None
     try:
-        # Handles "2026-02-01T12:34:56.123456" or with timezone
         dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -105,6 +104,34 @@ def creds_from_stored(data: Dict[str, Any]) -> Credentials:
     )
 
 
+def _refresh_if_needed(creds: Credentials, stored_tokens: Dict[str, Any]) -> None:
+    """
+    Refresh credentials if expired and refresh_token exists.
+    Updates stored_tokens IN-PLACE so the current request continues reliably.
+
+    Note: Persisting the refreshed token back to Redis is the responsibility of the caller.
+    (You can do it in the route layer after catching success.)
+    """
+    try:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+
+            # Update in-memory token dict for this request chain
+            stored_tokens["token"] = creds.token
+            stored_tokens["expiry"] = creds.expiry.isoformat() if creds.expiry else None
+
+            # refresh_token is often None on refresh; keep existing
+            if creds.refresh_token:
+                stored_tokens["refresh_token"] = creds.refresh_token
+
+    except RefreshError as e:
+        # This is your "invalid_grant" / revoked token case
+        raise GoogleCalendarAuthError(str(e)) from e
+    except Exception as e:
+        # Any other refresh edge-case: treat as auth error so it doesn't go silent
+        raise GoogleCalendarAuthError(f"Token refresh failed: {e}") from e
+
+
 def get_calendar_service(stored_tokens: Dict[str, Any]):
     """
     Build a Calendar API service.
@@ -112,15 +139,9 @@ def get_calendar_service(stored_tokens: Dict[str, Any]):
     Raises GoogleCalendarAuthError on invalid_grant / revoked tokens.
     """
     creds = creds_from_stored(stored_tokens)
+    _refresh_if_needed(creds, stored_tokens)
 
-    # Proactive refresh prevents random failures mid-call
-    try:
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-    except RefreshError as e:
-        # This is your "invalid_grant" case
-        raise GoogleCalendarAuthError(str(e)) from e
-
+    # cache_discovery=False avoids extra caching issues in server envs
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -184,15 +205,15 @@ def list_upcoming_events(
 ) -> List[Dict[str, Any]]:
     service = get_calendar_service(stored_tokens)
 
-    now = datetime.utcnow().isoformat() + "Z"
-    end = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat() + "Z"
+    now_utc = datetime.now(timezone.utc)
+    end_utc = now_utc + timedelta(days=days_ahead)
 
     resp = (
         service.events()
         .list(
             calendarId=calendar_id,
-            timeMin=now,
-            timeMax=end,
+            timeMin=now_utc.isoformat(),
+            timeMax=end_utc.isoformat(),
             singleEvents=True,
             orderBy="startTime",
             maxResults=max_results,
