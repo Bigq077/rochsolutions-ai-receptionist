@@ -1,13 +1,20 @@
 # app/tools/calendar_google.py
 
 import os
+import asyncio
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import pytz
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
+
+from app.storage.redis_store import redis_set_json, redis_delete
+
+TOKENS_KEY = "google_tokens"
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
@@ -90,11 +97,6 @@ def creds_from_stored(data: Dict[str, Any]) -> Credentials:
     )
 
 
-def get_calendar_service(stored_tokens: Dict[str, Any]):
-    creds = creds_from_stored(stored_tokens)
-    return build("calendar", "v3", credentials=creds)
-
-
 def _ensure_tz(dt: datetime) -> datetime:
     """
     Ensure dt is timezone-aware in Europe/London.
@@ -103,6 +105,89 @@ def _ensure_tz(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return LONDON_TZ.localize(dt)
     return dt.astimezone(LONDON_TZ)
+
+
+def _safe_async_fire_and_forget(coro) -> None:
+    """
+    We are in sync code but Redis helpers are async.
+    If running inside an event loop (FastAPI), schedule task.
+    Otherwise run it directly (for scripts/tests).
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        asyncio.run(coro)
+
+
+def _store_refreshed_tokens(creds: Credentials, stored_tokens: Dict[str, Any]) -> None:
+    """
+    Persist refreshed access token + expiry back to Redis.
+    Keep refresh_token (may be None on refresh, so preserve existing).
+    """
+    updated = dict(stored_tokens)
+
+    # Access token changes on refresh
+    updated["token"] = creds.token
+
+    # Google may not resend refresh_token on refresh; keep old one
+    if creds.refresh_token:
+        updated["refresh_token"] = creds.refresh_token
+
+    updated["token_uri"] = creds.token_uri or updated.get("token_uri")
+    updated["client_id"] = creds.client_id or updated.get("client_id")
+    updated["client_secret"] = creds.client_secret or updated.get("client_secret")
+    updated["scopes"] = list(creds.scopes) if creds.scopes else (updated.get("scopes") or SCOPES)
+    updated["expiry"] = creds.expiry.isoformat() if creds.expiry else updated.get("expiry")
+
+    _safe_async_fire_and_forget(redis_set_json(TOKENS_KEY, updated))
+
+
+def _clear_tokens_if_invalid_grant(err: Exception) -> None:
+    """
+    If refresh token is dead (invalid_grant), wipe tokens from Redis.
+    That forces re-auth and prevents repeated dead-air failures.
+    """
+    if "invalid_grant" in str(err).lower():
+        _safe_async_fire_and_forget(redis_delete(TOKENS_KEY))
+
+
+def _get_authed_creds(stored_tokens: Dict[str, Any]) -> Credentials:
+    """
+    Build creds and refresh them if expired.
+    If refresh fails due to invalid_grant, clear stored tokens.
+    """
+    creds = creds_from_stored(stored_tokens)
+
+    # If already valid, great
+    if creds.valid:
+        return creds
+
+    # If expired but refreshable, refresh now
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            _store_refreshed_tokens(creds, stored_tokens)
+            return creds
+        except RefreshError as e:
+            _clear_tokens_if_invalid_grant(e)
+            raise
+        except Exception as e:
+            # other unexpected token errors
+            raise
+
+    # Not valid and can't refresh (no refresh_token)
+    raise RefreshError("Missing or invalid refresh_token; please re-auth Google Calendar.")
+
+
+def get_calendar_service(stored_tokens: Dict[str, Any]):
+    """
+    Returns Google Calendar API service with refreshed credentials (if needed).
+    """
+    creds = _get_authed_creds(stored_tokens)
+
+    # cache_discovery=False avoids file caching issues on some hosts
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
 def freebusy(
@@ -221,5 +306,3 @@ def delete_event(
     service = get_calendar_service(stored_tokens)
     service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
     return True
-
-
