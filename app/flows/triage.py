@@ -657,6 +657,9 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # RESCHEDULE FLOW
     # ======================================================================
+        # ======================================================================
+    # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
+    # ======================================================================
     if state == RESCH_NAME:
         intent_check = detect_intent(user_said)
         if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
@@ -664,25 +667,45 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         collected["name"] = user_said.strip()
         session["state"] = RESCH_ORIGINAL
-        return _say("Thanks. What was the date and time of your original appointment?", session)
+        return _say(f"{random.choice(FRIENDLY_ACK)} What was the date and time of your original appointment?", session)
 
     if state == RESCH_ORIGINAL:
         collected["original_appt"] = user_said.strip()
 
-        ev = await find_event_by_name_and_time(session, collected.get("name", ""), collected.get("original_appt", ""))
+        # Try calendar match by name + time
+        try:
+            ev = await find_event_by_name_and_time(
+                session,
+                collected.get("name", ""),
+                collected.get("original_appt", ""),
+            )
+        except Exception as e:
+            print("RESCHEDULE find_event_by_name_and_time error:", repr(e))
+            ev = None
+
         if ev:
             session["resch_event_id"] = ev.get("id")
             session["resch_event_summary"] = ev.get("summary", "Appointment")
             session["state"] = RESCH_NEW_PREF
             return _say("Thanks. What day or time would you like to move it to?", session)
 
+        # If we have tokens but couldn't match, ask phone as fallback
         tokens = await redis_get_json(TOKENS_KEY)
         if tokens:
             session["state"] = RESCH_PHONE_FALLBACK
-            return _say("Thanks. To find it quickly, what phone number was used for the booking?", session)
+            return _say(
+                "Thanks. To find it quickly, what phone number was used for the booking?",
+                session,
+            )
 
+        # No tokens → we can't match the booking, but we can still take the reschedule request
+        session["manual_reschedule"] = True
+        session["manual_reason"] = "no_calendar_tokens"
         session["state"] = RESCH_NEW_PREF
-        return _say("Thanks. What day or time would you like to move it to?", session)
+        return _say(
+            "No problem — I can still help. What day or time would you like to move it to?",
+            session,
+        )
 
     if state == RESCH_PHONE_FALLBACK:
         phone_raw = user_said.strip()
@@ -692,23 +715,38 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         collected["phone"] = normalize_phone(phone_raw)
 
         tokens = await redis_get_json(TOKENS_KEY)
+
+        # If tokens exist, try match by phone in event description
         if tokens:
-            ev = None
-            events = list_upcoming_events(
-                stored_tokens=tokens,
-                calendar_id=clinic.get("calendar_id", "primary"),
-                days_ahead=60,
-                max_results=50,
-            )
-            target = collected["phone"]
-            for e in events:
-                desc = _digits_only((e.get("description") or ""))
-                if target and target in desc:
-                    ev = e
-                    break
-            if ev:
-                session["resch_event_id"] = ev.get("id")
-                session["resch_event_summary"] = ev.get("summary", "Appointment")
+            try:
+                events = list_upcoming_events(
+                    stored_tokens=tokens,
+                    calendar_id=clinic.get("calendar_id", "primary"),
+                    days_ahead=60,
+                    max_results=50,
+                )
+                target = collected["phone"]
+                ev = None
+                for e in events:
+                    desc = _digits_only((e.get("description") or ""))
+                    if target and target in desc:
+                        ev = e
+                        break
+
+                if ev:
+                    session["resch_event_id"] = ev.get("id")
+                    session["resch_event_summary"] = ev.get("summary", "Appointment")
+                else:
+                    # Couldn't find it even with phone → manual reschedule request
+                    session["manual_reschedule"] = True
+                    session["manual_reason"] = "event_not_found"
+            except Exception as e:
+                print("RESCHEDULE list_upcoming_events error:", repr(e))
+                session["manual_reschedule"] = True
+                session["manual_reason"] = "calendar_lookup_error"
+        else:
+            session["manual_reschedule"] = True
+            session["manual_reason"] = "no_calendar_tokens"
 
         session["state"] = RESCH_NEW_PREF
         return _say("Thanks. What day or time would you like to move it to?", session)
@@ -738,14 +776,36 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             day_window=dw_parsed,
         )
 
+        # ✅ If calendar fails, do NOT stall — switch to manual reschedule request
         if err:
-            session["state"] = RESCH_NEW_PREF
-            return _say(err, session)
+            session["manual_reschedule"] = True
+            session["manual_reason"] = "calendar_unavailable"
+            session["state"] = RESCH_CONFIRM  # go straight to confirm as "request logged"
+            return _say(
+                f"{err} No worries — I’ll log a reschedule request for the clinic to confirm. "
+                "Please say yes to confirm I should pass this on, or no to cancel.",
+                session,
+            )
+
+        # ✅ Safety: if slots/labels are missing, switch to manual request
+        if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
+            session["manual_reschedule"] = True
+            session["manual_reason"] = "no_slots_returned"
+            session["state"] = RESCH_CONFIRM
+            return _say(
+                "No problem — I can’t see clear availability right now. "
+                "I’ll log a reschedule request for the clinic to confirm. "
+                "Please say yes to confirm, or no to cancel.",
+                session,
+            )
 
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
         session[SLOT_LABELS_KEY] = labels
         session["state"] = RESCH_PICK_SLOT
-        return _say(f"{random.choice(FRIENDLY_CHECKING)} I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.", session)
+        return _say(
+            f"{random.choice(FRIENDLY_ACK)} I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
+            session,
+        )
 
     if state == RESCH_PICK_SLOT:
         m = re.search(r"\b(1|2|3)\b", _norm(user_said))
@@ -770,21 +830,78 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session = _reset_to_triage(session)
             return _say("No problem. What would you like to do instead?", session)
 
+        label = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
+
+        # ✅ Manual reschedule path: log request instead of touching calendar
+        if session.get("manual_reschedule"):
+            if send_to_sheet is not None:
+                try:
+                    send_to_sheet(
+                        name=collected.get("name", ""),
+                        phone=collected.get("phone", ""),
+                        intent="RESCHEDULE_REQUEST_MANUAL",
+                        message=(
+                            f"Manual reschedule requested. "
+                            f"Original appt: {collected.get('original_appt','')}. "
+                            f"Requested new time: {label}. "
+                            f"Reason: {session.get('manual_reason','')}. "
+                            f"call_sid={session.get('call_sid','')}"
+                        ),
+                        call_sid=session.get("call_sid", ""),
+                    )
+                except Exception as e2:
+                    print("send_to_sheet error:", repr(e2))
+
+            session = _reset_to_triage(session)
+            return _say(
+                f"Perfect — I’ve logged your reschedule request for {label}. "
+                "The clinic will confirm it shortly.",
+                session,
+            )
+
+        # ✅ Normal calendar reschedule path
         tokens = await redis_get_json(TOKENS_KEY)
         chosen = session.get(SELECTED_SLOT_KEY)
-        label = session.get(SELECTED_SLOT_LABEL_KEY) or "the new time"
         event_id = session.get("resch_event_id")
 
         if tokens and event_id and chosen:
-            start = datetime.fromisoformat(chosen["start"])
-            end = datetime.fromisoformat(chosen["end"])
-            patch_event_time(
-                stored_tokens=tokens,
-                event_id=event_id,
-                start_dt=start,
-                end_dt=end,
-                calendar_id=clinic.get("calendar_id", "primary"),
-            )
+            try:
+                start = datetime.fromisoformat(chosen["start"])
+                end = datetime.fromisoformat(chosen["end"])
+                patch_event_time(
+                    stored_tokens=tokens,
+                    event_id=event_id,
+                    start_dt=start,
+                    end_dt=end,
+                    calendar_id=clinic.get("calendar_id", "primary"),
+                )
+            except Exception as e:
+                print("RESCHEDULE patch_event_time error:", repr(e))
+
+                # If patch fails → log manual request
+                if send_to_sheet is not None:
+                    try:
+                        send_to_sheet(
+                            name=collected.get("name", ""),
+                            phone=collected.get("phone", ""),
+                            intent="RESCHEDULE_REQUEST_MANUAL",
+                            message=(
+                                f"Calendar patch FAILED. "
+                                f"Original appt: {collected.get('original_appt','')}. "
+                                f"Requested new time: {label}. "
+                                f"call_sid={session.get('call_sid','')}"
+                            ),
+                            call_sid=session.get("call_sid", ""),
+                        )
+                    except Exception:
+                        pass
+
+                session = _reset_to_triage(session)
+                return _say(
+                    f"Perfect — I’ve logged your reschedule request for {label}. "
+                    "The clinic will confirm it shortly.",
+                    session,
+                )
 
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you’re rescheduled to {label}. We look forward to seeing you.", session)
