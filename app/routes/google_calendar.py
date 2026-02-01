@@ -1,254 +1,200 @@
-# app/tools/calendar_google.py
+# app/routes/google_calendar.py
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+import secrets
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 
 import pytz
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError
+from fastapi import APIRouter, Request
+from fastapi.responses import RedirectResponse, JSONResponse
 
-SCOPES = [
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/calendar.readonly",
-]
+from app.storage.redis_store import (
+    redis_get_json,
+    redis_set_json,
+    redis_delete_key,
+)
 
-LONDON_TZ = pytz.timezone("Europe/London")
+from app.tools.calendar_google import (
+    GoogleCalendarAuthError,
+    get_auth_url,
+    exchange_code_for_tokens,
+    freebusy,
+    create_event,
+    list_upcoming_events,
+    patch_event_time,
+    delete_event,
+)
 
+router = APIRouter()
 
-class GoogleCalendarAuthError(RuntimeError):
-    """
-    Raised when Google OAuth tokens are invalid/revoked (invalid_grant etc.).
-    Caller should handle by clearing stored tokens and asking user to reconnect.
-    """
-    pass
-
-
-def _require_env(name: str) -> str:
-    v = os.getenv(name)
-    if not v:
-        raise RuntimeError(f"Missing environment variable: {name}")
-    return v.strip()
+TOKENS_KEY = "google_tokens"
+STATE_KEY = "google_oauth_state"
+TZ = pytz.timezone("Europe/London")
 
 
-def build_flow(redirect_uri: str) -> Flow:
-    client_id = _require_env("GOOGLE_CLIENT_ID")
-    client_secret = _require_env("GOOGLE_CLIENT_SECRET")
-
-    client_config = {
-        "web": {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-    }
-
-    flow = Flow.from_client_config(client_config, scopes=SCOPES)
-    flow.redirect_uri = redirect_uri
-    return flow
+def _base_url(request: Request) -> str:
+    # On Render you usually set BASE_URL to the public https domain
+    # e.g. https://rochsolutions-ai-receptionist.onrender.com
+    base = os.getenv("BASE_URL") or str(request.base_url)
+    return base.strip().rstrip("/")
 
 
-def get_auth_url(redirect_uri: str, state: str) -> str:
-    flow = build_flow(redirect_uri)
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-        state=state,
-    )
-    return auth_url
+async def _get_tokens() -> Optional[Dict[str, Any]]:
+    tokens = await redis_get_json(TOKENS_KEY)
+    return tokens if isinstance(tokens, dict) else None
 
 
-def exchange_code_for_tokens(redirect_uri: str, code: str) -> Dict[str, Any]:
-    flow = build_flow(redirect_uri)
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-
-    return {
-        "token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": list(creds.scopes) if creds.scopes else [],
-        "expiry": creds.expiry.isoformat() if creds.expiry else None,
-    }
+async def _save_tokens(tokens: Dict[str, Any]) -> None:
+    # 1 year TTL
+    await redis_set_json(TOKENS_KEY, tokens, ttl_seconds=60 * 60 * 24 * 365)
 
 
-def _parse_expiry(expiry: Optional[str]) -> Optional[datetime]:
-    if not expiry:
-        return None
-    try:
-        dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
-def creds_from_stored(data: Dict[str, Any]) -> Credentials:
-    return Credentials(
-        token=data.get("token"),
-        refresh_token=data.get("refresh_token"),
-        token_uri=data.get("token_uri"),
-        client_id=data.get("client_id"),
-        client_secret=data.get("client_secret"),
-        scopes=data.get("scopes") or SCOPES,
-        expiry=_parse_expiry(data.get("expiry")),
+async def _auth_fail(e: Exception):
+    # Clear stored tokens so future calls don't keep failing silently
+    await redis_delete_key(TOKENS_KEY)
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": "Google Calendar auth expired/revoked. Please reconnect.",
+            "detail": str(e),
+            "next_step": "Open /auth/google/start to reconnect.",
+        },
+        status_code=401,
     )
 
 
-def _refresh_if_needed(creds: Credentials, stored_tokens: Dict[str, Any]) -> None:
-    """
-    Refresh credentials if expired and refresh_token exists.
-    Updates stored_tokens IN-PLACE so the current request continues reliably.
+# -------------------------
+# OAuth endpoints
+# -------------------------
 
-    Note: Persisting the refreshed token back to Redis is the responsibility of the caller.
-    (You can do it in the route layer after catching success.)
-    """
-    try:
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+@router.get("/auth/google/start")
+async def google_start(request: Request):
+    state = secrets.token_urlsafe(24)
+    base = _base_url(request)
+    redirect_uri = f"{base}/auth/google/callback"
 
-            # Update in-memory token dict for this request chain
-            stored_tokens["token"] = creds.token
-            stored_tokens["expiry"] = creds.expiry.isoformat() if creds.expiry else None
+    await redis_set_json(STATE_KEY, {"state": state}, ttl_seconds=600)
 
-            # refresh_token is often None on refresh; keep existing
-            if creds.refresh_token:
-                stored_tokens["refresh_token"] = creds.refresh_token
-
-    except RefreshError as e:
-        # This is your "invalid_grant" / revoked token case
-        raise GoogleCalendarAuthError(str(e)) from e
-    except Exception as e:
-        # Any other refresh edge-case: treat as auth error so it doesn't go silent
-        raise GoogleCalendarAuthError(f"Token refresh failed: {e}") from e
+    url = get_auth_url(redirect_uri=redirect_uri, state=state)
+    return RedirectResponse(url)
 
 
-def get_calendar_service(stored_tokens: Dict[str, Any]):
-    """
-    Build a Calendar API service.
-    Proactively refreshes if expired.
-    Raises GoogleCalendarAuthError on invalid_grant / revoked tokens.
-    """
-    creds = creds_from_stored(stored_tokens)
-    _refresh_if_needed(creds, stored_tokens)
-
-    # cache_discovery=False avoids extra caching issues in server envs
-    return build("calendar", "v3", credentials=creds, cache_discovery=False)
-
-
-def _ensure_tz(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return LONDON_TZ.localize(dt)
-    return dt.astimezone(LONDON_TZ)
-
-
-def freebusy(
-    stored_tokens: Dict[str, Any],
-    time_min: datetime,
-    time_max: datetime,
-    calendar_id: str = "primary",
-) -> List[Dict[str, str]]:
-    service = get_calendar_service(stored_tokens)
-
-    time_min = _ensure_tz(time_min)
-    time_max = _ensure_tz(time_max)
-
-    body = {
-        "timeMin": time_min.isoformat(),
-        "timeMax": time_max.isoformat(),
-        "items": [{"id": calendar_id}],
-    }
-
-    resp = service.freebusy().query(body=body).execute()
-    busy = resp.get("calendars", {}).get(calendar_id, {}).get("busy", [])
-    return busy
-
-
-def create_event(
-    stored_tokens: Dict[str, Any],
-    start_dt: datetime,
-    end_dt: datetime,
-    summary: str,
-    description: str = "",
-    calendar_id: str = "primary",
-) -> Dict[str, Any]:
-    service = get_calendar_service(stored_tokens)
-
-    start_dt = _ensure_tz(start_dt)
-    end_dt = _ensure_tz(end_dt)
-
-    event = {
-        "summary": summary,
-        "description": description,
-        "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
-        "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
-    }
-
-    created = service.events().insert(calendarId=calendar_id, body=event).execute()
-    return created
-
-
-def list_upcoming_events(
-    stored_tokens: Dict[str, Any],
-    days_ahead: int = 30,
-    max_results: int = 25,
-    calendar_id: str = "primary",
-) -> List[Dict[str, Any]]:
-    service = get_calendar_service(stored_tokens)
-
-    now_utc = datetime.now(timezone.utc)
-    end_utc = now_utc + timedelta(days=days_ahead)
-
-    resp = (
-        service.events()
-        .list(
-            calendarId=calendar_id,
-            timeMin=now_utc.isoformat(),
-            timeMax=end_utc.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=max_results,
+@router.get("/auth/google/callback")
+async def google_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+):
+    if error:
+        return JSONResponse(
+            {"ok": False, "error": error, "error_description": error_description},
+            status_code=400,
         )
-        .execute()
+
+    if not code:
+        return JSONResponse({"ok": False, "error": "Missing code from Google"}, status_code=400)
+
+    saved = await redis_get_json(STATE_KEY) or {}
+    if not state or saved.get("state") != state:
+        return JSONResponse({"ok": False, "error": "Invalid OAuth state"}, status_code=400)
+
+    base = _base_url(request)
+    redirect_uri = f"{base}/auth/google/callback"
+
+    token_data = exchange_code_for_tokens(redirect_uri=redirect_uri, code=code)
+    await _save_tokens(token_data)
+
+    return JSONResponse(
+        {"ok": True, "status": "connected", "message": "Google Calendar connected successfully ✅"}
     )
-    return resp.get("items", [])
 
 
-def patch_event_time(
-    stored_tokens: Dict[str, Any],
-    event_id: str,
-    start_dt: datetime,
-    end_dt: datetime,
-    calendar_id: str = "primary",
-) -> Dict[str, Any]:
-    service = get_calendar_service(stored_tokens)
-
-    start_dt = _ensure_tz(start_dt)
-    end_dt = _ensure_tz(end_dt)
-
-    body = {
-        "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
-        "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
-    }
-
-    updated = service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
-    return updated
+@router.get("/auth/google/status")
+async def google_status():
+    tokens = await _get_tokens()
+    return {"ok": True, "connected": bool(tokens), "has_refresh_token": bool(tokens and tokens.get("refresh_token"))}
 
 
-def delete_event(
-    stored_tokens: Dict[str, Any],
-    event_id: str,
-    calendar_id: str = "primary",
-) -> bool:
-    service = get_calendar_service(stored_tokens)
-    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-    return True
+@router.post("/auth/google/reset")
+async def google_reset():
+    await redis_delete_key(TOKENS_KEY)
+    return {"ok": True, "message": "Google tokens deleted. Reconnect via /auth/google/start"}
+
+
+# -------------------------
+# Test endpoints
+# -------------------------
+
+@router.get("/calendar/test/freebusy")
+async def calendar_test_freebusy():
+    tokens = await _get_tokens()
+    if not tokens:
+        return JSONResponse(
+            {"ok": False, "error": "Google not connected. Run /auth/google/start first."},
+            status_code=400,
+        )
+
+    now = datetime.now(TZ)
+    end = now + timedelta(days=7)
+
+    try:
+        busy = freebusy(tokens, time_min=now, time_max=end, calendar_id="primary")
+        # tokens may be refreshed/mutated; persist them
+        await _save_tokens(tokens)
+        return {"ok": True, "busy": busy}
+    except GoogleCalendarAuthError as e:
+        return await _auth_fail(e)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "freebusy failed", "detail": repr(e)}, status_code=500)
+
+
+@router.get("/calendar/test/create-event")
+async def calendar_test_create_event():
+    tokens = await _get_tokens()
+    if not tokens:
+        return JSONResponse(
+            {"ok": False, "error": "Google not connected. Run /auth/google/start first."},
+            status_code=400,
+        )
+
+    start = datetime.now(TZ) + timedelta(minutes=10)
+    end = start + timedelta(minutes=30)
+
+    try:
+        event = create_event(
+            stored_tokens=tokens,
+            start_dt=start,
+            end_dt=end,
+            summary="RochSolutions Test Booking",
+            description="Created by /calendar/test/create-event",
+            calendar_id="primary",
+        )
+        await _save_tokens(tokens)
+        return {"ok": True, "event_id": event.get("id"), "event_link": event.get("htmlLink")}
+    except GoogleCalendarAuthError as e:
+        return await _auth_fail(e)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "create_event failed", "detail": repr(e)}, status_code=500)
+
+
+@router.get("/calendar/test/events")
+async def calendar_test_events():
+    tokens = await _get_tokens()
+    if not tokens:
+        return JSONResponse(
+            {"ok": False, "error": "Google not connected. Run /auth/google/start first."},
+            status_code=400,
+        )
+
+    try:
+        events = list_upcoming_events(tokens, days_ahead=14, max_results=10, calendar_id="primary")
+        await _save_tokens(tokens)
+        return {"ok": True, "count": len(events), "events": events}
+    except GoogleCalendarAuthError as e:
+        return await _auth_fail(e)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "list events failed", "detail": repr(e)}, status_code=500)
