@@ -61,9 +61,12 @@ async def _get_tokens() -> Optional[Dict[str, Any]]:
 
 
 async def _save_tokens(tokens: Dict[str, Any]) -> None:
-    # Persist refreshed tokens (tools mutate token/expiry in-place)
     tokens = _normalize_tokens(tokens)
-    await redis_set_json(TOKENS_KEY, tokens, ttl_seconds=60 * 60 * 24 * 365)  # 1 year
+    await redis_set_json(
+        TOKENS_KEY,
+        tokens,
+        ttl_seconds=60 * 60 * 24 * 365,  # 1 year
+    )
 
 
 async def _auth_fail(e: Exception):
@@ -84,9 +87,7 @@ async def _auth_fail(e: Exception):
 
 
 def _tz_now() -> datetime:
-    """
-    Always timezone-aware. Keeps all test endpoints clean.
-    """
+    """Always timezone-aware."""
     return datetime.now(TZ)
 
 
@@ -116,53 +117,57 @@ async def google_callback(
 ):
     if error:
         return JSONResponse(
-            {"ok": False, "error": error, "error_description": error_description},
+            {
+                "ok": False,
+                "error": error,
+                "error_description": error_description,
+            },
             status_code=400,
         )
 
     if not code:
-        return JSONResponse({"ok": False, "error": "Missing code from Google"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "error": "Missing code from Google"},
+            status_code=400,
+        )
 
-   saved = await redis_get_json(STATE_KEY) or {}
-if not state or saved.get("state") != state:
+    saved = await redis_get_json(STATE_KEY) or {}
+    if not state or saved.get("state") != state:
+        return JSONResponse(
+            {"ok": False, "error": "Invalid OAuth state"},
+            status_code=400,
+        )
+
+    redirect_uri = f"{_base_url(request)}/auth/google/callback"
+
+    token_data = exchange_code_for_tokens(
+        redirect_uri=redirect_uri,
+        code=code,
+    )
+    token_data = _normalize_tokens(token_data)
+
+    has_refresh = bool(token_data.get("refresh_token"))
+    if not has_refresh:
+        print(
+            "WARNING: Google did not issue a refresh_token "
+            "(existing consent reused)."
+        )
+
+    await _save_tokens(token_data)
+
     return JSONResponse(
-        {"ok": False, "error": "Invalid OAuth state"},
-        status_code=400,
+        {
+            "ok": True,
+            "status": "connected",
+            "message": (
+                "Google Calendar connected successfully ✅"
+                if has_refresh
+                else "Google Calendar connected ✅ "
+                     "(no refresh token issued — reconnect if it expires)."
+            ),
+            "has_refresh_token": has_refresh,
+        }
     )
-
-redirect_uri = f"{_base_url(request)}/auth/google/callback"
-
-token_data = exchange_code_for_tokens(
-    redirect_uri=redirect_uri,
-    code=code,
-)
-token_data = _normalize_tokens(token_data)
-
-# Warn in logs only — do NOT interrupt the flow
-has_refresh = bool(token_data.get("refresh_token"))
-if not has_refresh:
-    print(
-        "WARNING: Google did not issue a refresh_token "
-        "(existing consent reused)."
-    )
-
-# ✅ SAVE TOKENS ONCE
-await _save_tokens(token_data)
-
-# ✅ RETURN ONCE
-return JSONResponse(
-    {
-        "ok": True,
-        "status": "connected",
-        "message": (
-            "Google Calendar connected successfully ✅"
-            if has_refresh
-            else "Google Calendar connected ✅ "
-                 "(no refresh token issued — reconnect if it expires)."
-        ),
-        "has_refresh_token": has_refresh,
-    }
-)
 
 
 @router.get("/auth/google/status")
@@ -180,13 +185,19 @@ async def google_status():
 @router.get("/auth/google/reset")
 async def google_reset_get():
     await redis_delete_key(TOKENS_KEY)
-    return {"ok": True, "message": "Google tokens deleted. Reconnect via /auth/google/start"}
+    return {
+        "ok": True,
+        "message": "Google tokens deleted. Reconnect via /auth/google/start",
+    }
 
 
 @router.post("/auth/google/reset")
 async def google_reset_post():
     await redis_delete_key(TOKENS_KEY)
-    return {"ok": True, "message": "Google tokens deleted. Reconnect via /auth/google/start"}
+    return {
+        "ok": True,
+        "message": "Google tokens deleted. Reconnect via /auth/google/start",
+    }
 
 
 # -------------------------
@@ -198,7 +209,10 @@ async def calendar_test_freebusy():
     tokens = await _get_tokens()
     if not tokens:
         return JSONResponse(
-            {"ok": False, "error": "Google not connected. Run /auth/google/start first."},
+            {
+                "ok": False,
+                "error": "Google not connected. Run /auth/google/start first.",
+            },
             status_code=400,
         )
 
@@ -206,14 +220,21 @@ async def calendar_test_freebusy():
     end = now + timedelta(days=7)
 
     try:
-        busy = freebusy(tokens, time_min=now, time_max=end, calendar_id="primary")
+        busy = freebusy(
+            tokens,
+            time_min=now,
+            time_max=end,
+            calendar_id="primary",
+        )
         await _save_tokens(tokens)
         return {"ok": True, "busy": busy}
     except (GoogleCalendarAuthError, TypeError) as e:
-        # TypeError catches: "can't compare offset-naive and offset-aware datetimes"
         return await _auth_fail(e)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": "freebusy failed", "detail": repr(e)}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "error": "freebusy failed", "detail": repr(e)},
+            status_code=500,
+        )
 
 
 @router.get("/calendar/test/create-event")
@@ -221,7 +242,10 @@ async def calendar_test_create_event():
     tokens = await _get_tokens()
     if not tokens:
         return JSONResponse(
-            {"ok": False, "error": "Google not connected. Run /auth/google/start first."},
+            {
+                "ok": False,
+                "error": "Google not connected. Run /auth/google/start first.",
+            },
             status_code=400,
         )
 
@@ -238,11 +262,18 @@ async def calendar_test_create_event():
             calendar_id="primary",
         )
         await _save_tokens(tokens)
-        return {"ok": True, "event_id": event.get("id"), "event_link": event.get("htmlLink")}
+        return {
+            "ok": True,
+            "event_id": event.get("id"),
+            "event_link": event.get("htmlLink"),
+        }
     except (GoogleCalendarAuthError, TypeError) as e:
         return await _auth_fail(e)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": "create_event failed", "detail": repr(e)}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "error": "create_event failed", "detail": repr(e)},
+            status_code=500,
+        )
 
 
 @router.get("/calendar/test/events")
@@ -250,15 +281,30 @@ async def calendar_test_events():
     tokens = await _get_tokens()
     if not tokens:
         return JSONResponse(
-            {"ok": False, "error": "Google not connected. Run /auth/google/start first."},
+            {
+                "ok": False,
+                "error": "Google not connected. Run /auth/google/start first.",
+            },
             status_code=400,
         )
 
     try:
-        events = list_upcoming_events(tokens, days_ahead=14, max_results=10, calendar_id="primary")
+        events = list_upcoming_events(
+            tokens,
+            days_ahead=14,
+            max_results=10,
+            calendar_id="primary",
+        )
         await _save_tokens(tokens)
-        return {"ok": True, "count": len(events), "events": events}
+        return {
+            "ok": True,
+            "count": len(events),
+            "events": events,
+        }
     except (GoogleCalendarAuthError, TypeError) as e:
         return await _auth_fail(e)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": "list events failed", "detail": repr(e)}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "error": "list events failed", "detail": repr(e)},
+            status_code=500,
+        )
