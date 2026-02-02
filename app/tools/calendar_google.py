@@ -78,18 +78,38 @@ def exchange_code_for_tokens(redirect_uri: str, code: str) -> Dict[str, Any]:
 
 
 def _parse_expiry(expiry: Optional[str]) -> Optional[datetime]:
+    """
+    Always return timezone-aware datetime in UTC (or None).
+    Accepts '...Z' or '+00:00' or naive ISO; coerces to UTC aware.
+    """
     if not expiry:
         return None
     try:
         dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        return dt.astimezone(timezone.utc)
     except Exception:
         return None
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _is_expired(expiry_dt: Optional[datetime], skew_seconds: int = 90) -> bool:
+    """
+    Expiry check with a small skew so we refresh slightly early.
+    Prevents mid-request expiry.
+    """
+    if not expiry_dt:
+        return True
+    expiry_dt = expiry_dt.astimezone(timezone.utc)
+    return expiry_dt <= (_now_utc() + timedelta(seconds=skew_seconds))
+
+
 def creds_from_stored(data: Dict[str, Any]) -> Credentials:
+    expiry_dt = _parse_expiry(data.get("expiry"))
     return Credentials(
         token=data.get("token"),
         refresh_token=data.get("refresh_token"),
@@ -97,20 +117,38 @@ def creds_from_stored(data: Dict[str, Any]) -> Credentials:
         client_id=data.get("client_id"),
         client_secret=data.get("client_secret"),
         scopes=data.get("scopes") or SCOPES,
-        expiry=_parse_expiry(data.get("expiry")),
+        expiry=expiry_dt,  # always aware UTC (or None)
     )
 
 
 def _refresh_if_needed(creds: Credentials, stored_tokens: Dict[str, Any]) -> None:
+    """
+    Refresh without using creds.expired (avoids naive/aware comparison bugs).
+    Updates stored_tokens IN-PLACE so upstream can persist it.
+    """
     try:
-        if creds.expired and creds.refresh_token:
+        expiry_dt = creds.expiry.astimezone(timezone.utc) if creds.expiry else None
+        needs_refresh = _is_expired(expiry_dt)
+
+        if needs_refresh:
+            if not creds.refresh_token:
+                raise GoogleCalendarAuthError("No refresh_token available (reconnect Google Calendar).")
+
             creds.refresh(Request())
+
+            # Update in-memory token dict for this request chain
             stored_tokens["token"] = creds.token
             stored_tokens["expiry"] = creds.expiry.isoformat() if creds.expiry else None
+
+            # Google often does not return refresh_token on refresh; keep existing unless provided
             if creds.refresh_token:
                 stored_tokens["refresh_token"] = creds.refresh_token
+
     except RefreshError as e:
+        # invalid_grant, revoked, etc.
         raise GoogleCalendarAuthError(str(e)) from e
+    except GoogleCalendarAuthError:
+        raise
     except Exception as e:
         raise GoogleCalendarAuthError(f"Token refresh failed: {e}") from e
 
@@ -122,6 +160,9 @@ def get_calendar_service(stored_tokens: Dict[str, Any]):
 
 
 def _ensure_tz(dt: datetime) -> datetime:
+    """
+    Ensure dt is timezone-aware in Europe/London.
+    """
     if dt.tzinfo is None:
         return LONDON_TZ.localize(dt)
     return dt.astimezone(LONDON_TZ)
@@ -138,7 +179,11 @@ def freebusy(
     time_min = _ensure_tz(time_min)
     time_max = _ensure_tz(time_max)
 
-    body = {"timeMin": time_min.isoformat(), "timeMax": time_max.isoformat(), "items": [{"id": calendar_id}]}
+    body = {
+        "timeMin": time_min.isoformat(),
+        "timeMax": time_max.isoformat(),
+        "items": [{"id": calendar_id}],
+    }
     resp = service.freebusy().query(body=body).execute()
     return resp.get("calendars", {}).get(calendar_id, {}).get("busy", [])
 
