@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import base64
 
 import httpx
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
@@ -30,6 +31,17 @@ class VoiceTurnResponse(BaseModel):
     transcript: str
     reply_text: str
     session_id: str
+
+
+# ✅ NEW: TTS request/response
+class TTSRequest(BaseModel):
+    text: str
+    voice: str | None = None  # optional override
+
+
+class TTSResponse(BaseModel):
+    audio_b64: str
+    mime_type: str
 
 
 # -----------------------------
@@ -82,7 +94,7 @@ async def avatar_voice_turn(
     if not audio:
         raise HTTPException(status_code=400, detail="audio file is required")
 
-    # Save audio to a temp file (we send bytes to Deepgram, but temp file helps debug)
+    # Save audio to a temp file
     suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp_path = tmp.name
@@ -131,6 +143,20 @@ async def avatar_voice_turn(
             pass
 
 
+# -----------------------------------------
+# 3) TTS: TEXT -> AUDIO (Deepgram)
+# -----------------------------------------
+@router.post("/tts", response_model=TTSResponse)
+async def avatar_tts(payload: TTSRequest):
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+
+    audio_bytes, mime_type = await deepgram_tts(text, voice=payload.voice)
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    return TTSResponse(audio_b64=audio_b64, mime_type=mime_type)
+
+
 # -----------------------------
 # Deepgram STT
 # -----------------------------
@@ -156,22 +182,55 @@ async def transcribe_audio_file(path: str) -> str:
 
     headers = {
         "Authorization": f"Token {api_key}",
-        # Deepgram can often infer content type; you can optionally set:
-        # "Content-Type": "audio/webm",
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, params=params, headers=headers, content=audio_bytes)
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Deepgram error {resp.status_code}: {resp.text}")
+        raise RuntimeError(f"Deepgram STT error {resp.status_code}: {resp.text}")
 
     data = resp.json()
 
-    # Deepgram response: results -> channels[0] -> alternatives[0] -> transcript
     try:
         transcript = data["results"]["channels"][0]["alternatives"][0].get("transcript", "")
     except Exception:
         transcript = ""
 
     return transcript or ""
+
+
+# -----------------------------
+# Deepgram TTS
+# -----------------------------
+async def deepgram_tts(text: str, voice: str | None = None) -> tuple[bytes, str]:
+    """
+    Generate speech audio using Deepgram TTS (/v1/speak).
+    Returns (audio_bytes, mime_type).
+    Expects DEEPGRAM_API_KEY in environment variables.
+    """
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing DEEPGRAM_API_KEY env var")
+
+    # Default voice (can override by passing payload.voice from frontend)
+    # If you get "model not found", change this to a voice available on your Deepgram account.
+    voice_model = voice or "aura-asteria-en"
+
+    # MP3 is easiest to play in browser + avatar tools
+    url = f"https://api.deepgram.com/v1/speak?model={voice_model}&encoding=mp3"
+
+    headers = {
+        "Authorization": f"Token {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    body = {"text": text}
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(url, headers=headers, json=body)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Deepgram TTS error {resp.status_code}: {resp.text}")
+
+    return resp.content, "audio/mpeg"
