@@ -123,32 +123,46 @@ async def google_callback(
     if not code:
         return JSONResponse({"ok": False, "error": "Missing code from Google"}, status_code=400)
 
-    saved = await redis_get_json(STATE_KEY) or {}
-    if not state or saved.get("state") != state:
-        return JSONResponse({"ok": False, "error": "Invalid OAuth state"}, status_code=400)
+   saved = await redis_get_json(STATE_KEY) or {}
+if not state or saved.get("state") != state:
+    return JSONResponse(
+        {"ok": False, "error": "Invalid OAuth state"},
+        status_code=400,
+    )
 
-    redirect_uri = f"{_base_url(request)}/auth/google/callback"
+redirect_uri = f"{_base_url(request)}/auth/google/callback"
 
-    token_data = exchange_code_for_tokens(redirect_uri=redirect_uri, code=code)
-    token_data = _normalize_tokens(token_data)
+token_data = exchange_code_for_tokens(
+    redirect_uri=redirect_uri,
+    code=code,
+)
+token_data = _normalize_tokens(token_data)
 
-    # If Google didn’t issue a refresh_token, you will eventually hit invalid_grant / refresh failures.
-    # This usually happens if the Google account already consented earlier and Google "reuses" consent.
-    # Your get_auth_url includes prompt="consent" which *should* force a refresh_token, but we sanity-check.
-    if not token_data.get("refresh_token"):
-        # Save anyway so the user can test immediately, but warn clearly
-        await _save_tokens(token_data)
-        return JSONResponse(
-            {
-                "ok": True,
-                "status": "connected_with_warning",
-                "message": "Connected ✅ (but no refresh_token was issued). If it stops working, reset and reconnect.",
-                "next_step": "If you hit auth errors: open /auth/google/reset then /auth/google/start again.",
-            }
-        )
+# Warn in logs only — do NOT interrupt the flow
+has_refresh = bool(token_data.get("refresh_token"))
+if not has_refresh:
+    print(
+        "WARNING: Google did not issue a refresh_token "
+        "(existing consent reused)."
+    )
 
-    await _save_tokens(token_data)
-    return JSONResponse({"ok": True, "status": "connected", "message": "Google Calendar connected successfully ✅"})
+# ✅ SAVE TOKENS ONCE
+await _save_tokens(token_data)
+
+# ✅ RETURN ONCE
+return JSONResponse(
+    {
+        "ok": True,
+        "status": "connected",
+        "message": (
+            "Google Calendar connected successfully ✅"
+            if has_refresh
+            else "Google Calendar connected ✅ "
+                 "(no refresh token issued — reconnect if it expires)."
+        ),
+        "has_refresh_token": has_refresh,
+    }
+)
 
 
 @router.get("/auth/google/status")
