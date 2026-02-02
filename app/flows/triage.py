@@ -122,6 +122,34 @@ def _norm(t: str) -> str:
     t = re.sub(r"\s+", " ", t)
     return t
 
+def parse_slot_choice(text: str) -> Optional[int]:
+    """
+    Return 1/2/3 if the user picked a slot, else None.
+    Supports: "1", "one", "option 1", "number one", etc.
+    """
+    t = _norm(text)
+
+    # First: direct digit
+    m = re.search(r"\b(1|2|3)\b", t)
+    if m:
+        return int(m.group(1))
+
+    # Word mapping
+    word_map = {
+        "one": 1,
+        "first": 1,
+        "two": 2,
+        "second": 2,
+        "three": 3,
+        "third": 3,
+    }
+
+    # Match whole words
+    for w, n in word_map.items():
+        if re.search(rf"\b{w}\b", t):
+            return n
+
+    return None
 
 def looks_like_name(text: str) -> bool:
     t = (text or "").strip()
@@ -807,23 +835,25 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-    if state == RESCH_PICK_SLOT:
-        m = re.search(r"\b(1|2|3)\b", _norm(user_said))
-        if not m:
-            return _say("Please say 1, 2, or 3.", session)
+   if state == RESCH_PICK_SLOT:
+        choice = parse_slot_choice(user_said)
+        if not choice:
+            return _say("Sorry — please say 1, 2, or 3.", session)
 
-        idx = int(m.group(1)) - 1
+        idx = choice - 1
         slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
         labels = session.get(SLOT_LABELS_KEY) or []
+
         if idx < 0 or idx >= len(slots):
-            return _say("Please say 1, 2, or 3.", session)
+            return _say("Sorry — please say 1, 2, or 3.", session)
 
         session[SELECTED_SLOT_KEY] = slots[idx]
         if idx < len(labels):
-            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+        session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
 
         session["state"] = RESCH_CONFIRM
         return _say("Perfect. Please say yes to confirm, or no to cancel.", session)
+
 
     if state == RESCH_CONFIRM:
         if not is_yes(user_said):
@@ -987,23 +1017,25 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-    if state == BOOK_PICK_SLOT:
-        m = re.search(r"\b(1|2|3)\b", _norm(user_said))
-        if not m:
-            return _say("Please say 1, 2, or 3.", session)
+      if state == BOOK_PICK_SLOT:
+        choice = parse_slot_choice(user_said)
+        if not choice:
+            return _say("Sorry — please say 1, 2, or 3.", session)
 
-        idx = int(m.group(1)) - 1
+        idx = choice - 1
         slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
         labels = session.get(SLOT_LABELS_KEY) or []
+
         if idx < 0 or idx >= len(slots):
-            return _say("Please say 1, 2, or 3.", session)
+            return _say("Sorry — please say 1, 2, or 3.", session)
 
         session[SELECTED_SLOT_KEY] = slots[idx]
         if idx < len(labels):
             session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
 
         session["state"] = BOOK_NAME
-        return _say("Perfect. What’s your full name for the booking?", session)
+        return _say("Perfect — what’s your full name for the booking?", session)
+
 
     if state == BOOK_NAME:
         collected["name"] = user_said.strip()
