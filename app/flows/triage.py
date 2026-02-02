@@ -122,6 +122,7 @@ def _norm(t: str) -> str:
     t = re.sub(r"\s+", " ", t)
     return t
 
+
 def parse_slot_choice(text: str) -> Optional[int]:
     """
     Return 1/2/3 if the user picked a slot, else None.
@@ -150,6 +151,7 @@ def parse_slot_choice(text: str) -> Optional[int]:
             return n
 
     return None
+
 
 def looks_like_name(text: str) -> bool:
     t = (text or "").strip()
@@ -211,11 +213,25 @@ def is_valid_phone(phone: str) -> bool:
 def parse_patient_type(text: str) -> Optional[str]:
     t = _norm(text)
     returning = [
-        "returning", "existing", "been before", "follow up", "follow-up", "followup",
-        "already a patient", "i've been", "i have been", "return patient", "recurring",
+        "returning",
+        "existing",
+        "been before",
+        "follow up",
+        "follow-up",
+        "followup",
+        "already a patient",
+        "i've been",
+        "i have been",
+        "return patient",
+        "recurring",
     ]
     new = [
-        "new", "first time", "never been", "not been before", "initial", "first visit",
+        "new",
+        "first time",
+        "never been",
+        "not been before",
+        "initial",
+        "first visit",
         "new patient",
     ]
     if any(k in t for k in returning):
@@ -230,8 +246,21 @@ def _is_interrupt(text: str) -> bool:
     if not t:
         return False
     return t in {
-        "stop", "cancel", "wait", "hold on", "hang on", "one second", "a second",
-        "pause", "restart", "start over", "reset", "go back", "back", "main menu", "menu",
+        "stop",
+        "cancel",
+        "wait",
+        "hold on",
+        "hang on",
+        "one second",
+        "a second",
+        "pause",
+        "restart",
+        "start over",
+        "reset",
+        "go back",
+        "back",
+        "main menu",
+        "menu",
     }
 
 
@@ -245,6 +274,9 @@ def _reset_to_triage(session: Dict[str, Any]) -> Dict[str, Any]:
     session.pop("resch_event_summary", None)
     session.pop(SLOT_LABELS_KEY, None)
     session.pop(SELECTED_SLOT_LABEL_KEY, None)
+    session.pop("manual_booking", None)
+    session.pop("manual_reason", None)
+    session.pop("manual_reschedule", None)
     return session
 
 
@@ -285,10 +317,16 @@ def detect_intent(text: str) -> str:
     if _contains_any(t, ["address", "location", "where are you", "parking", "postcode", "directions", "near", "map"]):
         return "FAQ_LOCATION"
 
-    if _contains_any(t, ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"]):
+    if _contains_any(
+        t,
+        ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"],
+    ):
         return "FAQ_INSURANCE"
 
-    if _contains_any(t, ["treatments", "treatment", "services", "physio", "physiotherapy", "massage", "sports therapy", "rehab", "shockwave"]):
+    if _contains_any(
+        t,
+        ["treatments", "treatment", "services", "physio", "physiotherapy", "massage", "sports therapy", "rehab", "shockwave"],
+    ):
         return "FAQ_SERVICES"
 
     if _contains_any(t, ["cancel policy", "cancellation policy", "late fee", "refund", "missed appointment"]):
@@ -318,13 +356,22 @@ def preference_window(pref: str) -> Optional[tuple[int, int]]:
 
 
 WEEKDAYS = {
-    "monday": 0, "mon": 0,
-    "tuesday": 1, "tue": 1, "tues": 1,
-    "wednesday": 2, "wed": 2,
-    "thursday": 3, "thu": 3, "thurs": 3,
-    "friday": 4, "fri": 4,
-    "saturday": 5, "sat": 5,
-    "sunday": 6, "sun": 6,
+    "monday": 0,
+    "mon": 0,
+    "tuesday": 1,
+    "tue": 1,
+    "tues": 1,
+    "wednesday": 2,
+    "wed": 2,
+    "thursday": 3,
+    "thu": 3,
+    "thurs": 3,
+    "friday": 4,
+    "fri": 4,
+    "saturday": 5,
+    "sat": 5,
+    "sunday": 6,
+    "sun": 6,
 }
 
 
@@ -428,7 +475,7 @@ async def suggest_top_slots(
         labels = [format_slot((s, e)) for s, e in top3]
         return raw, labels, None
 
-       # Live calendar (safe)
+    # Live calendar (safe)
     try:
         busy = freebusy(
             tokens,
@@ -439,7 +486,6 @@ async def suggest_top_slots(
     except Exception as e:
         # Calendar unavailable → do NOT invent availability
         print("CALENDAR ERROR (freebusy):", repr(e))
-
         return [], [], (
             "No problem — I’m having trouble checking the live calendar right now. "
             "Tell me your preferred day or time, and I’ll log a booking request for the clinic to confirm."
@@ -448,7 +494,6 @@ async def suggest_top_slots(
     busy_blocks = parse_busy(busy or [])
     free_slots = filter_free_slots(candidates, busy_blocks)
     top3 = pick_first_n(free_slots, 3)
-
 
     # If preference window is too strict, widen to clinic hours
     if not top3 and win:
@@ -475,6 +520,7 @@ async def suggest_top_slots(
 def _safe_parse_user_datetime(text: str, tz) -> Optional[datetime]:
     try:
         from dateutil import parser as dtparser  # type: ignore
+
         dt = dtparser.parse(text, fuzzy=True)
         if dt.tzinfo is None:
             dt = tz.localize(dt)
@@ -655,7 +701,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         if intent == "CANCEL":
             session = _reset_to_triage(session)
-            return _say("Sure — can I take your full name and the date and time of the appointment you want to cancel?", session)
+            return _say(
+                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
+                session,
+            )
 
         if intent == "HUMAN":
             if send_to_sheet is not None:
@@ -683,9 +732,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         )
 
     # ======================================================================
-    # RESCHEDULE FLOW
-    # ======================================================================
-        # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
     if state == RESCH_NAME:
@@ -695,7 +741,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         collected["name"] = user_said.strip()
         session["state"] = RESCH_ORIGINAL
-        return _say(f"{random.choice(FRIENDLY_ACK)} What was the date and time of your original appointment?", session)
+        return _say(
+            f"{random.choice(FRIENDLY_ACK)} What was the date and time of your original appointment?",
+            session,
+        )
 
     if state == RESCH_ORIGINAL:
         collected["original_appt"] = user_said.strip()
@@ -765,7 +814,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                     session["resch_event_id"] = ev.get("id")
                     session["resch_event_summary"] = ev.get("summary", "Appointment")
                 else:
-                    # Couldn't find it even with phone → manual reschedule request
                     session["manual_reschedule"] = True
                     session["manual_reason"] = "event_not_found"
             except Exception as e:
@@ -804,18 +852,18 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             day_window=dw_parsed,
         )
 
-        # ✅ If calendar fails, do NOT stall — switch to manual reschedule request
+        # Calendar fails → manual request
         if err:
             session["manual_reschedule"] = True
             session["manual_reason"] = "calendar_unavailable"
-            session["state"] = RESCH_CONFIRM  # go straight to confirm as "request logged"
+            session["state"] = RESCH_CONFIRM
             return _say(
                 f"{err} No worries — I’ll log a reschedule request for the clinic to confirm. "
                 "Please say yes to confirm I should pass this on, or no to cancel.",
                 session,
             )
 
-        # ✅ Safety: if slots/labels are missing, switch to manual request
+        # Safety: if slots/labels missing, manual
         if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
             session["manual_reschedule"] = True
             session["manual_reason"] = "no_slots_returned"
@@ -835,7 +883,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-   if state == RESCH_PICK_SLOT:
+    if state == RESCH_PICK_SLOT:
         choice = parse_slot_choice(user_said)
         if not choice:
             return _say("Sorry — please say 1, 2, or 3.", session)
@@ -849,11 +897,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         session[SELECTED_SLOT_KEY] = slots[idx]
         if idx < len(labels):
-        session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
 
         session["state"] = RESCH_CONFIRM
         return _say("Perfect. Please say yes to confirm, or no to cancel.", session)
-
 
     if state == RESCH_CONFIRM:
         if not is_yes(user_said):
@@ -862,7 +909,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         label = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
 
-        # ✅ Manual reschedule path: log request instead of touching calendar
+        # Manual reschedule path
         if session.get("manual_reschedule"):
             if send_to_sheet is not None:
                 try:
@@ -871,7 +918,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                         phone=collected.get("phone", ""),
                         intent="RESCHEDULE_REQUEST_MANUAL",
                         message=(
-                            f"Manual reschedule requested. "
+                            "Manual reschedule requested. "
                             f"Original appt: {collected.get('original_appt','')}. "
                             f"Requested new time: {label}. "
                             f"Reason: {session.get('manual_reason','')}. "
@@ -884,12 +931,11 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
             session = _reset_to_triage(session)
             return _say(
-                f"Perfect — I’ve logged your reschedule request for {label}. "
-                "The clinic will confirm it shortly.",
+                f"Perfect — I’ve logged your reschedule request for {label}. The clinic will confirm it shortly.",
                 session,
             )
 
-        # ✅ Normal calendar reschedule path
+        # Normal calendar reschedule path
         tokens = await redis_get_json(TOKENS_KEY)
         chosen = session.get(SELECTED_SLOT_KEY)
         event_id = session.get("resch_event_id")
@@ -916,7 +962,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                             phone=collected.get("phone", ""),
                             intent="RESCHEDULE_REQUEST_MANUAL",
                             message=(
-                                f"Calendar patch FAILED. "
+                                "Calendar patch FAILED. "
                                 f"Original appt: {collected.get('original_appt','')}. "
                                 f"Requested new time: {label}. "
                                 f"call_sid={session.get('call_sid','')}"
@@ -928,8 +974,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
                 session = _reset_to_triage(session)
                 return _say(
-                    f"Perfect — I’ve logged your reschedule request for {label}. "
-                    "The clinic will confirm it shortly.",
+                    f"Perfect — I’ve logged your reschedule request for {label}. The clinic will confirm it shortly.",
                     session,
                 )
 
@@ -940,7 +985,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # BOOKING FLOW
     # ======================================================================
     if state == BOOK_PATIENT_TYPE:
-        # If they repeat "book" etc, just re-ask once
         intent_check = detect_intent(user_said)
         if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
             return _say("Sure — are you a new patient, or have you been here before?", session)
@@ -956,7 +1000,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         collected["patient_type"] = pt
         session["state"] = BOOK_REASON
-        return _say("Great. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?", session)
+        return _say(
+            "Great. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?",
+            session,
+        )
 
     if state == BOOK_REASON:
         collected["reason"] = user_said.strip()
@@ -988,17 +1035,14 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             day_window=dw_parsed,
         )
 
-        # ✅ Calendar unavailable (or any freebusy error) → switch to manual booking request flow
+        # Calendar unavailable → manual booking request flow
         if err:
             session["manual_booking"] = True
             session["manual_reason"] = "calendar_unavailable"
             session["state"] = BOOK_NAME
-            return _say(
-                f"{err} To get that sorted, what’s your full name?",
-                session,
-            )
+            return _say(f"{err} To get that sorted, what’s your full name?", session)
 
-        # ✅ Safety: if we didn't get 3 labels for any reason, also go manual
+        # Safety: if we didn't get 3 labels, go manual
         if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
             session["manual_booking"] = True
             session["manual_reason"] = "no_slots_returned"
@@ -1017,7 +1061,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-      if state == BOOK_PICK_SLOT:
+    if state == BOOK_PICK_SLOT:
         choice = parse_slot_choice(user_said)
         if not choice:
             return _say("Sorry — please say 1, 2, or 3.", session)
@@ -1035,7 +1079,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         session["state"] = BOOK_NAME
         return _say("Perfect — what’s your full name for the booking?", session)
-
 
     if state == BOOK_NAME:
         collected["name"] = user_said.strip()
