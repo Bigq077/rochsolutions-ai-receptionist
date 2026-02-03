@@ -1122,6 +1122,16 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         label = session.get(SELECTED_SLOT_LABEL_KEY) or "the selected time"
         tokens = await redis_get_json(TOKENS_KEY)
 
+        # 🔎 DEBUG — THIS IS CRITICAL
+        print("DEBUG BOOK_CONFIRM", {
+            "has_tokens": bool(tokens),
+            "has_chosen": bool(chosen),
+            "tokens_key": TOKENS_KEY,
+            "calendar_env": os.getenv("GOOGLE_CALENDAR_ID"),
+            "chosen_start": chosen.get("start") if chosen else None,
+            "chosen_end": chosen.get("end") if chosen else None,
+        })
+
         # Calendar mode
         if tokens and chosen:
             start = datetime.fromisoformat(chosen["start"])
@@ -1137,6 +1147,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                 "Booked via RochSolutions AI receptionist."
             )
 
+            print("DEBUG CREATING EVENT", {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "calendar_id": os.getenv("GOOGLE_CALENDAR_ID", "primary"),
+            })
+
             event = create_event(
                 stored_tokens=tokens,
                 start_dt=start,
@@ -1144,8 +1160,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                 summary=summary,
                 description=description,
                 calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
-
             )
+
+            print("DEBUG EVENT RESULT", {
+                "event_id": event.get("id") if event else None,
+                "htmlLink": event.get("htmlLink") if event else None,
+            })
 
             session = _reset_to_triage(session)
             if not event or not event.get("id"):
@@ -1153,13 +1173,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
             return _say(f"Confirmed — you’re booked for {label}. Thanks, and we’ll see you then.", session)
 
-        # Demo mode fallback
+        # 🚨 DEMO MODE (THIS IS WHAT IS CURRENTLY HAPPENING)
+        print("⚠️ DEMO MODE FALLBACK — NO CALENDAR EVENT CREATED", {
+            "has_tokens": bool(tokens),
+            "has_chosen": bool(chosen),
+        })
+
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you’re booked for {label}. Thanks, and we’ll see you then.", session)
-
-    # If we reach here, reset safely
-    session = _reset_to_triage(session)
-    return _say(
-        "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
-        session,
-    )
+    
