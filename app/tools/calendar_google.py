@@ -19,6 +19,10 @@ SCOPES = [
 
 LONDON_TZ = pytz.timezone("Europe/London")
 
+# ✅ Default calendar for ALL operations (set this in Render):
+# GOOGLE_CALENDAR_ID=quentinroch10@gmail.com
+DEFAULT_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary").strip() or "primary"
+
 
 class GoogleCalendarAuthError(RuntimeError):
     """Raised when Google OAuth tokens are invalid/revoked (invalid_grant etc.)."""
@@ -172,7 +176,7 @@ def freebusy(
     stored_tokens: Dict[str, Any],
     time_min: datetime,
     time_max: datetime,
-    calendar_id: str = "primary",
+    calendar_id: str = DEFAULT_CALENDAR_ID,
 ) -> List[Dict[str, str]]:
     service = get_calendar_service(stored_tokens)
 
@@ -194,7 +198,7 @@ def create_event(
     end_dt: datetime,
     summary: str,
     description: str = "",
-    calendar_id: str = "primary",
+    calendar_id: str = DEFAULT_CALENDAR_ID,
 ) -> Dict[str, Any]:
     service = get_calendar_service(stored_tokens)
 
@@ -207,14 +211,32 @@ def create_event(
         "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
         "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
     }
-    return service.events().insert(calendarId=calendar_id, body=event).execute()
+
+    created = service.events().insert(calendarId=calendar_id, body=event).execute()
+
+    # ✅ Helpful debug: proves exactly where the event was created
+    try:
+        print(
+            "✅ Calendar event created:",
+            {
+                "calendar_id": calendar_id,
+                "event_id": created.get("id"),
+                "htmlLink": created.get("htmlLink"),
+                "start": created.get("start"),
+                "end": created.get("end"),
+            },
+        )
+    except Exception:
+        pass
+
+    return created
 
 
 def list_upcoming_events(
     stored_tokens: Dict[str, Any],
     days_ahead: int = 30,
     max_results: int = 25,
-    calendar_id: str = "primary",
+    calendar_id: str = DEFAULT_CALENDAR_ID,
 ) -> List[Dict[str, Any]]:
     service = get_calendar_service(stored_tokens)
 
@@ -241,7 +263,7 @@ def patch_event_time(
     event_id: str,
     start_dt: datetime,
     end_dt: datetime,
-    calendar_id: str = "primary",
+    calendar_id: str = DEFAULT_CALENDAR_ID,
 ) -> Dict[str, Any]:
     service = get_calendar_service(stored_tokens)
 
@@ -258,8 +280,9 @@ def patch_event_time(
 def delete_event(
     stored_tokens: Dict[str, Any],
     event_id: str,
-    calendar_id: str = "primary",
+    calendar_id: str = DEFAULT_CALENDAR_ID,
 ) -> bool:
     service = get_calendar_service(stored_tokens)
     service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
     return True
+
