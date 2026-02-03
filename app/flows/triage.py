@@ -122,7 +122,28 @@ def _norm(t: str) -> str:
     t = (t or "").lower().strip()
     t = re.sub(r"\s+", " ", t)
     return t
+import re
 
+def _norm(text: str | None) -> str:
+    t = (text or "").strip().lower()
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def is_reschedule_intent(text: str | None) -> bool:
+    t = _norm(text)
+    # covers: reschedule, rescheduling, change appointment, move appointment, rearrange
+    return any(
+        kw in t
+        for kw in [
+            "reschedule", "rescheduling",
+            "change my appointment", "change appointment",
+            "move my appointment", "move appointment",
+            "rebook", "re booking", "re-book",
+            "switch my appointment", "switch appointment",
+            "change the time", "change the date",
+        ]
+    )
 
 def parse_slot_choice(text: str) -> Optional[int]:
     """
@@ -639,7 +660,16 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ==========================================================
     # TRIAGE: LLM + knowledge + deterministic routing
     # ==========================================================
-    if state == TRIAGE:
+   
+   if state == TRIAGE:
+          # 🔹 FORCE obvious reschedule intent (e.g. "rescheduling")
+        forced_intent = normalize_reschedule_intent(user_said)
+        if forced_intent == "RESCHEDULE":
+            session = _reset_to_triage(session)
+            session["state"] = RESCH_NAME
+            return _say("Sure — to reschedule, what’s your full name?", session)
+
+   
         try:
             kb = retrieve_knowledge(user_said, clinic=clinic)
         except Exception:
