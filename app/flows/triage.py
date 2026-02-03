@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Any, Tuple, Optional
 import re
+import os
 import random
 from datetime import datetime, timedelta
 
@@ -1142,7 +1143,8 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                 end_dt=end,
                 summary=summary,
                 description=description,
-                calendar_id=clinic.get("calendar_id", "primary"),
+                calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
+
             )
 
             session = _reset_to_triage(session)
