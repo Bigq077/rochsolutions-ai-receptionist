@@ -190,7 +190,7 @@ async def avatar_video_start(payload: AvatarVideoStartRequest):
     # HeyGen env vars
     heygen_key = os.getenv("HEYGEN_API_KEY")
     heygen_talking_photo_id = os.getenv("HEYGEN_AVATAR_ID")  # Sandy's id
-    heygen_voice_id = os.getenv("HEYGEN_VOICE_ID")           # Sandy's default voice id
+    heygen_voice_id = os.getenv("HEYGEN_VOICE_ID")  # Sandy's default voice id
 
     if not all([heygen_key, heygen_talking_photo_id, heygen_voice_id]):
         raise HTTPException(
