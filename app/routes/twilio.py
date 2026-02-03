@@ -37,7 +37,7 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
         timeout=10,
         action_on_empty_result=True,
         barge_in=True,
-        num_digits=1,  # helps for "1/2/3" choices
+        num_digits=1,
     )
     if prompt:
         g.say(prompt, language="en-GB")
@@ -68,7 +68,6 @@ async def voice(request: Request):
 
     vr.append(gather_speech(turn_url, "Hi, Roch Physio speaking. How can I help today?"))
 
-    # If gather returns empty, we fall through here
     vr.say("Sorry — I didn’t catch that.", language="en-GB")
     vr.redirect(voice_url, method="POST")
     return xml(vr)
@@ -95,7 +94,9 @@ async def turn(request: Request):
 
     call_sid = (form.get("CallSid") or "").strip()
 
-    # ✅ Prefer digits first (for menu choices), then speech, then unstable speech
+    # -----------------------------
+    # Normalize user input
+    # -----------------------------
     digits_raw = form.get("Digits")
     digits = (digits_raw or "").strip()
     if digits == "":
@@ -104,14 +105,12 @@ async def turn(request: Request):
     speech = (form.get("SpeechResult") or "").strip()
     unstable = (form.get("UnstableSpeechResult") or "").strip()
 
-    # Pick primary user input
     if digits:
         user_said = digits
     else:
         user_said = speech or unstable
 
-    # ✅ Normalize simple YES/NO inputs with punctuation like "Yes." / "No."
-    # This directly fixes your log case: SpeechResult = "Yes."
+    # Normalize yes / no with punctuation (e.g. "Yes.")
     if user_said:
         t = user_said.strip().lower()
         t = re.sub(r"\s+", " ", t)
