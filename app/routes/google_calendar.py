@@ -259,7 +259,7 @@ async def calendar_test_create_event():
             end_dt=end,
             summary="RochSolutions Test Booking",
             description="Created by /calendar/test/create-event",
-            calendar_id="primary",
+            calendar_id=calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
         )
         await _save_tokens(tokens)
         return {
