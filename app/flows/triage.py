@@ -172,6 +172,10 @@ def is_yes(text: str) -> bool:
     return _norm(text) in ("yes", "y", "yeah", "yep", "confirm", "ok", "okay", "sure")
 
 
+def is_no(text: str) -> bool:
+    return _norm(text) in ("no", "n", "nope", "nah", "cancel")
+
+
 def _contains_any(t: str, keywords: list[str]) -> bool:
     return any(k in t for k in keywords)
 
@@ -277,6 +281,8 @@ def _reset_to_triage(session: Dict[str, Any]) -> Dict[str, Any]:
     session.pop("manual_booking", None)
     session.pop("manual_reason", None)
     session.pop("manual_reschedule", None)
+    session.pop("manual_reschedule", None)
+    session.pop("manual_reason", None)
     return session
 
 
@@ -985,6 +991,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # BOOKING FLOW
     # ======================================================================
     if state == BOOK_PATIENT_TYPE:
+        # If they repeat "book" etc, just re-ask once
         intent_check = detect_intent(user_said)
         if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
             return _say("Sure — are you a new patient, or have you been here before?", session)
@@ -1035,14 +1042,17 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             day_window=dw_parsed,
         )
 
-        # Calendar unavailable → manual booking request flow
+        # Calendar unavailable (or any freebusy error) → switch to manual booking request flow
         if err:
             session["manual_booking"] = True
             session["manual_reason"] = "calendar_unavailable"
             session["state"] = BOOK_NAME
-            return _say(f"{err} To get that sorted, what’s your full name?", session)
+            return _say(
+                f"{err} To get that sorted, what’s your full name?",
+                session,
+            )
 
-        # Safety: if we didn't get 3 labels, go manual
+        # Safety: if we didn't get 3 labels for any reason, also go manual
         if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
             session["manual_booking"] = True
             session["manual_reason"] = "no_slots_returned"
@@ -1093,26 +1103,19 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["state"] = BOOK_CONFIRM
         return _say("Great. Please say yes to confirm the booking, or no to cancel.", session)
 
-     if state == BOOK_CONFIRM:
-        # Only cancel on an explicit NO.
-        # Anything unclear (including empty) should reprompt — never auto-cancel.
-        if is_yes(user_said):
-            # ✅ proceed to actually create / finalize booking here
-            # (whatever your next state/function is)
-            session["state"] = BOOK_FINALIZE  # <-- replace with your real next state
-            return _say("Perfect — confirming now.", session)
-
+    # ✅ FIXED: BOOK_CONFIRM should not reset on "yes"
+    # ✅ FIXED: only cancel on explicit "no"; unclear input reprompts
+    if state == BOOK_CONFIRM:
         if is_no(user_said):
             session = _reset_to_triage(session)
             return _say("No problem — I’ve cancelled that. What would you like to do instead?", session)
 
-        # Unclear / empty input -> reprompt
-        return _say(
-            "Sorry — just to confirm, should I book that appointment? "
-            "Please say yes to confirm, or no to cancel. You can also press 1 for yes or 2 for no.",
-            session,
-        )
-
+        if not is_yes(user_said):
+            return _say(
+                "Sorry — just to confirm: should I book that appointment? "
+                "Please say yes to confirm, or no to cancel.",
+                session,
+            )
 
         chosen = session.get(SELECTED_SLOT_KEY)
         label = session.get(SELECTED_SLOT_LABEL_KEY) or "the selected time"
