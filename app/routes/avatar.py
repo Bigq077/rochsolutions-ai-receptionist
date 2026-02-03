@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import tempfile
 import base64
+import time
+import hashlib
 
 import httpx
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
@@ -42,6 +44,19 @@ class TTSRequest(BaseModel):
 class TTSResponse(BaseModel):
     audio_b64: str
     mime_type: str
+
+
+# ✅ NEW: Video request/response
+class AvatarVideoRequest(BaseModel):
+    clinic_id: str
+    session_id: str
+    text: str
+
+
+class AvatarVideoResponse(BaseModel):
+    reply_text: str
+    video_url: str
+    session_id: str
 
 
 # -----------------------------
@@ -155,6 +170,147 @@ async def avatar_tts(payload: TTSRequest):
     audio_bytes, mime_type = await deepgram_tts(text, voice=payload.voice)
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
     return TTSResponse(audio_b64=audio_b64, mime_type=mime_type)
+
+
+# -----------------------------------------
+# 4) VIDEO: TEXT -> BRAIN -> HEYGEN VIDEO URL
+# -----------------------------------------
+@router.post("/video", response_model=AvatarVideoResponse)
+async def avatar_video(payload: AvatarVideoRequest):
+    """
+    Input: clinic_id, session_id, text
+    Output: reply_text + video_url (HeyGen pre-generated avatar video)
+    """
+
+    user_text = (payload.text or "").strip()
+    if not user_text:
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+
+    # --- Load HeyGen env vars (must be set in Render) ---
+    heygen_key = os.getenv("HEYGEN_API_KEY")
+    heygen_talking_photo_id = os.getenv("HEYGEN_AVATAR_ID")  # Sandy's id
+    heygen_voice_id = os.getenv("HEYGEN_VOICE_ID")          # Sandy's default voice id
+
+    if not heygen_key or not heygen_talking_photo_id or not heygen_voice_id:
+        raise HTTPException(
+            status_code=500,
+            detail="Missing HeyGen env vars (HEYGEN_API_KEY / HEYGEN_AVATAR_ID / HEYGEN_VOICE_ID)",
+        )
+
+    # --- Session (shared memory) ---
+    session_key = f"avatar:{payload.clinic_id}:{payload.session_id}"
+    try:
+        session = await get_session(session_key) or {}
+    except Exception as e:
+        print("Redis get_session error:", repr(e))
+        session = {}
+
+    session["clinic_id"] = payload.clinic_id
+    session["session_id"] = payload.session_id
+    session["channel"] = "avatar_web_video"
+
+    # 1) Run brain
+    reply_text, session = await handle_user_text(user_text, session)
+
+    # Save session back (even if HeyGen fails, we still keep memory)
+    try:
+        await save_session(session_key, session)
+    except Exception as e:
+        print("Redis save_session error:", repr(e))
+
+    # 2) Optional cache (saves money): cache by clinic + reply_text hash for 24h
+    # If your redis_store only stores JSON, that's fine — we store {"video_url": "..."}.
+    cache_ttl_seconds = 86400
+    reply_hash = hashlib.sha256(reply_text.encode("utf-8")).hexdigest()[:24]
+    cache_key = f"heygen_video:{payload.clinic_id}:{reply_hash}"
+
+    try:
+        cached = await get_session(cache_key)
+        if isinstance(cached, dict) and cached.get("video_url"):
+            return AvatarVideoResponse(
+                reply_text=reply_text,
+                video_url=cached["video_url"],
+                session_id=payload.session_id,
+            )
+    except Exception as e:
+        print("Redis cache get error:", repr(e))
+
+    # 3) Create HeyGen video
+    create_url = "https://api.heygen.com/v2/video/generate"
+    status_url = "https://api.heygen.com/v1/video_status.get"
+
+    create_payload = {
+        "video_inputs": [
+            {
+                "character": {
+                    "type": "talking_photo",
+                    "talking_photo_id": heygen_talking_photo_id,
+                },
+                "voice": {
+                    "type": "text",
+                    "input_text": reply_text,
+                    "voice_id": heygen_voice_id,
+                },
+            }
+        ],
+        "dimension": {"width": 720, "height": 1280},
+    }
+
+    headers = {
+        "X-API-KEY": heygen_key,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(create_url, headers=headers, json=create_payload)
+
+    if resp.status_code != 200:
+        # helpful for debugging in Render logs
+        raise HTTPException(status_code=500, detail=f"HeyGen create failed: {resp.status_code} {resp.text}")
+
+    data = resp.json()
+    video_id = (data.get("data") or {}).get("video_id")
+    if not video_id:
+        raise HTTPException(status_code=500, detail=f"HeyGen create returned unexpected payload: {data}")
+
+    # 4) Poll status until completed (timeout ~40s)
+    deadline = time.time() + 40.0
+    poll_interval = 1.5
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        while time.time() < deadline:
+            s = await client.get(status_url, headers={"X-API-KEY": heygen_key}, params={"video_id": video_id})
+
+            if s.status_code == 200:
+                sd = s.json().get("data", {})
+                status = sd.get("status")
+
+                if status == "completed" and sd.get("video_url"):
+                    video_url = sd["video_url"]
+
+                    # cache success (24h)
+                    try:
+                        await save_session(cache_key, {"video_url": video_url, "created_at": time.time()})
+                        # If your save_session supports TTL, set it there; if not, ignore.
+                        # (Many simple redis wrappers don't support TTL in this function.)
+                    except Exception as e:
+                        print("Redis cache save error:", repr(e))
+
+                    return AvatarVideoResponse(
+                        reply_text=reply_text,
+                        video_url=video_url,
+                        session_id=payload.session_id,
+                    )
+
+                if status == "failed":
+                    break
+
+            # Wait and poll again
+            import asyncio
+            await asyncio.sleep(poll_interval)
+
+    # Timeouts are normal sometimes — frontend should fallback to /tts
+    raise HTTPException(status_code=504, detail="HeyGen video timed out or failed")
 
 
 # -----------------------------
