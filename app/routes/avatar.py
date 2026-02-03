@@ -7,6 +7,7 @@ import tempfile
 import base64
 import time
 import hashlib
+import asyncio
 
 import httpx
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
@@ -109,6 +110,8 @@ async def avatar_voice_turn(
     if not audio:
         raise HTTPException(status_code=400, detail="audio file is required")
 
+    tmp_path: str | None = None
+
     # Save audio to a temp file
     suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -152,10 +155,11 @@ async def avatar_voice_turn(
 
     finally:
         # Cleanup temp file
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 # -----------------------------------------
@@ -306,7 +310,6 @@ async def avatar_video(payload: AvatarVideoRequest):
                     break
 
             # Wait and poll again
-            import asyncio
             await asyncio.sleep(poll_interval)
 
     # Timeouts are normal sometimes — frontend should fallback to /tts
