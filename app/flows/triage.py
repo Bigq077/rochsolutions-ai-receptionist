@@ -1093,10 +1093,26 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["state"] = BOOK_CONFIRM
         return _say("Great. Please say yes to confirm the booking, or no to cancel.", session)
 
-    if state == BOOK_CONFIRM:
-        if not is_yes(user_said):
+     if state == BOOK_CONFIRM:
+        # Only cancel on an explicit NO.
+        # Anything unclear (including empty) should reprompt — never auto-cancel.
+        if is_yes(user_said):
+            # ✅ proceed to actually create / finalize booking here
+            # (whatever your next state/function is)
+            session["state"] = BOOK_FINALIZE  # <-- replace with your real next state
+            return _say("Perfect — confirming now.", session)
+
+        if is_no(user_said):
             session = _reset_to_triage(session)
-            return _say("No problem. What would you like to do instead?", session)
+            return _say("No problem — I’ve cancelled that. What would you like to do instead?", session)
+
+        # Unclear / empty input -> reprompt
+        return _say(
+            "Sorry — just to confirm, should I book that appointment? "
+            "Please say yes to confirm, or no to cancel. You can also press 1 for yes or 2 for no.",
+            session,
+        )
+
 
         chosen = session.get(SELECTED_SLOT_KEY)
         label = session.get(SELECTED_SLOT_LABEL_KEY) or "the selected time"
