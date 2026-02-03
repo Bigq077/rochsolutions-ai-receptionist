@@ -1,3 +1,6 @@
+# app/tools/slots.py
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from typing import Optional
 import pytz
@@ -5,22 +8,41 @@ import pytz
 DEFAULT_TZ = pytz.timezone("Europe/London")
 
 
-def overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> bool:
-    return max(a_start, b_start) < min(a_end, b_end)
-
-
-def _ensure_tz(dt: datetime, tz) -> datetime:
+def _ensure_tz(dt: datetime, tz=DEFAULT_TZ) -> datetime:
     """
-    Make sure dt is timezone-aware in tz.
+    Ensure dt is timezone-aware in tz.
+    If dt is naive -> localize to tz.
+    If dt is aware -> convert to tz.
     """
     if dt.tzinfo is None:
         return tz.localize(dt)
     return dt.astimezone(tz)
 
 
+def _coerce_pair(a: datetime, b: datetime, tz=DEFAULT_TZ) -> tuple[datetime, datetime]:
+    """
+    Force both datetimes to be timezone-aware in the SAME timezone before comparisons.
+    This prevents: TypeError: can't compare offset-naive and offset-aware datetimes
+    """
+    return _ensure_tz(a, tz), _ensure_tz(b, tz)
+
+
+def overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime, tz=DEFAULT_TZ) -> bool:
+    """
+    Return True if [a_start, a_end) overlaps [b_start, b_end).
+    Fully safe across naive/aware mixtures by coercing all inputs.
+    """
+    a_start, a_end = _coerce_pair(a_start, a_end, tz)
+    b_start, b_end = _coerce_pair(b_start, b_end, tz)
+    return max(a_start, b_start) < min(a_end, b_end)
+
+
 def parse_busy(busy: list[dict], tz=DEFAULT_TZ) -> list[tuple[datetime, datetime]]:
     """
     Convert Google busy blocks (RFC3339 strings) into timezone-aware datetimes in tz.
+    Google returns strings like:
+      - 2026-02-06T08:30:00Z
+      - 2026-02-06T08:30:00+00:00
     """
     out: list[tuple[datetime, datetime]] = []
     for b in busy or []:
@@ -29,13 +51,14 @@ def parse_busy(busy: list[dict], tz=DEFAULT_TZ) -> list[tuple[datetime, datetime
         if not s or not e:
             continue
 
-        # Google returns Z or offset. datetime.fromisoformat needs small normalization for Z.
+        # Normalize 'Z' to '+00:00' for fromisoformat
         s = s.replace("Z", "+00:00")
         e = e.replace("Z", "+00:00")
 
         ds = datetime.fromisoformat(s)
         de = datetime.fromisoformat(e)
 
+        # Force into tz (aware)
         ds = _ensure_tz(ds, tz)
         de = _ensure_tz(de, tz)
 
@@ -44,6 +67,9 @@ def parse_busy(busy: list[dict], tz=DEFAULT_TZ) -> list[tuple[datetime, datetime
 
 
 def next_7_days_window(now: Optional[datetime] = None, tz=DEFAULT_TZ) -> tuple[datetime, datetime]:
+    """
+    Returns an aware (tz) window [now, now+7days].
+    """
     now = now or datetime.now(tz)
     now = _ensure_tz(now, tz)
     end = now + timedelta(days=7)
@@ -60,22 +86,7 @@ def generate_candidate_slots(
     clinic_working_hours: Optional[dict] = None,
 ) -> list[tuple[datetime, datetime]]:
     """
-    Generate slots inside [window_start, window_end].
-
-    If clinic_working_hours is provided (e.g. from clinic_config["working_hours"]),
-    it will use per-day hours and will NOT force Mon–Fri only.
-
-    clinic_working_hours example:
-      {
-        "mon": (8, 19),
-        "tue": (8, 19),
-        ...
-        "sat": (9, 14),
-        "sun": None
-      }
-
-    If not provided, it falls back to the old behaviour with day_start_h/day_end_h
-    and will include Mon–Fri by default.
+    Generate candidate slots inside [window_start, window_end], all timezone-aware in tz.
     """
     window_start = _ensure_tz(window_start, tz)
     window_end = _ensure_tz(window_end, tz)
@@ -83,20 +94,19 @@ def generate_candidate_slots(
     slots: list[tuple[datetime, datetime]] = []
     step = timedelta(minutes=duration_min)
 
-    # Start from next boundary for neatness
+    # Start from next boundary for neatness (preserves tzinfo)
     cursor = window_start.replace(second=0, microsecond=0)
     minute_mod = cursor.minute % duration_min
     if minute_mod != 0:
         cursor += timedelta(minutes=(duration_min - minute_mod))
 
-    # Helper to read per-day hours
     day_keys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
     while cursor < window_end:
-        slot_start = cursor
-        slot_end = cursor + step
+        slot_start = _ensure_tz(cursor, tz)
+        slot_end = _ensure_tz(cursor + step, tz)
 
-        # Determine hours for this weekday
+        # Determine working hours for this weekday
         if clinic_working_hours:
             key = day_keys[slot_start.weekday()]  # 0=mon
             hours = clinic_working_hours.get(key)
@@ -111,8 +121,8 @@ def generate_candidate_slots(
                 continue
             ds_h, de_h = int(day_start_h), int(day_end_h)
 
-        day_start = slot_start.replace(hour=ds_h, minute=0, second=0, microsecond=0)
-        day_end = slot_start.replace(hour=de_h, minute=0, second=0, microsecond=0)
+        day_start = _ensure_tz(slot_start.replace(hour=ds_h, minute=0, second=0, microsecond=0), tz)
+        day_end = _ensure_tz(slot_start.replace(hour=de_h, minute=0, second=0, microsecond=0), tz)
 
         if slot_start >= day_start and slot_end <= day_end and slot_end <= window_end:
             slots.append((slot_start, slot_end))
@@ -125,20 +135,35 @@ def generate_candidate_slots(
 def filter_free_slots(
     candidates: list[tuple[datetime, datetime]],
     busy_blocks: list[tuple[datetime, datetime]],
+    tz=DEFAULT_TZ,
 ) -> list[tuple[datetime, datetime]]:
+    """
+    Filter out candidate slots that overlap with busy blocks.
+    Fully safe even if upstream accidentally passes a naive datetime somewhere.
+    """
     free: list[tuple[datetime, datetime]] = []
-    for s, e in candidates:
-        if any(overlaps(s, e, bs, be) for bs, be in busy_blocks):
+
+    # Normalize busy blocks once
+    norm_busy: list[tuple[datetime, datetime]] = [
+        (_ensure_tz(bs, tz), _ensure_tz(be, tz)) for bs, be in (busy_blocks or [])
+    ]
+
+    for s, e in candidates or []:
+        s = _ensure_tz(s, tz)
+        e = _ensure_tz(e, tz)
+
+        if any(overlaps(s, e, bs, be, tz) for bs, be in norm_busy):
             continue
         free.append((s, e))
+
     return free
 
 
 def format_slot(slot: tuple[datetime, datetime]) -> str:
     s, _ = slot
-    # Example: "Tue 30 Dec at 14:30"
     return s.strftime("%a %d %b at %H:%M")
 
 
 def pick_first_n(slots: list[tuple[datetime, datetime]], n: int = 3) -> list[tuple[datetime, datetime]]:
     return slots[:n]
+
