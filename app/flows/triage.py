@@ -62,33 +62,97 @@ FRIENDLY_CHECKING = [
     "Sure — let me take a quick look.",
 ]
 
+# If a prompt contains any of these, do NOT add random friendliness.
+# These are "high-precision" moments where clarity matters.
+NO_FRIENDLY_PHRASES = [
+    "please say",
+    "please tell me",
+    "say 1",
+    "press 1",
+    "say 2",
+    "press 2",
+    "say 3",
+    "press 3",
+    "one, two, or three",
+    "1, 2, or 3",
+    "confirm",
+    "to confirm",
+    "yes to confirm",
+    "no to cancel",
+    "what is your phone number",
+    "phone number",
+    "date and time",
+    "what day",
+    "what time",
+    "spell",
+    "repeat",
+    "i have three",
+    "first:",
+    "second:",
+    "third:",
+    "available appointment",
+    "available slots",
+]
+
+# Also avoid "cute" tone for these openings; keep them direct.
+NO_FRIENDLY_STARTS = (
+    "sorry",
+    "perfect",
+    "thanks",
+    "thank you",
+    "confirmed",
+    "all done",
+    "you’re",
+    "you're",
+)
 
 def _clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text or "")
     return text.strip()
 
+def _is_high_precision_prompt(text: str) -> bool:
+    """
+    Returns True when we should NOT add random friendly prefix/suffix.
+    Examples: slot menus, confirmations, phone numbers, dates, instructions.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+
+    # Long prompts are harder to process; don't add fluff
+    if len(t) > 120:
+        return True
+
+    if t.startswith(NO_FRIENDLY_STARTS):
+        return True
+
+    return any(phrase in t for phrase in NO_FRIENDLY_PHRASES)
 
 def _maybe_prefix(text: str) -> str:
     if not text:
         return text
 
-    lower = text.lower()
-
-    # Don't mess with apologies or confirmations
-    if lower.startswith(("sorry", "perfect", "thanks", "confirmed", "all done", "you’re", "you're")):
+    if _is_high_precision_prompt(text):
         return text
 
-    if random.random() < 0.35:
+    # Mildly friendly sometimes, but only when it's safe
+    if random.random() < 0.25:
         return f"{random.choice(FRIENDLY_ACK)} {text}"
 
     return text
 
-
 def _maybe_suffix(text: str) -> str:
-    if random.random() < 0.20:
-        return f"{text} {random.choice(FRIENDLY_REASSURE)}"
-    return text
+    if not text:
+        return text
 
+    if _is_high_precision_prompt(text):
+        return text
+
+    # Reassurance rarely, only when safe
+    if random.random() < 0.12:
+        return f"{text} {random.choice(FRIENDLY_REASSURE)}"
+
+    return text
 
 def _friendly(text: str) -> str:
     text = _clean(text)
@@ -96,12 +160,13 @@ def _friendly(text: str) -> str:
     text = _maybe_suffix(text)
     return _clean(text)
 
-
 def _say(text: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """
+    Applies a friendly tone ONLY when it won't reduce clarity.
+    """
     friendly_text = _friendly(text)
     session["last_bot_prompt"] = friendly_text
     return friendly_text, session
-
 
 # ---------- CONFIG ----------
 TOKENS_KEY = "google_tokens"
@@ -777,482 +842,441 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
     # ======================================================================
-    if state == RESCH_NAME:
-        intent_check = detect_intent(user_said)
-        if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
-            return _say("Sure — what’s your full name?", session)
+if state == RESCH_NAME:
+    intent_check = detect_intent(user_said)
+    if intent_check in ("RESCHEDULE", "BOOK", "CANCEL"):
+        return _say("Sure — what’s your full name?", session)
 
-        collected["name"] = user_said.strip()
-        session["state"] = RESCH_ORIGINAL
-        return _say(
-            f"{random.choice(FRIENDLY_ACK)} What was the date and time of your original appointment?",
+    collected["name"] = user_said.strip()
+    session["state"] = RESCH_ORIGINAL
+    return _say(
+        f"{random.choice(FRIENDLY_ACK)} What was the date and time of your original appointment?",
+        session,
+    )
+
+
+if state == RESCH_ORIGINAL:
+    collected["original_appt"] = user_said.strip()
+
+    try:
+        ev = await find_event_by_name_and_time(
             session,
+            collected.get("name", ""),
+            collected.get("original_appt", ""),
         )
+    except Exception as e:
+        print("RESCHEDULE find_event_by_name_and_time error:", repr(e))
+        ev = None
 
-    if state == RESCH_ORIGINAL:
-        collected["original_appt"] = user_said.strip()
-
-        # Try calendar match by name + time
-        try:
-            ev = await find_event_by_name_and_time(
-                session,
-                collected.get("name", ""),
-                collected.get("original_appt", ""),
-            )
-        except Exception as e:
-            print("RESCHEDULE find_event_by_name_and_time error:", repr(e))
-            ev = None
-
-        if ev:
-            session["resch_event_id"] = ev.get("id")
-            session["resch_event_summary"] = ev.get("summary", "Appointment")
-            session["state"] = RESCH_NEW_PREF
-            return _say("Thanks. What day or time would you like to move it to?", session)
-
-        # If we have tokens but couldn't match, ask phone as fallback
-        tokens = await redis_get_json(TOKENS_KEY)
-        if tokens:
-            session["state"] = RESCH_PHONE_FALLBACK
-            return _say(
-                "Thanks. To find it quickly, what phone number was used for the booking?",
-                session,
-            )
-
-        # No tokens → we can't match the booking, but we can still take the reschedule request
-        session["manual_reschedule"] = True
-        session["manual_reason"] = "no_calendar_tokens"
-        session["state"] = RESCH_NEW_PREF
-        return _say(
-            "No problem — I can still help. What day or time would you like to move it to?",
-            session,
-        )
-
-    if state == RESCH_PHONE_FALLBACK:
-        phone_raw = user_said.strip()
-        if not is_valid_phone(phone_raw):
-            return _say("Sorry — I didn’t catch a valid phone number. Please say it again.", session)
-
-        collected["phone"] = normalize_phone(phone_raw)
-
-        tokens = await redis_get_json(TOKENS_KEY)
-
-        # If tokens exist, try match by phone in event description
-        if tokens:
-            try:
-                events = list_upcoming_events(
-                    stored_tokens=tokens,
-                    calendar_id=clinic.get("calendar_id", "primary"),
-                    days_ahead=60,
-                    max_results=50,
-                )
-                target = collected["phone"]
-                ev = None
-                for e in events:
-                    desc = _digits_only((e.get("description") or ""))
-                    if target and target in desc:
-                        ev = e
-                        break
-
-                if ev:
-                    session["resch_event_id"] = ev.get("id")
-                    session["resch_event_summary"] = ev.get("summary", "Appointment")
-                else:
-                    session["manual_reschedule"] = True
-                    session["manual_reason"] = "event_not_found"
-            except Exception as e:
-                print("RESCHEDULE list_upcoming_events error:", repr(e))
-                session["manual_reschedule"] = True
-                session["manual_reason"] = "calendar_lookup_error"
-        else:
-            session["manual_reschedule"] = True
-            session["manual_reason"] = "no_calendar_tokens"
-
+    if ev:
+        session["resch_event_id"] = ev.get("id")
+        session["resch_event_summary"] = ev.get("summary", "Appointment")
         session["state"] = RESCH_NEW_PREF
         return _say("Thanks. What day or time would you like to move it to?", session)
 
-    if state == RESCH_NEW_PREF:
-        collected["time_pref"] = user_said.strip()
-
-        dw = parse_specific_day_window(collected["time_pref"], tz)
-        if dw:
-            collected["day_window_start"] = dw[0].isoformat()
-            collected["day_window_end"] = dw[1].isoformat()
-        else:
-            collected.pop("day_window_start", None)
-            collected.pop("day_window_end", None)
-
-        dw_parsed = None
-        if collected.get("day_window_start") and collected.get("day_window_end"):
-            dw_parsed = (
-                datetime.fromisoformat(collected["day_window_start"]),
-                datetime.fromisoformat(collected["day_window_end"]),
-            )
-
-        raw_slots, labels, err = await suggest_top_slots(
-            session,
-            duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
-            pref_text=collected.get("time_pref", ""),
-            day_window=dw_parsed,
-        )
-
-        # Calendar fails → manual request
-        if err:
-            session["manual_reschedule"] = True
-            session["manual_reason"] = "calendar_unavailable"
-            session["state"] = RESCH_CONFIRM
-            return _say(
-                f"{err} No worries — I’ll log a reschedule request for the clinic to confirm. "
-                "Please say yes to confirm I should pass this on, or no to cancel.",
-                session,
-            )
-
-        # Safety: if slots/labels missing, manual
-        if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
-            session["manual_reschedule"] = True
-            session["manual_reason"] = "no_slots_returned"
-            session["state"] = RESCH_CONFIRM
-            return _say(
-                "No problem — I can’t see clear availability right now. "
-                "I’ll log a reschedule request for the clinic to confirm. "
-                "Please say yes to confirm, or no to cancel.",
-                session,
-            )
-
-        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
-        session[SLOT_LABELS_KEY] = labels
-        session["state"] = RESCH_PICK_SLOT
+    tokens = await redis_get_json(TOKENS_KEY)
+    if tokens:
+        session["state"] = RESCH_PHONE_FALLBACK
         return _say(
-            f"{random.choice(FRIENDLY_ACK)} I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
+            "Thanks. To find it quickly, what phone number was used for the booking?",
             session,
         )
 
-    if state == RESCH_PICK_SLOT:
-        choice = parse_slot_choice(user_said)
-        if not choice:
-            return _say("Sorry — please say 1, 2, or 3.", session)
+    session["manual_reschedule"] = True
+    session["manual_reason"] = "no_calendar_tokens"
+    session["state"] = RESCH_NEW_PREF
+    return _say(
+        "No problem — what day or time would you like to move it to?",
+        session,
+    )
 
-        idx = choice - 1
-        slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
-        labels = session.get(SLOT_LABELS_KEY) or []
 
-        if idx < 0 or idx >= len(slots):
-            return _say("Sorry — please say 1, 2, or 3.", session)
+if state == RESCH_PHONE_FALLBACK:
+    phone_raw = user_said.strip()
+    if not is_valid_phone(phone_raw):
+        return _say("Sorry — I didn’t catch a valid phone number. Please say it again.", session)
 
-        session[SELECTED_SLOT_KEY] = slots[idx]
-        if idx < len(labels):
-            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+    collected["phone"] = normalize_phone(phone_raw)
+    tokens = await redis_get_json(TOKENS_KEY)
 
+    if tokens:
+        try:
+            events = list_upcoming_events(
+                stored_tokens=tokens,
+                calendar_id=clinic.get("calendar_id", "primary"),
+                days_ahead=60,
+                max_results=50,
+            )
+            target = collected["phone"]
+            ev = None
+            for e in events:
+                desc = _digits_only((e.get("description") or ""))
+                if target and target in desc:
+                    ev = e
+                    break
+
+            if ev:
+                session["resch_event_id"] = ev.get("id")
+                session["resch_event_summary"] = ev.get("summary", "Appointment")
+            else:
+                session["manual_reschedule"] = True
+                session["manual_reason"] = "event_not_found"
+        except Exception as e:
+            print("RESCHEDULE list_upcoming_events error:", repr(e))
+            session["manual_reschedule"] = True
+            session["manual_reason"] = "calendar_lookup_error"
+    else:
+        session["manual_reschedule"] = True
+        session["manual_reason"] = "no_calendar_tokens"
+
+    session["state"] = RESCH_NEW_PREF
+    return _say("Thanks. What day or time would you like to move it to?", session)
+
+
+if state == RESCH_NEW_PREF:
+    collected["time_pref"] = user_said.strip()
+
+    dw = parse_specific_day_window(collected["time_pref"], tz)
+    if dw:
+        collected["day_window_start"] = dw[0].isoformat()
+        collected["day_window_end"] = dw[1].isoformat()
+    else:
+        collected.pop("day_window_start", None)
+        collected.pop("day_window_end", None)
+
+    dw_parsed = None
+    if collected.get("day_window_start") and collected.get("day_window_end"):
+        dw_parsed = (
+            datetime.fromisoformat(collected["day_window_start"]),
+            datetime.fromisoformat(collected["day_window_end"]),
+        )
+
+    raw_slots, labels, err = await suggest_top_slots(
+        session,
+        duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
+        pref_text=collected.get("time_pref", ""),
+        day_window=dw_parsed,
+    )
+
+    if err:
+        session["manual_reschedule"] = True
+        session["manual_reason"] = "calendar_unavailable"
         session["state"] = RESCH_CONFIRM
-        return _say("Perfect. Please say yes to confirm, or no to cancel.", session)
+        return _say(
+            f"{err} No worries — I’ll pass this to the clinic to confirm. "
+            "Please say yes to confirm, or no to cancel.",
+            session,
+        )
 
-    if state == RESCH_CONFIRM:
-        if not is_yes(user_said):
-            session = _reset_to_triage(session)
-            return _say("No problem. What would you like to do instead?", session)
+    if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
+        session["manual_reschedule"] = True
+        session["manual_reason"] = "no_slots_returned"
+        session["state"] = RESCH_CONFIRM
+        return _say(
+            "I can’t see clear availability right now. "
+            "I’ll pass this to the clinic to confirm. "
+            "Please say yes to confirm, or no to cancel.",
+            session,
+        )
 
-        label = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
+    session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+    session[SLOT_LABELS_KEY] = labels
+    session["state"] = RESCH_PICK_SLOT
 
-        # Manual reschedule path
-        if session.get("manual_reschedule"):
-            if send_to_sheet is not None:
-                try:
-                    send_to_sheet(
-                        name=collected.get("name", ""),
-                        phone=collected.get("phone", ""),
-                        intent="RESCHEDULE_REQUEST_MANUAL",
-                        message=(
-                            "Manual reschedule requested. "
-                            f"Original appt: {collected.get('original_appt','')}. "
-                            f"Requested new time: {label}. "
-                            f"Reason: {session.get('manual_reason','')}. "
-                            f"call_sid={session.get('call_sid','')}"
-                        ),
-                        call_sid=session.get("call_sid", ""),
-                    )
-                except Exception as e2:
-                    print("send_to_sheet error:", repr(e2))
+    msg = (
+        "I have three available appointment times. "
+        f"First: {labels[0]}. "
+        f"Second: {labels[1]}. "
+        f"Third: {labels[2]}. "
+        "Please say 1 for the first option, 2 for the second, or 3 for the third."
+    )
 
+    return _say(msg, session)
+
+
+if state == RESCH_PICK_SLOT:
+    choice = parse_slot_choice(user_said)
+    if not choice:
+        return _say(
+            "Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.",
+            session,
+        )
+
+    idx = choice - 1
+    slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
+    labels = session.get(SLOT_LABELS_KEY) or []
+
+    if idx < 0 or idx >= len(slots):
+        return _say(
+            "Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.",
+            session,
+        )
+
+    session[SELECTED_SLOT_KEY] = slots[idx]
+    if idx < len(labels):
+        session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+
+    session["state"] = RESCH_CONFIRM
+    return _say("Perfect. Please say yes to confirm, or no to cancel.", session)
+
+
+if state == RESCH_CONFIRM:
+    if not is_yes(user_said):
+        session = _reset_to_triage(session)
+        return _say("No problem. What would you like to do instead?", session)
+
+    label = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
+
+    if session.get("manual_reschedule"):
+        if send_to_sheet is not None:
+            try:
+                send_to_sheet(
+                    name=collected.get("name", ""),
+                    phone=collected.get("phone", ""),
+                    intent="RESCHEDULE_REQUEST_MANUAL",
+                    message=(
+                        "Manual reschedule requested. "
+                        f"Original appt: {collected.get('original_appt','')}. "
+                        f"Requested new time: {label}. "
+                        f"Reason: {session.get('manual_reason','')}. "
+                        f"call_sid={session.get('call_sid','')}"
+                    ),
+                    call_sid=session.get("call_sid", ""),
+                )
+            except Exception:
+                pass
+
+        session = _reset_to_triage(session)
+        return _say(
+            f"Perfect — I’ve logged your reschedule request for {label}. The clinic will confirm it shortly.",
+            session,
+        )
+
+    tokens = await redis_get_json(TOKENS_KEY)
+    chosen = session.get(SELECTED_SLOT_KEY)
+    event_id = session.get("resch_event_id")
+
+    if tokens and event_id and chosen:
+        try:
+            start = datetime.fromisoformat(chosen["start"])
+            end = datetime.fromisoformat(chosen["end"])
+            patch_event_time(
+                stored_tokens=tokens,
+                event_id=event_id,
+                start_dt=start,
+                end_dt=end,
+                calendar_id=clinic.get("calendar_id", "primary"),
+            )
+        except Exception:
             session = _reset_to_triage(session)
             return _say(
                 f"Perfect — I’ve logged your reschedule request for {label}. The clinic will confirm it shortly.",
                 session,
             )
 
-        # Normal calendar reschedule path
-        tokens = await redis_get_json(TOKENS_KEY)
-        chosen = session.get(SELECTED_SLOT_KEY)
-        event_id = session.get("resch_event_id")
-
-        if tokens and event_id and chosen:
-            try:
-                start = datetime.fromisoformat(chosen["start"])
-                end = datetime.fromisoformat(chosen["end"])
-                patch_event_time(
-                    stored_tokens=tokens,
-                    event_id=event_id,
-                    start_dt=start,
-                    end_dt=end,
-                    calendar_id=clinic.get("calendar_id", "primary"),
-                )
-            except Exception as e:
-                print("RESCHEDULE patch_event_time error:", repr(e))
-
-                # If patch fails → log manual request
-                if send_to_sheet is not None:
-                    try:
-                        send_to_sheet(
-                            name=collected.get("name", ""),
-                            phone=collected.get("phone", ""),
-                            intent="RESCHEDULE_REQUEST_MANUAL",
-                            message=(
-                                "Calendar patch FAILED. "
-                                f"Original appt: {collected.get('original_appt','')}. "
-                                f"Requested new time: {label}. "
-                                f"call_sid={session.get('call_sid','')}"
-                            ),
-                            call_sid=session.get("call_sid", ""),
-                        )
-                    except Exception:
-                        pass
-
-                session = _reset_to_triage(session)
-                return _say(
-                    f"Perfect — I’ve logged your reschedule request for {label}. The clinic will confirm it shortly.",
-                    session,
-                )
-
-        session = _reset_to_triage(session)
-        return _say(f"Confirmed — you’re rescheduled to {label}. We look forward to seeing you.", session)
+    session = _reset_to_triage(session)
+    return _say(f"Confirmed — you’re rescheduled to {label}. We look forward to seeing you.", session)
 
     # ======================================================================
     # BOOKING FLOW
     # ======================================================================
-    if state == BOOK_PATIENT_TYPE:
-        # 1) If they say "book/reschedule/cancel" again, don't loop.
-        # Just restate the question clearly (once) and keep the same state.
-        intent_check = detect_intent(user_said)
-        if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
-            return _say(
-                "No worries — just to confirm, are you a new patient, or have you been here before?",
-                session,
-            )
-
-        # 2) If they accidentally give a name here, store it and continue with the SAME question.
-        if looks_like_name(user_said) and not collected.get("name"):
-            collected["name"] = user_said.strip()
-            return _say(
-                "Thanks. Are you a new patient, or have you been here before?",
-                session,
-            )
-
-        # 3) Parse patient type robustly
-        pt = parse_patient_type(user_said)
-        if not pt:
-            # Helpful reprompt with examples
-            return _say(
-                "Sorry — I just need to know if you’re a new patient or a returning patient. "
-                "You can say “new” or “returning”.",
-                session,
-            )
-
-        collected["patient_type"] = pt
-        session["state"] = BOOK_REASON
+ if state == BOOK_PATIENT_TYPE:
+    intent_check = detect_intent(user_said)
+    if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
         return _say(
-            "Great. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?",
+            "Just to confirm — are you a new patient, or have you been here before?",
             session,
         )
 
-    if state == BOOK_REASON:
-        collected["reason"] = user_said.strip()
-        session["state"] = BOOK_TIME_PREF
-        return _say("Thanks. What day or time would you prefer?", session)
-
-    if state == BOOK_TIME_PREF:
-        collected["time_pref"] = user_said.strip()
-
-        dw = parse_specific_day_window(collected["time_pref"], tz)
-        if dw:
-            collected["day_window_start"] = dw[0].isoformat()
-            collected["day_window_end"] = dw[1].isoformat()
-        else:
-            collected.pop("day_window_start", None)
-            collected.pop("day_window_end", None)
-
-        dw_parsed = None
-        if collected.get("day_window_start") and collected.get("day_window_end"):
-            dw_parsed = (
-                datetime.fromisoformat(collected["day_window_start"]),
-                datetime.fromisoformat(collected["day_window_end"]),
-            )
-
-        raw_slots, labels, err = await suggest_top_slots(
-            session,
-            duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
-            pref_text=collected.get("time_pref", ""),
-            day_window=dw_parsed,
-        )
-
-        # Calendar unavailable (or any freebusy error) → switch to manual booking request flow
-        if err:
-            session["manual_booking"] = True
-            session["manual_reason"] = "calendar_unavailable"
-            session["state"] = BOOK_NAME
-            return _say(
-                f"{err} To get that sorted, what’s your full name?",
-                session,
-            )
-
-        # Safety: if we didn't get 3 labels for any reason, also go manual
-        if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
-            session["manual_booking"] = True
-            session["manual_reason"] = "no_slots_returned"
-            session["state"] = BOOK_NAME
-            return _say(
-                "No problem — I can’t see clear availability right now. What’s your full name so I can log a booking request?",
-                session,
-            )
-
-        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
-        session[SLOT_LABELS_KEY] = labels
-        session["state"] = BOOK_PICK_SLOT
-
-        return _say(
-            f"{random.choice(FRIENDLY_CHECKING)} I can do: 1) {labels[0]}, 2) {labels[1]}, 3) {labels[2]}. Say 1, 2, or 3.",
-            session,
-        )
-
-    if state == BOOK_PICK_SLOT:
-        choice = parse_slot_choice(user_said)
-        if not choice:
-            return _say("Sorry — please say 1, 2, or 3.", session)
-
-        idx = choice - 1
-        slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
-        labels = session.get(SLOT_LABELS_KEY) or []
-
-        if idx < 0 or idx >= len(slots):
-            return _say("Sorry — please say 1, 2, or 3.", session)
-
-        session[SELECTED_SLOT_KEY] = slots[idx]
-        if idx < len(labels):
-            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
-
-        session["state"] = BOOK_NAME
-        return _say("Perfect — what’s your full name for the booking?", session)
-
-    if state == BOOK_NAME:
+    if looks_like_name(user_said) and not collected.get("name"):
         collected["name"] = user_said.strip()
-        session["state"] = BOOK_PHONE
-        return _say("Thanks. What’s the best mobile number for the booking?", session)
+        return _say(
+            "Thanks. Are you a new patient, or have you been here before?",
+            session,
+        )
 
-    if state == BOOK_PHONE:
-        phone_raw = user_said.strip()
-        if not is_valid_phone(phone_raw):
-            return _say("Sorry — I didn’t catch a valid phone number. Please say the phone number again.", session)
-        collected["phone"] = normalize_phone(phone_raw)
-        session["state"] = BOOK_CONFIRM
-        return _say("Great. Please say yes to confirm the booking, or no to cancel.", session)
+    pt = parse_patient_type(user_said)
+    if not pt:
+        return _say(
+            "Sorry — I just need to know if you’re a new patient or a returning patient. "
+            "You can say new, or returning.",
+            session,
+        )
 
-    # ✅ FIXED: BOOK_CONFIRM should not reset on "yes"
-    # ✅ FIXED: only cancel on explicit "no"; unclear input reprompts
-    if state == BOOK_CONFIRM:
-        if is_no(user_said):
-            session = _reset_to_triage(session)
-            return _say("No problem — I’ve cancelled that. What would you like to do instead?", session)
+    collected["patient_type"] = pt
+    session["state"] = BOOK_REASON
+    return _say(
+        "Great. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?",
+        session,
+    )
 
-        if not is_yes(user_said):
-            return _say(
-                "Sorry — just to confirm: should I book that appointment? "
-                "Please say yes to confirm, or no to cancel.",
-                session,
-            )
 
-        chosen = session.get(SELECTED_SLOT_KEY)
-        label = session.get(SELECTED_SLOT_LABEL_KEY) or "the selected time"
-        tokens = await redis_get_json(TOKENS_KEY)
+if state == BOOK_REASON:
+    collected["reason"] = user_said.strip()
+    session["state"] = BOOK_TIME_PREF
+    return _say("Thanks. What day or time would you prefer?", session)
 
-        # 🔎 DEBUG — THIS IS CRITICAL
-        print("DEBUG BOOK_CONFIRM", {
-            "has_tokens": bool(tokens),
-            "has_chosen": bool(chosen),
-            "tokens_key": TOKENS_KEY,
-            "calendar_env": os.getenv("GOOGLE_CALENDAR_ID"),
-            "chosen_start": chosen.get("start") if chosen else None,
-            "chosen_end": chosen.get("end") if chosen else None,
-        })
 
-        # Calendar mode
-        if tokens and chosen:
-            start = datetime.fromisoformat(chosen["start"])
-            end = datetime.fromisoformat(chosen["end"])
+if state == BOOK_TIME_PREF:
+    collected["time_pref"] = user_said.strip()
 
-            # =========================
-            # ✅ Calendar event content
-            # Title: Name + Phone only
-            # Description: patient status + reason + optional comment + extras
-            # =========================
+    dw = parse_specific_day_window(collected["time_pref"], tz)
+    if dw:
+        collected["day_window_start"] = dw[0].isoformat()
+        collected["day_window_end"] = dw[1].isoformat()
+    else:
+        collected.pop("day_window_start", None)
+        collected.pop("day_window_end", None)
 
-            name = (collected.get("name") or "Patient").strip()
-            phone = (collected.get("phone") or "").strip()
+    dw_parsed = None
+    if collected.get("day_window_start") and collected.get("day_window_end"):
+        dw_parsed = (
+            datetime.fromisoformat(collected["day_window_start"]),
+            datetime.fromisoformat(collected["day_window_end"]),
+        )
 
-            patient_type = (collected.get("patient_type") or "").strip()  # NEW / RETURNING
-            reason = (collected.get("reason") or "").strip()
-            comment = (collected.get("comment") or collected.get("notes") or "").strip()
+    raw_slots, labels, err = await suggest_top_slots(
+        session,
+        duration_min=int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN)),
+        pref_text=collected.get("time_pref", ""),
+        day_window=dw_parsed,
+    )
 
-            # ---- Calendar TITLE (summary) ----
-            summary = name
-            if phone:
-                summary += f" ({phone})"
+    if err:
+        session["manual_booking"] = True
+        session["manual_reason"] = "calendar_unavailable"
+        session["state"] = BOOK_NAME
+        return _say(
+            f"{err} To get this booked, what’s your full name?",
+            session,
+        )
 
-            # ---- Calendar DESCRIPTION ----
-            description_lines = [
-                f"Patient status: {patient_type}" if patient_type else "",
-                f"Reason for assessment: {reason}" if reason else "",
-                f"Additional notes: {comment}" if comment else "",
-                f"Clinic: {clinic.get('display_name', 'Clinic')}",
-                f"CallSid: {session.get('call_sid', '')}",
-                "Booked via RochSolutions AI receptionist.",
-            ]
-            description = "\n".join(line for line in description_lines if line)
+    if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
+        session["manual_booking"] = True
+        session["manual_reason"] = "no_slots_returned"
+        session["state"] = BOOK_NAME
+        return _say(
+            "I can’t see clear availability right now. What’s your full name so I can log a booking request?",
+            session,
+        )
 
-            print("DEBUG CREATING EVENT", {
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "calendar_id": os.getenv("GOOGLE_CALENDAR_ID", "primary"),
-            })
+    session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+    session[SLOT_LABELS_KEY] = labels
+    session["state"] = BOOK_PICK_SLOT
 
-            event = create_event(
-                stored_tokens=tokens,
-                start_dt=start,
-                end_dt=end,
-                summary=summary,
-                description=description,
-                calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
-            )
+    msg = (
+        "I have three available appointment times. "
+        f"The first option is {labels[0]}. "
+        f"The second option is {labels[1]}. "
+        f"The third option is {labels[2]}. "
+        "Please say 1 for the first option, 2 for the second, or 3 for the third."
+    )
+    return _say(msg, session)
 
-            print("DEBUG EVENT RESULT", {
-                "event_id": event.get("id") if event else None,
-                "htmlLink": event.get("htmlLink") if event else None,
-            })
 
-            session = _reset_to_triage(session)
-            if not event or not event.get("id"):
-                return _say("I couldn’t create the booking. Please try again.", session)
+if state == BOOK_PICK_SLOT:
+    choice = parse_slot_choice(user_said)
+    if not choice:
+        return _say(
+            "Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.",
+            session,
+        )
 
-            return _say(f"Confirmed — you’re booked for {label}. Thanks, and we’ll see you then.", session)
+    idx = choice - 1
+    slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
+    labels = session.get(SLOT_LABELS_KEY) or []
 
-        # 🚨 DEMO MODE
-        print("⚠️ DEMO MODE FALLBACK — NO CALENDAR EVENT CREATED", {
-            "has_tokens": bool(tokens),
-            "has_chosen": bool(chosen),
-        })
+    if idx < 0 or idx >= len(slots):
+        return _say(
+            "Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.",
+            session,
+        )
+
+    session[SELECTED_SLOT_KEY] = slots[idx]
+    if idx < len(labels):
+        session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+
+    session["state"] = BOOK_NAME
+    return _say("Perfect. What’s your full name for the booking?", session)
+
+
+if state == BOOK_NAME:
+    collected["name"] = user_said.strip()
+    session["state"] = BOOK_PHONE
+    return _say("Thanks. What’s the best mobile number for the booking?", session)
+
+
+if state == BOOK_PHONE:
+    phone_raw = user_said.strip()
+    if not is_valid_phone(phone_raw):
+        return _say(
+            "Sorry — I didn’t catch a valid phone number. Please say the phone number again.",
+            session,
+        )
+
+    collected["phone"] = normalize_phone(phone_raw)
+    session["state"] = BOOK_CONFIRM
+    return _say("Great. Please say yes to confirm the booking, or no to cancel.", session)
+
+
+if state == BOOK_CONFIRM:
+    if is_no(user_said):
+        session = _reset_to_triage(session)
+        return _say("No problem — I’ve cancelled that. What would you like to do instead?", session)
+
+    if not is_yes(user_said):
+        return _say(
+            "Sorry — just to confirm: should I book that appointment? "
+            "Please say yes to confirm, or no to cancel.",
+            session,
+        )
+
+    chosen = session.get(SELECTED_SLOT_KEY)
+    label = session.get(SELECTED_SLOT_LABEL_KEY) or "the selected time"
+    tokens = await redis_get_json(TOKENS_KEY)
+
+    if tokens and chosen:
+        start = datetime.fromisoformat(chosen["start"])
+        end = datetime.fromisoformat(chosen["end"])
+
+        name = (collected.get("name") or "Patient").strip()
+        phone = (collected.get("phone") or "").strip()
+        patient_type = (collected.get("patient_type") or "").strip()
+        reason = (collected.get("reason") or "").strip()
+
+        summary = name
+        if phone:
+            summary += f" ({phone})"
+
+        description_lines = [
+            f"Patient status: {patient_type}" if patient_type else "",
+            f"Reason for assessment: {reason}" if reason else "",
+            f"Clinic: {clinic.get('display_name', 'Clinic')}",
+            f"CallSid: {session.get('call_sid', '')}",
+            "Booked via RochSolutions AI receptionist.",
+        ]
+        description = "\n".join(line for line in description_lines if line)
+
+        event = create_event(
+            stored_tokens=tokens,
+            start_dt=start,
+            end_dt=end,
+            summary=summary,
+            description=description,
+            calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
+        )
 
         session = _reset_to_triage(session)
-        return _say(f"Confirmed — you’re booked for {label}. Thanks, and we’ll see you then.", session)
+        if not event or not event.get("id"):
+            return _say("I couldn’t create the booking. Please try again.", session)
 
-    # Safety fallback
+        return _say(
+            f"Confirmed — you’re booked for {label}. We look forward to seeing you.",
+            session,
+        )
+
     session = _reset_to_triage(session)
     return _say(
-        "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
+        f"Confirmed — you’re booked for {label}. We look forward to seeing you.",
         session,
     )
