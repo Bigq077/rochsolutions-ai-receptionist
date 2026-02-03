@@ -95,6 +95,7 @@ def _tz_now() -> datetime:
 # OAuth endpoints
 # -------------------------
 
+
 @router.get("/auth/google/start")
 async def google_start(request: Request):
     state = secrets.token_urlsafe(24)
@@ -162,8 +163,7 @@ async def google_callback(
             "message": (
                 "Google Calendar connected successfully ✅"
                 if has_refresh
-                else "Google Calendar connected ✅ "
-                     "(no refresh token issued — reconnect if it expires)."
+                else "Google Calendar connected ✅ (no refresh token issued — reconnect if it expires)."
             ),
             "has_refresh_token": has_refresh,
         }
@@ -203,6 +203,7 @@ async def google_reset_post():
 # -------------------------
 # Test endpoints
 # -------------------------
+
 
 @router.get("/calendar/test/freebusy")
 async def calendar_test_freebusy():
@@ -259,7 +260,7 @@ async def calendar_test_create_event():
             end_dt=end,
             summary="RochSolutions Test Booking",
             description="Created by /calendar/test/create-event",
-            calendar_id=calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
+            calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
         )
         await _save_tokens(tokens)
         return {
@@ -290,10 +291,10 @@ async def calendar_test_events():
 
     try:
         events = list_upcoming_events(
-            tokens,
+            stored_tokens=tokens,
             days_ahead=14,
             max_results=10,
-            calendar_id="primary",
+            calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
         )
         await _save_tokens(tokens)
         return {
