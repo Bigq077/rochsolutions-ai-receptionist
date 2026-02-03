@@ -1,7 +1,7 @@
 # app/routes/twilio.py
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
@@ -24,10 +24,10 @@ def _abs_url(request: Request, path: str) -> str:
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     """
     Speech gather with barge-in enabled.
-    Keep input as 'speech' (DTMF sometimes arrives anyway; we handle it in /turn).
+    Use speech + dtmf so callers can say "one" OR press 1.
     """
     g = Gather(
-        input="speech",
+        input="speech dtmf",
         action=action_url,
         method="POST",
         language="en-GB",
@@ -35,6 +35,7 @@ def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
         timeout=10,
         action_on_empty_result=True,
         barge_in=True,
+        num_digits=1,  # helps for "1/2/3" choices
     )
     if prompt:
         g.say(prompt, language="en-GB")
@@ -50,14 +51,22 @@ def _append_turn(session: dict, role: str, text: str) -> dict:
     return session
 
 
-@router.api_route("/voice", methods=["GET", "POST"])
+@router.api_route("/voice", methods=["GET", "POST", "HEAD"])
 async def voice(request: Request):
+    """
+    Twilio will POST here, but probes/monitors may HEAD/GET.
+    Return 200 for HEAD/GET to avoid 405 spam.
+    """
+    if request.method in ("HEAD", "GET"):
+        return Response(status_code=200)
+
     vr = VoiceResponse()
     turn_url = _abs_url(request, "/twilio/turn")
     voice_url = _abs_url(request, "/twilio/voice")
 
     vr.append(gather_speech(turn_url, "Hi, Roch Physio speaking. How can I help today?"))
 
+    # If gather returns empty, we fall through here
     vr.say("Sorry — I didn’t catch that.", language="en-GB")
     vr.redirect(voice_url, method="POST")
     return xml(vr)
@@ -84,14 +93,14 @@ async def turn(request: Request):
 
     call_sid = (form.get("CallSid") or "").strip()
 
-    # ✅ 1) Prefer speech, fallback to unstable speech, fallback to digits
-    user_said = (form.get("SpeechResult") or "").strip()
-    if not user_said:
-        user_said = (form.get("UnstableSpeechResult") or "").strip()
-    if not user_said:
-        digits = (form.get("Digits") or "").strip()
-        if digits:
-            user_said = digits  # e.g. "1", "2", "3"
+    # ✅ Prefer digits first (for menu choices), then speech, then unstable speech
+    digits = (form.get("Digits") or "").strip()
+    if digits:
+        user_said = digits
+    else:
+        user_said = (form.get("SpeechResult") or "").strip()
+        if not user_said:
+            user_said = (form.get("UnstableSpeechResult") or "").strip()
 
     from app.flows.triage import triage_turn
 
@@ -121,7 +130,12 @@ async def turn(request: Request):
                 return xml(vr)
 
             if miss == 2:
-                vr.append(gather_speech(turn_url, "Are you looking to book, reschedule, or ask about prices, location, or opening hours?"))
+                vr.append(
+                    gather_speech(
+                        turn_url,
+                        "Are you looking to book, reschedule, or ask about prices, location, or opening hours?",
+                    )
+                )
                 return xml(vr)
 
             vr.append(gather_speech(turn_url, "I can take a message. Please say your name, number, and what you need help with."))
@@ -146,3 +160,4 @@ async def turn(request: Request):
         print("ERROR in /twilio/turn:", repr(e))
         vr.append(gather_speech(turn_url, "Sorry, there was a technical issue. Please try again."))
         return xml(vr)
+
