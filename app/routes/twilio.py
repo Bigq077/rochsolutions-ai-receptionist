@@ -1,6 +1,8 @@
 # app/routes/twilio.py
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -94,13 +96,30 @@ async def turn(request: Request):
     call_sid = (form.get("CallSid") or "").strip()
 
     # ✅ Prefer digits first (for menu choices), then speech, then unstable speech
-    digits = (form.get("Digits") or "").strip()
+    digits_raw = form.get("Digits")
+    digits = (digits_raw or "").strip()
+    if digits == "":
+        digits = None
+
+    speech = (form.get("SpeechResult") or "").strip()
+    unstable = (form.get("UnstableSpeechResult") or "").strip()
+
+    # Pick primary user input
     if digits:
         user_said = digits
     else:
-        user_said = (form.get("SpeechResult") or "").strip()
-        if not user_said:
-            user_said = (form.get("UnstableSpeechResult") or "").strip()
+        user_said = speech or unstable
+
+    # ✅ Normalize simple YES/NO inputs with punctuation like "Yes." / "No."
+    # This directly fixes your log case: SpeechResult = "Yes."
+    if user_said:
+        t = user_said.strip().lower()
+        t = re.sub(r"\s+", " ", t)
+
+        if re.fullmatch(r"(yes|yeah|yep|yup|ok|okay|confirm|correct)[\W_]*", t):
+            user_said = "yes"
+        elif re.fullmatch(r"(no|nope|nah|cancel|stop|dont|do not|nevermind|never mind)[\W_]*", t):
+            user_said = "no"
 
     from app.flows.triage import triage_turn
 
@@ -138,7 +157,12 @@ async def turn(request: Request):
                 )
                 return xml(vr)
 
-            vr.append(gather_speech(turn_url, "I can take a message. Please say your name, number, and what you need help with."))
+            vr.append(
+                gather_speech(
+                    turn_url,
+                    "I can take a message. Please say your name, number, and what you need help with.",
+                )
+            )
             vr.redirect(voice_url, method="POST")
             return xml(vr)
 
@@ -160,4 +184,3 @@ async def turn(request: Request):
         print("ERROR in /twilio/turn:", repr(e))
         vr.append(gather_speech(turn_url, "Sorry, there was a technical issue. Please try again."))
         return xml(vr)
-
