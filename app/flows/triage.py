@@ -118,17 +118,12 @@ LAST_USER_TEXT_KEY = "last_user_text"
 
 
 # ---------- HELPERS ----------
-def _norm(t: str) -> str:
-    t = (t or "").lower().strip()
-    t = re.sub(r"\s+", " ", t)
-    return t
-import re
-
 def _norm(text: str | None) -> str:
     t = (text or "").strip().lower()
     t = re.sub(r"[^a-z0-9\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
 
 def is_reschedule_intent(text: str | None) -> bool:
     t = _norm(text)
@@ -136,14 +131,27 @@ def is_reschedule_intent(text: str | None) -> bool:
     return any(
         kw in t
         for kw in [
-            "reschedule", "rescheduling",
-            "change my appointment", "change appointment",
-            "move my appointment", "move appointment",
-            "rebook", "re booking", "re-book",
-            "switch my appointment", "switch appointment",
-            "change the time", "change the date",
+            "reschedule",
+            "rescheduling",
+            "change my appointment",
+            "change appointment",
+            "move my appointment",
+            "move appointment",
+            "rebook",
+            "re booking",
+            "re-book",
+            "switch my appointment",
+            "switch appointment",
+            "change the time",
+            "change the date",
         ]
     )
+
+
+def normalize_reschedule_intent(text: str | None) -> str:
+    # Keep your TRIAGE hook working without changing your intent system
+    return "RESCHEDULE" if is_reschedule_intent(text) else ""
+
 
 def parse_slot_choice(text: str) -> Optional[int]:
     """
@@ -660,16 +668,14 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ==========================================================
     # TRIAGE: LLM + knowledge + deterministic routing
     # ==========================================================
-   
-   if state == TRIAGE:
-          # 🔹 FORCE obvious reschedule intent (e.g. "rescheduling")
+    if state == TRIAGE:
+        # 🔹 FORCE obvious reschedule intent (e.g. "rescheduling")
         forced_intent = normalize_reschedule_intent(user_said)
         if forced_intent == "RESCHEDULE":
             session = _reset_to_triage(session)
             session["state"] = RESCH_NAME
             return _say("Sure — to reschedule, what’s your full name?", session)
 
-   
         try:
             kb = retrieve_knowledge(user_said, clinic=clinic)
         except Exception:
@@ -1022,19 +1028,32 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # BOOKING FLOW
     # ======================================================================
     if state == BOOK_PATIENT_TYPE:
-        # If they repeat "book" etc, just re-ask once
+        # 1) If they say "book/reschedule/cancel" again, don't loop.
+        # Just restate the question clearly (once) and keep the same state.
         intent_check = detect_intent(user_said)
         if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
-            return _say("Sure — are you a new patient, or have you been here before?", session)
+            return _say(
+                "No worries — just to confirm, are you a new patient, or have you been here before?",
+                session,
+            )
 
-        # If they accidentally give a name here, store it and continue
+        # 2) If they accidentally give a name here, store it and continue with the SAME question.
         if looks_like_name(user_said) and not collected.get("name"):
             collected["name"] = user_said.strip()
-            return _say("Thanks. And are you a new patient, or have you been here before?", session)
+            return _say(
+                "Thanks. Are you a new patient, or have you been here before?",
+                session,
+            )
 
+        # 3) Parse patient type robustly
         pt = parse_patient_type(user_said)
         if not pt:
-            return _say("No problem — are you a new patient, or have you been here before?", session)
+            # Helpful reprompt with examples
+            return _say(
+                "Sorry — I just need to know if you’re a new patient or a returning patient. "
+                "You can say “new” or “returning”.",
+                session,
+            )
 
         collected["patient_type"] = pt
         session["state"] = BOOK_REASON
@@ -1167,15 +1186,34 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             start = datetime.fromisoformat(chosen["start"])
             end = datetime.fromisoformat(chosen["end"])
 
-            summary = f"{collected.get('name', 'Patient')} – {collected.get('reason', 'Appointment')}"
-            description = (
-                f"Clinic: {clinic.get('display_name', 'Clinic')}\n"
-                f"Patient type: {collected.get('patient_type', '')}\n"
-                f"Phone: {collected.get('phone', '')}\n"
-                f"Reason: {collected.get('reason', '')}\n"
-                f"Preference: {collected.get('time_pref', '')}\n"
-                "Booked via RochSolutions AI receptionist."
-            )
+            # =========================
+            # ✅ Calendar event content
+            # Title: Name + Phone only
+            # Description: patient status + reason + optional comment + extras
+            # =========================
+
+            name = (collected.get("name") or "Patient").strip()
+            phone = (collected.get("phone") or "").strip()
+
+            patient_type = (collected.get("patient_type") or "").strip()  # NEW / RETURNING
+            reason = (collected.get("reason") or "").strip()
+            comment = (collected.get("comment") or collected.get("notes") or "").strip()
+
+            # ---- Calendar TITLE (summary) ----
+            summary = name
+            if phone:
+                summary += f" ({phone})"
+
+            # ---- Calendar DESCRIPTION ----
+            description_lines = [
+                f"Patient status: {patient_type}" if patient_type else "",
+                f"Reason for assessment: {reason}" if reason else "",
+                f"Additional notes: {comment}" if comment else "",
+                f"Clinic: {clinic.get('display_name', 'Clinic')}",
+                f"CallSid: {session.get('call_sid', '')}",
+                "Booked via RochSolutions AI receptionist.",
+            ]
+            description = "\n".join(line for line in description_lines if line)
 
             print("DEBUG CREATING EVENT", {
                 "start": start.isoformat(),
@@ -1203,7 +1241,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
             return _say(f"Confirmed — you’re booked for {label}. Thanks, and we’ll see you then.", session)
 
-        # 🚨 DEMO MODE (THIS IS WHAT IS CURRENTLY HAPPENING)
+        # 🚨 DEMO MODE
         print("⚠️ DEMO MODE FALLBACK — NO CALENDAR EVENT CREATED", {
             "has_tokens": bool(tokens),
             "has_chosen": bool(chosen),
@@ -1211,4 +1249,10 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you’re booked for {label}. Thanks, and we’ll see you then.", session)
-    
+
+    # Safety fallback
+    session = _reset_to_triage(session)
+    return _say(
+        "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
+        session,
+    )
