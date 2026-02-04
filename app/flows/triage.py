@@ -1152,32 +1152,33 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                     session,
                 )
 
-            if llm_intent == "HUMAN":
-                if send_to_sheet is not None:
-                    try:
-                        send_to_sheet(
-                            name=collected.get("name", ""),
-                            phone=collected.get("phone", ""),
-                            intent="CALLBACK",
-                            message=user_said,
-                            call_sid=session.get("call_sid", ""),
-                        )
-                    except Exception:
-                        pass
-
-                return _say(
-                    "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
-                    session,
+            try:
+    if llm_intent == "HUMAN":
+        if send_to_sheet is not None:
+            try:
+                send_to_sheet(
+                    name=collected.get("name", ""),
+                    phone=collected.get("phone", ""),
+                    intent="CALLBACK",
+                    message=user_said,
+                    call_sid=session.get("call_sid", ""),
                 )
+            except Exception:
+                pass
 
-            if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
-                if reply:
-                    if follow:
-                        return _say(f"{reply} {follow}", session)
-                    return _say(reply, session)
+        return _say(
+            "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
+            session,
+        )
 
-    except Exception:
-        pass
+    if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
+        if reply:
+            if follow:
+                return _say(f"{reply} {follow}", session)
+            return _say(reply, session)
+
+except Exception:
+    pass
 
     intent = detect_intent(user_said)
 
@@ -1253,7 +1254,6 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
         session,
     )
-
 
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
