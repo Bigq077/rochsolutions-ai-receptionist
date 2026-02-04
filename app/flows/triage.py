@@ -1130,18 +1130,18 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                 last_bot_prompt=session.get(LAST_BOT_PROMPT_KEY, ""),
             )
 
-        llm_intent = (llm.get("intent") or "").strip()
-        conf = float(llm.get("confidence") or 0.0)
-        reply = (llm.get("reply") or "").strip()
-        follow = (llm.get("follow_up_question") or "").strip()
+            llm_intent = (llm.get("intent") or "").strip()
+            conf = float(llm.get("confidence") or 0.0)
+            reply = (llm.get("reply") or "").strip()
+            follow = (llm.get("follow_up_question") or "").strip()
 
-        if conf >= 0.55:
-            if llm_intent == "BOOK":
-                session = _reset_to_triage(session)
-                session["state"] = BOOK_PATIENT_TYPE
-                return _say(
-                    "Sure — are you a new patient, or have you been here before?",
-                    session,
+            if conf >= 0.55:
+                if llm_intent == "BOOK":
+                    session = _reset_to_triage(session)
+                    session["state"] = BOOK_PATIENT_TYPE
+                    return _say(
+                        "Sure — are you a new patient, or have you been here before?",
+                        session,
                 )
 
             if llm_intent == "RESCHEDULE":
