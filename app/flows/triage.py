@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from app.call_summary import build_call_summary
+from app.callsummary import build_callsummary
 from app.insurers import ACCEPTED_INSURERS
 
 from datetime import datetime, timedelta
