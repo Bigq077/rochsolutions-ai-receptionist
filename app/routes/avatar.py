@@ -44,7 +44,7 @@ class TTSResponse(BaseModel):
     mime_type: str
 
 
-# ✅ NEW: Video start + status (prevents Render 504)
+# ✅ Video start + status (prevents Render 504)
 class AvatarVideoStartRequest(BaseModel):
     clinic_id: str
     session_id: str
@@ -62,7 +62,7 @@ class AvatarVideoStatusResponse(BaseModel):
     video_url: str | None = None
 
 
-# ✅ NEW: LiveAvatar (Mode 2, low-latency interactive)
+# ✅ LiveAvatar (Mode 2, low-latency interactive)
 class LiveAvatarStartRequest(BaseModel):
     clinic_id: str
     session_id: str
@@ -72,6 +72,14 @@ class LiveAvatarStartResponse(BaseModel):
     liveavatar_session_id: str
     livekit_url: str
     livekit_token: str
+
+
+class LiveAvatarStopRequest(BaseModel):
+    session_token: str
+
+
+class LiveAvatarStopResponse(BaseModel):
+    ok: bool
 
 
 # -----------------------------
@@ -300,13 +308,17 @@ async def avatar_video_status(video_id: str):
 
 # -----------------------------------------
 # 5) LIVEAVATAR START (Mode 2): return LiveKit URL + token
+#    - Fixes language default (use "en")
+#    - Adds Redis caching to avoid concurrency errors
 # -----------------------------------------
 @router.post("/live/start", response_model=LiveAvatarStartResponse)
 async def liveavatar_start(payload: LiveAvatarStartRequest):
     """
     Mode 2 (low-latency): create a LiveAvatar FULL session and start it.
-    Frontend connects to LiveKit using returned (livekit_url, livekit_token),
-    then publishes command events (avatar.speak_text, etc.) to topic `agent-control`.
+
+    IMPORTANT:
+    - Most accounts have concurrency=1. Starting multiple sessions triggers 4032.
+    - We cache the LiveKit URL/token per (clinic_id, session_id) and reuse it.
 
     Env vars required:
       LIVEAVATAR_API_KEY
@@ -318,7 +330,7 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
     api_key = os.getenv("LIVEAVATAR_API_KEY")
     avatar_id = os.getenv("LIVEAVATAR_AVATAR_ID")
     voice_id = os.getenv("LIVEAVATAR_VOICE_ID")
-    language = os.getenv("LIVEAVATAR_LANGUAGE", "en-GB")
+    language = os.getenv("LIVEAVATAR_LANGUAGE", "en")
     context_id = os.getenv("LIVEAVATAR_CONTEXT_ID")  # optional
 
     if not api_key or not avatar_id or not voice_id:
@@ -327,7 +339,20 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
             detail="Missing LIVEAVATAR env vars (LIVEAVATAR_API_KEY / LIVEAVATAR_AVATAR_ID / LIVEAVATAR_VOICE_ID)",
         )
 
-    # Optional: store that this session is in live mode
+    # Reuse an existing LiveAvatar session for this browser session (prevents 4032)
+    live_cache_key = f"liveavatar:{payload.clinic_id}:{payload.session_id}"
+    try:
+        cached = await get_session(live_cache_key)
+        if isinstance(cached, dict) and cached.get("livekit_url") and cached.get("livekit_token") and cached.get("liveavatar_session_id"):
+            return LiveAvatarStartResponse(
+                liveavatar_session_id=cached["liveavatar_session_id"],
+                livekit_url=cached["livekit_url"],
+                livekit_token=cached["livekit_token"],
+            )
+    except Exception as e:
+        print("Redis live cache get error:", repr(e))
+
+    # Store that this user session is in live mode (optional)
     session_key = f"avatar:{payload.clinic_id}:{payload.session_id}"
     try:
         session = await get_session(session_key) or {}
@@ -396,18 +421,61 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
     st_data = st_json.get("data") if isinstance(st_json, dict) else None
     st_data = st_data if isinstance(st_data, dict) else st_json
 
-    # These keys are what LiveAvatar returns for LiveKit connectivity.
     livekit_url = st_data.get("livekit_url") or st_data.get("liveKitUrl") or st_data.get("url")
     livekit_token = st_data.get("livekit_token") or st_data.get("liveKitToken") or st_data.get("token")
 
     if not livekit_url or not livekit_token:
         raise HTTPException(status_code=500, detail=f"Unexpected LiveAvatar start payload: {st_json}")
 
+    # Cache so we reuse this LiveAvatar session and avoid concurrency errors
+    try:
+        await save_session(
+            live_cache_key,
+            {
+                "liveavatar_session_id": liveavatar_session_id,
+                "session_token": session_token,
+                "livekit_url": livekit_url,
+                "livekit_token": livekit_token,
+            },
+        )
+    except Exception as e:
+        print("Redis live cache save error:", repr(e))
+
     return LiveAvatarStartResponse(
         liveavatar_session_id=liveavatar_session_id,
         livekit_url=livekit_url,
         livekit_token=livekit_token,
     )
+
+
+# -----------------------------------------
+# 6) LIVEAVATAR STOP: frees concurrency slot
+# -----------------------------------------
+@router.post("/live/stop", response_model=LiveAvatarStopResponse)
+async def liveavatar_stop(payload: LiveAvatarStopRequest):
+    """
+    Stops the current LiveAvatar session (frees concurrency slot).
+
+    Note: this endpoint only uses the session_token.
+    If your account requires session_id too, we can extend it.
+    """
+    session_token = (payload.session_token or "").strip()
+    if not session_token:
+        raise HTTPException(status_code=400, detail="session_token is required")
+
+    stop_url = "https://api.liveavatar.com/v1/sessions/stop"
+    headers = {
+        "authorization": f"Bearer {session_token}",
+        "accept": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(stop_url, headers=headers)
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"LiveAvatar stop error: {r.status_code} {r.text}")
+
+    return LiveAvatarStopResponse(ok=True)
 
 
 # -----------------------------
@@ -466,11 +534,7 @@ async def deepgram_tts(text: str, voice: str | None = None) -> tuple[bytes, str]
     if not api_key:
         raise RuntimeError("Missing DEEPGRAM_API_KEY env var")
 
-    # Default voice (can override by passing payload.voice from frontend)
-    # If you get "model not found", change this to a voice available on your Deepgram account.
     voice_model = voice or "aura-asteria-en"
-
-    # MP3 is easiest to play in browser + avatar tools
     url = f"https://api.deepgram.com/v1/speak?model={voice_model}&encoding=mp3"
 
     headers = {
