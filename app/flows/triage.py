@@ -10,6 +10,7 @@ import random
 from datetime import datetime, timedelta
 
 import pytz
+from app.flows.faq import faq_answer
 
 from app.callsummary import build_call_summary
 from app.inusrers import match_insurer
@@ -294,19 +295,57 @@ def detect_service_topic(text: str) -> str | None:
 def detect_intent(text: str) -> str:
     t = (text or "").lower()
 
-    # “what is …” or “tell me about …” style
-    if any(p in t for p in ["what is", "what's", "tell me about", "explain", "how does"]):
+    # ✅ Service explanation requests (robust to “tell me more about…”, “more info on…”, “this service”)
+    if any(p in t for p in [
+        "what is",
+        "what's",
+        "tell me about",
+        "tell me more",
+        "tell me more about",
+        "more about",
+        "more info",
+        "more information",
+        "explain",
+        "explain to me",
+        "how does",
+        "how do",
+        "how it works",
+        "how does it work",
+    ]):
         topic = detect_service_topic(t)
         if topic:
             return "FAQ_SERVICE_EXPLAIN"
+        # If they don't name it but say “this/that service”, still route to explain
+        if "this service" in t or "that service" in t:
+            return "FAQ_SERVICE_EXPLAIN"
 
-    # also catch short forms: “shockwave therapy?”
+    # ✅ Also catch short forms: “shockwave?”, “shockwave therapy”, “dry needling?”
     topic = detect_service_topic(t)
-    if topic and ("?" in t or len(t.split()) <= 4):
+    if topic and ("?" in t or len(t.split()) <= 5):
         return "FAQ_SERVICE_EXPLAIN"
 
     # ...existing logic...
     return "OTHER"
+# app/flows/intents.py  (or triage.py helpers section)
+
+SERVICE_EXPLAIN_KEYWORDS = {
+    "shockwave": ["shockwave", "shock wave", "eswt"],
+    "sports_massage": ["sports massage", "massage"],
+    "dry_needling": ["dry needling", "needling", "needle"],
+    "physiotherapy": ["physio", "physiotherapy", "physical therapy"],
+    "rehab": ["rehab", "rehabilitation"],
+    "exercise_programme": ["exercise programme", "exercise program", "exercises"],
+    "post_op": ["post op", "post-op", "after surgery", "post surgery"],
+    "back_pain": ["back pain", "lower back", "upper back"],
+}
+
+def detect_service_topic(text: str) -> str | None:
+    t = (text or "").lower()
+    for topic, keywords in SERVICE_EXPLAIN_KEYWORDS.items():
+        if any(k in t for k in keywords):
+            return topic
+    return None
+
 
 def widen_day_window(
     dw: Optional[Tuple[datetime, datetime]],
@@ -1122,8 +1161,10 @@ async def find_event_by_name_and_time(
 
 # ---------- FAQ (deterministic fallback) ----------
 def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
-    if intent == "FAQ_PRICES":
-        return clinic.get("pricing_summary", "Please ask the clinic for pricing.")
+   if intent == "FAQ_PRICES":
+    pricing = clinic.get("pricing_summary", "Please ask the clinic for pricing.")
+    return "Prices. Yes, no problem — here are the prices. " + pricing
+
 
     if intent == "FAQ_HOURS":
         return clinic.get("hours_summary", "Please ask the clinic for opening hours.")
@@ -1600,36 +1641,43 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
         )
         return _say(msg, session)
 
-    if state == RESCH_PICK_SLOT:
-        choice = parse_slot_choice(user_said, dtmf=dtmf)  # ✅ pass dtmf
-        if not choice:
-            return _say(
-                "Sorry — please say one, two, or three. Or press 1, 2, or 3.",
-                session,
-                tone="checking",
-            )
+    elif state == RESCH_PICK_SLOT:
+    slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
 
-        idx = choice - 1
-        slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
-        labels = session.get(SLOT_LABELS_KEY) or []
-
-        if idx < 0 or idx >= len(slots):
-            return _say(
-                "Sorry — please say one, two, or three. Or press 1, 2, or 3.",
-                session,
-                tone="checking",
-            )
-
-        session[SELECTED_SLOT_KEY] = slots[idx]
-        if idx < len(labels):
-            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
-
-        session["state"] = RESCH_CONFIRM
+    if not slots:
+        session["manual_followup"] = True
+        session["state"] = TRIAGE
         return _say(
-            "Perfect. Please say yes to confirm, or no to cancel.",
+            "I’m sorry — I can’t see any available slots right now. "
+            "The clinic will contact you to reschedule.",
             session,
-            tone="ack",
+            tone="reassure",
         )
+
+    # ✅ NEW UX LINE (added exactly as requested)
+    _say(
+        "I have three available slots for the day you asked.",
+        session,
+        tone="none",
+    )
+
+    # Slow, explicit option reading (defensive for speech)
+    _say(
+        "The first option is "
+        + format_slot(slots[0])
+        + ". "
+        "The second option is "
+        + format_slot(slots[1])
+        + ". "
+        "The third option is "
+        + format_slot(slots[2])
+        + ". "
+        "Please say 1, 2, or 3.",
+        session,
+        tone="none",
+    )
+
+    return session
 
     if state == RESCH_CONFIRM:
         if not is_yes(user_said):
