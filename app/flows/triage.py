@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 
 import pytz
 
+from app.call_summary import build_call_summary
+from app.insurers import ACCEPTED_INSURERS
+
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
