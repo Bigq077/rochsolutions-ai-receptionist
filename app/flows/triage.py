@@ -9,9 +9,6 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from app.insurers import match_insurer
-from app.voicecopy import manual_fallback_phrase
-
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
