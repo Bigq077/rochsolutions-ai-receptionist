@@ -257,7 +257,56 @@ def _norm(text: str | None) -> str:
 
 
 import re
+BOOKING_STATES = {
+    "BOOK_START",
+    "BOOK_SERVICE",
+    "BOOK_TIME_PREF",
+    "BOOK_OFFER_SLOTS",
+    "BOOK_COLLECT_NAME",
+    "BOOK_COLLECT_PHONE",
+    "BOOK_CONFIRM",
+}
 
+def is_yes(text: str) -> bool:
+    t = (text or "").lower()
+    return any(x in t for x in ["yes", "yeah", "yep", "continue", "go on", "book", "carry on"])
+
+def is_no(text: str) -> bool:
+    t = (text or "").lower()
+    return any(x in t for x in ["no", "not now", "stop", "cancel"])
+
+# app/flows/intents.py (or wherever detect_intent lives)
+
+SERVICE_EXPLAIN_KEYWORDS = {
+    "shockwave": ["shockwave", "shock wave", "eswt"],
+    "sports_massage": ["sports massage", "massage"],
+    "dry_needling": ["dry needling", "needling"],
+    "physio": ["physio", "physiotherapy", "physical therapy"],
+}
+
+def detect_service_topic(text: str) -> str | None:
+    t = (text or "").lower()
+    for topic, kws in SERVICE_EXPLAIN_KEYWORDS.items():
+        if any(k in t for k in kws):
+            return topic
+    return None
+
+def detect_intent(text: str) -> str:
+    t = (text or "").lower()
+
+    # “what is …” or “tell me about …” style
+    if any(p in t for p in ["what is", "what's", "tell me about", "explain", "how does"]):
+        topic = detect_service_topic(t)
+        if topic:
+            return "FAQ_SERVICE_EXPLAIN"
+
+    # also catch short forms: “shockwave therapy?”
+    topic = detect_service_topic(t)
+    if topic and ("?" in t or len(t.split()) <= 4):
+        return "FAQ_SERVICE_EXPLAIN"
+
+    # ...existing logic...
+    return "OTHER"
 
 def widen_day_window(
     dw: Optional[Tuple[datetime, datetime]],
@@ -1639,6 +1688,98 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you’re rescheduled to {label}. We look forward to seeing you.", session)
 
+       
+       async def triage_turn(
+    user_said: str,
+    session: Dict[str, Any],
+    dtmf: str | None = None
+) -> Tuple[str, Dict[str, Any]]:
+
+    # Allow user to cut the receptionist off at any time
+    if _is_interrupt(user_said):
+        return _interrupt_reply(user_said, session)
+
+    if not user_said:
+        return _say("Sorry — I didn’t catch that. Could you repeat?", session)
+
+    clinic = get_clinic(session)
+    tz = get_tz(clinic)
+
+    state = session.get("state", TRIAGE)
+    collected = session.setdefault("collected", {})
+    session.setdefault(LAST_OFFERED_SLOTS_KEY, None)
+    session.setdefault(SELECTED_SLOT_KEY, None)
+
+    session[LAST_USER_TEXT_KEY] = user_said
+
+    # Repeat helper (keep your existing one)
+    if _norm(user_said) in ("repeat", "say again") and state in (BOOK_PICK_SLOT, RESCH_PICK_SLOT):
+        return _say("Sure. Please say 1, 2, or 3.", session)
+
+    # ---------------------------
+    # INTENT (once, early)
+    # ---------------------------
+    intent = detect_intent(user_said)
+
+    # ---------------------------
+    # (1) Mid-booking FAQ detour
+    # ---------------------------
+    if state in BOOKING_STATES and intent == "FAQ_SERVICE_EXPLAIN":
+        topic = detect_service_topic(user_said)  # pure helper
+        session["return_state"] = state
+        session["faq_topic"] = topic
+        session["state"] = FAQ_DETOUR
+        session["faq_turns"] = int(session.get("faq_turns", 0)) + 1
+
+        # answer, then explicitly offer to continue or ask more
+        _say(faq_answer("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic), session, tone="none")
+        return _say(
+            "Would you like to continue booking an appointment? Say continue, or ask another question.",
+            session,
+            tone="checking",
+        )
+
+    # ---------------------------
+    # MAIN STATE MACHINE
+    # ---------------------------
+
+    # (2) FAQ detour handler (answer more questions, then return)
+    if state == FAQ_DETOUR:
+        # Guard against accidental slot selection (DTMF 1/2/3) while in FAQ mode
+        if dtmf in ("1", "2", "3"):
+            return _say("You’re in the help menu. Say continue to go back to booking.", session, tone="checking")
+
+        # allow multiple service questions before returning
+        if intent == "FAQ_SERVICE_EXPLAIN":
+            topic = detect_service_topic(user_said)
+            session["faq_topic"] = topic
+            session["faq_turns"] = int(session.get("faq_turns", 0)) + 1
+            _say(faq_answer("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic), session, tone="none")
+            return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
+
+        # resume booking explicitly
+        if is_continue(user_said) or is_yes(user_said):
+            return_state = session.get("return_state", TRIAGE)
+            session["state"] = return_state
+            return _say("Okay.", session, tone="ack")
+
+        # exit detour entirely
+        if is_no(user_said):
+            session["state"] = TRIAGE
+            return _say("No problem. How can I help today?", session, tone="ack")
+
+        return _say("Sorry — say continue to go back to booking, or ask your question.", session, tone="checking")
+
+    # ---- keep the rest of your existing state machine below ----
+    # if state == TRIAGE:
+    #     ...
+    # elif state == BOOK_*:
+    #     ...
+    # elif state == RESCH_*:
+    #     ...
+    # else:
+    #     ...
+
     # =========================
     # INSURANCE PROVIDER STATE  👈 ADD THIS
     # =========================
@@ -1708,54 +1849,23 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
     # ======================================================================
     # BOOKING FLOW
     # ======================================================================
-    if state == BOOK_PATIENT_TYPE:
-        intent_check = detect_intent(user_said)
+   if state == BOOK_PATIENT_TYPE:
+    intent_check = detect_intent(user_said)
 
-        # If they try to switch task, let them (or redirect).
-        if intent_check in ("RESCHEDULE", "CANCEL"):
-            session = _reset_to_triage(session)
-            session["state"] = RESCH_NAME if intent_check == "RESCHEDULE" else TRIAGE
-            return _say(
-                "No problem — do you want to reschedule or cancel an appointment?",
-                session,
-                tone="ack",
-            )
+    # If they try to switch task, let them (or redirect).
+    if intent_check in ("RESCHEDULE", "CANCEL"):
+        session = _reset_to_triage(session)
+        session["state"] = RESCH_NAME if intent_check == "RESCHEDULE" else TRIAGE
+        return _say(
+            "No problem — do you want to reschedule or cancel an appointment?",
+            session,
+            tone="ack",
+        )
 
-        # If they accidentally give their name here, capture it once.
-        if looks_like_name(user_said) and not collected.get("name"):
-            collected["name"] = user_said.strip()
-            return _say(
-                "Thanks. Are you a new patient, or have you been here before? You can say “new” or “returning”.",
-                session,
-                tone="checking",
-            )
-
-        pt = parse_patient_type(user_said)
-
-        if not pt:
-            # Repair counter to prevent endless repeats
-            tries = int(session.get("pt_type_tries", 0)) + 1
-            session["pt_type_tries"] = tries
-
-            if tries >= 2:
-                # Offer keypad option and an escape hatch without breaking flow
-                return _say(
-                    "Sorry — I’m not getting that clearly. "
-                    "Please say “new” or “returning”. "
-                    "Or press 1 for new patient, or 2 for returning.",
-                    session,
-                    tone="checking",
-                )
-
-            return _say(
-                "Sorry — are you a new patient or a returning patient? You can say “new” or “returning”.",
-                session,
-                tone="checking",
-            )
-
-        # Success: reset tries
+    # 1) First: try to parse patient type (prevents double-asking when they say “I’m new, John”)
+    pt = parse_patient_type(user_said)
+    if pt:
         session["pt_type_tries"] = 0
-
         collected["patient_type"] = pt
         session["state"] = BOOK_REASON
         return _say(
@@ -1763,6 +1873,37 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
             session,
             tone="ack",
         )
+
+    # 2) If they accidentally give their name here, capture it once (but don’t make it feel like “asking twice”)
+    if looks_like_name(user_said) and not collected.get("name"):
+        collected["name"] = user_said.strip()
+        # Make the re-ask feel like a confirmation, not a repeat
+        return _say(
+            "Thanks. Just to confirm — are you a new patient, or have you been here before? "
+            "You can say “new patient” or “returning patient”.",
+            session,
+            tone="checking",
+        )
+
+    # 3) Repair if we still don’t have patient type
+    tries = int(session.get("pt_type_tries", 0)) + 1
+    session["pt_type_tries"] = tries
+
+    if tries >= 2:
+        return _say(
+            "Sorry — I’m not getting that clearly. "
+            "Please say “new” or “returning”. "
+            "Or press 1 for new patient, or 2 for returning.",
+            session,
+            tone="checking",
+        )
+
+    return _say(
+        "Sorry — are you a new patient or a returning patient? You can say “new” or “returning”.",
+        session,
+        tone="checking",
+    )
+
 
     if state == BOOK_REASON:
         text = (user_said or "").strip()
