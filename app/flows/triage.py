@@ -12,6 +12,8 @@ import pytz
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
+from dataclasses import dataclass
+
 from app.storage.redis_store import redis_get_json
 from app.clinic_config import CLINICS
 
@@ -128,11 +130,30 @@ def _classify_tone(text: str) -> str:
         return "none"
 
     # Error / retry prompts → reassure (but don't stack)
-    if t.startswith(("sorry", "i didn’t catch", "i did not catch", "i can't", "i cannot", "there was a technical issue")):
+    if t.startswith(
+        (
+            "sorry",
+            "i didn’t catch",
+            "i did not catch",
+            "i can't",
+            "i cannot",
+            "there was a technical issue",
+        )
+    ):
         return "reassure"
 
     # "Checking availability" style prompts
-    if any(k in t for k in ["check availability", "checking availability", "let me check", "i’ll check", "i will check", "one moment"]):
+    if any(
+        k in t
+        for k in [
+            "check availability",
+            "checking availability",
+            "let me check",
+            "i’ll check",
+            "i will check",
+            "one moment",
+        ]
+    ):
         return "checking"
 
     # Short confirmations/acknowledgements → ack
@@ -315,11 +336,16 @@ def normalize_reschedule_intent(text: str | None) -> str:
     return "RESCHEDULE" if is_reschedule_intent(text) else ""
 
 
-def parse_slot_choice(text: str) -> Optional[int]:
+def parse_slot_choice(text: str, dtmf: str | None = None) -> Optional[int]:
     """
     Return 1/2/3 if the user picked a slot, else None.
     Supports: "1", "one", "option 1", "number one", etc.
+    Also supports keypad dtmf if provided.
     """
+    # First: DTMF if present
+    if dtmf and str(dtmf).strip() in ("1", "2", "3"):
+        return int(str(dtmf).strip())
+
     t = _norm(text)
 
     # First: direct digit
@@ -1059,11 +1085,7 @@ def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
 
     if intent == "FAQ_SERVICES":
         services = clinic.get("services", [])
-        return (
-            "We offer: " + ", ".join(services) + "."
-            if services
-            else "We offer physiotherapy services."
-        )
+        return ("We offer: " + ", ".join(services) + "." if services else "We offer physiotherapy services.")
 
     if intent == "FAQ_POLICIES":
         return clinic.get(
@@ -1083,8 +1105,52 @@ def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
     return "How can I help?"
 
 
+# -----------------------------
+# Insurance matching helpers (needed because your file calls match_insurer)
+# -----------------------------
+@dataclass
+class InsurerMatch:
+    display_name: str
+    normalized: str
+    accepted: Optional[bool]
+    confidence: float
+
+
+def match_insurer(user_text: str, accepted_map: dict) -> InsurerMatch:
+    raw = (user_text or "").strip()
+    n = _norm(raw)
+
+    # exact match
+    if n in accepted_map:
+        return InsurerMatch(
+            display_name=raw,
+            normalized=n,
+            accepted=bool(accepted_map.get(n)),
+            confidence=1.0,
+        )
+
+    # fuzzy contains match (simple, deterministic)
+    for k, v in accepted_map.items():
+        if k and (k in n or n in k):
+            # mild confidence unless it's very close
+            conf = 0.85 if len(n) >= 3 else 0.70
+            return InsurerMatch(
+                display_name=raw,
+                normalized=k,
+                accepted=bool(v),
+                confidence=conf,
+            )
+
+    return InsurerMatch(
+        display_name=raw,
+        normalized=n,
+        accepted=None,
+        confidence=0.40,
+    )
+
+
 # ---------- MAIN STATE MACHINE ----------
-async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None = None) -> Tuple[str, Dict[str, Any]]:
     # Allow user to cut the receptionist off at any time
     if _is_interrupt(user_said):
         return _interrupt_reply(user_said, session)
@@ -1122,6 +1188,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         except Exception:
             kb = ""
 
+        # LLM route (safe) → only act on it when confident
         try:
             llm = route_and_answer(
                 user_text=((f"KNOWLEDGE:\n{kb}\n\n" if kb else "") + user_said),
@@ -1142,118 +1209,118 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                     return _say(
                         "Sure — are you a new patient, or have you been here before?",
                         session,
-                )
+                    )
 
-            if llm_intent == "RESCHEDULE":
-                session = _reset_to_triage(session)
-                session["state"] = RESCH_NAME
-                return _say(
-                    "Sure — to reschedule, what’s your full name?",
-                    session,
-                )
+                if llm_intent == "RESCHEDULE":
+                    session = _reset_to_triage(session)
+                    session["state"] = RESCH_NAME
+                    return _say(
+                        "Sure — to reschedule, what’s your full name?",
+                        session,
+                    )
 
-            try:
-    if llm_intent == "HUMAN":
-        if send_to_sheet is not None:
-            try:
-                send_to_sheet(
-                    name=collected.get("name", ""),
-                    phone=collected.get("phone", ""),
-                    intent="CALLBACK",
-                    message=user_said,
-                    call_sid=session.get("call_sid", ""),
-                )
-            except Exception:
-                pass
+                if llm_intent == "HUMAN":
+                    if send_to_sheet is not None:
+                        try:
+                            send_to_sheet(
+                                name=collected.get("name", ""),
+                                phone=collected.get("phone", ""),
+                                intent="CALLBACK",
+                                message=user_said,
+                                call_sid=session.get("call_sid", ""),
+                            )
+                        except Exception:
+                            pass
 
-        return _say(
-            "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
-            session,
-        )
+                    return _say(
+                        "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
+                        session,
+                    )
 
-    if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
-        if reply:
-            if follow:
-                return _say(f"{reply} {follow}", session)
-            return _say(reply, session)
+                if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
+                    if reply:
+                        if follow:
+                            return _say(f"{reply} {follow}", session)
+                        return _say(reply, session)
 
-except Exception:
-    pass
+        except Exception:
+            pass
 
-    intent = detect_intent(user_said)
+        # Deterministic fallback routing
+        intent = detect_intent(user_said)
 
-    if intent == "BOOK":
-        session = _reset_to_triage(session)
-        session["state"] = BOOK_PATIENT_TYPE
-        return _say(
-            "Sure — are you a new patient, or have you been here before?",
-            session,
-        )
-
-    if intent == "RESCHEDULE":
-        session = _reset_to_triage(session)
-        session["state"] = RESCH_NAME
-        return _say(
-            "Sure — to reschedule, what’s your full name?",
-            session,
-        )
-
-    if intent == "FAQ_INSURANCE":
-        insurance_text = clinic.get(
-            "insurance_note",
-            "Please ask the clinic about insurance.",
-        )
-
-        session["last_faq"] = "INSURANCE"
-        session["insurance_info_given"] = True
-        session["insurance_last_answer"] = insurance_text
-        session["state"] = INSURANCE_PROVIDER
-
-        if not session.get("insurance_intro_done"):
-            session["insurance_intro_done"] = True
+        if intent == "BOOK":
+            session = _reset_to_triage(session)
+            session["state"] = BOOK_PATIENT_TYPE
             return _say(
-                f"Here’s how insurance works at the clinic. {insurance_text} "
-                "If you tell me the name of your insurer, I can check that for you.",
+                "Sure — are you a new patient, or have you been here before?",
                 session,
             )
 
-        return _say(
-            f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
-            session,
-        )
+        if intent == "RESCHEDULE":
+            session = _reset_to_triage(session)
+            session["state"] = RESCH_NAME
+            return _say(
+                "Sure — to reschedule, what’s your full name?",
+                session,
+            )
 
-    if intent == "CANCEL":
-        session = _reset_to_triage(session)
-        return _say(
-            "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
-            session,
-        )
+        if intent == "FAQ_INSURANCE":
+            insurance_text = clinic.get(
+                "insurance_note",
+                "Please ask the clinic about insurance.",
+            )
 
-    if intent == "HUMAN":
-        if send_to_sheet is not None:
-            try:
-                send_to_sheet(
-                    name=collected.get("name", ""),
-                    phone=collected.get("phone", ""),
-                    intent="CALLBACK",
-                    message=user_said,
-                    call_sid=session.get("call_sid", ""),
+            session["last_faq"] = "INSURANCE"
+            session["insurance_info_given"] = True
+            session["insurance_last_answer"] = insurance_text
+            session["state"] = INSURANCE_PROVIDER
+
+            if not session.get("insurance_intro_done"):
+                session["insurance_intro_done"] = True
+                return _say(
+                    f"Here’s how insurance works at the clinic. {insurance_text} "
+                    "If you tell me the name of your insurer, I can check that for you.",
+                    session,
                 )
-            except Exception:
-                pass
+
+            return _say(
+                f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
+                session,
+            )
+
+        if intent == "CANCEL":
+            session = _reset_to_triage(session)
+            return _say(
+                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
+                session,
+            )
+
+        if intent == "HUMAN":
+            if send_to_sheet is not None:
+                try:
+                    send_to_sheet(
+                        name=collected.get("name", ""),
+                        phone=collected.get("phone", ""),
+                        intent="CALLBACK",
+                        message=user_said,
+                        call_sid=session.get("call_sid", ""),
+                    )
+                except Exception:
+                    pass
+
+            return _say(
+                "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
+                session,
+            )
+
+        if intent.startswith("FAQ_"):
+            return _say(faq_answer(intent, clinic), session)
 
         return _say(
-            "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
+            "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
             session,
         )
-
-    if intent.startswith("FAQ_"):
-        return _say(faq_answer(intent, clinic), session)
-
-    return _say(
-        "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
-        session,
-    )
 
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
