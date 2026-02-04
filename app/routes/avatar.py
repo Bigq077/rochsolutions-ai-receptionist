@@ -308,8 +308,9 @@ async def avatar_video_status(video_id: str):
 
 # -----------------------------------------
 # 5) LIVEAVATAR START (Mode 2): return LiveKit URL + token
-#    - Fixes language default (use "en")
-#    - Adds Redis caching to avoid concurrency errors
+#    - Accepts 200 OR 201 from /sessions/start
+#    - Uses livekit_client_token from response
+#    - Caches session to avoid concurrency errors
 # -----------------------------------------
 @router.post("/live/start", response_model=LiveAvatarStartResponse)
 async def liveavatar_start(payload: LiveAvatarStartRequest):
@@ -343,7 +344,12 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
     live_cache_key = f"liveavatar:{payload.clinic_id}:{payload.session_id}"
     try:
         cached = await get_session(live_cache_key)
-        if isinstance(cached, dict) and cached.get("livekit_url") and cached.get("livekit_token") and cached.get("liveavatar_session_id"):
+        if (
+            isinstance(cached, dict)
+            and cached.get("livekit_url")
+            and cached.get("livekit_token")
+            and cached.get("liveavatar_session_id")
+        ):
             return LiveAvatarStartResponse(
                 liveavatar_session_id=cached["liveavatar_session_id"],
                 livekit_url=cached["livekit_url"],
@@ -398,10 +404,8 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
     tok_data = tok_json.get("data") if isinstance(tok_json, dict) else None
     tok_data = tok_data if isinstance(tok_data, dict) else tok_json
 
-    liveavatar_session_id = tok_data.get("session_id")
     session_token = tok_data.get("session_token")
-
-    if not liveavatar_session_id or not session_token:
+    if not session_token:
         raise HTTPException(status_code=500, detail=f"Unexpected LiveAvatar token payload: {tok_json}")
 
     # 2) Start session (returns LiveKit connection details)
@@ -414,17 +418,19 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
     async with httpx.AsyncClient(timeout=30.0) as client:
         st = await client.post(start_url, headers=start_headers)
 
-    if st.status_code != 200:
+    # LiveAvatar commonly returns 201 Created on success
+    if st.status_code not in (200, 201):
         raise HTTPException(status_code=500, detail=f"LiveAvatar start error: {st.status_code} {st.text}")
 
     st_json = st.json()
     st_data = st_json.get("data") if isinstance(st_json, dict) else None
     st_data = st_data if isinstance(st_data, dict) else st_json
 
-    livekit_url = st_data.get("livekit_url") or st_data.get("liveKitUrl") or st_data.get("url")
-    livekit_token = st_data.get("livekit_token") or st_data.get("liveKitToken") or st_data.get("token")
+    liveavatar_session_id = st_data.get("session_id")
+    livekit_url = st_data.get("livekit_url")
+    livekit_token = st_data.get("livekit_client_token")
 
-    if not livekit_url or not livekit_token:
+    if not liveavatar_session_id or not livekit_url or not livekit_token:
         raise HTTPException(status_code=500, detail=f"Unexpected LiveAvatar start payload: {st_json}")
 
     # Cache so we reuse this LiveAvatar session and avoid concurrency errors
@@ -455,9 +461,6 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
 async def liveavatar_stop(payload: LiveAvatarStopRequest):
     """
     Stops the current LiveAvatar session (frees concurrency slot).
-
-    Note: this endpoint only uses the session_token.
-    If your account requires session_id too, we can extend it.
     """
     session_token = (payload.session_token or "").strip()
     if not session_token:
