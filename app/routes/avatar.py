@@ -312,7 +312,7 @@ async def liveavatar_start(payload: LiveAvatarStartRequest):
       LIVEAVATAR_API_KEY
       LIVEAVATAR_AVATAR_ID
       LIVEAVATAR_VOICE_ID
-      LIVEAVATAR_LANGUAGE (optional, default en-GB)
+      LIVEAVATAR_LANGUAGE (optional, default en)
       LIVEAVATAR_CONTEXT_ID (optional)
     """
     api_key = os.getenv("LIVEAVATAR_API_KEY")
