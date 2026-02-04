@@ -1129,112 +1129,131 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
                 current_state=state,
                 last_bot_prompt=session.get(LAST_BOT_PROMPT_KEY, ""),
             )
-            llm_intent = (llm.get("intent") or "").strip()
-            conf = float(llm.get("confidence") or 0.0)
-            reply = (llm.get("reply") or "").strip()
-            follow = (llm.get("follow_up_question") or "").strip()
 
-            if conf >= 0.55:
-                if llm_intent == "BOOK":
-                    session = _reset_to_triage(session)
-                    session["state"] = BOOK_PATIENT_TYPE
-                    return _say("Sure — are you a new patient, or have you been here before?", session)
+        llm_intent = (llm.get("intent") or "").strip()
+        conf = float(llm.get("confidence") or 0.0)
+        reply = (llm.get("reply") or "").strip()
+        follow = (llm.get("follow_up_question") or "").strip()
 
-                if llm_intent == "RESCHEDULE":
-                    session = _reset_to_triage(session)
-                    session["state"] = RESCH_NAME
-                    return _say("Sure — to reschedule, what’s your full name?", session)
-
-                if llm_intent == "HUMAN":
-                    if send_to_sheet is not None:
-                        try:
-                            send_to_sheet(
-                                name=collected.get("name", ""),
-                                phone=collected.get("phone", ""),
-                                intent="CALLBACK",
-                                message=user_said,
-                                call_sid=session.get("call_sid", ""),
-                            )
-                        except Exception:
-                            pass
-                    return _say(
-                        "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
-                        session,
-                    )
-
-                if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
-                    if reply:
-                        if follow:
-                            return _say(f"{reply} {follow}", session)
-                        return _say(reply, session)
-
-        except Exception:
-            pass
-
-        intent = detect_intent(user_said)
-
-        if intent == "BOOK":
-            session = _reset_to_triage(session)
-            session["state"] = BOOK_PATIENT_TYPE
-            return _say("Sure — are you a new patient, or have you been here before?", session)
-
-        if intent == "RESCHEDULE":
-            session = _reset_to_triage(session)
-            session["state"] = RESCH_NAME
-            return _say("Sure — to reschedule, what’s your full name?", session)
-
-        if intent == "FAQ_INSURANCE":
-            insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
-
-            session["last_faq"] = "INSURANCE"
-            session["insurance_info_given"] = True
-            session["insurance_last_answer"] = insurance_text
-
-            session["state"] = INSURANCE_PROVIDER
-            if not session.get("insurance_intro_done"):
-                session["insurance_intro_done"] = True
+        if conf >= 0.55:
+            if llm_intent == "BOOK":
+                session = _reset_to_triage(session)
+                session["state"] = BOOK_PATIENT_TYPE
                 return _say(
-                    f"Here’s how insurance works at the clinic. {insurance_text} "
-                    "If you tell me the name of your insurer, I can check that for you.",
+                    "Sure — are you a new patient, or have you been here before?",
                     session,
                 )
 
-            return _say(
-                f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
-                session,
-            )
+            if llm_intent == "RESCHEDULE":
+                session = _reset_to_triage(session)
+                session["state"] = RESCH_NAME
+                return _say(
+                    "Sure — to reschedule, what’s your full name?",
+                    session,
+                )
 
-        if intent == "CANCEL":
-            session = _reset_to_triage(session)
-            return _say(
-                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
-                session,
-            )
+            if llm_intent == "HUMAN":
+                if send_to_sheet is not None:
+                    try:
+                        send_to_sheet(
+                            name=collected.get("name", ""),
+                            phone=collected.get("phone", ""),
+                            intent="CALLBACK",
+                            message=user_said,
+                            call_sid=session.get("call_sid", ""),
+                        )
+                    except Exception:
+                        pass
 
-        if intent == "HUMAN":
-            if send_to_sheet is not None:
-                try:
-                    send_to_sheet(
-                        name=collected.get("name", ""),
-                        phone=collected.get("phone", ""),
-                        intent="CALLBACK",
-                        message=user_said,
-                        call_sid=session.get("call_sid", ""),
-                    )
-                except Exception:
-                    pass
-            return _say(
-                "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
-                session,
-            )
+                return _say(
+                    "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
+                    session,
+                )
 
-        if intent.startswith("FAQ_"):
-            return _say(faq_answer(intent, clinic), session)
+            if llm_intent in ("FAQ", "OTHER", "MESSAGE"):
+                if reply:
+                    if follow:
+                        return _say(f"{reply} {follow}", session)
+                    return _say(reply, session)
 
+    except Exception:
+        pass
+
+    intent = detect_intent(user_said)
+
+    if intent == "BOOK":
+        session = _reset_to_triage(session)
+        session["state"] = BOOK_PATIENT_TYPE
         return _say(
-            "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
+            "Sure — are you a new patient, or have you been here before?",
             session,
         )
+
+    if intent == "RESCHEDULE":
+        session = _reset_to_triage(session)
+        session["state"] = RESCH_NAME
+        return _say(
+            "Sure — to reschedule, what’s your full name?",
+            session,
+        )
+
+    if intent == "FAQ_INSURANCE":
+        insurance_text = clinic.get(
+            "insurance_note",
+            "Please ask the clinic about insurance.",
+        )
+
+        session["last_faq"] = "INSURANCE"
+        session["insurance_info_given"] = True
+        session["insurance_last_answer"] = insurance_text
+        session["state"] = INSURANCE_PROVIDER
+
+        if not session.get("insurance_intro_done"):
+            session["insurance_intro_done"] = True
+            return _say(
+                f"Here’s how insurance works at the clinic. {insurance_text} "
+                "If you tell me the name of your insurer, I can check that for you.",
+                session,
+            )
+
+        return _say(
+            f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
+            session,
+        )
+
+    if intent == "CANCEL":
+        session = _reset_to_triage(session)
+        return _say(
+            "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
+            session,
+        )
+
+    if intent == "HUMAN":
+        if send_to_sheet is not None:
+            try:
+                send_to_sheet(
+                    name=collected.get("name", ""),
+                    phone=collected.get("phone", ""),
+                    intent="CALLBACK",
+                    message=user_said,
+                    call_sid=session.get("call_sid", ""),
+                )
+            except Exception:
+                pass
+
+        return _say(
+            "No problem — please say your name, number, and what you need help with, and the clinic will call you back.",
+            session,
+        )
+
+    if intent.startswith("FAQ_"):
+        return _say(faq_answer(intent, clinic), session)
+
+    return _say(
+        "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
+        session,
+    )
+
 
     # ======================================================================
     # RESCHEDULE FLOW: name -> original appt -> desired new time -> offer -> pick -> confirm
