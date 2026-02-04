@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -51,6 +52,91 @@ def _append_turn(session: dict, role: str, text: str) -> dict:
     turns.append({"role": role, "text": text})
     session["turns"] = turns
     return session
+
+
+# =========================================================
+# ✅ NEW: Call status webhook for end-of-call sheet logging
+# =========================================================
+@router.post("/status")
+async def status(request: Request) -> PlainTextResponse:
+    """
+    Twilio Status Callback webhook.
+    Configure Twilio to POST here on call status changes (at least Completed).
+
+    This logs ONE row to Google Sheets per call (idempotent).
+    """
+    form = await request.form()
+    call_sid = (form.get("CallSid") or "").strip()
+    call_status = (form.get("CallStatus") or "").strip().lower()
+
+    # Only log when the call is finished (Twilio may fire multiple intermediate events)
+    if call_status not in ("completed", "busy", "failed", "no-answer", "no_answer", "canceled", "cancelled"):
+        return PlainTextResponse("ok")
+
+    if not call_sid:
+        return PlainTextResponse("missing CallSid", status_code=400)
+
+    # --- Optional imports INSIDE route (won't crash prod if libs missing) ---
+    # callsummary module name varies in your repo; support both.
+    build_call_summary = None
+    summary_to_sheet_row = None
+    try:
+        from app.callsummary import build_call_summary as _bcs, summary_to_sheet_row as _sr  # type: ignore
+
+        build_call_summary = _bcs
+        summary_to_sheet_row = _sr
+    except Exception:
+        try:
+            from app.call_summary import build_call_summary as _bcs, summary_to_sheet_row as _sr  # type: ignore
+
+            build_call_summary = _bcs
+            summary_to_sheet_row = _sr
+        except Exception:
+            build_call_summary = None
+            summary_to_sheet_row = None
+
+    try:
+        from app.tools.handoff import append_summary_row  # type: ignore
+    except Exception:
+        append_summary_row = None  # type: ignore
+
+    # If summary system isn't available, don't error Twilio
+    if not build_call_summary or not summary_to_sheet_row or append_summary_row is None:
+        return PlainTextResponse("ok")
+
+    # Load session from Redis
+    try:
+        session = await get_session(call_sid) or {}
+    except Exception as e:
+        print("Redis get_session error (/status):", repr(e))
+        session = {}
+
+    # Idempotency guard (Twilio retries webhooks sometimes)
+    if session.get("call_summary_logged"):
+        return PlainTextResponse("already logged")
+
+    # Add useful meta (pure summary builder will read this)
+    session["call_sid"] = call_sid
+    session["call_status"] = call_status
+    session["ended_at_utc"] = datetime.utcnow().isoformat() + "Z"
+
+    try:
+        summary = build_call_summary(session)
+        row = summary_to_sheet_row(summary)
+
+        ok = append_summary_row(row)
+        if ok:
+            session["call_summary_logged"] = True
+            try:
+                await save_session(call_sid, session)
+            except Exception as e:
+                print("Redis save_session error (/status):", repr(e))
+        else:
+            print("Sheets append_summary_row returned False")
+    except Exception as e:
+        print("CALL SUMMARY LOG ERROR:", repr(e))
+
+    return PlainTextResponse("ok")
 
 
 @router.api_route("/voice", methods=["GET", "POST", "HEAD"])
@@ -168,6 +254,8 @@ async def turn(request: Request):
         session["miss_count"] = 0
         session = _append_turn(session, "caller", user_said)
 
+        # If your triage_turn supports dtmf separately, pass it:
+        # Here, Digits is already merged into user_said above, so dtmf stays None.
         reply_text, session = await triage_turn(user_said, session)
 
         session = _append_turn(session, "assistant", reply_text)
