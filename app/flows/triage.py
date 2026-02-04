@@ -195,7 +195,7 @@ SLOT_LABELS_KEY = "slot_labels"
 SELECTED_SLOT_LABEL_KEY = "selected_slot_label"
 LAST_BOT_PROMPT_KEY = "last_bot_prompt"
 LAST_USER_TEXT_KEY = "last_user_text"
-
+INSURANCE_PROVIDER = "INSURANCE_PROVIDER"
 
 # ---------- HELPERS ----------
 def _norm(text: str | None) -> str:
@@ -467,49 +467,225 @@ def detect_intent(text: str) -> str:
     if not t:
         return "UNKNOWN"
 
-    if _contains_any(t, ["book", "booking", "book in", "appointment", "schedule", "available", "slot", "availability"]):
+    # --------------------
+    # BOOKING INTENTS
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "book",
+            "booking",
+            "book in",
+            "appointment",
+            "schedule",
+            "available",
+            "availability",
+            "slot",
+            "slots",
+        ],
+    ):
         return "BOOK"
-
-    if _contains_any(t, ["reschedule", "move", "rebook", "postpone", "change my appointment", "change my booking"]):
-        return "RESCHEDULE"
-
-    if _contains_any(t, ["cancel appointment", "cancel my appointment", "cancel", "cancellation", "call it off"]):
-        return "CANCEL"
-
-    if _contains_any(t, ["price", "cost", "fee", "how much", "charge", "rates", "pricing", "payment", "pay"]):
-        return "FAQ_PRICES"
-
-    if _contains_any(t, ["hours", "open", "close", "opening", "when are you open", "weekend", "saturday", "sunday"]):
-        return "FAQ_HOURS"
-
-    if _contains_any(t, ["address", "location", "where are you", "parking", "postcode", "directions", "near", "map"]):
-        return "FAQ_LOCATION"
 
     if _contains_any(
         t,
-        ["insurance", "insured", "bupa", "axa", "vitality", "aviva", "wpa", "cigna", "claim", "receipt"],
+        [
+            "reschedule",
+            "move",
+            "rebook",
+            "postpone",
+            "change my appointment",
+            "change my booking",
+        ],
+    ):
+        return "RESCHEDULE"
+
+    if _contains_any(
+        t,
+        [
+            "cancel appointment",
+            "cancel my appointment",
+            "cancel booking",
+            "cancel",
+            "cancellation",
+            "call it off",
+        ],
+    ):
+        return "CANCEL"
+
+    # --------------------
+    # PRICES
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "price",
+            "prices",
+            "cost",
+            "fee",
+            "how much",
+            "charge",
+            "rates",
+            "pricing",
+            "payment",
+            "pay",
+        ],
+    ):
+        return "FAQ_PRICES"
+
+    # --------------------
+    # OPENING HOURS
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "hours",
+            "opening hours",
+            "open",
+            "close",
+            "opening",
+            "when are you open",
+            "weekend",
+            "saturday",
+            "sunday",
+        ],
+    ):
+        return "FAQ_HOURS"
+
+    # --------------------
+    # LOCATION
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "address",
+            "location",
+            "where are you",
+            "parking",
+            "postcode",
+            "directions",
+            "near",
+            "map",
+        ],
+    ):
+        return "FAQ_LOCATION"
+
+    # --------------------
+    # INSURANCE
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "insurance",
+            "insured",
+            "do you accept",
+            "covered",
+            "health insurance",
+            "claim",
+            "receipt",
+            "bupa",
+            "axa",
+            "vitality",
+            "aviva",
+            "wpa",
+            "cigna",
+        ],
     ):
         return "FAQ_INSURANCE"
 
+    # --------------------
+    # SERVICES / TREATMENTS
+    # --------------------
     if _contains_any(
         t,
-        ["treatments", "treatment", "services", "physio", "physiotherapy", "massage", "sports therapy", "rehab", "shockwave"],
+        [
+            "service",
+            "services",
+            "treatment",
+            "treatments",
+            "physio",
+            "physiotherapy",
+            "massage",
+            "sports therapy",
+            "rehab",
+            "shockwave",
+            "shockwave therapy",
+            "tell me about",
+            "what is",
+            "what’s",
+            "whats",
+            "how does",
+            "how do",
+            "does it work",
+            "explain",
+        ],
     ):
         return "FAQ_SERVICES"
 
-    if _contains_any(t, ["cancel policy", "cancellation policy", "late fee", "refund", "missed appointment"]):
+    # --------------------
+    # POLICIES
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "cancel policy",
+            "cancellation policy",
+            "late fee",
+            "refund",
+            "missed appointment",
+        ],
+    ):
         return "FAQ_POLICIES"
 
-    if _contains_any(t, ["first visit", "what should i bring", "what do i wear", "arrive", "late"]):
+    # --------------------
+    # FIRST VISIT
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "first visit",
+            "what should i bring",
+            "what do i wear",
+            "arrive",
+            "arrival",
+            "late",
+        ],
+    ):
         return "FAQ_FIRST_VISIT"
 
-    if _contains_any(t, ["privacy", "data", "gdpr", "recording", "confidential"]):
+    # --------------------
+    # PRIVACY
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "privacy",
+            "data",
+            "gdpr",
+            "recording",
+            "confidential",
+        ],
+    ):
         return "FAQ_PRIVACY"
 
-    if _contains_any(t, ["human", "person", "receptionist", "someone", "call me back", "speak to", "call back"]):
+    # --------------------
+    # HUMAN / CALLBACK
+    # --------------------
+    if _contains_any(
+        t,
+        [
+            "human",
+            "person",
+            "receptionist",
+            "someone",
+            "call me back",
+            "call back",
+            "speak to",
+        ],
+    ):
         return "HUMAN"
 
     return "OTHER"
+
 
 
 def preference_window(pref: str) -> Optional[tuple[int, int]]:
@@ -755,54 +931,44 @@ async def find_event_by_name_and_time(
 # ---------- FAQ (deterministic fallback) ----------
 def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
     if intent == "FAQ_PRICES":
-        prices = clinic.get("pricing_summary", "Please ask the clinic for pricing.")
-        if not session.get("prices_intro_done"):
-            session["prices_intro_done"] = True
-            return _say(f"Here are the clinic prices. {prices}", session)
-        return _say(prices, session)
+        return clinic.get("pricing_summary", "Please ask the clinic for pricing.")
+
     if intent == "FAQ_HOURS":
-        hours = clinic.get("hours_summary", "Please ask the clinic for opening hours.")
-        if not session.get("hours_intro_done"):
-            session["hours_intro_done"] = True
-            return _say(f"Here are the clinic opening hours. {hours}", session)
-        return _say(hours, session)
+        return clinic.get("hours_summary", "Please ask the clinic for opening hours.")
+
     if intent == "FAQ_LOCATION":
         return clinic.get("address", "Roch Physio is located at ...")
+
     if intent == "FAQ_INSURANCE":
-        insurance_text = clinic.get(
+        return clinic.get(
             "insurance_note",
             "Please ask the clinic about insurance.",
         )
 
-        # Save for future call summary
-        session["last_faq"] = "INSURANCE"
-        session["insurance_info_given"] = True
-
-        # One-time intro per call
-        if not session.get("insurance_intro_done"):
-            session["insurance_intro_done"] = True
-            return _say(
-                f"Here’s how insurance works at the clinic. {insurance_text} "
-                "If you’d like, tell me the name of your insurer and I can check that for you.",
-                session,
-            )
-
-        # If they already heard the intro, just give info + prompt
-        return _say(
-            f"{insurance_text} If you’d like, tell me the name of your insurer and I can check that for you.",
-            session,
-        )
     if intent == "FAQ_SERVICES":
         services = clinic.get("services", [])
-        return "We offer: " + ", ".join(services) + "." if services else "We offer physiotherapy services."
+        return (
+            "We offer: " + ", ".join(services) + "."
+            if services
+            else "We offer physiotherapy services."
+        )
+
     if intent == "FAQ_POLICIES":
-        return clinic.get("cancellation_policy", "Please give at least 24 hours’ notice to cancel or reschedule.")
+        return clinic.get(
+            "cancellation_policy",
+            "Please give at least 24 hours’ notice to cancel or reschedule.",
+        )
+
     if intent == "FAQ_FIRST_VISIT":
-        return clinic.get("what_to_bring", "Please wear comfortable clothing and bring any relevant notes or scans.")
+        return clinic.get(
+            "what_to_bring",
+            "Please wear comfortable clothing and bring any relevant notes or scans.",
+        )
+
     if intent == "FAQ_PRIVACY":
         return "Your information is treated as confidential and handled in line with UK data protection rules."
-    return "How can I help?"
 
+    return "How can I help?"
 
 # ---------- MAIN STATE MACHINE ----------
 async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -903,6 +1069,27 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session = _reset_to_triage(session)
             session["state"] = RESCH_NAME
             return _say("Sure — to reschedule, what’s your full name?", session)
+ 
+        if intent == "FAQ_INSURANCE":
+        insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
+
+        session["last_faq"] = "INSURANCE"
+        session["insurance_info_given"] = True
+        session["insurance_last_answer"] = insurance_text
+
+        session["state"] = INSURANCE_PROVIDER
+        if not session.get("insurance_intro_done"):
+            session["insurance_intro_done"] = True
+            return _say(
+                f"Here’s how insurance works at the clinic. {insurance_text} "
+                "If you tell me the name of your insurer, I can check that for you.",
+                session,
+            )
+
+        return _say(
+            f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
+            session,
+        )
 
         if intent == "CANCEL":
             session = _reset_to_triage(session)
@@ -1177,6 +1364,32 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you’re rescheduled to {label}. We look forward to seeing you.", session)
+
+    # =========================
+    # INSURANCE PROVIDER STATE  👈 ADD THIS
+    # =========================
+    if state == INSURANCE_PROVIDER:
+    insurer = (user_said or "").strip()
+
+    if not insurer or len(insurer) < 2:
+        return _say(
+            "Sorry — what’s the name of your insurer? For example Bupa, AXA, Vitality, or Aviva.",
+            session,
+        )
+
+    collected["insurer"] = insurer
+    session["insurer_name"] = insurer
+    session["insurance_provider_captured"] = True
+
+    faq_turns = session.get("faq_turns", [])
+    faq_turns.append({"q": "insurer_name", "a": insurer})
+    session["faq_turns"] = faq_turns
+
+    session = _reset_to_triage(session)
+    return _say(
+        f"Thanks — I’ve noted {insurer}. The clinic will confirm whether you’re covered and what to do next.",
+        session,
+    )
 
     # ======================================================================
     # BOOKING FLOW
