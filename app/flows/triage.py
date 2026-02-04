@@ -9,6 +9,9 @@ from datetime import datetime, timedelta
 
 import pytz
 
+from app.insurers import match_insurer
+from app.voicecopy import manual_fallback_phrase
+
 from app.storage.redis_store import redis_get_json
 from app.clinic_config import CLINICS
 
@@ -1369,26 +1372,66 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # INSURANCE PROVIDER STATE  👈 ADD THIS
     # =========================
     if state == INSURANCE_PROVIDER:
-    insurer = (user_said or "").strip()
+    insurer_raw = (user_said or "").strip()
 
-    if not insurer or len(insurer) < 2:
+    if not insurer_raw or len(insurer_raw) < 2:
         return _say(
             "Sorry — what’s the name of your insurer? For example Bupa, AXA, Vitality, or Aviva.",
             session,
+            tone="checking",
         )
 
-    collected["insurer"] = insurer
-    session["insurer_name"] = insurer
+    # Store capture (as you already do)
+    collected["insurer"] = insurer_raw
+    session["insurer_name"] = insurer_raw
     session["insurance_provider_captured"] = True
 
+    # Determine acceptance deterministically (no lying)
+    m = match_insurer(insurer_raw, ACCEPTED_INSURERS)
+
+    # Persist structured turns for later summary
     faq_turns = session.get("faq_turns", [])
-    faq_turns.append({"q": "insurer_name", "a": insurer})
+    faq_turns.append({"type": "insurance_provider", "value": insurer_raw, "match_conf": round(m.confidence, 2)})
+    session["faq_turns"] = faq_turns
+
+    # Set explicit acceptance flag for ops + call summary
+    # accepted / not_accepted / unknown
+    if m.accepted is True and m.confidence >= 0.80:
+        session["insurance_acceptance"] = "accepted"
+        faq_turns.append({"type": "insurance_acceptance", "value": "accepted", "insurer_norm": m.normalized})
+        session["faq_turns"] = faq_turns
+
+        session = _reset_to_triage(session)
+        return _say(
+            f"Thanks — yes, we accept {m.display_name}. Would you like to book an appointment?",
+            session,
+            tone="ack",
+        )
+
+    if m.accepted is False and m.confidence >= 0.80:
+        session["insurance_acceptance"] = "not_accepted"
+        faq_turns.append({"type": "insurance_acceptance", "value": "not_accepted", "insurer_norm": m.normalized})
+        session["faq_turns"] = faq_turns
+
+        session = _reset_to_triage(session)
+        return _say(
+            f"Thanks — we may not be able to accept {m.display_name}. "
+            "If you like, I can still book you in and the clinic team will confirm coverage.",
+            session,
+            tone="reassure",
+        )
+
+    # Unknown / low confidence match
+    session["insurance_acceptance"] = "unknown"
+    faq_turns.append({"type": "insurance_acceptance", "value": "unknown", "insurer_norm": m.normalized})
     session["faq_turns"] = faq_turns
 
     session = _reset_to_triage(session)
     return _say(
-        f"Thanks — I’ve noted {insurer}. The clinic will confirm whether you’re covered and what to do next.",
+        f"Thanks — I’ve noted {insurer_raw}. The clinic will confirm whether you’re covered and what to do next. "
+        "Would you like to book an appointment?",
         session,
+        tone="reassure",
     )
 
     # ======================================================================
