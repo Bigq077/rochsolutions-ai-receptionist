@@ -1,4 +1,10 @@
-# app/call_summary.py
+# app/callsummary.py  (RECOMMENDED FILENAME)
+# If your file is currently named app/call_summary.py, either:
+#   1) rename it to callsummary.py, OR
+#   2) update imports everywhere to: from app.call_summary import ...
+#
+# This file is PURE (no I/O). It only reads session -> summary -> sheet row.
+
 from __future__ import annotations
 
 import json
@@ -14,12 +20,48 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
     collected = session.get("collected", {}) or {}
     faq_turns = session.get("faq_turns", []) or []
 
+    # Prefer "ended_at_utc" already set by your /twilio/status handler if you add it,
+    # otherwise compute now.
+    ended_at_utc = session.get("ended_at_utc") or (datetime.utcnow().isoformat() + "Z")
+
+    # Intent best-effort (because you have both deterministic + LLM routing)
+    intent = session.get("last_intent") or session.get("intent") or session.get("llm_intent")
+
+    # Selected slot best-effort (your triage.py uses these keys)
+    selected_slot = (
+        session.get("selected_slot_label")
+        or session.get("selected_slot")
+        or session.get("SELECTED_SLOT_LABEL")  # legacy/optional
+        or collected.get("selected_slot")
+    )
+
+    # Calendar info best-effort (booking + reschedule)
+    calendar_event_id = (
+        session.get("calendar_event_id")
+        or session.get("event_id")
+        or session.get("resch_event_id")
+        or session.get("created_event_id")
+    )
+
+    calendar_status = (
+        session.get("calendar_status")
+        or session.get("calendar_result")  # optional legacy
+        or ("manual_needed" if (session.get("manual_booking") or session.get("manual_reschedule")) else None)
+    )
+
+    calendar_error = session.get("calendar_error") or session.get("calendar_last_error") or ""
+
+    # Service vs reason: keep both
+    service = collected.get("service") or collected.get("reason")
+    reason = collected.get("reason")
+
     summary = {
         "meta": {
             "call_sid": session.get("call_sid"),
             "session_id": session.get("session_id"),
-            "ended_at_utc": datetime.utcnow().isoformat() + "Z",
+            "ended_at_utc": ended_at_utc,
             "flow_state_final": session.get("state"),
+            "call_status": session.get("call_status"),  # optional: set in /twilio/status
         },
         "patient": {
             "name": collected.get("name"),
@@ -27,23 +69,16 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
             "new_or_returning": collected.get("patient_type"),
         },
         "appointment": {
-            "intent": session.get("last_intent"),
-            "service": collected.get("service") or collected.get("reason"),
-            "reason": collected.get("reason"),
+            "intent": intent,
+            "service": service,
+            "reason": reason,
             "notes": collected.get("notes"),
             "time_preference": collected.get("time_pref"),
-            # Best-effort: many flows store selected slot in session keys; callers can also store it in collected.
-            "selected_slot": (
-                collected.get("selected_slot")
-                or session.get("selected_slot_label")
-                or session.get("selected_slot")
-                or session.get("SELECTED_SLOT_LABEL_KEY")
-                or session.get("SELECTED_SLOT_KEY")
-            ),
+            "selected_slot": selected_slot,
             "calendar": {
-                "event_id": session.get("calendar_event_id"),
-                "status": session.get("calendar_status"),  # created/patched/failed/manual_needed
-                "error": session.get("calendar_error"),
+                "event_id": calendar_event_id,
+                "status": calendar_status,  # created/patched/failed/manual_needed
+                "error": calendar_error,
             },
         },
         "insurance": {
@@ -52,15 +87,18 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
         },
         "faq": faq_turns,
         "handoff": {
-            # Some flows use manual_reschedule/manual_reason; we unify into this handoff block.
             "manual_followup_needed": bool(
                 session.get("manual_followup_needed")
+                or session.get("manual_followup")
                 or session.get("manual_reschedule")
                 or session.get("manual_booking")
             ),
-            "reason": session.get("manual_followup_reason")
-            or session.get("manual_reason")
-            or session.get("manual_booking_reason"),
+            "reason": (
+                session.get("manual_followup_reason")
+                or session.get("manual_reason")
+                or session.get("manual_booking_reason")
+                or session.get("manual_reschedule_reason")
+            ),
         },
     }
     return summary
@@ -70,6 +108,7 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
     """
     Convert structured summary -> flat row for Google Sheets.
     Keep the order in sync with your Sheet header row.
+
     Recommended header order (20 cols):
       1 ended_at_utc
       2 call_sid
@@ -100,7 +139,11 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
     handoff = summary.get("handoff", {}) or {}
     faq_turns = summary.get("faq", []) or []
 
+    # Keep FAQ JSON but prevent mega-cells
     faq_json = json.dumps(faq_turns, ensure_ascii=False)
+    if len(faq_json) > 45000:
+        faq_json = faq_json[:45000] + "…"
+
     slot_label = _slot_label_from_selected(appt.get("selected_slot"))
 
     return [
