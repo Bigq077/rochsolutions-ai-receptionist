@@ -102,9 +102,11 @@ NO_FRIENDLY_STARTS = (
     "you're",
 )
 
+
 def _clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text or "")
     return text.strip()
+
 
 def _is_high_precision_prompt(text: str) -> bool:
     t = (text or "").strip().lower()
@@ -115,6 +117,7 @@ def _is_high_precision_prompt(text: str) -> bool:
     if t.startswith(NO_FRIENDLY_STARTS):
         return True
     return any(p in t for p in NO_FRIENDLY_PHRASES)
+
 
 def _classify_tone(text: str) -> str:
     """
@@ -142,6 +145,7 @@ def _classify_tone(text: str) -> str:
     # Default: no extra fluff
     return "none"
 
+
 def _apply_tone(text: str, tone: str) -> str:
     """
     Deterministic: applies at most ONE prefix and never adds suffix.
@@ -166,11 +170,13 @@ def _apply_tone(text: str, tone: str) -> str:
 
     return text
 
+
 def _friendly(text: str) -> str:
     text = _clean(text)
     tone = _classify_tone(text)
     text = _apply_tone(text, tone)
     return _clean(text)
+
 
 def _say(text: str, session: Dict[str, Any], tone: str | None = None) -> Tuple[str, Dict[str, Any]]:
     """
@@ -186,7 +192,6 @@ def _say(text: str, session: Dict[str, Any], tone: str | None = None) -> Tuple[s
 
     session["last_bot_prompt"] = out
     return out, session
-
 
 
 # ---------- CONFIG ----------
@@ -219,12 +224,15 @@ ACCEPTED_INSURERS = {
     # "benenden": False,
 }
 
+
 # ---------- HELPERS ----------
 def _norm(text: str | None) -> str:
     t = (text or "").strip().lower()
     t = re.sub(r"[^a-z0-9\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
 import re
 
 
@@ -247,21 +255,40 @@ def widen_day_window(
         return (dw[0] - timedelta(days=1), dw[1] + timedelta(days=1))
     return (dw[0] - timedelta(days=3), dw[1] + timedelta(days=3))
 
+
 def is_service_info_question(text: str) -> bool:
     t = (text or "").lower().strip()
     if not t:
         return False
 
     # classic question phrasing
-    if any(p in t for p in [
-        "what is", "what’s", "whats", "tell me more", "can you tell me more",
-        "how does", "does it", "is it", "does shockwave", "shockwave",
-        "sports massage", "assessment", "follow up", "follow-up",
-        "how much", "price", "cost", "insurance"
-    ]):
+    if any(
+        p in t
+        for p in [
+            "what is",
+            "what’s",
+            "whats",
+            "tell me more",
+            "can you tell me more",
+            "how does",
+            "does it",
+            "is it",
+            "does shockwave",
+            "shockwave",
+            "sports massage",
+            "assessment",
+            "follow up",
+            "follow-up",
+            "how much",
+            "price",
+            "cost",
+            "insurance",
+        ]
+    ):
         # avoid capturing pure booking statements like "shockwave please"
         return ("?" in text) or any(q in t for q in ["what", "how", "tell me", "can you", "does", "is it"])
     return False
+
 
 def is_reschedule_intent(text: str | None) -> bool:
     t = _norm(text)
@@ -320,6 +347,7 @@ def parse_slot_choice(text: str) -> Optional[int]:
 
     return None
 
+
 async def answer_with_knowledge(user_text: str, clinic: dict, state: str, session: dict) -> str:
     try:
         kb = retrieve_knowledge(user_text, clinic=clinic)
@@ -337,6 +365,8 @@ async def answer_with_knowledge(user_text: str, clinic: dict, state: str, sessio
         return reply
     except Exception:
         return ""
+
+
 def resume_prompt_for_state(state: str) -> str:
     """
     After answering a service/info question, return the user
@@ -356,6 +386,7 @@ def resume_prompt_for_state(state: str) -> str:
 
     # Safe fallback
     return "What would you like to do next?"
+
 
 def looks_like_name(text: str) -> bool:
     t = (text or "").strip()
@@ -420,6 +451,7 @@ def is_valid_phone(phone: str) -> bool:
 
 import re
 from typing import Optional
+
 
 def parse_patient_type(text: str | None) -> Optional[str]:
     """
@@ -489,7 +521,6 @@ def parse_patient_type(text: str | None) -> Optional[str]:
         return "RETURNING"
 
     return None
-
 
 
 def _is_interrupt(text: str) -> bool:
@@ -770,7 +801,6 @@ def detect_intent(text: str) -> str:
         return "HUMAN"
 
     return "OTHER"
-
 
 
 def preference_window(pref: str) -> Optional[tuple[int, int]]:
@@ -1055,6 +1085,7 @@ def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
 
     return "How can I help?"
 
+
 # ---------- MAIN STATE MACHINE ----------
 async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     # Allow user to cut the receptionist off at any time
@@ -1154,27 +1185,27 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session = _reset_to_triage(session)
             session["state"] = RESCH_NAME
             return _say("Sure — to reschedule, what’s your full name?", session)
- 
+
         if intent == "FAQ_INSURANCE":
-        insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
+            insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
 
-        session["last_faq"] = "INSURANCE"
-        session["insurance_info_given"] = True
-        session["insurance_last_answer"] = insurance_text
+            session["last_faq"] = "INSURANCE"
+            session["insurance_info_given"] = True
+            session["insurance_last_answer"] = insurance_text
 
-        session["state"] = INSURANCE_PROVIDER
-        if not session.get("insurance_intro_done"):
-            session["insurance_intro_done"] = True
+            session["state"] = INSURANCE_PROVIDER
+            if not session.get("insurance_intro_done"):
+                session["insurance_intro_done"] = True
+                return _say(
+                    f"Here’s how insurance works at the clinic. {insurance_text} "
+                    "If you tell me the name of your insurer, I can check that for you.",
+                    session,
+                )
+
             return _say(
-                f"Here’s how insurance works at the clinic. {insurance_text} "
-                "If you tell me the name of your insurer, I can check that for you.",
+                f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
                 session,
             )
-
-        return _say(
-            f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
-            session,
-        )
 
         if intent == "CANCEL":
             session = _reset_to_triage(session)
@@ -1308,160 +1339,160 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session,
         )
 
-  if state == RESCH_NEW_PREF:
-    pref = (user_said or "").strip()
+    if state == RESCH_NEW_PREF:
+        pref = (user_said or "").strip()
 
-    # Attempt counter for how many times we've asked the caller for a preference
-    pref_attempts = int(session.get("resch_pref_attempts", 0))
+        # Attempt counter for how many times we've asked the caller for a preference
+        pref_attempts = int(session.get("resch_pref_attempts", 0))
 
-    if not pref:
-        session["resch_pref_attempts"] = pref_attempts + 1
-        return _say(
-            "What day or time would you like to move it to? For example, next Monday afternoon, or Friday morning.",
-            session,
-            tone="checking",
-        )
-
-    collected["time_pref"] = pref
-
-    # Parse a specific window if we can
-    dw = parse_specific_day_window(collected["time_pref"], tz)
-    if dw:
-        collected["day_window_start"] = dw[0].isoformat()
-        collected["day_window_end"] = dw[1].isoformat()
-        dw_parsed = dw
-    else:
-        collected.pop("day_window_start", None)
-        collected.pop("day_window_end", None)
-        dw_parsed = None  # we'll still pass pref_text so suggest_top_slots can interpret
-
-    duration = int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN))
-
-    # Try up to 2 widening passes within the same user preference
-    widen_attempt = int(session.get("resch_widen_attempts", 0))
-
-    def _try_suggest(day_window):
-        return await suggest_top_slots(
-            session,
-            duration_min=duration,
-            pref_text=collected.get("time_pref", ""),
-            day_window=day_window,
-        )
-
-    # 1) Try exact (or parsed) window first
-    raw_slots, labels, err = await _try_suggest(dw_parsed)
-
-    # If error: don't loop forever — website fallback after 2 attempts
-    if err:
-        session["manual_reschedule"] = True
-        session["manual_reason"] = "calendar_unavailable"
-
-        booking_url = (clinic.get("booking_url") or "").strip()
-        if booking_url:
-            session = _reset_to_triage(session)
-            return _say(
-                "I’m having trouble checking availability right now. "
-                f"Please use our online booking system to see all available times: {booking_url}. "
-                "If you’d prefer, I can also log this for the clinic team to follow up.",
-                session,
-                tone="reassure",
-            )
-        session = _reset_to_triage(session)
-        return _say(
-            "I’m having trouble checking availability right now. "
-            "Please use the clinic website booking system to see all available times. "
-            "If you’d prefer, I can also log this for the clinic team to follow up.",
-            session,
-            tone="reassure",
-        )
-
-    # If we didn't get 3 clean slots, widen within the same preference
-    if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
-        # widen only if we had a parsed day window (otherwise suggest_top_slots should interpret pref_text)
-        if dw_parsed and widen_attempt < 2:
-            session["resch_widen_attempts"] = widen_attempt + 1
-            widened = widen_day_window(dw_parsed, session["resch_widen_attempts"])
-            raw_slots, labels, err = await _try_suggest(widened)
-
-        # still no joy → ask for alternative, then website fallback after 2 pref attempts
-        if err or not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
-            session["resch_widen_attempts"] = 0
+        if not pref:
             session["resch_pref_attempts"] = pref_attempts + 1
-
-            if session["resch_pref_attempts"] >= 2:
-                booking_url = (clinic.get("booking_url") or "").strip()
-                session = _reset_to_triage(session)
-                if booking_url:
-                    return _say(
-                        "I can’t see a good match for that time right now. "
-                        f"To view all available slots, please use our online booking system: {booking_url}. "
-                        "If you’d like, I can also log a request for the clinic team to help.",
-                        session,
-                        tone="reassure",
-                    )
-                return _say(
-                    "I can’t see a good match for that time right now. "
-                    "To view all available slots, please use the clinic website booking system. "
-                    "If you’d like, I can also log a request for the clinic team to help.",
-                    session,
-                    tone="reassure",
-                )
-
             return _say(
-                "I don’t have clear availability around that time. "
-                "Could you tell me another day or time that would suit you?",
+                "What day or time would you like to move it to? For example, next Monday afternoon, or Friday morning.",
                 session,
                 tone="checking",
             )
 
-    # Success: reset attempts and offer the three slots
-    session["resch_pref_attempts"] = 0
-    session["resch_widen_attempts"] = 0
+        collected["time_pref"] = pref
 
-    session[LAST_OFFERED_SLOTS_KEY] = raw_slots
-    session[SLOT_LABELS_KEY] = labels
-    session["state"] = RESCH_PICK_SLOT
+        # Parse a specific window if we can
+        dw = parse_specific_day_window(collected["time_pref"], tz)
+        if dw:
+            collected["day_window_start"] = dw[0].isoformat()
+            collected["day_window_end"] = dw[1].isoformat()
+            dw_parsed = dw
+        else:
+            collected.pop("day_window_start", None)
+            collected.pop("day_window_end", None)
+            dw_parsed = None  # we'll still pass pref_text so suggest_top_slots can interpret
 
-    msg = (
-        "I have three available appointment times. "
-        f"The first option is {labels[0]}. "
-        f"The second option is {labels[1]}. "
-        f"The third option is {labels[2]}. "
-        "Please say 1 for the first option, 2 for the second, or 3 for the third. "
-        "Or press 1, 2, or 3."
-    )
-    return _say(msg, session)
+        duration = int(clinic.get("slot_minutes", DEFAULT_DURATION_MIN))
 
-if state == RESCH_PICK_SLOT:
-    choice = parse_slot_choice(user_said, dtmf=dtmf)   # ✅ pass dtmf
-    if not choice:
-        return _say(
-            "Sorry — please say one, two, or three. Or press 1, 2, or 3.",
-            session,
-            tone="checking",
+        # Try up to 2 widening passes within the same user preference
+        widen_attempt = int(session.get("resch_widen_attempts", 0))
+
+        async def _try_suggest(day_window):
+            return await suggest_top_slots(
+                session,
+                duration_min=duration,
+                pref_text=collected.get("time_pref", ""),
+                day_window=day_window,
+            )
+
+        # 1) Try exact (or parsed) window first
+        raw_slots, labels, err = await _try_suggest(dw_parsed)
+
+        # If error: don't loop forever — website fallback after 2 attempts
+        if err:
+            session["manual_reschedule"] = True
+            session["manual_reason"] = "calendar_unavailable"
+
+            booking_url = (clinic.get("booking_url") or "").strip()
+            if booking_url:
+                session = _reset_to_triage(session)
+                return _say(
+                    "I’m having trouble checking availability right now. "
+                    f"Please use our online booking system to see all available times: {booking_url}. "
+                    "If you’d prefer, I can also log this for the clinic team to follow up.",
+                    session,
+                    tone="reassure",
+                )
+            session = _reset_to_triage(session)
+            return _say(
+                "I’m having trouble checking availability right now. "
+                "Please use the clinic website booking system to see all available times. "
+                "If you’d prefer, I can also log this for the clinic team to follow up.",
+                session,
+                tone="reassure",
+            )
+
+        # If we didn't get 3 clean slots, widen within the same preference
+        if not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
+            # widen only if we had a parsed day window (otherwise suggest_top_slots should interpret pref_text)
+            if dw_parsed and widen_attempt < 2:
+                session["resch_widen_attempts"] = widen_attempt + 1
+                widened = widen_day_window(dw_parsed, session["resch_widen_attempts"])
+                raw_slots, labels, err = await _try_suggest(widened)
+
+            # still no joy → ask for alternative, then website fallback after 2 pref attempts
+            if err or not labels or len(labels) < 3 or not raw_slots or len(raw_slots) < 3:
+                session["resch_widen_attempts"] = 0
+                session["resch_pref_attempts"] = pref_attempts + 1
+
+                if session["resch_pref_attempts"] >= 2:
+                    booking_url = (clinic.get("booking_url") or "").strip()
+                    session = _reset_to_triage(session)
+                    if booking_url:
+                        return _say(
+                            "I can’t see a good match for that time right now. "
+                            f"To view all available slots, please use our online booking system: {booking_url}. "
+                            "If you’d like, I can also log a request for the clinic team to help.",
+                            session,
+                            tone="reassure",
+                        )
+                    return _say(
+                        "I can’t see a good match for that time right now. "
+                        "To view all available slots, please use the clinic website booking system. "
+                        "If you’d like, I can also log a request for the clinic team to help.",
+                        session,
+                        tone="reassure",
+                    )
+
+                return _say(
+                    "I don’t have clear availability around that time. "
+                    "Could you tell me another day or time that would suit you?",
+                    session,
+                    tone="checking",
+                )
+
+        # Success: reset attempts and offer the three slots
+        session["resch_pref_attempts"] = 0
+        session["resch_widen_attempts"] = 0
+
+        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+        session[SLOT_LABELS_KEY] = labels
+        session["state"] = RESCH_PICK_SLOT
+
+        msg = (
+            "I have three available appointment times. "
+            f"The first option is {labels[0]}. "
+            f"The second option is {labels[1]}. "
+            f"The third option is {labels[2]}. "
+            "Please say 1 for the first option, 2 for the second, or 3 for the third. "
+            "Or press 1, 2, or 3."
         )
+        return _say(msg, session)
 
-    idx = choice - 1
-    slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
-    labels = session.get(SLOT_LABELS_KEY) or []
+    if state == RESCH_PICK_SLOT:
+        choice = parse_slot_choice(user_said, dtmf=dtmf)  # ✅ pass dtmf
+        if not choice:
+            return _say(
+                "Sorry — please say one, two, or three. Or press 1, 2, or 3.",
+                session,
+                tone="checking",
+            )
 
-    if idx < 0 or idx >= len(slots):
+        idx = choice - 1
+        slots = session.get(LAST_OFFERED_SLOTS_KEY) or []
+        labels = session.get(SLOT_LABELS_KEY) or []
+
+        if idx < 0 or idx >= len(slots):
+            return _say(
+                "Sorry — please say one, two, or three. Or press 1, 2, or 3.",
+                session,
+                tone="checking",
+            )
+
+        session[SELECTED_SLOT_KEY] = slots[idx]
+        if idx < len(labels):
+            session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
+
+        session["state"] = RESCH_CONFIRM
         return _say(
-            "Sorry — please say one, two, or three. Or press 1, 2, or 3.",
+            "Perfect. Please say yes to confirm, or no to cancel.",
             session,
-            tone="checking",
+            tone="ack",
         )
-
-    session[SELECTED_SLOT_KEY] = slots[idx]
-    if idx < len(labels):
-        session[SELECTED_SLOT_LABEL_KEY] = labels[idx]
-
-    session["state"] = RESCH_CONFIRM
-    return _say(
-        "Perfect. Please say yes to confirm, or no to cancel.",
-        session,
-        tone="ack",
-    )
 
     if state == RESCH_CONFIRM:
         if not is_yes(user_said):
@@ -1524,126 +1555,126 @@ if state == RESCH_PICK_SLOT:
     # INSURANCE PROVIDER STATE  👈 ADD THIS
     # =========================
     if state == INSURANCE_PROVIDER:
-    insurer_raw = (user_said or "").strip()
+        insurer_raw = (user_said or "").strip()
 
-    if not insurer_raw or len(insurer_raw) < 2:
-        return _say(
-            "Sorry — what’s the name of your insurer? For example Bupa, AXA, Vitality, or Aviva.",
-            session,
-            tone="checking",
-        )
-
-    # Store capture (as you already do)
-    collected["insurer"] = insurer_raw
-    session["insurer_name"] = insurer_raw
-    session["insurance_provider_captured"] = True
-
-    # Determine acceptance deterministically (no lying)
-    m = match_insurer(insurer_raw, ACCEPTED_INSURERS)
-
-    # Persist structured turns for later summary
-    faq_turns = session.get("faq_turns", [])
-    faq_turns.append({"type": "insurance_provider", "value": insurer_raw, "match_conf": round(m.confidence, 2)})
-    session["faq_turns"] = faq_turns
-
-    # Set explicit acceptance flag for ops + call summary
-    # accepted / not_accepted / unknown
-    if m.accepted is True and m.confidence >= 0.80:
-        session["insurance_acceptance"] = "accepted"
-        faq_turns.append({"type": "insurance_acceptance", "value": "accepted", "insurer_norm": m.normalized})
-        session["faq_turns"] = faq_turns
-
-        session = _reset_to_triage(session)
-        return _say(
-            f"Thanks — yes, we accept {m.display_name}. Would you like to book an appointment?",
-            session,
-            tone="ack",
-        )
-
-    if m.accepted is False and m.confidence >= 0.80:
-        session["insurance_acceptance"] = "not_accepted"
-        faq_turns.append({"type": "insurance_acceptance", "value": "not_accepted", "insurer_norm": m.normalized})
-        session["faq_turns"] = faq_turns
-
-        session = _reset_to_triage(session)
-        return _say(
-            f"Thanks — we may not be able to accept {m.display_name}. "
-            "If you like, I can still book you in and the clinic team will confirm coverage.",
-            session,
-            tone="reassure",
-        )
-
-    # Unknown / low confidence match
-    session["insurance_acceptance"] = "unknown"
-    faq_turns.append({"type": "insurance_acceptance", "value": "unknown", "insurer_norm": m.normalized})
-    session["faq_turns"] = faq_turns
-
-    session = _reset_to_triage(session)
-    return _say(
-        f"Thanks — I’ve noted {insurer_raw}. The clinic will confirm whether you’re covered and what to do next. "
-        "Would you like to book an appointment?",
-        session,
-        tone="reassure",
-    )
-
-    # ======================================================================
-    # BOOKING FLOW
-    # ======================================================================
-   if state == BOOK_PATIENT_TYPE:
-    intent_check = detect_intent(user_said)
-
-    # If they try to switch task, let them (or redirect).
-    if intent_check in ("RESCHEDULE", "CANCEL"):
-        session = _reset_to_triage(session)
-        session["state"] = RESCH_NAME if intent_check == "RESCHEDULE" else TRIAGE
-        return _say(
-            "No problem — do you want to reschedule or cancel an appointment?",
-            session,
-            tone="ack",
-        )
-
-    # If they accidentally give their name here, capture it once.
-    if looks_like_name(user_said) and not collected.get("name"):
-        collected["name"] = user_said.strip()
-        return _say(
-            "Thanks. Are you a new patient, or have you been here before? You can say “new” or “returning”.",
-            session,
-            tone="checking",
-        )
-
-    pt = parse_patient_type(user_said)
-
-    if not pt:
-        # Repair counter to prevent endless repeats
-        tries = int(session.get("pt_type_tries", 0)) + 1
-        session["pt_type_tries"] = tries
-
-        if tries >= 2:
-            # Offer keypad option and an escape hatch without breaking flow
+        if not insurer_raw or len(insurer_raw) < 2:
             return _say(
-                "Sorry — I’m not getting that clearly. "
-                "Please say “new” or “returning”. "
-                "Or press 1 for new patient, or 2 for returning.",
+                "Sorry — what’s the name of your insurer? For example Bupa, AXA, Vitality, or Aviva.",
                 session,
                 tone="checking",
             )
 
+        # Store capture (as you already do)
+        collected["insurer"] = insurer_raw
+        session["insurer_name"] = insurer_raw
+        session["insurance_provider_captured"] = True
+
+        # Determine acceptance deterministically (no lying)
+        m = match_insurer(insurer_raw, ACCEPTED_INSURERS)
+
+        # Persist structured turns for later summary
+        faq_turns = session.get("faq_turns", [])
+        faq_turns.append({"type": "insurance_provider", "value": insurer_raw, "match_conf": round(m.confidence, 2)})
+        session["faq_turns"] = faq_turns
+
+        # Set explicit acceptance flag for ops + call summary
+        # accepted / not_accepted / unknown
+        if m.accepted is True and m.confidence >= 0.80:
+            session["insurance_acceptance"] = "accepted"
+            faq_turns.append({"type": "insurance_acceptance", "value": "accepted", "insurer_norm": m.normalized})
+            session["faq_turns"] = faq_turns
+
+            session = _reset_to_triage(session)
+            return _say(
+                f"Thanks — yes, we accept {m.display_name}. Would you like to book an appointment?",
+                session,
+                tone="ack",
+            )
+
+        if m.accepted is False and m.confidence >= 0.80:
+            session["insurance_acceptance"] = "not_accepted"
+            faq_turns.append({"type": "insurance_acceptance", "value": "not_accepted", "insurer_norm": m.normalized})
+            session["faq_turns"] = faq_turns
+
+            session = _reset_to_triage(session)
+            return _say(
+                f"Thanks — we may not be able to accept {m.display_name}. "
+                "If you like, I can still book you in and the clinic team will confirm coverage.",
+                session,
+                tone="reassure",
+            )
+
+        # Unknown / low confidence match
+        session["insurance_acceptance"] = "unknown"
+        faq_turns.append({"type": "insurance_acceptance", "value": "unknown", "insurer_norm": m.normalized})
+        session["faq_turns"] = faq_turns
+
+        session = _reset_to_triage(session)
         return _say(
-            "Sorry — are you a new patient or a returning patient? You can say “new” or “returning”.",
+            f"Thanks — I’ve noted {insurer_raw}. The clinic will confirm whether you’re covered and what to do next. "
+            "Would you like to book an appointment?",
             session,
-            tone="checking",
+            tone="reassure",
         )
 
-    # Success: reset tries
-    session["pt_type_tries"] = 0
+    # ======================================================================
+    # BOOKING FLOW
+    # ======================================================================
+    if state == BOOK_PATIENT_TYPE:
+        intent_check = detect_intent(user_said)
 
-    collected["patient_type"] = pt
-    session["state"] = BOOK_REASON
-    return _say(
-        "Great. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?",
-        session,
-        tone="ack",
-    )
+        # If they try to switch task, let them (or redirect).
+        if intent_check in ("RESCHEDULE", "CANCEL"):
+            session = _reset_to_triage(session)
+            session["state"] = RESCH_NAME if intent_check == "RESCHEDULE" else TRIAGE
+            return _say(
+                "No problem — do you want to reschedule or cancel an appointment?",
+                session,
+                tone="ack",
+            )
+
+        # If they accidentally give their name here, capture it once.
+        if looks_like_name(user_said) and not collected.get("name"):
+            collected["name"] = user_said.strip()
+            return _say(
+                "Thanks. Are you a new patient, or have you been here before? You can say “new” or “returning”.",
+                session,
+                tone="checking",
+            )
+
+        pt = parse_patient_type(user_said)
+
+        if not pt:
+            # Repair counter to prevent endless repeats
+            tries = int(session.get("pt_type_tries", 0)) + 1
+            session["pt_type_tries"] = tries
+
+            if tries >= 2:
+                # Offer keypad option and an escape hatch without breaking flow
+                return _say(
+                    "Sorry — I’m not getting that clearly. "
+                    "Please say “new” or “returning”. "
+                    "Or press 1 for new patient, or 2 for returning.",
+                    session,
+                    tone="checking",
+                )
+
+            return _say(
+                "Sorry — are you a new patient or a returning patient? You can say “new” or “returning”.",
+                session,
+                tone="checking",
+            )
+
+        # Success: reset tries
+        session["pt_type_tries"] = 0
+
+        collected["patient_type"] = pt
+        session["state"] = BOOK_REASON
+        return _say(
+            "Great. What’s the appointment for — for example physio assessment, follow-up, sports massage, or shockwave?",
+            session,
+            tone="ack",
+        )
 
     if state == BOOK_REASON:
         text = (user_said or "").strip()
