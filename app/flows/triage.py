@@ -44,26 +44,20 @@ except Exception:
 FRIENDLY_ACK = [
     "No problem.",
     "Of course.",
-    "Sure thing.",
-    "Absolutely.",
+    "Sure.",
     "Got it.",
-    "That’s fine.",
 ]
 
 FRIENDLY_REASSURE = [
     "No worries.",
     "That’s totally fine.",
-    "We can sort that out.",
 ]
 
 FRIENDLY_CHECKING = [
-    "Okay — I’ll check that now.",
     "One moment — I’m checking.",
-    "Sure — let me take a quick look.",
+    "Okay — I’ll check that now.",
 ]
 
-# If a prompt contains any of these, do NOT add random friendliness.
-# These are "high-precision" moments where clarity matters.
 NO_FRIENDLY_PHRASES = [
     "please say",
     "please tell me",
@@ -75,26 +69,22 @@ NO_FRIENDLY_PHRASES = [
     "press 3",
     "one, two, or three",
     "1, 2, or 3",
-    "confirm",
     "to confirm",
     "yes to confirm",
     "no to cancel",
-    "what is your phone number",
     "phone number",
     "date and time",
     "what day",
     "what time",
-    "spell",
     "repeat",
     "i have three",
-    "first:",
-    "second:",
-    "third:",
+    "the first option is",
+    "the second option is",
+    "the third option is",
     "available appointment",
     "available slots",
 ]
 
-# Also avoid "cute" tone for these openings; keep them direct.
 NO_FRIENDLY_STARTS = (
     "sorry",
     "perfect",
@@ -106,73 +96,91 @@ NO_FRIENDLY_STARTS = (
     "you're",
 )
 
-
 def _clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text or "")
     return text.strip()
 
-
 def _is_high_precision_prompt(text: str) -> bool:
-    """
-    Returns True when we should NOT add random friendly prefix/suffix.
-    Examples: slot menus, confirmations, phone numbers, dates, instructions.
-    """
     t = (text or "").strip().lower()
     if not t:
         return True
-
-    # Long prompts are harder to process; don't add fluff
     if len(t) > 120:
         return True
-
     if t.startswith(NO_FRIENDLY_STARTS):
         return True
+    return any(p in t for p in NO_FRIENDLY_PHRASES)
 
-    return any(phrase in t for phrase in NO_FRIENDLY_PHRASES)
-
-
-def _maybe_prefix(text: str) -> str:
-    if not text:
-        return text
+def _classify_tone(text: str) -> str:
+    """
+    Returns one of: none / ack / reassure / checking
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return "none"
 
     if _is_high_precision_prompt(text):
+        return "none"
+
+    # Error / retry prompts → reassure (but don't stack)
+    if t.startswith(("sorry", "i didn’t catch", "i did not catch", "i can't", "i cannot", "there was a technical issue")):
+        return "reassure"
+
+    # "Checking availability" style prompts
+    if any(k in t for k in ["check availability", "checking availability", "let me check", "i’ll check", "i will check", "one moment"]):
+        return "checking"
+
+    # Short confirmations/acknowledgements → ack
+    if len(t) <= 55 and any(k in t for k in ["thanks", "great", "okay", "ok", "perfect", "got it"]):
+        return "ack"
+
+    # Default: no extra fluff
+    return "none"
+
+def _apply_tone(text: str, tone: str) -> str:
+    """
+    Deterministic: applies at most ONE prefix and never adds suffix.
+    This avoids awkward double-friendly sentences.
+    """
+    if not text:
+        return text
+    if tone == "none":
         return text
 
-    # Mildly friendly sometimes, but only when it's safe
-    if random.random() < 0.25:
+    # Don't prefix if the message already starts with an acknowledgement/apology/confirmation
+    lower = text.strip().lower()
+    if lower.startswith(NO_FRIENDLY_STARTS):
+        return text
+
+    if tone == "ack":
         return f"{random.choice(FRIENDLY_ACK)} {text}"
+    if tone == "reassure":
+        return f"{random.choice(FRIENDLY_REASSURE)} {text}"
+    if tone == "checking":
+        return f"{random.choice(FRIENDLY_CHECKING)} {text}"
 
     return text
-
-
-def _maybe_suffix(text: str) -> str:
-    if not text:
-        return text
-
-    if _is_high_precision_prompt(text):
-        return text
-
-    # Reassurance rarely, only when safe
-    if random.random() < 0.12:
-        return f"{text} {random.choice(FRIENDLY_REASSURE)}"
-
-    return text
-
 
 def _friendly(text: str) -> str:
     text = _clean(text)
-    text = _maybe_prefix(text)
-    text = _maybe_suffix(text)
+    tone = _classify_tone(text)
+    text = _apply_tone(text, tone)
     return _clean(text)
 
+def _say(text: str, session: Dict[str, Any], tone: str | None = None) -> Tuple[str, Dict[str, Any]]:
+    """
+    If tone is provided, it forces the style: none/ack/reassure/checking
+    Otherwise it auto-classifies safely.
+    """
+    text = _clean(text)
 
-def _say(text: str, session: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-    """
-    Applies a friendly tone ONLY when it won't reduce clarity.
-    """
-    friendly_text = _friendly(text)
-    session["last_bot_prompt"] = friendly_text
-    return friendly_text, session
+    if tone is None:
+        out = _friendly(text)
+    else:
+        out = _apply_tone(text, tone)
+
+    session["last_bot_prompt"] = out
+    return out, session
+
 
 
 # ---------- CONFIG ----------
@@ -195,7 +203,23 @@ def _norm(text: str | None) -> str:
     t = re.sub(r"[^a-z0-9\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
+import re
 
+def is_service_info_question(text: str) -> bool:
+    t = (text or "").lower().strip()
+    if not t:
+        return False
+
+    # classic question phrasing
+    if any(p in t for p in [
+        "what is", "what’s", "whats", "tell me more", "can you tell me more",
+        "how does", "does it", "is it", "does shockwave", "shockwave",
+        "sports massage", "assessment", "follow up", "follow-up",
+        "how much", "price", "cost", "insurance"
+    ]):
+        # avoid capturing pure booking statements like "shockwave please"
+        return ("?" in text) or any(q in t for q in ["what", "how", "tell me", "can you", "does", "is it"])
+    return False
 
 def is_reschedule_intent(text: str | None) -> bool:
     t = _norm(text)
@@ -254,6 +278,42 @@ def parse_slot_choice(text: str) -> Optional[int]:
 
     return None
 
+async def answer_with_knowledge(user_text: str, clinic: dict, state: str, session: dict) -> str:
+    try:
+        kb = retrieve_knowledge(user_text, clinic=clinic)
+    except Exception:
+        kb = ""
+
+    try:
+        llm = route_and_answer(
+            user_text=((f"KNOWLEDGE:\n{kb}\n\n" if kb else "") + user_text),
+            clinic=clinic,
+            current_state=state,
+            last_bot_prompt=session.get("last_bot_prompt", ""),
+        )
+        reply = (llm.get("reply") or "").strip()
+        return reply
+    except Exception:
+        return ""
+def resume_prompt_for_state(state: str) -> str:
+    """
+    After answering a service/info question, return the user
+    to the correct conversational step.
+    """
+    if state == BOOK_REASON:
+        return (
+            "Now, which service would you like to book — for example physio assessment, "
+            "follow-up, sports massage, or shockwave?"
+        )
+
+    if state == TRIAGE:
+        return (
+            "What would you like to do — book an appointment, reschedule, ask about prices, "
+            "insurance, opening hours, or location?"
+        )
+
+    # Safe fallback
+    return "What would you like to do next?"
 
 def looks_like_name(text: str) -> bool:
     t = (text or "").strip()
@@ -695,13 +755,43 @@ async def find_event_by_name_and_time(
 # ---------- FAQ (deterministic fallback) ----------
 def faq_answer(intent: str, clinic: Dict[str, Any]) -> str:
     if intent == "FAQ_PRICES":
-        return clinic.get("pricing_summary", "Please ask the clinic for pricing.")
+        prices = clinic.get("pricing_summary", "Please ask the clinic for pricing.")
+        if not session.get("prices_intro_done"):
+            session["prices_intro_done"] = True
+            return _say(f"Here are the clinic prices. {prices}", session)
+        return _say(prices, session)
     if intent == "FAQ_HOURS":
-        return clinic.get("hours_summary", "Please ask the clinic for opening hours.")
+        hours = clinic.get("hours_summary", "Please ask the clinic for opening hours.")
+        if not session.get("hours_intro_done"):
+            session["hours_intro_done"] = True
+            return _say(f"Here are the clinic opening hours. {hours}", session)
+        return _say(hours, session)
     if intent == "FAQ_LOCATION":
         return clinic.get("address", "Roch Physio is located at ...")
     if intent == "FAQ_INSURANCE":
-        return clinic.get("insurance_note", "Please ask the clinic about insurance.")
+        insurance_text = clinic.get(
+            "insurance_note",
+            "Please ask the clinic about insurance.",
+        )
+
+        # Save for future call summary
+        session["last_faq"] = "INSURANCE"
+        session["insurance_info_given"] = True
+
+        # One-time intro per call
+        if not session.get("insurance_intro_done"):
+            session["insurance_intro_done"] = True
+            return _say(
+                f"Here’s how insurance works at the clinic. {insurance_text} "
+                "If you’d like, tell me the name of your insurer and I can check that for you.",
+                session,
+            )
+
+        # If they already heard the intro, just give info + prompt
+        return _say(
+            f"{insurance_text} If you’d like, tell me the name of your insurer and I can check that for you.",
+            session,
+        )
     if intent == "FAQ_SERVICES":
         services = clinic.get("services", [])
         return "We offer: " + ", ".join(services) + "." if services else "We offer physiotherapy services."
@@ -878,7 +968,11 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session["resch_event_id"] = ev.get("id")
             session["resch_event_summary"] = ev.get("summary", "Appointment")
             session["state"] = RESCH_NEW_PREF
-            return _say("Thanks. What day or time would you like to move it to?", session)
+            # ✅ change wording so it doesn't feel like a redundant step
+            return _say(
+                "Thanks — tell me a day or time that suits you, and I’ll offer the next available options.",
+                session,
+            )
 
         tokens = await redis_get_json(TOKENS_KEY)
         if tokens:
@@ -891,8 +985,9 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         session["manual_reschedule"] = True
         session["manual_reason"] = "no_calendar_tokens"
         session["state"] = RESCH_NEW_PREF
+        # ✅ same improved wording here too
         return _say(
-            "No problem — what day or time would you like to move it to?",
+            "No problem — tell me a day or time that suits you, and I’ll offer the next available options.",
             session,
         )
 
@@ -935,7 +1030,11 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
             session["manual_reason"] = "no_calendar_tokens"
 
         session["state"] = RESCH_NEW_PREF
-        return _say("Thanks. What day or time would you like to move it to?", session)
+        # ✅ improved wording here too so it doesn't feel like a repeated stage
+        return _say(
+            "Thanks — tell me a day or time that suits you, and I’ll offer the next available options.",
+            session,
+        )
 
     if state == RESCH_NEW_PREF:
         collected["time_pref"] = user_said.strip()
@@ -989,9 +1088,9 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
 
         msg = (
             "I have three available appointment times. "
-            f"First: {labels[0]}. "
-            f"Second: {labels[1]}. "
-            f"Third: {labels[2]}. "
+            f"The first option is {labels[0]}. "
+            f"The second option is {labels[1]}. "
+            f"The third option is {labels[2]}. "
             "Please say 1 for the first option, 2 for the second, or 3 for the third."
         )
 
@@ -1084,12 +1183,18 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
     # ======================================================================
     if state == BOOK_PATIENT_TYPE:
         intent_check = detect_intent(user_said)
-        if intent_check in ("BOOK", "RESCHEDULE", "CANCEL"):
+
+        # If they try to switch task, let them (or redirect).
+        if intent_check in ("RESCHEDULE", "CANCEL"):
+            session = _reset_to_triage(session)
+            session["state"] = RESCH_NAME if intent_check == "RESCHEDULE" else TRIAGE
             return _say(
-                "Just to confirm — are you a new patient, or have you been here before?",
+                "No problem — do you want to reschedule or cancel an appointment?",
                 session,
             )
 
+        # If they repeat "book" again, DO NOT re-ask (this caused the double question).
+        # Just continue trying to interpret their answer as NEW/RETURNING.
         if looks_like_name(user_said) and not collected.get("name"):
             collected["name"] = user_said.strip()
             return _say(
@@ -1100,8 +1205,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         pt = parse_patient_type(user_said)
         if not pt:
             return _say(
-                "Sorry — I just need to know if you’re a new patient or a returning patient. "
-                "You can say new, or returning.",
+                "Sorry — are you a new patient or a returning patient? You can say “new” or “returning”.",
                 session,
             )
 
@@ -1113,7 +1217,60 @@ async def triage_turn(user_said: str, session: Dict[str, Any]) -> Tuple[str, Dic
         )
 
     if state == BOOK_REASON:
-        collected["reason"] = user_said.strip()
+        text = (user_said or "").strip()
+        lower = text.lower()
+
+        # If the user is ASKING ABOUT a service, answer first, then re-ask the booking question
+        if any(
+            q in lower
+            for q in [
+                "what is",
+                "what’s",
+                "whats",
+                "tell me more",
+                "can you tell me",
+                "how does",
+                "how do",
+                "does it work",
+                "what does",
+                "explain",
+                "how long",
+                "does it hurt",
+                "is it painful",
+                "is it safe",
+            ]
+        ):
+            try:
+                kb = retrieve_knowledge(text, clinic=clinic)
+            except Exception:
+                kb = ""
+
+            reply = ""
+            try:
+                llm = route_and_answer(
+                    user_text=((f"KNOWLEDGE:\n{kb}\n\n" if kb else "") + text),
+                    clinic=clinic,
+                    current_state=state,
+                    last_bot_prompt=session.get("last_bot_prompt", ""),
+                )
+                reply = (llm.get("reply") or "").strip()
+            except Exception:
+                reply = ""
+
+            # Save Q&A for later call summary
+            faq_turns = session.get("faq_turns", [])
+            faq_turns.append({"q": text, "a": reply})
+            session["faq_turns"] = faq_turns
+            session["last_faq"] = "SERVICE_INFO"
+
+            if reply:
+                return _say(f"{reply} {resume_prompt_for_state(BOOK_REASON)}", session)
+
+            # Fallback if LLM/KB fails
+            return _say(resume_prompt_for_state(BOOK_REASON), session)
+
+        # Otherwise, treat input as the chosen service/reason
+        collected["reason"] = text
         session["state"] = BOOK_TIME_PREF
         return _say("Thanks. What day or time would you prefer?", session)
 
