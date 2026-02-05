@@ -44,6 +44,12 @@ from app.tools.slots import (
 from app.callsummary import build_call_summary
 from app.inusrers import match_insurer  # keep import as-is (file name misspelling)
 
+# ✅ IMPORTANT:
+# You have a local faq_answer(intent, clinic) below (deterministic clinic FAQ).
+# But service explanations live in app/flows/faq.py and need (intent, text, topic).
+# So we import it with an alias to avoid overwriting your local function.
+from app.flows.faq import faq_answer as faq_answer_service  # ✅ service explanations (pure)
+
 # Optional: Google Sheet handoff (won't crash if you haven't set it up yet)
 try:
     from app.tools.handoff import send_to_sheet  # type: ignore
@@ -654,11 +660,25 @@ def detect_intent(text: str) -> str:
         return "FAQ_INSURANCE"
 
     # ✅ Service explanation (tell me more / explain / what is + topic)
-    if any(p in t for p in [
-        "what is", "what's", "tell me about", "tell me more", "tell me more about",
-        "more about", "more info", "more information", "explain", "explain to me",
-        "how does", "how do", "how it works", "how does it work",
-    ]):
+    if any(
+        p in t
+        for p in [
+            "what is",
+            "what's",
+            "tell me about",
+            "tell me more",
+            "tell me more about",
+            "more about",
+            "more info",
+            "more information",
+            "explain",
+            "explain to me",
+            "how does",
+            "how do",
+            "how it works",
+            "how does it work",
+        ]
+    ):
         if detect_service_topic(t) is not None or "this service" in t or "that service" in t:
             return "FAQ_SERVICE_EXPLAIN"
 
@@ -1060,7 +1080,9 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
         session["state"] = FAQ_DETOUR
         session["faq_turns"] = int(session.get("faq_turns", 0)) + 1
 
-        _say(faq_answer("FAQ_SERVICE_EXPLAIN", clinic), session, tone="none")
+        # ✅ FIX: Use service-explanation FAQ function (text/topic), not clinic FAQ
+        answer = faq_answer_service("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic)
+        _say(answer, session, tone="none")
         return _say(
             "Would you like to continue booking an appointment? Say continue, or ask another question.",
             session,
@@ -1074,9 +1096,19 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
         if dtmf in ("1", "2", "3"):
             return _say("You’re in the help menu. Say continue to go back to booking.", session, tone="checking")
 
-        if intent in ("FAQ_SERVICE_EXPLAIN", "FAQ_SERVICES"):
+        # ✅ FIX: Allow repeated individual service explanations in detour
+        if intent == "FAQ_SERVICE_EXPLAIN":
+            topic = detect_service_topic(user_said) or session.get("faq_topic")
+            session["faq_topic"] = topic
             session["faq_turns"] = int(session.get("faq_turns", 0)) + 1
-            return _say(faq_answer(intent, clinic), session, tone="none")
+            answer = faq_answer_service("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic)
+            _say(answer, session, tone="none")
+            return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
+
+        # Keep your general services list working too
+        if intent == "FAQ_SERVICES":
+            session["faq_turns"] = int(session.get("faq_turns", 0)) + 1
+            return _say(faq_answer("FAQ_SERVICES", clinic), session, tone="none")
 
         if is_continue(user_said) or is_yes(user_said):
             return_state = session.get("return_state", TRIAGE)
@@ -1169,6 +1201,12 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
             session["state"] = RESCH_NAME
             return _say("Sure — to reschedule, what’s your full name?", session)
 
+        if intent2 == "FAQ_SERVICE_EXPLAIN":
+            # ✅ FIX: Use service-explanation FAQ (text/topic) in TRIAGE too
+            topic = detect_service_topic(user_said)
+            answer = faq_answer_service("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic)
+            return _say(answer, session, tone="none")
+
         if intent2 == "FAQ_INSURANCE":
             insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
 
@@ -1216,6 +1254,7 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
             )
 
         if intent2.startswith("FAQ_"):
+            # clinic-level deterministic FAQs (prices, services list, hours, etc.)
             return _say(faq_answer(intent2, clinic), session)
 
         return _say(
@@ -1836,4 +1875,3 @@ LEGACY_PASTED_SNIPPETS = r"""
 # and partial/incorrectly indented snippets were moved here verbatim in principle.
 # If you want me to paste the verbatim raw chunk here too, tell me and I’ll drop it in exactly.)
 """
-
