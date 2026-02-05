@@ -10,6 +10,9 @@ from app.routes.twilio import router as twilio_router
 from app.routes.google_calendar import router as google_calendar_router
 from app.routes.redis_debug import router as redis_debug_router
 from app.routes.avatar import router as avatar_router
+from app.routes.tts_eleven import router as tts_eleven_router
+
+
 
 # Admin route (temporary, for clearing google_tokens)
 from app.routes.admin import router as admin_router
@@ -39,6 +42,7 @@ def root():
 # --------------------
 # Routers
 # --------------------
+app.include_router(tts_eleven_router)
 app.include_router(twilio_router)
 app.include_router(google_calendar_router)
 app.include_router(redis_debug_router)
