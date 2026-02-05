@@ -11,10 +11,8 @@ from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ✅ Keep your existing env var name to avoid breaking production
 SHEET_ID = os.getenv("GOOGLE_SHEETS_ID", "").strip()
 
-# Optional: default tabs
 DEFAULT_MESSAGES_TAB = os.getenv("GOOGLE_SHEETS_MESSAGES_TAB", "Messages").strip()
 DEFAULT_SUMMARY_TAB = os.getenv("GOOGLE_SHEETS_SUMMARY_TAB", "CallSummaries").strip()
 
@@ -22,23 +20,28 @@ DEFAULT_SUMMARY_TAB = os.getenv("GOOGLE_SHEETS_SUMMARY_TAB", "CallSummaries").st
 def _get_service():
     raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if not raw or not SHEET_ID:
+        print("Sheets not configured: missing GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SHEETS_ID")
         return None
 
-    info = json.loads(raw)
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    # ✅ cache_discovery=False is safer on some hosts
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+    try:
+        info = json.loads(raw)
+    except Exception as e:
+        print("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON:", repr(e))
+        return None
+
+    try:
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return build("sheets", "v4", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print("Failed to build Google Sheets client:", repr(e))
+        return None
 
 
 def _append_values(values: List[List[Any]], tab_name: str) -> bool:
-    """
-    Low-level append. Returns True/False, never raises.
-    """
     service = _get_service()
     if not service:
         return False
 
-    # If tab doesn't exist, Sheets API will error — we just return False
     body = {"values": values}
 
     try:
@@ -49,14 +52,15 @@ def _append_values(values: List[List[Any]], tab_name: str) -> bool:
             insertDataOption="INSERT_ROWS",
             body=body,
         ).execute()
+        print(f"✅ Sheets append ok -> tab={tab_name} rows={len(values)}")
         return True
-    except Exception:
+    except Exception as e:
+        print("❌ Sheets append failed:", repr(e))
+        print("Sheet ID:", SHEET_ID)
+        print("Tab:", tab_name)
         return False
 
 
-# -------------------------------------------------------------------
-# EXISTING API (kept) — logs callbacks / manual notes / messages
-# -------------------------------------------------------------------
 def send_to_sheet(
     name: str,
     phone: str,
@@ -66,14 +70,10 @@ def send_to_sheet(
     source: str = "AI Receptionist",
     tab_name: Optional[str] = None,
 ) -> bool:
-    """
-    Keeps your existing contract.
-    Now supports writing to a specific tab (default: DEFAULT_MESSAGES_TAB).
-    """
     tab = (tab_name or DEFAULT_MESSAGES_TAB).strip()
 
     values = [[
-        datetime.utcnow().isoformat(),
+        datetime.utcnow().isoformat() + "Z",
         name,
         phone,
         intent,
@@ -85,16 +85,9 @@ def send_to_sheet(
     return _append_values(values, tab)
 
 
-# -------------------------------------------------------------------
-# NEW API — call summaries (one row per call at end of call)
-# -------------------------------------------------------------------
 def append_summary_row(row: List[Any], tab_name: Optional[str] = None) -> bool:
-    """
-    Append a pre-flattened call summary row (already in column order).
-    """
     tab = (tab_name or DEFAULT_SUMMARY_TAB).strip()
-    values = [row]
-    return _append_values(values, tab)
+    return _append_values([row], tab)
 
 
 def send_call_summary(
@@ -104,9 +97,5 @@ def send_call_summary(
     call_sid: str = "",
     tab_name: Optional[str] = None,
 ) -> bool:
-    """
-    Convenience wrapper. Doesn't require 'summary' but allows you to pass it for debugging.
-    """
-    # Optional: ensure call_sid is included somewhere if you want.
-    # We do NOT mutate 'row' to avoid changing your row schema.
+    # We keep this wrapper as-is. 'summary' is optional.
     return append_summary_row(row, tab_name=tab_name)
