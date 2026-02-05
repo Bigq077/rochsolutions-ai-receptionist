@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
+from app.tools.tts_elevenlabs import synthesize_speech
 
 from app.storage.redis_store import get_session, save_session
 
@@ -145,18 +146,42 @@ async def voice(request: Request):
     Twilio will POST here, but probes/monitors may HEAD/GET.
     Return 200 for HEAD/GET to avoid 405 spam.
     """
-    if request.method in ("HEAD", "GET"):
-        return Response(status_code=200)
+if request.method in ("HEAD", "GET"):
+    return Response(status_code=200)
 
     vr = VoiceResponse()
     turn_url = _abs_url(request, "/twilio/turn")
     voice_url = _abs_url(request, "/twilio/voice")
+    
+    # ✅ Start prompt using ElevenLabs if available (fallback to Twilio TTS)
+    from app.tools.tts_elevenlabs import synthesize_speech  # local import to avoid startup issues
+    
+    start_text = "Hi, Roch Physio speaking. How can I help today?"
+    audio_path = synthesize_speech(start_text)
 
-    vr.append(gather_speech(turn_url, "Hi, Roch Physio speaking. How can I help today?"))
+if audio_path:
+    filename = audio_path.split("/")[-1]
+    audio_url = _abs_url(request, f"/audio/{filename}")
 
-    vr.say("Sorry — I didn’t catch that.", language="en-GB")
-    vr.redirect(voice_url, method="POST")
-    return xml(vr)
+    vr.play(audio_url)
+    vr.append(gather_speech(turn_url))  # gather without prompt (we already played audio)
+else:
+    vr.append(gather_speech(turn_url, start_text))
+
+# Fallback if caller says nothing
+miss_text = "Sorry — I didn’t catch that."
+audio_path2 = synthesize_speech(miss_text)
+
+if audio_path2:
+    filename2 = audio_path2.split("/")[-1]
+    audio_url2 = _abs_url(request, f"/audio/{filename2}")
+    vr.play(audio_url2)
+else:
+    vr.say(miss_text, language="en-GB")
+
+vr.redirect(voice_url, method="POST")
+return xml(vr)
+
 
 
 @router.api_route("/turn", methods=["POST"], name="turn")
