@@ -41,7 +41,7 @@ from app.tools.slots import (
     format_slot,
 )
 
-from app.callsummary import build_call_summary
+from app.call_summary import build_call_summary
 from app.inusrers import match_insurer  # keep import as-is (file name misspelling)
 
 # ✅ IMPORTANT:
