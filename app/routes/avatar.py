@@ -112,6 +112,14 @@ async def avatar_chat(payload: AvatarChatRequest):
 
     return AvatarChatResponse(reply_text=reply_text, session_id=payload.session_id)
 
+def normalize_livekit_url(url: str) -> str:
+    url = (url or "").strip()
+    if url.startswith("wss://"):
+        return "https://" + url[len("wss://"):]
+    if url.startswith("ws://"):
+        return "http://" + url[len("ws://"):]
+    return url
+
 
 # -----------------------------------------
 # 2) VOICE TURN: AUDIO -> STT -> BRAIN -> TXT
