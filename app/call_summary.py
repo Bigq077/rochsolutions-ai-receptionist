@@ -1,9 +1,3 @@
-# app/callsummary.py  (RECOMMENDED FILENAME)
-# If your file is currently named app/call_summary.py, either:
-#   1) rename it to callsummary.py, OR
-#   2) update imports everywhere to: from app.call_summary import ...
-#
-# This file is PURE (no I/O). It only reads session -> summary -> sheet row.
 
 from __future__ import annotations
 
