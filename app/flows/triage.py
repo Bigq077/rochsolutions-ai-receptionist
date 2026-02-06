@@ -56,6 +56,8 @@ try:
 except Exception:
     send_to_sheet = None  # type: ignore
 
+print("✅ TRIAGE VERSION:", __file__)
+print("✅ TRIAGE LINE44 IMPORT SHOULD BE: app.tools.call_summary")
 
 # -----------------------------
 # Friendly tone engine
