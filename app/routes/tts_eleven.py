@@ -7,13 +7,17 @@ from pathlib import Path
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/avatar", tags=["avatar"])
 
 AUDIO_DIR = Path("/tmp/tts")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+# IMPORTANT: set this in Render
+# PUBLIC_BASE_URL=https://rochsolutions-ai-receptionist.onrender.com
+PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
 
 
 class TTSReq(BaseModel):
@@ -74,7 +78,9 @@ def tts_eleven(req: TTSReq):
 @router.post("/tts-eleven-url")
 def tts_eleven_url(req: TTSReq, request: Request):
     """
-    Twilio-friendly: saves MP3 to /tmp and returns a PUBLIC URL.
+    Twilio-friendly (BUT can fail on multi-instance deploys):
+    saves MP3 to /tmp and returns a URL.
+    Prefer /tts-eleven-token + /tts-eleven-bytes for production reliability.
     """
     text = (req.text or "").strip()
 
@@ -112,3 +118,61 @@ def serve_audio(filename: str):
         filename=filename,
         headers={"Cache-Control": "public, max-age=300"},
     )
+
+
+# -----------------------------------------------------------------------------
+# Production-grade Twilio audio (NO /tmp dependency)
+# -----------------------------------------------------------------------------
+# Why: your current /tts-eleven-url can fail when Twilio hits a different instance.
+# This approach generates audio BYTES at request time.
+
+class TTSTokenReq(BaseModel):
+    text: str = Field(..., min_length=1, max_length=800)  # keep Twilio prompts snappy
+
+
+@router.post("/tts-eleven-token")
+def tts_eleven_token(req: TTSTokenReq):
+    """
+    Returns a URL Twilio can <Play>.
+    The audio is generated on-demand by /tts-eleven-bytes.
+    """
+    token = uuid.uuid4().hex
+    text = (req.text or "").strip()
+
+    # TODO: store token -> text in Redis for ~120s
+    # Example (replace with your actual redis helper):
+    # from app.storage.redis_store import redis_set_json
+    # redis_set_json(f"tts:{token}", {"text": text}, ex=120)
+
+    if not PUBLIC_BASE_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="Missing PUBLIC_BASE_URL env var (set to https://rochsolutions-ai-receptionist.onrender.com)",
+        )
+
+    audio_url = f"{PUBLIC_BASE_URL}/avatar/tts-eleven-bytes?token={token}"
+    return {"token": token, "audio_url": audio_url, "mime_type": "audio/mpeg"}
+
+
+@router.get("/tts-eleven-bytes")
+def tts_eleven_bytes(token: str):
+    """
+    Twilio-friendly: generates MP3 bytes on-demand.
+    Twilio <Play> should point here.
+    """
+    # TODO: fetch text from Redis (replace with your actual redis helper)
+    # Example:
+    # from app.storage.redis_store import redis_get_json, redis_delete
+    # data = redis_get_json(f"tts:{token}")
+    data = None  # REPLACE
+
+    if not data or not data.get("text"):
+        raise HTTPException(status_code=404, detail="TTS token not found/expired")
+
+    text = (data["text"] or "").strip()
+    audio_bytes = _eleven_tts_bytes(text)
+
+    # Optional: make token single-use
+    # redis_delete(f"tts:{token}")
+
+    return Response(content=audio_bytes, media_type="audio/mpeg")
