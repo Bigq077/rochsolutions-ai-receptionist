@@ -131,7 +131,7 @@ async def voice(request: Request):
 
     if audio_path:
         filename = audio_path.split("/")[-1]
-        audio_url = _abs_url(request, f"/audio/{filename}")
+        audio_url = _abs_url(request, f"/avatar/audio/{filename}")
         vr.play(audio_url)
         vr.append(gather_speech(turn_url))
     else:
