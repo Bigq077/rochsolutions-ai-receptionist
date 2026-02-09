@@ -63,9 +63,11 @@ def _append_turn(session: dict, role: str, text: str) -> dict:
 @router.post("/status")
 async def status(request: Request) -> PlainTextResponse:
     form = await request.form()
+
     call_sid = (form.get("CallSid") or "").strip()
     call_status = (form.get("CallStatus") or "").strip().lower()
 
+    # Log only terminal statuses
     if call_status not in (
         "completed",
         "busy",
@@ -80,28 +82,49 @@ async def status(request: Request) -> PlainTextResponse:
     if not call_sid:
         return PlainTextResponse("missing CallSid", status_code=400)
 
-    # Optional imports (safe)
+    # ✅ Correct imports (your call_summary lives in app/tools/)
     try:
-        from app.call_summary import build_call_summary, summary_to_sheet_row
+        from app.tools.call_summary import build_call_summary, summary_to_sheet_row
         from app.tools.handoff import append_summary_row
-    except Exception:
+    except Exception as e:
+        print("STATUS IMPORT ERROR:", repr(e))
         return PlainTextResponse("ok")
 
+    # Load session
     try:
         session = await get_session(call_sid) or {}
     except Exception:
         session = {}
 
+    # prevent duplicates
     if session.get("call_summary_logged"):
         return PlainTextResponse("already logged")
 
+    # ✅ Attach Twilio end-of-call metadata (high value)
+    ended_at = datetime.utcnow().isoformat() + "Z"
     session["call_sid"] = call_sid
     session["call_status"] = call_status
-    session["ended_at_utc"] = datetime.utcnow().isoformat() + "Z"
+    session["ended_at_utc"] = ended_at
 
+    # Common Twilio fields you WANT
+    session["twilio_from"] = (form.get("From") or "").strip()
+    session["twilio_to"] = (form.get("To") or "").strip()
+    session["twilio_direction"] = (form.get("Direction") or "").strip()
+    session["twilio_duration_sec"] = (form.get("CallDuration") or "").strip()  # only reliable on completed
+    session["twilio_timestamp"] = (form.get("Timestamp") or "").strip()
+
+    # ✅ Keep the full payload for debugging (never lose info)
+    # Convert form to normal dict[str,str]
+    try:
+        session["twilio_status_payload"] = {k: str(v) for k, v in form.items()}
+    except Exception:
+        session["twilio_status_payload"] = {}
+
+    # Build summary + write to sheets
     try:
         summary = build_call_summary(session)
         row = summary_to_sheet_row(summary)
+
         if append_summary_row(row):
             session["call_summary_logged"] = True
             await save_session(call_sid, session)
@@ -109,6 +132,7 @@ async def status(request: Request) -> PlainTextResponse:
         print("CALL SUMMARY ERROR:", repr(e))
 
     return PlainTextResponse("ok")
+
 
 
 # =========================================================
