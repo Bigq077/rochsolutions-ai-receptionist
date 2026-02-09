@@ -1,4 +1,3 @@
- 
 from __future__ import annotations
 
 import json
@@ -13,8 +12,9 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
     """
     collected = session.get("collected", {}) or {}
     faq_turns = session.get("faq_turns", []) or []
+    turns = session.get("turns", []) or []
 
-    # Prefer "ended_at_utc" already set by your /twilio/status handler if you add it,
+    # Prefer "ended_at_utc" already set by your /twilio/status handler,
     # otherwise compute now.
     ended_at_utc = session.get("ended_at_utc") or (datetime.utcnow().isoformat() + "Z")
 
@@ -49,13 +49,31 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
     service = collected.get("service") or collected.get("reason")
     reason = collected.get("reason")
 
-    summary = {
+    # Conversation stats
+    caller_turns = [t.get("text", "") for t in turns if t.get("role") == "caller"]
+    conversation_stats = {
+        "turn_count": len(turns),
+        "miss_count": int(session.get("miss_count", 0) or 0),
+        "last_user_message": (caller_turns[-1] if caller_turns else ""),
+    }
+
+    # Calendar success (simple boolean)
+    calendar_success = calendar_status in ("created", "patched")
+
+    # Build base summary
+    summary: dict[str, Any] = {
         "meta": {
             "call_sid": session.get("call_sid"),
             "session_id": session.get("session_id"),
             "ended_at_utc": ended_at_utc,
             "flow_state_final": session.get("state"),
-            "call_status": session.get("call_status"),  # optional: set in /twilio/status
+            "call_status": session.get("call_status"),  # set in /twilio/status
+            # Twilio metadata (filled by /twilio/status if you store it)
+            "from": session.get("from") or session.get("caller_phone") or collected.get("phone"),
+            "to": session.get("to"),
+            "duration_sec": session.get("duration_sec") or session.get("call_duration_sec"),
+            "direction": session.get("direction"),
+            "twilio_status_payload": session.get("twilio_status_payload") or {},
         },
         "patient": {
             "name": collected.get("name"),
@@ -94,7 +112,14 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
                 or session.get("manual_reschedule_reason")
             ),
         },
+        "conversation": conversation_stats,
+        "calendar_success": bool(calendar_success),
     }
+
+    # Outcome + confidence score (computed after summary exists)
+    summary["outcome"] = infer_call_outcome(session, summary)
+    summary["confidence_score"] = compute_confidence_score(session, summary)
+
     return summary
 
 
@@ -103,27 +128,7 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
     Convert structured summary -> flat row for Google Sheets.
     Keep the order in sync with your Sheet header row.
 
-    Recommended header order (20 cols):
-      1 ended_at_utc
-      2 call_sid
-      3 session_id
-      4 intent
-      5 flow_state_final
-      6 patient_name
-      7 patient_phone
-      8 new_or_returning
-      9 service
-      10 reason
-      11 time_preference
-      12 selected_slot_label_or_time
-      13 calendar_status
-      14 calendar_event_id
-      15 insurer_name
-      16 insurance_acceptance
-      17 manual_followup_needed
-      18 manual_followup_reason
-      19 faq_json
-      20 calendar_error
+    Base 20 cols + append-only extras at the end.
     """
     meta = summary.get("meta", {}) or {}
     patient = summary.get("patient", {}) or {}
@@ -131,6 +136,7 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
     cal = appt.get("calendar", {}) or {}
     ins = summary.get("insurance", {}) or {}
     handoff = summary.get("handoff", {}) or {}
+    convo = summary.get("conversation", {}) or {}
     faq_turns = summary.get("faq", []) or []
 
     # Keep FAQ JSON but prevent mega-cells
@@ -142,40 +148,46 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
 
     twilio_payload_json = json.dumps(meta.get("twilio_status_payload", {}), ensure_ascii=False)
     if len(twilio_payload_json) > 45000:
-       twilio_payload_json = twilio_payload_json[:45000] + "…"
-   
+        twilio_payload_json = twilio_payload_json[:45000] + "…"
+
     return [
-    meta.get("ended_at_utc"),
-    meta.get("call_sid"),
-    meta.get("session_id"),
-    appt.get("intent"),
-    meta.get("flow_state_final"),
-    patient.get("name"),
-    patient.get("phone"),
-    patient.get("new_or_returning"),
-    appt.get("service"),
-    appt.get("reason"),
-    appt.get("time_preference"),
-    slot_label,
-    cal.get("status"),
-    cal.get("event_id"),
-    ins.get("insurer_name"),
-    ins.get("acceptance"),
-    bool(handoff.get("manual_followup_needed")),
-    handoff.get("reason"),
-    faq_json,
-    (cal.get("error") or "")[:250],
+        # --- Original 20 ---
+        meta.get("ended_at_utc"),
+        meta.get("call_sid"),
+        meta.get("session_id"),
+        appt.get("intent"),
+        meta.get("flow_state_final"),
+        patient.get("name"),
+        patient.get("phone"),
+        patient.get("new_or_returning"),
+        appt.get("service"),
+        appt.get("reason"),
+        appt.get("time_preference"),
+        slot_label,
+        cal.get("status"),
+        cal.get("event_id"),
+        ins.get("insurer_name"),
+        ins.get("acceptance"),
+        bool(handoff.get("manual_followup_needed")),
+        handoff.get("reason"),
+        faq_json,
+        (cal.get("error") or "")[:250],
 
-    # ✅ NEW — Twilio metadata (append-only)
-    meta.get("from"),
-    meta.get("to"),
-    meta.get("duration_sec"),
-    meta.get("direction"),
-    twilio_payload_json,
-]
+        # --- NEW: Twilio metadata (append-only) ---
+        meta.get("from"),
+        meta.get("to"),
+        meta.get("duration_sec"),
+        meta.get("direction"),
+        twilio_payload_json,
 
-
-       
+        # --- NEW: Outcome + quality (append-only) ---
+        summary.get("outcome"),
+        summary.get("calendar_success"),
+        convo.get("turn_count"),
+        convo.get("miss_count"),
+        convo.get("last_user_message"),
+        summary.get("confidence_score"),
+    ]
 
 
 def _slot_label_from_selected(selected: Any) -> str:
@@ -205,3 +217,52 @@ def _slot_label_from_selected(selected: Any) -> str:
         return ""
 
     return ""
+
+
+def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
+    """
+    High-level outcome label for dashboards.
+    """
+    cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
+    intent = (summary.get("appointment", {}) or {}).get("intent") or session.get("intent")
+
+    if cal_status in ("created", "patched"):
+        return "booked" if str(intent).upper() == "BOOK" else "rescheduled"
+
+    handoff_needed = bool((summary.get("handoff", {}) or {}).get("manual_followup_needed"))
+    if handoff_needed:
+        return "manual_followup"
+
+    # FAQ-only heuristics
+    if str(intent or "").upper().startswith("FAQ"):
+        return "faq_only"
+
+    # If call completed but no booking/reschedule, treat as abandoned
+    if (summary.get("meta", {}) or {}).get("call_status") == "completed":
+        return "abandoned"
+
+    return "failed"
+
+
+def compute_confidence_score(session: dict[str, Any], summary: dict[str, Any]) -> int:
+    """
+    Rough 0–100 quality score: higher is better.
+    Useful for tracking improvements + spotting bad calls.
+    """
+    score = 100
+
+    miss = int((summary.get("conversation", {}) or {}).get("miss_count") or 0)
+    score -= min(miss * 15, 45)
+
+    if bool((summary.get("handoff", {}) or {}).get("manual_followup_needed")):
+        score -= 25
+
+    # Penalize very short calls if duration available
+    dur = (summary.get("meta", {}) or {}).get("duration_sec") or session.get("call_duration_sec")
+    try:
+        if dur is not None and int(dur) < 20:
+            score -= 20
+    except Exception:
+        pass
+
+    return max(score, 0)
