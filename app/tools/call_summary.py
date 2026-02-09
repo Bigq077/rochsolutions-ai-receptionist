@@ -140,8 +140,8 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
 
     slot_label = _slot_label_from_selected(appt.get("selected_slot"))
 
-   twilio_payload_json = json.dumps(meta.get("twilio_status_payload", {}), ensure_ascii=False)
-   if len(twilio_payload_json) > 45000:
+    twilio_payload_json = json.dumps(meta.get("twilio_status_payload", {}), ensure_ascii=False)
+    if len(twilio_payload_json) > 45000:
        twilio_payload_json = twilio_payload_json[:45000] + "…"
    
     return [
