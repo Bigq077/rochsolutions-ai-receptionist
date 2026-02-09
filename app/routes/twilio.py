@@ -26,6 +26,10 @@ def _abs_url(request: Request, path: str) -> str:
         path = "/" + path
     return base + path
 
+def attach_status_callback(vr: VoiceResponse, request: Request) -> None:
+    vr.status_callback = _abs_url(request, "/twilio/status")
+    vr.status_callback_method = "POST"
+
 
 def gather_speech(action_url: str, prompt: str | None = None) -> Gather:
     g = Gather(
