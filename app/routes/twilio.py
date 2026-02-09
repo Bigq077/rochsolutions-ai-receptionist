@@ -119,27 +119,26 @@ async def voice(request: Request):
     turn_url = _abs_url(request, "/twilio/turn")
     voice_url = _abs_url(request, "/twilio/voice")
 
-    # Import locally so startup never fails
-    try:
-        from app.tools.tts_elevenlabs import synthesize_speech
-    except Exception:
-        synthesize_speech = None  # type: ignore
-
     start_text = "Hi, Roch Physio speaking. How can I help today?"
 
-    audio_path = synthesize_speech(start_text) if synthesize_speech else None
+    # ✅ Use the working ElevenLabs->MP3 URL generator you already have
+    try:
+        # IMPORTANT: adjust this import if your avatar router is not app/routes/avatar.py
+        from app.routes.avatar import tts_eleven_url, TTSReq
 
-    if audio_path:
-        filename = audio_path.split("/")[-1]
-        audio_url = _abs_url(request, f"/avatar/audio/{filename}")
+        data = tts_eleven_url(TTSReq(text=start_text), request)
+        audio_url = data["audio_url"]  # https://.../avatar/audio/<uuid>.mp3
+
         vr.play(audio_url)
         vr.append(gather_speech(turn_url))
-    else:
+
+    except Exception as e:
+        print("VOICE ELEVEN ERROR:", repr(e))
+        # fallback: Twilio TTS (never break the call)
         vr.append(gather_speech(turn_url, start_text))
 
     vr.redirect(voice_url, method="POST")
     return xml(vr)
-
 
 # =========================================================
 # TURN HANDLER
