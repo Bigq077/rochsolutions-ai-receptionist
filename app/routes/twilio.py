@@ -121,25 +121,32 @@ async def voice(request: Request):
 
     start_text = "Hi, Roch Physio speaking. How can I help today?"
 
-    # ✅ Use the working ElevenLabs->MP3 URL generator you already have
+    # ✅ Always attach StatusCallback so summaries fire
+    vr.status_callback = _abs_url(request, "/twilio/status")
+    vr.status_callback_method = "POST"
+
     try:
-        # IMPORTANT: adjust this import if your avatar router is not app/routes/avatar.py
+        # ✅ IMPORTANT: this must match where avatar.py lives
         from app.routes.avatar import tts_eleven_url, TTSReq
 
         data = tts_eleven_url(TTSReq(text=start_text), request)
-        audio_url = data["audio_url"]  # https://.../avatar/audio/<uuid>.mp3
+        audio_url = data["audio_url"]
 
+        # ✅ ElevenLabs audio
         vr.play(audio_url)
+
+        # ✅ Gather after audio
         vr.append(gather_speech(turn_url))
 
     except Exception as e:
+        # 🔥 This is what explains WHY you still get <Say>
         print("VOICE ELEVEN ERROR:", repr(e))
+
         # fallback: Twilio TTS (never break the call)
         vr.append(gather_speech(turn_url, start_text))
 
     vr.redirect(voice_url, method="POST")
     return xml(vr)
-
 # =========================================================
 # TURN HANDLER
 # =========================================================
