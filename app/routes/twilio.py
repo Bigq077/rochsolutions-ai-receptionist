@@ -127,7 +127,7 @@ async def voice(request: Request):
 
     try:
         # ✅ IMPORTANT: this must match where avatar.py lives
-        from app.routes.avatar import tts_eleven_url, TTSReq
+        from app.routes.tts_eleven import tts_eleven_url, TTSReq
 
         data = tts_eleven_url(TTSReq(text=start_text), request)
         audio_url = data["audio_url"]
