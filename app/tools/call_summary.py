@@ -140,28 +140,42 @@ def summary_to_sheet_row(summary: dict[str, Any]) -> List[Any]:
 
     slot_label = _slot_label_from_selected(appt.get("selected_slot"))
 
+   twilio_payload_json = json.dumps(meta.get("twilio_status_payload", {}), ensure_ascii=False)
+   if len(twilio_payload_json) > 45000:
+       twilio_payload_json = twilio_payload_json[:45000] + "…"
+   
     return [
-        meta.get("ended_at_utc"),
-        meta.get("call_sid"),
-        meta.get("session_id"),
-        appt.get("intent"),
-        meta.get("flow_state_final"),
-        patient.get("name"),
-        patient.get("phone"),
-        patient.get("new_or_returning"),
-        appt.get("service"),
-        appt.get("reason"),
-        appt.get("time_preference"),
-        slot_label,
-        cal.get("status"),
-        cal.get("event_id"),
-        ins.get("insurer_name"),
-        ins.get("acceptance"),
-        bool(handoff.get("manual_followup_needed")),
-        handoff.get("reason"),
-        faq_json,
-        (cal.get("error") or "")[:250],
-    ]
+    meta.get("ended_at_utc"),
+    meta.get("call_sid"),
+    meta.get("session_id"),
+    appt.get("intent"),
+    meta.get("flow_state_final"),
+    patient.get("name"),
+    patient.get("phone"),
+    patient.get("new_or_returning"),
+    appt.get("service"),
+    appt.get("reason"),
+    appt.get("time_preference"),
+    slot_label,
+    cal.get("status"),
+    cal.get("event_id"),
+    ins.get("insurer_name"),
+    ins.get("acceptance"),
+    bool(handoff.get("manual_followup_needed")),
+    handoff.get("reason"),
+    faq_json,
+    (cal.get("error") or "")[:250],
+
+    # ✅ NEW — Twilio metadata (append-only)
+    meta.get("from"),
+    meta.get("to"),
+    meta.get("duration_sec"),
+    meta.get("direction"),
+    twilio_payload_json,
+]
+
+
+       
 
 
 def _slot_label_from_selected(selected: Any) -> str:
