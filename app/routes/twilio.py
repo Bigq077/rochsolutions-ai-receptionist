@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
 from app.storage.redis_store import get_session, save_session
+from app.clinic_config import clinic_id_from_twilio_to, get_clinic
 
 router = APIRouter(prefix="/twilio")
 
@@ -25,6 +26,7 @@ def _abs_url(request: Request, path: str) -> str:
     if not path.startswith("/"):
         path = "/" + path
     return base + path
+
 
 def attach_status_callback(vr: VoiceResponse, request: Request) -> None:
     vr.status_callback = _abs_url(request, "/twilio/status")
@@ -57,6 +59,15 @@ def _append_turn(session: dict, role: str, text: str) -> dict:
     return session
 
 
+def _ensure_clinic_on_session(session: dict, to_number: str | None) -> dict:
+    """
+    Persist clinic_id early so all subsequent endpoints (turn/status) remain consistent.
+    """
+    if not session.get("clinic_id"):
+        session["clinic_id"] = clinic_id_from_twilio_to(to_number)
+    return session
+
+
 # =========================================================
 # Call status webhook (end-of-call logging)
 # =========================================================
@@ -82,7 +93,6 @@ async def status(request: Request) -> PlainTextResponse:
     if not call_sid:
         return PlainTextResponse("missing CallSid", status_code=400)
 
-    # ✅ Correct imports (your call_summary lives in app/tools/)
     try:
         from app.tools.call_summary import build_call_summary, summary_to_sheet_row
         from app.tools.handoff import append_summary_row
@@ -100,25 +110,26 @@ async def status(request: Request) -> PlainTextResponse:
     if session.get("call_summary_logged"):
         return PlainTextResponse("already logged")
 
-    # ✅ Attach Twilio end-of-call metadata (high value)
+    # Attach Twilio end-of-call metadata
     ended_at = datetime.utcnow().isoformat() + "Z"
     session["call_sid"] = call_sid
     session["call_status"] = call_status
     session["ended_at_utc"] = ended_at
 
-    # Common Twilio fields you WANT
     session["twilio_from"] = (form.get("From") or "").strip()
     session["twilio_to"] = (form.get("To") or "").strip()
     session["twilio_direction"] = (form.get("Direction") or "").strip()
-    session["twilio_duration_sec"] = (form.get("CallDuration") or "").strip()  # only reliable on completed
+    session["twilio_duration_sec"] = (form.get("CallDuration") or "").strip()
     session["twilio_timestamp"] = (form.get("Timestamp") or "").strip()
 
-    # ✅ Keep the full payload for debugging (never lose info)
-    # Convert form to normal dict[str,str]
+    # Keep the full payload for debugging
     try:
         session["twilio_status_payload"] = {k: str(v) for k, v in form.items()}
     except Exception:
         session["twilio_status_payload"] = {}
+
+    # Ensure clinic_id is persisted even if voice/turn never saved it
+    session = _ensure_clinic_on_session(session, session.get("twilio_to"))
 
     # Build summary + write to sheets
     try:
@@ -134,7 +145,6 @@ async def status(request: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
 
-
 # =========================================================
 # MAIN VOICE ENTRYPOINT
 # =========================================================
@@ -143,38 +153,49 @@ async def voice(request: Request):
     if request.method in ("HEAD", "GET"):
         return Response(status_code=200)
 
+    form = await request.form()
+    call_sid = (form.get("CallSid") or "").strip()
+    to_number = (form.get("To") or "").strip() or None
+
+    # Load session (so we can persist clinic_id ASAP)
+    try:
+        session = await get_session(call_sid) or {}
+    except Exception:
+        session = {}
+
+    session["call_sid"] = call_sid
+    session = _ensure_clinic_on_session(session, to_number)
+    await save_session(call_sid, session)
+
+    clinic = get_clinic(session.get("clinic_id"))
+    clinic_name = clinic.get("display_name", "the clinic")
+
     vr = VoiceResponse()
     turn_url = _abs_url(request, "/twilio/turn")
     voice_url = _abs_url(request, "/twilio/voice")
 
-    start_text = "Hi, Roch Physio speaking. How can I help today?"
+    # Greeting is clinic-specific
+    start_text = f"Hi, {clinic_name} speaking. How can I help today?"
 
-    # ✅ Always attach StatusCallback so summaries fire
-    vr.status_callback = _abs_url(request, "/twilio/status")
-    vr.status_callback_method = "POST"
+    # Always attach StatusCallback so summaries fire
+    attach_status_callback(vr, request)
 
     try:
-        # ✅ IMPORTANT: this must match where avatar.py lives
+        # ElevenLabs TTS (if available)
         from app.routes.tts_eleven import tts_eleven_url, TTSReq
 
         data = tts_eleven_url(TTSReq(text=start_text), request)
         audio_url = data["audio_url"]
-
-        # ✅ ElevenLabs audio
         vr.play(audio_url)
-
-        # ✅ Gather after audio
         vr.append(gather_speech(turn_url))
-
     except Exception as e:
-        # 🔥 This is what explains WHY you still get <Say>
         print("VOICE ELEVEN ERROR:", repr(e))
-
-        # fallback: Twilio TTS (never break the call)
         vr.append(gather_speech(turn_url, start_text))
 
     vr.redirect(voice_url, method="POST")
     return xml(vr)
+
+
 # =========================================================
 # TURN HANDLER
 # =========================================================
@@ -184,6 +205,7 @@ async def turn(request: Request):
     form = await request.form()
 
     call_sid = (form.get("CallSid") or "").strip()
+    to_number = (form.get("To") or "").strip() or None
 
     digits = (form.get("Digits") or "").strip() or None
     speech = (form.get("SpeechResult") or "").strip()
@@ -206,6 +228,9 @@ async def turn(request: Request):
         session = {}
 
     session["call_sid"] = call_sid
+    session = _ensure_clinic_on_session(session, to_number)
+    clinic = get_clinic(session.get("clinic_id"))
+
     miss = int(session.get("miss_count", 0))
 
     turn_url = _abs_url(request, "/twilio/turn")
@@ -242,6 +267,8 @@ async def turn(request: Request):
     session = _append_turn(session, "caller", user_said)
 
     try:
+        # IMPORTANT: we do NOT change your triage signature.
+        # triage_turn can read session["clinic_id"] and pick the right clinic config internally.
         reply_text, session = await triage_turn(user_said, session)
     except Exception as e:
         print("TRIAGE ERROR:", repr(e))
