@@ -61,7 +61,8 @@ def _append_turn(session: dict, role: str, text: str) -> dict:
 
 def _ensure_clinic_on_session(session: dict, to_number: str | None) -> dict:
     """
-    Persist clinic_id early so all subsequent endpoints (turn/status) remain consistent.
+    Production behavior: resolve clinic_id from Twilio 'To' number.
+    For testing Theorem on your demo number, we override clinic_id below.
     """
     if not session.get("clinic_id"):
         session["clinic_id"] = clinic_id_from_twilio_to(to_number)
@@ -128,8 +129,12 @@ async def status(request: Request) -> PlainTextResponse:
     except Exception:
         session["twilio_status_payload"] = {}
 
-    # Ensure clinic_id is persisted even if voice/turn never saved it
+    # Ensure clinic_id exists even if voice/turn never saved it
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
+
+    # 🔴 TEMP TEST OVERRIDE (REMOVE AFTER TESTING)
+    # Force Theorem on your existing Twilio demo number
+    session["clinic_id"] = "theorem"
 
     # Build summary + write to sheets
     try:
@@ -157,31 +162,34 @@ async def voice(request: Request):
     call_sid = (form.get("CallSid") or "").strip()
     to_number = (form.get("To") or "").strip() or None
 
-    # Load session (so we can persist clinic_id ASAP)
+    # Load session
     try:
         session = await get_session(call_sid) or {}
     except Exception:
         session = {}
 
-    session["call_ id"] = call_sid
+    session["call_sid"] = call_sid
+    session = _ensure_clinic_on_session(session, to_number)
+
+    # 🔴 TEMP TEST OVERRIDE (REMOVE AFTER TESTING)
+    # Force Theorem on your existing Twilio demo number
     session["clinic_id"] = "theorem"
+
     await save_session(call_sid, session)
 
-    clinic = get_clinic(session.get("clinic_id")
+    clinic = get_clinic(session.get("clinic_id"))
     clinic_name = clinic.get("display_name", "the clinic")
 
     vr = VoiceResponse()
     turn_url = _abs_url(request, "/twilio/turn")
     voice_url = _abs_url(request, "/twilio/voice")
 
-    # Greeting is clinic-specific
     start_text = f"Hi, {clinic_name} speaking. How can I help today?"
 
     # Always attach StatusCallback so summaries fire
     attach_status_callback(vr, request)
 
     try:
-        # ElevenLabs TTS (if available)
         from app.routes.tts_eleven import tts_eleven_url, TTSReq
 
         data = tts_eleven_url(TTSReq(text=start_text), request)
@@ -229,8 +237,11 @@ async def turn(request: Request):
 
     session["call_sid"] = call_sid
     session = _ensure_clinic_on_session(session, to_number)
-    clinic = get_clinic(session.get("clinic_id"))
+
+    # 🔴 TEMP TEST OVERRIDE (REMOVE AFTER TESTING)
+    # Force Theorem on your existing Twilio demo number
     session["clinic_id"] = session.get("clinic_id") or "theorem"
+    session["clinic_id"] = "theorem"
 
     miss = int(session.get("miss_count", 0))
 
@@ -268,8 +279,7 @@ async def turn(request: Request):
     session = _append_turn(session, "caller", user_said)
 
     try:
-        # IMPORTANT: we do NOT change your triage signature.
-        # triage_turn can read session["clinic_id"] and pick the right clinic config internally.
+        # triage_turn can read session["clinic_id"] and pick the right clinic internally
         reply_text, session = await triage_turn(user_said, session)
     except Exception as e:
         print("TRIAGE ERROR:", repr(e))
