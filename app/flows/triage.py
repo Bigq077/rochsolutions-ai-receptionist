@@ -19,6 +19,9 @@ import pytz
 
 from dataclasses import dataclass
 
+from typing import Dict, Any
+
+
 from app.storage.redis_store import redis_get_json
 from app.clinic_config import CLINICS
 
@@ -232,7 +235,7 @@ def _say(text: str, session: Dict[str, Any], tone: str | None = None) -> Tuple[s
 TOKENS_KEY = "google_tokens"
 DEFAULT_DURATION_MIN = 30
 
-ACTIVE_CLINIC_KEY = "active_clinic"
+ACTIVE_CLINIC_KEY = "clinic_id"
 LAST_OFFERED_SLOTS_KEY = "last_offered_slots"
 SELECTED_SLOT_KEY = "selected_slot"
 
