@@ -163,11 +163,11 @@ async def voice(request: Request):
     except Exception:
         session = {}
 
-    session["call_sid"] = call_sid
-    session = _ensure_clinic_on_session(session, to_number)
+    session["call_ id"] = call_sid
+    session["clinic_id"] = "theorem"
     await save_session(call_sid, session)
 
-    clinic = get_clinic(session.get("clinic_id"))
+    clinic = get_clinic(session.get("clinic_id")
     clinic_name = clinic.get("display_name", "the clinic")
 
     vr = VoiceResponse()
@@ -230,6 +230,7 @@ async def turn(request: Request):
     session["call_sid"] = call_sid
     session = _ensure_clinic_on_session(session, to_number)
     clinic = get_clinic(session.get("clinic_id"))
+    session["clinic_id"] = session.get("clinic_id") or "theorem"
 
     miss = int(session.get("miss_count", 0))
 
