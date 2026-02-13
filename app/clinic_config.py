@@ -545,5 +545,4 @@ def get_cancellation_policy(clinic_id: str = "theorem") -> str:
     """Get cancellation policy."""
     clinic = CLINICS.get(clinic_id, {})
     return clinic.get("cancellation_policy", "")
-```
 
