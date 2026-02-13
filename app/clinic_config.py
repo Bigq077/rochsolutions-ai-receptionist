@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Dict, Any, Optional
+import os
 
 
 def _hours_tuple(start_hour: float, end_hour: float):
@@ -17,7 +18,7 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Fill these with your actual Twilio numbers (E.164 format).
 TWILIO_TO_CLINIC: Dict[str, str] = {
     # Example:
-    # "+441234567890": "theorem",
+    # "+447870166861": "theorem",  # Theorem's actual number
     # "+1XXXXXXXXXXX": "demo",
 }
 
@@ -45,13 +46,13 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # FAQ / info
         "address": (
             "Roch Physio is located at 12 High Street, Coventry, CV1 — "
-            "a two minutes’ walk from Coventry Station."
+            "a two minutes' walk from Coventry Station."
         ),
         "parking": (
             "Paid on-street parking is available nearby, and there is a public car park opposite the clinic."
         ),
         "hours_summary": (
-            "We’re open Monday to Friday from 8am to 7pm, Saturday from 9am to 2pm, and closed on Sundays."
+            "We're open Monday to Friday from 8am to 7pm, Saturday from 9am to 2pm, and closed on Sundays."
         ),
         "pricing_summary": (
             "Initial assessment is £65 for 45 minutes. "
@@ -68,13 +69,13 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         ],
         "insurance_note": (
             "We accept Bupa, AXA Health, Vitality, Aviva and WPA. "
-            "If you’re with another insurer, we offer self-pay and can provide an invoice for reimbursement if your policy allows."
+            "If you're with another insurer, we offer self-pay and can provide an invoice for reimbursement if your policy allows."
         ),
         "common_insurers": ["Bupa", "AXA Health", "Vitality", "Aviva", "WPA"],
 
         # policies
         "cancellation_policy": (
-            "If you need to cancel or reschedule, please give at least 24 hours’ notice to avoid a late cancellation fee."
+            "If you need to cancel or reschedule, please give at least 24 hours' notice to avoid a late cancellation fee."
         ),
         "what_to_bring": (
             "Please wear comfortable clothing and bring any relevant scans, reports, or referral letters if you have them."
@@ -118,7 +119,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
         # Hours summary
         "hours_summary": (
-            "We’re open Monday to Friday from 8:30am to 9pm. "
+            "We're open Monday to Friday from 8:30am to 9pm. "
             "Currently no weekend appointments. Closed on all UK bank holidays."
         ),
         "holiday_closures": ["All UK bank holidays"],
@@ -137,7 +138,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Mark works Monday/Tuesday/Wednesday. Leanne works Thursday.",
             "Bookings are separated by clinic location in Acuity.",
             "Insurance referrals always require manual approval.",
-            "If the AI can’t fully help, direct to website and/or take a message/offer a callback/escalate to staff.",
+            "If the AI can't fully help, direct to website and/or take a message/offer a callback/escalate to staff.",
         ],
 
         # Services (from Mark)
@@ -169,7 +170,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
 
         "cancellation_policy": "24 hours cancellation policy — otherwise the full fee is charged.",
-        "what_to_bring": "If you can, bring shorts or wear loose clothing — but don’t worry if you can’t.",
+        "what_to_bring": "If you can, bring shorts or wear loose clothing — but don't worry if you can't.",
 
         # Insurance (from Mark)
         "insurance_note": (
@@ -185,9 +186,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "immediate_defer_to_human_for": ["Emergencies"],
             "emergency_message": (
                 "If this feels urgent or you have severe symptoms, please call 999 (or go to A&E). "
-                "We’re not an emergency service."
+                "We're not an emergency service."
             ),
-            # Optional: set this to Mark’s phone if you want Twilio to forward calls when needed.
+            # Optional: set this to Mark's phone if you want Twilio to forward calls when needed.
             # If you leave it None, your logic can just take a message instead.
             "escalation_forward_to_phone": None,
         },
@@ -203,7 +204,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "conversation_style": "Natural back-and-forth; detailed when appropriate.",
                 "tone": ["friendly", "reassuring", "empathetic"],
                 "must_say_sometimes": [
-                    "This is best discussed in person — I’d recommend booking an appointment."
+                    "This is best discussed in person — I'd recommend booking an appointment."
                 ],
                 "boundaries": [
                     "Informational, not diagnostic",
@@ -250,7 +251,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "notes": "Wants visibility on the above; open to learning what else is possible.",
         },
 
-        # Contact identity (from Mark’s signature)
+        # Contact identity (from Mark's signature)
         "contact_details": {
             "contact_email": "info@theoremhealth.co.uk",
             "company_number": "08116105",
@@ -259,6 +260,197 @@ CLINICS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+
+# ============================================================================
+# BOOKING SUBSYSTEM CONFIGURATION
+# ============================================================================
+
+# Acuity Scheduling configuration
+ACUITY_CONFIG = {
+    "theorem": {
+        "user_id": os.getenv("ACUITY_USER_ID"),
+        "api_key": os.getenv("ACUITY_API_KEY"),
+        # Calendar IDs for location-based or practitioner-based routing
+        "calendar_ids": {
+            "alcester": os.getenv("ACUITY_CALENDAR_ID_ALCESTER"),
+            "redditch": os.getenv("ACUITY_CALENDAR_ID_REDDITCH"),
+            "mark": os.getenv("ACUITY_CALENDAR_ID_MARK"),
+            "leanne": os.getenv("ACUITY_CALENDAR_ID_LEANNE"),
+        },
+    },
+}
+
+# Location definitions for Theorem
+THEOREM_LOCATIONS = {
+    "alcester": {
+        "id": "alcester",
+        "name": "Alcester",
+        "short_name": "Alcester",
+        "address": "Theorem Health and Wellness, The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD",
+        "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_ALCESTER"),
+    },
+    "redditch": {
+        "id": "redditch",
+        "name": "Redditch",
+        "short_name": "Redditch",
+        "address": "Theorem Health and Wellness, 51 Bromsgrove Road, Redditch, B97 4RH",
+        "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_REDDITCH"),
+    },
+}
+
+# Practitioner definitions for Theorem
+THEOREM_PRACTITIONERS = {
+    "mark": {
+        "id": "mark",
+        "name": "Mark",
+        "full_name": "Mark Dyer",
+        "title": "MSc, BSc (Hons) HCPC, Mcsp, AACP, Macs",
+        "role": "Physiotherapist & Prescriber",
+        "available_days": ["mon", "tue", "wed"],
+        "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_MARK"),
+    },
+    "leanne": {
+        "id": "leanne",
+        "name": "Leanne",
+        "role": "Physiotherapist",
+        "available_days": ["thu"],
+        "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_LEANNE"),
+    },
+}
+
+# Appointment type mappings (connects to Acuity appointment type IDs)
+THEOREM_APPOINTMENT_TYPES = {
+    "physio_assessment": {
+        "id": "physio_assessment",
+        "name": "Physiotherapy Assessment",
+        "duration_minutes": 50,
+        "price_gbp": 75.00,
+        "description": (
+            "Holistic assessment including physical mobility, strength, and emotional well-being. "
+            "We'll identify the issue and create a tailored treatment plan."
+        ),
+        "category": "physiotherapy",
+        "new_patients": True,
+        "returning_patients": True,
+        # This will be populated from Acuity after first sync
+        "acuity_appointment_type_id": None,
+    },
+    "physio_followup": {
+        "id": "physio_followup",
+        "name": "Physiotherapy Follow-up",
+        "duration_minutes": 50,
+        "price_gbp": 75.00,
+        "description": (
+            "Progress tracking and treatment plan adjustment. "
+            "We'll fine-tune your interventions for optimal recovery."
+        ),
+        "category": "physiotherapy",
+        "new_patients": False,
+        "returning_patients": True,
+        "acuity_appointment_type_id": None,
+    },
+    "remedial_rehab": {
+        "id": "remedial_rehab",
+        "name": "Remedial Rehabilitation",
+        "duration_minutes": 50,
+        "price_gbp": 65.00,
+        "description": "Expert rehabilitation instruction for ongoing recovery with our rehabilitation instructors.",
+        "category": "rehabilitation",
+        "new_patients": False,
+        "returning_patients": True,
+        "acuity_appointment_type_id": None,
+    },
+    "rehab_pt": {
+        "id": "rehab_pt",
+        "name": "Rehabilitation PT",
+        "duration_minutes": 50,
+        "price_gbp": 65.00,
+        "description": "Personal training focused on rehabilitation and strength building.",
+        "category": "rehabilitation",
+        "new_patients": False,
+        "returning_patients": True,
+        "acuity_appointment_type_id": None,
+    },
+    "prescribing": {
+        "id": "prescribing",
+        "name": "Prescribing Consultation",
+        "duration_minutes": 20,
+        "price_gbp": 12.50,
+        "description": "Medication prescription service with our qualified prescribers.",
+        "category": "prescribing",
+        "new_patients": False,
+        "returning_patients": True,
+        "acuity_appointment_type_id": None,
+    },
+    "acupuncture": {
+        "id": "acupuncture",
+        "name": "Acupuncture",
+        "duration_minutes": 50,
+        "price_gbp": 75.00,
+        "description": "Fine needles placed at specific points to balance energy flow and promote healing.",
+        "category": "physiotherapy",
+        "new_patients": False,
+        "returning_patients": True,
+        "acuity_appointment_type_id": None,
+    },
+    "psychotherapy": {
+        "id": "psychotherapy",
+        "name": "Psychotherapy",
+        "duration_minutes": 50,
+        "price_gbp": 75.00,
+        "description": (
+            "Safe space to explore thoughts and emotions using techniques "
+            "including hypnotherapy and spiritual healing."
+        ),
+        "category": "psychotherapy",
+        "new_patients": True,
+        "returning_patients": True,
+        "acuity_appointment_type_id": None,
+    },
+}
+
+# Specialist equipment surcharges (applied during session, not at booking)
+THEOREM_SURCHARGES = {
+    "shockwave": {
+        "id": "shockwave",
+        "name": "Shockwave Therapy",
+        "amount_gbp": 45.00,
+        "description": "Targeted sound waves to stimulate healing, especially for chronic tendon issues.",
+        "applied_at": "session",  # Not selected at booking, determined during assessment
+    },
+    "laser": {
+        "id": "laser",
+        "name": "Class IV Laser Therapy",
+        "amount_gbp": 45.00,
+        "description": "Powerful laser light to alleviate pain, reduce inflammation, and speed tissue repair.",
+        "applied_at": "session",
+    },
+}
+
+# UK Bank Holidays 2025-2026 (update annually)
+UK_BANK_HOLIDAYS = [
+    "2025-01-01",  # New Year's Day
+    "2025-04-18",  # Good Friday
+    "2025-04-21",  # Easter Monday
+    "2025-05-05",  # Early May Bank Holiday
+    "2025-05-26",  # Spring Bank Holiday
+    "2025-08-25",  # Summer Bank Holiday
+    "2025-12-25",  # Christmas Day
+    "2025-12-26",  # Boxing Day
+    "2026-01-01",  # New Year's Day 2026
+    "2026-04-03",  # Good Friday 2026
+    "2026-04-06",  # Easter Monday 2026
+    "2026-05-04",  # Early May Bank Holiday 2026
+    "2026-05-25",  # Spring Bank Holiday 2026
+    "2026-08-31",  # Summer Bank Holiday 2026
+    "2026-12-25",  # Christmas Day 2026
+    "2026-12-28",  # Boxing Day observed 2026
+]
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
 def get_clinic(clinic_id: Optional[str]) -> Dict[str, Any]:
     """
@@ -275,3 +467,131 @@ def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:
     """
     key = (to_number or "").strip()
     return TWILIO_TO_CLINIC.get(key, "demo")
+
+
+def get_acuity_config(clinic_id: str = "theorem") -> dict:
+    """Get Acuity configuration for clinic."""
+    return ACUITY_CONFIG.get(clinic_id, ACUITY_CONFIG.get("theorem", {}))
+
+
+def get_theorem_location(location_id: str) -> dict:
+    """Get location configuration."""
+    return THEOREM_LOCATIONS.get(location_id)
+
+
+def get_theorem_practitioner(practitioner_id: str) -> dict:
+    """Get practitioner configuration."""
+    return THEOREM_PRACTITIONERS.get(practitioner_id)
+
+
+def get_theorem_appointment_type(type_id: str) -> dict:
+    """Get appointment type configuration."""
+    return THEOREM_APPOINTMENT_TYPES.get(type_id)
+
+
+def is_practitioner_available_on_day(practitioner_id: str, day_abbrev: str) -> bool:
+    """
+    Check if practitioner works on given day.
+    
+    Args:
+        practitioner_id: "mark" or "leanne"
+        day_abbrev: "mon", "tue", "wed", "thu", "fri", "sat", "sun"
+    
+    Returns:
+        True if practitioner is available
+    """
+    prac = THEOREM_PRACTITIONERS.get(practitioner_id)
+    if not prac:
+        return False
+    return day_abbrev in prac.get("available_days", [])
+
+
+def calculate_appointment_price(
+    appointment_type_id: str,
+    include_surcharges: list = None,
+) -> float:
+    """
+    Calculate appointment price including optional surcharges.
+    
+    Args:
+        appointment_type_id: Base appointment type
+        include_surcharges: List of surcharge IDs (e.g., ["shockwave", "laser"])
+    
+    Returns:
+        Total price in GBP
+    """
+    apt_type = THEOREM_APPOINTMENT_TYPES.get(appointment_type_id)
+    if not apt_type:
+        return 0.0
+    
+    total = apt_type["price_gbp"]
+    
+    if include_surcharges:
+        for surcharge_id in include_surcharges:
+            surcharge = THEOREM_SURCHARGES.get(surcharge_id)
+            if surcharge:
+                total += surcharge["amount_gbp"]
+    
+    return total
+
+
+def get_insurance_guidance() -> str:
+    """Get insurance guidance for Theorem."""
+    clinic = CLINICS.get("theorem", {})
+    return clinic.get("insurance_note", "")
+
+
+def get_cancellation_policy(clinic_id: str = "theorem") -> str:
+    """Get cancellation policy."""
+    clinic = CLINICS.get(clinic_id, {})
+    return clinic.get("cancellation_policy", "")
+```
+
+---
+
+# File Dependencies & Upload Order
+
+Here's the dependency tree showing which files need to be created in order:
+
+## Layer 1: No Dependencies (Create First)
+```
+app/clinic_config.py  ← START HERE (paste the complete file above)
+```
+
+## Layer 2: Depends on clinic_config.py
+```
+app/booking/__init__.py
+app/booking/exceptions.py
+app/booking/models.py
+```
+
+## Layer 3: Depends on Layer 2
+```
+app/booking/utils.py       (imports from clinic_config + models)
+app/booking/interface.py   (imports from models)
+```
+
+## Layer 4: Depends on Layer 3
+```
+app/booking/providers/__init__.py
+app/booking/providers/acuity.py           (imports models, exceptions, utils)
+app/booking/providers/google_calendar.py  (imports models, exceptions, utils)
+```
+
+## Layer 5: Depends on Layer 4
+```
+app/booking/service.py  (imports models, interface, exceptions, utils, providers)
+```
+
+## Layer 6: Integration Layer (Depends on Everything Above)
+```
+app/flows/triage.py    (imports booking service + clinic_config)
+app/routes/twilio.py   (imports booking service + clinic_config)
+```
+
+## Layer 7: Tests (Depends on All Application Code)
+```
+app/tests/booking/__init__.py
+app/tests/booking/test_models.py
+app/tests/booking/test_service.py
+app/tests/booking/test_providers.py
