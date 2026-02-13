@@ -31,7 +31,36 @@ def _abs_url(request: Request, path: str) -> str:
         path = "/" + path
     return base + path
 
-
+async def create_booking_service_for_clinic(
+    clinic_id: str,
+    redis_client,
+) -> BookingService:
+    """
+    Factory to create BookingService with Acuity provider.
+    
+    Args:
+        clinic_id: Clinic identifier (e.g., "theorem")
+        redis_client: Your existing Redis client
+    
+    Returns:
+        Configured BookingService instance
+    """
+    # Get Acuity credentials from clinic_config
+    acuity_config = get_acuity_config(clinic_id)
+    
+    # Create Acuity provider
+    provider = AcuityAdapter(
+        user_id=acuity_config["user_id"],
+        api_key=acuity_config["api_key"],
+        clinic_id=clinic_id,
+    )
+    
+    # Create and return BookingService
+    return BookingService(
+        provider=provider,
+        redis_client=redis_client,
+        clinic_id=clinic_id,
+    )
 def attach_status_callback(vr: VoiceResponse, request: Request) -> None:
     vr.status_callback = _abs_url(request, "/twilio/status")
     vr.status_callback_method = "POST"
