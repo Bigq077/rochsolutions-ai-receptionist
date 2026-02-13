@@ -1,1 +1,1 @@
-
+"""Tests for booking subsystem."""
