@@ -4,7 +4,7 @@ gunicorn
 twilio
 pydantic
 python-dotenv
-
+twilio>=8.0.0
 sqlalchemy
 psycopg2-binary
 
