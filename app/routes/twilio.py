@@ -8,7 +8,6 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
-from app.booking import BookingService
 from app.booking.providers import AcuityAdapter
 from app.booking.exceptions import BookingError
 from app.clinic_config import get_acuity_config
