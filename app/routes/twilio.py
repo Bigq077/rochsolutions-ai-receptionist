@@ -8,7 +8,6 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
-from app.clinic_config import get_acuity_config
 from app.storage.redis_store import get_session, save_session
 from app.clinic_config import clinic_id_from_twilio_to, get_clinic
 
