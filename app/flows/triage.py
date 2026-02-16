@@ -120,6 +120,18 @@ NO_FRIENDLY_STARTS = (
     "you're",
 )
 
+# Add to top of triage.py (after imports)
+
+# AI Identity
+AI_NAME = "Susie"
+CLINIC_NAME = "Theorem Health"
+
+# Opening greeting
+OPENING_GREETING = (
+    f"Hi there, my name is {AI_NAME}, {CLINIC_NAME}'s AI receptionist. "
+    f"Quick question before I start: are you calling in regards to "
+    f"the Alcester clinic or the Redditch one?"
+)
 
 def _clean(text: str) -> str:
     text = re.sub(r"\s+", " ", text or "")
@@ -268,11 +280,99 @@ def _norm(text: str | None) -> str:
     t = re.sub(r"[^a-z0-9\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
-
+async def handle_location_response(request: Request, session: dict):
+    """
+    Process location selection and store in session.
+    """
+    form_data = await request.form()
+    speech_result = form_data.get("SpeechResult", "").lower()
+    
+    logger.info(f"Location response: {speech_result}")
+    
+    response = VoiceResponse()
+    
+    # Detect location from speech
+    location = None
+    
+    if "alcester" in speech_result or "alce" in speech_result:
+        location = "alcester"
+        confirmation = "Great! I've got you down for the Alcester clinic."
+    elif "redditch" in speech_result or "red" in speech_result:
+        location = "redditch"
+        confirmation = (
+            "Perfect! I've got you down for the Redditch clinic. "
+            "Just a reminder, Redditch is only open on Thursdays from 9am to 2pm."
+        )
+    else:
+        # Couldn't understand - ask again
+        gather = Gather(
+            input="speech",
+            action="/twilio/voice/location-response",
+            timeout=5,
+            speechTimeout="auto",
+            language="en-GB",
+        )
+        gather.say(
+            "Sorry, I didn't catch that. Are you calling about Alcester or Redditch?",
+            voice="Polly.Amy",
+            language="en-GB",
+        )
+        response.append(gather)
+        return Response(content=str(response), media_type="application/xml")
+    
+    # Store location in session
+    session["selected_location"] = location
+    session["location_selected"] = True
+    
+    # Confirm and continue to main triage
+    response.say(confirmation, voice="Polly.Amy", language="en-GB")
+    response.redirect("/twilio/voice/triage")  # Continue to main triage flow
+    
+    return Response(content=str(response), media_type="application/xml")
 
 def _contains_any(t: str, keywords: list[str]) -> bool:
     return any(k in t for k in keywords)
 
+async def handle_call_start(request: Request, session: dict):
+    """
+    First function called when a call comes in.
+    Greets caller and asks for location.
+    """
+    
+    # Initialize session state
+    if "location_selected" not in session:
+        session["location_selected"] = False
+        session["selected_location"] = None
+    
+    # Build TwiML response
+    response = VoiceResponse()
+    
+    # Greeting + location question
+    gather = Gather(
+        input="speech",
+        action="/twilio/voice/location-response",
+        timeout=5,
+        speechTimeout="auto",
+        language="en-GB",
+    )
+    
+    gather.say(
+        OPENING_GREETING,
+        voice="Polly.Amy",  # or your preferred voice
+        language="en-GB",
+    )
+    
+    response.append(gather)
+    
+    # Fallback if no response
+    response.say(
+        "Sorry, I didn't catch that. Let me ask again.",
+        voice="Polly.Amy",
+        language="en-GB",
+    )
+    response.redirect("/twilio/voice")
+    
+    return Response(content=str(response), media_type="application/xml")
 
 def _digits_only(s: str) -> str:
     return re.sub(r"\D", "", s or "")
