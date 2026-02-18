@@ -2289,9 +2289,8 @@ async def triage_turn(
                     end_dt=end,
                     calendar_id=get_clinic(session).get("calendar_id", "primary"),
                 )
-
-                try:
-                from app.notifications.booking_sms import send_reschedule_confirmation
+            try:
+            from app.notifications.booking_sms import send_reschedule_confirmation
                 
                 # Get old time from session
                 old_time_str = collected.get("original_appt")
