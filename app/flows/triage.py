@@ -2475,15 +2475,15 @@ async def triage_turn(
                     description=description,
                     calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
                 )
-                if event and event.get("id"):         
+                if event and event.get("id"):
                     try:
                         from app.notifications.booking_sms import send_booking_confirmation
-        
+
                         await send_booking_confirmation(
                             patient_phone=collected["phone"],
-                            patient_name=collected["name"].split()[0],  # First name only
-                            appointment_time=start,  # Your booking datetime
-                            location=get_location_label(session),  # "Alcester" or "Redditch"
+                            patient_name=collected["name"].split()[0],
+                            appointment_time=start,
+                            location=get_location_label(session),
                             service="physiotherapy",
                             practitioner="Mark",
                             is_new_patient=(collected.get("patient_type") == "NEW"),
@@ -2491,9 +2491,9 @@ async def triage_turn(
                             insurer=collected.get("insurer"),
                         )
                         logger.info(f"✅ Booking confirmation SMS sent to {collected['phone']}")
-                except Exception as e:
-                    logger.error(f"⚠️ Failed to send booking SMS: {e}")
-                    # Don't fail the booking if SMS fails - just log it
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to send booking SMS: {e}")
+                        # Don't fail the booking if SMS fails - just log it
 
             session = _reset_to_triage(session)
             return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
