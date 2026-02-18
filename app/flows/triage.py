@@ -1102,9 +1102,47 @@ NO_FRIENDLY_STARTS = (
 )
 
 
+# ... rest of your async triage_turn states above ...
+
+        # ============================================================================
+        # CANCELLATION FLOW (with SMS)
+        # ============================================================================
+        if state == "CANCELLATION_COLLECT":
+            collected["cancellation_details"] = user_said.strip()
+
+            # ... your cancellation logic here ...
+
+            try:
+                from app.notifications.booking_sms import send_cancellation_confirmation
+                from datetime import datetime
+
+                appointment_time = session.get("cancelled_appointment_time")
+                if appointment_time:
+                    appointment_dt = datetime.fromisoformat(appointment_time)
+                    now = datetime.utcnow()
+                    hours_until = (appointment_dt - now).total_seconds() / 3600
+                    is_late = hours_until < 24
+
+                    await send_cancellation_confirmation(
+                        patient_phone=collected.get("phone", "+447870166861"),
+                        patient_name=collected.get("name", "").split()[0] or "Patient",
+                        appointment_time=appointment_dt,
+                        is_late_cancellation=is_late,
+                    )
+                    logger.info(f"✅ Cancellation SMS sent")
+            except Exception as e:
+                logger.error(f"⚠️ Cancellation SMS failed: {e}")
+
+            session = _reset_to_triage(session)
+            return _say("Your appointment has been cancelled. You should receive a confirmation text shortly.", session)
+
+# ← async triage_turn function ends here (or wherever your last return is above)
+
+# ============================================================================
+# HELPER FUNCTIONS (these stay outside the async function)
+# ============================================================================
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
-
 
 def _is_high_precision_prompt(text: str) -> bool:
     t = (text or "").strip().lower()
@@ -1113,7 +1151,6 @@ def _is_high_precision_prompt(text: str) -> bool:
     if t.startswith(NO_FRIENDLY_STARTS):
         return True
     return any(p in t for p in NO_FRIENDLY_PHRASES)
-
 
 def _classify_tone(text: str) -> str:
     t = (text or "").strip().lower()
@@ -1126,7 +1163,6 @@ def _classify_tone(text: str) -> str:
     if len(t) <= 55 and any(k in t for k in ["thanks", "great", "okay", "ok", "perfect", "got it"]):
         return "ack"
     return "none"
-
 
 def _apply_tone(text: str, tone: str) -> str:
     if not text or tone == "none":
@@ -1142,11 +1178,9 @@ def _apply_tone(text: str, tone: str) -> str:
         return f"{random.choice(FRIENDLY_CHECKING)} {text}"
     return text
 
-
 def _friendly(text: str) -> str:
     text = _clean(text)
     return _apply_tone(text, _classify_tone(text))
-
 
 def _say(
     text: str,
@@ -1157,42 +1191,6 @@ def _say(
     out = _friendly(text) if tone is None else _apply_tone(text, tone)
     session["last_bot_prompt"] = out
     return out, session
-# ============================================================================
-# CANCELLATION FLOW (with SMS)
-# ============================================================================
-
-if state == "CANCELLATION_COLLECT":
-        # Collect name and date from user
-        collected["cancellation_details"] = user_said.strip()
-
-        # Try to parse and cancel
-        # ... your cancellation logic here ...
-
-        # Send cancellation SMS
-        try:
-            from app.notifications.booking_sms import send_cancellation_confirmation
-            from datetime import datetime
-
-            appointment_time = session.get("cancelled_appointment_time")
-            if appointment_time:
-                appointment_dt = datetime.fromisoformat(appointment_time)
-                now = datetime.utcnow()
-                hours_until = (appointment_dt - now).total_seconds() / 3600
-                is_late = hours_until < 24
-
-                await send_cancellation_confirmation(
-                    patient_phone=collected.get("phone", "+447870166861"),
-                    patient_name=collected.get("name", "").split()[0] or "Patient",
-                    appointment_time=appointment_dt,
-                    is_late_cancellation=is_late,
-                )
-                logger.info(f"✅ Cancellation SMS sent")
-        except Exception as e:
-            logger.error(f"⚠️ Cancellation SMS failed: {e}")
-
-        session = _reset_to_triage(session)
-        return _say("Your appointment has been cancelled. You should receive a confirmation text shortly.", session)
-
 # ============================================================================
 # SESSION KEYS & STATE CONSTANTS
 # ============================================================================
