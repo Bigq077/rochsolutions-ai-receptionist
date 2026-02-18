@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
-
+from app.tools.handoff import fire_and_forget_append_summary_row
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -283,6 +283,8 @@ async def status(request: Request) -> PlainTextResponse:
     try:
         summary = build_call_summary(session)
         row     = summary_to_sheet_row(summary)
+        fire_and_forget_append_summary_row(row)
+        logger.info(f"✅ Call summary sent to Google Sheets for {call_sid}")
         if append_summary_row(row):
             session["call_summary_logged"] = True
             await save_session(call_sid, session)
