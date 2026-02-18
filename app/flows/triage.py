@@ -1101,43 +1101,6 @@ NO_FRIENDLY_STARTS = (
     "confirmed", "all done", "you're", "you\u2019re",
 )
 
-
-# ... rest of your async triage_turn states above ...
-
-        # ============================================================================
-        # CANCELLATION FLOW (with SMS)
-        # ============================================================================
-        if state == "CANCELLATION_COLLECT":
-            collected["cancellation_details"] = user_said.strip()
-
-            # ... your cancellation logic here ...
-
-            try:
-                from app.notifications.booking_sms import send_cancellation_confirmation
-                from datetime import datetime
-
-                appointment_time = session.get("cancelled_appointment_time")
-                if appointment_time:
-                    appointment_dt = datetime.fromisoformat(appointment_time)
-                    now = datetime.utcnow()
-                    hours_until = (appointment_dt - now).total_seconds() / 3600
-                    is_late = hours_until < 24
-
-                    await send_cancellation_confirmation(
-                        patient_phone=collected.get("phone", "+447870166861"),
-                        patient_name=collected.get("name", "").split()[0] or "Patient",
-                        appointment_time=appointment_dt,
-                        is_late_cancellation=is_late,
-                    )
-                    logger.info(f"✅ Cancellation SMS sent")
-            except Exception as e:
-                logger.error(f"⚠️ Cancellation SMS failed: {e}")
-
-            session = _reset_to_triage(session)
-            return _say("Your appointment has been cancelled. You should receive a confirmation text shortly.", session)
-
-# ← async triage_turn function ends here (or wherever your last return is above)
-
 # ============================================================================
 # HELPER FUNCTIONS (these stay outside the async function)
 # ============================================================================
@@ -2099,6 +2062,33 @@ async def triage_turn(
     if state == INSURANCE_PROVIDER_STATE:
         session["state"] = INS_COLLECT_INSURER
         return await triage_turn(user_said, session, dtmf)
+
+    if state == "CANCELLATION_COLLECT":
+            collected["cancellation_details"] = user_said.strip()
+
+            try:
+                from app.notifications.booking_sms import send_cancellation_confirmation
+                from datetime import datetime
+
+                appointment_time = session.get("cancelled_appointment_time")
+                if appointment_time:
+                    appointment_dt = datetime.fromisoformat(appointment_time)
+                    now = datetime.utcnow()
+                    hours_until = (appointment_dt - now).total_seconds() / 3600
+                    is_late = hours_until < 24
+
+                    await send_cancellation_confirmation(
+                        patient_phone=collected.get("phone", "+447870166861"),
+                        patient_name=collected.get("name", "").split()[0] or "Patient",
+                        appointment_time=appointment_dt,
+                        is_late_cancellation=is_late,
+                    )
+                    logger.info(f"✅ Cancellation SMS sent")
+            except Exception as e:
+                logger.error(f"⚠️ Cancellation SMS failed: {e}")
+
+            session = _reset_to_triage(session)
+            return _say("Your appointment has been cancelled. You should receive a confirmation text shortly.", session)
 
     # ------------------------------------------------------------------
     # RESCHEDULE FLOW
