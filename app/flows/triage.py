@@ -2259,52 +2259,52 @@ async def triage_turn(
             session,
         )
     if state == RESCH_CONFIRM:
-    if not is_yes(user_said):
-        session = _reset_to_triage(session)
-        return _say("No problem. What would you like to do instead?", session)
-    label  = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
-    tokens = await redis_get_json(TOKENS_KEY)
-    if session.get("manual_reschedule"):
-        _attempt_send_to_sheet(
-            collected, user_said, session, "RESCHEDULE_REQUEST_MANUAL",
-            extra=f"Original: {collected.get('original_appt','')} → New: {label}",
-        )
-        session = _reset_to_triage(session)
-        return _say(f"I've logged your reschedule request for {label}. The clinic will confirm it shortly.", session)
-    chosen   = session.get(SELECTED_SLOT_KEY)
-    event_id = session.get("resch_event_id")
-    if tokens and event_id and chosen:
-        try:
-            start = datetime.fromisoformat(chosen["start"])
-            end   = datetime.fromisoformat(chosen["end"])
-            patch_event_time(
-                stored_tokens=tokens,
-                event_id=event_id,
-                start_dt=start,
-                end_dt=end,
-                calendar_id=get_clinic(session).get("calendar_id", "primary"),
-            )
-            try:
-                from app.notifications.booking_sms import send_reschedule_confirmation
-
-                old_time_str = collected.get("original_appt")
-                if old_time_str:
-                    old_time = _safe_parse_user_datetime(old_time_str, tz)
-                    await send_reschedule_confirmation(
-                        patient_phone=collected.get("phone", "+447870166861"),
-                        patient_name=collected.get("name", "").split()[0] or "Patient",
-                        old_time=old_time,
-                        new_time=start,
-                        location=get_location_label(session),
-                    )
-                    logger.info(f"✅ Reschedule SMS sent")
-            except Exception as e:
-                logger.error(f"⚠️ Reschedule SMS failed: {e}")
-        except Exception:
+        if not is_yes(user_said):
             session = _reset_to_triage(session)
-            return _say(f"I've logged your reschedule for {label}. The clinic will confirm it.", session)
-    session = _reset_to_triage(session)
-    return _say(f"Confirmed — you're rescheduled to {label}. We look forward to seeing you.", session)
+            return _say("No problem. What would you like to do instead?", session)
+        label  = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
+        tokens = await redis_get_json(TOKENS_KEY)
+        if session.get("manual_reschedule"):
+            _attempt_send_to_sheet(
+                collected, user_said, session, "RESCHEDULE_REQUEST_MANUAL",
+                extra=f"Original: {collected.get('original_appt','')} → New: {label}",
+            )
+            session = _reset_to_triage(session)
+            return _say(f"I've logged your reschedule request for {label}. The clinic will confirm it shortly.", session)
+        chosen   = session.get(SELECTED_SLOT_KEY)
+        event_id = session.get("resch_event_id")
+        if tokens and event_id and chosen:
+            try:
+                start = datetime.fromisoformat(chosen["start"])
+                end   = datetime.fromisoformat(chosen["end"])
+                patch_event_time(
+                    stored_tokens=tokens,
+                    event_id=event_id,
+                    start_dt=start,
+                    end_dt=end,
+                    calendar_id=get_clinic(session).get("calendar_id", "primary"),
+                )
+                try:
+                    from app.notifications.booking_sms import send_reschedule_confirmation
+
+                    old_time_str = collected.get("original_appt")
+                    if old_time_str:
+                        old_time = _safe_parse_user_datetime(old_time_str, tz)
+                        await send_reschedule_confirmation(
+                            patient_phone=collected.get("phone", "+447870166861"),
+                            patient_name=collected.get("name", "").split()[0] or "Patient",
+                            old_time=old_time,
+                            new_time=start,
+                            location=get_location_label(session),
+                        )
+                        logger.info(f"✅ Reschedule SMS sent")
+                except Exception as e:
+                    logger.error(f"⚠️ Reschedule SMS failed: {e}")
+            except Exception:
+                session = _reset_to_triage(session)
+                return _say(f"I've logged your reschedule for {label}. The clinic will confirm it.", session)
+        session = _reset_to_triage(session)
+        return _say(f"Confirmed — you're rescheduled to {label}. We look forward to seeing you.", session)
    
 
     # ------------------------------------------------------------------
