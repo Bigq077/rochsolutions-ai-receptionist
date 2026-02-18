@@ -642,3 +642,42 @@ async def create_booking_service_for_clinic(
         redis_client=redis_client,
         clinic_id=clinic_id,
     )
+# ============================================================================
+# SMS TEST ENDPOINT (for testing SMS notifications)
+# ============================================================================
+
+@router.get("/test-sms")
+async def test_sms_endpoint(phone: str = "+447870166861"):
+    """
+    Test endpoint to verify SMS is working.
+    
+    Usage: https://your-app.onrender.com/twilio/test-sms?phone=%2B447xxxxxxxxxx
+    
+    Returns: Success/failure message
+    """
+    try:
+        from app.notifications.booking_sms import send_booking_confirmation
+        from datetime import datetime, timedelta
+        
+        success = await send_booking_confirmation(
+            patient_phone=phone,
+            patient_name="Test Patient",
+            appointment_time=datetime.now() + timedelta(days=2),
+            location="Alcester",
+            service="physiotherapy",
+            practitioner="Mark",
+        )
+        
+        return {
+            "success": success,
+            "message": f"SMS sent to {phone}" if success else "SMS failed - check logs",
+            "phone": phone
+        }
+    
+    except Exception as e:
+        logger.error(f"Test SMS error: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Check Render logs for details"
+        }
