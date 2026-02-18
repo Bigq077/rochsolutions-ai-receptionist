@@ -2258,8 +2258,7 @@ async def triage_turn(
             "Shall I go ahead and reschedule that for you? Say yes to confirm or no to cancel.",
             session,
         )
-
-   if state == RESCH_CONFIRM:
+    if state == RESCH_CONFIRM:
     if not is_yes(user_said):
         session = _reset_to_triage(session)
         return _say("No problem. What would you like to do instead?", session)
@@ -2306,6 +2305,7 @@ async def triage_turn(
             return _say(f"I've logged your reschedule for {label}. The clinic will confirm it.", session)
     session = _reset_to_triage(session)
     return _say(f"Confirmed — you're rescheduled to {label}. We look forward to seeing you.", session)
+   
 
     # ------------------------------------------------------------------
     # BOOKING FLOW
