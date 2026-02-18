@@ -1,7 +1,7 @@
 # test_sms_system.py
 """
-Test script for Theorem Health SMS notification system.
-Run this to verify all SMS functionality is working correctly.
+Test script for Theorem Health Smart SMS Router System.
+Tests all 10 SMS templates with realistic call scenarios.
 """
 
 import asyncio
@@ -13,23 +13,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import SMS functions
-from app.notifications.booking_sms import (
-    send_booking_confirmation,
-    send_24hr_reminder,
-    send_same_day_reminder,
-    send_cancellation_confirmation,
-    send_reschedule_confirmation,
-    send_callback_confirmation,
-    send_first_visit_welcome,
-    send_insurance_receipt_notification,
-)
-from app.notifications.scheduler import (
-    schedule_appointment_reminders,
-    cancel_appointment_reminders,
-    send_test_reminder,
-    get_pending_reminders_count,
-    get_upcoming_reminders,
-)
+from app.notifications.smart_sms_router import send_smart_followup_sms
+from app.tools.call_summary import build_call_summary
 
 
 # ============================================================================
@@ -40,276 +25,450 @@ from app.notifications.scheduler import (
 TEST_PHONE = "+447870166861"  # ← Change to your UK mobile number
 
 # Test patient details
-TEST_PATIENT = "Sarah"
-TEST_APPOINTMENT_TIME = datetime.now() + timedelta(days=2, hours=14)  # 2 days from now at 2pm
-TEST_LOCATION = "Alcester"
+TEST_PATIENT_NAME = "Sarah"
+TEST_APPOINTMENT_TIME = datetime.now() + timedelta(days=2, hours=14)
 
 
 # ============================================================================
-# INDIVIDUAL TEST FUNCTIONS
+# HELPER FUNCTION - CREATE TEST SESSION
 # ============================================================================
 
-async def test_booking_confirmation():
-    """Test 1: Booking confirmation SMS"""
-    print("\n🧪 TEST 1: Booking Confirmation")
-    print("=" * 50)
+def create_test_session(
+    outcome: str,
+    phone: str = TEST_PHONE,
+    name: str = TEST_PATIENT_NAME,
+    reason: str = "",
+    insurer: str = "",
+    handoff_reason: str = "",
+    faq_questions: list = None,
+    duration: int = 60,
+):
+    """Create a realistic test session for different scenarios."""
     
-    success = await send_booking_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-        service="physiotherapy",
-        practitioner="Mark",
-        is_new_patient=False,
-        has_insurance=False,
+    session = {
+        "call_sid": f"TEST_{outcome}_{datetime.now().timestamp()}",
+        "session_id": "test_session",
+        "state": "TRIAGE",
+        "selected_location": "alcester",
+        "collected": {
+            "name": name,
+            "phone": phone,
+            "patient_type": "NEW",
+        },
+        "turns": [],
+        "call_status": "completed",
+        "ended_at_utc": datetime.utcnow().isoformat() + "Z",
+        "twilio_duration_sec": str(duration),
+    }
+    
+    if reason:
+        session["collected"]["reason"] = reason
+    
+    if insurer:
+        session["collected"]["insurer"] = insurer
+    
+    if faq_questions:
+        session["turns"] = [
+            {"user": q, "assistant": "Here's the answer..."} 
+            for q in faq_questions
+        ]
+    
+    # Create summary from session
+    summary = build_call_summary(session)
+    
+    # Override outcome if needed
+    summary["outcome"] = outcome
+    
+    # Add handoff data if needed
+    if handoff_reason:
+        summary["handoff"] = {
+            "manual_followup_needed": True,
+            "reason": handoff_reason,
+        }
+    
+    return session, summary
+
+
+# ============================================================================
+# TEST 1: ABANDONED BOOKING
+# ============================================================================
+
+async def test_abandoned_booking():
+    """Test: Person started booking but didn't finish."""
+    print("\n🧪 TEST 1: Abandoned Booking")
+    print("=" * 60)
+    print("Scenario: Patient gave name, phone, and reason but hung up")
+    print("Expected SMS: Encourages them to complete booking")
+    
+    session, summary = create_test_session(
+        outcome="abandoned",
+        reason="lower back pain",
+        duration=90,
     )
     
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Booking confirmation sent successfully!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Abandoned booking")
         print(f"   Sent to: {TEST_PHONE}")
-        print(f"   Check your phone for the message.")
+        print(f"   Expected: 'Hi Sarah, thanks for calling about lower back pain...'")
     else:
-        print("❌ Failed to send booking confirmation")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_24hr_reminder():
-    """Test 2: 24-hour reminder SMS"""
-    print("\n🧪 TEST 2: 24-Hour Reminder")
-    print("=" * 50)
+# ============================================================================
+# TEST 2: PRICE INQUIRY
+# ============================================================================
+
+async def test_price_inquiry():
+    """Test: Person asked about pricing."""
+    print("\n🧪 TEST 2: Price Inquiry")
+    print("=" * 60)
+    print("Scenario: Patient asked 'How much does a session cost?'")
+    print("Expected SMS: Provides pricing info (£75/50min)")
     
-    success = await send_24hr_reminder(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-        is_new_patient=True,  # Will include "what to bring"
-        has_insurance=False,
+    session, summary = create_test_session(
+        outcome="faq_only",
+        faq_questions=[
+            "How much does a physiotherapy session cost?",
+            "What are your prices?",
+        ],
+        duration=45,
     )
     
+    # Add FAQ data to summary
+    summary["faq"] = [
+        {"question": "How much does a physiotherapy session cost?"},
+        {"question": "What are your prices?"},
+    ]
+    
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ 24-hour reminder sent successfully!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Price inquiry")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...£75 for 50 minutes...'")
     else:
-        print("❌ Failed to send 24-hour reminder")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_same_day_reminder():
-    """Test 3: Same-day reminder SMS"""
-    print("\n🧪 TEST 3: Same-Day Reminder")
-    print("=" * 50)
-    
-    success = await send_same_day_reminder(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-    )
-    
-    if success:
-        print("✅ Same-day reminder sent successfully!")
-        print(f"   Sent to: {TEST_PHONE}")
-    else:
-        print("❌ Failed to send same-day reminder")
-    
-    return success
+# ============================================================================
+# TEST 3: INSURANCE INQUIRY (GENERAL)
+# ============================================================================
 
-
-async def test_insurance_booking():
-    """Test 4: Insurance booking confirmation"""
-    print("\n🧪 TEST 4: Insurance Booking Confirmation")
-    print("=" * 50)
+async def test_insurance_inquiry():
+    """Test: Person asked about insurance."""
+    print("\n🧪 TEST 3: Insurance Inquiry (AXA)")
+    print("=" * 60)
+    print("Scenario: Patient asked about using AXA Health insurance")
+    print("Expected SMS: Explains self-pay then claim back")
     
-    success = await send_booking_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-        has_insurance=True,
+    session, summary = create_test_session(
+        outcome="faq_only",
         insurer="AXA Health",
+        faq_questions=["Do you accept AXA Health insurance?"],
+        duration=50,
     )
     
+    summary["insurance"] = {"insurer_name": "AXA Health"}
+    summary["faq"] = [{"question": "Do you accept AXA Health insurance?"}]
+    
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Insurance booking confirmation sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Insurance inquiry (AXA)")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...self-pay then claim back from AXA Health...'")
     else:
-        print("❌ Failed to send insurance booking confirmation")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_new_patient_welcome():
-    """Test 5: First-time patient welcome"""
-    print("\n🧪 TEST 5: New Patient Welcome")
-    print("=" * 50)
+# ============================================================================
+# TEST 4: BUPA INQUIRY (REJECTED)
+# ============================================================================
+
+async def test_bupa_inquiry():
+    """Test: Person asked about Bupa (which we don't accept)."""
+    print("\n🧪 TEST 4: Bupa Inquiry (Not Accepted)")
+    print("=" * 60)
+    print("Scenario: Patient asked about Bupa insurance")
+    print("Expected SMS: Politely explains we don't accept Bupa")
     
-    success = await send_booking_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-        is_new_patient=True,
+    session, summary = create_test_session(
+        outcome="faq_only",
+        insurer="Bupa",
+        faq_questions=["Do you accept Bupa?"],
+        duration=40,
     )
     
+    summary["insurance"] = {"insurer_name": "Bupa"}
+    summary["faq"] = [{"question": "Do you accept Bupa?"}]
+    
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ New patient welcome sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Bupa rejection")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...unfortunately we don't accept Bupa directly...'")
     else:
-        print("❌ Failed to send new patient welcome")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_cancellation():
-    """Test 6: Cancellation confirmation"""
-    print("\n🧪 TEST 6: Cancellation Confirmation")
-    print("=" * 50)
+# ============================================================================
+# TEST 5: GENERAL INFO ONLY
+# ============================================================================
+
+async def test_general_info():
+    """Test: Person just asked general questions."""
+    print("\n🧪 TEST 5: General Info Questions")
+    print("=" * 60)
+    print("Scenario: Patient asked about hours and location")
+    print("Expected SMS: Thank you with general info")
     
-    success = await send_cancellation_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        is_late_cancellation=False,
+    session, summary = create_test_session(
+        outcome="faq_only",
+        faq_questions=[
+            "What are your opening hours?",
+            "Where are you located?",
+        ],
+        duration=35,
     )
     
+    summary["faq"] = [
+        {"question": "What are your opening hours?"},
+        {"question": "Where are you located?"},
+    ]
+    
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Cancellation confirmation sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: General info")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...glad we could help with your questions...'")
     else:
-        print("❌ Failed to send cancellation confirmation")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_late_cancellation():
-    """Test 7: Late cancellation warning"""
-    print("\n🧪 TEST 7: Late Cancellation Warning")
-    print("=" * 50)
+# ============================================================================
+# TEST 6: NO SUITABLE TIME
+# ============================================================================
+
+async def test_no_suitable_time():
+    """Test: Couldn't find appointment time that worked."""
+    print("\n🧪 TEST 6: No Suitable Time Found")
+    print("=" * 60)
+    print("Scenario: Patient wanted to book but no suitable times")
+    print("Expected SMS: Offers callback to find alternative")
     
-    success = await send_cancellation_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        is_late_cancellation=True,
+    session, summary = create_test_session(
+        outcome="manual_followup",
+        reason="knee pain",
+        handoff_reason="couldn't find suitable time slot",
+        duration=120,
     )
     
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Late cancellation warning sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: No suitable time")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...sorry we couldn't find a suitable time...'")
     else:
-        print("❌ Failed to send late cancellation warning")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_reschedule():
-    """Test 8: Reschedule confirmation"""
-    print("\n🧪 TEST 8: Reschedule Confirmation")
-    print("=" * 50)
+# ============================================================================
+# TEST 7: RESCHEDULE REQUEST
+# ============================================================================
+
+async def test_reschedule_request():
+    """Test: Person wants to reschedule appointment."""
+    print("\n🧪 TEST 7: Reschedule Request")
+    print("=" * 60)
+    print("Scenario: Patient called to reschedule existing appointment")
+    print("Expected SMS: Confirms we'll help reschedule")
     
-    old_time = TEST_APPOINTMENT_TIME
-    new_time = TEST_APPOINTMENT_TIME + timedelta(days=1)
-    
-    success = await send_reschedule_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        old_time=old_time,
-        new_time=new_time,
-        location=TEST_LOCATION,
+    session, summary = create_test_session(
+        outcome="manual_followup",
+        handoff_reason="wants to reschedule appointment",
+        duration=60,
     )
     
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Reschedule confirmation sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Reschedule request")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...thanks for calling about rescheduling...'")
     else:
-        print("❌ Failed to send reschedule confirmation")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_callback_confirmation():
-    """Test 9: Callback request confirmation"""
-    print("\n🧪 TEST 9: Callback Confirmation")
-    print("=" * 50)
+# ============================================================================
+# TEST 8: CANCELLATION REQUEST
+# ============================================================================
+
+async def test_cancellation_request():
+    """Test: Person wants to cancel appointment."""
+    print("\n🧪 TEST 8: Cancellation Request")
+    print("=" * 60)
+    print("Scenario: Patient called to cancel appointment")
+    print("Expected SMS: Asks them to call to confirm")
     
-    success = await send_callback_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
+    session, summary = create_test_session(
+        outcome="manual_followup",
+        handoff_reason="wants to cancel appointment",
+        duration=45,
     )
     
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Callback confirmation sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Cancellation request")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...thanks for calling about cancelling...'")
     else:
-        print("❌ Failed to send callback confirmation")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_insurance_receipt():
-    """Test 10: Insurance receipt notification"""
-    print("\n🧪 TEST 10: Insurance Receipt Notification")
-    print("=" * 50)
+# ============================================================================
+# TEST 9: TECHNICAL ISSUE
+# ============================================================================
+
+async def test_technical_issue():
+    """Test: Call had technical problems."""
+    print("\n🧪 TEST 9: Technical Issue / Failed Call")
+    print("=" * 60)
+    print("Scenario: Call dropped due to technical issue")
+    print("Expected SMS: Apologizes and asks them to call back")
     
-    success = await send_insurance_receipt_notification(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        insurer="AXA Health",
+    session, summary = create_test_session(
+        outcome="failed",
+        duration=30,
     )
     
+    success = await send_smart_followup_sms(session, summary)
+    
     if success:
-        print("✅ Insurance receipt notification sent!")
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: Technical issue")
         print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...sorry - we had a technical issue...'")
     else:
-        print("❌ Failed to send insurance receipt notification")
+        print("❌ Failed to send SMS")
     
     return success
 
 
-async def test_scheduler():
-    """Test 11: Reminder scheduler"""
-    print("\n🧪 TEST 11: Reminder Scheduler")
-    print("=" * 50)
+# ============================================================================
+# TEST 10: GENERAL CALLBACK
+# ============================================================================
+
+async def test_general_callback():
+    """Test: Generic callback needed."""
+    print("\n🧪 TEST 10: General Callback Request")
+    print("=" * 60)
+    print("Scenario: Patient needs callback for unspecified reason")
+    print("Expected SMS: Confirms callback will happen")
     
-    # Schedule reminders for test appointment
-    success = await schedule_appointment_reminders(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-        is_new_patient=True,
-        has_insurance=False,
+    session, summary = create_test_session(
+        outcome="manual_followup",
+        handoff_reason="needs callback to discuss options",
+        duration=75,
     )
     
-    if success:
-        print("✅ Reminders scheduled successfully!")
-        
-        # Check how many reminders are pending
-        count = await get_pending_reminders_count()
-        print(f"   Total pending reminders: {count}")
-        
-        # Get upcoming reminders
-        upcoming = await get_upcoming_reminders(limit=5)
-        print(f"   Next {len(upcoming)} reminders:")
-        for reminder in upcoming:
-            reminder_time = datetime.fromisoformat(reminder["reminder_time"])
-            print(f"     - {reminder['reminder_type']} at {reminder_time}")
-        
-        # Cancel the reminders we just scheduled (cleanup)
-        cancelled = await cancel_appointment_reminders(
-            patient_phone=TEST_PHONE,
-            appointment_time=TEST_APPOINTMENT_TIME,
-        )
-        print(f"   Cancelled {cancelled} test reminders (cleanup)")
+    success = await send_smart_followup_sms(session, summary)
     
+    if success:
+        print("✅ SMS sent successfully!")
+        print(f"   Message type: General callback")
+        print(f"   Sent to: {TEST_PHONE}")
+        print(f"   Expected: '...thanks for your message. One of our team...'")
     else:
-        print("❌ Failed to schedule reminders")
+        print("❌ Failed to send SMS")
     
     return success
+
+
+# ============================================================================
+# TEST 11: SKIP - NO PHONE
+# ============================================================================
+
+async def test_no_phone_skip():
+    """Test: Should skip SMS when no phone collected."""
+    print("\n🧪 TEST 11: No Phone Collected (Should Skip)")
+    print("=" * 60)
+    print("Scenario: Patient didn't provide phone number")
+    print("Expected: No SMS sent (returns False)")
+    
+    session, summary = create_test_session(
+        outcome="abandoned",
+        phone="",  # No phone
+        duration=60,
+    )
+    
+    session["collected"]["phone"] = ""  # Clear phone
+    
+    success = await send_smart_followup_sms(session, summary)
+    
+    if not success:  # Should return False
+        print("✅ Correctly skipped SMS (no phone number)")
+        print(f"   Expected behavior: Don't send if no phone")
+        return True
+    else:
+        print("❌ Incorrectly sent SMS without phone number")
+        return False
+
+
+# ============================================================================
+# TEST 12: SKIP - TOO SHORT
+# ============================================================================
+
+async def test_too_short_skip():
+    """Test: Should skip SMS for very short calls."""
+    print("\n🧪 TEST 12: Call Too Short (Should Skip)")
+    print("=" * 60)
+    print("Scenario: Call lasted only 8 seconds (wrong number)")
+    print("Expected: No SMS sent (returns False)")
+    
+    session, summary = create_test_session(
+        outcome="abandoned",
+        duration=8,  # Very short
+    )
+    
+    success = await send_smart_followup_sms(session, summary)
+    
+    if not success:  # Should return False
+        print("✅ Correctly skipped SMS (call too short)")
+        print(f"   Expected behavior: Don't send for <15s calls")
+        return True
+    else:
+        print("❌ Incorrectly sent SMS for short call")
+        return False
 
 
 # ============================================================================
@@ -317,56 +476,61 @@ async def test_scheduler():
 # ============================================================================
 
 async def run_all_tests():
-    """Run all SMS tests"""
-    print("\n" + "=" * 50)
-    print("   THEOREM HEALTH SMS SYSTEM TESTS")
-    print("=" * 50)
+    """Run all SMS router tests."""
+    print("\n" + "=" * 60)
+    print("   THEOREM HEALTH SMART SMS ROUTER TESTS")
+    print("=" * 60)
     print(f"\nTest phone number: {TEST_PHONE}")
-    print(f"Make sure this is YOUR number!")
-    print("\nRunning tests in 3 seconds...")
+    print(f"⚠️  IMPORTANT: Make sure this is YOUR number!")
+    print("\nThis will send ~10 SMS messages to test all scenarios.")
+    print("Each test has a 3-second delay between sends.")
+    print("\nStarting in 5 seconds...")
     print("(Ctrl+C to cancel)")
     
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
     
     results = []
     
-    # Run each test with a pause between
-    results.append(("Booking Confirmation", await test_booking_confirmation()))
+    # Run each test with pause
+    results.append(("Abandoned Booking", await test_abandoned_booking()))
+    await asyncio.sleep(3)
+    
+    results.append(("Price Inquiry", await test_price_inquiry()))
+    await asyncio.sleep(3)
+    
+    results.append(("Insurance (AXA)", await test_insurance_inquiry()))
+    await asyncio.sleep(3)
+    
+    results.append(("Bupa Rejection", await test_bupa_inquiry()))
+    await asyncio.sleep(3)
+    
+    results.append(("General Info", await test_general_info()))
+    await asyncio.sleep(3)
+    
+    results.append(("No Suitable Time", await test_no_suitable_time()))
+    await asyncio.sleep(3)
+    
+    results.append(("Reschedule Request", await test_reschedule_request()))
+    await asyncio.sleep(3)
+    
+    results.append(("Cancellation Request", await test_cancellation_request()))
+    await asyncio.sleep(3)
+    
+    results.append(("Technical Issue", await test_technical_issue()))
+    await asyncio.sleep(3)
+    
+    results.append(("General Callback", await test_general_callback()))
+    await asyncio.sleep(3)
+    
+    results.append(("Skip: No Phone", await test_no_phone_skip()))
     await asyncio.sleep(2)
     
-    results.append(("24hr Reminder", await test_24hr_reminder()))
-    await asyncio.sleep(2)
-    
-    results.append(("Same-Day Reminder", await test_same_day_reminder()))
-    await asyncio.sleep(2)
-    
-    results.append(("Insurance Booking", await test_insurance_booking()))
-    await asyncio.sleep(2)
-    
-    results.append(("New Patient Welcome", await test_new_patient_welcome()))
-    await asyncio.sleep(2)
-    
-    results.append(("Cancellation", await test_cancellation()))
-    await asyncio.sleep(2)
-    
-    results.append(("Late Cancellation", await test_late_cancellation()))
-    await asyncio.sleep(2)
-    
-    results.append(("Reschedule", await test_reschedule()))
-    await asyncio.sleep(2)
-    
-    results.append(("Callback Confirmation", await test_callback_confirmation()))
-    await asyncio.sleep(2)
-    
-    results.append(("Insurance Receipt", await test_insurance_receipt()))
-    await asyncio.sleep(2)
-    
-    results.append(("Scheduler", await test_scheduler()))
+    results.append(("Skip: Too Short", await test_too_short_skip()))
     
     # Summary
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("   TEST SUMMARY")
-    print("=" * 50)
+    print("=" * 60)
     
     passed = sum(1 for _, success in results if success)
     total = len(results)
@@ -375,34 +539,36 @@ async def run_all_tests():
         status = "✅ PASS" if success else "❌ FAIL"
         print(f"{status} - {test_name}")
     
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print(f"   {passed}/{total} tests passed")
-    print("=" * 50)
+    print("=" * 60)
     
     if passed == total:
-        print("\n🎉 ALL TESTS PASSED! SMS system is working perfectly.")
+        print("\n🎉 ALL TESTS PASSED! Smart SMS Router working perfectly.")
+        print(f"\n📱 Check {TEST_PHONE} for {passed - 2} SMS messages!")
+        print("   (2 tests correctly skipped - no phone & too short)")
     else:
-        print(f"\n⚠️  {total - passed} test(s) failed. Check the output above.")
+        print(f"\n⚠️  {total - passed} test(s) failed. Check output above.")
 
 
 async def run_single_test():
-    """Run a single quick test"""
-    print("\n📱 Quick SMS Test")
-    print("=" * 50)
-    print(f"Sending test booking confirmation to: {TEST_PHONE}")
+    """Run a single quick test."""
+    print("\n📱 Quick SMS Router Test")
+    print("=" * 60)
+    print(f"Sending abandoned booking SMS to: {TEST_PHONE}")
     
-    success = await send_booking_confirmation(
-        patient_phone=TEST_PHONE,
-        patient_name=TEST_PATIENT,
-        appointment_time=TEST_APPOINTMENT_TIME,
-        location=TEST_LOCATION,
-        service="physiotherapy",
-        practitioner="Mark",
+    session, summary = create_test_session(
+        outcome="abandoned",
+        reason="lower back pain",
+        duration=90,
     )
+    
+    success = await send_smart_followup_sms(session, summary)
     
     if success:
         print("\n✅ SMS sent successfully!")
-        print("Check your phone for the message.")
+        print("Check your phone for abandoned booking message.")
+        print("Expected: 'Hi Sarah, thanks for calling about lower back pain...'")
     else:
         print("\n❌ Failed to send SMS")
         print("Check your Twilio credentials in .env file")
@@ -413,11 +579,13 @@ async def run_single_test():
 # ============================================================================
 
 if __name__ == "__main__":
-    print("\nTHEOREM HEALTH SMS TESTING")
-    print("=" * 50)
+    print("\nTHEOREM HEALTH SMART SMS ROUTER TESTING")
+    print("=" * 60)
+    print("\nThis tests the new smart SMS system that sends different")
+    print("messages based on call outcome (abandoned, price inquiry, etc.)")
     print("\nChoose test mode:")
-    print("1. Quick test (single SMS)")
-    print("2. Full test suite (all SMS types)")
+    print("1. Quick test (single SMS - abandoned booking)")
+    print("2. Full test suite (all 12 scenarios)")
     print("3. Exit")
     
     choice = input("\nEnter choice (1-3): ").strip()
