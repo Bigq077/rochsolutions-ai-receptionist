@@ -2508,6 +2508,16 @@ async def triage_turn(
     session = _reset_to_triage(session)
     return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
 
+        except Exception as e:
+            print("BOOKING CREATE EVENT ERROR:", repr(e))
+            session = _reset_to_triage(session)
+            if not event or not event.get("id"):
+                return _say("I couldn't create the booking. Please try again.", session)
+            return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
+
+    session = _reset_to_triage(session)
+    return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
+
     # ------------------------------------------------------------------
     # Fallback for unknown state
     # ------------------------------------------------------------------
