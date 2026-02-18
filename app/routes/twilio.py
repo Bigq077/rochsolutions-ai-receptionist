@@ -235,7 +235,6 @@ def _mentions_insurance(text: str) -> bool:
 # Call status webhook (end-of-call logging)
 # =========================================================
 
-
 @router.post("/status")
 async def status(request: Request) -> PlainTextResponse:
     form = await request.form()
@@ -251,9 +250,10 @@ async def status(request: Request) -> PlainTextResponse:
     if not call_sid:
         return PlainTextResponse("missing CallSid", status_code=400)
     
-    # ✅ FIXED IMPORTS - Use fire_and_forget version
+    # ✅ UPDATED IMPORTS - Use actionable summary for Mark
     try:
-        from app.tools.call_summary import build_call_summary, summary_to_sheet_row
+        from app.tools.call_summary import build_call_summary
+        from app.tools.actionable_summary import build_actionable_summary_row
         from app.tools.handoff import fire_and_forget_append_summary_row
     except Exception as e:
         logger.error(f"STATUS IMPORT ERROR: {e}")
@@ -290,15 +290,18 @@ async def status(request: Request) -> PlainTextResponse:
     # 🔴 TEMP TEST OVERRIDE — remove after go-live
     session["clinic_id"] = "theorem"
     
-    # ✅ BUILD AND SEND SUMMARY TO GOOGLE SHEETS
+    # ✅ BUILD ACTIONABLE SUMMARY FOR MARK
     try:
+        # Build full technical summary first
         summary = build_call_summary(session)
-        row = summary_to_sheet_row(summary)
+        
+        # Convert to actionable row (business-focused for Mark)
+        row = build_actionable_summary_row(summary)
         
         # Send to Google Sheets (non-blocking)
         fire_and_forget_append_summary_row(row)
         
-        logger.info(f"✅ Call summary sent to Google Sheets for {call_sid}")
+        logger.info(f"✅ Actionable call summary sent to Google Sheets for {call_sid}")
         
         # Mark as logged
         session["call_summary_logged"] = True
@@ -308,7 +311,6 @@ async def status(request: Request) -> PlainTextResponse:
         logger.error(f"❌ CALL SUMMARY ERROR: {e}", exc_info=True)
     
     return PlainTextResponse("ok")
-
 
 # =========================================================
 # MAIN VOICE ENTRYPOINT
