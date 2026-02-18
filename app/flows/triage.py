@@ -1157,7 +1157,42 @@ def _say(
     out = _friendly(text) if tone is None else _apply_tone(text, tone)
     session["last_bot_prompt"] = out
     return out, session
+# ============================================================================
+# CANCELLATION FLOW (with SMS)
+# ============================================================================
 
+if state == "CANCELLATION_COLLECT":
+    # Collect name and date from user
+    collected["cancellation_details"] = user_said.strip()
+    
+    # Try to parse and cancel
+    # ... your cancellation logic here ...
+    
+    # Send cancellation SMS
+    try:
+        from app.notifications.booking_sms import send_cancellation_confirmation
+        from datetime import datetime
+        
+        # If you have the appointment time stored:
+        appointment_time = session.get("cancelled_appointment_time")
+        if appointment_time:
+            appointment_dt = datetime.fromisoformat(appointment_time)
+            now = datetime.utcnow()
+            hours_until = (appointment_dt - now).total_seconds() / 3600
+            is_late = hours_until < 24
+            
+            await send_cancellation_confirmation(
+                patient_phone=collected.get("phone", "+447870166861"),
+                patient_name=collected.get("name", "").split()[0] or "Patient",
+                appointment_time=appointment_dt,
+                is_late_cancellation=is_late,
+            )
+            logger.info(f"✅ Cancellation SMS sent")
+    except Exception as e:
+        logger.error(f"⚠️ Cancellation SMS failed: {e}")
+    
+    session = _reset_to_triage(session)
+    return _say("Your appointment has been cancelled. You should receive a confirmation text shortly.", session)
 
 # ============================================================================
 # SESSION KEYS & STATE CONSTANTS
@@ -2030,14 +2065,18 @@ async def triage_turn(
             session["state"] = BOOK_PATIENT_TYPE
             return _say("Sure — are you a new patient, or have you been here before?", session)
 
-        if intent == "CANCEL":
-            session = _reset_to_triage(session)
-            return _say(
-                "Sure — can I take your full name and the date and time "
-                "of the appointment you'd like to cancel?",
-                session,
-            )
-
+        if intent2 == "CANCEL":
+    # ✅ ADD SMS - Collect details first, then send cancellation SMS
+    
+    # Store that we're in cancellation flow
+            session["state"] = "CANCELLATION_COLLECT"
+            session["cancellation_started"] = True
+    
+        return _say(
+            "Sure — can I take your full name and the date and time "
+            "of the appointment you'd like to cancel?",
+            session,
+        )
         if intent == "HUMAN":
             _attempt_send_to_sheet(collected, user_said, session, "CALLBACK")
             return _say(
@@ -2250,6 +2289,34 @@ async def triage_turn(
                     end_dt=end,
                     calendar_id=get_clinic(session).get("calendar_id", "primary"),
                 )
+
+                try:
+                from app.notifications.booking_sms import send_reschedule_confirmation
+                
+                # Get old time from session
+                old_time_str = collected.get("original_appt")
+                if old_time_str:
+                    old_time = _safe_parse_user_datetime(old_time_str, tz)
+                    
+                    await send_reschedule_confirmation(
+                        patient_phone=collected.get("phone", "+447870166861"),
+                        patient_name=collected.get("name", "").split()[0] or "Patient",
+                        old_time=old_time,
+                        new_time=start,
+                        location=get_location_label(session),
+                    )
+                    logger.info(f"✅ Reschedule SMS sent")
+            except Exception as e:
+                logger.error(f"⚠️ Reschedule SMS failed: {e}")
+                        # ✅ ADD SMS CODE HERE (see below)
+            
+            except Exception:
+                session = _reset_to_triage(session)
+                return _say(f"I've logged your reschedule for {label}. The clinic will confirm it.", session)
+
+        session = _reset_to_triage(session)
+        return _say(f"Confirmed — you're rescheduled to {label}. We look forward to seeing you.", session)
+
             except Exception:
                 session = _reset_to_triage(session)
                 return _say(f"I've logged your reschedule for {label}. The clinic will confirm it.", session)
@@ -2425,7 +2492,28 @@ async def triage_turn(
                     description=description,
                     calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary"),
                 )
-
+                if event and event.get("id"):         
+                    try:
+                        from app.notifications.booking_sms import send_booking_confirmation
+        
+                        await send_booking_confirmation(
+                            patient_phone=collected["phone"],
+                            patient_name=collected["name"].split()[0],  # First name only
+                            appointment_time=start,  # Your booking datetime
+                            location=get_location_label(session),  # "Alcester" or "Redditch"
+                            service="physiotherapy",
+                            practitioner="Mark",
+                            is_new_patient=(collected.get("patient_type") == "NEW"),
+                            has_insurance=bool(collected.get("insurer")),
+                            insurer=collected.get("insurer"),
+                        )
+                        logger.info(f"✅ Booking confirmation SMS sent to {collected['phone']}")
+                      except Exception as e:
+                        logger.error(f"⚠️ Failed to send booking SMS: {e}")
+        # Don't fail the booking if SMS fails - just log it
+    
+    session = _reset_to_triage(session)
+    return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
                 session = _reset_to_triage(session)
                 if not event or not event.get("id"):
                     return _say("I couldn't create the booking. Please try again.", session)
