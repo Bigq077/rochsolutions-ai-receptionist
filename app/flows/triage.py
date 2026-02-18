@@ -2310,7 +2310,7 @@ async def triage_turn(
     # ------------------------------------------------------------------
     # BOOKING FLOW
     # ------------------------------------------------------------------
-   if state == BOOK_PATIENT_TYPE:
+    if state == BOOK_PATIENT_TYPE:
         intent_check = detect_intent(user_said)
         if intent_check in ("RESCHEDULE", "CANCEL"):
             session = _reset_to_triage(session)
@@ -2508,15 +2508,6 @@ async def triage_turn(
 
         session = _reset_to_triage(session)
         return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
-    # ------------------------------------------------------------------
-    # Fallback for unknown state
-    # ------------------------------------------------------------------
-    session = _reset_to_triage(session)
-    return _say(
-        "Sorry — I'm not sure I understood. "
-        "What would you like to do: book an appointment, ask about a treatment, or something else?",
-        session,
-    )
 
 
 # ============================================================================
