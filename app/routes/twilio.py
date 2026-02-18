@@ -4,6 +4,12 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
+from fastapi import Request
+from fastapi.responses import Response
+import logging
+
+logger = logging.getLogger(__name__)
+from datetime import datetime
 from app.tools.handoff import fire_and_forget_append_summary_row
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -229,37 +235,41 @@ def _mentions_insurance(text: str) -> bool:
 # Call status webhook (end-of-call logging)
 # =========================================================
 
+
 @router.post("/status")
 async def status(request: Request) -> PlainTextResponse:
     form = await request.form()
-
     call_sid    = (form.get("CallSid")    or "").strip()
     call_status = (form.get("CallStatus") or "").strip().lower()
-
+    
     if call_status not in (
         "completed", "busy", "failed",
         "no-answer", "no_answer", "canceled", "cancelled",
     ):
         return PlainTextResponse("ok")
-
+    
     if not call_sid:
         return PlainTextResponse("missing CallSid", status_code=400)
-
+    
+    # ✅ FIXED IMPORTS - Use fire_and_forget version
     try:
         from app.tools.call_summary import build_call_summary, summary_to_sheet_row
-        from app.tools.handoff import append_summary_row
+        from app.tools.handoff import fire_and_forget_append_summary_row
     except Exception as e:
-        print("STATUS IMPORT ERROR:", repr(e))
+        logger.error(f"STATUS IMPORT ERROR: {e}")
         return PlainTextResponse("ok")
-
+    
+    # Get session
     try:
         session = await get_session(call_sid) or {}
     except Exception:
         session = {}
-
+    
+    # Don't log same call twice
     if session.get("call_summary_logged"):
         return PlainTextResponse("already logged")
-
+    
+    # Add Twilio metadata to session
     ended_at = datetime.utcnow().isoformat() + "Z"
     session["call_sid"]             = call_sid
     session["call_status"]          = call_status
@@ -269,28 +279,34 @@ async def status(request: Request) -> PlainTextResponse:
     session["twilio_direction"]     = (form.get("Direction")    or "").strip()
     session["twilio_duration_sec"]  = (form.get("CallDuration") or "").strip()
     session["twilio_timestamp"]     = (form.get("Timestamp")    or "").strip()
-
+    
     try:
         session["twilio_status_payload"] = {k: str(v) for k, v in form.items()}
     except Exception:
         session["twilio_status_payload"] = {}
-
+    
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
-
+    
     # 🔴 TEMP TEST OVERRIDE — remove after go-live
     session["clinic_id"] = "theorem"
-
+    
+    # ✅ BUILD AND SEND SUMMARY TO GOOGLE SHEETS
     try:
         summary = build_call_summary(session)
-        row     = summary_to_sheet_row(summary)
+        row = summary_to_sheet_row(summary)
+        
+        # Send to Google Sheets (non-blocking)
         fire_and_forget_append_summary_row(row)
+        
         logger.info(f"✅ Call summary sent to Google Sheets for {call_sid}")
-        if append_summary_row(row):
-            session["call_summary_logged"] = True
-            await save_session(call_sid, session)
+        
+        # Mark as logged
+        session["call_summary_logged"] = True
+        await save_session(call_sid, session)
+        
     except Exception as e:
-        print("CALL SUMMARY ERROR:", repr(e))
-
+        logger.error(f"❌ CALL SUMMARY ERROR: {e}", exc_info=True)
+    
     return PlainTextResponse("ok")
 
 
