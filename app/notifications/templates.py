@@ -1,8 +1,7 @@
 # app/notifications/templates.py
 """
-Complete SMS templates for Theorem Health.
-Contains all booking SMS templates and smart router templates.
-NO imports from other app.notifications modules to avoid circular imports.
+COMPLETE SMS templates for Theorem Health - ALL FUNCTIONS.
+Includes booking templates, smart router templates, and helper functions.
 """
 
 from datetime import datetime
@@ -10,7 +9,7 @@ from typing import Optional
 
 
 # ============================================================================
-# BOOKING CONFIRMATION TEMPLATES (used by booking_sms.py)
+# BOOKING CONFIRMATION TEMPLATES
 # ============================================================================
 
 def format_booking_confirmation(
@@ -50,7 +49,7 @@ def format_insurance_booking_confirmation(
     service: str = "physiotherapy",
     practitioner: Optional[str] = None,
 ) -> str:
-    """Booking confirmation SMS for insurance patients."""
+    """Booking confirmation for insurance patients."""
     day_name = appointment_time.strftime("%A")
     day_num = appointment_time.strftime("%d").lstrip("0")
     month = appointment_time.strftime("%b")
@@ -72,20 +71,19 @@ def format_insurance_booking_confirmation(
     return message
 
 
-def format_new_patient_booking_confirmation(
+def format_first_visit_welcome(
     patient_name: str,
     appointment_time: datetime,
     location: str,
-    service: str = "physiotherapy",
 ) -> str:
-    """Booking confirmation for first-time patients."""
+    """Welcome message for first-time patients."""
     day_name = appointment_time.strftime("%A")
     day_num = appointment_time.strftime("%d").lstrip("0")
     month = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
     
     return (
-        f"Hi {patient_name}, welcome to Theorem Health! Your first {service} appointment is "
+        f"Hi {patient_name}, welcome to Theorem Health! Your first appointment is "
         f"{day_name} {day_num} {month} at {time_str} at our {location} clinic. "
         f"Please arrive 5 minutes early. We look forward to meeting you! "
         f"Call 07870 166861 with any questions."
@@ -100,6 +98,7 @@ def format_24hr_reminder(
     patient_name: str,
     appointment_time: datetime,
     location: str,
+    what_to_bring: bool = False,  # ← CORRECT parameter name for booking_sms.py
     is_new_patient: bool = False,
     has_insurance: bool = False,
 ) -> str:
@@ -109,7 +108,7 @@ def format_24hr_reminder(
     
     message = f"Hi {patient_name}, reminder: your physiotherapy appointment is tomorrow ({day_name}) at {time_str} at our {location} clinic."
     
-    if is_new_patient:
+    if what_to_bring or is_new_patient:
         message += " Please arrive 5 minutes early to complete paperwork."
     
     message += " Call 07870 166861 if you need to reschedule. Theorem Health"
@@ -122,12 +121,30 @@ def format_same_day_reminder(
     appointment_time: datetime,
     location: str,
 ) -> str:
-    """Same-day reminder SMS (2 hours before)."""
+    """Same-day reminder (2 hours before)."""
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
     
     return (
         f"Hi {patient_name}, reminder: your physiotherapy appointment is today at {time_str} "
         f"at our {location} clinic. See you soon! Theorem Health - 07870 166861"
+    )
+
+
+def format_insurance_reminder(patient_name: str, insurer: str) -> str:
+    """Insurance reminder (sent with 24hr reminder)."""
+    return (
+        f"Hi {patient_name}, reminder: we'll provide all documentation needed "
+        f"for your {insurer} claim. Bring your membership number if you have it. "
+        f"Theorem Health"
+    )
+
+
+def format_what_to_bring_reminder(patient_name: str) -> str:
+    """What to bring reminder for new patients."""
+    return (
+        f"Hi {patient_name}, for your first visit please bring: photo ID, "
+        f"insurance details (if claiming), and any relevant medical reports. "
+        f"Theorem Health"
     )
 
 
@@ -140,7 +157,7 @@ def format_cancellation_confirmation(
     appointment_time: datetime,
     is_late_cancellation: bool = False,
 ) -> str:
-    """Cancellation confirmation SMS."""
+    """Cancellation confirmation."""
     day_name = appointment_time.strftime("%A")
     day_num = appointment_time.strftime("%d").lstrip("0")
     month = appointment_time.strftime("%b")
@@ -156,13 +173,22 @@ def format_cancellation_confirmation(
     return message
 
 
+def format_late_cancellation_warning(patient_name: str) -> str:
+    """Late cancellation warning (within 24 hours)."""
+    return (
+        f"Hi {patient_name}, your appointment has been cancelled. "
+        f"As this was within 24 hours of your appointment, our £25 cancellation fee applies. "
+        f"Call 07870 166861 to rebook. Theorem Health"
+    )
+
+
 def format_reschedule_confirmation(
     patient_name: str,
     old_time: datetime,
     new_time: datetime,
     location: str,
 ) -> str:
-    """Reschedule confirmation SMS."""
+    """Reschedule confirmation."""
     new_day = new_time.strftime("%A")
     new_day_num = new_time.strftime("%d").lstrip("0")
     new_month = new_time.strftime("%b")
@@ -176,29 +202,53 @@ def format_reschedule_confirmation(
 
 
 # ============================================================================
-# GENERAL COMMUNICATION TEMPLATES
+# COMMUNICATION TEMPLATES
 # ============================================================================
 
 def format_callback_confirmation(patient_name: str) -> str:
-    """Callback request confirmation SMS."""
+    """Callback request confirmation."""
     if patient_name:
         return f"Hi {patient_name}, thanks for your message. One of our team will call you back shortly. Theorem Health"
     return "Thanks for your message. We'll call you back shortly. Theorem Health"
 
 
-def format_first_visit_welcome(
+def format_message_received_confirmation(patient_name: str) -> str:
+    """Message received confirmation."""
+    if patient_name:
+        return (
+            f"Hi {patient_name}, we've received your message and will respond shortly. "
+            f"Theorem Health - 07870 166861"
+        )
+    return "Message received. We'll respond shortly. Theorem Health - 07870 166861"
+
+
+# ============================================================================
+# POST-APPOINTMENT TEMPLATES
+# ============================================================================
+
+def format_post_appointment_thankyou(
     patient_name: str,
-    appointment_time: datetime,
-    location: str,
+    practitioner: Optional[str] = None,
 ) -> str:
-    """First visit welcome SMS."""
-    day_name = appointment_time.strftime("%A")
-    time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    """Thank you after appointment."""
+    message = f"Hi {patient_name}, thank you for visiting Theorem Health today"
     
+    if practitioner:
+        message += f" with {practitioner}"
+    
+    message += (
+        ". Remember to do your prescribed exercises! "
+        f"Call 07870 166861 if you have any questions."
+    )
+    
+    return message
+
+
+def format_insurance_receipt_ready(patient_name: str, insurer: str) -> str:
+    """Insurance receipt ready notification."""
     return (
-        f"Hi {patient_name}, welcome to Theorem Health! Your first appointment is {day_name} at {time_str} "
-        f"at our {location} clinic. Please arrive 5 minutes early. We look forward to meeting you! "
-        f"Call 07870 166861 with any questions."
+        f"Hi {patient_name}, your receipt and clinical notes for {insurer} "
+        f"have been emailed. Call 07870 166861 if you need anything else. Theorem Health"
     )
 
 
@@ -206,11 +256,8 @@ def format_insurance_receipt_notification(
     patient_name: str,
     insurer: str,
 ) -> str:
-    """Insurance receipt notification SMS."""
-    return (
-        f"Hi {patient_name}, your receipt and clinical notes for {insurer} have been emailed. "
-        f"Contact us at 07870 166861 if you need anything else. Theorem Health"
-    )
+    """Alias for format_insurance_receipt_ready (backward compatibility)."""
+    return format_insurance_receipt_ready(patient_name, insurer)
 
 
 # ============================================================================
@@ -222,7 +269,7 @@ def format_abandoned_booking_sms(
     reason: Optional[str] = None,
     location: Optional[str] = None,
 ) -> str:
-    """SMS for people who started booking but didn't finish."""
+    """SMS for abandoned bookings."""
     if patient_name and reason:
         return (
             f"Hi {patient_name}, thanks for calling about {reason}. "
@@ -243,7 +290,7 @@ def format_abandoned_booking_sms(
 
 
 def format_info_only_sms(patient_name: str, topics: Optional[str] = None) -> str:
-    """SMS for people who just asked questions."""
+    """SMS for FAQ-only calls."""
     if patient_name and topics:
         return (
             f"Hi {patient_name}, glad we could help with your questions about {topics}. "
@@ -262,7 +309,7 @@ def format_info_only_sms(patient_name: str, topics: Optional[str] = None) -> str
 
 
 def format_price_inquiry_sms(patient_name: str, service: Optional[str] = None) -> str:
-    """SMS for people who asked about pricing."""
+    """SMS for price inquiries."""
     if patient_name and service:
         return (
             f"Hi {patient_name}, {service} sessions are £75 for 50 minutes. "
@@ -287,7 +334,7 @@ def format_insurance_inquiry_sms(
     insurer: Optional[str] = None,
     bupa_mentioned: bool = False,
 ) -> str:
-    """SMS for people who asked about insurance."""
+    """SMS for insurance inquiries."""
     if bupa_mentioned:
         if patient_name:
             return (
@@ -329,7 +376,7 @@ def format_insurance_inquiry_sms(
 
 
 def format_no_suitable_time_sms(patient_name: str, reason: Optional[str] = None) -> str:
-    """SMS when no suitable appointment time was found."""
+    """SMS when no suitable time found."""
     if patient_name and reason:
         return (
             f"Hi {patient_name}, sorry we couldn't find a suitable time for {reason}. "
@@ -350,7 +397,7 @@ def format_no_suitable_time_sms(patient_name: str, reason: Optional[str] = None)
 
 
 def format_technical_issue_sms(patient_name: str) -> str:
-    """SMS for technical call issues."""
+    """SMS for technical issues."""
     if patient_name:
         return (
             f"Hi {patient_name}, sorry - we had a technical issue with your call. "
@@ -365,7 +412,7 @@ def format_technical_issue_sms(patient_name: str) -> str:
 
 
 def format_reschedule_request_sms(patient_name: str) -> str:
-    """SMS for people wanting to reschedule."""
+    """SMS for reschedule requests."""
     if patient_name:
         return (
             f"Hi {patient_name}, thanks for calling about rescheduling. "
@@ -380,7 +427,7 @@ def format_reschedule_request_sms(patient_name: str) -> str:
 
 
 def format_cancellation_request_sms(patient_name: str) -> str:
-    """SMS for people wanting to cancel."""
+    """SMS for cancellation requests."""
     if patient_name:
         return (
             f"Hi {patient_name}, thanks for calling about cancelling. "
@@ -395,7 +442,7 @@ def format_cancellation_request_sms(patient_name: str) -> str:
 
 
 def format_general_thankyou_sms(patient_name: str) -> str:
-    """Generic thank you SMS (fallback)."""
+    """Generic thank you SMS."""
     if patient_name:
         return (
             f"Hi {patient_name}, thanks for calling Theorem Health. "
@@ -414,7 +461,7 @@ def format_general_thankyou_sms(patient_name: str) -> str:
 # ============================================================================
 
 def get_location_short_name(location: str) -> str:
-    """Convert full location name to short version for SMS."""
+    """Convert location to short name."""
     location_lower = location.lower()
     if "alcester" in location_lower:
         return "Alcester"
