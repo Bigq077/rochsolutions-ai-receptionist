@@ -1,7 +1,7 @@
-# app/tools/actionable_summary.py
+# app/tools/actionable_summary.py - SIMPLE VERSION
 """
-Build actionable call summaries that Mark can actually use.
-Focus on outcomes, not technical details.
+Build actionable call summaries directly from session data.
+This version is simpler and more reliable.
 """
 
 from typing import Dict, Any, List
@@ -11,67 +11,73 @@ from datetime import datetime
 
 def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
     """
-    Convert full summary into actionable row for Mark.
-    
-    Columns (15 total):
-    1. Summary (human-readable one-liner)
-    2. Outcome (booked/abandoned/faq_only/etc)
-    3. Booked? (YES/NO)
-    4. Patient Name
-    5. Phone
-    6. Service/Reason (what they wanted)
-    7. Asked About Price? (YES/NO)
-    8. Has Insurance (YES/NO)
-    9. Insurance Company
-    10. Manual Followup Needed (YES/NO)
-    11. Followup Notes
-    12. Call Date
-    13. Call Duration (seconds)
-    14. Call SID
-    15. Full Details (JSON for reference)
+    Convert summary into actionable row for Mark.
+    Works directly with the data structure from build_call_summary.
     """
     
+    # Get the RAW session data if available (more reliable)
+    # build_call_summary should pass the original session in summary["_raw_session"]
+    raw_session = summary.get("_raw_session", {})
+    
+    # Collected data from conversation
+    collected = raw_session.get("collected", {}) or summary.get("patient", {}) or {}
+    
+    # Meta data about the call
     meta = summary.get("meta", {}) or {}
-    patient = summary.get("patient", {}) or {}
-    appt = summary.get("appointment", {}) or {}
-    ins = summary.get("insurance", {}) or {}
-    handoff = summary.get("handoff", {}) or {}
-    faq = summary.get("faq", []) or []
     
-    # 1. HUMAN-READABLE SUMMARY
-    summary_text = _build_human_summary(summary)
+    # =================================================================
+    # EXTRACT DATA WITH MULTIPLE FALLBACKS
+    # =================================================================
     
-    # 2. OUTCOME
+    # PATIENT NAME
+    patient_name = (
+        collected.get("name") or
+        summary.get("patient", {}).get("name") or
+        ""
+    )
+    
+    # PHONE NUMBER
+    phone = (
+        collected.get("phone") or
+        summary.get("patient", {}).get("phone") or
+        meta.get("from") or
+        ""
+    )
+    # Skip if it's a Twilio client ID
+    if phone and phone.startswith("client:"):
+        phone = ""
+    
+    # OUTCOME
     outcome = summary.get("outcome", "unknown")
     
-    # 3. BOOKED?
+    # BOOKED?
     booked = "YES" if outcome in ("booked", "rescheduled") else "NO"
     
-    # 4. PATIENT NAME
-    patient_name = patient.get("name", "")
+    # SERVICE/REASON
+    service = (
+        collected.get("reason") or
+        summary.get("appointment", {}).get("reason") or
+        summary.get("appointment", {}).get("service") or
+        ""
+    )
     
-    # 5. PHONE
-    phone = patient.get("phone", "")
+    # INSURANCE
+    insurer = (
+        collected.get("insurer") or
+        summary.get("insurance", {}).get("insurer_name") or
+        ""
+    )
+    has_insurance = "YES" if insurer else "NO"
     
-    # 6. SERVICE/REASON
-    service = appt.get("service") or appt.get("reason") or ""
-    
-    # 7. ASKED ABOUT PRICE?
-    asked_price = _check_price_questions(faq, summary)
-    
-    # 8. HAS INSURANCE
-    has_insurance = "YES" if ins.get("insurer_name") else "NO"
-    
-    # 9. INSURANCE COMPANY
-    insurance_company = ins.get("insurer_name", "")
-    
-    # 10. MANUAL FOLLOWUP NEEDED
+    # MANUAL FOLLOWUP
+    handoff = summary.get("handoff", {}) or {}
     manual_followup = "YES" if handoff.get("manual_followup_needed") else "NO"
-    
-    # 11. FOLLOWUP NOTES
     followup_notes = handoff.get("reason", "")
     
-    # 12. CALL DATE
+    # ASKED ABOUT PRICE?
+    asked_price = _detect_price_question(summary, raw_session)
+    
+    # CALL METADATA
     call_date = meta.get("ended_at_utc", "")
     if call_date:
         try:
@@ -80,141 +86,105 @@ def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         except:
             pass
     
-    # 13. CALL DURATION
     duration = meta.get("duration_sec", "")
-    
-    # 14. CALL SID
     call_sid = meta.get("call_sid", "")
     
-    # 15. FULL DETAILS (JSON)
+    # HUMAN SUMMARY
+    summary_text = _build_summary_text(
+        outcome=outcome,
+        name=patient_name,
+        service=service,
+        duration=duration,
+        handoff_notes=followup_notes,
+    )
+    
+    # FULL DETAILS
     full_details = json.dumps(summary, ensure_ascii=False)
     if len(full_details) > 45000:
         full_details = full_details[:45000] + "..."
     
+    # =================================================================
+    # RETURN ROW (15 columns)
+    # =================================================================
+    
     return [
-        summary_text,
-        outcome,
-        booked,
-        patient_name,
-        phone,
-        service,
-        asked_price,
-        has_insurance,
-        insurance_company,
-        manual_followup,
-        followup_notes,
-        call_date,
-        duration,
-        call_sid,
-        full_details,
+        summary_text,           # 1. Summary
+        outcome,                # 2. Outcome
+        booked,                 # 3. Booked?
+        patient_name,           # 4. Patient Name
+        phone,                  # 5. Phone
+        service,                # 6. Service/Reason
+        asked_price,            # 7. Asked About Price?
+        has_insurance,          # 8. Has Insurance
+        insurer,                # 9. Insurance Company
+        manual_followup,        # 10. Manual Followup Needed
+        followup_notes,         # 11. Followup Notes
+        call_date,              # 12. Call Date
+        duration,               # 13. Call Duration
+        call_sid,               # 14. Call SID
+        full_details,           # 15. Full Details (JSON)
     ]
 
 
-def _build_human_summary(summary: Dict[str, Any]) -> str:
-    """
-    Build a one-line human-readable summary.
+def _build_summary_text(outcome: str, name: str, service: str, duration: str, handoff_notes: str) -> str:
+    """Build human-readable one-liner."""
     
-    Examples:
-    - "Sarah booked physiotherapy for lower back pain (Mon 2pm)"
-    - "John asked about pricing - needs callback"
-    - "Anonymous caller - hung up after 8 seconds"
-    """
-    patient = summary.get("patient", {}) or {}
-    appt = summary.get("appointment", {}) or {}
-    outcome = summary.get("outcome", "")
+    display_name = name if name else "Anonymous caller"
     
-    name = patient.get("name") or "Anonymous caller"
-    service = appt.get("service") or appt.get("reason")
-    slot = appt.get("selected_slot")
-    
-    # Build summary based on outcome
     if outcome == "booked":
-        if service and slot:
-            return f"{name} BOOKED {service} ({slot})"
-        elif service:
-            return f"{name} BOOKED {service}"
-        else:
-            return f"{name} BOOKED appointment"
+        if service:
+            return f"{display_name} BOOKED {service}"
+        return f"{display_name} BOOKED appointment"
     
     elif outcome == "rescheduled":
-        if slot:
-            return f"{name} RESCHEDULED to {slot}"
-        else:
-            return f"{name} RESCHEDULED appointment"
+        return f"{display_name} RESCHEDULED appointment"
     
     elif outcome == "manual_followup":
-        handoff_reason = (summary.get("handoff", {}) or {}).get("reason", "")
-        if handoff_reason:
-            return f"{name} - NEEDS CALLBACK: {handoff_reason}"
-        else:
-            return f"{name} - NEEDS CALLBACK"
+        if handoff_notes:
+            return f"{display_name} - NEEDS CALLBACK: {handoff_notes}"
+        return f"{display_name} - NEEDS CALLBACK"
     
     elif outcome == "faq_only":
-        faq_topics = _extract_faq_topics(summary.get("faq", []))
-        if faq_topics:
-            return f"{name} asked about: {faq_topics}"
-        else:
-            return f"{name} - general questions only"
+        return f"{display_name} - asked questions but didn't book"
     
     elif outcome == "abandoned":
-        duration = (summary.get("meta", {}) or {}).get("duration_sec")
         try:
-            dur_int = int(duration) if duration else 0
-            if dur_int < 10:
-                return f"{name} - hung up immediately ({dur_int}s)"
-            elif dur_int < 30:
-                return f"{name} - abandoned after {dur_int}s"
+            dur = int(duration) if duration else 0
+            if dur < 10:
+                return f"{display_name} - hung up immediately ({dur}s)"
+            elif service:
+                return f"{display_name} - started booking {service} but didn't complete"
             else:
-                return f"{name} - started booking but didn't complete"
+                return f"{display_name} - abandoned booking"
         except:
-            return f"{name} - abandoned call"
+            return f"{display_name} - abandoned call"
     
     elif outcome == "failed":
-        return f"{name} - call failed (technical issue)"
+        return f"{display_name} - call failed (technical issue)"
     
     else:
-        return f"{name} - {outcome}"
+        return f"{display_name} - {outcome}"
 
 
-def _check_price_questions(faq_turns: List[Any], summary: Dict[str, Any]) -> str:
-    """Check if patient asked about pricing."""
+def _detect_price_question(summary: Dict, session: Dict) -> str:
+    """Detect if they asked about pricing."""
     
-    # Check FAQ turns for pricing questions
-    for turn in faq_turns:
-        if isinstance(turn, dict):
-            question = turn.get("question", "").lower()
-            if any(word in question for word in ["price", "cost", "how much", "fee", "charge", "expensive"]):
+    price_words = ["price", "cost", "how much", "fee", "charge", "£"]
+    
+    # Check FAQ
+    faq = summary.get("faq", []) or []
+    for item in faq:
+        if isinstance(item, dict):
+            q = item.get("question", "").lower()
+            if any(word in q for word in price_words):
                 return "YES"
     
     # Check conversation turns
-    convo = summary.get("conversation", {}) or {}
-    last_message = (convo.get("last_user_message") or "").lower()
-    if any(word in last_message for word in ["price", "cost", "how much", "fee", "charge"]):
-        return "YES"
+    turns = session.get("turns", []) or []
+    for turn in turns[-5:]:  # Last 5 turns
+        if isinstance(turn, dict):
+            user_msg = turn.get("user", "").lower()
+            if any(word in user_msg for word in price_words):
+                return "YES"
     
     return "NO"
-
-
-def _extract_faq_topics(faq_turns: List[Any]) -> str:
-    """Extract main topics from FAQ questions."""
-    topics = []
-    
-    for turn in faq_turns[:3]:  # Only first 3
-        if isinstance(turn, dict):
-            question = turn.get("question", "")
-            # Extract key words
-            q_lower = question.lower()
-            if "price" in q_lower or "cost" in q_lower:
-                topics.append("pricing")
-            elif "hour" in q_lower or "open" in q_lower:
-                topics.append("hours")
-            elif "location" in q_lower or "address" in q_lower:
-                topics.append("location")
-            elif "insurance" in q_lower:
-                topics.append("insurance")
-            elif "service" in q_lower or "treatment" in q_lower:
-                topics.append("services")
-    
-    if topics:
-        return ", ".join(topics[:3])
-    return "general info"
