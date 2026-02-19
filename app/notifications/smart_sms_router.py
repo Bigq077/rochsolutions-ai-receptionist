@@ -1,7 +1,7 @@
 # app/notifications/smart_sms_router.py
 """
-Smart SMS routing system that sends the right message for every call type.
-Analyzes call outcome, conversation content, and collected data to choose optimal template.
+Smart SMS routing system - sends the right message for every call type.
+Analyzes call outcome and conversation to choose optimal template.
 """
 
 import logging
@@ -17,17 +17,17 @@ async def send_smart_followup_sms(
     summary: Dict[str, Any],
 ) -> bool:
     """
-    Intelligently route to appropriate SMS template based on call context.
+    Route to appropriate SMS template based on call context.
     
     Args:
         session: Full session data from call
         summary: Structured summary from build_call_summary
     
     Returns:
-        True if SMS sent successfully
+        True if SMS sent successfully, False otherwise
     
-    Call Outcome → SMS Template Mapping:
-    - booked → Booking confirmation (when Acuity integrated)
+    Routing Logic:
+    - booked → Skip (will add with Acuity integration)
     - abandoned + reason → Abandoned booking SMS
     - faq_only + price_asked → Price inquiry SMS
     - faq_only + insurance → Insurance inquiry SMS
@@ -37,8 +37,8 @@ async def send_smart_followup_sms(
     - manual_followup + cancel → Cancellation request SMS
     - manual_followup → General callback SMS
     - failed → Technical issue SMS
-    - no_phone → Skip (can't send)
-    - too_short (<15s) → Skip (wrong number)
+    - no_phone → Skip
+    - too_short (<15s) → Skip
     """
     
     # Extract key data
@@ -47,12 +47,10 @@ async def send_smart_followup_sms(
     patient_name = (collected.get("name", "") or "").split()[0]  # First name only
     
     outcome = summary.get("outcome", "")
-    patient_data = summary.get("patient", {}) or {}
-    appt_data = summary.get("appointment", {}) or {}
+    meta_data = summary.get("meta", {}) or {}
     insurance_data = summary.get("insurance", {}) or {}
     handoff_data = summary.get("handoff", {}) or {}
     faq_data = summary.get("faq", []) or []
-    meta_data = summary.get("meta", {}) or {}
     
     # Get duration
     duration = 0
@@ -61,9 +59,13 @@ async def send_smart_followup_sms(
     except:
         pass
     
+    # =================================================================
+    # FILTER RULES
+    # =================================================================
+    
     # RULE 1: No phone number = can't send SMS
     if not patient_phone:
-        logger.info("📵 No phone number collected - skipping SMS")
+        logger.info("📵 No phone number - skipping SMS")
         return False
     
     # RULE 2: Call too short (<15s) = probably wrong number
@@ -71,17 +73,19 @@ async def send_smart_followup_sms(
         logger.info(f"⏱️  Call too short ({duration}s) - skipping SMS")
         return False
     
-    # RULE 3: Already booked = skip for now (will add when Acuity integrated)
+    # RULE 3: Already booked = skip for now (will add with Acuity)
     if outcome == "booked":
-        logger.info("✅ Booking completed - SMS will be added with Acuity integration")
+        logger.info("✅ Booked - SMS will be added with Acuity integration")
         return False
     
-    # RULE 4: Determine appropriate template
+    # =================================================================
+    # CHOOSE TEMPLATE
+    # =================================================================
+    
     message = _choose_template(
         outcome=outcome,
         patient_name=patient_name,
         collected=collected,
-        appt_data=appt_data,
         insurance_data=insurance_data,
         handoff_data=handoff_data,
         faq_data=faq_data,
@@ -89,10 +93,13 @@ async def send_smart_followup_sms(
     )
     
     if not message:
-        logger.warning(f"⚠️  No appropriate template found for outcome: {outcome}")
+        logger.warning(f"⚠️  No template found for outcome: {outcome}")
         return False
     
-    # RULE 5: Send the SMS
+    # =================================================================
+    # SEND SMS
+    # =================================================================
+    
     try:
         await send_sms(to=patient_phone, message=message)
         logger.info(f"✅ Smart SMS sent to {patient_phone}: {outcome}")
@@ -106,33 +113,25 @@ def _choose_template(
     outcome: str,
     patient_name: str,
     collected: Dict,
-    appt_data: Dict,
     insurance_data: Dict,
     handoff_data: Dict,
     faq_data: list,
     session: Dict,
 ) -> Optional[str]:
-    """
-    Choose the right template based on call outcome and context.
-    """
+    """Choose the right template based on call outcome."""
     
     reason = collected.get("reason", "")
     location = session.get("selected_location", "")
     insurer = insurance_data.get("insurer_name", "")
     
-    # Check if they asked about prices
+    # Detect what they asked about
     asked_about_price = _check_price_question(faq_data, session)
-    
-    # Check if they asked about insurance
     asked_about_insurance = _check_insurance_question(faq_data, insurance_data, session)
-    
-    # Check if Bupa was mentioned (we don't accept it)
     bupa_mentioned = _check_bupa_mention(faq_data, insurance_data)
     
-    # Extract FAQ topics
-    faq_topics = _extract_faq_topics(faq_data)
-    
+    # =================================================================
     # ROUTING LOGIC
+    # =================================================================
     
     # 1. ABANDONED BOOKING
     if outcome == "abandoned":
@@ -157,11 +156,12 @@ def _choose_template(
             bupa_mentioned=bupa_mentioned,
         )
     
-    # 4. FAQ ONLY - GENERAL QUESTIONS
+    # 4. FAQ ONLY - GENERAL
     elif outcome == "faq_only":
+        topics = _extract_faq_topics(faq_data)
         return templates.format_info_only_sms(
             patient_name=patient_name,
-            topics=faq_topics,
+            topics=topics,
         )
     
     # 5. MANUAL FOLLOWUP - NO SUITABLE TIME
@@ -172,52 +172,46 @@ def _choose_template(
         )
     
     # 6. MANUAL FOLLOWUP - RESCHEDULE
-    elif outcome == "manual_followup" and any(word in handoff_data.get("reason", "").lower() 
-                                              for word in ["reschedule", "change", "move"]):
-        return templates.format_reschedule_request_sms(
-            patient_name=patient_name,
-        )
+    elif outcome == "manual_followup" and any(
+        word in handoff_data.get("reason", "").lower() 
+        for word in ["reschedule", "change", "move"]
+    ):
+        return templates.format_reschedule_request_sms(patient_name=patient_name)
     
     # 7. MANUAL FOLLOWUP - CANCELLATION
-    elif outcome == "manual_followup" and any(word in handoff_data.get("reason", "").lower() 
-                                              for word in ["cancel", "cancellation"]):
-        return templates.format_cancellation_request_sms(
-            patient_name=patient_name,
-        )
+    elif outcome == "manual_followup" and any(
+        word in handoff_data.get("reason", "").lower() 
+        for word in ["cancel", "cancellation"]
+    ):
+        return templates.format_cancellation_request_sms(patient_name=patient_name)
     
     # 8. MANUAL FOLLOWUP - GENERAL
     elif outcome == "manual_followup":
-        return templates.format_callback_confirmation(
-            patient_name=patient_name,
-        )
+        return templates.format_callback_confirmation(patient_name=patient_name)
     
     # 9. TECHNICAL FAILURE
     elif outcome == "failed":
-        return templates.format_technical_issue_sms(
-            patient_name=patient_name,
-        )
+        return templates.format_technical_issue_sms(patient_name=patient_name)
     
-    # 10. FALLBACK - GENERAL THANK YOU
+    # 10. FALLBACK
     else:
-        return templates.format_general_thankyou_sms(
-            patient_name=patient_name,
-        )
+        return templates.format_general_thankyou_sms(patient_name=patient_name)
 
 
 def _check_price_question(faq_data: list, session: Dict) -> bool:
     """Check if patient asked about pricing."""
-    price_keywords = ["price", "cost", "how much", "fee", "charge", "expensive", "cheap", "afford"]
+    price_keywords = ["price", "cost", "how much", "fee", "charge", "expensive", "£"]
     
-    # Check FAQ turns
+    # Check FAQ
     for turn in faq_data:
         if isinstance(turn, dict):
             question = turn.get("question", "").lower()
             if any(keyword in question for keyword in price_keywords):
                 return True
     
-    # Check conversation turns
+    # Check conversation
     turns = session.get("turns", []) or []
-    for turn in turns[-5:]:  # Last 5 turns
+    for turn in turns[-5:]:
         if isinstance(turn, dict):
             user_msg = turn.get("user", "").lower()
             if any(keyword in user_msg for keyword in price_keywords):
@@ -234,14 +228,14 @@ def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dic
     if insurance_data.get("insurer_name"):
         return True
     
-    # Check FAQ turns
+    # Check FAQ
     for turn in faq_data:
         if isinstance(turn, dict):
             question = turn.get("question", "").lower()
             if any(keyword in question for keyword in insurance_keywords):
                 return True
     
-    # Check conversation turns
+    # Check conversation
     turns = session.get("turns", []) or []
     for turn in turns[-5:]:
         if isinstance(turn, dict):
@@ -278,7 +272,7 @@ def _extract_faq_topics(faq_data: list) -> Optional[str]:
                 if "pricing" not in topics:
                     topics.append("pricing")
             
-            elif any(word in question for word in ["hour", "open", "when", "time"]):
+            elif any(word in question for word in ["hour", "open", "when"]):
                 if "hours" not in topics:
                     topics.append("hours")
             
@@ -286,11 +280,11 @@ def _extract_faq_topics(faq_data: list) -> Optional[str]:
                 if "location" not in topics:
                     topics.append("location")
             
-            elif any(word in question for word in ["insurance", "claim"]):
+            elif "insurance" in question:
                 if "insurance" not in topics:
                     topics.append("insurance")
             
-            elif any(word in question for word in ["service", "treatment", "what do"]):
+            elif any(word in question for word in ["service", "treatment", "help with"]):
                 if "services" not in topics:
                     topics.append("services")
     
