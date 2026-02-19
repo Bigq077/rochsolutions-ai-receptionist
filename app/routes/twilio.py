@@ -230,25 +230,22 @@ def _mentions_insurance(text: str) -> bool:
     t = text.lower()
     return any(kw in t for kw in _INSURANCE_KEYWORDS)
 
-
-# =========================================================
-# Call status webhook (end-of-call logging)
-# =========================================================
-
-# UPDATED /status ENDPOINT FOR app/routes/twilio.py
+# COMPLETE /status ENDPOINT FOR app/routes/twilio.py
 # Replace your entire @router.post("/status") function with this:
 
 @router.post("/status")
 async def status(request: Request) -> PlainTextResponse:
     """
     Called by Twilio when call ends.
-    Sends call summary to Google Sheets and appropriate follow-up SMS.
+    - Builds call summary
+    - Sends actionable data to Google Sheets
+    - Sends smart follow-up SMS based on call outcome
     """
     form = await request.form()
-    call_sid    = (form.get("CallSid")    or "").strip()
+    call_sid = (form.get("CallSid") or "").strip()
     call_status = (form.get("CallStatus") or "").strip().lower()
     
-    # Only process completed/ended calls
+    # Only process ended calls
     if call_status not in (
         "completed", "busy", "failed",
         "no-answer", "no_answer", "canceled", "cancelled",
@@ -280,14 +277,14 @@ async def status(request: Request) -> PlainTextResponse:
     
     # Add Twilio metadata to session
     ended_at = datetime.utcnow().isoformat() + "Z"
-    session["call_sid"]             = call_sid
-    session["call_status"]          = call_status
-    session["ended_at_utc"]         = ended_at
-    session["twilio_from"]          = (form.get("From")         or "").strip()
-    session["twilio_to"]            = (form.get("To")           or "").strip()
-    session["twilio_direction"]     = (form.get("Direction")    or "").strip()
-    session["twilio_duration_sec"]  = (form.get("CallDuration") or "").strip()
-    session["twilio_timestamp"]     = (form.get("Timestamp")    or "").strip()
+    session["call_sid"] = call_sid
+    session["call_status"] = call_status
+    session["ended_at_utc"] = ended_at
+    session["twilio_from"] = (form.get("From") or "").strip()
+    session["twilio_to"] = (form.get("To") or "").strip()
+    session["twilio_direction"] = (form.get("Direction") or "").strip()
+    session["twilio_duration_sec"] = (form.get("CallDuration") or "").strip()
+    session["twilio_timestamp"] = (form.get("Timestamp") or "").strip()
     
     try:
         session["twilio_status_payload"] = {k: str(v) for k, v in form.items()}
@@ -296,43 +293,43 @@ async def status(request: Request) -> PlainTextResponse:
     
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
     session["clinic_id"] = "theorem"  # TEMP - remove after go-live
-
+    
     # ========================================================================
-    # SEND CALL SUMMARY TO GOOGLE SHEETS
+    # BUILD CALL SUMMARY & SEND TO GOOGLE SHEETS
     # ========================================================================
     summary = None
     try:
-        # Build full technical summary
+        # Build technical summary
         summary = build_call_summary(session)
-
-        # ✅ FIX: Pass raw session data so actionable_summary can extract fields
+        
+        # ✅ CRITICAL: Pass raw session so actionable_summary can extract data
         summary["_raw_session"] = session
-
+        
         # Convert to actionable row for Mark
         row = build_actionable_summary_row(summary)
-
+        
         # Send to Google Sheets (non-blocking)
         fire_and_forget_append_summary_row(row)
-
-        logger.info(f"✅ Actionable summary sent to Sheets: {call_sid}")
-
+        
+        logger.info(f"✅ Summary sent to Sheets: {call_sid}")
+        
     except Exception as e:
         logger.error(f"❌ SUMMARY ERROR: {e}", exc_info=True)
-
+    
     # ========================================================================
     # SEND SMART FOLLOW-UP SMS
     # ========================================================================
     try:
-        if summary:  # Only send if we successfully built summary
-            # Smart router decides which SMS template to use
+        if summary:
+            # Smart router chooses appropriate template
             await send_smart_followup_sms(session=session, summary=summary)
         else:
-            logger.warning(f"⚠️  No summary available - skipping SMS for {call_sid}")
-
+            logger.warning(f"⚠️  No summary - skipping SMS for {call_sid}")
+    
     except Exception as e:
         logger.error(f"⚠️  SMS ERROR: {e}", exc_info=True)
-        # Don't fail the status callback if SMS fails
-
+        # Don't fail status callback if SMS fails
+    
     # ========================================================================
     # MARK AS LOGGED
     # ========================================================================
@@ -341,8 +338,11 @@ async def status(request: Request) -> PlainTextResponse:
         await save_session(call_sid, session)
     except Exception as e:
         logger.error(f"Failed to save session: {e}")
-
+    
     return PlainTextResponse("ok")
+
+
+
 
 # =========================================================
 # MAIN VOICE ENTRYPOINT
