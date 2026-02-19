@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import SMS functions
-from app.notifications.smart_sms_router import send_smart_followup_sms
 from app.tools.call_summary import build_call_summary
 
 
