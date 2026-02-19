@@ -2025,7 +2025,7 @@ async def triage_turn(
             session["state"] = BOOK_PATIENT_TYPE
             return _say("Sure — are you a new patient, or have you been here before?", session)
 
-        if intent2 == "CANCEL":
+        if intent == "CANCEL":
     # ✅ ADD SMS - Collect details first, then send cancellation SMS
     
     # Store that we're in cancellation flow
