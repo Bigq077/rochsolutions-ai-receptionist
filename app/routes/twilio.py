@@ -296,29 +296,29 @@ async def status(request: Request) -> PlainTextResponse:
     
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
     session["clinic_id"] = "theorem"  # TEMP - remove after go-live
-    
+
     # ========================================================================
     # SEND CALL SUMMARY TO GOOGLE SHEETS
     # ========================================================================
-   summary = None
+    summary = None
     try:
         # Build full technical summary
         summary = build_call_summary(session)
-        
+
         # ✅ FIX: Pass raw session data so actionable_summary can extract fields
         summary["_raw_session"] = session
-        
+
         # Convert to actionable row for Mark
         row = build_actionable_summary_row(summary)
-        
+
         # Send to Google Sheets (non-blocking)
         fire_and_forget_append_summary_row(row)
-        
+
         logger.info(f"✅ Actionable summary sent to Sheets: {call_sid}")
-        
+
     except Exception as e:
         logger.error(f"❌ SUMMARY ERROR: {e}", exc_info=True)
-    
+
     # ========================================================================
     # SEND SMART FOLLOW-UP SMS
     # ========================================================================
@@ -328,11 +328,11 @@ async def status(request: Request) -> PlainTextResponse:
             await send_smart_followup_sms(session=session, summary=summary)
         else:
             logger.warning(f"⚠️  No summary available - skipping SMS for {call_sid}")
-    
+
     except Exception as e:
         logger.error(f"⚠️  SMS ERROR: {e}", exc_info=True)
         # Don't fail the status callback if SMS fails
-    
+
     # ========================================================================
     # MARK AS LOGGED
     # ========================================================================
@@ -341,7 +341,7 @@ async def status(request: Request) -> PlainTextResponse:
         await save_session(call_sid, session)
     except Exception as e:
         logger.error(f"Failed to save session: {e}")
-    
+
     return PlainTextResponse("ok")
 
 # =========================================================
