@@ -235,12 +235,20 @@ def _mentions_insurance(text: str) -> bool:
 # Call status webhook (end-of-call logging)
 # =========================================================
 
+# UPDATED /status ENDPOINT FOR app/routes/twilio.py
+# Replace your entire @router.post("/status") function with this:
+
 @router.post("/status")
 async def status(request: Request) -> PlainTextResponse:
+    """
+    Called by Twilio when call ends.
+    Sends call summary to Google Sheets and appropriate follow-up SMS.
+    """
     form = await request.form()
     call_sid    = (form.get("CallSid")    or "").strip()
     call_status = (form.get("CallStatus") or "").strip().lower()
     
+    # Only process completed/ended calls
     if call_status not in (
         "completed", "busy", "failed",
         "no-answer", "no_answer", "canceled", "cancelled",
@@ -250,22 +258,23 @@ async def status(request: Request) -> PlainTextResponse:
     if not call_sid:
         return PlainTextResponse("missing CallSid", status_code=400)
     
-    # ✅ UPDATED IMPORTS - Use actionable summary for Mark
+    # Import required modules
     try:
         from app.tools.call_summary import build_call_summary
         from app.tools.actionable_summary import build_actionable_summary_row
         from app.tools.handoff import fire_and_forget_append_summary_row
+        from app.notifications.smart_sms_router import send_smart_followup_sms
     except Exception as e:
         logger.error(f"STATUS IMPORT ERROR: {e}")
         return PlainTextResponse("ok")
     
-    # Get session
+    # Get session from Redis
     try:
         session = await get_session(call_sid) or {}
     except Exception:
         session = {}
     
-    # Don't log same call twice
+    # Don't process same call twice
     if session.get("call_summary_logged"):
         return PlainTextResponse("already logged")
     
@@ -286,29 +295,49 @@ async def status(request: Request) -> PlainTextResponse:
         session["twilio_status_payload"] = {}
     
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
+    session["clinic_id"] = "theorem"  # TEMP - remove after go-live
     
-    # 🔴 TEMP TEST OVERRIDE — remove after go-live
-    session["clinic_id"] = "theorem"
-    
-    # ✅ BUILD ACTIONABLE SUMMARY FOR MARK
+    # ========================================================================
+    # SEND CALL SUMMARY TO GOOGLE SHEETS
+    # ========================================================================
+    summary = None
     try:
-        # Build full technical summary first
+        # Build full technical summary
         summary = build_call_summary(session)
         
-        # Convert to actionable row (business-focused for Mark)
+        # Convert to actionable row for Mark
         row = build_actionable_summary_row(summary)
         
         # Send to Google Sheets (non-blocking)
         fire_and_forget_append_summary_row(row)
         
-        logger.info(f"✅ Actionable call summary sent to Google Sheets for {call_sid}")
-        
-        # Mark as logged
-        session["call_summary_logged"] = True
-        await save_session(call_sid, session)
+        logger.info(f"✅ Actionable summary sent to Sheets: {call_sid}")
         
     except Exception as e:
-        logger.error(f"❌ CALL SUMMARY ERROR: {e}", exc_info=True)
+        logger.error(f"❌ SUMMARY ERROR: {e}", exc_info=True)
+    
+    # ========================================================================
+    # SEND SMART FOLLOW-UP SMS
+    # ========================================================================
+    try:
+        if summary:  # Only send if we successfully built summary
+            # Smart router decides which SMS template to use
+            await send_smart_followup_sms(session=session, summary=summary)
+        else:
+            logger.warning(f"⚠️  No summary available - skipping SMS for {call_sid}")
+    
+    except Exception as e:
+        logger.error(f"⚠️  SMS ERROR: {e}", exc_info=True)
+        # Don't fail the status callback if SMS fails
+    
+    # ========================================================================
+    # MARK AS LOGGED
+    # ========================================================================
+    try:
+        session["call_summary_logged"] = True
+        await save_session(call_sid, session)
+    except Exception as e:
+        logger.error(f"Failed to save session: {e}")
     
     return PlainTextResponse("ok")
 
