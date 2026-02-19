@@ -18,32 +18,22 @@ async def send_smart_followup_sms(
 ) -> bool:
     """
     Route to appropriate SMS template based on call context.
-    
-    Args:
-        session: Full session data from call
-        summary: Structured summary from build_call_summary
-    
-    Returns:
-        True if SMS sent successfully, False otherwise
-    
-    Routing Logic:
-    - booked → Skip (will add with Acuity integration)
-    - abandoned + reason → Abandoned booking SMS
-    - faq_only + price_asked → Price inquiry SMS
-    - faq_only + insurance → Insurance inquiry SMS
-    - faq_only → General info SMS
-    - manual_followup + no_time → No suitable time SMS
-    - manual_followup + reschedule → Reschedule request SMS
-    - manual_followup + cancel → Cancellation request SMS
-    - manual_followup → General callback SMS
-    - failed → Technical issue SMS
-    - no_phone → Skip
-    - too_short (<15s) → Skip
     """
     
     # Extract key data
     collected = session.get("collected", {}) or {}
-    patient_phone = collected.get("phone", "")
+    
+    # ✅ FIX: Get phone from Twilio metadata (the number they're calling FROM)
+    # This is automatically available, they don't need to tell us
+    patient_phone = (
+        session.get("twilio_from", "") or  # Caller's phone number
+        collected.get("phone", "")          # Fallback to collected if available
+    )
+    
+    # Clean Twilio client IDs (if any)
+    if patient_phone and patient_phone.startswith("client:"):
+        patient_phone = ""
+    
     # Get first name safely (handle empty names)
     name = collected.get("name", "") or ""
     patient_name = name.split()[0] if name.strip() else ""
