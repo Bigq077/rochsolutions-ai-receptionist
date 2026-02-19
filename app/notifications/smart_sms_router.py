@@ -44,7 +44,9 @@ async def send_smart_followup_sms(
     # Extract key data
     collected = session.get("collected", {}) or {}
     patient_phone = collected.get("phone", "")
-    patient_name = (collected.get("name", "") or "").split()[0]  # First name only
+    # Get first name safely (handle empty names)
+    name = collected.get("name", "") or ""
+    patient_name = name.split()[0] if name.strip() else ""
     
     outcome = summary.get("outcome", "")
     meta_data = summary.get("meta", {}) or {}
