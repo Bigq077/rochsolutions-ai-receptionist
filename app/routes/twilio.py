@@ -7,7 +7,7 @@ from datetime import datetime
 from fastapi import Request
 from fastapi.responses import Response
 import logging
-
+from app.notifications.smart_sms_router import send_smart_followup_sms
 logger = logging.getLogger(__name__)
 from datetime import datetime
 from app.tools.handoff import fire_and_forget_append_summary_row
