@@ -15,7 +15,33 @@ load_dotenv()
 # Import SMS functions
 from app.tools.call_summary import build_call_summary
 
-
+def format_booking_confirmation(
+    patient_name: str,
+    appointment_time: datetime,
+    location: str,
+    service: str = "physiotherapy",
+    practitioner: Optional[str] = None,
+    is_new_patient: bool = False,
+    has_insurance: bool = False,
+    insurer: Optional[str] = None,
+) -> str:
+    """
+    Booking confirmation SMS - called by booking_sms.py
+    Kept for backwards compatibility.
+    """
+    day_name = appointment_time.strftime("%A")
+    day_num = appointment_time.strftime("%d").lstrip("0")
+    month = appointment_time.strftime("%b")
+    time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    
+    message = f"Hi {patient_name}, your {service} appointment is confirmed for {day_name} {day_num} {month} at {time_str} at our {location} clinic"
+    
+    if practitioner:
+        message += f" with {practitioner}"
+    
+    message += ". We look forward to seeing you! Theorem Health - 07870 166861"
+    
+    return message
 # ============================================================================
 # TEST CONFIGURATION
 # ============================================================================
