@@ -300,10 +300,13 @@ async def status(request: Request) -> PlainTextResponse:
     # ========================================================================
     # SEND CALL SUMMARY TO GOOGLE SHEETS
     # ========================================================================
-    summary = None
+   summary = None
     try:
         # Build full technical summary
         summary = build_call_summary(session)
+        
+        # ✅ FIX: Pass raw session data so actionable_summary can extract fields
+        summary["_raw_session"] = session
         
         # Convert to actionable row for Mark
         row = build_actionable_summary_row(summary)
