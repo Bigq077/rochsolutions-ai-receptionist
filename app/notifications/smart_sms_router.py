@@ -244,7 +244,9 @@ def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dic
 
 def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
     """Check if Bupa was specifically mentioned."""
-    if insurance_data.get("insurer_name", "").lower() == "bupa":
+    # ✅ FIX: Handle None values safely
+    insurer_name = (insurance_data or {}).get("insurer_name") or ""
+    if insurer_name.lower() == "bupa":
         return True
     
     for turn in faq_data:
