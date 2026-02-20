@@ -1,7 +1,7 @@
 # app/tools/actionable_summary.py
 """
 Build actionable call summaries for Mark.
-Extracts data directly from session to ensure accurate Google Sheets reporting.
+FIXED: Correct column alignment and data extraction.
 """
 
 from typing import Dict, Any, List
@@ -14,69 +14,73 @@ logger = logging.getLogger(__name__)
 
 def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
     """
-    Convert summary into actionable 15-column row for Mark's Google Sheet.
+    Convert summary into 15-column row for Google Sheets.
     
-    Columns:
-    1. Summary - One-line human readable
-    2. Outcome - booked/abandoned/faq_only/manual_followup/failed
-    3. Booked? - YES/NO
+    Columns (EXACT ORDER):
+    1. Summary (human-readable)
+    2. Outcome (abandoned/booked/faq_only/manual_followup)
+    3. Booked? (YES/NO)
     4. Patient Name
     5. Phone
-    6. Service/Reason - What they wanted help with
-    7. Asked About Price? - YES/NO
-    8. Has Insurance - YES/NO
-    9. Insurance Company - Name or empty
-    10. Manual Followup Needed - YES/NO
-    11. Followup Notes - Why followup needed
-    12. Call Date - Formatted timestamp
-    13. Call Duration - Seconds
-    14. Call SID - Twilio identifier
-    15. Full Details - Complete JSON for reference
+    6. Service/Reason
+    7. Asked About Price? (YES/NO)
+    8. Has Insurance (YES/NO)
+    9. Insurance Company
+    10. Manual Followup (YES/NO)
+    11. Followup Notes
+    12. Call Date
+    13. Call Duration (seconds)
+    14. Call SID
+    15. Full Details (JSON)
     """
     
-    # Get raw session data (most reliable source)
+    # Get raw session data
     raw_session = summary.get("_raw_session", {})
     
-    # Collected data from the conversation
+    # Extract sections
     collected = raw_session.get("collected", {}) or {}
-    
-    # Meta data about the call
     meta = summary.get("meta", {}) or {}
-    
-    # Summary sections
     patient_info = summary.get("patient", {}) or {}
     appt_info = summary.get("appointment", {}) or {}
     insurance_info = summary.get("insurance", {}) or {}
     handoff_info = summary.get("handoff", {}) or {}
     
     # =================================================================
-    # EXTRACT DATA WITH FALLBACKS
+    # COLUMN 1: OUTCOME (most important - extract first!)
     # =================================================================
+    outcome = summary.get("outcome", "unknown")
     
-    # PATIENT NAME - Try multiple sources
+    # =================================================================
+    # COLUMN 2: BOOKED?
+    # =================================================================
+    booked = "YES" if outcome in ("booked", "rescheduled") else "NO"
+    
+    # =================================================================
+    # COLUMN 3: PATIENT NAME
+    # =================================================================
     patient_name = (
         collected.get("name") or 
         patient_info.get("name") or 
         ""
     )
     
-    # PHONE - Try multiple sources, filter out Twilio client IDs
+    # =================================================================
+    # COLUMN 4: PHONE (from Twilio caller ID)
+    # =================================================================
     phone = (
+        raw_session.get("twilio_from") or  # Caller ID from Twilio
         collected.get("phone") or 
         patient_info.get("phone") or 
         meta.get("from") or 
         ""
     )
+    # Filter out Twilio client IDs
     if phone and phone.startswith("client:"):
-        phone = ""  # Twilio client, not real phone
+        phone = ""
     
-    # OUTCOME
-    outcome = summary.get("outcome", "unknown")
-    
-    # BOOKED?
-    booked = "YES" if outcome in ("booked", "rescheduled") else "NO"
-    
-    # SERVICE/REASON - What they called about
+    # =================================================================
+    # COLUMN 5: SERVICE/REASON
+    # =================================================================
     service = (
         collected.get("reason") or 
         appt_info.get("reason") or 
@@ -84,7 +88,14 @@ def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         ""
     )
     
-    # INSURANCE
+    # =================================================================
+    # COLUMN 6: ASKED ABOUT PRICE?
+    # =================================================================
+    asked_price = _detect_price_question(summary, raw_session)
+    
+    # =================================================================
+    # COLUMN 7: HAS INSURANCE
+    # =================================================================
     insurer = (
         collected.get("insurer") or 
         insurance_info.get("insurer_name") or 
@@ -92,14 +103,24 @@ def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
     )
     has_insurance = "YES" if insurer else "NO"
     
-    # ASKED ABOUT PRICE?
-    asked_price = _detect_price_question(summary, raw_session)
+    # =================================================================
+    # COLUMN 8: INSURANCE COMPANY
+    # =================================================================
+    insurance_company = insurer
     
-    # MANUAL FOLLOWUP
+    # =================================================================
+    # COLUMN 9: MANUAL FOLLOWUP NEEDED
+    # =================================================================
     manual_followup = "YES" if handoff_info.get("manual_followup_needed") else "NO"
+    
+    # =================================================================
+    # COLUMN 10: FOLLOWUP NOTES
+    # =================================================================
     followup_notes = handoff_info.get("reason", "")
     
-    # CALL METADATA
+    # =================================================================
+    # COLUMN 11: CALL DATE
+    # =================================================================
     call_date = meta.get("ended_at_utc", "")
     if call_date:
         try:
@@ -108,10 +129,19 @@ def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         except:
             pass
     
-    duration = meta.get("duration_sec", "")
-    call_sid = meta.get("call_sid", "")
+    # =================================================================
+    # COLUMN 12: CALL DURATION (seconds)
+    # =================================================================
+    duration = meta.get("duration_sec", "") or raw_session.get("twilio_duration_sec", "")
     
-    # HUMAN-READABLE SUMMARY
+    # =================================================================
+    # COLUMN 13: CALL SID
+    # =================================================================
+    call_sid = meta.get("call_sid", "") or raw_session.get("call_sid", "")
+    
+    # =================================================================
+    # COLUMN 14: HUMAN-READABLE SUMMARY (build at end)
+    # =================================================================
     summary_text = _build_summary_text(
         outcome=outcome,
         name=patient_name,
@@ -120,52 +150,56 @@ def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         followup_notes=followup_notes,
     )
     
-    # FULL DETAILS (JSON)
+    # =================================================================
+    # COLUMN 15: FULL DETAILS (JSON)
+    # =================================================================
     full_details = json.dumps(summary, ensure_ascii=False)
-    if len(full_details) > 45000:  # Google Sheets cell limit
+    if len(full_details) > 45000:
         full_details = full_details[:45000] + "...truncated"
     
     # =================================================================
-    # BUILD ROW
+    # BUILD ROW - EXACT ORDER MATTERS!
     # =================================================================
     
     row = [
-        summary_text,           # 1
-        outcome,                # 2
-        booked,                 # 3
-        patient_name,           # 4
-        phone,                  # 5
-        service,                # 6
-        asked_price,            # 7
-        has_insurance,          # 8
-        insurer,                # 9
-        manual_followup,        # 10
-        followup_notes,         # 11
-        call_date,              # 12
-        duration,               # 13
-        call_sid,               # 14
-        full_details,           # 15
+        summary_text,           # 1. Summary
+        outcome,                # 2. Outcome
+        booked,                 # 3. Booked?
+        patient_name,           # 4. Patient Name
+        phone,                  # 5. Phone
+        service,                # 6. Service/Reason
+        asked_price,            # 7. Asked About Price?
+        has_insurance,          # 8. Has Insurance
+        insurance_company,      # 9. Insurance Company
+        manual_followup,        # 10. Manual Followup Needed
+        followup_notes,         # 11. Followup Notes
+        call_date,              # 12. Call Date
+        duration,               # 13. Call Duration
+        call_sid,               # 14. Call SID
+        full_details,           # 15. Full Details
     ]
     
-    # Log for debugging
+    # Debug log
     logger.info(
-        f"📊 Summary row built - Name: {patient_name or 'None'}, "
-        f"Phone: {'Yes' if phone else 'No'}, "
+        f"📊 Summary row built - "
         f"Outcome: {outcome}, "
-        f"Service: {service or 'None'}"
+        f"Name: {patient_name or 'None'}, "
+        f"Phone: {'Yes' if phone else 'No'}, "
+        f"Service: {service or 'None'}, "
+        f"Duration: {duration}s"
     )
     
     return row
 
 
 def _build_summary_text(
-    outcome: str, 
-    name: str, 
-    service: str, 
-    duration: str, 
-    followup_notes: str
+    outcome: str,
+    name: str,
+    service: str,
+    duration: str,
+    followup_notes: str,
 ) -> str:
-    """Build one-line human-readable summary for Mark."""
+    """Build one-line human-readable summary."""
     
     display_name = name if name else "Anonymous caller"
     
@@ -192,10 +226,12 @@ def _build_summary_text(
             dur = int(duration) if duration else 0
             if dur < 10:
                 return f"❌ {display_name} - hung up immediately ({dur}s)"
+            elif dur < 30:
+                return f"⚠️ {display_name} - abandoned after {dur}s"
             elif service:
-                return f"⚠️ {display_name} - started booking {service} but didn't complete"
+                return f"⚠️ {display_name} - started booking {service} but abandoned ({dur}s)"
             else:
-                return f"⚠️ {display_name} - abandoned booking"
+                return f"⚠️ {display_name} - abandoned call ({dur}s)"
         except:
             return f"⚠️ {display_name} - abandoned call"
     
@@ -211,7 +247,7 @@ def _detect_price_question(summary: Dict, session: Dict) -> str:
     
     price_keywords = ["price", "cost", "how much", "fee", "charge", "£", "pound", "expensive"]
     
-    # Check FAQ turns in summary
+    # Check FAQ
     faq = summary.get("faq", []) or []
     for item in faq:
         if isinstance(item, dict):
@@ -219,7 +255,7 @@ def _detect_price_question(summary: Dict, session: Dict) -> str:
             if any(keyword in question for keyword in price_keywords):
                 return "YES"
     
-    # Check conversation turns in raw session
+    # Check conversation turns
     turns = session.get("turns", []) or []
     for turn in turns[-5:]:  # Last 5 turns
         if isinstance(turn, dict):
