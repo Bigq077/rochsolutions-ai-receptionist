@@ -44,13 +44,17 @@ async def send_smart_followup_sms(
     handoff_data = summary.get("handoff", {}) or {}
     faq_data = summary.get("faq", []) or []
     
-    # Get duration
+    # Get duration - check multiple sources like actionable_summary does
     duration = 0
     try:
-        duration = int(meta_data.get("duration_sec", 0) or 0)
+        duration_str = (
+            meta_data.get("duration_sec") or 
+            session.get("twilio_duration_sec") or 
+            "0"
+        )
+        duration = int(duration_str)
     except:
-        pass
-    
+        duration = 0
     # =================================================================
     # FILTER RULES
     # =================================================================
