@@ -114,6 +114,11 @@ def _is_expired(expiry_dt: Optional[datetime], skew_seconds: int = 90) -> bool:
 
 def creds_from_stored(data: Dict[str, Any]) -> Credentials:
     expiry_dt = _parse_expiry(data.get("expiry"))
+    # Google's Credentials class expects a NAIVE UTC datetime for expiry.
+    # Its internal helpers compare with datetime.utcnow() (naive), so passing
+    # an aware datetime causes "can't compare offset-naive and offset-aware".
+    if expiry_dt is not None:
+        expiry_dt = expiry_dt.replace(tzinfo=None)  # strip tz → naive UTC
     return Credentials(
         token=data.get("token"),
         refresh_token=data.get("refresh_token"),
@@ -121,7 +126,7 @@ def creds_from_stored(data: Dict[str, Any]) -> Credentials:
         client_id=data.get("client_id"),
         client_secret=data.get("client_secret"),
         scopes=data.get("scopes") or SCOPES,
-        expiry=expiry_dt,  # always aware UTC (or None)
+        expiry=expiry_dt,  # naive UTC, as google-auth expects
     )
 
 
@@ -131,7 +136,9 @@ def _refresh_if_needed(creds: Credentials, stored_tokens: Dict[str, Any]) -> Non
     Updates stored_tokens IN-PLACE so upstream can persist it.
     """
     try:
-        expiry_dt = creds.expiry.astimezone(timezone.utc) if creds.expiry else None
+        # creds.expiry is naive UTC (google-auth convention) — use replace() not
+        # astimezone() so we don't accidentally convert from local time.
+        expiry_dt = creds.expiry.replace(tzinfo=timezone.utc) if creds.expiry else None
         needs_refresh = _is_expired(expiry_dt)
 
         if needs_refresh:
