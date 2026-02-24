@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 import re
 
 
@@ -43,7 +43,7 @@ def _chunk(text: str, max_chars: int = 900) -> List[str]:
 def _score(query: str, chunk: str) -> float:
     """
     Very simple keyword score (no embeddings).
-    Good enough for a demo knowledge base.
+    Good enough for a per-clinic knowledge base.
     """
     q = query.lower()
     c = chunk.lower()
@@ -62,24 +62,48 @@ def _score(query: str, chunk: str) -> float:
     return float(hits + 2 * bonus)
 
 
+def _resolve_path(clinic: Optional[Dict[str, Any]] = None) -> Path:
+    """
+    Resolve which knowledge file to use.
+
+    Priority:
+      1. app/clinics/{clinic_id}/knowledge.md  (per-clinic file)
+      2. app/knowledge/clinic.md               (shared fallback)
+    """
+    if clinic:
+        clinic_id = (clinic.get("clinic_id") or "").strip()
+        if clinic_id:
+            per_clinic = Path(f"app/clinics/{clinic_id}/knowledge.md")
+            if per_clinic.exists():
+                text = per_clinic.read_text(encoding="utf-8", errors="ignore").strip()
+                if text:  # only use if non-empty
+                    return per_clinic
+    return DEFAULT_KNOWLEDGE_PATH
+
+
 def retrieve_knowledge(
     query: str,
     path: Path = DEFAULT_KNOWLEDGE_PATH,
     top_k: int = 3,
+    clinic: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
-    Returns up to top_k relevant chunks from clinic.md.
-    If file missing, returns empty string (safe).
+    Returns up to top_k relevant chunks from the clinic knowledge base.
+
+    If 'clinic' dict is provided with a 'clinic_id', tries to load from
+    app/clinics/{clinic_id}/knowledge.md first. Falls back to DEFAULT_KNOWLEDGE_PATH.
+    If file missing or empty, returns empty string (safe).
     """
+    actual_path = _resolve_path(clinic) if clinic else path
     try:
-        if not path.exists():
+        if not actual_path.exists():
             return ""
-        text = _read_text(path).strip()
+        text = _read_text(actual_path).strip()
         if not text:
             return ""
 
         chunks = _chunk(text)
-        scored: List[Tuple[float, str]] = [( _score(query, ch), ch) for ch in chunks]
+        scored: List[Tuple[float, str]] = [(_score(query, ch), ch) for ch in chunks]
         scored.sort(key=lambda x: x[0], reverse=True)
 
         best = [ch for s, ch in scored if s > 0][:top_k]
@@ -91,8 +115,3 @@ def retrieve_knowledge(
         return out[:2200]
     except Exception:
         return ""
-
-
-
-
-

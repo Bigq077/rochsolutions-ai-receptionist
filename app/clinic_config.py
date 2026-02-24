@@ -491,9 +491,13 @@ UK_BANK_HOLIDAYS = [
 def get_clinic(clinic_id: Optional[str]) -> Dict[str, Any]:
     """
     Safe getter: defaults to demo if unknown.
+    Injects 'clinic_id' into the returned dict so downstream code
+    (e.g. knowledge retrieval) can identify the clinic.
     """
     cid = (clinic_id or "demo").strip().lower()
-    return CLINICS.get(cid, CLINICS["demo"])
+    clinic = dict(CLINICS.get(cid, CLINICS["demo"]))
+    clinic["clinic_id"] = cid
+    return clinic
 
 
 def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:

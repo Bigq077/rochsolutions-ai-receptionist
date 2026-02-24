@@ -1339,10 +1339,13 @@ def _interrupt_reply(text: str, session: Dict[str, Any]) -> Tuple[str, Dict[str,
 def get_clinic(session: Dict[str, Any]) -> Dict[str, Any]:
     key = session.get(ACTIVE_CLINIC_KEY)
     if key and key in CLINICS:
-        return CLINICS[key]
-    if "demo" in CLINICS:
-        return CLINICS["demo"]
-    return next(iter(CLINICS.values()))
+        clinic = dict(CLINICS[key])
+        clinic["clinic_id"] = key
+        return clinic
+    cid = "demo" if "demo" in CLINICS else next(iter(CLINICS))
+    clinic = dict(CLINICS[cid])
+    clinic["clinic_id"] = cid
+    return clinic
 
 
 def get_tz(clinic: Dict[str, Any]):
