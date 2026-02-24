@@ -2326,7 +2326,7 @@ async def triage_turn(
 
         try:
             from app.notifications.booking_sms import send_cancellation_confirmation
-            from datetime import datetime
+            # datetime already imported at module level — no local import needed
 
             appointment_time = session.get("cancelled_appointment_time")
             if appointment_time:
@@ -2762,6 +2762,7 @@ async def triage_turn(
         tokens = await redis_get_json(TOKENS_KEY)
 
         if tokens and chosen:
+            event = None  # initialise so except block can safely reference it
             try:
                 start = datetime.fromisoformat(chosen["start"])
                 end   = datetime.fromisoformat(chosen["end"])
@@ -2775,7 +2776,7 @@ async def triage_turn(
                     f"Policy: {collected.get('policy_number', 'N/A')}",
                     f"Clinic: {clinic_obj.get('display_name', '')}",
                     f"CallSid: {session.get('call_sid', '')}",
-                    "Booked via Theorem AI receptionist.",
+                    "Booked via AI receptionist.",
                 ]
                 description = "\n".join(l for l in description_lines if l)
 
@@ -2818,22 +2819,58 @@ async def triage_turn(
                             clinic_phone=_sms_clinic.get("phone"),
                         )
                         logger.info(f"✅ Booking confirmation SMS sent to {collected['phone']}")
-                    except Exception as e:
-                        logger.error(f"⚠️ Failed to send booking SMS: {e}")
-                        # Don't fail the booking if SMS fails - just log it
+                    except Exception as sms_err:
+                        logger.error(f"⚠️ Failed to send booking SMS: {sms_err}")
+                        # Never fail the booking just because SMS failed
 
-                session = _reset_to_triage(session)
-                return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
+                    session = _reset_to_triage(session)
+                    return _say(
+                        f"Confirmed — you're booked for {label}. We look forward to seeing you.",
+                        session,
+                    )
 
-            except Exception as e:
-                print("BOOKING CREATE EVENT ERROR:", repr(e))
-                session = _reset_to_triage(session)
-                if not event or not event.get("id"):
-                    return _say("I couldn't create the booking. Please try again.", session)
-                return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
+                # create_event returned but no ID — treat as a failure
+                raise RuntimeError("create_event returned no event ID")
 
-        session = _reset_to_triage(session)
-        return _say(f"Confirmed — you're booked for {label}. We look forward to seeing you.", session)
+            except Exception as booking_err:
+                logger.error(f"BOOKING CREATE EVENT ERROR: {booking_err!r}")
+
+                fail_count = int(session.get("booking_fail_count", 0)) + 1
+                session["booking_fail_count"] = fail_count
+
+                if fail_count >= 2:
+                    # Second failure → switch to manual, ask for name + phone
+                    session["manual_booking"] = True
+                    session["manual_reason"]  = "calendar_error"
+                    session["state"]          = BOOK_NAME
+                    # Keep collected so name/phone we already have isn't lost
+                    collected.pop("name", None)
+                    collected.pop("phone", None)
+                    return _say(
+                        "I'm sorry about that — the calendar isn't cooperating. "
+                        "Could you give me your full name and phone number "
+                        "and I'll write it down for the clinic to call you back?",
+                        session,
+                    )
+
+                # First failure → stay at BOOK_CONFIRM and retry
+                session["state"] = BOOK_CONFIRM
+                return _say(
+                    "Something went wrong on my end — let me try that again. "
+                    "Say yes to confirm your booking for "
+                    f"{label}, or no to cancel.",
+                    session,
+                )
+
+        # No tokens or no chosen slot — fall back to manual
+        session["manual_booking"] = True
+        session["manual_reason"]  = "no_calendar_tokens"
+        session["state"]          = BOOK_NAME
+        return _say(
+            "I don't have calendar access right now. "
+            "Could you give me your full name and I'll log a booking request for the clinic?",
+            session,
+        )
 
 
 # ============================================================================
