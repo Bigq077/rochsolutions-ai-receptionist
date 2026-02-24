@@ -44,10 +44,12 @@ async def send_booking_confirmation(
     is_new_patient: bool = False,
     has_insurance: bool = False,
     insurer: Optional[str] = None,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> bool:
     """
     Send immediate booking confirmation SMS.
-    
+
     Args:
         patient_phone: Patient's mobile number
         patient_name: Patient's first name
@@ -58,13 +60,16 @@ async def send_booking_confirmation(
         is_new_patient: True if this is their first visit
         has_insurance: True if patient has insurance
         insurer: Insurance company name
-    
+        clinic_name: Clinic branding name for SMS sign-off
+        clinic_phone: Clinic contact number for SMS sign-off
+
     Returns:
         True if sent successfully, False otherwise
     """
     try:
         location_short = get_location_short_name(location)
-        
+        ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
+
         # Choose appropriate template
         if has_insurance and insurer:
             message = format_insurance_booking_confirmation(
@@ -72,12 +77,14 @@ async def send_booking_confirmation(
                 appointment_time=appointment_time,
                 location=location_short,
                 insurer=insurer,
+                **ck,
             )
         elif is_new_patient:
             message = format_first_visit_welcome(
                 patient_name=patient_name,
                 appointment_time=appointment_time,
                 location=location_short,
+                **ck,
             )
         else:
             message = format_booking_confirmation(
@@ -86,6 +93,7 @@ async def send_booking_confirmation(
                 location=location_short,
                 service=service,
                 practitioner=practitioner,
+                **ck,
             )
         
         await send_sms(to=patient_phone, message=message)

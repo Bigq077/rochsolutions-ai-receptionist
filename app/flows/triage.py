@@ -2533,6 +2533,7 @@ async def triage_turn(
                     try:
                         from app.notifications.booking_sms import send_booking_confirmation
 
+                        _sms_clinic = get_clinic(session)
                         await send_booking_confirmation(
                             patient_phone=collected["phone"],
                             patient_name=collected["name"].split()[0],
@@ -2543,6 +2544,8 @@ async def triage_turn(
                             is_new_patient=(collected.get("patient_type") == "NEW"),
                             has_insurance=bool(collected.get("insurer")),
                             insurer=collected.get("insurer"),
+                            clinic_name=_sms_clinic.get("sms_name") or _sms_clinic.get("display_name"),
+                            clinic_phone=_sms_clinic.get("phone"),
                         )
                         logger.info(f"✅ Booking confirmation SMS sent to {collected['phone']}")
                     except Exception as e:

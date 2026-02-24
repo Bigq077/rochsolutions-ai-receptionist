@@ -38,6 +38,14 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "calendar_id": "primary",
         "booking_system": "google_calendar",
 
+        # Branding / contact — used in SMS messages and greeting
+        "greeting": (
+            "Hi there! This is Susie, Roch Solutions' AI receptionist. "
+            "How can I help you today?"
+        ),
+        "sms_name":  "Roch Physio Clinic",
+        "phone":     "07366 530580",
+
         # booking rules
         "slot_minutes": 30,
         "days_ahead": 7,
@@ -96,6 +104,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
     "theorem": {
         "display_name": "Theorem Health and Wellness",
         "timezone": "Europe/London",
+
+        # Branding / contact — used in SMS messages
+        "sms_name": "Theorem Health",
+        "phone":    "07870 166861",
 
         # Booking system / routing
         "booking_system": "acuity",

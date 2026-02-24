@@ -38,9 +38,14 @@ HOW_CAN_I_HELP = "How can I help you today?"
 def _build_greeting(clinic: dict) -> str:
     """
     Build the opening greeting from clinic config.
+    - Custom 'greeting' field: used as-is (e.g. demo line).
     - Multi-location clinic: introduce Susie and ask which location.
     - Single-location clinic: simple greeting using display_name.
     """
+    # Custom greeting overrides everything (set in clinic config)
+    if clinic.get("greeting"):
+        return clinic["greeting"]
+
     name = clinic.get("display_name", "the clinic")
     locations = clinic.get("locations", [])
     if locations:
@@ -50,7 +55,7 @@ def _build_greeting(clinic: dict) -> str:
             f"Quick question before I start — "
             f"are you calling about our {loc_names} clinic?"
         )
-    return f"Hi, {name} speaking. How can I help today?"
+    return f"Hi there! This is {AI_NAME}, {name}'s AI receptionist. How can I help you today?"
 
 
 def _build_location_confirmation(location_id: str, clinic: dict) -> str:

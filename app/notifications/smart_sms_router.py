@@ -8,6 +8,7 @@ import logging
 from typing import Dict, Any, Optional
 from app.notifications.booking_sms import send_sms
 from app.notifications import templates
+from app.clinic_config import get_clinic
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,11 @@ async def send_smart_followup_sms(
     insurance_data = summary.get("insurance", {}) or {}
     handoff_data = summary.get("handoff", {}) or {}
     faq_data = summary.get("faq", []) or []
+
+    # Clinic branding for SMS sign-off
+    _clinic      = get_clinic(session.get("clinic_id"))
+    clinic_name  = _clinic.get("sms_name")  or _clinic.get("display_name")
+    clinic_phone = _clinic.get("phone")
     
     # Get duration - check multiple sources like actionable_summary does
     duration = 0
@@ -86,6 +92,8 @@ async def send_smart_followup_sms(
         handoff_data=handoff_data,
         faq_data=faq_data,
         session=session,
+        clinic_name=clinic_name,
+        clinic_phone=clinic_phone,
     )
     
     if not message:
@@ -113,85 +121,80 @@ def _choose_template(
     handoff_data: Dict,
     faq_data: list,
     session: Dict,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> Optional[str]:
     """Choose the right template based on call outcome."""
-    
-    reason = collected.get("reason", "")
+
+    reason   = collected.get("reason", "")
     location = session.get("selected_location", "")
-    insurer = insurance_data.get("insurer_name", "")
-    
+    insurer  = insurance_data.get("insurer_name", "")
+
     # Detect what they asked about
-    asked_about_price = _check_price_question(faq_data, session)
+    asked_about_price     = _check_price_question(faq_data, session)
     asked_about_insurance = _check_insurance_question(faq_data, insurance_data, session)
-    bupa_mentioned = _check_bupa_mention(faq_data, insurance_data)
-    
+    bupa_mentioned        = _check_bupa_mention(faq_data, insurance_data)
+
+    # Shared kwargs passed to every template
+    ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
+
     # =================================================================
     # ROUTING LOGIC
     # =================================================================
-    
+
     # 1. ABANDONED BOOKING
     if outcome == "abandoned":
         return templates.format_abandoned_booking_sms(
-            patient_name=patient_name,
-            reason=reason,
-            location=location,
-        )
-    
+            patient_name=patient_name, reason=reason, location=location, **ck)
+
     # 2. FAQ ONLY - PRICE FOCUSED
     elif outcome == "faq_only" and asked_about_price:
         return templates.format_price_inquiry_sms(
-            patient_name=patient_name,
-            service=reason or None,
-        )
-    
+            patient_name=patient_name, service=reason or None, **ck)
+
     # 3. FAQ ONLY - INSURANCE FOCUSED
     elif outcome == "faq_only" and asked_about_insurance:
         return templates.format_insurance_inquiry_sms(
-            patient_name=patient_name,
-            insurer=insurer or None,
-            bupa_mentioned=bupa_mentioned,
-        )
-    
+            patient_name=patient_name, insurer=insurer or None,
+            bupa_mentioned=bupa_mentioned, **ck)
+
     # 4. FAQ ONLY - GENERAL
     elif outcome == "faq_only":
         topics = _extract_faq_topics(faq_data)
         return templates.format_info_only_sms(
-            patient_name=patient_name,
-            topics=topics,
-        )
-    
+            patient_name=patient_name, topics=topics, **ck)
+
     # 5. MANUAL FOLLOWUP - NO SUITABLE TIME
     elif outcome == "manual_followup" and "time" in handoff_data.get("reason", "").lower():
         return templates.format_no_suitable_time_sms(
-            patient_name=patient_name,
-            reason=reason,
-        )
-    
+            patient_name=patient_name, reason=reason, **ck)
+
     # 6. MANUAL FOLLOWUP - RESCHEDULE
     elif outcome == "manual_followup" and any(
-        word in handoff_data.get("reason", "").lower() 
+        word in handoff_data.get("reason", "").lower()
         for word in ["reschedule", "change", "move"]
     ):
-        return templates.format_reschedule_request_sms(patient_name=patient_name)
-    
+        return templates.format_reschedule_request_sms(patient_name=patient_name, **ck)
+
     # 7. MANUAL FOLLOWUP - CANCELLATION
     elif outcome == "manual_followup" and any(
-        word in handoff_data.get("reason", "").lower() 
+        word in handoff_data.get("reason", "").lower()
         for word in ["cancel", "cancellation"]
     ):
-        return templates.format_cancellation_request_sms(patient_name=patient_name)
-    
+        return templates.format_cancellation_request_sms(patient_name=patient_name, **ck)
+
     # 8. MANUAL FOLLOWUP - GENERAL
     elif outcome == "manual_followup":
-        return templates.format_callback_confirmation(patient_name=patient_name)
-    
+        return templates.format_callback_confirmation(
+            patient_name=patient_name, clinic_name=clinic_name)
+
     # 9. TECHNICAL FAILURE
     elif outcome == "failed":
-        return templates.format_technical_issue_sms(patient_name=patient_name)
-    
+        return templates.format_technical_issue_sms(patient_name=patient_name, **ck)
+
     # 10. FALLBACK
     else:
-        return templates.format_general_thankyou_sms(patient_name=patient_name)
+        return templates.format_general_thankyou_sms(patient_name=patient_name, **ck)
 
 
 def _check_price_question(faq_data: list, session: Dict) -> bool:
