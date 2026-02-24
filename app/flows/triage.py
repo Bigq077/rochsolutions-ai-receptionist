@@ -1292,8 +1292,25 @@ def parse_slot_choice(text: str, dtmf: Optional[str] = None) -> Optional[int]:
     m = re.search(r"\b(1|2|3)\b", t)
     if m:
         return int(m.group(1))
-    for w, n in {"one": 1, "first": 1, "two": 2, "second": 2, "three": 3, "third": 3}.items():
-        if re.search(rf"\b{w}\b", t):
+    # Word → number map.
+    # "free" and "tree" are common Twilio STT mishearings of "three" in British English.
+    # Longer/more specific phrases are checked first (order matters — iterate longest first).
+    word_map = [
+        # Two
+        ("option two",   2), ("number two",   2),
+        # Three / STT variants
+        ("option three", 3), ("number three", 3), ("option free",  3),
+        ("number free",  3), ("last one",     3),
+        # Single words — checked after phrases
+        ("first",  1), ("one",   1),
+        ("second", 2), ("two",   2),
+        ("third",  3), ("three", 3),
+        ("free",   3),  # British STT mishearing of "three"
+        ("tree",   3),  # Another STT variant
+        ("last",   3),  # "the last one"
+    ]
+    for w, n in word_map:
+        if re.search(rf"\b{re.escape(w)}\b", t):
             return n
     return None
 
