@@ -115,6 +115,34 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
 
         # Locations
+        # Each entry drives the greeting, location-select, hours, address, parking answers.
+        # Clinics with no "locations" key are treated as single-location (demo pattern).
+        "locations": [
+            {
+                "id": "alcester",
+                "name": "Alcester",
+                "address": "The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD",
+                "hours_summary": (
+                    "The Alcester clinic is open Monday to Friday, "
+                    "eight thirty in the morning until nine at night. "
+                    "We're closed on weekends."
+                ),
+                "parking": "There's parking available at the Greig Sports Center.",
+            },
+            {
+                "id": "redditch",
+                "name": "Redditch",
+                "address": "51 Bromsgrove Road, Redditch, B97 4RH",
+                "hours_summary": (
+                    "The Redditch clinic is open Monday to Saturday. "
+                    "Monday, Tuesday and Friday we're open nine to five. "
+                    "Wednesday and Thursday we're open nine to seven. "
+                    "And Saturday we're open nine to five. "
+                    "We're closed on Sundays."
+                ),
+                "parking": "There's street parking on Bromsgrove Road by the Redditch clinic.",
+            },
+        ],
         "addresses": [
             "Theorem Health and Wellness, The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD",
             "Theorem Health and Wellness, 51 Bromsgrove Road, Redditch, B97 4RH",

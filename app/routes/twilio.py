@@ -25,49 +25,46 @@ router = APIRouter(prefix="/twilio")
 # Constants
 # --------------------------------------------------
 
-AI_NAME        = "Susie"
-CLINIC_NAME    = "Theorem Health"
-
-# Improvement 1: New opening greeting — Susie introduces herself and asks location
-OPENING_GREETING = (
-    f"Hi there! My name is {AI_NAME}, {CLINIC_NAME}'s AI receptionist. "
-    f"Quick question before I start — "
-    f"are you calling in regards to the Alcester clinic or the Redditch one?"
-)
-
-# Improvement 2: Correct location-specific opening hours
-LOCATION_HOURS = {
-    "alcester": (
-        "The Alcester clinic is open Monday to Friday, "
-        "eight thirty in the morning until nine at night. "
-        "We're closed on weekends."
-    ),
-    "redditch": (
-        "The Redditch clinic is open Monday to Saturday. "
-        "Monday, Tuesday and Friday we're open nine to five. "
-        "Wednesday and Thursday we're open nine to seven. "
-        "And Saturday we're open nine to five. "
-        "We're closed on Sundays."
-    ),
-}
-
-LOCATION_ADDRESSES = {
-    "alcester": (
-        "We're at The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD."
-    ),
-    "redditch": (
-        "We're at 51 Bromsgrove Road, Redditch, B97 4RH."
-    ),
-}
-
-# Confirmation messages after location selected
-LOCATION_CONFIRMATIONS = {
-    "alcester": "Great! I've got you down for the Alcester clinic.",
-    "redditch": "Perfect! I've got you down for the Redditch clinic.",
-}
+AI_NAME = "Susie"
 
 # After location confirmed — hand off to triage
 HOW_CAN_I_HELP = "How can I help you today?"
+
+
+# --------------------------------------------------
+# Clinic-aware greeting helpers
+# --------------------------------------------------
+
+def _build_greeting(clinic: dict) -> str:
+    """
+    Build the opening greeting from clinic config.
+    - Multi-location clinic: introduce Susie and ask which location.
+    - Single-location clinic: simple greeting using display_name.
+    """
+    name = clinic.get("display_name", "the clinic")
+    locations = clinic.get("locations", [])
+    if locations:
+        loc_names = " or ".join(loc["name"] for loc in locations)
+        return (
+            f"Hi there! My name is {AI_NAME}, {name}'s AI receptionist. "
+            f"Quick question before I start — "
+            f"are you calling about our {loc_names} clinic?"
+        )
+    return f"Hi, {name} speaking. How can I help today?"
+
+
+def _build_location_confirmation(location_id: str, clinic: dict) -> str:
+    """Return a confirmation string after the caller picks a location."""
+    locations = clinic.get("locations", [])
+    loc = next((l for l in locations if l["id"] == location_id), None)
+    if loc:
+        name = loc["name"]
+        confirmations = {
+            "alcester": "Great! I've got you down for the Alcester clinic.",
+            "redditch": "Perfect! I've got you down for the Redditch clinic.",
+        }
+        return confirmations.get(location_id, f"Got it — the {name} clinic.")
+    return "Got it."
 
 
 # --------------------------------------------------
@@ -201,16 +198,38 @@ def attach_status_callback(vr: VoiceResponse, request: Request) -> None:
 # Location helper
 # --------------------------------------------------
 
-def _detect_location(speech: str) -> str | None:
+def _detect_location(speech: str, clinic: dict) -> str | None:
     """
-    Return 'alcester' or 'redditch' from caller's speech, or None.
-    Deliberately loose matching — people slur place names on the phone.
+    Return a location id from caller's speech, or None.
+    Reads location names from clinic config so it works for any clinic.
+    Falls back to Theorem-specific phonetic variants for robustness.
     """
     s = speech.lower()
-    if any(k in s for k in ("alcester", "alce", "alchester", "alcest")):
+    locations = clinic.get("locations", [])
+
+    # First pass: match against each location's name from clinic config
+    for loc in locations:
+        loc_name = loc["name"].lower()
+        if loc_name in s:
+            return loc["id"]
+
+    # Second pass: Theorem-specific phonetic variants
+    # (Alcester is pronounced "ALL-ster" — speech recognition varies widely)
+    _alcester_variants = (
+        "alcester", "alce", "alchester", "alcest",
+        "allster", "alster", "all ster", "all chester",
+        "awlster", "olster", "ulster",
+    )
+    _redditch_variants = (
+        "redditch", "reditch", "reddich", "red ditch",
+        "red witch", "reddit",
+    )
+
+    if any(k in s for k in _alcester_variants) or s.strip() in ("1", "one"):
         return "alcester"
-    if any(k in s for k in ("redditch", "reditch", "red", "redd")):
+    if any(k in s for k in _redditch_variants) or s.strip() in ("2", "two"):
         return "redditch"
+
     return None
 
 
@@ -353,9 +372,9 @@ async def voice(request: Request):
     if request.method in ("HEAD", "GET"):
         return Response(status_code=200)
 
-    form       = await request.form()
-    call_sid   = (form.get("CallSid") or "").strip()
-    to_number  = (form.get("To")      or "").strip() or None
+    form      = await request.form()
+    call_sid  = (form.get("CallSid") or "").strip()
+    to_number = (form.get("To")      or "").strip() or None
 
     try:
         session = await get_session(call_sid) or {}
@@ -365,15 +384,27 @@ async def voice(request: Request):
     session = _init_session(session, call_sid)
     session = _ensure_clinic_on_session(session, to_number)
 
-    await save_session(call_sid, session)
+    clinic    = get_clinic(session.get("clinic_id"))
+    locations = clinic.get("locations", [])
+    greeting  = _build_greeting(clinic)
+
+    attach_status_callback(VoiceResponse(), request)  # register status callback
 
     vr = VoiceResponse()
-    location_url = _abs_url(request, "/twilio/location-select")
-
     attach_status_callback(vr, request)
 
-    # Improvement 1: Play Susie greeting and ask for location
-    await _say(vr, OPENING_GREETING, request, gather_action=location_url)
+    if locations:
+        # Multi-location clinic (e.g. Theorem) — ask which location first
+        location_url = _abs_url(request, "/twilio/location-select")
+        await _say(vr, greeting, request, gather_action=location_url)
+    else:
+        # Single-location clinic (e.g. demo) — skip location question entirely
+        session["location_selected"] = True
+        session["selected_location"] = "default"
+        turn_url = _abs_url(request, "/twilio/turn")
+        await _say(vr, greeting, request, gather_action=turn_url)
+
+    await save_session(call_sid, session)
 
     # Fallback redirect if caller says nothing
     vr.redirect(_abs_url(request, "/twilio/voice"), method="POST")
@@ -399,12 +430,13 @@ async def location_select(request: Request):
         session = {}
 
     session = _init_session(session, call_sid)
+    session = _ensure_clinic_on_session(session, (form.get("To") or "").strip() or None)
+    clinic = get_clinic(session.get("clinic_id"))
 
-    vr           = _abs_url(request, "/twilio/voice")
     location_url = _abs_url(request, "/twilio/location-select")
     turn_url     = _abs_url(request, "/twilio/turn")
 
-    location = _detect_location(user_said) if user_said else None
+    location = _detect_location(user_said, clinic) if user_said else None
 
     if not location:
         # Could not detect — ask again politely (max 2 retries)
@@ -442,7 +474,7 @@ async def location_select(request: Request):
     await save_session(call_sid, session)
 
     # Confirm location then ask how we can help
-    confirmation = LOCATION_CONFIRMATIONS[location] + " " + HOW_CAN_I_HELP
+    confirmation = _build_location_confirmation(location, clinic) + " " + HOW_CAN_I_HELP
 
     vr_resp = VoiceResponse()
     await _say(vr_resp, confirmation, request, gather_action=turn_url)
@@ -591,73 +623,73 @@ async def turn(request: Request):
 
 def _try_quick_answer(user_said: str, session: dict) -> str | None:
     """
-    Return a canned, location-specific answer for common factual
-    questions. Returns None if the question should go to triage_turn.
+    Return a canned, location-specific answer for common factual questions.
+    Reads hours, address, parking, prices and policies from clinic config.
+    Returns None if the question should go to triage_turn.
     """
-    location = session.get("selected_location", "alcester")
-    t = user_said.lower()
+    clinic      = get_clinic(session.get("clinic_id"))
+    location_id = session.get("selected_location", "")
+    locations   = clinic.get("locations", [])
+    t           = user_said.lower()
+
+    # Find location-specific config block if this clinic has multiple locations
+    loc_cfg = next((l for l in locations if l["id"] == location_id), None)
 
     # Opening hours
     if any(kw in t for kw in ("hour", "open", "close", "when are you", "what time")):
-        hours    = LOCATION_HOURS.get(location, LOCATION_HOURS["alcester"])
-        location_label = "Alcester" if location == "alcester" else "Redditch"
-        return (
-            f"{hours} "
-            f"Is there anything else I can help you with, "
-            f"or would you like to book an appointment at {location_label}?"
+        hours = (
+            loc_cfg.get("hours_summary")
+            if loc_cfg
+            else clinic.get("hours_summary", "")
         )
+        if hours:
+            suffix = (
+                f"or would you like to book an appointment at {loc_cfg['name']}?"
+                if loc_cfg
+                else "or would you like to book an appointment?"
+            )
+            return f"{hours} Is there anything else I can help you with, {suffix}"
 
     # Address / directions
     if any(kw in t for kw in ("address", "where are you", "location", "find you", "directions")):
-        address = LOCATION_ADDRESSES.get(location, LOCATION_ADDRESSES["alcester"])
-        return (
-            f"{address} "
-            f"Would you like to book an appointment, or is there anything else I can help with?"
+        address = (
+            loc_cfg.get("address")
+            if loc_cfg
+            else clinic.get("address", "")
         )
+        if address:
+            return (
+                f"We're at {address}. "
+                "Would you like to book an appointment, or is there anything else I can help with?"
+            )
 
     # Parking
     if "park" in t:
-        if location == "alcester":
-            return (
-                "There's parking available at the Greig Sports Center. "
-                "Can I help you with anything else?"
-            )
-        else:
-            return (
-                "There's street parking on Bromsgrove Road by the Redditch clinic. "
-                "Can I help you with anything else?"
-            )
+        parking = (
+            loc_cfg.get("parking")
+            if loc_cfg
+            else clinic.get("parking", "")
+        )
+        if parking:
+            return f"{parking} Can I help you with anything else?"
 
     # What to wear / bring
     if any(kw in t for kw in ("wear", "bring", "prepare", "what should i")):
-        return (
-            "Just wear loose or comfortable clothing if you can. "
-            "If you have any scans or reports, do bring those along. "
-            "But honestly, don't worry if you haven't — just come as you are. "
-            "Anything else I can help with?"
-        )
+        what_to_bring = clinic.get("what_to_bring", "")
+        if what_to_bring:
+            return f"{what_to_bring} Anything else I can help with?"
 
     # Cancellation policy
-    if any(kw in t for kw in ("cancel", "cancellation", "reschedule", "change appointment")):
-        return (
-            "We have a twenty-four hour cancellation policy. "
-            "If you need to cancel or reschedule, please let us know at least "
-            "twenty-four hours before your appointment, otherwise the full fee applies. "
-            "You can reach us on 07870 166861. "
-            "Is there anything else I can help you with?"
-        )
+    if any(kw in t for kw in ("cancellation policy", "cancel policy", "late fee", "no show")):
+        policy = clinic.get("cancellation_policy", "")
+        if policy:
+            return f"{policy} Is there anything else I can help you with?"
 
     # Price / cost
     if any(kw in t for kw in ("cost", "price", "how much", "fee", "charge")):
-        return (
-            "Physiotherapy sessions are seventy-five pounds for fifty minutes. "
-            "Rehabilitation sessions are sixty-five pounds. "
-            "Psychotherapy is also seventy-five pounds. "
-            "If we use specialist equipment like shockwave or laser therapy during your session, "
-            "there's an additional forty-five pounds for that. "
-            "And prescribing consultations are twelve pounds fifty. "
-            "Would you like to book an appointment?"
-        )
+        pricing = clinic.get("pricing_summary", "")
+        if pricing:
+            return f"{pricing} Would you like to book an appointment?"
 
     return None
 
