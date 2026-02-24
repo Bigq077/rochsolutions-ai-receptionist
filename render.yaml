@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: rochsolutions-ai-receptionist
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --preload --timeout 120 --keep-alive 75
+    healthCheckPath: /health
+    autoDeploy: true
