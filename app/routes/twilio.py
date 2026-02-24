@@ -161,10 +161,6 @@ async def status(request: Request) -> PlainTextResponse:
     # Ensure clinic_id exists even if voice/turn never saved it
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
 
-    # 🔴 TEMP TEST OVERRIDE (REMOVE AFTER TESTING)
-    # Force Theorem on your existing Twilio demo number
-    session["clinic_id"] = "theorem"
-
     # Build summary + write to sheets
     try:
         summary = build_call_summary(session)
@@ -199,10 +195,6 @@ async def voice(request: Request):
 
     session["call_sid"] = call_sid
     session = _ensure_clinic_on_session(session, to_number)
-
-    # 🔴 TEMP TEST OVERRIDE (REMOVE AFTER TESTING)
-    # Force Theorem on your existing Twilio demo number
-    session["clinic_id"] = "theorem"
 
     await save_session(call_sid, session)
 
@@ -266,11 +258,6 @@ async def turn(request: Request):
 
     session["call_sid"] = call_sid
     session = _ensure_clinic_on_session(session, to_number)
-
-    # 🔴 TEMP TEST OVERRIDE (REMOVE AFTER TESTING)
-    # Force Theorem on your existing Twilio demo number
-    session["clinic_id"] = session.get("clinic_id") or "theorem"
-    session["clinic_id"] = "theorem"
 
     miss = int(session.get("miss_count", 0))
 

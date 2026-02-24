@@ -15,11 +15,19 @@ def _hours_tuple(start_hour: float, end_hour: float):
 
 
 # Map inbound Twilio "To" numbers -> clinic_id
-# Fill these with your actual Twilio numbers (E.164 format).
+# Format: "+447XXXXXXXXX": "clinic_id"
+# Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
-    # Example:
-    # "+447870166861": "theorem",  # Theorem's actual number
-    # "+1XXXXXXXXXXX": "demo",
+    "+447367002651": "theorem",       # Theorem Health and Wellness
+    "+447366530580": "demo",          # RochSolutions demo line
+
+    # ---------------------------------------------------------------
+    # ADD NEW CLIENT HERE
+    # 1. Add their Twilio number and a clinic_id (slug, no spaces)
+    # 2. Create app/clinics/<clinic_id>/clinic.json + knowledge.md
+    # 3. Add their env vars to Render with the same prefix
+    # ---------------------------------------------------------------
+    # "+44XXXXXXXXXX": "health_for_life",   # Health For Life (coming soon)
 }
 
 

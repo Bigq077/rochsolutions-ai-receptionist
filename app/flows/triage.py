@@ -613,6 +613,8 @@ def _reset_to_triage(session: Dict[str, Any]) -> Dict[str, Any]:
     session.pop("manual_reschedule", None)
     session.pop("manual_reschedule", None)
     session.pop("manual_reason", None)
+    session.pop("pending_intent", None)
+    session.pop("location_id", None)
     return session
 
 
@@ -805,6 +807,9 @@ RESCH_NEW_PREF = "RESCH_NEW_PREF"
 RESCH_PICK_SLOT = "RESCH_PICK_SLOT"
 RESCH_CONFIRM = "RESCH_CONFIRM"
 RESCH_PHONE_FALLBACK = "RESCH_PHONE_FALLBACK"
+
+# Location selection (asked after intent is detected)
+ASK_LOCATION = "ASK_LOCATION"
 
 
 # ---------- SLOT SUGGESTION ----------
@@ -1127,14 +1132,106 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
         return _say("Sorry — say continue to go back to booking, or ask your question.", session, tone="checking")
 
     # ==========================================================
+    # ASK_LOCATION: Which clinic? (asked after intent is detected)
+    # ==========================================================
+    if state == ASK_LOCATION:
+        t = _norm(user_said)
+        location_id = None
+
+        # Alcester is pronounced "ALL-ster" — speech recognition produces many variants
+        _alcester_variants = [
+            "alcester",
+            "alchester",
+            "allster",
+            "alster",
+            "all ster",
+            "all chester",
+            "allchester",
+            "alcesta",
+            "all cester",
+            "awlster",
+            "olster",
+            "alces",
+            "ulster",
+            "alc",
+        ]
+        # Redditch variants
+        _redditch_variants = [
+            "redditch",
+            "red ditch",
+            "reddich",
+            "reditch",
+            "red witch",
+            "reddit",
+            "reddich",
+            "redich",
+        ]
+
+        if _contains_any(t, _alcester_variants) or t in ("1", "one"):
+            location_id = "alcester"
+        elif _contains_any(t, _redditch_variants) or t in ("2", "two"):
+            location_id = "redditch"
+
+        if not location_id:
+            return _say(
+                "Sorry — could you say Alcester or Redditch?",
+                session,
+                tone="checking",
+            )
+
+        session["location_id"] = location_id
+        pending = session.pop("pending_intent", None)
+
+        if pending == "BOOK":
+            session["state"] = BOOK_PATIENT_TYPE
+            return _say("Are you a new patient, or have you been here before?", session)
+
+        if pending == "RESCHEDULE":
+            session["state"] = RESCH_NAME
+            return _say("Sure — to reschedule, what's your full name?", session)
+
+        if pending == "CANCEL":
+            session["state"] = TRIAGE
+            return _say(
+                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
+                session,
+            )
+
+        if pending == "FAQ_INSURANCE":
+            insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
+            session["last_faq"] = "INSURANCE"
+            session["insurance_info_given"] = True
+            session["insurance_last_answer"] = insurance_text
+            session["state"] = INSURANCE_PROVIDER
+            if not session.get("insurance_intro_done"):
+                session["insurance_intro_done"] = True
+                return _say(
+                    f"Here's how insurance works at the clinic. {insurance_text} "
+                    "If you tell me the name of your insurer, I can check that for you.",
+                    session,
+                )
+            return _say(
+                f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
+                session,
+            )
+
+        if pending and pending.startswith("FAQ_"):
+            session["state"] = TRIAGE
+            return _say(faq_answer(pending, clinic), session)
+
+        session["state"] = TRIAGE
+        return _say("How can I help?", session)
+
+    # ==========================================================
     # TRIAGE: LLM + knowledge + deterministic routing
     # ==========================================================
     if state == TRIAGE:
         forced_intent = normalize_reschedule_intent(user_said)
         if forced_intent == "RESCHEDULE":
             session = _reset_to_triage(session)
-            session["state"] = RESCH_NAME
-            return _say("Sure — to reschedule, what’s your full name?", session)
+            session["pending_intent"] = "RESCHEDULE"
+            session["state"] = ASK_LOCATION
+            return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         try:
             kb = retrieve_knowledge(user_said, clinic=clinic)
@@ -1158,13 +1255,15 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
             if conf >= 0.55:
                 if llm_intent == "BOOK":
                     session = _reset_to_triage(session)
-                    session["state"] = BOOK_PATIENT_TYPE
-                    return _say("Sure — are you a new patient, or have you been here before?", session)
+                    session["pending_intent"] = "BOOK"
+                    session["state"] = ASK_LOCATION
+                    return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
                 if llm_intent == "RESCHEDULE":
                     session = _reset_to_triage(session)
-                    session["state"] = RESCH_NAME
-                    return _say("Sure — to reschedule, what’s your full name?", session)
+                    session["pending_intent"] = "RESCHEDULE"
+                    session["state"] = ASK_LOCATION
+                    return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
                 if llm_intent == "HUMAN":
                     if send_to_sheet is not None:
@@ -1198,13 +1297,15 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
 
         if intent2 == "BOOK":
             session = _reset_to_triage(session)
-            session["state"] = BOOK_PATIENT_TYPE
-            return _say("Sure — are you a new patient, or have you been here before?", session)
+            session["pending_intent"] = "BOOK"
+            session["state"] = ASK_LOCATION
+            return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         if intent2 == "RESCHEDULE":
             session = _reset_to_triage(session)
-            session["state"] = RESCH_NAME
-            return _say("Sure — to reschedule, what’s your full name?", session)
+            session["pending_intent"] = "RESCHEDULE"
+            session["state"] = ASK_LOCATION
+            return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         if intent2 == "FAQ_SERVICE_EXPLAIN":
             # ✅ FIX: Use service-explanation FAQ (text/topic) in TRIAGE too
@@ -1213,32 +1314,14 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
             return _say(answer, session, tone="none")
 
         if intent2 == "FAQ_INSURANCE":
-            insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
-
-            session["last_faq"] = "INSURANCE"
-            session["insurance_info_given"] = True
-            session["insurance_last_answer"] = insurance_text
-            session["state"] = INSURANCE_PROVIDER
-
-            if not session.get("insurance_intro_done"):
-                session["insurance_intro_done"] = True
-                return _say(
-                    f"Here’s how insurance works at the clinic. {insurance_text} "
-                    "If you tell me the name of your insurer, I can check that for you.",
-                    session,
-                )
-
-            return _say(
-                f"{insurance_text} If you tell me the name of your insurer, I can check that for you.",
-                session,
-            )
+            session["pending_intent"] = "FAQ_INSURANCE"
+            session["state"] = ASK_LOCATION
+            return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         if intent2 == "CANCEL":
-            session = _reset_to_triage(session)
-            return _say(
-                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
-                session,
-            )
+            session["pending_intent"] = "CANCEL"
+            session["state"] = ASK_LOCATION
+            return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         if intent2 == "HUMAN":
             if send_to_sheet is not None:
@@ -1259,8 +1342,15 @@ async def triage_turn(user_said: str, session: Dict[str, Any], dtmf: str | None 
             )
 
         if intent2.startswith("FAQ_"):
-            # clinic-level deterministic FAQs (prices, services list, hours, etc.)
-            return _say(faq_answer(intent2, clinic), session)
+            # For FAQ_SERVICE_EXPLAIN, answer directly (not location-specific)
+            if intent2 == "FAQ_SERVICE_EXPLAIN":
+                topic = detect_service_topic(user_said)
+                answer = faq_answer_service("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic)
+                return _say(answer, session, tone="none")
+            # All other FAQs: ask which clinic first
+            session["pending_intent"] = intent2
+            session["state"] = ASK_LOCATION
+            return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         return _say(
             "I can help with booking, rescheduling, opening hours, location, prices, insurance, or general questions. What would you like to do?",
