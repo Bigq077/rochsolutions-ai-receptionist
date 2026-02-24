@@ -1175,6 +1175,8 @@ FAQ_DETOUR               = "FAQ_DETOUR"
 TRIAGE              = "TRIAGE"
 BOOK_PATIENT_TYPE   = "BOOK_PATIENT_TYPE"
 BOOK_REASON         = "BOOK_REASON"
+BOOK_INTAKE         = "BOOK_INTAKE"    # follow-up clinical question about the condition
+BOOK_RECOMMEND      = "BOOK_RECOMMEND" # present recommended service + price, get confirmation
 BOOK_TIME_PREF      = "BOOK_TIME_PREF"
 BOOK_PICK_SLOT      = "BOOK_PICK_SLOT"
 BOOK_NAME           = "BOOK_NAME"
@@ -1196,8 +1198,8 @@ INS_BUPA_RESPONSE   = "INS_BUPA_RESPONSE"
 INS_COLLECT_POLICY  = "INS_COLLECT_POLICY"
 
 BOOKING_STATES = {
-    BOOK_PATIENT_TYPE, BOOK_REASON, BOOK_TIME_PREF,
-    BOOK_PICK_SLOT, BOOK_NAME, BOOK_PHONE, BOOK_CONFIRM,
+    BOOK_PATIENT_TYPE, BOOK_REASON, BOOK_INTAKE, BOOK_RECOMMEND,
+    BOOK_TIME_PREF, BOOK_PICK_SLOT, BOOK_NAME, BOOK_PHONE, BOOK_CONFIRM,
 }
 
 
@@ -1486,15 +1488,187 @@ def faq_answer(intent: str, clinic: Dict[str, Any], session: Optional[Dict[str, 
 def resume_prompt_for_state(state: str) -> str:
     if state == BOOK_REASON:
         return (
-            "Now — which service would you like to book? "
-            "For example, physiotherapy assessment, follow-up, or rehabilitation?"
+            "Now — what would you like to book? "
+            "For example, you could say lower back pain, sports injury, or physiotherapy."
         )
+    if state == BOOK_INTAKE:
+        return (
+            "Just to follow up — how long has that been going on, "
+            "and is it constant or does it come and go?"
+        )
+    if state == BOOK_RECOMMEND:
+        return "Shall I go ahead and book you in for that?"
     if state == TRIAGE:
         return (
             "What would you like to do — book an appointment, "
             "ask about a treatment, or something else?"
         )
     return "What would you like to do next?"
+
+
+# ============================================================================
+# INTAKE / RECOMMENDATION HELPERS
+# ============================================================================
+
+def _intake_question_for_condition(reason: str) -> str:
+    """
+    Return a targeted clinical follow-up question based on the patient's stated reason.
+    Categorises by broad condition type and picks the most useful single question.
+    """
+    r = reason.lower()
+
+    # Tendon / repetitive strain
+    if any(kw in r for kw in [
+        "tendon", "tendinopathy", "tendinitis", "plantar", "achilles",
+        "tennis elbow", "golfer", "heel", "rotator cuff",
+    ]):
+        return (
+            "How long has that been bothering you? "
+            "And has it been getting gradually worse, or did it come on suddenly?"
+        )
+
+    # Acute sports / trauma
+    if any(kw in r for kw in [
+        "sprain", "strain", "pulled", "torn", "tear", "injury", "accident",
+        "twisted", "rolled ankle", "fall", "sport", "football", "running",
+        "gym", "training",
+    ]):
+        return (
+            "Was this from a specific incident, or has it built up over time? "
+            "And how long ago did it happen?"
+        )
+
+    # Back pain
+    if any(kw in r for kw in [
+        "back", "lumbar", "spine", "disc", "sciatica", "sciatic",
+        "lower back", "upper back",
+    ]):
+        return (
+            "How long have you had this? "
+            "And is it constant, or does it come and go?"
+        )
+
+    # Neck / shoulder
+    if any(kw in r for kw in [
+        "neck", "cervical", "shoulder", "frozen shoulder", "whiplash",
+    ]):
+        return (
+            "How long has this been going on? "
+            "And does it affect your sleep or daily movement?"
+        )
+
+    # Hip / knee / joint
+    if any(kw in r for kw in [
+        "hip", "knee", "joint", "arthritis", "osteoarthritis", "cartilage",
+        "kneecap", "patella",
+    ]):
+        return (
+            "Is this pain on movement, at rest, or both? "
+            "And how long have you been dealing with it?"
+        )
+
+    # Post-surgery / rehab
+    if any(kw in r for kw in [
+        "surgery", "operation", "post-op", "post op", "rehab",
+        "recovery", "replacement", "reconstruction",
+    ]):
+        return (
+            "How long ago was the surgery, and have you had any physiotherapy since then?"
+        )
+
+    # Headache / migraine / jaw
+    if any(kw in r for kw in [
+        "headache", "migraine", "jaw", "tmj", "dizziness", "vertigo",
+    ]):
+        return (
+            "How long have you been getting these, and how often would you say they occur?"
+        )
+
+    # Generic fallback
+    return (
+        "How long have you been experiencing this? "
+        "And has it been getting worse, staying the same, or improving?"
+    )
+
+
+def _build_recommendation(
+    reason: str,
+    intake_answer: str,
+    patient_type: str,
+    clinic: dict,
+) -> tuple:
+    """
+    Build a spoken recommendation and resolve the service key.
+
+    Returns: (speech: str, service_key: str)
+    - speech     → what the AI says to the patient
+    - service_key → key into clinic["service_prices"], or "initial_assessment" as default
+    """
+    r = (reason or "").lower()
+    a = (intake_answer or "").lower()
+    prices = clinic.get("service_prices", {})
+
+    # --- Decide service key ---
+    # Shockwave-appropriate: chronic tendon conditions (>6-8 weeks)
+    chronic_signals = [
+        "months", "years", "long time", "a while", "6 weeks", "8 weeks",
+        "chronic", "ongoing", "for a year", "for years", "kept coming back",
+    ]
+    tendon_signals = [
+        "tendon", "tendinopathy", "plantar", "achilles", "tennis elbow",
+        "golfer", "heel spur", "rotator",
+    ]
+    is_tendon   = any(kw in r for kw in tendon_signals)
+    is_chronic  = any(kw in a for kw in chronic_signals) or any(kw in r for kw in chronic_signals)
+    is_returning = (patient_type or "").upper() == "RETURNING"
+    is_post_op  = any(kw in r for kw in ["surgery", "post-op", "post op", "operation", "reconstruction", "replacement"])
+
+    if is_post_op and "rehabilitation" in prices:
+        service_key = "rehabilitation"
+    elif is_returning and "follow_up" in prices:
+        service_key = "follow_up"
+    elif is_tendon and is_chronic and "shockwave" in prices:
+        service_key = "shockwave"
+    else:
+        service_key = "initial_assessment"
+
+    # --- Look up price info ---
+    svc = prices.get(service_key) or prices.get("initial_assessment") or {}
+    label    = svc.get("label",    "physiotherapy assessment")
+    price    = svc.get("price",    "")
+    duration = svc.get("duration", "")
+    blurb    = svc.get("blurb",    "")
+
+    # --- Build speech ---
+    # Opening: acknowledge what they said
+    if is_tendon and is_chronic:
+        opener = (
+            "Thanks for telling me that. "
+            "For a condition like this that's been going on a while, "
+        )
+    elif is_post_op:
+        opener = (
+            "Thanks for that. "
+            "After surgery, "
+        )
+    elif is_returning:
+        opener = "Welcome back. "
+    else:
+        opener = "Thanks for that. "
+
+    # Core recommendation
+    price_clause = f", which is {price}" if price else ""
+    duration_clause = f" — {duration}" if duration else ""
+    blurb_clause = f" {blurb}" if blurb else ""
+
+    speech = (
+        f"{opener}"
+        f"I'd recommend our {label}{price_clause}{duration_clause}. "
+        f"{blurb_clause} "
+        f"Would you like me to book you in for that?"
+    ).strip()
+
+    return speech, service_key
 
 
 # ============================================================================
@@ -2394,27 +2568,99 @@ async def triage_turn(
     if state == BOOK_REASON:
         lower = (user_said or "").lower()
 
-        # Service info question mid-booking → detour
+        # Service info question mid-booking → detour, then come back to BOOK_REASON
         if any(q in lower for q in ["what is", "what's", "tell me more", "how does", "explain", "does it hurt"]):
             svc_key = extract_service_from_question(user_said)
             answer  = get_service_explanation(svc_key or "physiotherapy", "detailed")
             return _say(f"{answer} {resume_prompt_for_state(BOOK_REASON)}", session)
 
-        # Condition mention → give recommendation then continue
-        condition = identify_condition(user_said)
-        if condition:
-            collected["reason"] = user_said.strip()
-            session["state"]    = BOOK_TIME_PREF
+        # Save reason and ask a clinical intake follow-up question
+        collected["reason"] = (user_said or "").strip()
+        intake_q = _intake_question_for_condition(collected["reason"])
+        session["state"] = BOOK_INTAKE
+        return _say(intake_q, session, tone="checking")
+
+    if state == BOOK_INTAKE:
+        collected["intake_answer"] = (user_said or "").strip()
+
+        # Build a service recommendation based on reason + intake answer
+        patient_type = collected.get("patient_type", "")
+        clinic_obj   = get_clinic(session)
+        speech, service_key = _build_recommendation(
+            reason       = collected.get("reason", ""),
+            intake_answer= collected["intake_answer"],
+            patient_type = patient_type,
+            clinic       = clinic_obj,
+        )
+        collected["service"] = service_key
+        session["state"]     = BOOK_RECOMMEND
+        return _say(speech, session, tone="none")
+
+    if state == BOOK_RECOMMEND:
+        lower = (user_said or "").lower()
+
+        # Patient asks about price / cost
+        if any(kw in lower for kw in ["price", "cost", "how much", "fee", "charge", "expensive", "£"]):
+            clinic_obj = get_clinic(session)
+            prices     = clinic_obj.get("service_prices", {})
+            svc_key    = collected.get("service", "initial_assessment")
+            svc        = prices.get(svc_key) or prices.get("initial_assessment") or {}
+            price      = svc.get("price", "")
+            label      = svc.get("label", "that service")
+            duration   = svc.get("duration", "")
+
+            if price:
+                duration_clause = f" — {duration}" if duration else ""
+                price_info = (
+                    f"The {label} is {price}{duration_clause}. "
+                    f"Would you like me to go ahead and book you in for that?"
+                )
+            else:
+                price_info = (
+                    "I don't have exact pricing to hand right now — "
+                    "the team will confirm that with you. "
+                    "Shall I go ahead and book you in?"
+                )
+            return _say(price_info, session, tone="checking")
+
+        # Patient asks more about the service
+        if any(q in lower for q in ["what is", "what's", "tell me more", "how does", "explain", "what happens", "what does"]):
+            svc_key = collected.get("service", "physiotherapy")
+            # Map our service_key to SERVICE_EXPLANATIONS key
+            explanation_map = {
+                "initial_assessment": "physiotherapy",
+                "follow_up":          "physiotherapy_followup",
+                "rehabilitation":     "rehabilitation",
+                "shockwave":          "shockwave",
+                "sports_massage":     "sports_massage",
+            }
+            explanation_key = explanation_map.get(svc_key, "physiotherapy")
+            answer = get_service_explanation(explanation_key, "detailed")
             return _say(
-                f"{condition['text']} "
-                f"Let's get you booked in. "
-                f"What day or time would suit you?",
+                f"{answer} Shall I go ahead and book you in?",
                 session, tone="none",
             )
 
-        collected["reason"] = (user_said or "").strip()
-        session["state"]    = BOOK_TIME_PREF
-        return _say("Thanks. What day or time would you prefer?", session)
+        # Patient says no / wants something different
+        if is_no(lower):
+            # Let them re-state what they want
+            session["state"] = BOOK_REASON
+            return _say(
+                "No problem. What would you like to book instead? "
+                "For example, you can say physiotherapy, sports massage, or rehabilitation.",
+                session, tone="checking",
+            )
+
+        # Patient confirms (yes / ok / yeah / go ahead / sounds good)
+        if is_yes(lower) or any(kw in lower for kw in ["ok", "yeah", "sure", "go ahead", "sounds good", "perfect", "book"]):
+            session["state"] = BOOK_TIME_PREF
+            return _say("Great. What day or time would suit you?", session)
+
+        # Fallback — didn't match yes/no/price/info
+        return _say(
+            "Sorry — shall I go ahead and book that for you? Just say yes or no.",
+            session, tone="checking",
+        )
 
     if state == BOOK_TIME_PREF:
         collected["time_pref"] = user_said.strip()
@@ -2534,12 +2780,19 @@ async def triage_turn(
                         from app.notifications.booking_sms import send_booking_confirmation
 
                         _sms_clinic = get_clinic(session)
+                        # Resolve service label from service_prices if we have a key
+                        _svc_key = collected.get("service", "initial_assessment")
+                        _svc_label = (
+                            _sms_clinic.get("service_prices", {})
+                            .get(_svc_key, {})
+                            .get("label", "physiotherapy")
+                        )
                         await send_booking_confirmation(
                             patient_phone=collected["phone"],
                             patient_name=collected["name"].split()[0],
                             appointment_time=start,
                             location=get_location_label(session),
-                            service="physiotherapy",
+                            service=_svc_label,
                             practitioner="Mark",
                             is_new_patient=(collected.get("patient_type") == "NEW"),
                             has_insurance=bool(collected.get("insurer")),

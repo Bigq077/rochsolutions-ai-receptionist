@@ -76,6 +76,43 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Sports massage is £40 for 30 minutes or £70 for 60 minutes. "
             "Shockwave therapy sessions are £55."
         ),
+        # Structured pricing used by the intake/recommendation booking flow
+        "service_prices": {
+            "initial_assessment": {
+                "label":    "initial physiotherapy assessment",
+                "price":    "£65",
+                "duration": "45 minutes",
+                "blurb": (
+                    "We'll do a full assessment, identify the root cause of your problem, "
+                    "and start hands-on treatment — all in that first session."
+                ),
+            },
+            "follow_up": {
+                "label":    "follow-up physiotherapy session",
+                "price":    "£45",
+                "duration": "30 minutes",
+                "blurb": (
+                    "We'll check your progress, adjust the plan, and continue treatment."
+                ),
+            },
+            "sports_massage": {
+                "label":    "sports massage",
+                "price":    "£40 for 30 minutes or £70 for 60 minutes",
+                "duration": "30 or 60 minutes",
+                "blurb": (
+                    "Deep soft tissue work to reduce muscle tension and support recovery."
+                ),
+            },
+            "shockwave": {
+                "label":    "shockwave therapy",
+                "price":    "£55 per session",
+                "duration": "per session",
+                "blurb": (
+                    "Targeted acoustic waves to stimulate healing in stubborn tendon conditions. "
+                    "Very effective for plantar fasciitis, Achilles, and tennis elbow."
+                ),
+            },
+        },
         "services": [
             "Initial physiotherapy assessment",
             "Follow-up physiotherapy sessions",
@@ -206,6 +243,43 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Physio sessions are £75 (50 minutes). Rehab sessions are £65. Prescribing is £12.50. "
             "Laser and shockwave may add a £45 surcharge when specialist equipment is used."
         ),
+        # Structured pricing used by the intake/recommendation booking flow
+        "service_prices": {
+            "initial_assessment": {
+                "label":    "physiotherapy assessment",
+                "price":    "£75",
+                "duration": "50 minutes",
+                "blurb": (
+                    "We'll do a full holistic assessment — physical and emotional — "
+                    "identify the root cause, and start treatment in that first session."
+                ),
+            },
+            "follow_up": {
+                "label":    "follow-up physiotherapy session",
+                "price":    "£75",
+                "duration": "50 minutes",
+                "blurb": (
+                    "We'll check your progress, adjust the plan, and continue treatment."
+                ),
+            },
+            "rehabilitation": {
+                "label":    "rehabilitation session",
+                "price":    "£65",
+                "duration": "50 minutes",
+                "blurb": (
+                    "Progressive strengthening and movement work to rebuild function and get you back to full activity."
+                ),
+            },
+            "shockwave": {
+                "label":    "shockwave therapy",
+                "price":    "£45 surcharge when used",
+                "duration": "as part of your physio session",
+                "blurb": (
+                    "Acoustic waves to restart healing in stubborn tendon conditions. "
+                    "Very effective for plantar fasciitis, Achilles, and tennis elbow."
+                ),
+            },
+        },
         "pricing_details": {
             "physio_session_gbp": 75.0,
             "rehab_session_gbp": 65.0,
