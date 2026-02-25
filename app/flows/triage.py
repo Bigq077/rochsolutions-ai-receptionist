@@ -998,15 +998,16 @@ ACCEPTED_INSURERS: Dict[str, bool] = {
 }
 
 # Calm, friendly insurance explanation lines
-INSURANCE_EXPLAIN = (
-    "So, here's how it works at Theorem Health. "
-    "We operate as a self-pay clinic — "
-    "which means you pay for your sessions directly with us. "
-    "We don't bill insurance companies ourselves. "
-    "However, many patients are able to claim the costs back through their insurer afterwards. "
-    "We'll give you a detailed receipt and any documentation you need to make that claim. "
-    "It's a straightforward process for most policies."
-)
+def _insurance_explain(clinic_name: str) -> str:
+    return (
+        f"So, here's how it works at {clinic_name}. "
+        "We operate as a self-pay clinic — "
+        "which means you pay for your sessions directly with us. "
+        "We don't bill insurance companies ourselves. "
+        "However, many patients are able to claim the costs back through their insurer afterwards. "
+        "We'll give you a detailed receipt and any documentation you need to make that claim. "
+        "It's a straightforward process for most policies."
+    )
 
 INSURANCE_BUPA_WARNING = (
     "I do need to let you know — we're not able to accept Bupa. "
@@ -1070,9 +1071,19 @@ def extract_insurer_name(speech: str) -> str:
         if key in speech_lower:
             return val
 
-    fillers = ["i'm with", "i have", "my insurance is", "i've got", "it's", "with"]
+    # Longest phrases first to prevent partial matches
+    fillers = [
+        "my insurance provider is", "my insurance company is", "i am covered by",
+        "i'm covered by", "i am insured with", "i'm insured with",
+        "i am insured by", "i'm insured by", "my insurer is", "i am with",
+        "my insurance is", "i have insurance with", "i'm with", "i've got",
+        "i have", "covered by", "insured by", "insured with", "it's", "with",
+    ]
     cleaned = speech_lower
     for f in fillers:
+        if cleaned.startswith(f):
+            cleaned = cleaned[len(f):].strip()
+            break
         cleaned = cleaned.replace(f, "").strip()
     return cleaned.title() if cleaned else "Unknown"
 
@@ -1471,8 +1482,9 @@ def faq_answer(intent: str, clinic: Dict[str, Any], session: Optional[Dict[str, 
 
     if intent == "FAQ_INSURANCE":
         # Handled by the full insurance flow in triage — this is just a fallback
+        clinic_name = clinic.get("name", "the clinic")
         return (
-            f"{INSURANCE_EXPLAIN} "
+            f"{_insurance_explain(clinic_name)} "
             f"{INSURANCE_BUPA_WARNING} "
             "Could I ask which insurer you're with?"
         )
@@ -2082,17 +2094,13 @@ async def triage_turn(
     # ------------------------------------------------------------------
 
     if state == INS_EXPLAIN:
-        gather_insurer = (
-            f"{INSURANCE_CHECK_WARNING} "
-            "Could I ask which insurance company you're with? "
-            "That way I can make a note on your booking."
-        )
-        if is_yes(user_said) or any(w in user_said.lower() for w in ["okay", "makes sense", "understand", "got it", "sure"]):
-            session["state"] = INS_COLLECT_INSURER
-            return _say(gather_insurer, session)
-        answer = _answer_insurance_question(user_said)
+        # This state is now a pass-through — we go straight to INS_COLLECT_INSURER
         session["state"] = INS_COLLECT_INSURER
-        return _say(f"{answer} {gather_insurer}", session)
+        return _say(
+            "Which insurance company are you with? "
+            "For example, AXA, Vitality, Aviva, or WPA.",
+            session,
+        )
 
     if state == INS_COLLECT_INSURER:
         insurer_raw = (user_said or "").strip()
@@ -2114,9 +2122,8 @@ async def triage_turn(
         session["insurance_info"]["is_bupa"] = False
         session["state"] = INS_COLLECT_POLICY
         response = (
-            f"Thank you — I'll make a note that you're with {insurer_name}. "
-            f"{INSURANCE_CHECK_WARNING} "
-            "Would you happen to have your policy number handy? "
+            f"Got it — I've made a note that you're with {insurer_name}. "
+            "Do you have your policy number handy? "
             "It's not essential right now — just helpful to have on file."
         )
         return _say(response, session, tone="none")
@@ -2206,6 +2213,7 @@ async def triage_turn(
         if intent == "FAQ_INSURANCE":
             session.setdefault("insurance_info", {})
             session["insurance_info"]["mentioned"] = True
+            clinic_name = clinic.get("name", "the clinic")
 
             # Check if Bupa mentioned directly
             if "bupa" in user_said.lower():
@@ -2214,14 +2222,13 @@ async def triage_turn(
                 session["state"] = INS_BUPA_RESPONSE
                 return _say(INSURANCE_BUPA_RESPONSE, session, tone="none")
 
-            session["state"] = INS_EXPLAIN
+            # Go straight to collecting the insurer — no "does that make sense?" pause
+            session["state"] = INS_COLLECT_INSURER
             return _say(
-                f"Of course — let me explain how insurance works with us. "
-                f"{INSURANCE_EXPLAIN} "
+                f"Of course. {_insurance_explain(clinic_name)} "
                 f"{INSURANCE_BUPA_WARNING} "
-                f"For all other insurers, it's worth checking with your provider "
-                f"whether they cover self-pay physiotherapy claims. "
-                f"Does that all make sense?",
+                "Which insurance company are you with? "
+                "For example, AXA, Vitality, Aviva, or WPA.",
                 session, tone="none",
             )
 
