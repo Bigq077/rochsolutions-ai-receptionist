@@ -2274,28 +2274,28 @@ async def triage_turn(
             session["state"] = ASK_LOCATION
             return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
-        if intent2 == "RESCHEDULE":
+        if intent == "RESCHEDULE":
             session = _reset_to_triage(session)
             session["pending_intent"] = "RESCHEDULE"
             session["state"] = ASK_LOCATION
             return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
-        if intent2 == "FAQ_SERVICE_EXPLAIN":
+        if intent == "FAQ_SERVICE_EXPLAIN":
             topic = detect_service_topic(user_said)
             answer = faq_answer_service("FAQ_SERVICE_EXPLAIN", text=user_said, topic=topic)
             return _say(answer, session, tone="none")
 
-        if intent2 == "FAQ_INSURANCE":
+        if intent == "FAQ_INSURANCE":
             session["pending_intent"] = "FAQ_INSURANCE"
             session["state"] = ASK_LOCATION
             return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
-        if intent2 == "CANCEL":
+        if intent == "CANCEL":
             session["pending_intent"] = "CANCEL"
             session["state"] = ASK_LOCATION
             return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
-        if intent2 == "HUMAN":
+        if intent == "HUMAN":
             _attempt_send_to_sheet(collected, user_said, session, "CALLBACK")
             return _say(
                 "No problem — please say your name, number, and what you need help with, "
@@ -2303,8 +2303,8 @@ async def triage_turn(
                 session,
             )
 
-        if intent2.startswith("FAQ_"):
-            return _say(faq_answer(intent2, clinic, session), session)
+        if intent.startswith("FAQ_"):
+            return _say(faq_answer(intent, clinic, session), session)
 
         # Final fallback
         return _say(

@@ -329,7 +329,7 @@ async def status(request: Request) -> PlainTextResponse:
         summary["_raw_session"] = session
         
         # Convert to actionable row for Mark
-        row = build_actionable_summary_row(summary)
+        row = await build_actionable_summary_row(summary)
         
         # Send to Google Sheets (non-blocking)
         fire_and_forget_append_summary_row(row)
