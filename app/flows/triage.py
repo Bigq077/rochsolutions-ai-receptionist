@@ -1286,11 +1286,20 @@ def parse_patient_type(text: Optional[str]) -> Optional[str]:
         return "NEW"
     if t in ("returning", "existing", "return", "2"):
         return "RETURNING"
-    for p in ("returning", "existing", "been before", "already a patient",
-              "follow up", "followup", "follow-up", "seen you before"):
+    for p in (
+        "returning", "existing", "been before", "been here before",
+        "come here before", "came before", "been a patient", "previous patient",
+        "already a patient", "already been", "been with you", "visited before",
+        "follow up", "followup", "follow-up", "seen you before",
+        "seen before", "came here", "i have been", "i ve been",
+    ):
         if p in t:
             return "RETURNING"
-    for p in ("new", "first time", "first visit", "never been", "initial"):
+    for p in (
+        "new", "first time", "first visit", "never been", "initial",
+        "brand new", "first appointment", "haven t been", "have not been",
+        "never visited", "my first", "haven t visited",
+    ):
         if p in t:
             return "NEW"
     return None
@@ -2631,19 +2640,15 @@ async def triage_turn(
             session["state"]              = BOOK_REASON
             return _say("Great. What's the appointment for?", session, tone="ack")
 
-        if looks_like_name(user_said) and not collected.get("name"):
-            collected["name"] = user_said.strip()
-            return _say(
-                "Thanks. Are you a new patient or have you been here before? "
-                "You can say new patient or returning patient.",
-                session, tone="checking",
-            )
-
         tries = int(session.get("pt_type_tries", 0)) + 1
         session["pt_type_tries"] = tries
         if tries >= 2:
-            return _say("Sorry — please say new or returning. Or press 1 for new, 2 for returning.", session, tone="checking")
-        return _say("Are you a new patient or a returning patient?", session, tone="checking")
+            # After two failed attempts, default to new patient and move on
+            collected["patient_type"] = "NEW"
+            session["pt_type_tries"]  = 0
+            session["state"]          = BOOK_REASON
+            return _say("No problem — I'll put you down as a new patient. What's the appointment for?", session, tone="ack")
+        return _say("Just to confirm — are you a new patient or have you been here before? You can say new or returning.", session, tone="checking")
 
     if state == BOOK_REASON:
         lower = (user_said or "").lower()
