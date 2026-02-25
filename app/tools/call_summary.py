@@ -221,13 +221,31 @@ def _slot_label_from_selected(selected: Any) -> str:
 
 def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     """
-    High-level outcome label for dashboards.
+    High-level outcome label for dashboards and SMS routing.
+
+    Possible values:
+      booked           — calendar event created (new booking)
+      rescheduled      — calendar event updated
+      human_requested  — caller explicitly asked for a human / live transfer
+      out_of_hours     — call received outside clinic opening hours
+      manual_followup  — booking attempted but needs manual intervention
+      faq_only         — caller only asked questions, no booking attempt
+      abandoned        — caller showed interest but didn't complete booking
+      failed           — technical failure
     """
     cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
     intent = (summary.get("appointment", {}) or {}).get("intent") or session.get("intent")
 
     if cal_status in ("created", "patched"):
         return "booked" if str(intent).upper() == "BOOK" else "rescheduled"
+
+    # Human / live-transfer explicitly requested
+    if session.get("request_transfer") or session.get("human_requested"):
+        return "human_requested"
+
+    # Out-of-hours flag (set in voice route when call arrives outside business hours)
+    if session.get("out_of_hours"):
+        return "out_of_hours"
 
     handoff_needed = bool((summary.get("handoff", {}) or {}).get("manual_followup_needed"))
     if handoff_needed:
@@ -237,7 +255,7 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     if str(intent or "").upper().startswith("FAQ"):
         return "faq_only"
 
-    # If call completed but no booking/reschedule, treat as abandoned
+    # Call completed but no booking/reschedule → abandoned
     if (summary.get("meta", {}) or {}).get("call_status") == "completed":
         return "abandoned"
 

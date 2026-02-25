@@ -1,11 +1,13 @@
 # app/notifications/smart_sms_router.py
 """
-Smart SMS routing system - sends the right message for every call type.
-Analyzes call outcome and conversation to choose optimal template.
+Smart SMS routing — sends the right message for every call outcome.
+Analyses call outcome and conversation to choose the right template.
 """
 
 import logging
+import re
 from typing import Dict, Any, Optional
+
 from app.notifications.booking_sms import send_sms
 from app.notifications import templates
 from app.clinic_config import get_clinic
@@ -13,283 +15,387 @@ from app.clinic_config import get_clinic
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# CONDITION EXTRACTION
+# Turns raw caller speech ("my elbow is bad", "I broke my foot")
+# into a clean label suitable for SMS ("elbow pain", "broken foot").
+# ============================================================================
+
+# Ordered longest-first so longer phrases match before shorter substrings
+_NAMED_CONDITIONS = [
+    ("slipped disc",          "a slipped disc"),
+    ("plantar fasciitis",     "plantar fasciitis"),
+    ("frozen shoulder",       "a frozen shoulder"),
+    ("rotator cuff",          "a rotator cuff injury"),
+    ("tennis elbow",          "tennis elbow"),
+    ("golfer",                "golfer's elbow"),
+    ("shin splint",           "shin splints"),
+    ("repetitive strain",     "repetitive strain injury"),
+    ("osteoarthritis",        "osteoarthritis"),
+    ("fibromyalgia",          "fibromyalgia"),
+    ("tendinopathy",          "tendinopathy"),
+    ("tendinitis",            "tendinitis"),
+    ("tendinosis",            "tendinosis"),
+    ("bursitis",              "bursitis"),
+    ("whiplash",              "whiplash"),
+    ("scoliosis",             "scoliosis"),
+    ("sciatica",              "sciatica"),
+    ("arthritis",             "arthritis"),
+    ("sports injury",         "a sports injury"),
+    ("muscle strain",         "a muscle strain"),
+    ("muscle tear",           "a muscle tear"),
+    ("rsi",                   "RSI"),
+    ("disc",                  "a disc problem"),
+]
+
+_BODY_PARTS = [
+    ("lower back",  "lower back pain"),
+    ("upper back",  "upper back pain"),
+    ("mid back",    "mid-back pain"),
+    ("achilles",    "Achilles pain"),
+    ("hamstring",   "hamstring pain"),
+    ("shoulder",    "shoulder pain"),
+    ("back",        "back pain"),
+    ("knee",        "knee pain"),
+    ("elbow",       "elbow pain"),
+    ("neck",        "neck pain"),
+    ("hip",         "hip pain"),
+    ("ankle",       "ankle pain"),
+    ("wrist",       "wrist pain"),
+    ("foot",        "foot pain"),
+    ("heel",        "heel pain"),
+    ("calf",        "calf pain"),
+    ("groin",       "groin pain"),
+    ("thumb",       "thumb pain"),
+    ("finger",      "finger pain"),
+    ("toe",         "toe pain"),
+    ("hand",        "hand pain"),
+    ("arm",         "arm pain"),
+    ("leg",         "leg pain"),
+    ("chest",       "chest pain"),
+    ("rib",         "rib pain"),
+    ("jaw",         "jaw pain"),
+]
+
+_FRACTURE_WORDS  = {"broken", "fracture", "fractured", "break", "broke", "snapped", "cracked"}
+_SURGERY_WORDS   = {"post-op", "post op", "surgery", "operation", "reconstruction", "replacement"}
+
+# Filler phrases stripped from the start of raw reason text
+_FILLERS = sorted([
+    "i'm not really sure but my ", "i'm not really sure but ",
+    "i'm not sure but my ", "i'm not sure but ", "i'm not sure, ",
+    "not really sure but ", "i think ", "um, ", "uh, ",
+    "i have a problem with my ", "i have a problem with ",
+    "i'm having issues with my ", "i'm having issues with ",
+    "i've been having problems with my ", "i've been having problems with ",
+    "i've been having ", "i have been having ",
+    "i'm experiencing ", "i am experiencing ",
+    "i've got a problem with ", "i've got ", "i have got ", "i've got a ",
+    "i have a ", "i have ", "i'm having ", "i am having ",
+    "it's my ", "it is my ", "my ", "it's ", "its ",
+    "a bit of ", "some ", "a lot of ",
+], key=lambda x: -len(x))
+
+
+def extract_condition_label(reason: str) -> str:
+    """
+    Extract a clean, human-readable condition label from raw caller speech.
+
+    Examples:
+      "I'm not really sure but my elbow is bad" → "elbow pain"
+      "I broke my foot"                          → "broken foot"
+      "sciatica for the last three months"       → "sciatica"
+      "lower back pain after the gym"            → "lower back pain"
+    """
+    if not reason:
+        return ""
+
+    r = reason.lower()
+
+    is_fracture  = any(w in r for w in _FRACTURE_WORDS)
+    is_post_surg = any(w in r for w in _SURGERY_WORDS)
+
+    # 1. Named conditions (more specific — check first)
+    for key, label in _NAMED_CONDITIONS:
+        if key in r:
+            return label
+
+    # 2. Body parts
+    for key, label in _BODY_PARTS:
+        if key in r:
+            if is_fracture:
+                return f"a broken {key}"
+            if is_post_surg:
+                return f"post-surgery {key} recovery"
+            return label
+
+    # 3. Fallback: strip filler words and return cleaned text
+    cleaned = reason.strip()
+    for filler in _FILLERS:
+        if cleaned.lower().startswith(filler):
+            cleaned = cleaned[len(filler):].strip()
+            break
+
+    # Remove trailing noise ("is bad", "is hurting", "is giving me problems" etc.)
+    cleaned = re.sub(
+        r"\s+(is bad|is killing me|is hurting|is really bad|hurts|is sore|"
+        r"is giving me problems|is playing up|has been bad|has been hurting)[\s,\.]*$",
+        "", cleaned, flags=re.IGNORECASE,
+    ).strip()
+
+    if cleaned and 2 <= len(cleaned) <= 60:
+        return cleaned[0].upper() + cleaned[1:]
+
+    return ""
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
 async def send_smart_followup_sms(
     session: Dict[str, Any],
     summary: Dict[str, Any],
 ) -> bool:
-    """
-    Route to appropriate SMS template based on call context.
-    """
-    
-    # Extract key data
+    """Route to appropriate SMS template based on call context."""
+
     collected = session.get("collected", {}) or {}
-    
-    # ✅ FIX: Get phone from Twilio metadata (the number they're calling FROM)
-    # This is automatically available, they don't need to tell us
+
+    # Phone — use the caller's Twilio number first (always available)
     patient_phone = (
-        session.get("twilio_from", "") or  # Caller's phone number
-        collected.get("phone", "")          # Fallback to collected if available
+        session.get("twilio_from", "") or
+        collected.get("phone", "")
     )
-    
-    # Clean Twilio client IDs (if any)
     if patient_phone and patient_phone.startswith("client:"):
         patient_phone = ""
-    
-    # Get first name safely (handle empty names)
-    name = collected.get("name", "") or ""
-    patient_name = name.split()[0] if name.strip() else ""
-    
-    outcome = summary.get("outcome", "")
-    meta_data = summary.get("meta", {}) or {}
-    insurance_data = summary.get("insurance", {}) or {}
-    handoff_data = summary.get("handoff", {}) or {}
-    faq_data = summary.get("faq", []) or []
 
-    # Clinic branding for SMS sign-off
+    # First name only
+    name_raw     = collected.get("name", "") or ""
+    patient_name = name_raw.split()[0] if name_raw.strip() else ""
+
+    outcome        = summary.get("outcome", "")
+    meta_data      = summary.get("meta", {}) or {}
+    insurance_data = summary.get("insurance", {}) or {}
+    handoff_data   = summary.get("handoff", {}) or {}
+    faq_data       = summary.get("faq", []) or []
+
+    # Clinic branding
     _clinic      = get_clinic(session.get("clinic_id"))
-    clinic_name  = _clinic.get("sms_name")  or _clinic.get("display_name")
+    clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name")
     clinic_phone = _clinic.get("phone")
-    
-    # Get duration - check multiple sources like actionable_summary does
+    hours_summary = _clinic.get("hours_summary")  # e.g. "Mon–Fri 8:30am–9pm"
+
+    # Call duration
     duration = 0
     try:
         duration_str = (
-            meta_data.get("duration_sec") or 
-            session.get("twilio_duration_sec") or 
+            meta_data.get("duration_sec") or
+            session.get("twilio_duration_sec") or
             "0"
         )
         duration = int(duration_str)
-    except:
+    except Exception:
         duration = 0
-    # =================================================================
-    # FILTER RULES
-    # =================================================================
-    
-    # RULE 1: No phone number = can't send SMS
+
+    # ── FILTER RULES ─────────────────────────────────────────────────────────
+
     if not patient_phone:
-        logger.info("📵 No phone number - skipping SMS")
+        logger.info("📵 No phone number — skipping SMS")
         return False
-    
-    # RULE 2: Call too short (<15s) = probably wrong number
+
     if duration < 15:
-        logger.info(f"⏱️  Call too short ({duration}s) - skipping SMS")
+        logger.info(f"⏱️  Call too short ({duration}s) — skipping SMS")
         return False
-    
-    # RULE 3: Already booked = skip for now (will add with Acuity)
+
+    # Booked — handled separately (booking confirmation SMS is already sent)
     if outcome == "booked":
-        logger.info("✅ Booked - SMS will be added with Acuity integration")
+        logger.info("✅ Booked — booking confirmation SMS already sent")
         return False
-    
-    # =================================================================
-    # CHOOSE TEMPLATE
-    # =================================================================
-    
+
+    # ── CHOOSE TEMPLATE ──────────────────────────────────────────────────────
+
     message = _choose_template(
-        outcome=outcome,
-        patient_name=patient_name,
-        collected=collected,
-        insurance_data=insurance_data,
-        handoff_data=handoff_data,
-        faq_data=faq_data,
-        session=session,
-        clinic_name=clinic_name,
-        clinic_phone=clinic_phone,
+        outcome        = outcome,
+        patient_name   = patient_name,
+        collected      = collected,
+        insurance_data = insurance_data,
+        handoff_data   = handoff_data,
+        faq_data       = faq_data,
+        session        = session,
+        clinic_name    = clinic_name,
+        clinic_phone   = clinic_phone,
+        hours_summary  = hours_summary,
     )
-    
+
     if not message:
-        logger.warning(f"⚠️  No template found for outcome: {outcome}")
+        logger.warning(f"⚠️  No template for outcome: {outcome}")
         return False
-    
-    # =================================================================
-    # SEND SMS
-    # =================================================================
-    
+
+    # ── SEND ─────────────────────────────────────────────────────────────────
+
     try:
         await send_sms(to=patient_phone, message=message)
-        logger.info(f"✅ Smart SMS sent to {patient_phone}: {outcome}")
+        logger.info(f"✅ Smart SMS sent [{outcome}] → {patient_phone}")
         return True
     except Exception as e:
         logger.error(f"❌ Failed to send SMS: {e}", exc_info=True)
         return False
 
 
+# ============================================================================
+# TEMPLATE SELECTOR
+# ============================================================================
+
 def _choose_template(
-    outcome: str,
-    patient_name: str,
-    collected: Dict,
+    outcome:        str,
+    patient_name:   str,
+    collected:      Dict,
     insurance_data: Dict,
-    handoff_data: Dict,
-    faq_data: list,
-    session: Dict,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
+    handoff_data:   Dict,
+    faq_data:       list,
+    session:        Dict,
+    clinic_name:    Optional[str] = None,
+    clinic_phone:   Optional[str] = None,
+    hours_summary:  Optional[str] = None,
 ) -> Optional[str]:
     """Choose the right template based on call outcome."""
 
-    reason   = collected.get("reason", "")
-    location = session.get("selected_location", "")
-    insurer  = insurance_data.get("insurer_name", "")
+    raw_reason  = collected.get("reason", "") or ""
+    location    = session.get("selected_location", "")
+    insurer     = insurance_data.get("insurer_name", "") or ""
 
-    # Detect what they asked about
+    # Extract a clean condition label from the raw reason
+    condition_label = extract_condition_label(raw_reason)
+
+    # Flags
     asked_about_price     = _check_price_question(faq_data, session)
     asked_about_insurance = _check_insurance_question(faq_data, insurance_data, session)
     bupa_mentioned        = _check_bupa_mention(faq_data, insurance_data)
 
-    # Shared kwargs passed to every template
     ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
 
-    # =================================================================
-    # ROUTING LOGIC
-    # =================================================================
+    # ── ROUTING ──────────────────────────────────────────────────────────────
 
-    # 1. ABANDONED BOOKING
+    # 1. HUMAN CALLBACK REQUESTED
+    if outcome == "human_requested":
+        return templates.format_callback_confirmation(
+            patient_name=patient_name, **ck)
+
+    # 2. OUT OF HOURS
+    if outcome == "out_of_hours":
+        return templates.format_out_of_hours_sms(
+            hours_summary=hours_summary, **ck)
+
+    # 3. RESCHEDULED (manual followup for reschedule)
+    if outcome == "rescheduled" or (
+        outcome == "manual_followup" and any(
+            w in (handoff_data.get("reason") or "").lower()
+            for w in ["reschedule", "change", "move"]
+        )
+    ):
+        return templates.format_reschedule_request_sms(
+            patient_name=patient_name, **ck)
+
+    # 4. CANCELLATION (manual followup for cancellation)
+    if outcome == "manual_followup" and any(
+        w in (handoff_data.get("reason") or "").lower()
+        for w in ["cancel", "cancellation"]
+    ):
+        return templates.format_cancellation_request_sms(
+            patient_name=patient_name, **ck)
+
+    # 5. NO SUITABLE TIME
+    if outcome == "manual_followup" and "time" in (handoff_data.get("reason") or "").lower():
+        return templates.format_no_suitable_time_sms(
+            patient_name=patient_name, reason=condition_label or raw_reason, **ck)
+
+    # 6. GENERAL MANUAL FOLLOWUP
+    if outcome == "manual_followup":
+        return templates.format_callback_confirmation(
+            patient_name=patient_name, **ck)
+
+    # 7. FAQ — BUPA SPECIFICALLY
+    if bupa_mentioned:
+        return templates.format_insurance_inquiry_sms(
+            patient_name=patient_name, bupa_mentioned=True, **ck)
+
+    # 8. FAQ — INSURANCE (non-Bupa)
+    if asked_about_insurance:
+        return templates.format_insurance_inquiry_sms(
+            patient_name=patient_name,
+            insurer=insurer or None,
+            bupa_mentioned=False,
+            **ck,
+        )
+
+    # 9. FAQ — PRICE
+    if asked_about_price:
+        return templates.format_price_inquiry_sms(
+            patient_name=patient_name, **ck)
+
+    # 10. ABANDONED — with condition/reason
+    if outcome == "abandoned" and (condition_label or raw_reason):
+        return templates.format_abandoned_booking_sms(
+            patient_name    = patient_name,
+            condition_label = condition_label or raw_reason,
+            **ck,
+        )
+
+    # 11. ABANDONED — general (no condition)
     if outcome == "abandoned":
         return templates.format_abandoned_booking_sms(
-            patient_name=patient_name, reason=reason, location=location, **ck)
+            patient_name=patient_name, **ck)
 
-    # 2. FAQ ONLY - PRICE FOCUSED
-    elif outcome == "faq_only" and asked_about_price:
-        return templates.format_price_inquiry_sms(
-            patient_name=patient_name, service=reason or None, **ck)
+    # 12. FAQ — GENERAL (no specific topic)
+    if outcome == "faq_only":
+        return templates.format_general_thankyou_sms(
+            patient_name=patient_name, **ck)
 
-    # 3. FAQ ONLY - INSURANCE FOCUSED
-    elif outcome == "faq_only" and asked_about_insurance:
-        return templates.format_insurance_inquiry_sms(
-            patient_name=patient_name, insurer=insurer or None,
-            bupa_mentioned=bupa_mentioned, **ck)
+    # 13. TECHNICAL FAILURE
+    if outcome == "failed":
+        return templates.format_technical_issue_sms(
+            patient_name=patient_name, **ck)
 
-    # 4. FAQ ONLY - GENERAL
-    elif outcome == "faq_only":
-        topics = _extract_faq_topics(faq_data)
-        return templates.format_info_only_sms(
-            patient_name=patient_name, topics=topics, **ck)
+    # 14. FALLBACK
+    return templates.format_general_thankyou_sms(
+        patient_name=patient_name, **ck)
 
-    # 5. MANUAL FOLLOWUP - NO SUITABLE TIME
-    elif outcome == "manual_followup" and "time" in handoff_data.get("reason", "").lower():
-        return templates.format_no_suitable_time_sms(
-            patient_name=patient_name, reason=reason, **ck)
 
-    # 6. MANUAL FOLLOWUP - RESCHEDULE
-    elif outcome == "manual_followup" and any(
-        word in handoff_data.get("reason", "").lower()
-        for word in ["reschedule", "change", "move"]
-    ):
-        return templates.format_reschedule_request_sms(patient_name=patient_name, **ck)
-
-    # 7. MANUAL FOLLOWUP - CANCELLATION
-    elif outcome == "manual_followup" and any(
-        word in handoff_data.get("reason", "").lower()
-        for word in ["cancel", "cancellation"]
-    ):
-        return templates.format_cancellation_request_sms(patient_name=patient_name, **ck)
-
-    # 8. MANUAL FOLLOWUP - GENERAL
-    elif outcome == "manual_followup":
-        return templates.format_callback_confirmation(
-            patient_name=patient_name, clinic_name=clinic_name)
-
-    # 9. TECHNICAL FAILURE
-    elif outcome == "failed":
-        return templates.format_technical_issue_sms(patient_name=patient_name, **ck)
-
-    # 10. FALLBACK
-    else:
-        return templates.format_general_thankyou_sms(patient_name=patient_name, **ck)
-
+# ============================================================================
+# DETECTION HELPERS
+# ============================================================================
 
 def _check_price_question(faq_data: list, session: Dict) -> bool:
     """Check if patient asked about pricing."""
-    price_keywords = ["price", "cost", "how much", "fee", "charge", "expensive", "£"]
-    
-    # Check FAQ
+    keywords = {"price", "cost", "how much", "fee", "charge", "expensive", "£"}
     for turn in faq_data:
-        if isinstance(turn, dict):
-            question = turn.get("question", "").lower()
-            if any(keyword in question for keyword in price_keywords):
-                return True
-    
-    # Check conversation
-    turns = session.get("turns", []) or []
-    for turn in turns[-5:]:
-        if isinstance(turn, dict):
-            user_msg = turn.get("user", "").lower()
-            if any(keyword in user_msg for keyword in price_keywords):
-                return True
-    
+        if isinstance(turn, dict) and any(k in turn.get("question", "").lower() for k in keywords):
+            return True
+    for turn in (session.get("turns", []) or [])[-6:]:
+        if isinstance(turn, dict) and any(k in turn.get("user", "").lower() for k in keywords):
+            return True
     return False
 
 
 def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dict) -> bool:
     """Check if patient asked about insurance."""
-    insurance_keywords = ["insurance", "insurer", "bupa", "axa", "aviva", "vitality", "claim", "cover"]
-    
-    # If they provided insurance info, they asked about it
     if insurance_data.get("insurer_name"):
         return True
-    
-    # Check FAQ
+    keywords = {"insurance", "insurer", "bupa", "axa", "aviva", "vitality", "claim", "cover"}
     for turn in faq_data:
-        if isinstance(turn, dict):
-            question = turn.get("question", "").lower()
-            if any(keyword in question for keyword in insurance_keywords):
-                return True
-    
-    # Check conversation
-    turns = session.get("turns", []) or []
-    for turn in turns[-5:]:
-        if isinstance(turn, dict):
-            user_msg = turn.get("user", "").lower()
-            if any(keyword in user_msg for keyword in insurance_keywords):
-                return True
-    
+        if isinstance(turn, dict) and any(k in turn.get("question", "").lower() for k in keywords):
+            return True
+    for turn in (session.get("turns", []) or [])[-6:]:
+        if isinstance(turn, dict) and any(k in turn.get("user", "").lower() for k in keywords):
+            return True
     return False
 
 
 def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
     """Check if Bupa was specifically mentioned."""
-    # ✅ FIX: Handle None values safely
-    insurer_name = (insurance_data or {}).get("insurer_name") or ""
-    if insurer_name.lower() == "bupa":
+    if (insurance_data or {}).get("insurer_name", "").lower() == "bupa":
         return True
-    
     for turn in faq_data:
-        if isinstance(turn, dict):
-            question = turn.get("question", "").lower()
-            if "bupa" in question:
-                return True
-    
+        if isinstance(turn, dict) and "bupa" in turn.get("question", "").lower():
+            return True
     return False
-
-
-def _extract_faq_topics(faq_data: list) -> Optional[str]:
-    """Extract main topics from FAQ questions."""
-    topics = []
-    
-    for turn in faq_data[:3]:  # First 3 questions
-        if isinstance(turn, dict):
-            question = turn.get("question", "").lower()
-            
-            if any(word in question for word in ["price", "cost", "how much"]):
-                if "pricing" not in topics:
-                    topics.append("pricing")
-            
-            elif any(word in question for word in ["hour", "open", "when"]):
-                if "hours" not in topics:
-                    topics.append("hours")
-            
-            elif any(word in question for word in ["where", "location", "address"]):
-                if "location" not in topics:
-                    topics.append("location")
-            
-            elif "insurance" in question:
-                if "insurance" not in topics:
-                    topics.append("insurance")
-            
-            elif any(word in question for word in ["service", "treatment", "help with"]):
-                if "services" not in topics:
-                    topics.append("services")
-    
-    if topics:
-        return ", ".join(topics[:3])
-    
-    return None

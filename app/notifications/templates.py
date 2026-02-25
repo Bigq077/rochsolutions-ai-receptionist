@@ -3,7 +3,9 @@
 Clinic-aware SMS templates.
 Every function accepts optional clinic_name and clinic_phone kwargs so the
 correct branding appears in every message regardless of which clinic is active.
-Defaults retain Theorem Health values for backward compatibility.
+
+Demo clinic  : "Roch Physio Clinic" / 07366 530580
+Theorem Health: "Theorem Health"     / 07870 166861
 """
 
 from datetime import datetime
@@ -27,7 +29,7 @@ def _cp(clinic_phone: Optional[str]) -> str:
 
 
 # ============================================================================
-# BOOKING CONFIRMATION TEMPLATES
+# ✅ BOOKING CONFIRMATION
 # ============================================================================
 
 def format_booking_confirmation(
@@ -42,22 +44,26 @@ def format_booking_confirmation(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """Standard booking confirmation SMS."""
+    """✅ Booking confirmed."""
     day_name = appointment_time.strftime("%A")
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
 
-    message = (
-        f"Hi {patient_name}, your {service} appointment is confirmed for "
-        f"{day_name} {day_num} {month} at {time_str} at our {location} clinic"
+    name    = _cn(clinic_name)
+    phone   = _cp(clinic_phone)
+    loc_str = location.title() if location else "our"
+
+    msg = (
+        f"Hi {patient_name}, you're all booked in with {name} on "
+        f"{day_name} {day_num} {month} at {time_str} at our {loc_str} clinic."
     )
     if practitioner:
-        message += f" with {practitioner}"
+        msg += f" Your appointment is with {practitioner}."
     if is_new_patient:
-        message += ". Please arrive 5 minutes early"
-    message += f". We look forward to seeing you! {_cn(clinic_name)} - {_cp(clinic_phone)}"
-    return message
+        msg += " Please arrive 5 minutes early."
+    msg += f" If you need to reschedule, just call us on {phone}. We look forward to seeing you! 🙌"
+    return msg
 
 
 def format_insurance_booking_confirmation(
@@ -70,23 +76,27 @@ def format_insurance_booking_confirmation(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """Booking confirmation for insurance patients."""
+    """✅ Booking confirmed — insurance patient."""
     day_name = appointment_time.strftime("%A")
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
 
-    message = (
-        f"Hi {patient_name}, your {service} appointment is confirmed for "
-        f"{day_name} {day_num} {month} at {time_str} at our {location} clinic"
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    loc_str = location.title() if location else "our"
+
+    msg = (
+        f"Hi {patient_name}, you're all booked in with {name} on "
+        f"{day_name} {day_num} {month} at {time_str} at our {loc_str} clinic."
     )
     if practitioner:
-        message += f" with {practitioner}"
-    message += (
-        f". We'll provide all documentation for your {insurer} claim. "
-        f"See you then! {_cn(clinic_name)} - {_cp(clinic_phone)}"
+        msg += f" Your appointment is with {practitioner}."
+    msg += (
+        f" We'll provide all the documentation you need for your {insurer} claim. "
+        f"If you need to reschedule, call {phone}. See you then! 🙌"
     )
-    return message
+    return msg
 
 
 def format_first_visit_welcome(
@@ -96,22 +106,26 @@ def format_first_visit_welcome(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """Welcome message for first-time patients."""
+    """✅ First-visit welcome — new patient."""
     day_name = appointment_time.strftime("%A")
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
 
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    loc_str = location.title() if location else "our"
+
     return (
-        f"Hi {patient_name}, welcome to {_cn(clinic_name)}! Your first appointment is "
-        f"{day_name} {day_num} {month} at {time_str} at our {location} clinic. "
-        f"Please arrive 5 minutes early. We look forward to meeting you! "
-        f"Call {_cp(clinic_phone)} with any questions."
+        f"Hi {patient_name}, welcome to {name}! Your first appointment is on "
+        f"{day_name} {day_num} {month} at {time_str} at our {loc_str} clinic. "
+        f"Please arrive 5 minutes early — we look forward to meeting you! "
+        f"Any questions? Call us on {phone}."
     )
 
 
 # ============================================================================
-# REMINDER TEMPLATES
+# 🔔 REMINDER TEMPLATES
 # ============================================================================
 
 def format_24hr_reminder(
@@ -124,18 +138,19 @@ def format_24hr_reminder(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """24-hour reminder SMS."""
+    """Reminder — 24 hours before."""
     day_name = appointment_time.strftime("%A")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    loc_str  = location.title() if location else "our"
 
-    message = (
-        f"Hi {patient_name}, reminder: your physiotherapy appointment is tomorrow "
-        f"({day_name}) at {time_str} at our {location} clinic."
+    msg = (
+        f"Hi {patient_name}, just a reminder — your physiotherapy appointment is tomorrow "
+        f"({day_name}) at {time_str} at our {loc_str} clinic."
     )
     if what_to_bring or is_new_patient:
-        message += " Please arrive 5 minutes early to complete paperwork."
-    message += f" Call {_cp(clinic_phone)} if you need to reschedule. {_cn(clinic_name)}"
-    return message
+        msg += " Please arrive 5 minutes early to complete your paperwork."
+    msg += f" Need to reschedule? Call {_cp(clinic_phone)}. {_cn(clinic_name)}"
+    return msg
 
 
 def format_same_day_reminder(
@@ -145,12 +160,13 @@ def format_same_day_reminder(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """Same-day reminder (2 hours before)."""
+    """Reminder — same day, 2 hours before."""
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    loc_str  = location.title() if location else "our"
 
     return (
-        f"Hi {patient_name}, reminder: your physiotherapy appointment is today at {time_str} "
-        f"at our {location} clinic. See you soon! {_cn(clinic_name)} - {_cp(clinic_phone)}"
+        f"Hi {patient_name}, just a reminder — your physiotherapy appointment is today at {time_str} "
+        f"at our {loc_str} clinic. See you soon! {_cn(clinic_name)} - {_cp(clinic_phone)}"
     )
 
 
@@ -161,7 +177,7 @@ def format_insurance_reminder(
 ) -> str:
     """Insurance reminder (sent with 24hr reminder)."""
     return (
-        f"Hi {patient_name}, reminder: we'll provide all documentation needed "
+        f"Hi {patient_name}, reminder: we'll provide all the documentation you need "
         f"for your {insurer} claim. Bring your membership number if you have it. "
         f"{_cn(clinic_name)}"
     )
@@ -171,7 +187,7 @@ def format_what_to_bring_reminder(
     patient_name: str,
     clinic_name: Optional[str] = None,
 ) -> str:
-    """What to bring reminder for new patients."""
+    """What to bring — new patient."""
     return (
         f"Hi {patient_name}, for your first visit please bring: photo ID, "
         f"insurance details (if claiming), and any relevant medical reports. "
@@ -180,8 +196,34 @@ def format_what_to_bring_reminder(
 
 
 # ============================================================================
-# CANCELLATION & RESCHEDULE TEMPLATES
+# 🔄 RESCHEDULE & ❌ CANCELLATION TEMPLATES
 # ============================================================================
+
+def format_reschedule_confirmation(
+    patient_name: str,
+    old_time: datetime,
+    new_time: datetime,
+    location: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """🔄 Appointment rescheduled."""
+    new_day      = new_time.strftime("%A")
+    new_day_num  = new_time.strftime("%d").lstrip("0")
+    new_month    = new_time.strftime("%b")
+    new_time_str = new_time.strftime("%I:%M%p").lstrip("0").lower()
+    loc_str      = location.title() if location else ""
+
+    phone = _cp(clinic_phone)
+    name  = _cn(clinic_name)
+
+    loc_clause = f" at our {loc_str} clinic" if loc_str else ""
+    return (
+        f"Hi {patient_name}, your appointment has been moved to "
+        f"{new_day} {new_day_num} {new_month} at {new_time_str}{loc_clause}. "
+        f"If anything changes, give us a call on {phone} and we'll sort it. See you then! {name}"
+    )
+
 
 def format_cancellation_confirmation(
     patient_name: str,
@@ -190,20 +232,26 @@ def format_cancellation_confirmation(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """Cancellation confirmation."""
+    """❌ Appointment cancelled."""
     day_name = appointment_time.strftime("%A")
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
 
-    message = (
+    phone = _cp(clinic_phone)
+    name  = _cn(clinic_name)
+
+    msg = (
         f"Hi {patient_name}, your appointment on {day_name} {day_num} {month} "
-        f"at {time_str} has been cancelled."
+        f"at {time_str} has been cancelled as requested."
     )
     if is_late_cancellation:
-        message += " As this was within 24 hours, our cancellation fee may apply."
-    message += f" Call {_cp(clinic_phone)} to rebook. {_cn(clinic_name)}"
-    return message
+        msg += " As this was within 24 hours, our cancellation fee may apply."
+    msg += (
+        f" Whenever you're ready to rebook, just give us a call — "
+        f"we'll get you sorted quickly. {phone} {name}"
+    )
+    return msg
 
 
 def format_late_cancellation_warning(
@@ -214,47 +262,33 @@ def format_late_cancellation_warning(
     """Late cancellation warning (within 24 hours)."""
     return (
         f"Hi {patient_name}, your appointment has been cancelled. "
-        f"As this was within 24 hours of your appointment, our £25 cancellation fee applies. "
-        f"Call {_cp(clinic_phone)} to rebook. {_cn(clinic_name)}"
-    )
-
-
-def format_reschedule_confirmation(
-    patient_name: str,
-    old_time: datetime,
-    new_time: datetime,
-    location: str,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """Reschedule confirmation."""
-    new_day      = new_time.strftime("%A")
-    new_day_num  = new_time.strftime("%d").lstrip("0")
-    new_month    = new_time.strftime("%b")
-    new_time_str = new_time.strftime("%I:%M%p").lstrip("0").lower()
-
-    return (
-        f"Hi {patient_name}, your appointment has been rescheduled to "
-        f"{new_day} {new_day_num} {new_month} at {new_time_str} at our {location} clinic. "
-        f"See you then! {_cn(clinic_name)} - {_cp(clinic_phone)}"
+        f"As this was within 24 hours, our £25 cancellation fee applies. "
+        f"Ready to rebook? Call {_cp(clinic_phone)}. {_cn(clinic_name)}"
     )
 
 
 # ============================================================================
-# COMMUNICATION TEMPLATES
+# 🙋 HUMAN CALLBACK TEMPLATES
 # ============================================================================
 
 def format_callback_confirmation(
     patient_name: str,
-    clinic_name: Optional[str] = None,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> str:
-    """Callback request confirmation."""
+    """🙋 Human callback requested."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
     if patient_name:
         return (
-            f"Hi {patient_name}, thanks for your message. "
-            f"One of our team will call you back shortly. {_cn(clinic_name)}"
+            f"Hi {patient_name}, you asked for a callback from our team. "
+            f"We've noted your details and someone will be in touch as soon as possible. "
+            f"If it's urgent, call us directly on {phone}. {name}"
         )
-    return f"Thanks for your message. We'll call you back shortly. {_cn(clinic_name)}"
+    return (
+        f"Hi, you requested a callback from our team at {name}. "
+        f"Someone will be in touch shortly. If it's urgent, call {phone}."
+    )
 
 
 def format_message_received_confirmation(
@@ -272,7 +306,149 @@ def format_message_received_confirmation(
 
 
 # ============================================================================
-# POST-APPOINTMENT TEMPLATES
+# 📞 ABANDONED BOOKING — SHOWED INTEREST, DIDN'T BOOK
+# ============================================================================
+
+def format_abandoned_booking_sms(
+    patient_name: str,
+    reason: Optional[str] = None,
+    location: Optional[str] = None,
+    condition_label: Optional[str] = None,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """📞 Abandoned call — showed interest but didn't complete booking."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+
+    # Use extracted condition label if available, fall back to raw reason
+    subject = condition_label or reason
+    if subject:
+        return (
+            f"Hi, you called {name} earlier about {subject}. "
+            f"We'd love to help — booking takes less than 2 minutes over the phone. "
+            f"Give us a call back whenever suits you. 😊 {phone}"
+        )
+    return (
+        f"Hi, you called {name} earlier and we'd love to help. "
+        f"Booking takes less than 2 minutes over the phone — "
+        f"give us a call back whenever suits you. 😊 {phone}"
+    )
+
+
+# ============================================================================
+# ⚠️ CONDITION MENTIONED — NO BOOKING MADE
+# ============================================================================
+
+def format_condition_sms(
+    condition_label: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """⚠️ Caller mentioned a condition but didn't book."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    subject = condition_label or "your condition"
+    return (
+        f"Hi, you called about {subject}. "
+        f"Our physios have a great track record with this — "
+        f"most patients feel a difference within 1–2 sessions. "
+        f"Don't let it drag on — give us a call back and we'll get you seen quickly. "
+        f"{phone} {name}"
+    )
+
+
+# ============================================================================
+# 💰 PRICING ENQUIRY — DIDN'T BOOK
+# ============================================================================
+
+def format_price_inquiry_sms(
+    patient_name: str,
+    service: Optional[str] = None,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """💰 Price enquiry — didn't book."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    return (
+        f"Hi, you called {name} earlier asking about our prices. "
+        f"A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+        f"Ready to book? Call us back anytime, we'd love to help. {phone}"
+    )
+
+
+# ============================================================================
+# 🏥 INSURANCE ENQUIRY — DIDN'T BOOK
+# ============================================================================
+
+def format_insurance_inquiry_sms(
+    patient_name: str,
+    insurer: Optional[str] = None,
+    bupa_mentioned: bool = False,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """🏥 Insurance enquiry / 🚫 Bupa — didn't book."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+
+    if bupa_mentioned:
+        return (
+            f"Hi, you called {name} about Bupa cover. "
+            f"Unfortunately we can't bill Bupa directly, but many patients pay privately "
+            f"at £75 and find it great value. "
+            f"If you'd like to chat it through, give us a call — no pressure at all. {phone}"
+        )
+
+    insurer_clause = f" with {insurer}" if insurer else ""
+    return (
+        f"Hi, you called about using your health insurance{insurer_clause} with {name}. "
+        f"We work with most major insurers — you pay us directly and claim back from your provider. "
+        f"Give us a call back if you'd like to get booked in, we'll walk you through it. {phone}"
+    )
+
+
+# ============================================================================
+# 🌙 OUT OF HOURS — DIDN'T BOOK
+# ============================================================================
+
+def format_out_of_hours_sms(
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+    hours_summary: Optional[str] = None,
+) -> str:
+    """🌙 Out of hours call — didn't book."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    hours_clause = f" We're open {hours_summary}." if hours_summary else ""
+    return (
+        f"Hi, you called {name} outside of our opening hours.{hours_clause} "
+        f"Call back when you're ready or reply to this message and we'll get you booked in. {phone}"
+    )
+
+
+# ============================================================================
+# ❓ GENERAL ENQUIRY — CURIOUS BUT UNCOMMITTED
+# ============================================================================
+
+def format_general_thankyou_sms(
+    patient_name: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """❓ General enquiry — curious but uncommitted."""
+    name  = _cn(clinic_name)
+    phone = _cp(clinic_phone)
+    return (
+        f"Hi, thanks for calling {name}! "
+        f"If you have any more questions or want to book in, just give us a call — "
+        f"our AI receptionist is available any time and can get you sorted in under 2 minutes. 😊 {phone}"
+    )
+
+
+# ============================================================================
+# 💌 POST-APPOINTMENT TEMPLATES
 # ============================================================================
 
 def format_post_appointment_thankyou(
@@ -282,14 +458,14 @@ def format_post_appointment_thankyou(
     clinic_phone: Optional[str] = None,
 ) -> str:
     """Thank you after appointment."""
-    message = f"Hi {patient_name}, thank you for visiting {_cn(clinic_name)} today"
+    msg = f"Hi {patient_name}, thank you for visiting {_cn(clinic_name)} today"
     if practitioner:
-        message += f" with {practitioner}"
-    message += (
+        msg += f" with {practitioner}"
+    msg += (
         ". Remember to do your prescribed exercises! "
         f"Call {_cp(clinic_phone)} if you have any questions."
     )
-    return message
+    return msg
 
 
 def format_insurance_receipt_ready(
@@ -300,7 +476,7 @@ def format_insurance_receipt_ready(
 ) -> str:
     """Insurance receipt ready notification."""
     return (
-        f"Hi {patient_name}, your receipt and clinical notes for {insurer} "
+        f"Hi {patient_name}, your receipt and clinical notes for your {insurer} claim "
         f"have been emailed. Call {_cp(clinic_phone)} if you need anything else. "
         f"{_cn(clinic_name)}"
     )
@@ -320,118 +496,8 @@ def format_insurance_receipt_notification(
 
 
 # ============================================================================
-# SMART SMS ROUTER TEMPLATES (for different call outcomes)
+# LEGACY / MANUAL-FOLLOWUP TEMPLATES
 # ============================================================================
-
-def format_abandoned_booking_sms(
-    patient_name: str,
-    reason: Optional[str] = None,
-    location: Optional[str] = None,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """SMS for abandoned bookings."""
-    name  = _cn(clinic_name)
-    phone = _cp(clinic_phone)
-    if patient_name and reason:
-        return (
-            f"Hi {patient_name}, thanks for calling about {reason}. "
-            f"We'd love to help — call {phone} to book or reply YES for a callback. {name}"
-        )
-    elif patient_name:
-        return (
-            f"Hi {patient_name}, thanks for calling {name}. "
-            f"We're here if you'd like to complete your booking. "
-            f"Call {phone} or reply YES for a callback."
-        )
-    else:
-        return f"Thanks for calling {name}. Call {phone} to book your appointment."
-
-
-def format_info_only_sms(
-    patient_name: str,
-    topics: Optional[str] = None,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """SMS for FAQ-only calls."""
-    name  = _cn(clinic_name)
-    phone = _cp(clinic_phone)
-    if patient_name and topics:
-        return (
-            f"Hi {patient_name}, glad we could help with your questions about {topics}. "
-            f"Ready to book? Call {phone}. {name}"
-        )
-    elif patient_name:
-        return (
-            f"Hi {patient_name}, thanks for your call. If you have more questions or want to book, "
-            f"call {phone}. {name}"
-        )
-    else:
-        return f"Thanks for calling {name}. Questions or bookings? Call {phone}."
-
-
-def format_price_inquiry_sms(
-    patient_name: str,
-    service: Optional[str] = None,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """SMS for price inquiries."""
-    name  = _cn(clinic_name)
-    phone = _cp(clinic_phone)
-    if patient_name and service:
-        return (
-            f"Hi {patient_name}, {service} sessions are £75 for 50 minutes. "
-            f"First session includes full assessment and treatment. "
-            f"Ready to book? Call {phone}. {name}"
-        )
-    elif patient_name:
-        return (
-            f"Hi {patient_name}, physiotherapy sessions are £75 for 50 minutes "
-            f"(full assessment + treatment included). "
-            f"Questions or booking? Call {phone}. {name}"
-        )
-    else:
-        return f"Physiotherapy £75/50min (assessment + treatment). Call {phone} to book. {name}"
-
-
-def format_insurance_inquiry_sms(
-    patient_name: str,
-    insurer: Optional[str] = None,
-    bupa_mentioned: bool = False,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """SMS for insurance inquiries."""
-    name  = _cn(clinic_name)
-    phone = _cp(clinic_phone)
-    if bupa_mentioned:
-        if patient_name:
-            return (
-                f"Hi {patient_name}, unfortunately we don't accept Bupa directly. "
-                f"You're welcome to book as a private patient. "
-                f"Call {phone} for more info. {name}"
-            )
-        else:
-            return f"We don't accept Bupa directly. Call {phone} for details. {name}"
-    elif insurer:
-        if patient_name:
-            return (
-                f"Hi {patient_name}, we're self-pay then you claim back from {insurer}. "
-                f"We provide all documentation. Ready to book? Call {phone}. {name}"
-            )
-        else:
-            return f"Self-pay, claim back from {insurer}. We provide receipts. Call {phone}. {name}"
-    else:
-        if patient_name:
-            return (
-                f"Hi {patient_name}, we're self-pay then you claim back from your insurer. "
-                f"We provide all documentation needed. Call {phone} to book. {name}"
-            )
-        else:
-            return f"Self-pay, claim from your insurer. We provide receipts. Call {phone}. {name}"
-
 
 def format_no_suitable_time_sms(
     patient_name: str,
@@ -439,21 +505,18 @@ def format_no_suitable_time_sms(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """SMS when no suitable time found."""
+    """No suitable appointment time found."""
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
-    if patient_name and reason:
+    if reason:
         return (
-            f"Hi {patient_name}, sorry we couldn't find a suitable time for {reason}. "
+            f"Hi, sorry we couldn't find a suitable time for {reason}. "
             f"Reply YES and we'll call you back to arrange something. Or call {phone}. {name}"
         )
-    elif patient_name:
-        return (
-            f"Hi {patient_name}, sorry we couldn't find a suitable appointment time. "
-            f"Reply YES for a callback or call us on {phone}. We'll find something that works! {name}"
-        )
-    else:
-        return f"Sorry we couldn't find a suitable time. Reply YES for callback or call {phone}. {name}"
+    return (
+        f"Hi, sorry we couldn't find a suitable appointment time. "
+        f"Reply YES for a callback or call us on {phone}. We'll find something that works! {name}"
+    )
 
 
 def format_technical_issue_sms(
@@ -461,16 +524,13 @@ def format_technical_issue_sms(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """SMS for technical issues."""
+    """Technical issue during call."""
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
-    if patient_name:
-        return (
-            f"Hi {patient_name}, sorry — we had a technical issue with your call. "
-            f"Please call us back on {phone} or reply YES and we'll call you. Apologies! {name}"
-        )
-    else:
-        return f"Sorry — technical issue with your call. Please call {phone} or reply YES for callback. {name}"
+    return (
+        f"Hi, sorry — we had a technical issue with your call to {name}. "
+        f"Please call us back on {phone} or reply YES and we'll call you. Apologies!"
+    )
 
 
 def format_reschedule_request_sms(
@@ -478,7 +538,7 @@ def format_reschedule_request_sms(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """SMS for reschedule requests."""
+    """Reschedule request received."""
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
     if patient_name:
@@ -486,8 +546,7 @@ def format_reschedule_request_sms(
             f"Hi {patient_name}, thanks for calling about rescheduling. "
             f"We'll help you find a new time — call {phone} or reply YES and we'll call you. {name}"
         )
-    else:
-        return f"Thanks for calling about rescheduling. Call {phone} or reply YES for callback. {name}"
+    return f"Thanks for calling about rescheduling. Call {phone} or reply YES for a callback. {name}"
 
 
 def format_cancellation_request_sms(
@@ -495,33 +554,15 @@ def format_cancellation_request_sms(
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
 ) -> str:
-    """SMS for cancellation requests."""
+    """Cancellation request received."""
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
     if patient_name:
         return (
-            f"Hi {patient_name}, thanks for calling about cancelling. "
-            f"Please call {phone} to confirm your cancellation and we'll sort it out. {name}"
+            f"Hi {patient_name}, thanks for calling about cancelling your appointment. "
+            f"Please call {phone} to confirm and we'll sort it out. {name}"
         )
-    else:
-        return f"Thanks for calling about cancellation. Call {phone} to confirm. {name}"
-
-
-def format_general_thankyou_sms(
-    patient_name: str,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """Generic thank you SMS."""
-    name  = _cn(clinic_name)
-    phone = _cp(clinic_phone)
-    if patient_name:
-        return (
-            f"Hi {patient_name}, thanks for calling {name}. "
-            f"If you'd like to book or have questions, call {phone}."
-        )
-    else:
-        return f"Thanks for calling {name}. Call {phone} to book or ask questions."
+    return f"Thanks for calling about cancellation. Call {phone} to confirm. {name}"
 
 
 # ============================================================================
@@ -530,7 +571,7 @@ def format_general_thankyou_sms(
 
 def get_location_short_name(location: str) -> str:
     """Convert location to short name."""
-    location_lower = location.lower()
+    location_lower = (location or "").lower()
     if "alcester" in location_lower:
         return "Alcester"
     elif "redditch" in location_lower:
