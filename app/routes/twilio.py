@@ -13,7 +13,7 @@ from datetime import datetime
 from app.tools.handoff import fire_and_forget_append_summary_row
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
-from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 
 from app.storage.redis_store import get_session, save_session
 from app.clinic_config import clinic_id_from_twilio_to, get_clinic
@@ -26,6 +26,7 @@ router = APIRouter(prefix="/twilio")
 # --------------------------------------------------
 
 AI_NAME = "Susie"
+TRANSFER_NUMBER = "+447502211207"
 
 # After location confirmed — hand off to triage
 HOW_CAN_I_HELP = "How can I help you today?"
@@ -37,9 +38,7 @@ HOW_CAN_I_HELP = "How can I help you today?"
 
 def _build_reintro(clinic: dict) -> str:
     """
-    Re-introduction with services list.
-    Used when the caller says nothing, says something irrelevant,
-    or seems confused about who they've called.
+    Tier 1 re-introduction — used on first silence or first confused turn at TRIAGE.
     """
     name = clinic.get("sms_name") or clinic.get("display_name", "the clinic")
     return (
@@ -51,6 +50,31 @@ def _build_reintro(clinic: dict) -> str:
         f"or details about our opening hours and location. "
         f"What can I help you with today?"
     )
+
+
+def _build_menu() -> str:
+    """
+    Tier 2 explicit menu — used on second consecutive missed turn (silence or confusion).
+    """
+    return (
+        "Let me give you a quick menu. "
+        "Say book to book an appointment. "
+        "Say treatments for information about our services and prices. "
+        "Or say transfer and I'll put you straight through to the team. "
+        "What would you like?"
+    )
+
+
+def _append_transfer(vr: VoiceResponse, announcement: str) -> None:
+    """
+    Speak the announcement then live-transfer the call to the clinic team.
+    Used for Tier 3 escalation and explicit 'speak to someone' requests.
+    """
+    vr.say(announcement, language="en-GB")
+    dial = Dial()
+    dial.number(TRANSFER_NUMBER)
+    vr.append(dial)
+
 
 def _build_greeting(clinic: dict) -> str:
     """
@@ -556,7 +580,7 @@ async def turn(request: Request):
         return xml(vr)
 
     # --------------------------------------------------
-    # Handle empty input
+    # Handle empty input  (3-tier escalation)
     # --------------------------------------------------
     if not user_said:
         miss = int(session.get("miss_count", 0)) + 1
@@ -566,27 +590,23 @@ async def turn(request: Request):
         _clinic_obj = get_clinic(session)
         _cur_state  = session.get("state", "TRIAGE")
 
+        # Tier 1 — first silence
         if miss == 1:
             if _cur_state == "TRIAGE":
-                # Re-introduce with services so caller knows who they've reached
                 vr.append(gather_speech(turn_url, _build_reintro(_clinic_obj)))
             else:
                 vr.append(gather_speech(turn_url, "Sorry — I didn't catch that. Could you say that again?"))
             return xml(vr)
 
+        # Tier 2 — second silence: explicit menu
         if miss == 2:
-            # Always re-introduce on second silence — they're clearly confused
-            vr.append(gather_speech(turn_url, _build_reintro(_clinic_obj)))
+            vr.append(gather_speech(turn_url, _build_menu()))
             return xml(vr)
 
-        # 3rd miss — offer to take a message
-        vr.append(
-            gather_speech(
-                turn_url,
-                "Not to worry. I can take a message for the team. "
-                "Please say your name, your number, "
-                "and what you'd like help with.",
-            )
+        # Tier 3 — third silence: live transfer
+        _append_transfer(
+            vr,
+            "Not to worry — let me put you through to the team right now. Please hold.",
         )
         return xml(vr)
 
@@ -633,8 +653,14 @@ async def turn(request: Request):
         return xml(vr)
 
     session = _append_turn(session, "assistant", reply_text)
-    await save_session(call_sid, session)
 
+    # Tier 3 escalation — triage signalled a live transfer
+    if session.pop("request_transfer", False):
+        await save_session(call_sid, session)
+        _append_transfer(vr, reply_text)
+        return xml(vr)
+
+    await save_session(call_sid, session)
     vr.append(gather_speech(turn_url, reply_text))
     return xml(vr)
 

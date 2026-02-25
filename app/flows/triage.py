@@ -1527,10 +1527,12 @@ def resume_prompt_for_state(state: str) -> str:
 # INTAKE / RECOMMENDATION HELPERS
 # ============================================================================
 
-def _intake_question_for_condition(reason: str) -> str:
+def _intake_question_for_condition(reason: str) -> Optional[str]:
     """
-    Return a targeted clinical follow-up question based on the patient's stated reason.
-    Categorises by broad condition type and picks the most useful single question.
+    Return a targeted clinical follow-up question based on the patient's stated reason,
+    or None if the condition doesn't match any known category.
+    When None is returned, the caller skips BOOK_INTAKE and goes straight to
+    a generic physiotherapy assessment recommendation.
     """
     r = reason.lower()
 
@@ -1553,6 +1555,16 @@ def _intake_question_for_condition(reason: str) -> str:
         return (
             "Was this from a specific incident, or has it built up over time? "
             "And how long ago did it happen?"
+        )
+
+    # Fracture / broken bone / cast recovery
+    if any(kw in r for kw in [
+        "broken", "fracture", "fractured", "cast", "break", "broke",
+        "cracked", "stress fracture",
+    ]):
+        return (
+            "How long ago did that happen, "
+            "and are you still in a cast or have you been cleared to start moving?"
         )
 
     # Back pain
@@ -1601,11 +1613,8 @@ def _intake_question_for_condition(reason: str) -> str:
             "How long have you been getting these, and how often would you say they occur?"
         )
 
-    # Generic fallback
-    return (
-        "How long have you been experiencing this? "
-        "And has it been getting worse, staying the same, or improving?"
-    )
+    # Unknown condition — caller will skip BOOK_INTAKE entirely
+    return None
 
 
 def _build_recommendation(
@@ -2314,28 +2323,50 @@ async def triage_turn(
             return _say("Are you calling about our Alcester or Redditch clinic?", session)
 
         if intent == "HUMAN":
-            _attempt_send_to_sheet(collected, user_said, session, "CALLBACK")
+            # Caller explicitly wants a person — transfer immediately
+            _attempt_send_to_sheet(collected, user_said, session, "TRANSFER_REQUEST")
+            session["request_transfer"] = True
             return _say(
-                "No problem — please say your name, number, and what you need help with, "
-                "and the team will call you back.",
+                "Of course — let me put you through to the team right now. Please hold.",
                 session,
             )
 
         if intent.startswith("FAQ_"):
             return _say(faq_answer(intent, clinic, session), session)
 
-        # Final fallback — caller said something we didn't understand or something
-        # completely off-topic (e.g. "is this the pizza place?").
-        # Re-introduce Susie with a clear services list so they know who they've called.
-        _clinic_name = clinic.get("sms_name") or clinic.get("display_name", "the clinic")
+        # Final fallback — tier-based escalation for confused/off-topic input
+        miss = int(session.get("miss_count", 0)) + 1
+        session["miss_count"] = miss
+
+        if miss <= 1:
+            # Tier 1: re-introduce with services list
+            _clinic_name = clinic.get("sms_name") or clinic.get("display_name", "the clinic")
+            return _say(
+                f"Hello — this is Susie, {_clinic_name}'s AI receptionist. "
+                f"I can help you with: booking an appointment, "
+                f"information about our treatments and pricing, "
+                f"insurance questions, "
+                f"or details about our opening hours and location. "
+                f"What can I help you with today?",
+                session,
+            )
+
+        if miss == 2:
+            # Tier 2: explicit spoken menu
+            return _say(
+                "Let me give you a quick menu. "
+                "Say book to book an appointment. "
+                "Say treatments for information about our services and prices. "
+                "Or say transfer and I'll put you straight through to the team. "
+                "What would you like?",
+                session,
+            )
+
+        # Tier 3: live transfer
+        _attempt_send_to_sheet(collected, user_said, session, "TRANSFER_ESCALATION")
+        session["request_transfer"] = True
         return _say(
-            f"Hello — this is Susie, {_clinic_name}'s AI receptionist. "
-            f"I can help you with: "
-            f"booking an appointment, "
-            f"information about our treatments and pricing, "
-            f"insurance questions, "
-            f"or details about our opening hours and location. "
-            f"What can I help you with today?",
+            "Not a problem — let me put you through to the team right now. Please hold.",
             session,
         )
 
@@ -2619,6 +2650,23 @@ async def triage_turn(
         # Save reason and ask a clinical intake follow-up question
         collected["reason"] = (user_said or "").strip()
         intake_q = _intake_question_for_condition(collected["reason"])
+
+        if intake_q is None:
+            # Unknown condition — skip BOOK_INTAKE, go straight to a generic recommendation
+            clinic_obj   = get_clinic(session)
+            svc          = clinic_obj.get("service_prices", {}).get("initial_assessment", {})
+            price        = svc.get("price", "")
+            price_clause = f", which is {price}" if price else ""
+            collected["service"] = "initial_assessment"
+            session["state"]     = BOOK_RECOMMEND
+            return _say(
+                f"That sounds like something our physiotherapist can definitely help with. "
+                f"A physiotherapy assessment would be the best starting point{price_clause} — "
+                f"we'll assess where you are and put together a plan from there. "
+                f"Would you like me to book you in for that?",
+                session, tone="none",
+            )
+
         session["state"] = BOOK_INTAKE
         return _say(intake_q, session, tone="checking")
 
