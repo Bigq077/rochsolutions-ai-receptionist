@@ -2291,12 +2291,7 @@ async def triage_turn(
             pass
 
         # Deterministic fallback routing
-        if intent == "BOOK":
-            session = _reset_to_triage(session)
-            session["pending_intent"] = "BOOK"
-            session["state"] = ASK_LOCATION
-            return _say("Are you calling about our Alcester or Redditch clinic?", session)
-
+        # Note: BOOK is handled early (fast-path intercept above) so it never reaches here.
         if intent == "RESCHEDULE":
             session = _reset_to_triage(session)
             session["pending_intent"] = "RESCHEDULE"
