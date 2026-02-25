@@ -169,7 +169,18 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    """Application shutdown tasks."""
+    """Application shutdown tasks — close all async resources cleanly."""
     logger.info("=" * 60)
     logger.info("👋 Theorem Health AI Receptionist shutting down...")
     logger.info("=" * 60)
+
+    # Close the Redis async connection pool so its sockets are released
+    # before the process exits. Without this, the OS force-closes them
+    # which can produce 'Bad file descriptor' errors in the uvicorn logs.
+    try:
+        from app.storage.redis_store import redis_client
+        if redis_client:
+            await redis_client.aclose()
+            logger.info("✅ Redis connection pool closed")
+    except Exception as e:
+        logger.warning(f"⚠️  Redis close warning: {e}")
