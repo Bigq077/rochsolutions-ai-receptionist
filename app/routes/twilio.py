@@ -82,11 +82,11 @@ def _build_location_confirmation(location_id: str, clinic: dict) -> str:
     if loc:
         name = loc["name"]
         confirmations = {
-            "alcester": "Great! I've got you down for the Alcester clinic.",
-            "redditch": "Perfect! I've got you down for the Redditch clinic.",
+            "alcester": f"Ok, thank you — I've noted you down for our Alcester clinic.",
+            "redditch": f"Ok, thank you — I've noted you down for our Redditch clinic.",
         }
-        return confirmations.get(location_id, f"Got it — the {name} clinic.")
-    return "Got it."
+        return confirmations.get(location_id, f"Ok, thank you — I've noted you down for our {name} clinic.")
+    return "Ok, thank you."
 
 
 # --------------------------------------------------

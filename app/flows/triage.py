@@ -2163,6 +2163,29 @@ async def triage_turn(
     # ------------------------------------------------------------------
     if state == TRIAGE:
 
+        # ── FAST-PATH INTERCEPTS ──────────────────────────────────────
+        # These are caught by detect_intent() synchronously (no LLM).
+        # Handle them here immediately so we never hit the slow LLM call
+        # for the most common actions.
+
+        # Book intercept — most common action, must be instant
+        if intent == "BOOK":
+            locations = clinic.get("locations", [])
+            if locations and not session.get("location_selected"):
+                loc_names = " or ".join(loc["name"] for loc in locations)
+                session["pending_intent"] = "BOOK"
+                session["state"] = ASK_LOCATION
+                return _say(
+                    f"Of course! Are you looking to book at our {loc_names} clinic?",
+                    session,
+                )
+            # Single-location / demo clinic — skip location step
+            session["state"] = BOOK_PATIENT_TYPE
+            return _say(
+                "Of course! Are you a new patient or a returning patient?",
+                session, tone="ack",
+            )
+
         # Reschedule keyword intercept
         if is_reschedule_intent(user_said):
             session = _reset_to_triage(session)
