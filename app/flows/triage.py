@@ -1213,6 +1213,53 @@ BOOKING_STATES = {
     BOOK_TIME_PREF, BOOK_PICK_SLOT, BOOK_NAME, BOOK_PHONE, BOOK_CONFIRM,
 }
 
+RESCH_STATES = {
+    RESCH_NAME, RESCH_ORIGINAL, RESCH_PHONE_FALLBACK,
+    RESCH_NEW_PREF, RESCH_PICK_SLOT, RESCH_CONFIRM,
+}
+
+# States that get mid-flow switch protection (excludes TRIAGE and ASK_LOCATION)
+_SWITCHABLE_BOOKING = BOOKING_STATES - {BOOK_PATIENT_TYPE}  # BOOK_PATIENT_TYPE already has its own guard
+_SWITCHABLE_RESCH   = RESCH_STATES
+_SWITCHABLE_ALL     = _SWITCHABLE_BOOKING | _SWITCHABLE_RESCH
+
+# Option 3: explicit "I want to switch" phrases — unambiguous, always trigger a flow switch
+_EXPLICIT_SWITCH_PHRASES = [
+    "actually i want to", "actually i need to", "actually i would like to",
+    "actually can i", "actually could i", "wait i want to", "wait i need to",
+    "let me reschedule instead", "i want to reschedule instead", "reschedule instead",
+    "instead of booking", "i want to cancel instead", "actually cancel",
+    "forget the booking", "forget this booking", "never mind the booking",
+    "i changed my mind", "changed my mind", "different thing", "something different",
+]
+
+
+def _is_explicit_switch(text: str) -> bool:
+    """Return True if the user used an unambiguous 'I want to switch flow' phrase."""
+    t = _norm(text)
+    return any(phrase in t for phrase in _EXPLICIT_SWITCH_PHRASES)
+
+
+def _soft_reset_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Clear flow-specific data but KEEP personal info already given by the caller:
+    name, phone, patient_type, insurer, policy_number, location.
+    Used when switching flows mid-conversation so the caller doesn't have to
+    repeat themselves.
+    """
+    collected = session.get("collected", {}) or {}
+    keep_keys = {"name", "phone", "patient_type", "insurer", "policy_number"}
+    session["collected"] = {k: v for k, v in collected.items() if k in keep_keys}
+    session[LAST_OFFERED_SLOTS_KEY] = None
+    session[SELECTED_SLOT_KEY] = None
+    for k in (
+        "resch_event_id", "resch_event_summary", SLOT_LABELS_KEY,
+        SELECTED_SLOT_LABEL_KEY, "manual_booking", "manual_reason",
+        "manual_reschedule", "pending_intent", "pt_type_tries",
+    ):
+        session.pop(k, None)
+    return session
+
 
 # ============================================================================
 # GENERIC HELPERS
@@ -1999,6 +2046,94 @@ async def triage_turn(
         answer  = get_service_explanation(svc_key or "physiotherapy", "detailed")
         _say(answer, session, tone="none")
         return _say("Would you like to continue booking? Say continue, or ask another question.", session, tone="checking")
+
+    # ------------------------------------------------------------------
+    # MID-FLOW INTENT SWITCH  (Option 1 + 3)
+    # Catches the user changing their mind mid-booking or mid-reschedule.
+    # Runs before any state handler so every deep state gets protection.
+    # ------------------------------------------------------------------
+    if state in _SWITCHABLE_ALL:
+        t_norm = _norm(user_said)
+
+        # Option 3 — explicit switch phrase (unambiguous)
+        is_explicit = _is_explicit_switch(user_said)
+
+        # Option 1 — centralized intent guard (conflicting major intent detected)
+        in_booking = state in _SWITCHABLE_BOOKING
+        in_resch   = state in _SWITCHABLE_RESCH
+        conflicts  = (
+            (in_booking and intent in ("RESCHEDULE", "CANCEL", "HUMAN")) or
+            (in_resch   and intent in ("BOOK",       "CANCEL", "HUMAN"))
+        )
+
+        if is_explicit or conflicts:
+            # Determine target flow — explicit phrases need keyword inspection,
+            # non-explicit can rely on intent directly.
+            target = intent  # default: use detect_intent result
+
+            if is_explicit and target not in ("RESCHEDULE", "CANCEL", "BOOK", "HUMAN"):
+                # detect_intent returned OTHER/FAQ — infer target from keywords
+                if _contains_any(t_norm, ["reschedule", "rebook", "move", "change"]):
+                    target = "RESCHEDULE"
+                elif _contains_any(t_norm, ["cancel"]):
+                    target = "CANCEL"
+                elif _contains_any(t_norm, ["book", "appointment", "new booking"]):
+                    target = "BOOK"
+                elif _contains_any(t_norm, ["human", "person", "someone", "transfer", "speak"]):
+                    target = "HUMAN"
+                else:
+                    # Explicit switch but target unclear — surface to TRIAGE
+                    session = _soft_reset_session(session)
+                    session["state"] = TRIAGE
+                    return _say(
+                        "No problem — what would you like to do instead? "
+                        "I can help you book, reschedule, or answer a question.",
+                        session, tone="ack",
+                    )
+
+            # Perform the soft reset (keeps name / phone / patient_type / insurer)
+            session = _soft_reset_session(session)
+
+            if target == "HUMAN":
+                session["request_transfer"] = True
+                return _say(
+                    "Of course — let me put you through to someone right now.",
+                    session, tone="none",
+                )
+
+            if target == "RESCHEDULE":
+                session["state"] = RESCH_NAME
+                return _say(
+                    "No problem — let's get that sorted. "
+                    "Can I take your full name for the existing appointment?",
+                    session, tone="ack",
+                )
+
+            if target == "CANCEL":
+                session["state"] = TRIAGE
+                return _say(
+                    "Of course — can I take your full name and the date and time "
+                    "of the appointment you'd like to cancel?",
+                    session, tone="ack",
+                )
+
+            if target == "BOOK":
+                # Switch from reschedule flow back to new booking
+                clinic_obj = get_clinic(session)
+                locations  = clinic_obj.get("locations", [])
+                if locations and not session.get("location_selected"):
+                    loc_names = " or ".join(loc["name"] for loc in locations)
+                    session["pending_intent"] = "BOOK"
+                    session["state"]          = ASK_LOCATION
+                    return _say(
+                        f"Of course — are you looking to book at our {loc_names} clinic?",
+                        session,
+                    )
+                session["state"] = BOOK_PATIENT_TYPE
+                return _say(
+                    "Of course — are you a new patient or have you been here before?",
+                    session, tone="ack",
+                )
 
     # ------------------------------------------------------------------
     # FAQ DETOUR HANDLER
