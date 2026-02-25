@@ -2306,11 +2306,18 @@ async def triage_turn(
         if intent.startswith("FAQ_"):
             return _say(faq_answer(intent, clinic, session), session)
 
-        # Final fallback
+        # Final fallback — caller said something we didn't understand or something
+        # completely off-topic (e.g. "is this the pizza place?").
+        # Re-introduce Susie with a clear services list so they know who they've called.
+        _clinic_name = clinic.get("sms_name") or clinic.get("display_name", "the clinic")
         return _say(
-            "I can help with booking, treatment information, "
-            "opening hours, location, pricing, or insurance. "
-            "What would you like to know?",
+            f"Hello — this is Susie, {_clinic_name}'s AI receptionist. "
+            f"I can help you with: "
+            f"booking an appointment, "
+            f"information about our treatments and pricing, "
+            f"insurance questions, "
+            f"or details about our opening hours and location. "
+            f"What can I help you with today?",
             session,
         )
 

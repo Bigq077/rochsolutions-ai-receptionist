@@ -35,6 +35,23 @@ HOW_CAN_I_HELP = "How can I help you today?"
 # Clinic-aware greeting helpers
 # --------------------------------------------------
 
+def _build_reintro(clinic: dict) -> str:
+    """
+    Re-introduction with services list.
+    Used when the caller says nothing, says something irrelevant,
+    or seems confused about who they've called.
+    """
+    name = clinic.get("sms_name") or clinic.get("display_name", "the clinic")
+    return (
+        f"Hello — this is Susie, {name}'s AI receptionist. "
+        f"I can help you with: "
+        f"booking an appointment, "
+        f"information about our treatments and pricing, "
+        f"insurance questions, "
+        f"or details about our opening hours and location. "
+        f"What can I help you with today?"
+    )
+
 def _build_greeting(clinic: dict) -> str:
     """
     Build the opening greeting from clinic config.
@@ -546,18 +563,20 @@ async def turn(request: Request):
         session["miss_count"] = miss
         await save_session(call_sid, session)
 
+        _clinic_obj = get_clinic(session)
+        _cur_state  = session.get("state", "TRIAGE")
+
         if miss == 1:
-            vr.append(gather_speech(turn_url, "Sorry — I didn't catch that. Could you repeat?"))
+            if _cur_state == "TRIAGE":
+                # Re-introduce with services so caller knows who they've reached
+                vr.append(gather_speech(turn_url, _build_reintro(_clinic_obj)))
+            else:
+                vr.append(gather_speech(turn_url, "Sorry — I didn't catch that. Could you say that again?"))
             return xml(vr)
 
         if miss == 2:
-            vr.append(
-                gather_speech(
-                    turn_url,
-                    "Are you looking to book, ask about a treatment, "
-                    "or get information about opening times or location?",
-                )
-            )
+            # Always re-introduce on second silence — they're clearly confused
+            vr.append(gather_speech(turn_url, _build_reintro(_clinic_obj)))
             return xml(vr)
 
         # 3rd miss — offer to take a message
