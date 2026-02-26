@@ -221,6 +221,11 @@ async def send_smart_followup_sms(
         logger.info("✅ Booked — booking confirmation SMS already sent")
         return False
 
+    # Cancelled / any flow where a confirmation SMS was already sent during the call
+    if session.get("confirmation_sms_sent"):
+        logger.info("📩 Confirmation SMS already sent during call — skipping follow-up")
+        return False
+
     # ── CHOOSE TEMPLATE ──────────────────────────────────────────────────────
 
     message = _choose_template(

@@ -2781,6 +2781,7 @@ async def triage_turn(
                         appointment_time=appointment_dt,
                         is_late_cancellation=False,
                     )
+                    session["confirmation_sms_sent"] = True
                 else:
                     # No appointment time in session — send a generic cancellation SMS
                     from app.notifications.sms import send_sms as _send_sms
@@ -2796,6 +2797,7 @@ async def triage_turn(
                                 f"{_c.get('phone', '')} {_c.get('display_name', '')}".strip()
                             ),
                         )
+                        session["confirmation_sms_sent"] = True
             except Exception as e:
                 logger.error(f"⚠️ Cancellation SMS failed: {e}")
 
@@ -3164,6 +3166,7 @@ async def triage_turn(
                             clinic_phone=_sms_clinic.get("phone"),
                         )
                         logger.info(f"✅ Booking confirmation SMS sent to {collected['phone']}")
+                        session["confirmation_sms_sent"] = True
                     except Exception as sms_err:
                         logger.error(f"⚠️ Failed to send booking SMS: {sms_err}")
                         # Never fail the booking just because SMS failed
