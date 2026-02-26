@@ -4,6 +4,7 @@ SMS sending service using Twilio.
 
 import logging
 import os
+import re
 from typing import Optional
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
@@ -61,10 +62,20 @@ class SMSService:
         Returns:
             Message SID if successful, None if failed
         """
-        # Validate phone number format
+        # Normalise to E.164 if needed
         if not to.startswith("+"):
             logger.warning(f"Phone number should start with +: {to}")
-            to = f"+{to.lstrip('0')}"  # Attempt to fix UK numbers
+            digits = re.sub(r"\D", "", to)
+            if digits.startswith("07") and len(digits) == 11:
+                # UK mobile: 07xxx xxx xxx → +447xxx xxx xxx
+                to = "+44" + digits[1:]
+            elif digits.startswith("44") and 11 <= len(digits) <= 13:
+                # Already international without +
+                to = "+" + digits
+            else:
+                # Best-effort: strip leading zeros, prepend +
+                to = "+" + digits.lstrip("0")
+            logger.info(f"Phone normalised to: {to}")
         
         # Truncate message if too long
         if len(message) > max_length:

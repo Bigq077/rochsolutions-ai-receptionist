@@ -7,12 +7,15 @@ print("✅ LOADED TRIAGE FROM:", __file__)
 # IMPORTS
 # ============================================================================
 
+import logging
 import os
 import re
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 import pytz
 
@@ -1208,6 +1211,11 @@ INS_COLLECT_INSURER = "INS_COLLECT_INSURER"
 INS_BUPA_RESPONSE   = "INS_BUPA_RESPONSE"
 INS_COLLECT_POLICY  = "INS_COLLECT_POLICY"
 
+# Fallback state — entered when the system can't complete a flow normally
+# (e.g. repeated technical errors, call drop risk). Reads back collected
+# info, asks "say yes" to pass it on to the clinic team manually.
+MANUAL_CAPTURE      = "MANUAL_CAPTURE"
+
 BOOKING_STATES = {
     BOOK_PATIENT_TYPE, BOOK_REASON, BOOK_INTAKE, BOOK_RECOMMEND,
     BOOK_TIME_PREF, BOOK_PICK_SLOT, BOOK_NAME, BOOK_PHONE, BOOK_CONFIRM,
@@ -1261,6 +1269,82 @@ def _soft_reset_session(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
+def _build_manual_capture_message(session: Dict[str, Any], clinic: Dict[str, Any]) -> str:
+    """
+    Build a natural-language summary of everything collected so far,
+    read back to the caller before manual handoff.
+    Covers booking, reschedule, general enquiry, and condition-only calls.
+    """
+    collected  = session.get("collected", {}) or {}
+    pre_state  = session.get("pre_error_state", session.get("state", "TRIAGE"))
+
+    name         = (collected.get("name") or "").strip()
+    reason       = (collected.get("reason") or "").strip()
+    time_pref    = (collected.get("time_pref") or "").strip()
+    selected     = (
+        session.get("selected_slot_label") or
+        session.get(SELECTED_SLOT_LABEL_KEY) or
+        collected.get("selected_slot") or ""
+    )
+    insurer      = (collected.get("insurer") or "").strip()
+    patient_type = (collected.get("patient_type") or "").upper()
+
+    # Determine what the caller was trying to do
+    if any(pre_state.startswith(p) for p in ("BOOK", "RESCH")):
+        action = "reschedule" if pre_state.startswith("RESCH") else "book an appointment"
+    elif any(pre_state.startswith(p) for p in ("INS",)):
+        action = "ask about insurance"
+    else:
+        action = "get in touch"
+
+    parts: list = []
+
+    # Opening
+    if action == "book an appointment":
+        opener = "Okay — I've got you looking to book an appointment"
+        if reason:
+            opener += f" for {reason}"
+        if selected:
+            opener += f" at {selected}"
+        elif time_pref:
+            opener += f" around {time_pref}"
+        parts.append(opener)
+    elif action == "reschedule":
+        opener = "Okay — I've got you looking to reschedule your appointment"
+        if selected:
+            opener += f" to {selected}"
+        elif time_pref:
+            opener += f" to around {time_pref}"
+        parts.append(opener)
+    elif reason:
+        parts.append(f"Okay — I've got a note that you called about {reason}")
+    else:
+        parts.append("Okay — I've got a note that you were in touch with us")
+
+    # Personal details
+    details: list = []
+    if name:
+        details.append(f"your name is {name}")
+    if patient_type == "NEW":
+        details.append("you're a new patient")
+    elif patient_type == "RETURNING":
+        details.append("you're a returning patient")
+    if insurer:
+        details.append(f"you're with {insurer}")
+    if details:
+        parts.append(", ".join(details))
+
+    body = ". ".join(parts).strip()
+    if not body.endswith("."):
+        body += "."
+
+    return (
+        f"{body} "
+        "Say yes and I'll pass all of that on to the clinic team right now — "
+        "they'll be in touch to confirm everything."
+    )
+
+
 # ============================================================================
 # GENERIC HELPERS
 # ============================================================================
@@ -1302,11 +1386,22 @@ def is_no(text: str) -> bool:
 
 
 def normalize_phone(phone: str) -> str:
-    return _digits_only(phone)
+    """Return E.164 format. UK mobiles 07xxx → +447xxx."""
+    digits = _digits_only(phone)
+    if digits.startswith("07") and len(digits) == 11:
+        return "+44" + digits[1:]
+    if digits.startswith("44") and 11 <= len(digits) <= 13:
+        return "+" + digits
+    if digits.startswith("0") and 10 <= len(digits) <= 11:
+        # Generic UK landline / other format
+        return "+44" + digits[1:]
+    if digits and not phone.strip().startswith("+"):
+        return digits   # leave as-is if we can't determine country
+    return digits
 
 
 def is_valid_phone(phone: str) -> bool:
-    p = normalize_phone(phone)
+    p = _digits_only(phone)
     return 10 <= len(p) <= 15
 
 
@@ -3091,6 +3186,43 @@ async def triage_turn(
             "Could you give me your full name and I'll log a booking request for the clinic?",
             session,
         )
+
+    # ── MANUAL CAPTURE ───────────────────────────────────────────────────────
+    # Fallback state entered after repeated errors or unexpected call drops.
+    # Reads back collected info and asks caller to confirm so we can hand off.
+
+    if state == MANUAL_CAPTURE:
+        if is_yes(user_said):
+            # Mark for manual follow-up
+            session["manual_followup_needed"] = True
+            session["manual_followup_reason"] = session.get(
+                "pre_error_state", "system_error"
+            )
+            session["manual_capture_confirmed"] = True
+            session = _reset_to_triage(session)
+            clinic_phone = clinic.get("phone", "")
+            outro = (
+                f" Someone from the team will call you back shortly. "
+                f"If it's urgent, you can also reach us on {clinic_phone}."
+                if clinic_phone else
+                " Someone from the team will call you back shortly."
+            )
+            return _say(
+                "Perfect — I've passed all of that on to the clinic team."
+                + outro,
+                session,
+            )
+
+        if is_no(user_said):
+            session = _reset_to_triage(session)
+            return _say(
+                "No problem — is there anything else I can help you with?",
+                session,
+            )
+
+        # Unclear response — re-read the summary and prompt again
+        capture_msg = _build_manual_capture_message(session, clinic)
+        return _say(capture_msg, session)
 
 
 # ============================================================================

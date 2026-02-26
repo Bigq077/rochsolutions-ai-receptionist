@@ -359,6 +359,29 @@ async def status(request: Request) -> PlainTextResponse:
     session = _ensure_clinic_on_session(session, session.get("twilio_to"))
 
     # ========================================================================
+    # AUTO-FLAG CALL DROPS WITH PARTIAL DATA AS MANUAL FOLLOWUP
+    # If the call ended abnormally (not completed) but the caller already gave
+    # us their name, reason, or phone number, flag for manual follow-up so the
+    # clinic team gets a heads-up and an SMS is sent to the caller.
+    # ========================================================================
+    _dropped_statuses = {"busy", "failed", "no-answer", "no_answer", "canceled", "cancelled"}
+    if call_status in _dropped_statuses and not session.get("manual_followup_needed"):
+        _collected = session.get("collected") or {}
+        _has_data  = any([
+            (_collected.get("name") or "").strip(),
+            (_collected.get("reason") or "").strip(),
+            (_collected.get("phone") or "").strip(),
+            session.get("twilio_from", "").strip(),
+        ])
+        if _has_data:
+            session["manual_followup_needed"] = True
+            session["manual_followup_reason"] = "call_dropped"
+            logger.info(
+                f"📵 Call dropped ({call_status}) with partial data — "
+                f"flagged as manual followup for {call_sid}"
+            )
+
+    # ========================================================================
     # BUILD CALL SUMMARY & SEND TO GOOGLE SHEETS
     # ========================================================================
     summary = None
@@ -645,11 +668,29 @@ async def turn(request: Request):
 
     try:
         reply_text, session = await triage_turn(user_said, session)
+        session.pop("error_count", None)   # reset on success
     except Exception as e:
         print("TRIAGE ERROR:", repr(e))
-        vr.append(
-            gather_speech(turn_url, "Sorry, something went wrong. Let me try that again.")
-        )
+
+        error_count = int(session.get("error_count", 0)) + 1
+        session["error_count"] = error_count
+
+        if error_count >= 2:
+            # Second failure → enter manual capture mode
+            from app.flows.triage import _build_manual_capture_message, MANUAL_CAPTURE
+            from app.clinic_config import get_clinic as _get_clinic
+            session["pre_error_state"] = session.get("state", "TRIAGE")
+            session["state"] = MANUAL_CAPTURE
+            _clinic = _get_clinic(session.get("clinic_id"))
+            capture_msg = _build_manual_capture_message(session, _clinic)
+            await save_session(call_sid, session)
+            vr.append(gather_speech(turn_url, capture_msg))
+        else:
+            # First failure → retry once, preserve current state
+            await save_session(call_sid, session)
+            vr.append(
+                gather_speech(turn_url, "Sorry, something went wrong. Let me try that again.")
+            )
         return xml(vr)
 
     session = _append_turn(session, "assistant", reply_text)
