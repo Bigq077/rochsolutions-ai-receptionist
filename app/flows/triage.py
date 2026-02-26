@@ -2764,8 +2764,14 @@ async def triage_turn(
         session[SLOT_LABELS_KEY]        = labels
         session["state"]                = RESCH_PICK_SLOT
 
+        _resch_pref = (collected.get("time_pref") or "").strip()
+        _resch_intro = (
+            f"For {_resch_pref}, I have three options. "
+            if _resch_pref else
+            "I have three options. "
+        )
         return _say(
-            f"I have three options. "
+            f"{_resch_intro}"
             f"The first is {labels[0]}. "
             f"The second is {labels[1]}. "
             f"The third is {labels[2]}. "
@@ -3026,8 +3032,14 @@ async def triage_turn(
         session[SLOT_LABELS_KEY]        = labels
         session["state"]                = BOOK_PICK_SLOT
 
+        _book_pref  = (collected.get("time_pref") or "").strip()
+        _book_intro = (
+            f"For {_book_pref}, I have three options. "
+            if _book_pref else
+            "I have three options. "
+        )
         return _say(
-            f"I have three options. "
+            f"{_book_intro}"
             f"The first is {labels[0]}. "
             f"The second is {labels[1]}. "
             f"The third is {labels[2]}. "
