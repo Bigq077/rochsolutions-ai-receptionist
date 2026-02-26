@@ -752,6 +752,25 @@ def identify_condition(complaint: str) -> Optional[Dict]:
     return best_entry
 
 
+# Shared list of words that signal a physical complaint.
+# Used in TRIAGE, ASK_LOCATION, and FAQ_DETOUR to gracefully catch
+# conditions that aren't in CONDITION_KNOWLEDGE.
+_PHYSICAL_SYMPTOM_WORDS = (
+    "pain", "ache", "hurt", "hurts", "sore", "injury", "injured", "stiff", "weak",
+    "swollen", "swelling", "numb", "tight", "burning", "shooting", "throbbing",
+    "discomfort", "sensation", "weird", "strange", "odd", "popping", "clicking",
+    "locking", "grinding", "tingling", "spasm", "cramp", "bruised", "bruising",
+    "trouble", "difficulty", "struggle", "can't", "limited", "restricted",
+    "problem", "issue", "feeling", "strain", "sprain", "torn", "tear",
+)
+
+
+def _is_physical_complaint(text: str) -> bool:
+    """Return True if the text contains physical symptom words."""
+    t = (text or "").lower()
+    return any(w in t for w in _PHYSICAL_SYMPTOM_WORDS)
+
+
 # ============================================================================
 # IMPROVEMENT 6: SERVICE EXPLANATIONS (brief, natural, Mark's words)
 # ============================================================================
@@ -2314,6 +2333,19 @@ async def triage_turn(
             session["state"] = TRIAGE
             return _say("No problem. How can I help today?", session, tone="ack")
 
+        # Caller described a physical complaint we don't recognise — don't pretend to know.
+        # Acknowledge it, steer toward an assessment, and let them continue or book.
+        if _is_physical_complaint(user_said):
+            collected.setdefault("reason", user_said.strip())
+            collected.setdefault("service", "initial_assessment")
+            return _say(
+                "That's not something I can pinpoint exactly from here, "
+                "but a physiotherapy assessment is the right starting point — "
+                "the physio will take a proper look and work out what's going on. "
+                "Would you like to book in for that, or is there anything else I can help with?",
+                session, tone="none",
+            )
+
         return _say("Say continue to go back to booking, or ask your question.", session, tone="checking")
 
     # ==========================================================
@@ -2360,6 +2392,15 @@ async def triage_turn(
             if _faq_intent in ("FAQ_PRICES", "FAQ_INSURANCE", "FAQ_SERVICES", "FAQ_SERVICE_EXPLAIN"):
                 _ans = faq_answer(_faq_intent, clinic, session)
                 return _say(f"{_ans} Now — are you calling about the Alcester or the Redditch clinic?", session)
+            # Caller described a physical complaint instead of picking a location —
+            # acknowledge it warmly, save for later, and still ask for the clinic.
+            if _is_physical_complaint(user_said):
+                collected.setdefault("reason", user_said.strip())
+                return _say(
+                    "Got it — we can certainly look into that for you. "
+                    "Just so I can direct you to the right team, are you calling about our Alcester or Redditch clinic?",
+                    session,
+                )
             return _say("Sorry — could you say Alcester or Redditch?", session, tone="checking")
 
         session["location_id"] = location_id
@@ -2555,15 +2596,7 @@ async def triage_turn(
                 )
 
             # Unknown condition — check if it sounds like a physical complaint
-            _physical_words = [
-                "pain", "ache", "hurt", "sore", "injury", "injured", "stiff", "weak",
-                "swollen", "swelling", "numb", "tight", "burning", "shooting", "throbbing",
-                "discomfort", "sensation", "weird", "strange", "odd", "popping", "clicking",
-                "locking", "grinding", "tingling", "spasm", "cramp", "bruised", "bruising",
-                "trouble", "difficulty", "struggle", "can't", "limited", "restricted",
-                "problem", "issue", "feeling", "strain", "sprain", "torn", "tear",
-            ]
-            if any(w in user_said.lower() for w in _physical_words):
+            if _is_physical_complaint(user_said):
                 collected["reason"]  = user_said.strip()
                 collected["service"] = "initial_assessment"
                 session["state"]     = BOOK_RECOMMEND
