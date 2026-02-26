@@ -129,7 +129,16 @@ def extract_condition_label(reason: str) -> str:
                 return f"post-surgery {key} recovery"
             return label
 
-    # 3. Fallback: strip filler words and return cleaned text
+    # 3. Reject questions / enquiries — these are not conditions
+    _QUESTION_STARTS = (
+        "what", "how", "which", "can ", "could", "would", "should",
+        "is ", "are ", "do ", "does ", "will ", "why", "when", "where",
+        "have you", "do you", "can you", "could you",
+    )
+    if r.endswith("?") or any(r.startswith(q) for q in _QUESTION_STARTS):
+        return ""
+
+    # 4. Fallback: strip filler words and return cleaned text
     cleaned = reason.strip()
     for filler in _FILLERS:
         if cleaned.lower().startswith(filler):
@@ -333,15 +342,15 @@ def _choose_template(
         return templates.format_price_inquiry_sms(
             patient_name=patient_name, **ck)
 
-    # 10. ABANDONED — with condition/reason
-    if outcome == "abandoned" and (condition_label or raw_reason):
+    # 10. ABANDONED — with a clean condition label only (never raw speech)
+    if outcome == "abandoned" and condition_label:
         return templates.format_abandoned_booking_sms(
             patient_name    = patient_name,
-            condition_label = condition_label or raw_reason,
+            condition_label = condition_label,
             **ck,
         )
 
-    # 11. ABANDONED — general (no condition)
+    # 11. ABANDONED — general (no clean condition extracted)
     if outcome == "abandoned":
         return templates.format_abandoned_booking_sms(
             patient_name=patient_name, **ck)
