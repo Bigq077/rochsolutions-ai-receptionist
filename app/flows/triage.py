@@ -1280,7 +1280,7 @@ def _soft_reset_session(session: Dict[str, Any]) -> Dict[str, Any]:
     session[LAST_OFFERED_SLOTS_KEY] = None
     session[SELECTED_SLOT_KEY] = None
     for k in (
-        "resch_event_id", "resch_event_summary", SLOT_LABELS_KEY,
+        "resch_event_id", "resch_event_summary", "resch_event_start", SLOT_LABELS_KEY,
         SELECTED_SLOT_LABEL_KEY, "manual_booking", "manual_reason",
         "manual_reschedule", "pending_intent", "pt_type_tries",
     ):
@@ -2704,9 +2704,11 @@ async def triage_turn(
         if ev:
             session["resch_event_id"]      = ev.get("id")
             session["resch_event_summary"] = ev.get("summary", "your appointment")
+            session["resch_event_start"]   = (ev.get("start") or {}).get("dateTime")
             found_msg = f"Got it — I found your appointment for {ev.get('summary', 'you')}. "
         else:
-            session["resch_event_id"] = None
+            session["resch_event_id"]    = None
+            session["resch_event_start"] = None
             found_msg = "I wasn't able to find that booking in our system — I'll flag it for the team. "
 
         if intent == "cancel":
@@ -2765,12 +2767,35 @@ async def triage_turn(
             # Send cancellation SMS
             try:
                 from app.notifications.booking_sms import send_cancellation_confirmation
-                await send_cancellation_confirmation(
-                    patient_phone=collected.get("phone", ""),
-                    patient_name=(collected.get("name", "") or "").split()[0] or "Patient",
-                    appointment_time=None,
-                    is_late_cancellation=False,
-                )
+                raw_start = session.get("resch_event_start")
+                appointment_dt = None
+                if raw_start:
+                    try:
+                        appointment_dt = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                if appointment_dt:
+                    await send_cancellation_confirmation(
+                        patient_phone=collected.get("phone", ""),
+                        patient_name=(collected.get("name", "") or "").split()[0] or "Patient",
+                        appointment_time=appointment_dt,
+                        is_late_cancellation=False,
+                    )
+                else:
+                    # No appointment time in session — send a generic cancellation SMS
+                    from app.notifications.sms import send_sms as _send_sms
+                    _first = (collected.get("name", "") or "").split()[0] or "Patient"
+                    _phone = collected.get("phone", "")
+                    if _phone:
+                        _c = get_clinic(session)
+                        await _send_sms(
+                            to=_phone,
+                            message=(
+                                f"Hi {_first}, your appointment has been cancelled as requested. "
+                                f"Whenever you're ready to rebook, just give us a call. "
+                                f"{_c.get('phone', '')} {_c.get('display_name', '')}".strip()
+                            ),
+                        )
             except Exception as e:
                 logger.error(f"⚠️ Cancellation SMS failed: {e}")
 
