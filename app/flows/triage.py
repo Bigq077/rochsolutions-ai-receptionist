@@ -1443,6 +1443,8 @@ def parse_patient_type(text: Optional[str]) -> Optional[str]:
         "already a patient", "already been", "been with you", "visited before",
         "follow up", "followup", "follow-up", "seen you before",
         "seen before", "came here", "i have been", "i ve been",
+        "i am a patient", "im a patient", "i am returning", "im returning",
+        "been there before", "i have visited",
     ):
         if p in t:
             return "RETURNING"
@@ -1450,9 +1452,14 @@ def parse_patient_type(text: Optional[str]) -> Optional[str]:
         "new", "first time", "first visit", "never been", "initial",
         "brand new", "first appointment", "haven t been", "have not been",
         "never visited", "my first", "haven t visited",
+        "never been before", "i am new", "im new", "totally new",
+        "just moved", "no i haven", "no i have not",
     ):
         if p in t:
             return "NEW"
+    # "yes" alone is ambiguous — treated as NEW (most callers are new patients)
+    if t in ("yes", "yeah", "yep", "yup", "sure", "ok", "okay"):
+        return "NEW"
     return None
 
 
@@ -2215,10 +2222,10 @@ async def triage_turn(
                 )
 
             if target == "CANCEL":
-                session["state"] = TRIAGE
+                session["resch_intent"] = "cancel"
+                session["state"] = RESCH_NAME
                 return _say(
-                    "Of course — can I take your full name and the date and time "
-                    "of the appointment you'd like to cancel?",
+                    "Of course — what's your full name so I can find the appointment?",
                     session, tone="ack",
                 )
 
@@ -2234,11 +2241,7 @@ async def triage_turn(
                         f"Of course — are you looking to book at our {loc_names} clinic?",
                         session,
                     )
-                session["state"] = BOOK_PATIENT_TYPE
-                return _say(
-                    "Of course — are you a new patient or have you been here before?",
-                    session, tone="ack",
-                )
+                return _start_booking_flow(session, collected)
 
     # ------------------------------------------------------------------
     # FAQ DETOUR HANDLER
@@ -2299,8 +2302,7 @@ async def triage_turn(
         pending = session.pop("pending_intent", None)
 
         if pending == "BOOK":
-            session["state"] = BOOK_PATIENT_TYPE
-            return _say("Are you a new patient, or have you been here before?", session)
+            return _start_booking_flow(session, collected)
 
         if pending == "RESCHEDULE":
             session["resch_intent"] = "reschedule"
@@ -2444,11 +2446,7 @@ async def triage_turn(
                     session,
                 )
             # Single-location / demo clinic — skip location step
-            session["state"] = BOOK_PATIENT_TYPE
-            return _say(
-                "Of course! Are you a new patient or a returning patient?",
-                session, tone="ack",
-            )
+            return _start_booking_flow(session, collected)
 
         # Reschedule keyword intercept
         if is_reschedule_intent(user_said):
@@ -3273,6 +3271,19 @@ async def _send_insurance_staff_notification(session: Dict[str, Any]) -> None:
         await send_sms(to=staff_phone, message=message)
     except Exception as e:
         print("INSURANCE STAFF NOTIFICATION ERROR:", repr(e))
+
+
+def _start_booking_flow(session: Dict[str, Any], collected: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """
+    Route to the correct first booking state.
+    If patient_type is already known, skip straight to BOOK_REASON.
+    Otherwise ask the patient-type question (once only).
+    """
+    if collected.get("patient_type"):
+        session["state"] = BOOK_REASON
+        return _say("What's the appointment for?", session, tone="ack")
+    session["state"] = BOOK_PATIENT_TYPE
+    return _say("Are you a new patient, or have you been here before?", session, tone="ack")
 
 
 def _attempt_send_to_sheet(
