@@ -2167,7 +2167,22 @@ async def triage_turn(
     # ------------------------------------------------------------------
     # REPEAT helper
     # ------------------------------------------------------------------
-    if _norm(user_said) in ("repeat", "say again") and state in (BOOK_PICK_SLOT, RESCH_PICK_SLOT):
+    _REPEAT_PHRASES = (
+        "repeat", "say again", "can you repeat", "repeat that", "say that again",
+        "say it again", "repeat the slots", "repeat the options", "what were the options",
+        "what were the slots", "what are the options", "what are the slots",
+        "didn't hear", "didn't catch", "missed that", "come again",
+    )
+    if _contains_any(_norm(user_said), _REPEAT_PHRASES) and state in (BOOK_PICK_SLOT, RESCH_PICK_SLOT):
+        labels = session.get(SLOT_LABELS_KEY) or []
+        if len(labels) >= 3:
+            return _say(
+                f"Of course. The first is {labels[0]}. "
+                f"The second is {labels[1]}. "
+                f"The third is {labels[2]}. "
+                "Please say 1, 2, or 3.",
+                session,
+            )
         return _say("Sure. Please say 1, 2, or 3.", session)
 
     # ------------------------------------------------------------------
@@ -2536,6 +2551,31 @@ async def triage_turn(
                 session["condition_options"]    = condition["options"]
                 return _say(
                     f"{condition['text']} {condition['follow_up']}",
+                    session, tone="none",
+                )
+
+            # Unknown condition — check if it sounds like a physical complaint
+            _physical_words = [
+                "pain", "ache", "hurt", "sore", "injury", "injured", "stiff", "weak",
+                "swollen", "swelling", "numb", "tight", "burning", "shooting", "throbbing",
+                "discomfort", "sensation", "weird", "strange", "odd", "popping", "clicking",
+                "locking", "grinding", "tingling", "spasm", "cramp", "bruised", "bruising",
+                "trouble", "difficulty", "struggle", "can't", "limited", "restricted",
+                "problem", "issue", "feeling", "strain", "sprain", "torn", "tear",
+            ]
+            if any(w in user_said.lower() for w in _physical_words):
+                collected["reason"]  = user_said.strip()
+                collected["service"] = "initial_assessment"
+                session["state"]     = BOOK_RECOMMEND
+                clinic_obj   = get_clinic(session)
+                svc          = clinic_obj.get("service_prices", {}).get("initial_assessment", {})
+                price        = svc.get("price", "")
+                price_clause = f", which is {price}" if price else ""
+                return _say(
+                    f"That's not something I can pinpoint exactly from here, "
+                    f"but it's exactly the kind of thing a physiotherapy assessment is designed to get to the bottom of{price_clause}. "
+                    f"We'll have a proper look, figure out what's going on, and go from there. "
+                    f"Would you like me to book you in for that?",
                     session, tone="none",
                 )
 
@@ -2913,7 +2953,7 @@ async def triage_turn(
         intake_q = _intake_question_for_condition(collected["reason"])
 
         if intake_q is None:
-            # Unknown condition — skip BOOK_INTAKE, go straight to a generic recommendation
+            # Unknown condition — skip BOOK_INTAKE, go straight to a graceful recommendation
             clinic_obj   = get_clinic(session)
             svc          = clinic_obj.get("service_prices", {}).get("initial_assessment", {})
             price        = svc.get("price", "")
@@ -2921,10 +2961,11 @@ async def triage_turn(
             collected["service"] = "initial_assessment"
             session["state"]     = BOOK_RECOMMEND
             return _say(
-                f"That sounds like something our physiotherapist can definitely help with. "
-                f"A physiotherapy assessment would be the best starting point{price_clause} — "
-                f"we'll assess where you are and put together a plan from there. "
-                f"Would you like me to book you in for that?",
+                f"That's not something I can pinpoint exactly from here, "
+                f"but a physiotherapy assessment is the right starting point{price_clause}. "
+                f"The physiotherapist will take a proper look, work out what's going on, "
+                f"and put a plan together from there. "
+                f"Shall I get you booked in for that?",
                 session, tone="none",
             )
 
