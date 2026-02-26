@@ -1272,11 +1272,21 @@ _EXPLICIT_SWITCH_PHRASES = [
     "let me reschedule", "let me cancel",
     "reschedule instead", "cancel instead",
     "instead of booking",
+    # natural "existing appointment" phrasing — common when caller realises
+    # mid-flow that they already have a booking they need to move/cancel
+    "existing appointment", "existing booking",
+    "i have an appointment", "i have a booking",
+    "i already have", "i've already got",
+    "i need to change my", "i want to change my",
+    "move my appointment", "move my booking",
+    "change my slot",
     # mind change
     "forget the booking", "forget this booking", "never mind the booking",
     "i changed my mind", "changed my mind",
     "different thing", "something different", "something else",
     "scrap that", "ignore that", "start over",
+    # "instead" / "rather" pivots
+    "instead", "rather than", "not booking",
 ]
 
 
@@ -1302,6 +1312,9 @@ def _soft_reset_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "resch_event_id", "resch_event_summary", "resch_event_start", SLOT_LABELS_KEY,
         SELECTED_SLOT_LABEL_KEY, "manual_booking", "manual_reason",
         "manual_reschedule", "pending_intent", "pt_type_tries",
+        # Clear these so stale values from a previous flow can't bleed through.
+        # The switch handler always re-sets resch_intent after calling this function.
+        "resch_intent", "return_state",
     ):
         session.pop(k, None)
     return session
@@ -2278,7 +2291,8 @@ async def triage_turn(
                     )
 
             # Perform the soft reset (keeps name / phone / patient_type / insurer)
-            session = _soft_reset_session(session)
+            session   = _soft_reset_session(session)
+            collected = session["collected"]   # Re-bind — _soft_reset_session created a new dict
 
             if target == "HUMAN":
                 session["request_transfer"] = True
@@ -2305,10 +2319,12 @@ async def triage_turn(
                 )
 
             if target == "BOOK":
-                # Switch from reschedule flow back to new booking
+                # Switch from reschedule flow back to new booking.
+                # Use location_id (set by ASK_LOCATION) — location_selected was
+                # never populated, so checking it always re-asked for location.
                 clinic_obj = get_clinic(session)
                 locations  = clinic_obj.get("locations", [])
-                if locations and not session.get("location_selected"):
+                if locations and not session.get("location_id"):
                     loc_names = " or ".join(loc["name"] for loc in locations)
                     session["pending_intent"] = "BOOK"
                     session["state"]          = ASK_LOCATION
@@ -3166,6 +3182,37 @@ async def triage_turn(
     if state == BOOK_PICK_SLOT:
         choice = parse_slot_choice(user_said, dtmf=dtmf)
         if not choice:
+            # ── Safety net ────────────────────────────────────────────────────
+            # The global mid-flow switch (above) should catch reschedule/cancel/
+            # human intent before we reach here.  But STT variations or unusual
+            # phrasing can slip through.  Rather than looping the caller with
+            # "say 1, 2, or 3", make one more intent check and act on it.
+            _sn_intent = detect_intent(user_said)
+            if _sn_intent in ("RESCHEDULE", "CANCEL", "HUMAN") or is_reschedule_intent(user_said):
+                session   = _soft_reset_session(session)
+                collected = session["collected"]
+                if _sn_intent == "HUMAN":
+                    session["request_transfer"] = True
+                    return _say(
+                        "Of course — let me put you through to the team.",
+                        session, tone="none",
+                    )
+                if _sn_intent == "CANCEL":
+                    session["resch_intent"] = "cancel"
+                    session["state"]        = RESCH_NAME
+                    return _say(
+                        "No problem — what's your full name so I can find the appointment?",
+                        session, tone="ack",
+                    )
+                # RESCHEDULE (or is_reschedule_intent matched)
+                session["resch_intent"] = "reschedule"
+                session["state"]        = RESCH_NAME
+                return _say(
+                    "No problem — let's get that sorted. "
+                    "What's your full name so I can find your booking?",
+                    session, tone="ack",
+                )
+            # ── End safety net ────────────────────────────────────────────────
             return _say("Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.", session)
 
         idx    = choice - 1
