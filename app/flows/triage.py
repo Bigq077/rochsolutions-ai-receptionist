@@ -1735,12 +1735,24 @@ def resume_prompt_for_state(state: str) -> str:
         )
     if state == BOOK_RECOMMEND:
         return "Shall I go ahead and book you in for that?"
+    if state == BOOK_TIME_PREF:
+        return "So — what day or time would suit you?"
+    if state == BOOK_PICK_SLOT:
+        return "Please say 1, 2, or 3 for your preferred slot."
+    if state == BOOK_NAME:
+        return "What's your full name for the booking?"
+    if state == BOOK_PHONE:
+        return "And what's the best mobile number for us to reach you on?"
+    if state == BOOK_CONFIRM:
+        return "Say yes to confirm the booking, or no to cancel."
+    if state == BOOK_PATIENT_TYPE:
+        return "Are you a new patient or have you been here before?"
     if state == TRIAGE:
         return (
             "What would you like to do — book an appointment, "
             "ask about a treatment, or something else?"
         )
-    return "What would you like to do next?"
+    return "Is there anything else I can help you with?"
 
 
 # ============================================================================
@@ -2946,6 +2958,23 @@ async def triage_turn(
    
 
     # ------------------------------------------------------------------
+    # MID-BOOKING QUICK-FAQ GUARD
+    # If the caller asks a simple factual question (hours, prices, location,
+    # policies, first-visit advice, privacy) while mid-booking, answer it
+    # immediately and re-prompt for exactly where they were — rather than
+    # letting the state handler silently store the question as a name /
+    # phone number / time preference.
+    # ------------------------------------------------------------------
+    if state in BOOKING_STATES and intent in (
+        "FAQ_HOURS", "FAQ_LOCATION", "FAQ_PRICES",
+        "FAQ_POLICIES", "FAQ_FIRST_VISIT", "FAQ_PRIVACY",
+        "FAQ_INSURANCE",
+    ):
+        faq_resp  = faq_answer(intent, clinic, session)
+        re_prompt = resume_prompt_for_state(state)
+        return _say(f"{faq_resp} {re_prompt}", session, tone="none")
+
+    # ------------------------------------------------------------------
     # BOOKING FLOW
     # ------------------------------------------------------------------
     if state == BOOK_PATIENT_TYPE:
@@ -3350,6 +3379,23 @@ async def triage_turn(
         # Unclear response — re-read the summary and prompt again
         capture_msg = _build_manual_capture_message(session, clinic)
         return _say(capture_msg, session)
+
+    # ── UNIVERSAL CATCH-ALL ───────────────────────────────────────────────────
+    # Reached only when session["state"] contains a value that has no handler
+    # above (corrupted data, legacy state name, code bug).  Rather than
+    # returning None and crashing the Twilio unpacking, soft-reset and recover.
+    logger.warning(
+        "triage_turn: unhandled state=%r user=%r — soft-resetting to TRIAGE",
+        state, user_said,
+    )
+    session = _soft_reset_session(session)
+    session["state"] = TRIAGE
+    return _say(
+        "Sorry — I lost my place there. "
+        "I can help you book an appointment, reschedule, or answer any questions. "
+        "What would you like to do?",
+        session, tone="ack",
+    )
 
 
 # ============================================================================

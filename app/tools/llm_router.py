@@ -177,7 +177,19 @@ def route_and_answer(
                     out_text += c.text
 
     import json
-    data = json.loads(out_text)
+
+    # Guard: malformed or empty LLM output must never crash the call
+    try:
+        data = json.loads(out_text) if out_text.strip() else {}
+    except (json.JSONDecodeError, ValueError):
+        return {
+            "intent": "OTHER",
+            "faq_topic": "other",
+            "confidence": 0.0,
+            "entities": {},
+            "reply": "",
+            "follow_up_question": "",
+        }
 
     allowed = f"{ctx}\n\n{kb}"
     data["reply"] = _guardrail_reply(data.get("reply", ""), allowed)
