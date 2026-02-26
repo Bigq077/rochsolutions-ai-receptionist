@@ -3025,9 +3025,9 @@ async def triage_turn(
 
         _book_pref  = (collected.get("time_pref") or "").strip()
         _book_intro = (
-            f"For {_book_pref}, I have three options. "
+            f"I've had a look at the calendar and I currently have three options on {_book_pref}. "
             if _book_pref else
-            "I have three options. "
+            "I've had a look at the calendar and I currently have three options available. "
         )
         return _say(
             f"{_book_intro}"
