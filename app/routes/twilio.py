@@ -587,7 +587,7 @@ async def turn(request: Request):
         session["miss_count"] = miss
         await save_session(call_sid, session)
 
-        _clinic_obj = get_clinic(session)
+        _clinic_obj = get_clinic(session.get("clinic_id"))
         _cur_state  = session.get("state", "TRIAGE")
 
         # Tier 1 — first silence

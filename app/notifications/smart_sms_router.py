@@ -393,7 +393,7 @@ def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dic
 
 def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
     """Check if Bupa was specifically mentioned."""
-    if (insurance_data or {}).get("insurer_name", "").lower() == "bupa":
+    if ((insurance_data or {}).get("insurer_name") or "").lower() == "bupa":
         return True
     for turn in faq_data:
         if isinstance(turn, dict) and "bupa" in turn.get("question", "").lower():
