@@ -1242,12 +1242,22 @@ _SWITCHABLE_ALL     = _SWITCHABLE_BOOKING | _SWITCHABLE_RESCH
 
 # Option 3: explicit "I want to switch" phrases — unambiguous, always trigger a flow switch
 _EXPLICIT_SWITCH_PHRASES = [
+    # "actually" openers
     "actually i want to", "actually i need to", "actually i would like to",
-    "actually can i", "actually could i", "wait i want to", "wait i need to",
-    "let me reschedule instead", "i want to reschedule instead", "reschedule instead",
-    "instead of booking", "i want to cancel instead", "actually cancel",
+    "actually can i", "actually could i", "actually i",
+    # "wait" openers
+    "wait i want to", "wait i need to", "wait actually",
+    # direct reschedule/cancel mid-flow
+    "i want to reschedule", "i need to reschedule", "can i reschedule",
+    "i want to cancel", "i need to cancel", "can i cancel",
+    "let me reschedule", "let me cancel",
+    "reschedule instead", "cancel instead",
+    "instead of booking",
+    # mind change
     "forget the booking", "forget this booking", "never mind the booking",
-    "i changed my mind", "changed my mind", "different thing", "something different",
+    "i changed my mind", "changed my mind",
+    "different thing", "something different", "something else",
+    "scrap that", "ignore that", "start over",
 ]
 
 
@@ -1586,12 +1596,24 @@ def detect_intent(text: str) -> str:
     if not t:
         return "UNKNOWN"
 
+    # RESCHEDULE must be checked BEFORE BOOK — phrases like "reschedule my
+    # appointment" or "change my appointment time" contain "appointment" which
+    # would otherwise trigger BOOK incorrectly.
+    if _contains_any(t, [
+        "reschedule", "rebook", "postpone",
+        "change my appointment", "move my appointment", "change my booking",
+        "move my booking", "change the time", "change the date",
+        "move the appointment", "move the booking",
+        "i want to reschedule", "i need to reschedule",
+        "can i reschedule", "could i reschedule",
+        "want to change", "need to change", "like to change",
+    ]):
+        return "RESCHEDULE"
+    if _contains_any(t, ["cancel appointment", "cancel my appointment", "cancel booking",
+                          "cancel my booking", "cancellation", "i want to cancel", "i need to cancel"]):
+        return "CANCEL"
     if _contains_any(t, ["book", "appointment", "schedule", "available", "slot"]):
         return "BOOK"
-    if _contains_any(t, ["reschedule", "move", "rebook", "postpone", "change my appointment"]):
-        return "RESCHEDULE"
-    if _contains_any(t, ["cancel appointment", "cancel my appointment", "cancel booking", "cancellation"]):
-        return "CANCEL"
     if _contains_any(t, ["price", "cost", "fee", "how much", "charge", "rates", "pay"]):
         return "FAQ_PRICES"
     if _contains_any(t, ["hours", "opening hours", "open", "close", "when are you open", "weekend"]):
@@ -2103,9 +2125,13 @@ async def answer_with_knowledge(
 def is_reschedule_intent(text: Optional[str]) -> bool:
     t = _norm(text)
     return any(kw in t for kw in [
-        "reschedule", "rescheduling", "change my appointment",
-        "move my appointment", "rebook", "switch my appointment",
-        "change the time", "change the date",
+        "reschedule", "rescheduling", "rebook",
+        "change my appointment", "move my appointment",
+        "switch my appointment", "change my booking", "move my booking",
+        "change the time", "change the date", "move the appointment",
+        "i want to reschedule", "i need to reschedule",
+        "can i reschedule", "want to change", "need to change",
+        "different time", "different day", "another time", "another day",
     ])
 
 
@@ -2173,8 +2199,11 @@ async def triage_turn(
         in_booking = state in _SWITCHABLE_BOOKING
         in_resch   = state in _SWITCHABLE_RESCH
         conflicts  = (
-            (in_booking and intent in ("RESCHEDULE", "CANCEL", "HUMAN")) or
-            (in_resch   and intent in ("BOOK",       "CANCEL", "HUMAN"))
+            (in_booking and (
+                intent in ("RESCHEDULE", "CANCEL", "HUMAN") or
+                is_reschedule_intent(user_said)              # safety net for detect_intent edge cases
+            )) or
+            (in_resch and intent in ("BOOK", "CANCEL", "HUMAN"))
         )
 
         if is_explicit or conflicts:
