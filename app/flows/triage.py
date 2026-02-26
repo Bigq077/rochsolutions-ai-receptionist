@@ -2325,6 +2325,26 @@ async def triage_turn(
             location_id = "redditch"
 
         if not location_id:
+            # Before asking again, check if the caller is asking an FAQ instead
+            _faq_intent = detect_intent(user_said)
+            if _faq_intent == "FAQ_LOCATION":
+                return _say(
+                    "We have two clinics. "
+                    f"The Alcester clinic is at {LOCATION_ADDRESSES['alcester']} "
+                    f"The Redditch clinic is at {LOCATION_ADDRESSES['redditch']} "
+                    "Are you calling about the Alcester or the Redditch clinic?",
+                    session,
+                )
+            if _faq_intent == "FAQ_HOURS":
+                return _say(
+                    f"{LOCATION_HOURS['alcester']} "
+                    f"{LOCATION_HOURS['redditch']} "
+                    "Are you calling about the Alcester or the Redditch clinic?",
+                    session,
+                )
+            if _faq_intent in ("FAQ_PRICES", "FAQ_INSURANCE", "FAQ_SERVICES", "FAQ_SERVICE_EXPLAIN"):
+                _ans = faq_answer(_faq_intent, clinic, session)
+                return _say(f"{_ans} Now — are you calling about the Alcester or the Redditch clinic?", session)
             return _say("Sorry — could you say Alcester or Redditch?", session, tone="checking")
 
         session["location_id"] = location_id
