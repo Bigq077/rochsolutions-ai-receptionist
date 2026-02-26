@@ -24,6 +24,7 @@ from app.storage.redis_store import redis_get_json
 from app.tools.call_summary import build_call_summary
 from app.tools.calendar_google import (
     create_event,
+    delete_event,
     freebusy,
     list_upcoming_events,
     patch_event_time,
@@ -1197,8 +1198,13 @@ BOOK_NAME           = "BOOK_NAME"
 BOOK_PHONE          = "BOOK_PHONE"
 BOOK_CONFIRM        = "BOOK_CONFIRM"
 
-# Reschedule states
-RESCH_NAME          = "RESCH_NAME"
+# Reschedule / cancel states
+RESCH_NAME          = "RESCH_NAME"          # collect patient name
+RESCH_PHONE         = "RESCH_PHONE"         # collect phone → find event
+RESCH_BOOK_BACK     = "RESCH_BOOK_BACK"     # "want to book back in?"
+RESCH_SAME_PROBLEM  = "RESCH_SAME_PROBLEM"  # "same problem or different?"
+CANCEL_OR_REBOOK    = "CANCEL_OR_REBOOK"    # "cancel or new slot?"
+# Legacy states kept so in-flight sessions don't crash
 RESCH_ORIGINAL      = "RESCH_ORIGINAL"
 RESCH_NEW_PREF      = "RESCH_NEW_PREF"
 RESCH_PICK_SLOT     = "RESCH_PICK_SLOT"
@@ -1222,8 +1228,11 @@ BOOKING_STATES = {
 }
 
 RESCH_STATES = {
-    RESCH_NAME, RESCH_ORIGINAL, RESCH_PHONE_FALLBACK,
-    RESCH_NEW_PREF, RESCH_PICK_SLOT, RESCH_CONFIRM,
+    RESCH_NAME, RESCH_PHONE, RESCH_BOOK_BACK, RESCH_SAME_PROBLEM,
+    CANCEL_OR_REBOOK,
+    # legacy
+    RESCH_ORIGINAL, RESCH_PHONE_FALLBACK, RESCH_NEW_PREF,
+    RESCH_PICK_SLOT, RESCH_CONFIRM,
 }
 
 # States that get mid-flow switch protection (excludes TRIAGE and ASK_LOCATION)
@@ -2197,10 +2206,11 @@ async def triage_turn(
                 )
 
             if target == "RESCHEDULE":
+                session["resch_intent"] = "reschedule"
                 session["state"] = RESCH_NAME
                 return _say(
                     "No problem — let's get that sorted. "
-                    "Can I take your full name for the existing appointment?",
+                    "What's your full name so I can find your booking?",
                     session, tone="ack",
                 )
 
@@ -2293,15 +2303,14 @@ async def triage_turn(
             return _say("Are you a new patient, or have you been here before?", session)
 
         if pending == "RESCHEDULE":
+            session["resch_intent"] = "reschedule"
             session["state"] = RESCH_NAME
-            return _say("Sure — to reschedule, what's your full name?", session)
+            return _say("Sure — what's your full name so I can find your booking?", session)
 
         if pending == "CANCEL":
-            session["state"] = TRIAGE
-            return _say(
-                "Sure — can I take your full name and the date and time of the appointment you want to cancel?",
-                session,
-            )
+            session["resch_intent"] = "cancel"
+            session["state"] = RESCH_NAME
+            return _say("No problem — what's your full name so I can find your appointment?", session)
 
         if pending == "FAQ_INSURANCE":
             insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
@@ -2623,240 +2632,170 @@ async def triage_turn(
         session["state"] = INS_COLLECT_INSURER
         return await triage_turn(user_said, session, dtmf)
 
-    if state == "CANCELLATION_COLLECT":
-        collected["cancellation_details"] = user_said.strip()
-
-        try:
-            from app.notifications.booking_sms import send_cancellation_confirmation
-            # datetime already imported at module level — no local import needed
-
-            appointment_time = session.get("cancelled_appointment_time")
-            if appointment_time:
-                appointment_dt = datetime.fromisoformat(appointment_time)
-                now = datetime.utcnow()
-                hours_until = (appointment_dt - now).total_seconds() / 3600
-                is_late = hours_until < 24
-
-                await send_cancellation_confirmation(
-                    patient_phone=collected.get("phone", "+447870166861"),
-                    patient_name=collected.get("name", "").split()[0] or "Patient",
-                    appointment_time=appointment_dt,
-                    is_late_cancellation=is_late,
-                )
-        except Exception as e:
-            logger.error(f"⚠️ Cancellation SMS failed: {e}")
-
-        session = _reset_to_triage(session)
-        return _say("Your appointment has been cancelled. You should receive a confirmation text shortly.", session)
-
     # ------------------------------------------------------------------
-    # RESCHEDULE FLOW
+    # RESCHEDULE / CANCEL — shared "find booking" entry
     # ------------------------------------------------------------------
+
     if state == RESCH_NAME:
+        # Guard: don't store an intent phrase as a name
         if detect_intent(user_said) in ("RESCHEDULE", "BOOK", "CANCEL"):
-            return _say("Sure — what's your full name?", session)
+            intent_str = session.get("resch_intent", "reschedule")
+            q = "find your booking" if intent_str == "reschedule" else "find your appointment"
+            return _say(f"Sure — what's your full name so I can {q}?", session)
         collected["name"] = user_said.strip()
-        session["state"]  = RESCH_ORIGINAL
-        return _say(f"{random.choice(FRIENDLY_ACK)} What was the date and time of your original appointment?", session)
+        session["state"]  = RESCH_PHONE
+        return _say("Thanks. And what phone number was the booking made with?", session)
 
-    if state == RESCH_ORIGINAL:
-        collected["original_appt"] = user_said.strip()
-        try:
-            ev = await find_event_by_name_and_time(session, collected.get("name", ""), collected["original_appt"])
-        except Exception as e:
-            print("RESCHEDULE find event error:", repr(e))
-            ev = None
-
-        if ev:
-            session["resch_event_id"]      = ev.get("id")
-            session["resch_event_summary"] = ev.get("summary", "Appointment")
-            session["state"]               = RESCH_NEW_PREF
-            return _say("Thanks — tell me a day or time that suits you and I'll check availability.", session)
-
-        tokens = await redis_get_json(TOKENS_KEY)
-        if tokens:
-            session["state"] = RESCH_PHONE_FALLBACK
-            return _say("Thanks. What phone number was used for the booking?", session)
-
-        session["manual_reschedule"] = True
-        session["manual_reason"]     = "no_calendar_tokens"
-        session["state"]             = RESCH_NEW_PREF
-        return _say("No problem — tell me a day or time that suits you.", session)
-
-    if state == RESCH_PHONE_FALLBACK:
+    if state == RESCH_PHONE:
         if not is_valid_phone(user_said):
-            return _say("Sorry — I didn't catch a valid phone number. Please say it again.", session)
+            return _say("Sorry — I didn't catch a valid number. Could you say it again?", session)
         collected["phone"] = normalize_phone(user_said)
+
+        # Try to find the event in the calendar
         tokens = await redis_get_json(TOKENS_KEY)
+        ev = None
         if tokens:
             try:
                 events = list_upcoming_events(
                     stored_tokens=tokens,
                     calendar_id=get_clinic(session).get("calendar_id", "primary"),
-                    days_ahead=60, max_results=50,
+                    days_ahead=90, max_results=100,
                 )
-                target = collected["phone"]
-                ev = next((e for e in events if target in _digits_only(e.get("description") or "")), None)
-                if ev:
-                    session["resch_event_id"]      = ev.get("id")
-                    session["resch_event_summary"] = ev.get("summary", "Appointment")
-                else:
-                    session["manual_reschedule"] = True
-                    session["manual_reason"]     = "event_not_found"
+                phone_digits = _digits_only(collected["phone"])
+                name_lower   = collected.get("name", "").lower()
+                ev = next(
+                    (e for e in events if
+                     phone_digits in _digits_only(e.get("description") or "") or
+                     name_lower in (e.get("summary") or "").lower()),
+                    None,
+                )
             except Exception as e:
-                print("RESCHEDULE list_upcoming_events error:", repr(e))
-                session["manual_reschedule"] = True
-                session["manual_reason"]     = "calendar_lookup_error"
+                logger.error(f"RESCH_PHONE calendar lookup error: {e!r}")
+
+        intent = session.get("resch_intent", "reschedule")
+
+        if ev:
+            session["resch_event_id"]      = ev.get("id")
+            session["resch_event_summary"] = ev.get("summary", "your appointment")
+            found_msg = f"Got it — I found your appointment for {ev.get('summary', 'you')}. "
         else:
-            session["manual_reschedule"] = True
-            session["manual_reason"]     = "no_calendar_tokens"
+            session["resch_event_id"] = None
+            found_msg = "I wasn't able to find that booking in our system — I'll flag it for the team. "
 
-        session["state"] = RESCH_NEW_PREF
-        return _say("Thanks — tell me a day or time that suits you.", session)
-
-    if state == RESCH_NEW_PREF:
-        pref = (user_said or "").strip()
-        pref_attempts = int(session.get("resch_pref_attempts", 0))
-
-        if not pref:
-            session["resch_pref_attempts"] = pref_attempts + 1
-            return _say("What day or time would you like? For example, next Monday afternoon.", session, tone="checking")
-
-        collected["time_pref"] = pref
-        dw = parse_specific_day_window(collected["time_pref"], tz)
-        dw_parsed = None
-        if dw:
-            collected["day_window_start"] = dw[0].isoformat()
-            collected["day_window_end"]   = dw[1].isoformat()
-            dw_parsed = dw
-
-        duration = int(get_clinic(session).get("slot_minutes", DEFAULT_DURATION_MIN))
-        raw_slots, labels, err = await suggest_top_slots(session, duration_min=duration,
-                                                          pref_text=pref, day_window=dw_parsed)
-
-        if err:
-            session["manual_reschedule"] = True
-            session["manual_reason"]     = "calendar_unavailable"
-            booking_url = (get_clinic(session).get("booking_url") or "").strip()
-            session = _reset_to_triage(session)
-            if booking_url:
-                return _say(f"I'm having trouble checking availability. Please use our online booking system: {booking_url}", session, tone="reassure")
-            return _say("I'm having trouble checking availability. The clinic team will follow up with you.", session, tone="reassure")
-
-        if not labels or len(labels) < 3:
-            widen_attempt = int(session.get("resch_widen_attempts", 0)) + 1
-            session["resch_widen_attempts"] = widen_attempt
-            if dw_parsed and widen_attempt <= 2:
-                widened = widen_day_window(dw_parsed, widen_attempt)
-                raw_slots, labels, err = await suggest_top_slots(session, duration_min=duration,
-                                                                   pref_text=pref, day_window=widened)
-
-            if not labels or len(labels) < 3:
-                session["resch_pref_attempts"] = pref_attempts + 1
-                if session["resch_pref_attempts"] >= 2:
-                    session = _reset_to_triage(session)
-                    return _say("I can't see a clear match for that time. Could you suggest another day or time?", session, tone="reassure")
-                return _say("I don't have clear availability around that time. Could you tell me another day that would suit?", session, tone="checking")
-
-        session["resch_pref_attempts"]  = 0
-        session["resch_widen_attempts"] = 0
-        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
-        session[SLOT_LABELS_KEY]        = labels
-        session["state"]                = RESCH_PICK_SLOT
-
-        _resch_pref = (collected.get("time_pref") or "").strip()
-        _resch_intro = (
-            f"For {_resch_pref}, I have three options. "
-            if _resch_pref else
-            "I have three options. "
-        )
-        return _say(
-            f"{_resch_intro}"
-            f"The first is {labels[0]}. "
-            f"The second is {labels[1]}. "
-            f"The third is {labels[2]}. "
-            "Please say 1, 2, or 3.",
-            session,
-        )
-
-    if state == RESCH_PICK_SLOT:
-        slots  = session.get(LAST_OFFERED_SLOTS_KEY) or []
-        labels = session.get(SLOT_LABELS_KEY) or []
-
-        if not slots:
-            session["state"] = TRIAGE
-            return _say("I can't see any available slots right now. The clinic will contact you to reschedule.", session, tone="reassure")
-
-        choice = parse_slot_choice(user_said, dtmf=dtmf)
-        if not choice:
+        if intent == "cancel":
+            session["state"] = CANCEL_OR_REBOOK
             return _say(
-                f"The first option is {labels[0]}. "
-                f"The second is {labels[1]}. "
-                f"The third is {labels[2]}. "
-                "Please say 1, 2, or 3.",
+                found_msg +
+                "Would you like to cancel the appointment, or would you prefer to book a new slot instead? "
+                "Say cancel or new slot.",
+                session,
+            )
+        else:
+            session["state"] = RESCH_BOOK_BACK
+            return _say(
+                found_msg +
+                "Would you like to book back in?",
                 session,
             )
 
-        idx = choice - 1
-        if idx < 0 or idx >= len(slots):
-            return _say("Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.", session)
-
-        session[SELECTED_SLOT_KEY]       = slots[idx]
-        session[SELECTED_SLOT_LABEL_KEY] = labels[idx] if idx < len(labels) else ""
-        session["state"]                 = RESCH_CONFIRM
-
-        return _say(
-            f"You've chosen {labels[idx]}. "
-            "Shall I go ahead and reschedule that for you? Say yes to confirm or no to cancel.",
-            session,
-        )
-    if state == RESCH_CONFIRM:
-        if not is_yes(user_said):
+    if state == RESCH_BOOK_BACK:
+        if is_no(user_said):
             session = _reset_to_triage(session)
-            return _say("No problem. What would you like to do instead?", session)
-        label  = session.get(SELECTED_SLOT_LABEL_KEY) or collected.get("time_pref") or "the new time"
-        tokens = await redis_get_json(TOKENS_KEY)
-        if session.get("manual_reschedule"):
-            _attempt_send_to_sheet(
-                collected, user_said, session, "RESCHEDULE_REQUEST_MANUAL",
-                extra=f"Original: {collected.get('original_appt','')} → New: {label}",
+            clinic_phone = clinic.get("phone", "")
+            outro = f" Give us a call on {clinic_phone} any time you're ready." if clinic_phone else ""
+            return _say(
+                "No problem — we'll leave it there for now." + outro,
+                session,
             )
-            session = _reset_to_triage(session)
-            return _say(f"I've logged your reschedule request for {label}. The clinic will confirm it shortly.", session)
-        chosen   = session.get(SELECTED_SLOT_KEY)
-        event_id = session.get("resch_event_id")
-        if tokens and event_id and chosen:
-            try:
-                start = datetime.fromisoformat(chosen["start"])
-                end   = datetime.fromisoformat(chosen["end"])
-                patch_event_time(
-                    stored_tokens=tokens,
-                    event_id=event_id,
-                    start_dt=start,
-                    end_dt=end,
-                    calendar_id=get_clinic(session).get("calendar_id", "primary"),
-                )
-                try:
-                    from app.notifications.booking_sms import send_reschedule_confirmation
+        if not is_yes(user_said):
+            return _say("Just to confirm — would you like to book back in? Say yes or no.", session)
 
-                    old_time_str = collected.get("original_appt")
-                    if old_time_str:
-                        old_time = _safe_parse_user_datetime(old_time_str, tz)
-                        await send_reschedule_confirmation(
-                            patient_phone=collected.get("phone", "+447870166861"),
-                            patient_name=collected.get("name", "").split()[0] or "Patient",
-                            old_time=old_time,
-                            new_time=start,
-                            location=get_location_label(session),
-                        )
-                        logger.info(f"✅ Reschedule SMS sent")
+        session["state"] = RESCH_SAME_PROBLEM
+        return _say("Great. Is it for the same problem as before, or something different?", session)
+
+    if state == CANCEL_OR_REBOOK:
+        t = _norm(user_said)
+        wants_cancel    = any(w in t for w in ["cancel", "no", "nope", "just cancel", "don't", "dont", "not"])
+        wants_new_slot  = any(w in t for w in ["new slot", "rebook", "book", "new", "yes", "yeah", "reschedule"])
+
+        if wants_cancel and not wants_new_slot:
+            # Cancel the old event if we found it
+            event_id = session.get("resch_event_id")
+            tokens   = await redis_get_json(TOKENS_KEY)
+            if tokens and event_id:
+                try:
+                    delete_event(
+                        stored_tokens=tokens,
+                        event_id=event_id,
+                        calendar_id=get_clinic(session).get("calendar_id", "primary"),
+                    )
+                    logger.info(f"✅ Appointment cancelled: {event_id}")
                 except Exception as e:
-                    logger.error(f"⚠️ Reschedule SMS failed: {e}")
-            except Exception:
-                session = _reset_to_triage(session)
-                return _say(f"I've logged your reschedule for {label}. The clinic will confirm it.", session)
-        session = _reset_to_triage(session)
-        return _say(f"Confirmed — you're rescheduled to {label}. We look forward to seeing you.", session)
+                    logger.error(f"⚠️ Cancel delete_event error: {e!r}")
+            else:
+                _attempt_send_to_sheet(collected, user_said, session, "CANCEL_MANUAL")
+
+            # Send cancellation SMS
+            try:
+                from app.notifications.booking_sms import send_cancellation_confirmation
+                await send_cancellation_confirmation(
+                    patient_phone=collected.get("phone", ""),
+                    patient_name=(collected.get("name", "") or "").split()[0] or "Patient",
+                    appointment_time=None,
+                    is_late_cancellation=False,
+                )
+            except Exception as e:
+                logger.error(f"⚠️ Cancellation SMS failed: {e}")
+
+            clinic_phone = clinic.get("phone", "")
+            outro = f" Call us on {clinic_phone} any time you'd like to book a new slot." if clinic_phone else " Call us back any time you'd like to book a new slot."
+            session = _reset_to_triage(session)
+            return _say(
+                "Your appointment has been cancelled." + outro,
+                session,
+            )
+
+        if wants_new_slot:
+            # Proceed to rebook — same path as reschedule
+            session["state"] = RESCH_SAME_PROBLEM
+            return _say("Sure — is it for the same problem as before, or something different?", session)
+
+        return _say("Sorry — just say cancel to cancel, or new slot to book a replacement.", session)
+
+    if state == RESCH_SAME_PROBLEM:
+        t = _norm(user_said)
+        is_same      = is_yes(user_said) or any(w in t for w in ["same", "yes", "yeah", "same problem", "same thing"])
+        is_different = is_no(user_said)  or any(w in t for w in ["different", "no", "new", "other", "something else", "not the same"])
+
+        if not is_same and not is_different:
+            return _say("Just checking — is it for the same problem as before? Say yes or no.", session)
+
+        # We already have name + phone from the find-booking step
+        collected["patient_type"] = "RETURNING"
+
+        if is_same:
+            # Keep existing reason/service if present, jump straight to time picking
+            session["state"] = BOOK_TIME_PREF
+            return _say("No problem. When would you like to come in?", session)
+        else:
+            # Clear condition-specific data so the diagnosis flow runs fresh
+            for k in ("reason", "service", "intake_answer", "recommendation"):
+                collected.pop(k, None)
+            session["state"] = BOOK_REASON
+            return _say("Of course. What's the problem you'd like to be seen for?", session)
+
+    # Legacy reschedule handlers — redirect in-flight sessions gracefully
+    if state in (RESCH_ORIGINAL, RESCH_PHONE_FALLBACK):
+        session["state"] = RESCH_PHONE
+        return _say("Sorry — let me just take your phone number to find your booking.", session)
+
+    if state in (RESCH_NEW_PREF, RESCH_PICK_SLOT, RESCH_CONFIRM):
+        session["state"] = TRIAGE
+        return _say("Sorry — something went wrong with that reschedule. Let's start again — what can I help you with?", session)
+
+    if state == "CANCELLATION_COLLECT":
+        session["state"] = TRIAGE
+        return _say("Sorry — something went wrong. Let's start again — what can I help you with?", session)
    
 
     # ------------------------------------------------------------------
@@ -3061,7 +3000,19 @@ async def triage_turn(
 
         session[SELECTED_SLOT_KEY]       = slots[idx]
         session[SELECTED_SLOT_LABEL_KEY] = labels[idx] if idx < len(labels) else ""
-        session["state"]                 = BOOK_NAME
+
+        # If we already have name + phone (e.g. coming from reschedule/cancel flow)
+        # skip straight to confirmation
+        if collected.get("name") and collected.get("phone"):
+            label = labels[idx] if idx < len(labels) else "the selected time"
+            session["state"] = BOOK_CONFIRM
+            return _say(
+                f"You've chosen {label}. "
+                "Shall I go ahead and book that for you? Say yes to confirm or no to cancel.",
+                session,
+            )
+
+        session["state"] = BOOK_NAME
         return _say("Perfect. What's your full name for the booking?", session)
 
     if state == BOOK_NAME:
@@ -3121,6 +3072,21 @@ async def triage_turn(
                 )
 
                 if event and event.get("id"):
+                    # If this booking replaces an old one (reschedule/cancel+rebook),
+                    # delete the original event now that the new one is confirmed
+                    old_event_id = session.get("resch_event_id")
+                    if old_event_id:
+                        try:
+                            delete_event(
+                                stored_tokens=tokens,
+                                event_id=old_event_id,
+                                calendar_id=get_clinic(session).get("calendar_id", "primary"),
+                            )
+                            session["resch_event_id"] = None
+                            logger.info(f"✅ Old event deleted after rebook: {old_event_id}")
+                        except Exception as del_err:
+                            logger.error(f"⚠️ Could not delete old event {old_event_id}: {del_err!r}")
+
                     try:
                         from app.notifications.booking_sms import send_booking_confirmation
 
