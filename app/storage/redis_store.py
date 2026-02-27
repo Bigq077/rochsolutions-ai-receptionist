@@ -15,11 +15,14 @@ if REDIS_URL:
 
 DEFAULT_SESSION: Dict[str, Any] = {
     "intent": None,
-    "state": "TRIAGE",
-    "collected": {},          # IMPORTANT: mutable (deep-copied on use)
+    "state": "TRIAGE",          # Used by legacy path; Phase 3 ignores this
+    "collected": {},            # IMPORTANT: mutable (deep-copied on use)
     "miss_count": 0,
     "last_bot_prompt": "",
     "call_sid": "",
+    # Phase 3 fields
+    "conversation_history": [], # [{role: "user"|"assistant", content: str}]
+    "call_start_time": None,    # ISO timestamp set on first handle_turn call
 }
 
 

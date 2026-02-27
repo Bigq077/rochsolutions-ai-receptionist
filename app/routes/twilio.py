@@ -579,6 +579,7 @@ async def turn(request: Request):
             user_said = "no"
 
     from app.flows.triage_legacy import triage_turn
+    from app.config import PHASE3_ENABLED
 
     try:
         session = await get_session(call_sid) or {}
@@ -667,7 +668,11 @@ async def turn(request: Request):
     session = _append_turn(session, "caller", user_said)
 
     try:
-        reply_text, session = await triage_turn(user_said, session)
+        if PHASE3_ENABLED:
+            from app.flows.conversation import handle_turn
+            reply_text, session = await handle_turn(user_said, session)
+        else:
+            reply_text, session = await triage_turn(user_said, session)
         session.pop("error_count", None)   # reset on success
     except Exception as e:
         print("TRIAGE ERROR:", repr(e))
