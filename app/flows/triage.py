@@ -2180,6 +2180,52 @@ def is_reschedule_intent(text: Optional[str]) -> bool:
 
 
 # ============================================================================
+# SMART FALLBACK HELPER
+# ============================================================================
+
+async def _handle_fallback(
+    session: Dict[str, Any],
+    state: str,
+    clinic: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Shared fallback handler — called from every state's else-branch.
+
+    - Increments a per-state fallback counter in the session.
+    - On the 3rd consecutive fallback in the same state, escalates to a
+      live transfer (human callback flow) and resets the counter.
+    - Otherwise calls GPT-4o smart_fallback to generate a natural recovery
+      response and steer the caller back toward what the state needs.
+    """
+    from app.utils.smart_fallback import smart_fallback as _smart_fallback
+
+    fb_key   = f"fallback_count_{state}"
+    fb_count = int(session.get(fb_key, 0)) + 1
+    session[fb_key] = fb_count
+
+    if fb_count >= 3:
+        # Reset counter so a future revisit to this state starts fresh
+        session[fb_key] = 0
+        session["request_transfer"] = True
+        return _say(
+            "I'm sorry — I'm having a little trouble following. "
+            "Let me put you straight through to the team. Please hold.",
+            session,
+        )
+
+    context = {
+        "clinic_name": clinic.get("sms_name") or clinic.get("display_name", "the clinic"),
+        "location": session.get("selected_location") or session.get("location_id", ""),
+    }
+    reply = await _smart_fallback(
+        history=session.get("conversation_history", []),
+        current_state=state,
+        context=context,
+    )
+    return _say(reply, session, tone="none")
+
+
+# ============================================================================
 # MAIN STATE MACHINE
 # ============================================================================
 
@@ -2204,6 +2250,18 @@ async def triage_turn(
     session.setdefault(LAST_OFFERED_SLOTS_KEY, None)
     session.setdefault(SELECTED_SLOT_KEY, None)
     session[LAST_USER_TEXT_KEY] = user_said
+
+    # ------------------------------------------------------------------
+    # CONVERSATION HISTORY  (used by smart_fallback for GPT-4o context)
+    # Append the previous assistant response (stored in last_bot_prompt by
+    # every _say() call) then the current user turn, so history is always
+    # up-to-date before any fallback branch is reached.
+    # ------------------------------------------------------------------
+    _conv = session.setdefault("conversation_history", [])
+    _prev_bot = session.get("last_bot_prompt", "")
+    if _prev_bot and (not _conv or _conv[-1].get("role") != "assistant"):
+        _conv.append({"role": "assistant", "content": _prev_bot})
+    _conv.append({"role": "user", "content": user_said})
 
     # Detect intent once
     intent = detect_intent(user_said)
@@ -2374,7 +2432,7 @@ async def triage_turn(
                 session, tone="none",
             )
 
-        return _say("Say continue to go back to booking, or ask your question.", session, tone="checking")
+        return await _handle_fallback(session, state, clinic)
 
     # ==========================================================
     # ASK_LOCATION: Which clinic? (asked after intent is detected)
@@ -2429,7 +2487,7 @@ async def triage_turn(
                     "Just so I can direct you to the right team, are you calling about our Alcester or Redditch clinic?",
                     session,
                 )
-            return _say("Sorry — could you say Alcester or Redditch?", session, tone="checking")
+            return await _handle_fallback(session, state, clinic)
 
         session["location_id"] = location_id
         pending = session.pop("pending_intent", None)
@@ -2524,7 +2582,7 @@ async def triage_turn(
                 "Would that be helpful?",
                 session, tone="none",
             )
-        return _say("Would you still like to go ahead and book privately, or would you prefer some time to think it over?", session, tone="checking")
+        return await _handle_fallback(session, state, clinic)
 
     if state == INS_COLLECT_POLICY:
         no_policy = any(p in user_said.lower() for p in [
@@ -2858,7 +2916,7 @@ async def triage_turn(
                 session,
             )
         if not is_yes(user_said):
-            return _say("Just to confirm — would you like to book back in? Say yes or no.", session)
+            return await _handle_fallback(session, state, clinic)
 
         session["state"] = RESCH_SAME_PROBLEM
         return _say("Great. Is it for the same problem as before, or something different?", session)
@@ -2935,7 +2993,7 @@ async def triage_turn(
             session["state"] = RESCH_SAME_PROBLEM
             return _say("Sure — is it for the same problem as before, or something different?", session)
 
-        return _say("Sorry — just say cancel to cancel, or new slot to book a replacement.", session)
+        return await _handle_fallback(session, state, clinic)
 
     if state == RESCH_SAME_PROBLEM:
         t = _norm(user_said)
@@ -2943,7 +3001,7 @@ async def triage_turn(
         is_different = is_no(user_said)  or any(w in t for w in ["different", "no", "new", "other", "something else", "not the same"])
 
         if not is_same and not is_different:
-            return _say("Just checking — is it for the same problem as before? Say yes or no.", session)
+            return await _handle_fallback(session, state, clinic)
 
         # We already have name + phone from the find-booking step
         collected["patient_type"] = "RETURNING"
@@ -3015,7 +3073,7 @@ async def triage_turn(
             session["pt_type_tries"]  = 0
             session["state"]          = BOOK_REASON
             return _say("No problem — I'll put you down as a new patient. What's the appointment for?", session, tone="ack")
-        return _say("Just to confirm — are you a new patient or have you been here before? You can say new or returning.", session, tone="checking")
+        return await _handle_fallback(session, state, clinic)
 
     if state == BOOK_REASON:
         lower = (user_said or "").lower()
@@ -3127,10 +3185,7 @@ async def triage_turn(
             return _say("Great. What day or time would suit you?", session)
 
         # Fallback — didn't match yes/no/price/info
-        return _say(
-            "Sorry — shall I go ahead and book that for you? Just say yes or no.",
-            session, tone="checking",
-        )
+        return await _handle_fallback(session, state, clinic)
 
     if state == BOOK_TIME_PREF:
         collected["time_pref"] = user_said.strip()
@@ -3213,7 +3268,7 @@ async def triage_turn(
                     session, tone="ack",
                 )
             # ── End safety net ────────────────────────────────────────────────
-            return _say("Sorry — please say 1 for the first option, 2 for the second, or 3 for the third.", session)
+            return await _handle_fallback(session, state, clinic)
 
         idx    = choice - 1
         slots  = session.get(LAST_OFFERED_SLOTS_KEY) or []
@@ -3257,7 +3312,7 @@ async def triage_turn(
             return _say("No problem — I've cancelled that. What would you like to do instead?", session)
 
         if not is_yes(user_said):
-            return _say("Just to confirm — shall I go ahead and book that? Say yes or no.", session)
+            return await _handle_fallback(session, state, clinic)
 
         chosen = session.get(SELECTED_SLOT_KEY)
         label  = session.get(SELECTED_SLOT_LABEL_KEY) or "the selected time"
