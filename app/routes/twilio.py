@@ -578,7 +578,7 @@ async def turn(request: Request):
         elif re.fullmatch(r"(no|nope|cancel|stop)[\W_]*", t):
             user_said = "no"
 
-    from app.flows.triage import triage_turn
+    from app.flows.triage_legacy import triage_turn
 
     try:
         session = await get_session(call_sid) or {}
@@ -677,7 +677,7 @@ async def turn(request: Request):
 
         if error_count >= 2:
             # Second failure → enter manual capture mode
-            from app.flows.triage import _build_manual_capture_message, MANUAL_CAPTURE
+            from app.flows.triage_legacy import _build_manual_capture_message, MANUAL_CAPTURE
             from app.clinic_config import get_clinic as _get_clinic
             session["pre_error_state"] = session.get("state", "TRIAGE")
             session["state"] = MANUAL_CAPTURE

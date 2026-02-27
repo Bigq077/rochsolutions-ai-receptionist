@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Tuple, Dict, Any
 
-from app.flows.triage import triage_turn
+from app.flows.triage_legacy import triage_turn
 
 
 def _append_turn(session: dict, role: str, text: str) -> dict:
