@@ -1186,6 +1186,11 @@ def _say(
 ) -> Tuple[str, Dict[str, Any]]:
     text = _clean(text)
     out = _friendly(text) if tone is None else _apply_tone(text, tone)
+    # Prepend queued empathy prefix (set by intent classifier for
+    # frustrated/anxious callers) and consume it so it fires only once.
+    _empathy = session.pop("_pending_empathy", None)
+    if _empathy:
+        out = f"{_empathy} {out}"
     session["last_bot_prompt"] = out
     return out, session
 # ============================================================================
@@ -2263,8 +2268,122 @@ async def triage_turn(
         _conv.append({"role": "assistant", "content": _prev_bot})
     _conv.append({"role": "user", "content": user_said})
 
-    # Detect intent once
+    # Detect intent once (fast, synchronous keyword fallback)
     intent = detect_intent(user_said)
+
+    # ==================================================================
+    # INTENT CLASSIFICATION LAYER  (GPT-4o-mini, runs before routing)
+    # Enhances the keyword-based detect_intent() with a language-model
+    # classification that understands natural UK speech, extracts entities,
+    # and detects emotional tone.  If the classifier fails for any reason,
+    # execution falls through to the existing state machine unchanged.
+    # ==================================================================
+    try:
+        from app.utils.intent_classifier import classify_intent as _classify_intent
+
+        _clf = await _classify_intent(
+            text=user_said,
+            conversation_history=session.get("conversation_history", []),
+            current_state=state,
+            session=session,
+        )
+
+        if _clf is not None:
+            session["last_intent"] = _clf
+            _clf_intent  = _clf.get("primary_intent", "unclear")
+            _clf_conf    = float(_clf.get("confidence", 0.0))
+            _clf_tone    = _clf.get("emotional_tone", "neutral")
+            _clf_entities = _clf.get("extracted_entities") or {}
+
+            # ── Render log line ──────────────────────────────────────
+            logger.info(
+                "INTENT_CLASSIFIED: %s (%.2f) | entities: %s | tone: %s",
+                _clf_intent, _clf_conf, _clf_entities, _clf_tone,
+            )
+
+            # ── Pre-populate session from extracted entities ──────────
+            # Store entities the caller already provided so later states
+            # do not ask for the same information again.
+            if _clf_entities.get("patient_name") and not collected.get("name"):
+                collected["name"] = _clf_entities["patient_name"]
+
+            if _clf_entities.get("phone_number") and not collected.get("phone"):
+                collected["phone"] = _clf_entities["phone_number"]
+
+            if _clf_entities.get("condition") and not collected.get("reason"):
+                collected["reason"] = _clf_entities["condition"]
+
+            if _clf_entities.get("location_preference") and not session.get("location_id"):
+                _loc_raw = _clf_entities["location_preference"].lower()
+                if "alcester" in _loc_raw:
+                    session["location_id"]        = "alcester"
+                    session["selected_location"]  = "alcester"
+                elif "redditch" in _loc_raw:
+                    session["location_id"]        = "redditch"
+                    session["selected_location"]  = "redditch"
+
+            if _clf_entities.get("time_preference") and not collected.get("time_pref"):
+                collected["time_pref"] = _clf_entities["time_preference"]
+
+            if _clf_entities.get("appointment_date") and not collected.get("time_pref"):
+                collected["time_pref"] = _clf_entities["appointment_date"]
+
+            if _clf_entities.get("insurer_name") and not collected.get("insurer"):
+                collected["insurer"] = _clf_entities["insurer_name"]
+
+            # ── Emotional tone handling ───────────────────────────────
+            # Queue one empathetic sentence that _say() will prepend to
+            # the very next response, then clear so it fires only once.
+            _EMPATHY = {
+                "frustrated": "I completely understand — let me sort this out for you.",
+                "anxious":    "Of course, please don't worry — I'm here to help.",
+                "urgent":     "Absolutely, let's get this sorted as quickly as possible.",
+            }
+            if _clf_tone in _EMPATHY and not session.get("_empathy_shown"):
+                session["_pending_empathy"] = _EMPATHY[_clf_tone]
+                session["_empathy_shown"]   = True
+            elif _clf_tone == "neutral":
+                # Reset so empathy can re-fire if the caller's tone shifts
+                session.pop("_empathy_shown", None)
+
+            # ── Low-confidence bypass ─────────────────────────────────
+            # If the model is not confident, use its own suggested reply
+            # to respond naturally, then re-prompt for what the state needs.
+            if _clf_conf < 0.6:
+                _unclear_reply = (_clf.get("suggested_response_if_unclear") or "").strip()
+                if _unclear_reply:
+                    _reprompt = resume_prompt_for_state(state)
+                    _full = f"{_unclear_reply} {_reprompt}".strip() if _reprompt else _unclear_reply
+                    return _say(_full, session, tone="none")
+
+            # ── Override keyword intent with classified intent ─────────
+            # Map classifier labels → state-machine intent strings.
+            # Only override when confidence is high enough (≥ 0.70) to
+            # avoid clobbering good keyword matches with a weak prediction.
+            _INTENT_MAP: Dict[str, str] = {
+                "book_appointment":  "BOOK",
+                "reschedule":        "RESCHEDULE",
+                "cancel":            "CANCEL",
+                "price_enquiry":     "FAQ_PRICES",
+                "insurance_enquiry": "FAQ_INSURANCE",
+                "hours_enquiry":     "FAQ_HOURS",
+                "location_enquiry":  "FAQ_LOCATION",
+                "condition_question": "OTHER",
+                "request_human":     "HUMAN",
+                "general_question":  "OTHER",
+                # confirm_yes / confirm_no / unclear → keep detect_intent result
+            }
+            _mapped_intent = _INTENT_MAP.get(_clf_intent)
+            if _mapped_intent is not None and _clf_conf >= 0.70:
+                intent = _mapped_intent
+
+    except Exception as _clf_err:
+        # Never let classifier errors affect the call — fall through silently
+        logger.warning("INTENT_CLASSIFIER exception (falling through): %r", _clf_err)
+
+    # ==================================================================
+    # END INTENT CLASSIFICATION LAYER
+    # ==================================================================
 
     # ------------------------------------------------------------------
     # REPEAT helper
