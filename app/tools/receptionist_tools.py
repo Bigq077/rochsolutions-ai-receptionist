@@ -94,6 +94,13 @@ TOOL_CHECK_AVAILABILITY = {
                 "type": "integer",
                 "description": "Number of days ahead to search. Defaults to 7.",
             },
+            "service": {
+                "type": "string",
+                "description": (
+                    "Type of appointment to check, e.g. 'physiotherapy assessment', "
+                    "'physiotherapy follow-up', 'acupuncture'. Required for Acuity clinics."
+                ),
+            },
         },
         "required": ["location", "duration_minutes"],
     },
@@ -322,11 +329,454 @@ TOOL_SCHEMAS = [
 ]
 
 
+# ===========================================================================
+# ACUITY SCHEDULING — helpers and executors (Theorem clinic only)
+# ===========================================================================
+
+# Module-level cache: Acuity type name (lowercase) → "acuity_12345" ID
+# Populated on first call, reused for the lifetime of the worker process.
+_acuity_type_id_cache: Dict[str, str] = {}
+
+
+def _make_acuity_adapter():
+    """
+    Create a fresh AcuityAdapter using Theorem clinic credentials.
+    Returns None (with a warning) if ACUITY_USER_ID / ACUITY_API_KEY are not set.
+    Always call adapter.close() when done — use in a try/finally block.
+    """
+    from app.booking.booking.providers.acuity import AcuityAdapter
+    from app.clinic_config import get_acuity_config
+
+    cfg = get_acuity_config("theorem")
+    user_id = (cfg.get("user_id") or "").strip()
+    api_key = (cfg.get("api_key") or "").strip()
+    if not user_id or not api_key:
+        logger.warning(
+            "Acuity credentials not configured — set ACUITY_USER_ID and ACUITY_API_KEY"
+        )
+        return None
+    return AcuityAdapter(user_id=user_id, api_key=api_key, clinic_id="theorem")
+
+
+async def _fetch_acuity_type_cache(adapter) -> Dict[str, str]:
+    """
+    Populate _acuity_type_id_cache from the Acuity API if not already cached.
+    Returns {type_name_lower: "acuity_12345"} mapping.
+    """
+    global _acuity_type_id_cache
+    if _acuity_type_id_cache:
+        return _acuity_type_id_cache
+    try:
+        types = await adapter.get_appointment_types()
+        for t in types:
+            _acuity_type_id_cache[t.name.lower()] = t.id
+        logger.info("Acuity appointment type cache: %s", list(_acuity_type_id_cache.keys()))
+    except Exception as e:
+        logger.error("Failed to fetch Acuity appointment types: %r", e)
+    return _acuity_type_id_cache
+
+
+def _match_service_to_acuity_id(service: str, type_cache: Dict[str, str]) -> str:
+    """
+    Map a free-text service description to an Acuity appointment type ID.
+
+    Priority order (specific → general):
+      follow-up / returning → physio follow-up
+      psychotherapy / mental → psychotherapy
+      acupuncture / needling → acupuncture
+      prescrib → prescribing consultation
+      rehab / rehabilitation → remedial rehabilitation
+      assessment / initial / first / new → physiotherapy assessment
+
+    Falls back to the first "assessment"-type in the cache, then the first entry.
+    """
+    s = service.lower().strip()
+
+    # 1. Exact match
+    if s in type_cache:
+        return type_cache[s]
+
+    # 2. Keyword priority table
+    _PRIORITY = [
+        (["follow-up", "follow up", "followup", "follow", "returning"],
+         ["follow-up", "followup", "follow up"]),
+        (["psychotherapy", "therapy", "mental", "hypno", "spiritual"],
+         ["psychotherapy"]),
+        (["acupuncture", "needle", "needling"],
+         ["acupuncture"]),
+        (["prescrib", "medication", "prescription"],
+         ["prescribing"]),
+        (["rehab", "rehabilitation", "remedial"],
+         ["rehab", "remedial"]),
+        (["assessment", "initial", "first", "new", "physio"],
+         ["assessment", "physiotherapy"]),
+    ]
+    for input_keywords, cache_keywords in _PRIORITY:
+        if any(kw in s for kw in input_keywords):
+            for cached_name, cached_id in type_cache.items():
+                if any(kw in cached_name for kw in cache_keywords):
+                    return cached_id
+
+    # 3. Fall back: first "assessment" in cache
+    for name, tid in type_cache.items():
+        if "assessment" in name:
+            return tid
+
+    # 4. Absolute fallback: first entry
+    if type_cache:
+        return next(iter(type_cache.values()))
+
+    return None
+
+
+def _split_name(full_name: str):
+    """Split 'John Smith' → ('John', 'Smith'). Single word → (word, '')."""
+    parts = full_name.strip().split(None, 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else (parts[0], "")
+
+
+# ---------------------------------------------------------------------------
+# Acuity executor: check_availability
+# ---------------------------------------------------------------------------
+
+async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """check_availability via Acuity Scheduling (Theorem clinic)."""
+    from datetime import date as _date
+    from app.clinic_config import THEOREM_LOCATIONS
+
+    location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+    duration_min = int(args.get("duration_minutes") or 50)
+    day_window = int(args.get("day_window") or 14)
+    service = (args.get("service") or "physiotherapy assessment").strip()
+
+    adapter = _make_acuity_adapter()
+    if not adapter:
+        return {"error": "Booking system not configured. Please call the clinic directly.", "slots": []}
+
+    try:
+        type_cache = await _fetch_acuity_type_cache(adapter)
+        appointment_type_id = _match_service_to_acuity_id(service, type_cache)
+        if not appointment_type_id:
+            return {"error": "Could not match service to an Acuity appointment type.", "slots": []}
+
+        loc_cfg = THEOREM_LOCATIONS.get(location, {})
+        raw_cal_id = (loc_cfg.get("acuity_calendar_id") or "").strip()
+        practitioner_id = f"acuity_cal_{raw_cal_id}" if raw_cal_id else None
+
+        today = _date.today()
+        end_date = today + timedelta(days=day_window)
+
+        slots = await adapter.get_available_slots(
+            appointment_type_id=appointment_type_id,
+            start_date=today,
+            end_date=end_date,
+            practitioner_id=practitioner_id,
+        )
+
+        if not slots:
+            return {
+                "error": (
+                    f"No slots available at {location.title()} in the next {day_window} days. "
+                    "Try a wider window or different location."
+                ),
+                "slots": [],
+            }
+
+        top3 = slots[:3]
+        labels = [s.start_time.strftime("%a %d %b at %H:%M") for s in top3]
+        raw = [{"start": s.start_time.isoformat(), "end": s.end_time.isoformat()} for s in top3]
+
+        # Cache for use by book_appointment so it doesn't re-fetch
+        session["last_offered_slots"] = raw
+        session["slot_labels"] = labels
+        session["_acuity_appointment_type_id"] = appointment_type_id
+        session["_acuity_practitioner_id"] = practitioner_id
+
+        return {"slots": labels, "raw": raw}
+
+    except Exception as e:
+        logger.error("_check_availability_acuity error: %r", e)
+        return {"error": f"Availability check failed: {e}", "slots": []}
+    finally:
+        await adapter.close()
+
+
+# ---------------------------------------------------------------------------
+# Acuity executor: book_appointment
+# ---------------------------------------------------------------------------
+
+async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """book_appointment via Acuity Scheduling (Theorem clinic)."""
+    from app.booking.booking.models import BookingRequest, InsuranceInfo
+    from app.booking.booking.exceptions import SlotUnavailable, ProviderAuthError
+    from app.notifications.booking_sms import send_booking_confirmation
+    from app.clinic_config import get_clinic, THEOREM_LOCATIONS
+
+    adapter = _make_acuity_adapter()
+    if not adapter:
+        return {"success": False, "error": "Booking system not configured."}
+
+    try:
+        clinic = get_clinic(session.get("clinic_id"))
+        location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+        service = (args.get("service") or "physiotherapy assessment").strip()
+        patient_name = (args.get("patient_name") or "").strip()
+        phone = (args.get("phone") or "").strip()
+        is_new = bool(args.get("is_new_patient", True))
+        insurer = (args.get("insurer_name") or "").strip()
+        policy = (args.get("policy_number") or "").strip()
+
+        if not patient_name or not phone:
+            return {"success": False, "error": "patient_name and phone are required."}
+
+        try:
+            start_dt = datetime.fromisoformat(args["slot_iso"])
+            if start_dt.tzinfo is None:
+                start_dt = LONDON_TZ.localize(start_dt)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid slot datetime: {e}"}
+
+        # Appointment type — prefer cached from check_availability
+        appointment_type_id = session.get("_acuity_appointment_type_id")
+        if not appointment_type_id:
+            type_cache = await _fetch_acuity_type_cache(adapter)
+            appointment_type_id = _match_service_to_acuity_id(service, type_cache)
+        if not appointment_type_id:
+            return {"success": False, "error": "Could not map service to Acuity appointment type."}
+
+        # Practitioner / calendar ID — prefer cached from check_availability
+        practitioner_id = session.get("_acuity_practitioner_id")
+        if not practitioner_id:
+            loc_cfg = THEOREM_LOCATIONS.get(location, {})
+            raw_cal_id = (loc_cfg.get("acuity_calendar_id") or "").strip()
+            practitioner_id = f"acuity_cal_{raw_cal_id}" if raw_cal_id else None
+
+        first_name, last_name = _split_name(patient_name)
+
+        notes_parts = ["New patient" if is_new else "Returning patient"]
+        if insurer:
+            notes_parts.append(f"Insurance: {insurer}")
+            if policy:
+                notes_parts.append(f"Policy: {policy}")
+
+        insurance_info = None
+        if insurer:
+            insurance_info = InsuranceInfo(
+                provider_name=insurer,
+                policy_number=policy or None,
+            )
+
+        request = BookingRequest(
+            appointment_type_id=appointment_type_id,
+            slot_start=start_dt,
+            location_id=location,
+            patient_first_name=first_name,
+            patient_last_name=last_name,
+            patient_phone=phone,
+            notes=" | ".join(notes_parts),
+            practitioner_id=practitioner_id,
+            insurance_info=insurance_info,
+            call_sid=session.get("call_sid", "unknown"),
+            session_id=session.get("session_id", "unknown"),
+        )
+
+        booking = await adapter.create_booking(request)
+
+        # Update session
+        session.setdefault("collected", {})
+        session["collected"]["name"] = patient_name
+        session["collected"]["phone"] = phone
+        session["collected"]["service"] = service
+        session["collected"]["slot"] = args["slot_iso"]
+        if insurer:
+            session["collected"]["insurer"] = insurer
+        session["acuity_booking_id"] = booking.provider_booking_id
+        session["calendar_status"] = "created"
+
+        # Confirmation SMS — non-fatal
+        try:
+            await send_booking_confirmation(
+                patient_phone=phone,
+                patient_name=patient_name,
+                appointment_time=booking.start_time,
+                location=location.title(),
+                service=service,
+                is_new_patient=is_new,
+                has_insurance=bool(insurer),
+                insurer=insurer or None,
+                clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+                clinic_phone=clinic.get("phone"),
+            )
+        except Exception as e:
+            logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
+
+        # Sheets log — non-fatal
+        try:
+            from app.tools.handoff import send_to_sheet
+            await asyncio.to_thread(
+                send_to_sheet,
+                patient_name, phone, "BOOK",
+                (
+                    f"Booked: {service} at {location.title()} "
+                    f"on {booking.start_time.strftime('%d %b %Y %H:%M')} "
+                    f"(Acuity #{booking.provider_booking_id})"
+                ),
+                session.get("call_sid", ""),
+                "Phase3 AI Receptionist",
+            )
+        except Exception as e:
+            logger.warning("_book_appointment_acuity Sheets log failed (non-fatal): %r", e)
+
+        return {
+            "success": True,
+            "acuity_booking_id": booking.provider_booking_id,
+            "booked_slot": booking.start_time.strftime("%A %d %B at %H:%M"),
+            "location": location.title(),
+            "practitioner": booking.practitioner_name or "your practitioner",
+        }
+
+    except SlotUnavailable:
+        return {
+            "success": False,
+            "error": "That slot has just been taken. Please call check_availability again for alternative times.",
+        }
+    except ProviderAuthError:
+        return {
+            "success": False,
+            "error": "Booking system authentication error. Please ask the caller to call the clinic directly.",
+        }
+    except Exception as e:
+        logger.error("_book_appointment_acuity error: %r", e)
+        return {"success": False, "error": str(e)}
+    finally:
+        await adapter.close()
+
+
+# ---------------------------------------------------------------------------
+# Acuity executor: cancel_appointment
+# ---------------------------------------------------------------------------
+
+async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """cancel_appointment via Acuity Scheduling (Theorem clinic)."""
+    from datetime import date as _date
+
+    adapter = _make_acuity_adapter()
+    if not adapter:
+        return {"success": False, "error": "Booking system not configured."}
+
+    try:
+        patient_name_lower = (args.get("patient_name") or "").strip().lower()
+        today = datetime.now(LONDON_TZ).date()
+        end = today + timedelta(days=60)
+
+        appointments = await adapter.list_appointments(min_date=today, max_date=end)
+
+        found = None
+        for appt in appointments:
+            full = f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip().lower()
+            if patient_name_lower and patient_name_lower in full:
+                found = appt
+                break
+
+        if not found:
+            return {
+                "success": False,
+                "error": "No upcoming appointment found for that name. Please check the name and try again.",
+            }
+
+        provider_id = str(found["id"])
+        appt_time_str = found.get("datetime", "")
+        appt_type = found.get("type", "appointment")
+
+        success = await adapter.cancel_booking(provider_id)
+
+        if not success:
+            return {"success": False, "error": "Cancellation failed. Please ask the caller to call the clinic directly."}
+
+        session["calendar_status"] = "cancelled"
+
+        # SMS confirmation — non-fatal
+        try:
+            from app.notifications.booking_sms import send_cancellation_confirmation
+            if appt_time_str:
+                dt = datetime.fromisoformat(appt_time_str.replace("Z", "+00:00"))
+                await send_cancellation_confirmation(
+                    patient_phone=args.get("phone", ""),
+                    patient_name=args.get("patient_name", ""),
+                    appointment_time=dt,
+                )
+        except Exception as e:
+            logger.warning("_cancel_appointment_acuity SMS failed (non-fatal): %r", e)
+
+        return {
+            "success": True,
+            "cancelled": appt_type,
+            "was_at": appt_time_str,
+        }
+
+    except Exception as e:
+        logger.error("_cancel_appointment_acuity error: %r", e)
+        return {"success": False, "error": str(e)}
+    finally:
+        await adapter.close()
+
+
+# ---------------------------------------------------------------------------
+# Acuity executor: reschedule_appointment
+# ---------------------------------------------------------------------------
+
+async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    reschedule_appointment via Acuity: cancel old appointment then book new one.
+    Requires args to include both patient_name/phone/location (for finding old)
+    and new_slot_iso/duration_minutes/service (for creating new).
+    """
+    # Step 1: cancel the existing appointment
+    cancel_result = await _cancel_appointment_acuity(args, session)
+    if not cancel_result.get("success"):
+        return {
+            "success": False,
+            "error": f"Could not locate original appointment: {cancel_result.get('error')}",
+        }
+
+    # Step 2: book the new slot
+    book_args = {
+        **args,
+        "slot_iso": args["new_slot_iso"],  # map new_slot_iso → slot_iso for book executor
+    }
+    book_result = await _book_appointment_acuity(book_args, session)
+
+    if book_result.get("success"):
+        session["calendar_status"] = "rescheduled"
+        return {
+            "success": True,
+            "rescheduled_to": book_result.get("booked_slot"),
+            "location": book_result.get("location"),
+            "acuity_booking_id": book_result.get("acuity_booking_id"),
+        }
+    else:
+        return {
+            "success": False,
+            "error": (
+                f"Old appointment cancelled but new booking failed: {book_result.get('error')}. "
+                "Please ask the caller to call the clinic to complete rescheduling."
+            ),
+        }
+
+
+# ===========================================================================
+# GOOGLE CALENDAR — original executors (demo clinic + fallback)
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
 # Executor: check_availability
 # ---------------------------------------------------------------------------
 
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
+    if session.get("clinic_id") == "theorem":
+        return await _check_availability_acuity(args, session)
+
     from app.tools.slots import (
         generate_candidate_slots,
         filter_free_slots,
@@ -392,6 +842,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
+    if session.get("clinic_id") == "theorem":
+        return await _book_appointment_acuity(args, session)
+
     from app.tools.calendar_google import create_event
     from app.notifications.booking_sms import send_booking_confirmation
     from app.clinic_config import get_clinic
@@ -498,6 +952,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 # ---------------------------------------------------------------------------
 
 async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
+    if session.get("clinic_id") == "theorem":
+        return await _cancel_appointment_acuity(args, session)
+
     from app.tools.calendar_google import list_upcoming_events, delete_event
     from app.clinic_config import get_clinic
 
@@ -564,6 +1022,10 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
+    if session.get("clinic_id") == "theorem":
+        return await _reschedule_appointment_acuity(args, session)
+
     from app.tools.calendar_google import list_upcoming_events, patch_event_time
     from app.clinic_config import get_clinic
 

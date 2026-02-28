@@ -432,6 +432,36 @@ class AcuityAdapter:
         
         return booking
     
+    async def list_appointments(
+        self,
+        min_date: Optional[date] = None,
+        max_date: Optional[date] = None,
+        calendar_id: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        List upcoming appointments from Acuity.
+
+        Returns raw Acuity appointment dicts, each containing:
+            id, firstName, lastName, datetime, endTime, type, calendar, calendarID
+        Useful for finding a booking by patient name before cancel/reschedule.
+        """
+        params: dict = {}
+        if min_date:
+            params["minDate"] = min_date.isoformat()
+        if max_date:
+            params["maxDate"] = max_date.isoformat()
+        if calendar_id:
+            params["calendarID"] = calendar_id
+
+        response = await self._request_with_retry("GET", "/appointments", params=params)
+        data = response.json()
+
+        logger.info(
+            "Listed appointments from Acuity",
+            extra={"clinic_id": self.clinic_id, "count": len(data) if isinstance(data, list) else 0},
+        )
+        return data if isinstance(data, list) else []
+
     async def cancel_booking(self, provider_booking_id: str) -> bool:
         """Cancel appointment in Acuity."""
         try:
