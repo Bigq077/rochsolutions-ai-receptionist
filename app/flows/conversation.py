@@ -106,6 +106,7 @@ async def handle_turn(
 
         iterations = 0
         reply_text = _SAFE_FALLBACK
+        last_assistant_text = ""  # text Claude said alongside a tool call (may be reused)
 
         # ------------------------------------------------------------------ #
         # 3. Tool execution loop
@@ -138,6 +139,18 @@ async def handle_turn(
             # ---- Final response (no more tools) ---- #
             if stop_reason == "end_turn" or not tool_blocks:
                 raw_text = _extract_text(content)
+
+                # Anthropic sometimes returns empty content after a tool call
+                # when Claude already spoke in the same turn as the tool (iteration N
+                # had content_types=['text','tool_use']).  Reuse that earlier text.
+                if not raw_text and last_assistant_text:
+                    logger.info(
+                        "handle_turn: empty final response — reusing text from previous "
+                        "iteration (stop_reason=%s)",
+                        stop_reason,
+                    )
+                    raw_text = last_assistant_text
+
                 if not raw_text:
                     logger.warning(
                         "handle_turn: empty text from Anthropic — using SAFE_FALLBACK "
@@ -149,6 +162,11 @@ async def handle_turn(
                 break
 
             # ---- Tool calls to execute ---- #
+            # Save any text Claude spoke alongside this tool call so we can
+            # reuse it if the next response comes back empty (Anthropic sometimes
+            # sends empty content after a combined text+tool_use turn).
+            last_assistant_text = _extract_text(content)
+
             # Append the full assistant turn (may include both text + tool_use blocks)
             messages.append({
                 "role": "assistant",
