@@ -119,6 +119,7 @@ async def handle_turn(
                 system=system_prompt,
                 messages=messages,
                 tools=TOOL_SCHEMAS,
+                timeout=12.0,  # Stay well within Twilio's 15-second webhook limit
             )
 
             stop_reason = response.stop_reason
@@ -126,9 +127,25 @@ async def handle_turn(
 
             tool_blocks = [b for b in content if getattr(b, "type", None) == "tool_use"]
 
+            logger.info(
+                "handle_turn iteration=%d stop_reason=%s tool_blocks=%d content_types=%s",
+                iterations,
+                stop_reason,
+                len(tool_blocks),
+                [getattr(b, "type", "?") for b in content],
+            )
+
             # ---- Final response (no more tools) ---- #
             if stop_reason == "end_turn" or not tool_blocks:
-                reply_text = _extract_text(content) or _SAFE_FALLBACK
+                raw_text = _extract_text(content)
+                if not raw_text:
+                    logger.warning(
+                        "handle_turn: empty text from Anthropic — using SAFE_FALLBACK "
+                        "(stop_reason=%s, content_types=%s)",
+                        stop_reason,
+                        [getattr(b, "type", "?") for b in content],
+                    )
+                reply_text = raw_text or _SAFE_FALLBACK
                 break
 
             # ---- Tool calls to execute ---- #
