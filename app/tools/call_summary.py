@@ -233,11 +233,22 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
       abandoned        — caller showed interest but didn't complete booking
       failed           — technical failure
     """
-    cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
-    intent = (summary.get("appointment", {}) or {}).get("intent") or session.get("intent")
+    # Phase 3: the LLM explicitly logs the outcome via log_call_outcome tool.
+    # Trust that first — it's more accurate than our heuristics.
+    _logged = str(session.get("call_outcome_logged") or "").lower().strip()
+    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred"):
+        return _logged
 
-    if cal_status in ("created", "patched"):
-        return "booked" if str(intent).upper() == "BOOK" else "rescheduled"
+    cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
+
+    # Use cal_status directly to distinguish booking vs reschedule —
+    # "created" = new event (booking), "patched" = updated event (reschedule).
+    # Do NOT use intent here: Phase 3 sets intent to "BOOKED" (not "BOOK")
+    # which previously caused all successful bookings to be labelled "rescheduled".
+    if cal_status == "created":
+        return "booked"
+    if cal_status == "patched":
+        return "rescheduled"
 
     # Human / live-transfer explicitly requested
     if session.get("request_transfer") or session.get("human_requested"):
