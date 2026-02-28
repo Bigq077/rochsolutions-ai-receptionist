@@ -26,7 +26,7 @@ router = APIRouter(prefix="/twilio")
 # --------------------------------------------------
 
 AI_NAME = "Susie"
-TRANSFER_NUMBER = "+447502211207"
+TRANSFER_NUMBER_FALLBACK = "+447502211207"   # used only if clinic has no transfer_phone configured
 
 # After location confirmed — hand off to triage
 HOW_CAN_I_HELP = "How can I help you today?"
@@ -65,14 +65,23 @@ def _build_menu() -> str:
     )
 
 
-def _append_transfer(vr: VoiceResponse, announcement: str) -> None:
+def _append_transfer(
+    vr: VoiceResponse,
+    announcement: str,
+    request: Request,
+    transfer_phone: str,
+) -> None:
     """
     Speak the announcement then live-transfer the call to the clinic team.
-    Used for Tier 3 escalation and explicit 'speak to someone' requests.
+
+    Uses a 20-second dial timeout so the caller is never left ringing forever.
+    The Twilio action URL (/twilio/transfer-status) is called when the dial
+    completes — if nobody answered, Susie re-engages the caller.
     """
     vr.say(announcement, language="en-GB")
-    dial = Dial()
-    dial.number(TRANSFER_NUMBER)
+    status_url = _abs_url(request, "/twilio/transfer-status")
+    dial = Dial(action=status_url, method="POST", timeout=20)
+    dial.number(transfer_phone)
     vr.append(dial)
 
 
@@ -628,9 +637,13 @@ async def turn(request: Request):
             return xml(vr)
 
         # Tier 3 — third silence: live transfer
+        _clinic_obj2 = get_clinic(session.get("clinic_id"))
+        _xfer_phone  = _clinic_obj2.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
         _append_transfer(
             vr,
             "Not to worry — let me put you through to the team right now. Please hold.",
+            request,
+            _xfer_phone,
         )
         return xml(vr)
 
@@ -702,12 +715,66 @@ async def turn(request: Request):
 
     # Tier 3 escalation — triage signalled a live transfer
     if session.pop("request_transfer", False):
+        _clinic_xfer = get_clinic(session.get("clinic_id"))
+        _xfer_phone  = _clinic_xfer.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
         await save_session(call_sid, session)
-        _append_transfer(vr, reply_text)
+        _append_transfer(vr, reply_text, request, _xfer_phone)
         return xml(vr)
 
     await save_session(call_sid, session)
     vr.append(gather_speech(turn_url, reply_text))
+    return xml(vr)
+
+
+# =========================================================
+# TRANSFER STATUS CALLBACK
+# Called by Twilio when a <Dial action=...> completes.
+# If nobody answered, Susie re-engages the caller.
+# =========================================================
+
+@router.post("/transfer-status")
+async def transfer_status(request: Request):
+    """
+    Twilio calls this URL when the <Dial> in _append_transfer finishes.
+
+    DialCallStatus values:
+      completed  — someone answered and the call has ended  → do nothing
+      no-answer  — nobody picked up within the timeout      → re-engage
+      busy       — line is busy                             → re-engage
+      failed     — technical failure                        → re-engage
+      canceled   — caller hung up before anyone answered    → do nothing
+    """
+    form        = await request.form()
+    call_sid    = (form.get("CallSid")        or "").strip()
+    dial_status = (form.get("DialCallStatus") or "").strip().lower()
+
+    logger.info("transfer-status: call_sid=%s dial_status=%s", call_sid, dial_status)
+
+    vr = VoiceResponse()
+
+    # Call connected and ended normally — caller has gone, nothing to do
+    if dial_status in ("completed", "canceled"):
+        return xml(vr)
+
+    # Nobody answered (no-answer, busy, failed) — bring Susie back
+    try:
+        session = await get_session(call_sid) or {}
+    except Exception:
+        session = {}
+
+    session["transfer_attempted"]      = True
+    session["transfer_failed_status"]  = dial_status
+
+    turn_url = _abs_url(request, "/twilio/turn")
+
+    re_engage = (
+        "I'm sorry, the team doesn't seem to be available right now. "
+        "But I'm here and I can probably help — "
+        "did you want to book an appointment, or is there something else I can help with?"
+    )
+
+    await save_session(call_sid, session)
+    await _say(vr, re_engage, request, gather_action=turn_url)
     return xml(vr)
 
 

@@ -145,6 +145,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Branding / contact — used in SMS messages
         "sms_name": "Theorem Health",
         "phone":    "07870 166861",
+        "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
         # Booking system / routing
         "booking_system": "acuity",

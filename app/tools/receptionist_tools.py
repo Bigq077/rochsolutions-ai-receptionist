@@ -1263,14 +1263,37 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
     session["human_requested"] = True
     session["manual_followup_reason"] = reason
 
+    collected = session.get("collected") or {}
+    caller_name  = collected.get("name", "")
+    caller_phone = session.get("twilio_from", "") or collected.get("phone", "")
+    call_reason  = collected.get("reason", "") or reason
+
+    # SMS alert to clinic team so they know a caller is being transferred to them
+    # (fires before the Twilio <Dial> so even a missed call leaves a trace)
+    try:
+        from app.clinic_config import get_clinic
+        from app.notifications.sms import send_sms
+        clinic = get_clinic(session.get("clinic_id"))
+        transfer_phone = clinic.get("transfer_phone", "")
+        if transfer_phone:
+            parts = ["📞 Incoming transfer via Susie."]
+            if caller_name:
+                parts.append(f"Name: {caller_name}")
+            if caller_phone and not caller_phone.startswith("client:"):
+                parts.append(f"Caller: {caller_phone}")
+            if call_reason:
+                parts.append(f"Reason: {call_reason}")
+            await send_sms(to=transfer_phone, message=" | ".join(parts))
+    except Exception as e:
+        logger.warning("transfer_to_human SMS alert failed (non-fatal): %r", e)
+
     # Log to Sheets so clinic team sees the transfer
     try:
         from app.tools.handoff import send_to_sheet
-        collected = session.get("collected") or {}
         await asyncio.to_thread(
             send_to_sheet,
-            collected.get("name", "Unknown"),
-            collected.get("phone", ""),
+            caller_name or "Unknown",
+            caller_phone or collected.get("phone", ""),
             "TRANSFER",
             f"Transfer requested: {reason}",
             session.get("call_sid", ""),
