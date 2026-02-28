@@ -62,6 +62,68 @@ def _resolve_calendar_id(clinic: Dict[str, Any], location: str) -> str:
     )
 
 
+def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
+    """
+    Parse slot_iso as an ISO 8601 datetime.
+
+    If direct parsing fails (e.g. Claude passed a human-readable label like
+    'Mon 02 Mar at 09:00', a slot number like '1', or a slightly wrong format),
+    fall back to looking up the matching start time from the
+    session["last_offered_slots"] list that was stored by check_availability.
+
+    Always returns a timezone-aware datetime.
+    Raises ValueError if nothing can be resolved.
+    """
+    # 1. Direct ISO parse
+    s = str(slot_iso or "").strip()
+    if s:
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = LONDON_TZ.localize(dt)
+            return dt
+        except (ValueError, TypeError):
+            pass
+
+    offered = session.get("last_offered_slots") or []
+    labels  = session.get("slot_labels") or []
+    s_lower = s.lower()
+
+    # 2. Numeric / ordinal index ("1", "first", "slot 2", etc.)
+    idx_map = {
+        "1": 0, "first": 0,  "slot 1": 0, "option 1": 0, "slot1": 0,
+        "2": 1, "second": 1, "slot 2": 1, "option 2": 1, "slot2": 1,
+        "3": 2, "third": 2,  "slot 3": 2, "option 3": 2, "slot3": 2,
+    }
+    if s_lower in idx_map:
+        idx = idx_map[s_lower]
+        if idx < len(offered):
+            try:
+                dt = datetime.fromisoformat(offered[idx]["start"])
+                if dt.tzinfo is None:
+                    dt = LONDON_TZ.localize(dt)
+                logger.info("_resolve_slot_iso: index match %r → slot[%d] %s", slot_iso, idx, offered[idx]["start"])
+                return dt
+            except Exception:
+                pass
+
+    # 3. Fuzzy match against human-readable labels
+    for i, label in enumerate(labels):
+        if i < len(offered):
+            words = [w for w in s_lower.split() if len(w) > 2]
+            if words and any(w in label.lower() for w in words):
+                try:
+                    dt = datetime.fromisoformat(offered[i]["start"])
+                    if dt.tzinfo is None:
+                        dt = LONDON_TZ.localize(dt)
+                    logger.info("_resolve_slot_iso: fuzzy match %r → label[%d] %r", slot_iso, i, label)
+                    return dt
+                except Exception:
+                    pass
+
+    raise ValueError(f"Cannot parse or resolve slot datetime: {slot_iso!r}")
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (Anthropic format: input_schema, not OpenAI parameters)
 # ---------------------------------------------------------------------------
@@ -530,9 +592,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             return {"success": False, "error": "patient_name and phone are required."}
 
         try:
-            start_dt = datetime.fromisoformat(args["slot_iso"])
-            if start_dt.tzinfo is None:
-                start_dt = LONDON_TZ.localize(start_dt)
+            start_dt = _resolve_slot_iso(args.get("slot_iso", ""), session)
         except Exception as e:
             return {"success": False, "error": f"Invalid slot datetime: {e}"}
 
@@ -851,29 +911,56 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     from app.clinic_config import get_clinic
 
     tokens = await _get_tokens()
-    if not tokens:
-        return {
-            "success": False,
-            "error": "Calendar not connected — booking logged for manual follow-up.",
-        }
-
     clinic = get_clinic(session.get("clinic_id"))
     location = (args.get("location") or "").lower().strip()
-
-    try:
-        start_dt = datetime.fromisoformat(args["slot_iso"])
-        if start_dt.tzinfo is None:
-            start_dt = LONDON_TZ.localize(start_dt)
-        end_dt = start_dt + timedelta(minutes=int(args["duration_minutes"]))
-    except Exception as e:
-        return {"success": False, "error": f"Invalid slot datetime: {e}"}
-
-    patient_name = args["patient_name"]
-    phone = args["phone"]
+    patient_name = args.get("patient_name", "")
+    phone = args.get("phone", "")
     service = args.get("service", "physiotherapy")
     is_new = bool(args.get("is_new_patient", False))
     insurer = (args.get("insurer_name") or "").strip()
     policy = (args.get("policy_number") or "").strip()
+
+    # Resolve slot_iso — handles ISO strings, labels, and slot indices
+    try:
+        start_dt = _resolve_slot_iso(args.get("slot_iso", ""), session)
+        end_dt = start_dt + timedelta(minutes=int(args.get("duration_minutes", 30)))
+    except Exception as e:
+        return {"success": False, "error": f"Invalid slot datetime: {e}"}
+
+    if not tokens:
+        # Calendar not connected — log intent to Sheets so the clinic can follow up,
+        # then tell Claude the booking succeeded so it doesn't loop with "slot unavailable".
+        booked_label = start_dt.strftime("%A %d %B at %H:%M")
+        try:
+            from app.tools.handoff import send_to_sheet
+            await asyncio.to_thread(
+                send_to_sheet,
+                patient_name, phone, "BOOK_MANUAL",
+                (
+                    f"MANUAL BOOKING NEEDED: {service} at {location.title()} on {booked_label} "
+                    f"({'new' if is_new else 'returning'} patient)"
+                    + (f" | Insurer: {insurer}" if insurer else "")
+                    + (f" | Policy: {policy}" if policy else "")
+                ),
+                session.get("call_sid", ""),
+                "Phase3 AI Receptionist",
+            )
+        except Exception as e:
+            logger.warning("book_appointment (no calendar) Sheets log failed (non-fatal): %r", e)
+
+        session.setdefault("collected", {})
+        session["collected"]["name"] = patient_name
+        session["collected"]["phone"] = phone
+        session["collected"]["service"] = service
+        session["collected"]["slot"] = start_dt.isoformat()
+        session["calendar_status"] = "manual_followup"
+
+        return {
+            "success": True,
+            "booked_slot": booked_label,
+            "location": location.title(),
+            "note": "Calendar not connected — logged for manual confirmation by clinic team.",
+        }
 
     summary = f"{patient_name} — {service}"
     description_parts = [f"Phone: {phone}", f"Location: {location.title()}"]
@@ -1058,9 +1145,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     event_id = found["id"]
 
     try:
-        new_start = datetime.fromisoformat(args["new_slot_iso"])
-        if new_start.tzinfo is None:
-            new_start = LONDON_TZ.localize(new_start)
+        new_start = _resolve_slot_iso(args.get("new_slot_iso", ""), session)
         new_end = new_start + timedelta(minutes=int(args["duration_minutes"]))
     except Exception as e:
         return {"success": False, "error": f"Invalid new slot datetime: {e}"}
