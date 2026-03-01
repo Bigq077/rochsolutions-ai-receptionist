@@ -100,9 +100,9 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         loc_names = " or ".join(loc.get("name", "") for loc in locations)
         location_section = (
             f"This clinic has two locations: {loc_names}. "
-            f"Do NOT ask which location during the opening exchange or before the caller "
-            f"has told you their purpose. Only ask once they have stated they want to book, "
-            f"reschedule, or ask about pricing."
+            f"Do NOT ask which location in your first response or before the caller has "
+            f"said anything at all. Always greet first, let them speak, then ask location "
+            f"as the natural next question after their first reply — regardless of what they need."
         )
     else:
         loc_names = ""
@@ -176,7 +176,7 @@ After calling this tool, say a warm handover: "Of course, let me put you straigh
 Collect in this order, skipping anything already known:
 1. Reason for calling / what the problem is (if not already known)
 2. New or returning patient (if not already known)
-3. Location preference — ask ONLY after the caller has stated their intent to book (never in the opening); ask "Which location were you thinking — {loc_names if locations else clinic_name}?"
+3. Location preference — ask "Which location were you thinking — {loc_names if locations else clinic_name}?" — always on turn 2, after the caller's first reply, never before
 4. Time preference — day, morning or afternoon
 5. Call check_availability → present up to 3 slots by spoken name only
 6. Confirm the chosen slot verbally
@@ -188,12 +188,10 @@ Collect in this order, skipping anything already known:
 
 {f"""## Location Question Timing ({loc_names})
 This clinic has two locations. Follow these rules strictly:
-- Your FIRST response is always a greeting — never ask about location here
-- Wait until the caller has told you what they need, then ask the location question ONCE
-- For booking: after they say they want to book (or describe their condition), ask "Which location were you thinking — {loc_names}?"
-- For rescheduling: after they say they want to reschedule, ask which location their original appointment was at
-- For pricing/general enquiries: after they ask, answer the question first, then ask location only if it is relevant to the answer
-- Once location is known, store it and never ask again
+- Turn 1 (your opening): greet the caller and ask how you can help — NEVER ask about location here
+- Turn 2 (after their first reply): whatever they have said, your next question should be "Which location were you thinking — {loc_names}?" unless location is already known
+- This applies to every call type — booking, rescheduling, cancellation, pricing, hours, parking, anything
+- Once location is known, store it with collect_and_store and never ask again
 """ if locations else ""}
 ## Insurance Guidance
 {insurance_note}
