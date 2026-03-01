@@ -263,7 +263,7 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
         return "manual_followup"
 
     # FAQ-only heuristics
-    if str(intent or "").upper().startswith("FAQ"):
+    if str(session.get("intent") or "").upper().startswith("FAQ"):
         return "faq_only"
 
     # Call completed but no booking/reschedule → abandoned
