@@ -28,6 +28,7 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     clinic_phone = clinic.get("phone", "")
     location_id = (session.get("selected_location") or "").lower().strip()
     collected = session.get("collected") or {}
+    is_theorem = session.get("clinic_id") == "theorem"
 
     # ------------------------------------------------------------------ #
     # Resolve location-specific details (Theorem has two locations)
@@ -184,18 +185,47 @@ After calling this tool, say a warm handover: "Of course, let me put you straigh
 **log_call_outcome** — call this at the natural end of the call (after booking, after FAQ, after transfer)
 
 ## Booking Workflow
-Collect in this order, skipping anything already known:
-1. Reason for calling / what the problem is (if not already known)
-2. New or returning patient (if not already known)
-3. Location preference — ask "Which location were you thinking — {loc_names if locations else clinic_name}?" — always on turn 2, after the caller's first reply, never before
+{"""
+### SPEED RULE — complete every booking in 4 caller turns maximum
+Callers hang up if this takes too long. The only questions you are ever allowed to ask during a booking are:
+  1. Which location — Alcester or Redditch? (turn 2, already handled)
+  2. Which of these slots works for you? (show availability immediately — no time preference question first)
+  3. Could I take your name and best number? (name AND phone in ONE question)
+  Then call book_appointment. That is it. No more questions.
+
+NEVER ask:
+  - Reason for calling / what the problem is (accept if volunteered, never ask)
+  - New or returning patient (default is_new_patient=True silently)
+  - Time preference (just call check_availability and present the next 3 slots)
+  - Confirm-back step (trust the slot they chose — book immediately after getting name + phone)
+
+DEFAULT values to use silently when caller does not state them:
+  - service = "physiotherapy assessment"
+  - duration_minutes = 50
+  - is_new_patient = true
+
+Steps (fast-track):
+1. Location (turn 2 — already handled by location rule above)
+2. Call check_availability immediately → say "I have [slot 1], [slot 2], or [slot 3] — which works for you?"
+3. Caller picks a slot — acknowledge briefly
+4. Ask: "Could I take your name and best number?"
+5. Call book_appointment immediately
+6. Close warmly with the booking details
+""" if is_theorem else f"""
+Steps (collect in order, skipping anything already known):
+1. Reason for calling / what the problem is
+2. New or returning patient
+3. Location preference — ask "Which location were you thinking — {loc_names if locations else clinic_name}?" — always on turn 2, never before
 4. Time preference — day, morning or afternoon
 5. Call check_availability → present up to 3 slots by spoken name only
 6. Confirm the chosen slot verbally
-7. Full name for the booking (if not already known)
-8. Best mobile number (if not already known)
+7. Full name for the booking
+8. Best mobile number
 9. Insurance — ask only if they mention it; explain self-pay model if relevant
 10. Confirm all details back → call book_appointment
-11. Once book_appointment succeeds, close the call warmly — say something like: "That is all booked for you. We will see you on [day and date] at [time] — and please do not hesitate to call back at any time if you have any questions." Use the exact date and time from the booking confirmation. Never skip this closing line after a successful booking.
+11. Close warmly with the booking details
+"""}
+Once book_appointment succeeds, close the call warmly — say something like: "That is all booked for you. We will see you on [day and date] at [time] — and please do not hesitate to call back at any time if you have any questions." Use the exact date and time from the booking confirmation. Never skip this closing line after a successful booking.
 
 {f"""## Location Question Timing ({loc_names})
 This clinic has two locations. Follow these rules strictly:
