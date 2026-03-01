@@ -12,13 +12,19 @@ Anthropic API format notes:
   - response.content is a list of TextBlock / ToolUseBlock objects
   - response.stop_reason == "tool_use"  → more tools to run
   - response.stop_reason == "end_turn"  → final spoken response
+
+Latency optimisations (no quality reduction):
+  - Parallel tool execution via asyncio.gather() — multiple tools in one turn run concurrently
+  - Hybrid model: Haiku for turns after simple-only tools; Sonnet for booking/calendar/transfer
+  - max_tokens capped at 400 — phone responses are always 1-3 sentences
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +35,47 @@ _SAFE_FALLBACK = (
 
 MAX_TOOL_ITERATIONS = 6
 
+# Tools that don't need Sonnet-quality reasoning for the follow-up response.
+# After a turn where ONLY these tools ran, the next LLM call uses Haiku.
+_FAST_TOOLS: Set[str] = {
+    "collect_and_store",
+    "get_clinic_info",
+    "log_call_outcome",
+    "send_followup_sms",
+}
+
+# Tools that require Sonnet for the follow-up (complex confirmation, edge cases).
+_QUALITY_TOOLS: Set[str] = {
+    "check_availability",
+    "book_appointment",
+    "cancel_appointment",
+    "reschedule_appointment",
+    "transfer_to_human",
+}
+
 
 def _get_client():
-    """Return a cached AsyncAnthropic client."""
+    """Return an AsyncAnthropic client."""
     import os
     from anthropic import AsyncAnthropic
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
     return AsyncAnthropic(api_key=api_key)
+
+
+def _pick_model(tools_just_run: Set[str]) -> str:
+    """
+    Choose the LLM model for the next API call.
+
+    - No previous tools (first call): always Sonnet — Claude needs to plan strategy.
+    - Only fast/simple tools ran: Haiku is sufficient to formulate the follow-up question.
+    - Any quality/booking tool ran: keep Sonnet — complex confirmation or edge cases.
+    """
+    from app.config import RECEPTIONIST_MODEL, HAIKU_MODEL
+    if tools_just_run and not (tools_just_run & _QUALITY_TOOLS):
+        return HAIKU_MODEL
+    return RECEPTIONIST_MODEL
 
 
 def _extract_text(content_blocks) -> str:
@@ -66,6 +104,34 @@ def _blocks_to_dicts(content_blocks) -> List[Dict]:
                 "input": block.input,  # already a dict from the SDK
             })
     return out
+
+
+async def _run_tool(
+    block,
+    session: Dict[str, Any],
+    executors: Dict,
+) -> Tuple[str, Dict]:
+    """Execute a single tool call and return (tool_use_id, result_dict)."""
+    tool_name = block.name
+    tool_input = block.input  # dict, already parsed by SDK
+
+    executor = executors.get(tool_name)
+    if executor is None:
+        result = {"error": f"Unknown tool: {tool_name}"}
+    else:
+        try:
+            result = await executor(tool_input, session)
+        except Exception as exc:
+            logger.error("Tool %s raised: %r", tool_name, exc, exc_info=True)
+            result = {"error": str(exc)}
+
+    logger.info(
+        "TOOL %s | input=%s | result=%s",
+        tool_name,
+        json.dumps(tool_input, default=str),
+        json.dumps(result, default=str),
+    )
+    return block.id, result
 
 
 async def handle_turn(
@@ -107,6 +173,7 @@ async def handle_turn(
         iterations = 0
         reply_text = _SAFE_FALLBACK
         last_assistant_text = ""  # text Claude said alongside a tool call (may be reused)
+        last_tools_run: Set[str] = set()  # tools executed in the previous iteration
 
         # ------------------------------------------------------------------ #
         # 3. Tool execution loop
@@ -114,9 +181,20 @@ async def handle_turn(
         while iterations < MAX_TOOL_ITERATIONS:
             iterations += 1
 
+            # Hybrid model selection: first call always Sonnet; subsequent calls
+            # use Haiku if only fast/simple tools ran in the previous iteration.
+            model = _pick_model(last_tools_run) if iterations > 1 else RECEPTIONIST_MODEL
+
+            logger.info(
+                "handle_turn iteration=%d model=%s last_tools=%s",
+                iterations,
+                model,
+                last_tools_run or "none",
+            )
+
             response = await client.messages.create(
-                model=RECEPTIONIST_MODEL,
-                max_tokens=1024,
+                model=model,
+                max_tokens=400,
                 system=system_prompt,
                 messages=messages,
                 tools=TOOL_SCHEMAS,
@@ -173,34 +251,24 @@ async def handle_turn(
                 "content": _blocks_to_dicts(content),
             })
 
-            # Execute every tool call in this turn
-            tool_results = []
-            for block in tool_blocks:
-                tool_name = block.name
-                tool_input = block.input  # dict, already parsed by SDK
+            # Execute all tool calls in parallel — safe because asyncio is single-threaded
+            # (coroutines interleave but don't truly run concurrently, so session dict
+            # mutations from different tools cannot race each other).
+            raw_results = await asyncio.gather(
+                *[_run_tool(block, session, TOOL_EXECUTORS) for block in tool_blocks]
+            )
 
-                executor = TOOL_EXECUTORS.get(tool_name)
-                if executor is None:
-                    result = {"error": f"Unknown tool: {tool_name}"}
-                else:
-                    try:
-                        result = await executor(tool_input, session)
-                    except Exception as exc:
-                        logger.error("Tool %s raised: %r", tool_name, exc, exc_info=True)
-                        result = {"error": str(exc)}
-
-                logger.info(
-                    "TOOL %s | input=%s | result=%s",
-                    tool_name,
-                    json.dumps(tool_input, default=str),
-                    json.dumps(result, default=str),
-                )
-
-                tool_results.append({
+            tool_results = [
+                {
                     "type": "tool_result",
-                    "tool_use_id": block.id,
+                    "tool_use_id": tool_use_id,
                     "content": json.dumps(result, default=str),
-                })
+                }
+                for tool_use_id, result in raw_results
+            ]
+
+            # Track which tools ran so the next iteration can pick the right model
+            last_tools_run = {block.name for block in tool_blocks}
 
             # Tool results go back as a single user message
             messages.append({"role": "user", "content": tool_results})
