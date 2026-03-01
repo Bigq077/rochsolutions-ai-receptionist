@@ -2,7 +2,7 @@
 import os
 import httpx
 from fastapi import APIRouter
-from app.storage.redis_store import redis_delete_key  # we’ll add this helper
+from app.storage.redis_store import redis_delete_key
 
 router = APIRouter(prefix="/admin")
 
@@ -22,9 +22,9 @@ async def clear_google_tokens(key: str):
 async def test_acuity(key: str):
     """
     Read-only Acuity connectivity check. Hits three safe endpoints:
-      /me               — confirms credentials are valid
-      /appointment-types — lists configured appointment types
-      /calendars        — lists practitioner calendars
+      /me                - confirms credentials are valid
+      /appointment-types - lists configured appointment types
+      /calendars         - lists practitioner calendars
 
     No appointments are created or modified.
     Usage: GET /admin/test-acuity?key=YOUR_ADMIN_KEY
@@ -40,7 +40,7 @@ async def test_acuity(key: str):
     if missing:
         return {
             "ok": False,
-            "error": f"Missing env vars: {‘, ‘.join(missing)}",
+            "error": "Missing env vars: " + ", ".join(missing),
             "hint": "Set these in the Render dashboard under Environment.",
         }
 
@@ -50,7 +50,7 @@ async def test_acuity(key: str):
 
     async with httpx.AsyncClient(auth=auth, timeout=10.0) as client:
 
-        # 1. Account info — proves credentials work
+        # 1. Account info - proves credentials work
         try:
             r = await client.get(f"{base}/me")
             if r.status_code == 200:
@@ -66,7 +66,7 @@ async def test_acuity(key: str):
         except Exception as e:
             results["account"] = {"ok": False, "error": str(e)}
 
-        # 2. Appointment types — confirms Acuity is configured correctly
+        # 2. Appointment types - confirms Acuity is configured correctly
         try:
             r = await client.get(f"{base}/appointment-types")
             if r.status_code == 200:
@@ -74,14 +74,17 @@ async def test_acuity(key: str):
                 results["appointment_types"] = {
                     "ok": True,
                     "count": len(types),
-                    "types": [{"id": t.get("id"), "name": t.get("name"), "duration": t.get("duration")} for t in types],
+                    "types": [
+                        {"id": t.get("id"), "name": t.get("name"), "duration": t.get("duration")}
+                        for t in types
+                    ],
                 }
             else:
                 results["appointment_types"] = {"ok": False, "status": r.status_code, "body": r.text[:300]}
         except Exception as e:
             results["appointment_types"] = {"ok": False, "error": str(e)}
 
-        # 3. Calendars — shows which practitioner calendars exist
+        # 3. Calendars - shows which practitioner calendars exist
         try:
             r = await client.get(f"{base}/calendars")
             if r.status_code == 200:
@@ -89,14 +92,17 @@ async def test_acuity(key: str):
                 results["calendars"] = {
                     "ok": True,
                     "count": len(cals),
-                    "calendars": [{"id": c.get("id"), "name": c.get("name"), "email": c.get("email")} for c in cals],
+                    "calendars": [
+                        {"id": c.get("id"), "name": c.get("name"), "email": c.get("email")}
+                        for c in cals
+                    ],
                 }
             else:
                 results["calendars"] = {"ok": False, "status": r.status_code, "body": r.text[:300]}
         except Exception as e:
             results["calendars"] = {"ok": False, "error": str(e)}
 
-    # Also report which calendar ID env vars are set
+    # Report which calendar ID env vars are set
     cal_vars = {
         "ACUITY_CALENDAR_ID_ALCESTER": os.getenv("ACUITY_CALENDAR_ID_ALCESTER", ""),
         "ACUITY_CALENDAR_ID_REDDITCH": os.getenv("ACUITY_CALENDAR_ID_REDDITCH", ""),
@@ -104,7 +110,7 @@ async def test_acuity(key: str):
         "ACUITY_CALENDAR_ID_LEANNE":   os.getenv("ACUITY_CALENDAR_ID_LEANNE", ""),
     }
     results["env_calendar_ids"] = {
-        k: ("✅ set" if v else "❌ missing") for k, v in cal_vars.items()
+        k: ("set" if v else "MISSING") for k, v in cal_vars.items()
     }
 
     overall_ok = all(v.get("ok") for v in results.values() if isinstance(v, dict) and "ok" in v)
