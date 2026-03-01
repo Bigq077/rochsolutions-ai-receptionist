@@ -653,22 +653,25 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         session["acuity_booking_id"] = booking.provider_booking_id
         session["calendar_status"] = "created"
 
-        # Confirmation SMS — non-fatal
-        try:
-            await send_booking_confirmation(
-                patient_phone=phone,
-                patient_name=patient_name,
-                appointment_time=booking.start_time,
-                location=location.title(),
-                service=service,
-                is_new_patient=is_new,
-                has_insurance=bool(insurer),
-                insurer=insurer or None,
-                clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                clinic_phone=clinic.get("phone"),
-            )
-        except Exception as e:
-            logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
+        # Confirmation SMS — non-fatal.
+        # Suppressed when called as part of a reschedule (caller gets a reschedule
+        # confirmation instead, sent by _reschedule_appointment_acuity).
+        if not args.get("_suppress_sms"):
+            try:
+                await send_booking_confirmation(
+                    patient_phone=phone,
+                    patient_name=patient_name,
+                    appointment_time=booking.start_time,
+                    location=location.title(),
+                    service=service,
+                    is_new_patient=is_new,
+                    has_insurance=bool(insurer),
+                    insurer=insurer or None,
+                    clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+                    clinic_phone=clinic.get("phone"),
+                )
+            except Exception as e:
+                logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
 
         # Sheets log — non-fatal
         try:
@@ -755,18 +758,22 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
 
         session["calendar_status"] = "cancelled"
 
-        # SMS confirmation — non-fatal
-        try:
-            from app.notifications.booking_sms import send_cancellation_confirmation
-            if appt_time_str:
-                dt = datetime.fromisoformat(appt_time_str.replace("Z", "+00:00"))
-                await send_cancellation_confirmation(
-                    patient_phone=args.get("phone", ""),
-                    patient_name=args.get("patient_name", ""),
-                    appointment_time=dt,
-                )
-        except Exception as e:
-            logger.warning("_cancel_appointment_acuity SMS failed (non-fatal): %r", e)
+        # SMS confirmation — non-fatal.
+        # Suppressed when called as part of a reschedule (to avoid sending a cancel
+        # SMS alongside the reschedule confirmation that the caller will also receive).
+        if not args.get("_suppress_sms"):
+            try:
+                from app.notifications.booking_sms import send_cancellation_confirmation
+                if appt_time_str:
+                    dt = datetime.fromisoformat(appt_time_str.replace("Z", "+00:00"))
+                    await send_cancellation_confirmation(
+                        patient_phone=args.get("phone", ""),
+                        patient_name=args.get("patient_name", ""),
+                        appointment_time=dt,
+                    )
+            except Exception as e:
+                logger.warning("_cancel_appointment_acuity SMS failed (non-fatal): %r", e)
+            session["confirmation_sms_sent"] = True
 
         return {
             "success": True,
@@ -791,23 +798,49 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
     Requires args to include both patient_name/phone/location (for finding old)
     and new_slot_iso/duration_minutes/service (for creating new).
     """
-    # Step 1: cancel the existing appointment
-    cancel_result = await _cancel_appointment_acuity(args, session)
+    # Step 1: cancel the existing appointment.
+    # Suppress the cancel SMS — we'll send a single reschedule confirmation below.
+    cancel_result = await _cancel_appointment_acuity(
+        {**args, "_suppress_sms": True}, session
+    )
     if not cancel_result.get("success"):
         return {
             "success": False,
             "error": f"Could not locate original appointment: {cancel_result.get('error')}",
         }
 
-    # Step 2: book the new slot
+    # Step 2: book the new slot.
+    # Also suppress the booking SMS for the same reason.
     book_args = {
         **args,
         "slot_iso": args["new_slot_iso"],  # map new_slot_iso → slot_iso for book executor
+        "_suppress_sms": True,
     }
     book_result = await _book_appointment_acuity(book_args, session)
 
     if book_result.get("success"):
         session["calendar_status"] = "rescheduled"
+
+        # Send ONE reschedule confirmation SMS (cancel + booking SMS already suppressed above)
+        try:
+            from app.notifications.booking_sms import send_reschedule_confirmation
+            location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+            old_time_str = cancel_result.get("was_at", "")
+            new_time = _resolve_slot_iso(args["new_slot_iso"], session)
+            if old_time_str:
+                old_time = datetime.fromisoformat(old_time_str.replace("Z", "+00:00"))
+                await send_reschedule_confirmation(
+                    patient_phone=args.get("phone", ""),
+                    patient_name=args.get("patient_name", ""),
+                    old_time=old_time,
+                    new_time=new_time,
+                    location=location.title(),
+                )
+        except Exception as e:
+            logger.warning("_reschedule_appointment_acuity SMS failed (non-fatal): %r", e)
+
+        session["confirmation_sms_sent"] = True
+
         return {
             "success": True,
             "rescheduled_to": book_result.get("booked_slot"),
@@ -1099,6 +1132,9 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     except Exception as e:
         logger.warning("cancel_appointment SMS failed (non-fatal): %r", e)
 
+    # Prevent smart router from sending a duplicate follow-up SMS
+    session["confirmation_sms_sent"] = True
+
     return {
         "success": True,
         "cancelled_event": event_summary,
@@ -1176,6 +1212,9 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             )
     except Exception as e:
         logger.warning("reschedule_appointment SMS failed (non-fatal): %r", e)
+
+    # Prevent smart router from sending a duplicate follow-up SMS
+    session["confirmation_sms_sent"] = True
 
     return {
         "success": True,
