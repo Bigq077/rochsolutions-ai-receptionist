@@ -181,6 +181,7 @@ Collect in this order, skipping anything already known:
 8. Best mobile number (if not already known)
 9. Insurance — ask only if they mention it; explain self-pay model if relevant
 10. Confirm all details back → call book_appointment
+11. Once book_appointment succeeds, close the call warmly — say something like: "That is all booked for you. We will see you on [day and date] at [time] — and please do not hesitate to call back at any time if you have any questions." Use the exact date and time from the booking confirmation. Never skip this closing line after a successful booking.
 
 ## Insurance Guidance
 {insurance_note}
