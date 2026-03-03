@@ -412,7 +412,6 @@ def _make_acuity_adapter():
     """
     Create a fresh AcuityAdapter using Theorem clinic credentials.
     Returns None (with a warning) if ACUITY_USER_ID / ACUITY_API_KEY are not set.
-    Always call adapter.close() when done — use in a try/finally block.
     """
     from app.booking.booking.providers.acuity import AcuityAdapter
     from app.clinic_config import get_acuity_config
@@ -426,6 +425,21 @@ def _make_acuity_adapter():
         )
         return None
     return AcuityAdapter(user_id=user_id, api_key=api_key, clinic_id="theorem")
+
+
+# Module-level singleton — reuses the httpx.AsyncClient connection pool across
+# every availability check and booking call.  Creating a new AcuityAdapter (and
+# therefore a new httpx.AsyncClient) on every call forces a fresh TCP + TLS
+# handshake to Acuity each time, adding hundreds of milliseconds per booking turn.
+_acuity_adapter_singleton = None
+
+
+def _get_acuity_adapter():
+    """Return the shared AcuityAdapter singleton (lazy-initialised on first call)."""
+    global _acuity_adapter_singleton
+    if _acuity_adapter_singleton is None:
+        _acuity_adapter_singleton = _make_acuity_adapter()
+    return _acuity_adapter_singleton
 
 
 async def _fetch_acuity_type_cache(adapter) -> Dict[str, str]:
@@ -519,7 +533,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
     day_window = int(args.get("day_window") or 14)
     service = (args.get("service") or "physiotherapy assessment").strip()
 
-    adapter = _make_acuity_adapter()
+    adapter = _get_acuity_adapter()
     if not adapter:
         return {"error": "Booking system not configured. Please call the clinic directly.", "slots": []}
 
@@ -567,8 +581,6 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
     except Exception as e:
         logger.error("_check_availability_acuity error: %r", e)
         return {"error": f"Availability check failed: {e}", "slots": []}
-    finally:
-        await adapter.close()
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +594,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
     from app.notifications.booking_sms import send_booking_confirmation
     from app.clinic_config import get_clinic, THEOREM_LOCATIONS
 
-    adapter = _make_acuity_adapter()
+    adapter = _get_acuity_adapter()
     if not adapter:
         return {"success": False, "error": "Booking system not configured."}
 
@@ -732,8 +744,6 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
     except Exception as e:
         logger.error("_book_appointment_acuity error: %r", e)
         return {"success": False, "error": str(e)}
-    finally:
-        await adapter.close()
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +754,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
     """cancel_appointment via Acuity Scheduling (Theorem clinic)."""
     from datetime import date as _date
 
-    adapter = _make_acuity_adapter()
+    adapter = _get_acuity_adapter()
     if not adapter:
         return {"success": False, "error": "Booking system not configured."}
 
@@ -805,8 +815,6 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
     except Exception as e:
         logger.error("_cancel_appointment_acuity error: %r", e)
         return {"success": False, "error": str(e)}
-    finally:
-        await adapter.close()
 
 
 # ---------------------------------------------------------------------------

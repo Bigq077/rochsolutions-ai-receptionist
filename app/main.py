@@ -192,6 +192,45 @@ logger.info("✅ All routes registered successfully")
 # STARTUP EVENT
 # ============================================================================
 
+async def _prewarm_singletons() -> None:
+    """
+    Initialise latency-critical singletons at boot so callers never pay
+    the cold-start cost mid-conversation.
+
+    1. AsyncAnthropic client — creates the httpx connection pool to Anthropic.
+       Without this the first API call opens a new TCP+TLS connection every
+       turn, adding ~500 ms (and more after idle).
+    2. Tool schemas / executors — importing the tool module on first use adds
+       1-2 s of Python import time the first time the booking turn runs.
+    3. AcuityAdapter singleton — primes the httpx connection pool to Acuity.
+    """
+    # 1. Anthropic client singleton
+    try:
+        from app.flows.conversation import _get_client
+        _get_client()   # initialises _anthropic_client module global
+        logger.info("✅ Anthropic client singleton pre-warmed")
+    except Exception as e:
+        logger.warning("⚠️  Anthropic pre-warm skipped: %r", e)
+
+    # 2. Tool schemas (importing the module caches TOOL_SCHEMAS / TOOL_EXECUTORS)
+    try:
+        from app.tools.receptionist_tools import TOOL_SCHEMAS  # noqa: F401
+        logger.info("✅ Tool schemas pre-loaded (%d tools)", len(TOOL_SCHEMAS))
+    except Exception as e:
+        logger.warning("⚠️  Tool schema pre-load skipped: %r", e)
+
+    # 3. Acuity adapter singleton
+    try:
+        from app.tools.receptionist_tools import _get_acuity_adapter
+        adapter = _get_acuity_adapter()
+        if adapter:
+            logger.info("✅ Acuity adapter singleton pre-warmed")
+        else:
+            logger.info("ℹ️  Acuity adapter not pre-warmed (credentials not set)")
+    except Exception as e:
+        logger.warning("⚠️  Acuity pre-warm skipped: %r", e)
+
+
 @app.on_event("startup")
 async def startup():
     """
@@ -216,6 +255,19 @@ async def startup():
             logger.info("✅ Redis connected")
     except Exception as e:
         logger.warning(f"⚠️  Redis not available: {e}")
+
+    # ------------------------------------------------------------------ #
+    # Pre-warm latency-critical singletons (#perf)
+    #
+    # Without this, the very first booking turn pays:
+    #   - Python module import cost for anthropic, httpx, tool schemas (~1-2s)
+    #   - TCP + TLS handshake to Anthropic API (~300-500ms cold)
+    #   - TCP + TLS handshake to Acuity (~200-400ms cold)
+    #
+    # By initialising the singletons at startup, these costs are paid once
+    # during Render's boot sequence and never on a live caller's turn.
+    # ------------------------------------------------------------------ #
+    await _prewarm_singletons()
 
     # ------------------------------------------------------------------ #
     # Clinic credential validation (#21)

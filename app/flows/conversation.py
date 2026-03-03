@@ -75,14 +75,25 @@ _QUALITY_TOOLS: Set[str] = {
 }
 
 
+# Module-level singleton — keeps the httpx connection pool alive between turns.
+# Creating a new AsyncAnthropic() on every handle_turn() forces a fresh TCP
+# connection + TLS handshake to Anthropic on every call (~500 ms cold, seconds
+# after idle).  A singleton reuses the existing connection; subsequent turns
+# are dramatically faster.
+_anthropic_client = None
+
+
 def _get_client():
-    """Return an AsyncAnthropic client."""
-    import os
-    from anthropic import AsyncAnthropic
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
-    return AsyncAnthropic(api_key=api_key)
+    """Return the shared AsyncAnthropic singleton, initialising it on first call."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        import os
+        from anthropic import AsyncAnthropic
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+        _anthropic_client = AsyncAnthropic(api_key=api_key)
+    return _anthropic_client
 
 
 def _pick_model(tools_just_run: Set[str]) -> str:
