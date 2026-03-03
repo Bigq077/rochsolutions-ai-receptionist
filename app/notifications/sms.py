@@ -9,6 +9,8 @@ from typing import Optional
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
+from app.utils import normalise_to_e164, is_valid_e164
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,20 +64,18 @@ class SMSService:
         Returns:
             Message SID if successful, None if failed
         """
-        # Normalise to E.164 if needed
-        if not to.startswith("+"):
-            logger.warning(f"Phone number should start with +: {to}")
-            digits = re.sub(r"\D", "", to)
-            if digits.startswith("07") and len(digits) == 11:
-                # UK mobile: 07xxx xxx xxx → +447xxx xxx xxx
-                to = "+44" + digits[1:]
-            elif digits.startswith("44") and 11 <= len(digits) <= 13:
-                # Already international without +
-                to = "+" + digits
+        # Normalise to E.164 and validate before sending (#14)
+        if not is_valid_e164(to):
+            normalised = normalise_to_e164(to)
+            if normalised:
+                logger.info("Phone normalised: %s → %s", to, normalised)
+                to = normalised
             else:
-                # Best-effort: strip leading zeros, prepend +
-                to = "+" + digits.lstrip("0")
-            logger.info(f"Phone normalised to: {to}")
+                logger.error(
+                    "Invalid phone number — SMS aborted: %r", to,
+                    extra={"raw_number": to},
+                )
+                return None
         
         # Truncate message if too long
         if len(message) > max_length:

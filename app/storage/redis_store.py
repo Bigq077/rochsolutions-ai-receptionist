@@ -1,11 +1,13 @@
 # app/storage/redis_store.py
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import copy
 from typing import Dict, Any, Optional, List
 
-from app.config import REDIS_URL
+from app.config import REDIS_URL, SESSION_SECRET
 
 redis_client = None
 
@@ -60,13 +62,40 @@ def _fresh_default_session() -> Dict[str, Any]:
 
 
 # ============================
+# Session key helper
+# ============================
+
+def _session_key(call_sid: str) -> str:
+    """
+    Build the Redis key for a call session.
+
+    When SESSION_SECRET is set, the key gains an 8-hex-char HMAC suffix derived
+    from the secret + call_sid.  This makes session keys unguessable even if an
+    attacker can enumerate the Redis keyspace, because they cannot compute the
+    HMAC without the server secret.
+
+    Without SESSION_SECRET the key is plain ``call:{call_sid}`` for backwards
+    compatibility.  Changing SESSION_SECRET invalidates all in-flight sessions
+    (90-min TTL means impact is minimal — at most one active call per worker).
+    """
+    if SESSION_SECRET:
+        tag = hmac.new(
+            SESSION_SECRET.encode(),
+            call_sid.encode(),
+            hashlib.sha256,
+        ).hexdigest()[:8]
+        return f"call:{call_sid}:{tag}"
+    return f"call:{call_sid}"
+
+
+# ============================
 # Call session helpers
 # ============================
 async def get_session(call_sid: str) -> Dict[str, Any]:
     if not call_sid or not redis_client:
         return _fresh_default_session()
 
-    key = f"call:{call_sid}"
+    key = _session_key(call_sid)
     raw = await redis_client.get(key)
     if not raw:
         return _fresh_default_session()
@@ -97,7 +126,7 @@ async def save_session(call_sid: str, session: Dict[str, Any]) -> None:
     if not call_sid or not redis_client:
         return
 
-    key = f"call:{call_sid}"
+    key = _session_key(call_sid)
 
     # Defensive: ensure serializable + structure sane
     if not isinstance(session, dict):

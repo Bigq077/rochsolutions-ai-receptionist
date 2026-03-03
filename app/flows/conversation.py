@@ -28,6 +28,21 @@ from typing import Any, Dict, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Redis key that tracks how many times Phase 3 fell back to _SAFE_FALLBACK.
+# Exposed on /health so ops teams can see if the model is struggling.
+_FALLBACK_COUNTER_KEY = "metrics:phase3:fallbacks"
+
+
+async def _increment_fallback_counter() -> None:
+    """Increment the Phase 3 safe-fallback counter in Redis (best-effort)."""
+    try:
+        from app.storage.redis_store import redis_client
+        if redis_client:
+            await redis_client.incr(_FALLBACK_COUNTER_KEY)
+    except Exception:
+        pass  # Never let a metrics failure disrupt call handling
+
+
 _SAFE_FALLBACK = (
     "I'm sorry, something went wrong on my end. "
     "Could you give me just a moment and try again?"
@@ -282,6 +297,7 @@ async def handle_turn(
         else:
             # Hit the max-iteration guard — return safe fallback
             logger.warning("handle_turn hit MAX_TOOL_ITERATIONS (%d)", MAX_TOOL_ITERATIONS)
+            await _increment_fallback_counter()
             reply_text = _SAFE_FALLBACK
 
         # ------------------------------------------------------------------ #
@@ -303,4 +319,5 @@ async def handle_turn(
 
     except Exception as exc:
         logger.error("handle_turn critical error: %r", exc, exc_info=True)
+        await _increment_fallback_counter()
         return _SAFE_FALLBACK, session

@@ -1,24 +1,82 @@
 # app/routes/twilio.py
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from datetime import datetime
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import Response
 import logging
 from app.notifications.smart_sms_router import send_smart_followup_sms
 logger = logging.getLogger(__name__)
 from datetime import datetime
 from app.tools.handoff import fire_and_forget_append_summary_row
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 
 from app.storage.redis_store import get_session, save_session, acquire_once_lock
 from app.clinic_config import clinic_id_from_twilio_to, get_clinic
+from app.config import TRANSFER_FALLBACK_NUMBER, TWILIO_AUTH_TOKEN
 
-router = APIRouter(prefix="/twilio")
+
+# --------------------------------------------------
+# Security: Twilio request signature validation
+# --------------------------------------------------
+
+async def _verify_twilio_signature(request: Request) -> None:
+    """
+    Validate the X-Twilio-Signature header on every POST to /twilio/*.
+
+    Only active when TWILIO_AUTH_TOKEN is set — safe no-op in local dev.
+    Rejects forged or replayed webhook calls with HTTP 403.
+
+    URL reconstruction accounts for Render's HTTPS reverse-proxy:
+    - Uses BASE_URL env var if available (most reliable on Render)
+    - Falls back to X-Forwarded-Proto / X-Forwarded-Host headers
+    """
+    if not TWILIO_AUTH_TOKEN or request.method != "POST":
+        return
+
+    from twilio.request_validator import RequestValidator
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+
+    # Build the canonical URL Twilio used when signing this request.
+    # On Render the app is behind an HTTPS load balancer; the raw request
+    # arrives as HTTP internally, so we must trust the forwarded headers.
+    base = os.getenv("BASE_URL", "").rstrip("/")
+    if base:
+        path = request.url.path
+        query = request.url.query
+        canonical_url = f"{base}{path}{'?' + query if query else ''}"
+    else:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        path = request.url.path
+        query = request.url.query
+        canonical_url = f"{proto}://{host}{path}{'?' + query if query else ''}"
+
+    # Starlette caches parsed form data, so calling .form() here does not
+    # consume the body — the route handler can still read it afterwards.
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+
+    validator = RequestValidator(TWILIO_AUTH_TOKEN)
+    if not validator.validate(canonical_url, params, signature):
+        logger.warning(
+            "Twilio signature INVALID: url=%s sig=%s…",
+            canonical_url,
+            signature[:20],
+        )
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+router = APIRouter(
+    prefix="/twilio",
+    dependencies=[Depends(_verify_twilio_signature)],
+)
 
 
 # --------------------------------------------------
@@ -26,7 +84,10 @@ router = APIRouter(prefix="/twilio")
 # --------------------------------------------------
 
 AI_NAME = "Susie"
-TRANSFER_NUMBER_FALLBACK = "+447502211207"   # used only if clinic has no transfer_phone configured
+# Fallback transfer number: sourced from env var TRANSFER_FALLBACK_NUMBER.
+# Falls back to a default value if the env var is not set (see app/config.py).
+# Clinics with a 'transfer_phone' key in their config always take priority over this.
+TRANSFER_NUMBER_FALLBACK = TRANSFER_FALLBACK_NUMBER
 
 # After location confirmed — hand off to triage
 HOW_CAN_I_HELP = "How can I help you today?"
