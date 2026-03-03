@@ -81,18 +81,42 @@ class BookingService:
             logger.warning(f"Cache set failed: {e}", extra={"key": key})
     
     async def _bust_availability_cache(self, appointment_type_id: str):
-        """Invalidate availability cache after booking."""
+        """
+        Invalidate availability cache after booking.
+
+        FIX #10: Upgraded warning → critical so a failure is immediately
+        visible (stale cached slots could cause overbooking).
+        FIX (bonus): Uses cursor-based SCAN instead of KEYS so this never
+        blocks Redis on large keyspaces.
+        """
         pattern = self._cache_key("availability", appointment_type_id, "*")
         try:
-            keys = await self.redis.keys(pattern)
-            if keys:
-                await self.redis.delete(*keys)
+            deleted_count = 0
+            cursor = 0
+            while True:
+                cursor, keys = await self.redis.scan(cursor, match=pattern, count=100)
+                if keys:
+                    await self.redis.delete(*keys)
+                    deleted_count += len(keys)
+                if cursor == 0:
+                    break
+            if deleted_count:
                 logger.info(
-                    f"Busted availability cache for {appointment_type_id}",
-                    extra={"key_count": len(keys)},
+                    "Busted availability cache for %s (%d keys removed)",
+                    appointment_type_id,
+                    deleted_count,
+                    extra={"key_count": deleted_count},
                 )
         except Exception as e:
-            logger.warning(f"Cache bust failed: {e}")
+            logger.critical(
+                "CRITICAL: Availability cache bust FAILED after booking. "
+                "Stale slots may be offered to the next caller. "
+                "appointment_type_id=%s clinic=%s error=%s",
+                appointment_type_id,
+                self.clinic_id,
+                e,
+                exc_info=True,
+            )
     
     async def get_appointment_types(self) -> List[AppointmentType]:
         """
@@ -249,14 +273,19 @@ class BookingService:
         # Acquire distributed lock
         lock_key = f"{idempotency_key}:lock"
         lock_acquired = False
-        
+
         try:
-            # Try to acquire lock with timeout
-            lock_acquired = await self.redis.set(
-                lock_key,
-                "locked",
-                nx=True,  # Only set if not exists
-                ex=self.LOCK_TTL_SECONDS,
+            # FIX #4: redis.set(nx=True) returns True on success or None on
+            # failure.  Normalise to an explicit bool so the finally block's
+            # `if lock_acquired:` guard is unambiguous regardless of Redis
+            # library version or decode_responses setting.
+            lock_acquired = bool(
+                await self.redis.set(
+                    lock_key,
+                    "locked",
+                    nx=True,  # Only set if not exists
+                    ex=self.LOCK_TTL_SECONDS,
+                )
             )
             
             if not lock_acquired:

@@ -35,6 +35,12 @@ _SAFE_FALLBACK = (
 
 MAX_TOOL_ITERATIONS = 6
 
+# Maximum number of messages kept in persistent conversation_history.
+# Each exchange = 2 entries (user + assistant).  20 entries = 10 exchanges,
+# which is more than enough context for a phone call while preventing Redis
+# session bloat and Anthropic token-limit errors on very long calls.
+MAX_HISTORY_TURNS = 20
+
 # Tools that don't need Sonnet-quality reasoning for the follow-up response.
 # After a turn where ONLY these tools ran, the next LLM call uses Haiku.
 _FAST_TOOLS: Set[str] = {
@@ -279,9 +285,17 @@ async def handle_turn(
             reply_text = _SAFE_FALLBACK
 
         # ------------------------------------------------------------------ #
-        # 4. Store final reply in persistent history and session
+        # 4. Store final reply in persistent history and session.
+        #    FIX #3: Prune to MAX_HISTORY_TURNS to prevent Redis session
+        #    bloat and Anthropic token-limit errors on long calls.
         # ------------------------------------------------------------------ #
         history.append({"role": "assistant", "content": reply_text})
+        if len(history) > MAX_HISTORY_TURNS:
+            history = history[-MAX_HISTORY_TURNS:]
+            logger.info(
+                "handle_turn: pruned conversation_history to last %d turns",
+                MAX_HISTORY_TURNS,
+            )
         session["conversation_history"] = history
         session["last_bot_prompt"] = reply_text
 

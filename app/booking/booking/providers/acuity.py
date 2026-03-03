@@ -121,7 +121,23 @@ class AcuityAdapter:
                 safe_metadata=safe_metadata,
             )
         
-        # 4xx errors other than auth/rate limit
+        # FIX #7: 409 Conflict means the slot was taken by someone else between
+        # availability check and booking.  Raise SlotUnavailable so the caller
+        # is offered alternative slots rather than seeing a generic error.
+        if status == 409:
+            logger.warning(
+                f"Acuity slot conflict (409): {operation}",
+                extra={"clinic_id": self.clinic_id, "message": error_message},
+            )
+            raise SlotUnavailable(
+                f"Slot no longer available: {error_message}",
+                provider="acuity",
+                safe_metadata=safe_metadata,
+            )
+
+        # Other 4xx (400 Bad Request, 422 Unprocessable Entity, etc.) — client
+        # error, do not retry.  Use ProviderUnavailable so the service layer
+        # surfaces a clean error message without leaking API details.
         if 400 <= status < 500:
             logger.warning(
                 f"Acuity client error: {operation}",

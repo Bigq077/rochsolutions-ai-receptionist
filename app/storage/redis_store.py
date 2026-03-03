@@ -14,15 +14,41 @@ if REDIS_URL:
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 DEFAULT_SESSION: Dict[str, Any] = {
+    # Core state
     "intent": None,
-    "state": "TRIAGE",          # Used by legacy path; Phase 3 ignores this
-    "collected": {},            # IMPORTANT: mutable (deep-copied on use)
+    "state": "TRIAGE",              # Used by legacy path; Phase 3 ignores this
+    "collected": {},                # IMPORTANT: mutable (deep-copied on use)
     "miss_count": 0,
+    "error_count": 0,
     "last_bot_prompt": "",
     "call_sid": "",
+    "session_id": "",
+    "clinic_id": None,
+    # Location
+    "location_selected": False,
+    "selected_location": None,
+    "location_miss": 0,
+    "location_redirect_count": 0,  # guards against infinite /voice redirect loop
     # Phase 3 fields
-    "conversation_history": [], # [{role: "user"|"assistant", content: str}]
-    "call_start_time": None,    # ISO timestamp set on first handle_turn call
+    "conversation_history": [],     # [{role: "user"|"assistant", content: str}]
+    "turns": [],                    # [{role: str, text: str}] used by SMS router
+    "call_start_time": None,        # ISO timestamp set on first handle_turn call
+    # Insurance
+    "insurance_flagged": False,
+    "insurance_info": {},
+    # Booking state
+    "last_offered_slots": [],
+    "slot_labels": [],
+    "acuity_booking_id": None,
+    "calendar_status": None,
+    # Workflow flags
+    "manual_followup_needed": False,
+    "manual_followup_reason": None,
+    "confirmation_sms_sent": False,
+    "call_summary_logged": False,
+    "transfer_attempted": False,
+    "transfer_failed_status": None,
+    "request_transfer": False,
 }
 
 
@@ -82,7 +108,7 @@ async def save_session(call_sid: str, session: Dict[str, Any]) -> None:
     # keep it consistent
     session["call_sid"] = call_sid
 
-    await redis_client.set(key, json.dumps(session), ex=60 * 30)  # 30 min TTL
+    await redis_client.set(key, json.dumps(session), ex=60 * 90)  # 90 min TTL — covers long calls
 
 
 # ============================
@@ -176,3 +202,25 @@ async def redis_ping() -> bool:
         return bool(await redis_client.ping())
     except Exception:
         return False
+
+
+async def acquire_once_lock(key: str, ttl_seconds: int = 300) -> bool:
+    """
+    Atomically acquire a one-shot processing lock via Redis SET NX.
+
+    Returns True  → this caller is the first; proceed with the operation.
+    Returns False → another request already holds the lock; skip.
+
+    Safe no-op (returns True — allow processing) if Redis is not configured,
+    so the system degrades gracefully in local dev without Redis.
+
+    Use this to prevent duplicate side-effects when Twilio may fire the same
+    webhook twice (e.g. /status called twice for the same CallSid).
+    """
+    if not redis_client:
+        return True  # No Redis — allow processing; accept the duplicate risk
+    try:
+        result = await redis_client.set(key, "1", nx=True, ex=ttl_seconds)
+        return bool(result)  # True if set, None (→ False) if key already existed
+    except Exception:
+        return True  # Redis error — allow processing rather than silently drop

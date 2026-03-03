@@ -71,17 +71,29 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
     fall back to looking up the matching start time from the
     session["last_offered_slots"] list that was stored by check_availability.
 
-    Always returns a timezone-aware datetime.
+    Always returns a timezone-aware datetime in Europe/London.
     Raises ValueError if nothing can be resolved.
     """
+
+    def _to_london(dt: "datetime") -> "datetime":
+        """
+        FIX #8: Convert any datetime to Europe/London, handling both naive
+        and aware inputs correctly.
+        - Naive  → localize (treat as London wall-clock time)
+        - Aware  → astimezone (convert from whatever tz it carries)
+        Using localize() on an already-aware datetime would silently double
+        the UTC offset, so we must branch on tzinfo presence.
+        """
+        if dt.tzinfo is None:
+            return LONDON_TZ.localize(dt)
+        return dt.astimezone(LONDON_TZ)
+
     # 1. Direct ISO parse
     s = str(slot_iso or "").strip()
     if s:
         try:
             dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = LONDON_TZ.localize(dt)
-            return dt
+            return _to_london(dt)
         except (ValueError, TypeError):
             pass
 
@@ -99,9 +111,7 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
         idx = idx_map[s_lower]
         if idx < len(offered):
             try:
-                dt = datetime.fromisoformat(offered[idx]["start"])
-                if dt.tzinfo is None:
-                    dt = LONDON_TZ.localize(dt)
+                dt = _to_london(datetime.fromisoformat(offered[idx]["start"]))
                 logger.info("_resolve_slot_iso: index match %r → slot[%d] %s", slot_iso, idx, offered[idx]["start"])
                 return dt
             except Exception:
@@ -113,9 +123,7 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
             words = [w for w in s_lower.split() if len(w) > 2]
             if words and any(w in label.lower() for w in words):
                 try:
-                    dt = datetime.fromisoformat(offered[i]["start"])
-                    if dt.tzinfo is None:
-                        dt = LONDON_TZ.localize(dt)
+                    dt = _to_london(datetime.fromisoformat(offered[i]["start"]))
                     logger.info("_resolve_slot_iso: fuzzy match %r → label[%d] %r", slot_iso, i, label)
                     return dt
                 except Exception:
@@ -596,6 +604,19 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         except Exception as e:
             return {"success": False, "error": f"Invalid slot datetime: {e}"}
 
+        # FIX #9: Reject slots in the past — a hallucinated or stale datetime
+        # would reach Acuity and fail with a confusing error.
+        now_london = datetime.now(LONDON_TZ)
+        if start_dt <= now_london:
+            return {
+                "success": False,
+                "error": (
+                    f"Cannot book a slot in the past "
+                    f"({start_dt.strftime('%a %d %b at %H:%M')}). "
+                    "Please check availability again for current options."
+                ),
+            }
+
         # Appointment type — prefer cached from check_availability
         appointment_type_id = session.get("_acuity_appointment_type_id")
         if not appointment_type_id:
@@ -959,6 +980,18 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         end_dt = start_dt + timedelta(minutes=int(args.get("duration_minutes", 30)))
     except Exception as e:
         return {"success": False, "error": f"Invalid slot datetime: {e}"}
+
+    # FIX #9: Reject slots in the past
+    now_london = datetime.now(LONDON_TZ)
+    if start_dt <= now_london:
+        return {
+            "success": False,
+            "error": (
+                f"Cannot book a slot in the past "
+                f"({start_dt.strftime('%a %d %b at %H:%M')}). "
+                "Please check availability again for current options."
+            ),
+        }
 
     if not tokens:
         # Calendar not connected — log intent to Sheets so the clinic can follow up,

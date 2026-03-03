@@ -15,7 +15,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
 
-from app.storage.redis_store import get_session, save_session
+from app.storage.redis_store import get_session, save_session, acquire_once_lock
 from app.clinic_config import clinic_id_from_twilio_to, get_clinic
 
 router = APIRouter(prefix="/twilio")
@@ -328,7 +328,18 @@ async def status(request: Request) -> PlainTextResponse:
     
     if not call_sid:
         return PlainTextResponse("missing CallSid", status_code=400)
-    
+
+    # ── FIX #1 / #5: Atomic idempotency guard ────────────────────────────────
+    # Twilio can fire /status more than once for the same call (e.g. network
+    # retries).  Two parallel requests would both read call_summary_logged=False
+    # and both write to Sheets / send SMS — a classic TOCTOU race.
+    # Redis SET NX is atomic: only the first request wins the lock.
+    status_lock_key = f"status_lock:{call_sid}"
+    if not await acquire_once_lock(status_lock_key, ttl_seconds=300):
+        logger.info("Duplicate /status for %s — skipping (lock held)", call_sid)
+        return PlainTextResponse("already processing")
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Import required modules
     try:
         from app.tools.call_summary import build_call_summary
@@ -344,10 +355,6 @@ async def status(request: Request) -> PlainTextResponse:
         session = await get_session(call_sid) or {}
     except Exception:
         session = {}
-    
-    # Don't process same call twice
-    if session.get("call_summary_logged"):
-        return PlainTextResponse("already logged")
     
     # Add Twilio metadata to session
     ended_at = datetime.utcnow().isoformat() + "Z"
@@ -605,12 +612,31 @@ async def turn(request: Request):
 
     # --------------------------------------------------
     # Safety net: if location was never set, send back
-    # to the greeting so Susie can ask again
+    # to the greeting so Susie can ask again.
+    # FIX #2: Cap redirects to 3 to prevent an infinite loop when the
+    # caller never says a location (each redirect increments the counter;
+    # on the 4th arrival we default the location and carry on).
     # --------------------------------------------------
     if not session.get("location_selected"):
-        await save_session(call_sid, session)
-        vr.redirect(voice_url, method="POST")
-        return xml(vr)
+        redirect_count = int(session.get("location_redirect_count", 0)) + 1
+        session["location_redirect_count"] = redirect_count
+        if redirect_count >= 4:
+            # Break the loop — default to first available location and continue
+            clinic_for_default = get_clinic(session.get("clinic_id"))
+            locs = clinic_for_default.get("locations", [])
+            session["selected_location"] = locs[0]["id"] if locs else "default"
+            session["location_selected"] = True
+            logger.warning(
+                "Location redirect loop broken for %s after %d attempts — "
+                "defaulting to %s",
+                call_sid, redirect_count, session["selected_location"],
+            )
+            await save_session(call_sid, session)
+            # Fall through to normal turn handling below
+        else:
+            await save_session(call_sid, session)
+            vr.redirect(voice_url, method="POST")
+            return xml(vr)
 
     # --------------------------------------------------
     # Handle empty input  (3-tier escalation)
