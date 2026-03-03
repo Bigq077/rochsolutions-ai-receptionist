@@ -9,8 +9,6 @@ from typing import Optional
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
-from app.utils import normalise_to_e164, is_valid_e164
-
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +63,9 @@ class SMSService:
             Message SID if successful, None if failed
         """
         # Normalise to E.164 and validate before sending (#14)
+        # Import is lazy (inside the method) to avoid module-load import errors
+        # if app.utils is not yet initialised when sms.py is first imported.
+        from app.utils import normalise_to_e164, is_valid_e164
         if not is_valid_e164(to):
             normalised = normalise_to_e164(to)
             if normalised:
