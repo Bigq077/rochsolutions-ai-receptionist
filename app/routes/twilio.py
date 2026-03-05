@@ -150,22 +150,14 @@ def _build_greeting(clinic: dict) -> str:
     """
     Build the opening greeting from clinic config.
     - Custom 'greeting' field: used as-is (e.g. demo line).
-    - Multi-location clinic: introduce Susie and ask which location.
-    - Single-location clinic: simple greeting using display_name.
+    - All clinics: simple greeting asking how we can help.
+      Location is detected contextually during the conversation.
     """
     # Custom greeting overrides everything (set in clinic config)
     if clinic.get("greeting"):
         return clinic["greeting"]
 
     name = clinic.get("display_name", "the clinic")
-    locations = clinic.get("locations", [])
-    if locations:
-        loc_names = " or ".join(loc["name"] for loc in locations)
-        return (
-            f"Hi there! My name is {AI_NAME}, {name}'s AI receptionist. "
-            f"Quick question before I start — "
-            f"are you calling about our {loc_names} clinic?"
-        )
     return f"Hi there! This is {AI_NAME}, {name}'s AI receptionist. How can I help you today?"
 
 
@@ -539,16 +531,14 @@ async def voice(request: Request):
     vr = VoiceResponse()
     attach_status_callback(vr, request)
 
-    if locations:
-        # Multi-location clinic (e.g. Theorem) — ask which location first
-        location_url = _abs_url(request, "/twilio/location-select")
-        await _say(vr, greeting, request, gather_action=location_url)
-    else:
-        # Single-location clinic (e.g. demo) — skip location question entirely
+    # All clinics go directly to /turn — location is detected contextually.
+    # Single-location clinics mark location resolved immediately.
+    if not locations:
         session["location_selected"] = True
         session["selected_location"] = "default"
-        turn_url = _abs_url(request, "/twilio/turn")
-        await _say(vr, greeting, request, gather_action=turn_url)
+
+    turn_url = _abs_url(request, "/twilio/turn")
+    await _say(vr, greeting, request, gather_action=turn_url)
 
     await save_session(call_sid, session)
 
@@ -669,35 +659,19 @@ async def turn(request: Request):
     miss = int(session.get("miss_count", 0))
 
     turn_url = _abs_url(request, "/twilio/turn")
-    voice_url = _abs_url(request, "/twilio/voice")
 
     # --------------------------------------------------
-    # Safety net: if location was never set, send back
-    # to the greeting so Susie can ask again.
-    # FIX #2: Cap redirects to 3 to prevent an infinite loop when the
-    # caller never says a location (each redirect increments the counter;
-    # on the 4th arrival we default the location and carry on).
+    # Passive location detection — silently store whichever clinic
+    # the caller mentions in any turn, without interrupting the flow.
     # --------------------------------------------------
-    if not session.get("location_selected"):
-        redirect_count = int(session.get("location_redirect_count", 0)) + 1
-        session["location_redirect_count"] = redirect_count
-        if redirect_count >= 4:
-            # Break the loop — default to first available location and continue
-            clinic_for_default = get_clinic(session.get("clinic_id"))
-            locs = clinic_for_default.get("locations", [])
-            session["selected_location"] = locs[0]["id"] if locs else "default"
-            session["location_selected"] = True
-            logger.warning(
-                "Location redirect loop broken for %s after %d attempts — "
-                "defaulting to %s",
-                call_sid, redirect_count, session["selected_location"],
-            )
-            await save_session(call_sid, session)
-            # Fall through to normal turn handling below
-        else:
-            await save_session(call_sid, session)
-            vr.redirect(voice_url, method="POST")
-            return xml(vr)
+    if user_said and not session.get("location_selected"):
+        _clinic_for_loc = get_clinic(session.get("clinic_id"))
+        if _clinic_for_loc.get("locations"):
+            _detected_loc = _detect_location(user_said, _clinic_for_loc)
+            if _detected_loc:
+                session["selected_location"] = _detected_loc
+                session["location_selected"] = True
+                logger.info("Location passively detected for %s: %s", call_sid, _detected_loc)
 
     # --------------------------------------------------
     # Handle empty input  (3-tier escalation)
@@ -884,6 +858,23 @@ def _try_quick_answer(user_said: str, session: dict) -> str | None:
 
     # Find location-specific config block if this clinic has multiple locations
     loc_cfg = next((l for l in locations if l["id"] == location_id), None)
+
+    # If this is a location-specific question but we don't know which clinic yet,
+    # ask before giving the wrong information.
+    _location_specific_kws = (
+        "hour", "open", "close", "when are you", "what time",
+        "address", "where are you", "find you", "directions", "park",
+    )
+    if (
+        any(kw in t for kw in _location_specific_kws)
+        and len(locations) > 1
+        and loc_cfg is None
+    ):
+        loc_names = " or ".join(loc["name"] for loc in locations)
+        return (
+            f"Of course! Just so I give you the right details — "
+            f"are you asking about our {loc_names} clinic?"
+        )
 
     # Opening hours
     if any(kw in t for kw in ("hour", "open", "close", "when are you", "what time")):

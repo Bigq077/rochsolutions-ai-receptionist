@@ -266,58 +266,22 @@ class TestStatusIdempotency:
 
 
 # ===========================================================================
-# 5. Location redirect loop breaker
+# 5. Passive location detection in /turn
 # ===========================================================================
 
-class TestLocationRedirectLoopBreaker:
+class TestPassiveLocationDetection:
     """
-    Arriving at /turn without a location set increments location_redirect_count.
-    After 4 redirects the session should default the location and fall through
-    to normal turn handling rather than redirecting again.
+    /turn should silently detect a location name from any user utterance
+    and store it in session without interrupting the conversation flow.
     """
 
     CALL_SID = "CAloop001"
 
-    async def _turn_no_speech(self, async_client, mock_redis_session_store):
-        session = await mock_redis_session_store.get_session(self.CALL_SID)
-        # Ensure location has NOT been selected yet
-        session["location_selected"] = False
-        session["clinic_id"] = "theorem"
-        await mock_redis_session_store.save_session(self.CALL_SID, session)
-
-        return await async_client.post(
-            "/twilio/turn",
-            data={
-                "CallSid": self.CALL_SID,
-                "To": "+447367002651",
-                "SpeechResult": "something",
-            },
-        )
-
-    async def test_loop_redirects_under_limit(
+    async def test_location_detected_from_speech(
         self, async_client, mock_redis_session_store
     ):
         session = await mock_redis_session_store.get_session(self.CALL_SID)
         session["location_selected"] = False
-        session["location_redirect_count"] = 1   # 2nd redirect
-        session["clinic_id"] = "theorem"
-        await mock_redis_session_store.save_session(self.CALL_SID, session)
-
-        resp = await async_client.post(
-            "/twilio/turn",
-            data={"CallSid": self.CALL_SID, "To": "+447367002651"},
-        )
-        assert resp.status_code == 200
-        # Should redirect to /voice, not fall through
-        assert "<Redirect>" in resp.text
-
-    async def test_loop_breaks_at_four(
-        self, async_client, mock_redis_session_store
-    ):
-        # Seed session at 3 redirects — next arrival (4th) should break the loop
-        session = await mock_redis_session_store.get_session(self.CALL_SID)
-        session["location_selected"] = False
-        session["location_redirect_count"] = 3
         session["clinic_id"] = "theorem"
         await mock_redis_session_store.save_session(self.CALL_SID, session)
 
@@ -328,15 +292,19 @@ class TestLocationRedirectLoopBreaker:
         ):
             resp = await async_client.post(
                 "/twilio/turn",
-                data={"CallSid": self.CALL_SID, "To": "+447367002651", "SpeechResult": "hello"},
+                data={
+                    "CallSid": self.CALL_SID,
+                    "To": "+447367002651",
+                    "SpeechResult": "I'd like to book at Redditch please",
+                },
             )
 
         assert resp.status_code == 200
-        # Should NOT redirect — loop broken, normal turn handling
+        # No redirect — falls through to triage
+        assert "<Redirect>" not in resp.text
         updated = await mock_redis_session_store.get_session(self.CALL_SID)
         assert updated["location_selected"] is True
-        # Defaulted to first location in clinic config (alcester)
-        assert updated["selected_location"] == "alcester"
+        assert updated["selected_location"] == "redditch"
 
 
 # ===========================================================================
