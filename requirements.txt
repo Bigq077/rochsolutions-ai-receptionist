@@ -7,7 +7,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 gunicorn==25.1.0
-pydantic==2.10.5
+pydantic[email]==2.10.5
 python-multipart==0.0.20
 
 # ============================================================================
