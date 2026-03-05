@@ -537,6 +537,12 @@ async def voice(request: Request):
         session["location_selected"] = True
         session["selected_location"] = "default"
 
+    # Seed conversation_history with the greeting so the LLM knows
+    # it has already introduced itself and must NOT re-greet on its first reply.
+    history = session.setdefault("conversation_history", [])
+    if not history:
+        history.append({"role": "assistant", "content": greeting})
+
     turn_url = _abs_url(request, "/twilio/turn")
     await _say(vr, greeting, request, gather_action=turn_url)
 
