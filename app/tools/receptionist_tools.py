@@ -1350,22 +1350,24 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
     caller_phone = session.get("twilio_from", "") or collected.get("phone", "")
     call_reason  = collected.get("reason", "") or reason
 
-    # SMS alert to clinic team so they know a caller is being transferred to them
-    # (fires before the Twilio <Dial> so even a missed call leaves a trace)
+    # Brief heads-up SMS — glanceable, so Mark knows the incoming call is a patient
+    # (fires before the Twilio <Dial> so he recognises the number)
     try:
         from app.clinic_config import get_clinic
         from app.notifications.sms import send_sms
         clinic = get_clinic(session.get("clinic_id"))
         transfer_phone = clinic.get("transfer_phone", "")
         if transfer_phone:
-            parts = ["📞 Incoming transfer via Susie."]
-            if caller_name:
-                parts.append(f"Name: {caller_name}")
-            if caller_phone and not caller_phone.startswith("client:"):
-                parts.append(f"Caller: {caller_phone}")
-            if call_reason:
-                parts.append(f"Reason: {call_reason}")
-            await send_sms(to=transfer_phone, message=" | ".join(parts))
+            reason_snippet = f" ({call_reason})" if call_reason else ""
+            caller_snippet = (
+                f" from {caller_phone}"
+                if (caller_phone and not caller_phone.startswith("client:"))
+                else ""
+            )
+            await send_sms(
+                to=transfer_phone,
+                message=f"📞 Susie is transferring a patient{caller_snippet}{reason_snippet} — call coming through now.",
+            )
     except Exception as e:
         logger.warning("transfer_to_human SMS alert failed (non-fatal): %r", e)
 
