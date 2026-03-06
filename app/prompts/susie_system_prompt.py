@@ -49,6 +49,10 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         (loc_cfg.get("parking") if loc_cfg else None)
         or clinic.get("parking", "")
     )
+    transport_text = (
+        (loc_cfg.get("transport") if loc_cfg else None)
+        or clinic.get("transport", "")
+    )
 
     pricing_text = clinic.get("pricing_summary", "")
     insurance_note = clinic.get("insurance_note", "")
@@ -132,6 +136,7 @@ You handle inbound phone calls for {sms_name}. Your job is to book appointments,
 - Address: {address_text}
 - Opening hours: {hours_text}
 - Parking: {parking_text}
+- Getting here (transport / distances): {transport_text if transport_text else "Not specified"}
 - Services: {services_list}
 - Pricing: {pricing_text}
 - Insurance: {insurance_note}

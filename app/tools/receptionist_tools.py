@@ -269,7 +269,7 @@ TOOL_RESCHEDULE_APPOINTMENT = {
 TOOL_GET_CLINIC_INFO = {
     "name": "get_clinic_info",
     "description": (
-        "Get factual clinic information. Use for hours, address, prices, insurance, "
+        "Get factual clinic information. Use for hours, address, transport, prices, insurance, "
         "services, parking, cancellation policy, or what to bring. "
         "Never guess — always call this tool for factual questions."
     ),
@@ -279,8 +279,8 @@ TOOL_GET_CLINIC_INFO = {
             "topic": {
                 "type": "string",
                 "enum": [
-                    "hours", "address", "prices", "insurance",
-                    "services", "parking", "cancellation_policy", "what_to_bring",
+                    "hours", "address", "transport", "parking", "prices", "insurance",
+                    "services", "cancellation_policy", "what_to_bring",
                 ],
                 "description": "The topic to retrieve information about.",
             },
@@ -1284,6 +1284,8 @@ async def _exec_get_clinic_info(args: Dict[str, Any], session: Dict[str, Any]) -
         text = (loc_cfg.get("address") if loc_cfg else None) or clinic.get("address", "")
     elif topic == "parking":
         text = (loc_cfg.get("parking") if loc_cfg else None) or clinic.get("parking", "")
+    elif topic == "transport":
+        text = (loc_cfg.get("transport") if loc_cfg else None) or clinic.get("transport", "")
     elif topic == "prices":
         text = clinic.get("pricing_summary", "")
     elif topic == "insurance":

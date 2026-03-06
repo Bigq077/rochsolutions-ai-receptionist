@@ -870,6 +870,8 @@ def _try_quick_answer(user_said: str, session: dict) -> str | None:
     _location_specific_kws = (
         "hour", "open", "close", "when are you", "what time",
         "address", "where are you", "find you", "directions", "park",
+        "bus", "train", "transport", "get there", "travel", "far from",
+        "how far", "miles", "minutes away", "near", "station",
     )
     if (
         any(kw in t for kw in _location_specific_kws)
@@ -919,6 +921,16 @@ def _try_quick_answer(user_said: str, session: dict) -> str | None:
         )
         if parking:
             return f"{parking} Can I help you with anything else?"
+
+    # Transport / getting here
+    if any(kw in t for kw in ("bus", "train", "transport", "get there", "travel", "station", "far from", "how far", "miles")):
+        transport = (
+            loc_cfg.get("transport")
+            if loc_cfg
+            else clinic.get("transport", "")
+        )
+        if transport:
+            return f"{transport} Is there anything else I can help with?"
 
     # What to wear / bring
     if any(kw in t for kw in ("wear", "bring", "prepare", "what should i")):

@@ -171,18 +171,50 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             {
                 "id": "alcester",
                 "name": "Alcester",
-                "address": "The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD",
+                "address": (
+                    "We're at The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD. "
+                    "It's a large leisure centre — look for the Everyone Active signage and the big car park out front. "
+                    "Alcester sits at the junction of the A46 and the A435, so it's easy to reach from most directions. "
+                    "From Stratford-upon-Avon it's about 8 miles, roughly 15 minutes. "
+                    "From Redditch about 9 miles, 15 to 20 minutes. "
+                    "From Birmingham around 21 miles, roughly 35 to 40 minutes via the M42 and A435. "
+                    "From Evesham about 10 miles, around 15 minutes. "
+                    "From Warwick about 16 miles, around 20 to 25 minutes. "
+                    "The postcode B49 6AD will take you straight there on any satnav."
+                ),
                 "hours_summary": (
                     "The Alcester clinic is open Monday to Friday, "
                     "eight thirty in the morning until nine at night. "
                     "We're closed on weekends."
                 ),
-                "parking": "There's parking available at the Greig Sports Center.",
+                "parking": (
+                    "Parking at the Greig Leisure Centre is completely free, "
+                    "with around 80 spaces in the car park right in front of the building. "
+                    "There are no time limits, and disabled bays are available close to the entrance."
+                ),
+                "transport": (
+                    "Alcester doesn't have its own train station. "
+                    "The nearest stations are Redditch — about 9 miles away, roughly 15 minutes by car — "
+                    "and Stratford-upon-Avon, about 8 miles, also around 15 minutes. "
+                    "By bus, Route 26 run by Stagecoach connects Stratford-upon-Avon, Alcester, and Redditch. "
+                    "Route 247 by Diamond Bus links Redditch, Alcester, and Evesham. "
+                    "Buses stop in Alcester town centre, which is a short walk from the Greig Leisure Centre."
+                ),
             },
             {
                 "id": "redditch",
                 "name": "Redditch",
-                "address": "51 Bromsgrove Road, Redditch, B97 4RH",
+                "address": (
+                    "We're at 51 Bromsgrove Road, Redditch, B97 4RH. "
+                    "We're on the main Bromsgrove Road — look for us next to Smile Dental Care. "
+                    "Bromsgrove Road is the A448, the main road heading out of Redditch town centre toward Bromsgrove. "
+                    "From Birmingham it's about 15 miles, roughly 30 minutes via the A441. "
+                    "From Alcester about 9 miles, 15 to 20 minutes. "
+                    "From Bromsgrove about 7 miles, around 10 minutes. "
+                    "From Stratford-upon-Avon about 16 miles, 25 to 30 minutes. "
+                    "From Worcester about 17 miles, roughly 30 minutes. "
+                    "The postcode B97 4RH is reliable for satnavs."
+                ),
                 "hours_summary": (
                     "The Redditch clinic is open Monday to Saturday. "
                     "Monday, Tuesday and Friday we're open nine to five. "
@@ -190,7 +222,20 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                     "And Saturday we're open nine to five. "
                     "We're closed on Sundays."
                 ),
-                "parking": "There's street parking on Bromsgrove Road by the Redditch clinic.",
+                "parking": (
+                    "There's street parking on Bromsgrove Road — please check the signs on arrival for any restrictions. "
+                    "The Redditch Station car park is on the same road, about a 3 minute walk from the clinic — "
+                    "it has around 150 spaces and costs roughly three to four pounds fifty for the day."
+                ),
+                "transport": (
+                    "Redditch train station is on the same road as the clinic — Bromsgrove Road — "
+                    "about 5 to 7 minutes' walk away. "
+                    "West Midlands Railway runs the Cross-City Line from Birmingham New Street to Redditch "
+                    "roughly every 30 minutes, with a journey time of about 35 to 40 minutes from Birmingham. "
+                    "Several bus routes serve Bromsgrove Road: Route 52A to Bromsgrove, "
+                    "Route 247 to Alcester and Evesham, Route 150 toward Birmingham, "
+                    "and Route 512 to Stratford-upon-Avon."
+                ),
             },
         ],
         "addresses": [
@@ -409,7 +454,7 @@ THEOREM_LOCATIONS = {
         "id": "alcester",
         "name": "Alcester",
         "short_name": "Alcester",
-        "address": "Theorem Health and Wellness, The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD",
+        "address": "Theorem Health and Wellness, The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_ALCESTER"),
     },
     "redditch": {
