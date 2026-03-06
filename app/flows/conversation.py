@@ -226,7 +226,7 @@ async def handle_turn(
 
             response = await client.messages.create(
                 model=model,
-                max_tokens=400,
+                max_tokens=200,  # Phone replies are 1-3 sentences; 400 was wasteful
                 system=system_prompt,
                 messages=messages,
                 tools=TOOL_SCHEMAS,

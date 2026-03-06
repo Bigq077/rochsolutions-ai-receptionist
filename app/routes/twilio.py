@@ -717,6 +717,31 @@ async def turn(request: Request):
     session["miss_count"] = 0
 
     # --------------------------------------------------
+    # Transfer shortcut — bypass LLM entirely for explicit human requests.
+    # Saves ~4-5 seconds (two Anthropic round-trips) for the most common
+    # "speak to someone" intent where there is zero ambiguity.
+    # --------------------------------------------------
+    _transfer_phrases = (
+        "speak to someone", "speak to a person", "speak to a human",
+        "speak to someone real", "talk to someone", "talk to a person",
+        "talk to a human", "real person", "actual person",
+        "put me through", "transfer me", "transfer please",
+        "speak to mark", "talk to mark", "get mark",
+        "speak to the team", "talk to the team",
+        "speak to reception", "speak to staff",
+        "i want a human", "need a human", "want to speak to someone",
+    )
+    if any(phrase in user_said.lower() for phrase in _transfer_phrases):
+        _clinic_xfer  = get_clinic(session.get("clinic_id"))
+        _xfer_phone   = _clinic_xfer.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
+        _xfer_msg     = "Of course — let me put you straight through to the team now. Please hold."
+        session        = _append_turn(session, "caller", user_said)
+        session        = _append_turn(session, "assistant", _xfer_msg)
+        await save_session(call_sid, session)
+        _append_transfer(vr, _xfer_msg, request, _xfer_phone)
+        return xml(vr)
+
+    # --------------------------------------------------
     # Improvement 5: Insurance detection — intercept before triage
     # so we can flag it explicitly in session before triage_turn sees it
     # --------------------------------------------------

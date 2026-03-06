@@ -1350,8 +1350,7 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
     caller_phone = session.get("twilio_from", "") or collected.get("phone", "")
     call_reason  = collected.get("reason", "") or reason
 
-    # Brief heads-up SMS — glanceable, so Mark knows the incoming call is a patient
-    # (fires before the Twilio <Dial> so he recognises the number)
+    # Fire-and-forget heads-up SMS — don't block the tool return waiting for Twilio
     try:
         from app.clinic_config import get_clinic
         from app.notifications.sms import send_sms
@@ -1363,17 +1362,17 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
                 if (caller_phone and not caller_phone.startswith("client:"))
                 else ""
             )
-            await send_sms(
+            asyncio.create_task(send_sms(
                 to=transfer_phone,
                 message=f"📞 Susie is transferring a patient{caller_snippet} — call coming through now.",
-            )
+            ))
     except Exception as e:
         logger.warning("transfer_to_human SMS alert failed (non-fatal): %r", e)
 
-    # Log to Sheets so clinic team sees the transfer
+    # Fire-and-forget Sheets log — don't block the tool return waiting for Sheets
     try:
         from app.tools.handoff import send_to_sheet
-        await asyncio.to_thread(
+        asyncio.create_task(asyncio.to_thread(
             send_to_sheet,
             caller_name or "Unknown",
             caller_phone or collected.get("phone", ""),
@@ -1381,7 +1380,7 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
             f"Transfer requested: {reason}",
             session.get("call_sid", ""),
             "Phase3 AI Receptionist",
-        )
+        ))
     except Exception as e:
         logger.warning("transfer_to_human Sheets log failed (non-fatal): %r", e)
 
