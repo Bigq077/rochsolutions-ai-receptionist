@@ -50,12 +50,21 @@ async def readiness_check() -> Dict[str, Any]:
     - Environment variables are loaded
     - Critical services are configured
     """
+    acuity_user_id = os.getenv("ACUITY_USER_ID", "").strip()
+    acuity_api_key = os.getenv("ACUITY_API_KEY", "").strip()
+    phase3 = os.getenv("PHASE3_ENABLED", "false").lower() == "true"
+
     checks = {
         "twilio": bool(os.getenv("TWILIO_ACCOUNT_SID")),
+        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "phase3_enabled": phase3,
+        "acuity_credentials": bool(acuity_user_id and acuity_api_key),
+        "acuity_calendar_alcester": bool(os.getenv("ACUITY_CALENDAR_ID_ALCESTER")),
+        "acuity_calendar_redditch": bool(os.getenv("ACUITY_CALENDAR_ID_REDDITCH")),
         "redis": False,
         "environment": os.getenv("RENDER") or "local",
     }
-    
+
     # Check Redis (optional)
     try:
         from app.storage.redis_store import redis_client
@@ -64,10 +73,16 @@ async def readiness_check() -> Dict[str, Any]:
             checks["redis"] = True
     except Exception:
         pass
-    
-    all_critical_ok = checks["twilio"]  # Only Twilio is critical
-    
+
+    all_critical_ok = (
+        checks["twilio"]
+        and checks["anthropic"]
+        and checks["phase3_enabled"]
+        and checks["acuity_credentials"]
+    )
+
     return {
         "status": "ready" if all_critical_ok else "not_ready",
         "checks": checks,
+        "booking_ready": checks["acuity_credentials"] and checks["phase3_enabled"],
     }

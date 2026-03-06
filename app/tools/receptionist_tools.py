@@ -547,6 +547,14 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         raw_cal_id = (loc_cfg.get("acuity_calendar_id") or "").strip()
         practitioner_id = f"acuity_cal_{raw_cal_id}" if raw_cal_id else None
 
+        if location and not raw_cal_id:
+            logger.warning(
+                "No Acuity calendar ID configured for location %r — "
+                "fetching all-calendar availability. "
+                "Set ACUITY_CALENDAR_ID_%s on Render.",
+                location, location.upper(),
+            )
+
         today = _date.today()
         end_date = today + timedelta(days=day_window)
 
