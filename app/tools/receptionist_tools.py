@@ -1358,7 +1358,6 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
         clinic = get_clinic(session.get("clinic_id"))
         transfer_phone = clinic.get("transfer_phone", "")
         if transfer_phone:
-            reason_snippet = f" ({call_reason})" if call_reason else ""
             caller_snippet = (
                 f" from {caller_phone}"
                 if (caller_phone and not caller_phone.startswith("client:"))
@@ -1366,7 +1365,7 @@ async def _exec_transfer_to_human(args: Dict[str, Any], session: Dict[str, Any])
             )
             await send_sms(
                 to=transfer_phone,
-                message=f"📞 Susie is transferring a patient{caller_snippet}{reason_snippet} — call coming through now.",
+                message=f"📞 Susie is transferring a patient{caller_snippet} — call coming through now.",
             )
     except Exception as e:
         logger.warning("transfer_to_human SMS alert failed (non-fatal): %r", e)

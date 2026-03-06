@@ -842,15 +842,11 @@ async def transfer_status(request: Request):
             _collected     = session.get("collected") or {}
             _caller_name   = _collected.get("name", "")
             _caller_number = session.get("twilio_from", "") or _collected.get("phone", "")
-            _reason        = _collected.get("reason", "")
             _lines = ["📵 Missed patient transfer via Susie."]
             if _caller_number and not _caller_number.startswith("client:"):
                 _lines.append(f"📱 Call back: {_caller_number}")
             if _caller_name:
                 _lines.append(f"Name: {_caller_name}")
-            if _reason:
-                _lines.append(f"Reason: {_reason}")
-            _lines.append("They're still on the line with Susie.")
             await send_sms(to=_transfer_phone, message="\n".join(_lines))
     except Exception as e:
         logger.warning("Missed-transfer SMS failed (non-fatal): %r", e)
