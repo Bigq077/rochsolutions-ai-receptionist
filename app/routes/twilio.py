@@ -529,10 +529,10 @@ async def voice(request: Request):
     # only need to persist the initialised fields here.
     from app.config import REALTIME_ENABLED
     if REALTIME_ENABLED:
-        base_url = os.getenv("BASE_URL", "").rstrip("/")
+        base_url = os.getenv("BASE_URL", "").strip().rstrip("/")
         if not base_url:
             # Derive from request if BASE_URL not set (local dev)
-            base_url = str(request.base_url).rstrip("/")
+            base_url = str(request.base_url).strip().rstrip("/")
 
         # Convert https:// → wss:// for the WebSocket URL
         ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
