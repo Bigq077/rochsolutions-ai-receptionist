@@ -13,6 +13,15 @@ RECEPTIONIST_MODEL = os.getenv("RECEPTIONIST_MODEL", "claude-sonnet-4-6")
 HAIKU_MODEL = os.getenv("HAIKU_MODEL", "claude-haiku-4-5-20251001")
 PHASE3_ENABLED = os.getenv("PHASE3_ENABLED", "false").lower() == "true"
 
+# --- OpenAI Realtime API voice pipeline ---
+# When REALTIME_ENABLED=true, /twilio/voice returns <Connect><Stream> instead
+# of <Gather>, routing the call through the OpenAI Realtime WebSocket bridge.
+# Set REALTIME_ENABLED=false to instantly revert to the legacy HTTP flow.
+REALTIME_ENABLED = os.getenv("REALTIME_ENABLED", "false").lower() == "true"
+REALTIME_VOICE = os.getenv("REALTIME_VOICE", "coral")        # coral = warm British female
+REALTIME_VAD_SILENCE_MS = int(os.getenv("REALTIME_VAD_SILENCE_MS", "800"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
 # --- Security ---
 # Twilio Auth Token — used to validate X-Twilio-Signature on webhook requests.
 # Set this env var in production to reject fake/replayed webhook calls.

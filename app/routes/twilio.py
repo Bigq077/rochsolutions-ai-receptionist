@@ -14,7 +14,7 @@ from datetime import datetime
 from app.tools.handoff import fire_and_forget_append_summary_row
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import PlainTextResponse
-from twilio.twiml.voice_response import VoiceResponse, Gather, Dial
+from twilio.twiml.voice_response import VoiceResponse, Gather, Dial, Connect, Stream
 
 from app.storage.redis_store import get_session, save_session, acquire_once_lock
 from app.clinic_config import clinic_id_from_twilio_to, get_clinic
@@ -521,6 +521,38 @@ async def voice(request: Request):
 
     session = _init_session(session, call_sid)
     session = _ensure_clinic_on_session(session, to_number)
+
+    # ── OpenAI Realtime path ──────────────────────────────────────────────
+    # When REALTIME_ENABLED=true, hand the call off to the WebSocket bridge
+    # instead of using the legacy Gather→/turn HTTP round-trip flow.
+    # The media-stream handler loads the session from Redis itself, so we
+    # only need to persist the initialised fields here.
+    from app.config import REALTIME_ENABLED
+    if REALTIME_ENABLED:
+        base_url = os.getenv("BASE_URL", "").rstrip("/")
+        if not base_url:
+            # Derive from request if BASE_URL not set (local dev)
+            base_url = str(request.base_url).rstrip("/")
+
+        # Convert https:// → wss:// for the WebSocket URL
+        ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
+        stream_url = f"{ws_base}/twilio/media-stream"
+
+        await save_session(call_sid, session)
+
+        vr = VoiceResponse()
+        connect = Connect()
+        stream = Stream(url=stream_url)
+        stream.parameter(name="to", value=to_number or "")
+        connect.append(stream)
+        vr.append(connect)
+
+        logger.info(
+            "[realtime] /voice → Connect stream call_sid=%s stream_url=%s",
+            call_sid, stream_url,
+        )
+        return xml(vr)
+    # ── End Realtime path ─────────────────────────────────────────────────
 
     clinic    = get_clinic(session.get("clinic_id"))
     locations = clinic.get("locations", [])
