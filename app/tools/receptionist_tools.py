@@ -524,14 +524,21 @@ def _split_name(full_name: str):
 # ---------------------------------------------------------------------------
 
 async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
-    """check_availability via Acuity Scheduling (Theorem clinic)."""
+    """
+    check_availability via Acuity Scheduling (Theorem clinic).
+
+    Uses a progressive search window: 14 → 30 → 60 days, expanding automatically
+    until slots are found. This ensures the next available appointment is always
+    returned regardless of how far ahead it is.
+    """
     from datetime import date as _date
     from app.clinic_config import THEOREM_LOCATIONS
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
-    duration_min = int(args.get("duration_minutes") or 50)
-    day_window = int(args.get("day_window") or 14)
     service = (args.get("service") or "physiotherapy assessment").strip()
+
+    # Explicit day_window from the LLM bypasses progressive search
+    explicit_window = args.get("day_window")
 
     adapter = _get_acuity_adapter()
     if not adapter:
@@ -556,20 +563,57 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
             )
 
         today = _date.today()
-        end_date = today + timedelta(days=day_window)
 
-        slots = await adapter.get_available_slots(
-            appointment_type_id=appointment_type_id,
-            start_date=today,
-            end_date=end_date,
-            practitioner_id=practitioner_id,
-        )
+        # Progressive window: expand until slots are found.
+        # Explicit day_window bypasses this and searches that exact range only.
+        search_windows = [int(explicit_window)] if explicit_window else [14, 30, 60]
+
+        slots = []
+        used_window = search_windows[-1]
+
+        for window in search_windows:
+            used_window = window
+            end_date = today + timedelta(days=window)
+
+            try:
+                slots = await adapter.get_available_slots(
+                    appointment_type_id=appointment_type_id,
+                    start_date=today,
+                    end_date=end_date,
+                    practitioner_id=practitioner_id,
+                )
+            except Exception as api_err:
+                # Surface the real Acuity error (e.g. bad calendarID returns 400)
+                logger.error(
+                    "_check_availability_acuity: Acuity API error location=%r window=%d: %r",
+                    location, window, api_err,
+                )
+                return {
+                    "error": (
+                        f"Could not fetch availability for {location.title()}: {api_err}. "
+                        "There may be a configuration issue — please call the clinic directly."
+                    ),
+                    "slots": [],
+                }
+
+            if slots:
+                logger.info(
+                    "_check_availability_acuity: found %d slot(s) for %s within %d days",
+                    len(slots), location, window,
+                )
+                break
+            else:
+                logger.info(
+                    "_check_availability_acuity: no slots for %s in %d days — widening search",
+                    location, window,
+                )
 
         if not slots:
             return {
                 "error": (
-                    f"No slots available at {location.title()} in the next {day_window} days. "
-                    "Try a wider window or different location."
+                    f"No appointments available at {location.title()} in the next "
+                    f"{used_window} days. The clinic may be fully booked — "
+                    "please try the other location, or let the caller know the team will be in touch."
                 ),
                 "slots": [],
             }
@@ -587,7 +631,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         return {"slots": labels, "raw": raw}
 
     except Exception as e:
-        logger.error("_check_availability_acuity error: %r", e)
+        logger.error("_check_availability_acuity unexpected error: %r", e, exc_info=True)
         return {"error": f"Availability check failed: {e}", "slots": []}
 
 

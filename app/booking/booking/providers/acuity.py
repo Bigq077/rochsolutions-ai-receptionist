@@ -127,7 +127,8 @@ class AcuityAdapter:
         if status == 409:
             logger.warning(
                 f"Acuity slot conflict (409): {operation}",
-                extra={"clinic_id": self.clinic_id, "message": error_message},
+                # NOTE: "message" is a reserved LogRecord attribute — use "error_msg"
+                extra={"clinic_id": self.clinic_id, "error_msg": error_message},
             )
             raise SlotUnavailable(
                 f"Slot no longer available: {error_message}",
@@ -141,14 +142,15 @@ class AcuityAdapter:
         if 400 <= status < 500:
             logger.warning(
                 f"Acuity client error: {operation}",
+                # NOTE: "message" is a reserved LogRecord attribute — use "error_msg"
                 extra={
                     "clinic_id": self.clinic_id,
                     "status": status,
-                    "message": error_message,
+                    "error_msg": error_message,
                 },
             )
             raise ProviderUnavailable(
-                f"Acuity request error: {error_message}",
+                f"Acuity request error ({status}): {error_message}",
                 provider="acuity",
                 safe_metadata=safe_metadata,
             )
