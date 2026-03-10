@@ -93,7 +93,13 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     if not text.strip() or not stream_sid:
         return
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
+    # output_format is a QUERY PARAMETER, not a body field.
+    # Placing it in the body causes ElevenLabs to silently ignore it and
+    # return audio/mpeg (MP3) — confirmed via Content-Type header logging.
+    url = (
+        f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
+        f"?output_format=pcm_16000"
+    )
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
         "Content-Type": "application/json",
@@ -101,7 +107,6 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     body = {
         "text": text,
         "model_id": ELEVENLABS_MODEL_ID,
-        "output_format": "pcm_16000",   # Flash v2.5 returns audio/mpeg for ulaw_8000; pcm works
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75,
