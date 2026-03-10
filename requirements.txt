@@ -57,13 +57,20 @@ python-dateutil==2.9.0
 openai>=1.50.0
 
 # ============================================================================
-# WebSockets (client-side connection to OpenAI Realtime API WSS endpoint)
+# WebSockets (client-side connection to AssemblyAI STT WSS endpoint)
 # Already a transitive dep via uvicorn[standard] — pinned here for clarity
 # ============================================================================
 websockets>=13.0
 
 # ============================================================================
+# Groq (primary LLM for the Realtime voice pipeline)
+# Model: meta-llama/llama-4-maverick-17b-128e-instruct
+# ============================================================================
+groq>=0.7.0
+
+# ============================================================================
 # Anthropic (Phase 3 tool-calling receptionist — Claude Sonnet 4.6)
+# Used by conversation.py and via escalate_to_claude in the Realtime pipeline
 # ============================================================================
 anthropic>=0.40.0
 

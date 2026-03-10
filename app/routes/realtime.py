@@ -1,26 +1,44 @@
 # app/routes/realtime.py
 """
-OpenAI Realtime API voice bridge for Twilio Media Streams.
+AssemblyAI Universal-Streaming STT + Groq LLM + ElevenLabs TTS voice bridge.
 
 Architecture:
   Twilio call → <Connect><Stream url="wss://.../twilio/media-stream"/>
        ↓  (WebSocket, G.711 µ-law 8 kHz, bidirectional)
   /twilio/media-stream  (this module)
-       ↓  (WebSocket)
-  OpenAI Realtime API  (gpt-4o-realtime-preview)
-       ↓  (function calls)
-  TOOL_EXECUTORS  (receptionist_tools.py — Acuity, SMS, Sheets, etc.)
-       ↓  (complex reasoning fallback)
-  Claude Sonnet  (handle_turn via escalate_to_claude tool)
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Task 1: _twilio_to_assemblyai                              │
+  │    Twilio audio (µ-law bytes) → AssemblyAI WebSocket        │
+  │                                                             │
+  │  Task 2: _assemblyai_events                                 │
+  │    PartialTranscript (non-empty) → barge-in: cancel TTS     │
+  │    FinalTranscript              → Groq LLM → ElevenLabs TTS │
+  └─────────────────────────────────────────────────────────────┘
+
+  STT:  AssemblyAI Universal-2 (pcm_mulaw 8 kHz, format_turns=false)
+  LLM:  Groq  meta-llama/llama-4-maverick-17b-128e-instruct  (max_tokens=150)
+  TTS:  ElevenLabs Flash v2.5  (pcm_16000 → audioop → µ-law 8 kHz → Twilio)
 
 Key design points:
-- ElevenLabs pcm_16000 → audioop.tomono (anti-aliased 2:1 decimation) → audioop.lin2ulaw → Twilio G.711 µ-law.
-  (Flash v2.5 silently falls back to MP3 when ulaw_8000 is requested, so we transcode pcm_16000.)
-- Server-side VAD handles end-of-speech; no Twilio STT round-trip needed.
-- Barge-in: speech_started → cancel response + clear Twilio audio buffer.
-- Transfer: Twilio REST API calls(sid).update(twiml=…) — can't return TwiML mid-stream.
+- AssemblyAI accepts pcm_mulaw at 8 kHz — Twilio audio forwarded as raw bytes
+  (no codec conversion needed on the STT path).
+- Barge-in: a non-empty PartialTranscript while TTS is playing cancels the TTS
+  task and clears the Twilio audio buffer immediately.
+- Groq tool-calling loop reuses the same TOOL_EXECUTORS as before.
+  escalate_to_claude → Claude Sonnet (conversation.py) is completely unchanged.
+- Greeting is injected directly via ElevenLabs TTS on call start — no LLM
+  round-trip required (saves ~500 ms on the opening greeting latency).
 - Feature-gated: only active when REALTIME_ENABLED=true on Render.
 - Old /twilio/turn HTTP flow remains fully intact as fallback.
+
+ElevenLabs TTS pipeline (unchanged):
+- Flash v2.5 silently ignores the ulaw_8000 output_format body field and
+  returns audio/mpeg (MP3) instead — confirmed via Content-Type header logging.
+  Fix: request pcm_16000 as a URL query parameter, then transcode in Python.
+- audioop.tomono(pcm_16k, width=2, lfactor=0.5, rfactor=0.5) treats the
+  mono 16 kHz stream as if it were stereo 8 kHz and averages adjacent sample
+  pairs.  This is a 2-tap FIR box filter — null at 4 kHz (Nyquist for 8 kHz),
+  preventing aliasing while keeping all speech frequencies intact.
 """
 from __future__ import annotations
 
@@ -30,7 +48,7 @@ import base64
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import httpx
 import websockets
@@ -45,36 +63,50 @@ router = APIRouter()
 # Config
 # ---------------------------------------------------------------------------
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-REALTIME_MODEL = "gpt-4o-realtime-preview"
-REALTIME_VOICE = os.getenv("REALTIME_VOICE", "coral")   # fallback; ElevenLabs overrides audio output
-REALTIME_VAD_SILENCE_MS = int(os.getenv("REALTIME_VAD_SILENCE_MS", "800"))
-OPENAI_WS_URL = f"wss://api.openai.com/v1/realtime?model={REALTIME_MODEL}"
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+ASSEMBLYAI_WS_URL = (
+    "wss://streaming.assemblyai.com/v3/ws"
+    "?sample_rate=8000&encoding=pcm_mulaw&format_turns=false"
+)
 
-# ElevenLabs TTS — Flash v2.5 replaces OpenAI's built-in voice for all Twilio audio output.
-# OpenAI still generates audio internally (needed for response.audio_transcript.done event)
-# but those audio deltas are suppressed and ElevenLabs audio is streamed to Twilio instead.
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
+GROQ_MAX_TOKENS = 150
+
+# ElevenLabs TTS — Flash v2.5 (unchanged)
+ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "kBag1HOZlaVBH7ICPE8x")
 ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
 
+MAX_TOOL_ITERATIONS = 6
+MAX_HISTORY_TURNS   = 20
+
+_SAFE_FALLBACK = (
+    "I'm sorry, something went wrong on my end. "
+    "Could you give me just a moment and try again?"
+)
+
 
 # ---------------------------------------------------------------------------
-# ElevenLabs TTS  (Flash v2.5 pcm_16000 → tomono 2:1 decimation → lin2ulaw → Twilio)
+# Groq client singleton
 # ---------------------------------------------------------------------------
-#
-# Why not ulaw_8000?
-#   Flash v2.5 silently ignores the ulaw_8000 output_format and returns
-#   audio/mpeg (MP3) instead — confirmed via Content-Type header logging.
-#   Twilio receives MP3 bytes interpreted as raw µ-law → noise/static.
-#
-# Why tomono for downsampling?
-#   audioop.tomono(pcm_16k, width=2, lfactor=0.5, rfactor=0.5) treats the
-#   mono 16 kHz stream as if it were stereo 8 kHz and averages adjacent
-#   sample pairs.  This is a 2-tap FIR box filter — it has a perfect null
-#   at 4 kHz (the Nyquist frequency for 8 kHz), preventing aliasing while
-#   keeping all speech frequencies (300 Hz – 3.4 kHz) intact.  Much cleaner
-#   than audioop.ratecv linear interpolation which has no anti-aliasing.
+
+_groq_client = None
+
+
+def _get_groq_client():
+    """Return the shared AsyncGroq singleton, initialised on first call."""
+    global _groq_client
+    if _groq_client is None:
+        from groq import AsyncGroq
+        if not GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY is not set.")
+        _groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+    return _groq_client
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs TTS  (pcm_16000 → audioop tomono 2:1 decimation → lin2ulaw → Twilio)
 # ---------------------------------------------------------------------------
 
 async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
@@ -135,7 +167,7 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
                     return
 
                 # tomono requires chunks aligned to 4 bytes (2 samples × 2 bytes)
-                remainder = b""
+                remainder   = b""
                 chunk_count = 0
                 total_bytes = 0
 
@@ -144,11 +176,11 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
                     if not chunk:
                         continue
 
-                    chunk = remainder + chunk
+                    chunk    = remainder + chunk
                     leftover = len(chunk) % 4
                     if leftover:
                         remainder = chunk[-leftover:]
-                        chunk = chunk[:-leftover]
+                        chunk     = chunk[:-leftover]
                     else:
                         remainder = b""
 
@@ -161,11 +193,11 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
                             len(chunk), chunk[:16].hex(),
                         )
 
-                    # 1. Anti-aliased 2:1 decimation: treat mono 16 kHz as
-                    #    stereo 8 kHz and average L+R → mono 8 kHz
+                    # Anti-aliased 2:1 decimation: treat mono 16 kHz as
+                    # stereo 8 kHz and average L+R → mono 8 kHz
                     downsampled = audioop.tomono(chunk, 2, 0.5, 0.5)
 
-                    # 2. PCM16 → G.711 µ-law
+                    # PCM16 → G.711 µ-law
                     ulaw_chunk = audioop.lin2ulaw(downsampled, 2)
 
                     total_bytes += len(ulaw_chunk)
@@ -189,13 +221,17 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool schema conversion  (Anthropic → OpenAI Realtime format)
+# Tool schema conversion  (Anthropic → Groq / OpenAI Chat Completions format)
 # ---------------------------------------------------------------------------
 
-def _build_openai_tools() -> list:
+def _build_groq_tools() -> list:
     """
-    Convert Anthropic-format TOOL_SCHEMAS to OpenAI Realtime function definitions.
+    Convert Anthropic-format TOOL_SCHEMAS to Groq/OpenAI tool definitions.
     Also appends the special escalate_to_claude tool.
+
+    Groq uses the OpenAI Chat Completions format:
+      {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+    (Different from the OpenAI Realtime format which omits the nested "function" key.)
     """
     from app.tools.receptionist_tools import TOOL_SCHEMAS
 
@@ -203,31 +239,35 @@ def _build_openai_tools() -> list:
     for tool in TOOL_SCHEMAS:
         tools.append({
             "type": "function",
-            "name": tool["name"],
-            "description": tool.get("description", ""),
-            "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+            "function": {
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+            },
         })
 
-    # Extra tool: escalate to Claude Sonnet for complex multi-step reasoning
+    # escalate_to_claude — delegates to Claude Sonnet for complex reasoning
     tools.append({
         "type": "function",
-        "name": "escalate_to_claude",
-        "description": (
-            "Use ONLY when you need complex multi-step reasoning that is beyond a simple "
-            "conversational reply — for example, unusual edge cases in the booking flow, "
-            "complex insurance questions, or when you are genuinely unsure how to proceed. "
-            "Pass the patient's question or situation as 'question'. "
-            "Do NOT use this for standard greetings, FAQs, availability checks, or bookings."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The caller's question or situation requiring deep reasoning.",
-                }
+        "function": {
+            "name": "escalate_to_claude",
+            "description": (
+                "Use ONLY when you need complex multi-step reasoning that is beyond a simple "
+                "conversational reply — for example, unusual edge cases in the booking flow, "
+                "complex insurance questions, or when you are genuinely unsure how to proceed. "
+                "Pass the patient's question or situation as 'question'. "
+                "Do NOT use this for standard greetings, FAQs, availability checks, or bookings."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The caller's question or situation requiring deep reasoning.",
+                    }
+                },
+                "required": ["question"],
             },
-            "required": ["question"],
         },
     })
 
@@ -235,7 +275,7 @@ def _build_openai_tools() -> list:
 
 
 # ---------------------------------------------------------------------------
-# Tool executor: escalate_to_claude
+# Tool executor: escalate_to_claude  (unchanged — still delegates to Claude Sonnet)
 # ---------------------------------------------------------------------------
 
 async def _exec_escalate_to_claude(args: Dict[str, Any], session: Dict[str, Any]) -> Dict:
@@ -257,7 +297,7 @@ async def _exec_escalate_to_claude(args: Dict[str, Any], session: Dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Transfer helper  (Twilio REST API — can't return TwiML mid-stream)
+# Transfer helper  (unchanged — Twilio REST API, can't return TwiML mid-stream)
 # ---------------------------------------------------------------------------
 
 async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
@@ -265,7 +305,6 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     Inject <Say><Dial> into the live call using the Twilio REST API.
     Runs in a background thread so it doesn't block the event loop.
     """
-    import asyncio
     from twilio.rest import Client as TwilioClient
     from app.clinic_config import get_clinic
     from app.config import TRANSFER_FALLBACK_NUMBER
@@ -282,7 +321,7 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     )
 
     account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    auth_token  = os.getenv("TWILIO_AUTH_TOKEN", "")
 
     def _do_transfer():
         try:
@@ -296,88 +335,203 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI session configuration
+# Greeting injection  (direct TTS — no LLM round-trip needed)
 # ---------------------------------------------------------------------------
 
-async def _configure_openai_session(
-    openai_ws,
+async def _inject_greeting(
     session: Dict[str, Any],
-) -> None:
+    websocket,
+    stream_sid: str,
+) -> "asyncio.Task | None":
     """
-    Send session.update to OpenAI with Susie's system prompt + all tools.
-    Called only after both session.created (OpenAI) and start (Twilio) events
-    have been received, so get_system_prompt() has full session context.
+    Speak Susie's opening greeting directly via ElevenLabs TTS without a
+    Groq round-trip — saves ~500 ms on the first word of the call.
+
+    Stores the greeting in conversation_history as a user→assistant exchange
+    so Groq has full call context from the very first caller turn.
+    """
+    from app.clinic_config import get_clinic
+    from app.routes.twilio import _build_greeting
+
+    clinic   = get_clinic(session.get("clinic_id"))
+    greeting = _build_greeting(clinic)
+
+    logger.info("[realtime] injecting greeting: %r", greeting)
+
+    session.setdefault("turns", []).append({"role": "assistant", "text": greeting})
+
+    # Seed conversation history with a user→assistant exchange so every
+    # subsequent Groq call has context about how the call opened.
+    history = session.setdefault("conversation_history", [])
+    history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
+    history.append({"role": "assistant", "content": greeting})
+
+    session["last_bot_prompt"] = greeting
+
+    if not stream_sid:
+        return None
+
+    return asyncio.create_task(_tts_to_twilio(greeting, websocket, stream_sid))
+
+
+# ---------------------------------------------------------------------------
+# Groq LLM turn  (tool-calling loop)
+# ---------------------------------------------------------------------------
+
+async def _groq_turn(
+    user_text: str,
+    session: Dict[str, Any],
+    call_sid: str | None,
+) -> Tuple[str, bool]:
+    """
+    Run one caller turn through Groq (meta-llama/llama-4-maverick-17b-128e-instruct).
+
+    Handles the full tool-calling loop, per-tool session persistence, and
+    transfer detection.
+
+    Returns:
+      (reply_text, transfer_initiated)
+      - reply_text        : spoken response for ElevenLabs TTS
+                            (empty string if a transfer was triggered)
+      - transfer_initiated: True if transfer_to_human fired
     """
     from app.prompts.susie_system_prompt import get_system_prompt
-    from app.clinic_config import get_clinic
-    from app.routes.twilio import _build_greeting
+    from app.tools.receptionist_tools import TOOL_EXECUTORS
 
-    clinic = get_clinic(session.get("clinic_id"))
-    greeting = _build_greeting(clinic)
-
+    client        = _get_groq_client()
     system_prompt = get_system_prompt(session)
+    tools         = _build_groq_tools()
 
-    # Prepend a hard first-response rule so the exact greeting is always used
-    instructions = (
-        f"FIRST RESPONSE RULE: When the call starts your very first spoken words must be "
-        f"EXACTLY this greeting, word for word: \"{greeting}\" — do not paraphrase, "
-        f"do not add 'Hi there' or any other prefix, say ONLY those words.\n\n"
-        + system_prompt
-    )
+    history: list  = session.setdefault("conversation_history", [])
+    messages: list = [{"role": "system", "content": system_prompt}]
+    messages.extend(history[-MAX_HISTORY_TURNS:])
+    messages.append({"role": "user", "content": user_text})
 
-    await openai_ws.send(json.dumps({
-        "type": "session.update",
-        "session": {
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "silence_duration_ms": REALTIME_VAD_SILENCE_MS,
-                "prefix_padding_ms": 300,
-            },
-            "input_audio_format": "g711_ulaw",
-            "output_audio_format": "g711_ulaw",
-            "voice": REALTIME_VOICE,
-            "instructions": instructions,
-            "tools": _build_openai_tools(),
-            "tool_choice": "auto",
-            "input_audio_transcription": {"model": "whisper-1"},
-            "max_response_output_tokens": 300,  # phone replies are brief
-        },
-    }))
+    reply_text         = _SAFE_FALLBACK
+    transfer_initiated = False
 
+    for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
+        logger.info("[realtime] Groq iteration=%d model=%s", iteration, GROQ_MODEL)
 
-async def _inject_greeting(openai_ws, session: Dict[str, Any]) -> None:
-    """
-    Trigger Susie's opening greeting by injecting a synthetic 'call connected'
-    user message and asking OpenAI to respond.
-    """
-    from app.clinic_config import get_clinic
-    from app.routes.twilio import _build_greeting
+        try:
+            response = await client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                max_tokens=GROQ_MAX_TOKENS,
+                timeout=12.0,
+            )
+        except Exception as exc:
+            logger.error("[realtime] Groq API error iteration=%d: %r", iteration, exc)
+            return _SAFE_FALLBACK, False
 
-    clinic = get_clinic(session.get("clinic_id"))
-    greeting = _build_greeting(clinic)
+        choice       = response.choices[0]
+        message      = choice.message
+        finish_reason = choice.finish_reason
 
-    # Add a synthetic user turn so OpenAI has context to reply to
-    await openai_ws.send(json.dumps({
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "[call connected — patient is on the line]"}],
-        },
-    }))
+        logger.info(
+            "[realtime] Groq finish_reason=%s tool_calls=%d",
+            finish_reason,
+            len(message.tool_calls or []),
+        )
 
-    # Instruct the model to speak the greeting verbatim as its first response
-    await openai_ws.send(json.dumps({
-        "type": "response.create",
-        "response": {
-            "modalities": ["text", "audio"],
-            "instructions": (
-                f"Speak ONLY these exact words and nothing else: \"{greeting}\" "
-                "Do not change a single word. Do not add any prefix or suffix."
-            ),
-        },
-    }))
+        # Append assistant message to local working messages list
+        assistant_msg: Dict = {
+            "role":    "assistant",
+            "content": message.content or "",
+        }
+        if message.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id":   tc.id,
+                    "type": "function",
+                    "function": {
+                        "name":      tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in message.tool_calls
+            ]
+        messages.append(assistant_msg)
+
+        # ── Final spoken response (no tool calls) ─────────────────────────
+        if finish_reason == "stop" or not message.tool_calls:
+            reply_text = (message.content or "").strip() or _SAFE_FALLBACK
+            break
+
+        # ── Execute tool calls ─────────────────────────────────────────────
+        tool_results: list = []
+        for tc in message.tool_calls:
+            tool_name = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments)
+            except Exception:
+                args = {}
+
+            logger.info(
+                "[realtime] tool call: name=%s call_id=%s args=%s",
+                tool_name, tc.id, json.dumps(args, default=str),
+            )
+
+            if tool_name == "escalate_to_claude":
+                result = await _exec_escalate_to_claude(args, session)
+            else:
+                executor = TOOL_EXECUTORS.get(tool_name)
+                if executor:
+                    try:
+                        result = await executor(args, session)
+                    except Exception as exc:
+                        logger.error("[realtime] tool %s error: %r", tool_name, exc)
+                        result = {"error": str(exc)}
+                else:
+                    logger.warning("[realtime] unknown tool: %s", tool_name)
+                    result = {"error": f"Unknown tool: {tool_name}"}
+
+            logger.info(
+                "[realtime] tool result: name=%s result=%s",
+                tool_name, json.dumps(result, default=str),
+            )
+
+            tool_results.append({
+                "role":        "tool",
+                "tool_call_id": tc.id,
+                "content":     json.dumps(result, default=str),
+            })
+
+        messages.extend(tool_results)
+
+        # Persist session after each tool round
+        if call_sid:
+            try:
+                from app.storage.redis_store import save_session
+                await save_session(call_sid, session)
+            except Exception as exc:
+                logger.warning("[realtime] session save failed: %r", exc)
+
+        # Check for transfer request (set by transfer_to_human executor)
+        if session.pop("request_transfer", False):
+            logger.info("[realtime] transfer requested call_sid=%s", call_sid)
+            if call_sid:
+                await _handle_transfer(call_sid, session)
+            transfer_initiated = True
+            reply_text         = ""
+            break
+
+    else:
+        logger.warning("[realtime] Groq hit MAX_TOOL_ITERATIONS")
+        reply_text = _SAFE_FALLBACK
+
+    # Persist clean text turns to conversation history (tool intermediates excluded)
+    if not transfer_initiated:
+        history.append({"role": "user",      "content": user_text})
+        history.append({"role": "assistant", "content": reply_text})
+        if len(history) > MAX_HISTORY_TURNS:
+            history = history[-MAX_HISTORY_TURNS:]
+        session["conversation_history"] = history
+        session["last_bot_prompt"]      = reply_text
+
+    return reply_text, transfer_initiated
 
 
 # ---------------------------------------------------------------------------
@@ -387,110 +541,106 @@ async def _inject_greeting(openai_ws, session: Dict[str, Any]) -> None:
 @router.websocket("/twilio/media-stream")
 async def media_stream(websocket: WebSocket) -> None:
     """
-    Bidirectional bridge: Twilio Media Stream ↔ OpenAI Realtime API.
+    Bidirectional bridge: Twilio Media Stream → AssemblyAI STT → Groq LLM → ElevenLabs TTS.
 
     Lifecycle:
       1. Accept Twilio WebSocket
-      2. Open OpenAI Realtime WebSocket
-      3. Wait for both session.created (OpenAI) AND start (Twilio)
-      4. Configure OpenAI session with Susie's prompt + tools
-      5. Inject greeting
-      6. Bridge audio in both directions concurrently
-      7. Execute tool calls via TOOL_EXECUTORS
-      8. Save session to Redis on disconnect
+      2. Connect to AssemblyAI Universal-Streaming WebSocket
+      3. On Twilio "start": initialise session, speak greeting via ElevenLabs TTS
+      4. Task 1 (_twilio_to_assemblyai):
+           Forward Twilio µ-law audio bytes → AssemblyAI (no codec conversion)
+      5. Task 2 (_assemblyai_events):
+           PartialTranscript (non-empty) → barge-in: cancel TTS + clear Twilio buffer
+           FinalTranscript              → _groq_turn → ElevenLabs TTS
+      6. Save session to Redis on disconnect
     """
     await websocket.accept()
 
-    # Shared mutable state (all mutations happen in the async event loop —
-    # no threading, so no locks needed)
-    call_sid: str | None = None
+    # Shared mutable state (single asyncio event loop — no locks needed)
+    call_sid:  str | None = None
     stream_sid: str | None = None
-    session: Dict[str, Any] = {}
+    session:   Dict[str, Any] = {}
 
-    # Synchronisation: both tasks must be ready before greeting fires
-    _openai_session_ready = asyncio.Event()
-    _twilio_start_received = asyncio.Event()
-
-    # Barge-in drain flag
-    _clearing = False
-
-    # In-flight ElevenLabs TTS task — cancelled immediately on barge-in
+    _clearing      = False   # True while draining audio after barge-in
+    _groq_busy     = False   # True while Groq is processing a turn
     _elevenlabs_task: asyncio.Task | None = None
 
-    # Pending function calls keyed by call_id (streaming args accumulation)
-    _pending_calls: Dict[str, Dict] = {}
+    # Signal: Twilio "start" event received — session is ready
+    _twilio_started = asyncio.Event()
 
-    openai_headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "OpenAI-Beta": "realtime=v1",
-    }
+    # ── Connect to AssemblyAI ──────────────────────────────────────────────
+    if not ASSEMBLYAI_API_KEY:
+        logger.error("[realtime] ASSEMBLYAI_API_KEY is not set — closing connection")
+        await websocket.close()
+        return
 
-    async def _connect_openai():
-        """
-        Open the OpenAI Realtime WebSocket.
-        Returns the live connection or raises on failure.
-        """
-        return await websockets.connect(
-            OPENAI_WS_URL,
-            additional_headers=openai_headers,
-            ping_interval=30,
-            ping_timeout=10,
+    try:
+        assemblyai_ws = await websockets.connect(
+            ASSEMBLYAI_WS_URL,
+            additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
+            ping_interval=5,
+            ping_timeout=20,
         )
+    except Exception as exc:
+        logger.error("[realtime] Failed to connect to AssemblyAI: %r", exc)
+        await websocket.close()
+        return
 
-    # -----------------------------------------------------------------------
-    # Task: Twilio → OpenAI   (forward inbound audio; react to stream events)
-    # -----------------------------------------------------------------------
+    # ── Task 1: Twilio → AssemblyAI  (forward inbound audio) ──────────────
 
-    async def _twilio_to_openai(openai_ws) -> None:
-        nonlocal call_sid, stream_sid, session, _clearing
+    async def _twilio_to_assemblyai() -> None:
+        nonlocal call_sid, stream_sid, session, _elevenlabs_task, _clearing
 
         try:
             async for raw in websocket.iter_text():
-                msg = json.loads(raw)
+                msg   = json.loads(raw)
                 event = msg.get("event", "")
 
                 if event == "connected":
                     logger.info("[realtime] Twilio connected event received")
 
                 elif event == "start":
-                    start = msg.get("start", {})
-                    call_sid = start.get("callSid", "")
+                    start      = msg.get("start", {})
+                    call_sid   = start.get("callSid", "")
                     stream_sid = start.get("streamSid", "")
-                    custom = start.get("customParameters", {})
-                    to_number = custom.get("to", "")
+                    custom     = start.get("customParameters", {})
+                    to_number  = custom.get("to", "")
 
                     logger.info(
                         "[realtime] stream start call_sid=%s stream_sid=%s to=%s",
                         call_sid, stream_sid, to_number,
                     )
 
-                    # ── Load & initialise session BEFORE anything else ─────
                     from app.storage.redis_store import get_session
                     from app.routes.twilio import _init_session, _ensure_clinic_on_session
+                    from datetime import datetime
 
                     session = await get_session(call_sid) or {}
                     session = _init_session(session, call_sid)
                     session = _ensure_clinic_on_session(session, to_number or None)
 
                     if not session.get("call_start_time"):
-                        from datetime import datetime
                         session["call_start_time"] = datetime.utcnow().isoformat() + "Z"
 
-                    # ── Signal: Twilio start is ready ─────────────────────
-                    _twilio_start_received.set()
+                    _twilio_started.set()
 
-                    # ── Wait for OpenAI session before configuring ─────────
-                    await _openai_session_ready.wait()
-                    await _configure_openai_session(openai_ws, session)
-                    await _inject_greeting(openai_ws, session)
+                    # Speak the greeting immediately via ElevenLabs TTS
+                    _elevenlabs_task = await _inject_greeting(session, websocket, stream_sid)
 
                 elif event == "media":
                     payload = msg.get("media", {}).get("payload", "")
-                    if payload:
-                        await openai_ws.send(json.dumps({
-                            "type": "input_audio_buffer.append",
-                            "audio": payload,
-                        }))
+                    if payload and not _clearing:
+                        # Decode base64 → raw µ-law bytes and forward to AssemblyAI
+                        ulaw_bytes = base64.b64decode(payload)
+                        try:
+                            await assemblyai_ws.send(ulaw_bytes)
+                        except websockets.exceptions.ConnectionClosed:
+                            logger.warning(
+                                "[realtime] AssemblyAI connection closed — stopping audio"
+                            )
+                            break
+                        except Exception as exc:
+                            logger.warning("[realtime] AssemblyAI send error: %r", exc)
 
                 elif event == "stop":
                     logger.info("[realtime] Twilio stream stop call_sid=%s", call_sid)
@@ -499,212 +649,124 @@ async def media_stream(websocket: WebSocket) -> None:
         except WebSocketDisconnect:
             logger.info("[realtime] Twilio WebSocket disconnected call_sid=%s", call_sid)
         except Exception as exc:
-            logger.error("[realtime] _twilio_to_openai error: %r", exc, exc_info=True)
+            logger.error("[realtime] _twilio_to_assemblyai error: %r", exc, exc_info=True)
+        finally:
+            # Tell AssemblyAI the session is over
+            try:
+                await assemblyai_ws.send(json.dumps({"terminate_session": True}))
+            except Exception:
+                pass
 
-    # -----------------------------------------------------------------------
-    # Task: OpenAI → Twilio   (forward audio; handle function calls; barge-in)
-    # -----------------------------------------------------------------------
+    # ── Task 2: AssemblyAI events → Groq LLM → ElevenLabs TTS ────────────
 
-    async def _openai_to_twilio(openai_ws) -> None:
-        nonlocal session, _clearing, _elevenlabs_task
+    async def _assemblyai_events() -> None:
+        nonlocal session, _clearing, _groq_busy, _elevenlabs_task
 
         try:
-            async for raw in openai_ws:
-                msg = json.loads(raw)
-                msg_type = msg.get("type", "")
+            async for raw in assemblyai_ws:
+                msg      = json.loads(raw)
+                msg_type = msg.get("message_type", "")
 
-                # ── Session ready ─────────────────────────────────────────
-                if msg_type == "session.created":
-                    logger.info("[realtime] OpenAI session.created")
-                    _openai_session_ready.set()
-
-                # ── OpenAI audio output — suppressed; ElevenLabs handles TTS
-                elif msg_type == "response.audio.delta":
-                    pass  # intentionally discarded — ElevenLabs provides audio to Twilio
-
-                # ── New response started → clear barge-in flag ────────────
-                elif msg_type == "response.created":
-                    _clearing = False
+                # ── Session ready ──────────────────────────────────────────
+                if msg_type == "SessionBegins":
+                    logger.info(
+                        "[realtime] AssemblyAI session started: %s",
+                        msg.get("session_id", ""),
+                    )
 
                 # ── Barge-in: user started speaking ───────────────────────
-                elif msg_type == "input_audio_buffer.speech_started":
-                    logger.info("[realtime] barge-in detected call_sid=%s", call_sid)
-                    _clearing = True
-
-                    # Cancel any in-flight ElevenLabs TTS immediately
-                    if _elevenlabs_task and not _elevenlabs_task.done():
+                elif msg_type == "PartialTranscript":
+                    text = (msg.get("text") or "").strip()
+                    if text and _elevenlabs_task and not _elevenlabs_task.done():
+                        logger.info(
+                            "[realtime] barge-in detected call_sid=%s partial=%r",
+                            call_sid, text[:40],
+                        )
                         _elevenlabs_task.cancel()
-                    _elevenlabs_task = None
-
-                    # Cancel current OpenAI response
-                    try:
-                        await openai_ws.send(json.dumps({"type": "response.cancel"}))
-                    except Exception:
-                        pass
-
-                    # Clear Twilio audio buffer
-                    if stream_sid:
-                        try:
-                            await websocket.send_json({
-                                "event": "clear",
-                                "streamSid": stream_sid,
-                            })
-                        except Exception:
-                            pass
-
-                # ── Function call arguments streaming ─────────────────────
-                elif msg_type == "response.function_call_arguments.delta":
-                    call_id = msg.get("call_id", "")
-                    if call_id not in _pending_calls:
-                        _pending_calls[call_id] = {"name": "", "arguments": ""}
-                    _pending_calls[call_id]["arguments"] += msg.get("delta", "")
-
-                # ── Function call: name assigned ──────────────────────────
-                elif msg_type == "response.output_item.added":
-                    item = msg.get("item", {})
-                    if item.get("type") == "function_call":
-                        call_id = item.get("call_id", "")
-                        _pending_calls.setdefault(call_id, {"name": "", "arguments": ""})
-                        _pending_calls[call_id]["name"] = item.get("name", "")
-
-                # ── Function call: all arguments received → execute ────────
-                elif msg_type == "response.function_call_arguments.done":
-                    call_id = msg.get("call_id", "")
-                    tool_name = msg.get("name", "") or _pending_calls.get(call_id, {}).get("name", "")
-                    args_str = msg.get("arguments", "{}") or _pending_calls.get(call_id, {}).get("arguments", "{}")
-
-                    _pending_calls.pop(call_id, None)
-
-                    try:
-                        args = json.loads(args_str)
-                    except Exception:
-                        args = {}
-
-                    logger.info(
-                        "[realtime] tool call: name=%s call_id=%s args=%s",
-                        tool_name, call_id, json.dumps(args, default=str),
-                    )
-
-                    # Execute the tool
-                    if tool_name == "escalate_to_claude":
-                        result = await _exec_escalate_to_claude(args, session)
-                    else:
-                        from app.tools.receptionist_tools import TOOL_EXECUTORS
-                        executor = TOOL_EXECUTORS.get(tool_name)
-                        if executor:
+                        _elevenlabs_task = None
+                        _clearing = True
+                        if stream_sid:
                             try:
-                                result = await executor(args, session)
-                            except Exception as exc:
-                                logger.error("[realtime] tool %s error: %r", tool_name, exc)
-                                result = {"error": str(exc)}
-                        else:
-                            logger.warning("[realtime] unknown tool: %s", tool_name)
-                            result = {"error": f"Unknown tool: {tool_name}"}
+                                await websocket.send_json({
+                                    "event":     "clear",
+                                    "streamSid": stream_sid,
+                                })
+                            except Exception:
+                                pass
 
-                    logger.info(
-                        "[realtime] tool result: name=%s result=%s",
-                        tool_name, json.dumps(result, default=str),
-                    )
+                # ── Caller utterance complete → call Groq ─────────────────
+                elif msg_type == "FinalTranscript":
+                    text      = (msg.get("text") or "").strip()
+                    _clearing = False
 
-                    # Check for transfer request (set by transfer_to_human executor)
-                    if session.pop("request_transfer", False):
-                        if call_sid:
-                            await _handle_transfer(call_sid, session)
-                        return
+                    if not text:
+                        continue  # silence / noise — ignore
 
-                    # Send tool result back to OpenAI
-                    await openai_ws.send(json.dumps({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": json.dumps(result, default=str),
-                        },
-                    }))
-                    await openai_ws.send(json.dumps({"type": "response.create"}))
+                    logger.info("[realtime] caller said: %r", text)
+                    session.setdefault("turns", []).append({"role": "caller", "text": text})
 
-                    # Persist session after each tool execution
-                    if call_sid:
-                        from app.storage.redis_store import save_session
-                        await save_session(call_sid, session)
+                    if _groq_busy:
+                        logger.info("[realtime] Groq busy — dropping utterance: %r", text)
+                        continue
 
-                # ── Transcript: caller ────────────────────────────────────
-                elif msg_type == "conversation.item.input_audio_transcription.completed":
-                    transcript = msg.get("transcript", "").strip()
-                    if transcript:
-                        session.setdefault("turns", []).append(
-                            {"role": "caller", "text": transcript}
-                        )
-                        logger.info("[realtime] caller said: %r", transcript)
+                    # Safety guard: ensure session is initialised before first LLM call
+                    try:
+                        await asyncio.wait_for(_twilio_started.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("[realtime] session not initialised after 5 s — skipping")
+                        continue
 
-                # ── Susie's full response text → ElevenLabs TTS → Twilio ──
-                elif msg_type == "response.audio_transcript.done":
-                    transcript = msg.get("transcript", "").strip()
-                    if transcript:
-                        session.setdefault("turns", []).append(
-                            {"role": "assistant", "text": transcript}
-                        )
-                        logger.info("[realtime] susie said: %r", transcript)
+                    _groq_busy = True
+                    try:
+                        reply, transfer = await _groq_turn(text, session, call_sid)
+                    except Exception as exc:
+                        logger.error("[realtime] _groq_turn error: %r", exc, exc_info=True)
+                        reply, transfer = _SAFE_FALLBACK, False
+                    finally:
+                        _groq_busy = False
 
-                        # Cancel any previous TTS task still running, then start new one
+                    if transfer:
+                        return  # call handed off — stop processing events
+
+                    if reply and stream_sid and not _clearing:
                         if _elevenlabs_task and not _elevenlabs_task.done():
                             _elevenlabs_task.cancel()
-                        if not _clearing and stream_sid:
-                            _elevenlabs_task = asyncio.create_task(
-                                _tts_to_twilio(transcript, websocket, stream_sid)
-                            )
+                        _elevenlabs_task = asyncio.create_task(
+                            _tts_to_twilio(reply, websocket, stream_sid)
+                        )
+                        session.setdefault("turns", []).append(
+                            {"role": "assistant", "text": reply}
+                        )
+
+                    # Persist session after each completed turn
+                    if call_sid:
+                        try:
+                            from app.storage.redis_store import save_session
+                            await save_session(call_sid, session)
+                        except Exception as exc:
+                            logger.warning("[realtime] session save failed: %r", exc)
+
+                # ── AssemblyAI closed the session ──────────────────────────
+                elif msg_type == "SessionTerminated":
+                    logger.info("[realtime] AssemblyAI session terminated")
+                    break
 
                 # ── Errors ────────────────────────────────────────────────
-                elif msg_type == "error":
-                    error_code = msg.get("error", {}).get("code", "")
-                    if error_code == "response_cancel_not_active":
-                        # Benign race: barge-in fired before OpenAI had an active response
-                        logger.debug("[realtime] OpenAI %s (benign race, ignored)", error_code)
-                    else:
-                        logger.error("[realtime] OpenAI error event: %s", json.dumps(msg))
+                elif msg_type == "RealtimeError":
+                    logger.error("[realtime] AssemblyAI error: %s", msg.get("error"))
 
         except websockets.exceptions.ConnectionClosed as exc:
-            logger.warning("[realtime] OpenAI WebSocket closed: %s", exc)
+            logger.warning("[realtime] AssemblyAI WebSocket closed: %s", exc)
         except Exception as exc:
-            logger.error("[realtime] _openai_to_twilio error: %r", exc, exc_info=True)
+            logger.error("[realtime] _assemblyai_events error: %r", exc, exc_info=True)
 
-    # -----------------------------------------------------------------------
-    # Main connection lifecycle with reconnect
-    # -----------------------------------------------------------------------
-
-    openai_ws = None
-    reconnect_attempted = False
+    # ── Run both tasks concurrently ────────────────────────────────────────
 
     try:
-        try:
-            openai_ws = await _connect_openai()
-        except Exception as exc:
-            logger.error("[realtime] Failed to connect to OpenAI Realtime: %r", exc)
-            await websocket.close()
-            return
-
-        try:
-            await asyncio.gather(
-                _twilio_to_openai(openai_ws),
-                _openai_to_twilio(openai_ws),
-            )
-        except websockets.exceptions.ConnectionClosed:
-            # OpenAI dropped the connection mid-call — attempt one reconnect
-            if not reconnect_attempted:
-                reconnect_attempted = True
-                logger.warning("[realtime] OpenAI WS dropped mid-call — attempting reconnect")
-                try:
-                    openai_ws = await asyncio.wait_for(_connect_openai(), timeout=5.0)
-                    # Re-initialise with existing session context
-                    _openai_session_ready.clear()
-                    _twilio_start_received.set()  # already have call context
-                    await asyncio.gather(
-                        _twilio_to_openai(openai_ws),
-                        _openai_to_twilio(openai_ws),
-                    )
-                except Exception as exc:
-                    logger.error("[realtime] Reconnect failed: %r — ending call", exc)
-
+        await asyncio.gather(
+            _twilio_to_assemblyai(),
+            _assemblyai_events(),
+        )
     except Exception as exc:
         logger.error("[realtime] media_stream top-level error: %r", exc, exc_info=True)
 
@@ -718,12 +780,11 @@ async def media_stream(websocket: WebSocket) -> None:
             except Exception as exc:
                 logger.warning("[realtime] failed to save session: %r", exc)
 
-        # Close OpenAI WebSocket cleanly
-        if openai_ws:
-            try:
-                await openai_ws.close()
-            except Exception:
-                pass
+        # Close AssemblyAI WebSocket cleanly
+        try:
+            await assemblyai_ws.close()
+        except Exception:
+            pass
 
         # Close Twilio WebSocket cleanly
         try:
