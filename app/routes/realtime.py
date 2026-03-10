@@ -87,30 +87,58 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
         },
     }
 
-    logger.info("[realtime] ElevenLabs TTS start: %d chars", len(text))
+    logger.info(
+        "[realtime][diag] TTS request — voice=%s model=%s format=ulaw_8000 text=%r",
+        ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID, text[:80],
+    )
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             async with client.stream("POST", url, json=body, headers=headers) as resp:
+                # ── Diagnostic: log every response header ──────────────────
+                logger.info(
+                    "[realtime][diag] ElevenLabs response status=%d content-type=%r "
+                    "content-encoding=%r transfer-encoding=%r",
+                    resp.status_code,
+                    resp.headers.get("content-type", "MISSING"),
+                    resp.headers.get("content-encoding", "none"),
+                    resp.headers.get("transfer-encoding", "none"),
+                )
+
                 if resp.status_code != 200:
                     err = await resp.aread()
                     logger.error(
                         "[realtime] ElevenLabs TTS error %d: %s",
-                        resp.status_code, err[:200],
+                        resp.status_code, err[:300],
                     )
                     return
 
                 chunk_count = 0
+                total_bytes = 0
                 # 160 bytes = 20 ms at 8 kHz µ-law (1 byte/sample)
                 async for chunk in resp.aiter_bytes(chunk_size=160):
-                    if chunk:
-                        await websocket.send_json({
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": base64.b64encode(chunk).decode()},
-                        })
-                        chunk_count += 1
+                    if not chunk:
+                        continue
 
-                logger.info("[realtime] ElevenLabs TTS done: %d chunks sent", chunk_count)
+                    # ── Diagnostic: log first chunk in full detail ─────────
+                    if chunk_count == 0:
+                        logger.info(
+                            "[realtime][diag] first chunk: len=%d hex_head=%s",
+                            len(chunk),
+                            chunk[:16].hex(),
+                        )
+
+                    total_bytes += len(chunk)
+                    await websocket.send_json({
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {"payload": base64.b64encode(chunk).decode()},
+                    })
+                    chunk_count += 1
+
+                logger.info(
+                    "[realtime][diag] TTS done: chunks=%d total_bytes=%d approx_ms=%d",
+                    chunk_count, total_bytes, (total_bytes // 8),  # 8000 bytes/sec at ulaw_8000
+                )
 
     except asyncio.CancelledError:
         logger.info("[realtime] ElevenLabs TTS cancelled (barge-in)")
