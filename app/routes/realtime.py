@@ -14,7 +14,8 @@ Architecture:
   Claude Sonnet  (handle_turn via escalate_to_claude tool)
 
 Key design points:
-- ElevenLabs outputs ulaw_8000 natively — zero transcoding, direct forward to Twilio.
+- ElevenLabs pcm_16000 → audioop.tomono (anti-aliased 2:1 decimation) → audioop.lin2ulaw → Twilio G.711 µ-law.
+  (Flash v2.5 silently falls back to MP3 when ulaw_8000 is requested, so we transcode pcm_16000.)
 - Server-side VAD handles end-of-speech; no Twilio STT round-trip needed.
 - Barge-in: speech_started → cancel response + clear Twilio audio buffer.
 - Transfer: Twilio REST API calls(sid).update(twiml=…) — can't return TwiML mid-stream.
@@ -24,6 +25,7 @@ Key design points:
 from __future__ import annotations
 
 import asyncio
+import audioop
 import base64
 import json
 import logging
@@ -58,14 +60,33 @@ ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
 
 
 # ---------------------------------------------------------------------------
-# ElevenLabs TTS  (Flash v2.5 → ulaw_8000 → Twilio, zero transcoding)
+# ElevenLabs TTS  (Flash v2.5 pcm_16000 → tomono 2:1 decimation → lin2ulaw → Twilio)
+# ---------------------------------------------------------------------------
+#
+# Why not ulaw_8000?
+#   Flash v2.5 silently ignores the ulaw_8000 output_format and returns
+#   audio/mpeg (MP3) instead — confirmed via Content-Type header logging.
+#   Twilio receives MP3 bytes interpreted as raw µ-law → noise/static.
+#
+# Why tomono for downsampling?
+#   audioop.tomono(pcm_16k, width=2, lfactor=0.5, rfactor=0.5) treats the
+#   mono 16 kHz stream as if it were stereo 8 kHz and averages adjacent
+#   sample pairs.  This is a 2-tap FIR box filter — it has a perfect null
+#   at 4 kHz (the Nyquist frequency for 8 kHz), preventing aliasing while
+#   keeping all speech frequencies (300 Hz – 3.4 kHz) intact.  Much cleaner
+#   than audioop.ratecv linear interpolation which has no anti-aliasing.
 # ---------------------------------------------------------------------------
 
 async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     """
-    Call ElevenLabs Flash v2.5 streaming TTS and forward µ-law chunks
-    directly to Twilio. ulaw_8000 is G.711 µ-law 8 kHz — the native
-    Twilio format — so no codec conversion is needed at all.
+    Call ElevenLabs Flash v2.5 streaming TTS (pcm_16000) and forward audio
+    to Twilio as G.711 µ-law 8 kHz.
+
+    Transcode pipeline per chunk:
+      1. Align to 4-byte boundary (2 PCM16 samples) across chunk boundaries
+      2. audioop.tomono  — anti-aliased 2:1 decimation: 16 kHz → 8 kHz
+      3. audioop.lin2ulaw — PCM16 → µ-law (8-bit)
+      4. base64-encode and send to Twilio as media event
 
     Runs as an asyncio Task so it can be cancelled instantly on barge-in.
     """
@@ -80,7 +101,7 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     body = {
         "text": text,
         "model_id": ELEVENLABS_MODEL_ID,
-        "output_format": "ulaw_8000",          # native Twilio G.711 µ-law 8 kHz
+        "output_format": "pcm_16000",   # Flash v2.5 returns audio/mpeg for ulaw_8000; pcm works
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75,
@@ -88,20 +109,16 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     }
 
     logger.info(
-        "[realtime][diag] TTS request — voice=%s model=%s format=ulaw_8000 text=%r",
+        "[realtime][diag] TTS request — voice=%s model=%s format=pcm_16000 text=%r",
         ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID, text[:80],
     )
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             async with client.stream("POST", url, json=body, headers=headers) as resp:
-                # ── Diagnostic: log every response header ──────────────────
                 logger.info(
-                    "[realtime][diag] ElevenLabs response status=%d content-type=%r "
-                    "content-encoding=%r transfer-encoding=%r",
+                    "[realtime][diag] ElevenLabs response status=%d content-type=%r",
                     resp.status_code,
                     resp.headers.get("content-type", "MISSING"),
-                    resp.headers.get("content-encoding", "none"),
-                    resp.headers.get("transfer-encoding", "none"),
                 )
 
                 if resp.status_code != 200:
@@ -112,32 +129,51 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
                     )
                     return
 
+                # tomono requires chunks aligned to 4 bytes (2 samples × 2 bytes)
+                remainder = b""
                 chunk_count = 0
                 total_bytes = 0
-                # 160 bytes = 20 ms at 8 kHz µ-law (1 byte/sample)
-                async for chunk in resp.aiter_bytes(chunk_size=160):
+
+                # 640 bytes in → 160 µ-law bytes out (20 ms at 8 kHz)
+                async for chunk in resp.aiter_bytes(chunk_size=640):
                     if not chunk:
                         continue
 
-                    # ── Diagnostic: log first chunk in full detail ─────────
+                    chunk = remainder + chunk
+                    leftover = len(chunk) % 4
+                    if leftover:
+                        remainder = chunk[-leftover:]
+                        chunk = chunk[:-leftover]
+                    else:
+                        remainder = b""
+
+                    if len(chunk) < 4:
+                        continue
+
                     if chunk_count == 0:
                         logger.info(
                             "[realtime][diag] first chunk: len=%d hex_head=%s",
-                            len(chunk),
-                            chunk[:16].hex(),
+                            len(chunk), chunk[:16].hex(),
                         )
 
-                    total_bytes += len(chunk)
+                    # 1. Anti-aliased 2:1 decimation: treat mono 16 kHz as
+                    #    stereo 8 kHz and average L+R → mono 8 kHz
+                    downsampled = audioop.tomono(chunk, 2, 0.5, 0.5)
+
+                    # 2. PCM16 → G.711 µ-law
+                    ulaw_chunk = audioop.lin2ulaw(downsampled, 2)
+
+                    total_bytes += len(ulaw_chunk)
                     await websocket.send_json({
                         "event": "media",
                         "streamSid": stream_sid,
-                        "media": {"payload": base64.b64encode(chunk).decode()},
+                        "media": {"payload": base64.b64encode(ulaw_chunk).decode()},
                     })
                     chunk_count += 1
 
                 logger.info(
-                    "[realtime][diag] TTS done: chunks=%d total_bytes=%d approx_ms=%d",
-                    chunk_count, total_bytes, (total_bytes // 8),  # 8000 bytes/sec at ulaw_8000
+                    "[realtime][diag] TTS done: chunks=%d ulaw_bytes=%d approx_ms=%d",
+                    chunk_count, total_bytes, (total_bytes * 1000 // 8000),
                 )
 
     except asyncio.CancelledError:
