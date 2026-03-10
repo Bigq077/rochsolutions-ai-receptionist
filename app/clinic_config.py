@@ -33,7 +33,7 @@ TWILIO_TO_CLINIC: Dict[str, str] = {
 
 CLINICS: Dict[str, Dict[str, Any]] = {
     "demo": {
-        "display_name": "Roch Physio Clinic",
+        "display_name": "Roch Solutions",
         "timezone": "Europe/London",
         "calendar_id": "primary",
         "booking_system": "google_calendar",
@@ -43,7 +43,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Hi there! This is Susie, Roch Solutions' AI receptionist. "
             "How can I help you today?"
         ),
-        "sms_name":  "Roch Physio Clinic",
+        "sms_name":  "Roch Solutions",
         "phone":     "07366 530580",
 
         # booking rules
@@ -61,7 +61,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
         # FAQ / info
         "address": (
-            "Roch Physio is located at 12 High Street, Coventry, CV1 — "
+            "Roch Solutions is located at 12 High Street, Coventry, CV1 — "
             "a two minutes' walk from Coventry Station."
         ),
         "parking": (
