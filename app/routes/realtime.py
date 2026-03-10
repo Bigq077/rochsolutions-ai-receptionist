@@ -169,8 +169,21 @@ async def _configure_openai_session(
     have been received, so get_system_prompt() has full session context.
     """
     from app.prompts.susie_system_prompt import get_system_prompt
+    from app.clinic_config import get_clinic
+    from app.routes.twilio import _build_greeting
+
+    clinic = get_clinic(session.get("clinic_id"))
+    greeting = _build_greeting(clinic)
 
     system_prompt = get_system_prompt(session)
+
+    # Prepend a hard first-response rule so the exact greeting is always used
+    instructions = (
+        f"FIRST RESPONSE RULE: When the call starts your very first spoken words must be "
+        f"EXACTLY this greeting, word for word: \"{greeting}\" — do not paraphrase, "
+        f"do not add 'Hi there' or any other prefix, say ONLY those words.\n\n"
+        + system_prompt
+    )
 
     await openai_ws.send(json.dumps({
         "type": "session.update",
@@ -184,7 +197,7 @@ async def _configure_openai_session(
             "input_audio_format": "g711_ulaw",
             "output_audio_format": "g711_ulaw",
             "voice": REALTIME_VOICE,
-            "instructions": system_prompt,
+            "instructions": instructions,
             "tools": _build_openai_tools(),
             "tool_choice": "auto",
             "input_audio_transcription": {"model": "whisper-1"},
@@ -220,8 +233,8 @@ async def _inject_greeting(openai_ws, session: Dict[str, Any]) -> None:
         "response": {
             "modalities": ["text", "audio"],
             "instructions": (
-                f"Say exactly this greeting and nothing else: '{greeting}' "
-                "Do not add anything before or after it."
+                f"Speak ONLY these exact words and nothing else: \"{greeting}\" "
+                "Do not change a single word. Do not add any prefix or suffix."
             ),
         },
     }))
