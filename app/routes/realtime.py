@@ -24,11 +24,13 @@ Key design points:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
 from typing import Any, Dict
 
+import httpx
 import websockets
 import websockets.exceptions
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -43,9 +45,77 @@ router = APIRouter()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 REALTIME_MODEL = "gpt-4o-realtime-preview"
-REALTIME_VOICE = os.getenv("REALTIME_VOICE", "coral")   # coral = warm British female
+REALTIME_VOICE = os.getenv("REALTIME_VOICE", "coral")   # fallback; ElevenLabs overrides audio output
 REALTIME_VAD_SILENCE_MS = int(os.getenv("REALTIME_VAD_SILENCE_MS", "800"))
 OPENAI_WS_URL = f"wss://api.openai.com/v1/realtime?model={REALTIME_MODEL}"
+
+# ElevenLabs TTS — Flash v2.5 replaces OpenAI's built-in voice for all Twilio audio output.
+# OpenAI still generates audio internally (needed for response.audio_transcript.done event)
+# but those audio deltas are suppressed and ElevenLabs audio is streamed to Twilio instead.
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "kBag1HOZlaVBH7ICPE8x")
+ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs TTS  (Flash v2.5 → µ-law 8 kHz → Twilio)
+# ---------------------------------------------------------------------------
+
+async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
+    """
+    Call ElevenLabs Flash v2.5 streaming TTS and forward audio chunks directly
+    to Twilio as G.711 µ-law 8 kHz (ulaw_8000).  No codec conversion needed —
+    ElevenLabs outputs the exact format Twilio expects.
+
+    Runs as an asyncio Task so it can be cancelled instantly on barge-in.
+    """
+    if not text.strip() or not stream_sid:
+        return
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "text": text,
+        "model_id": ELEVENLABS_MODEL_ID,
+        "output_format": "ulaw_8000",          # native Twilio format — no transcoding
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+        },
+    }
+
+    logger.info("[realtime] ElevenLabs TTS start: %d chars", len(text))
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async with client.stream("POST", url, json=body, headers=headers) as resp:
+                if resp.status_code != 200:
+                    err = await resp.aread()
+                    logger.error(
+                        "[realtime] ElevenLabs TTS error %d: %s",
+                        resp.status_code, err[:200],
+                    )
+                    return
+
+                chunk_count = 0
+                async for chunk in resp.aiter_bytes(chunk_size=320):  # 40 ms per chunk
+                    if chunk:
+                        await websocket.send_json({
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": base64.b64encode(chunk).decode()},
+                        })
+                        chunk_count += 1
+
+                logger.info("[realtime] ElevenLabs TTS done: %d chunks sent", chunk_count)
+
+    except asyncio.CancelledError:
+        logger.info("[realtime] ElevenLabs TTS cancelled (barge-in)")
+        raise  # propagate so the task is marked cancelled
+    except Exception as exc:
+        logger.error("[realtime] ElevenLabs TTS stream error: %r", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -271,8 +341,11 @@ async def media_stream(websocket: WebSocket) -> None:
     _openai_session_ready = asyncio.Event()
     _twilio_start_received = asyncio.Event()
 
-    # Barge-in drain flag: drop audio deltas until next response.created
+    # Barge-in drain flag
     _clearing = False
+
+    # In-flight ElevenLabs TTS task — cancelled immediately on barge-in
+    _elevenlabs_task: asyncio.Task | None = None
 
     # Pending function calls keyed by call_id (streaming args accumulation)
     _pending_calls: Dict[str, Dict] = {}
@@ -363,7 +436,7 @@ async def media_stream(websocket: WebSocket) -> None:
     # -----------------------------------------------------------------------
 
     async def _openai_to_twilio(openai_ws) -> None:
-        nonlocal session, _clearing
+        nonlocal session, _clearing, _elevenlabs_task
 
         try:
             async for raw in openai_ws:
@@ -375,19 +448,11 @@ async def media_stream(websocket: WebSocket) -> None:
                     logger.info("[realtime] OpenAI session.created")
                     _openai_session_ready.set()
 
-                # ── Audio output → Twilio ─────────────────────────────────
+                # ── OpenAI audio output — suppressed; ElevenLabs handles TTS
                 elif msg_type == "response.audio.delta":
-                    if _clearing:
-                        continue  # drain buffered deltas after barge-in
-                    delta = msg.get("delta", "")
-                    if delta and stream_sid:
-                        await websocket.send_json({
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": delta},
-                        })
+                    pass  # intentionally discarded — ElevenLabs provides audio to Twilio
 
-                # ── New response started → clear barge-in drain flag ──────
+                # ── New response started → clear barge-in flag ────────────
                 elif msg_type == "response.created":
                     _clearing = False
 
@@ -395,6 +460,11 @@ async def media_stream(websocket: WebSocket) -> None:
                 elif msg_type == "input_audio_buffer.speech_started":
                     logger.info("[realtime] barge-in detected call_sid=%s", call_sid)
                     _clearing = True
+
+                    # Cancel any in-flight ElevenLabs TTS immediately
+                    if _elevenlabs_task and not _elevenlabs_task.done():
+                        _elevenlabs_task.cancel()
+                    _elevenlabs_task = None
 
                     # Cancel current OpenAI response
                     try:
@@ -497,7 +567,7 @@ async def media_stream(websocket: WebSocket) -> None:
                         )
                         logger.info("[realtime] caller said: %r", transcript)
 
-                # ── Transcript: Susie ─────────────────────────────────────
+                # ── Susie's full response text → ElevenLabs TTS → Twilio ──
                 elif msg_type == "response.audio_transcript.done":
                     transcript = msg.get("transcript", "").strip()
                     if transcript:
@@ -505,6 +575,14 @@ async def media_stream(websocket: WebSocket) -> None:
                             {"role": "assistant", "text": transcript}
                         )
                         logger.info("[realtime] susie said: %r", transcript)
+
+                        # Cancel any previous TTS task still running, then start new one
+                        if _elevenlabs_task and not _elevenlabs_task.done():
+                            _elevenlabs_task.cancel()
+                        if not _clearing and stream_sid:
+                            _elevenlabs_task = asyncio.create_task(
+                                _tts_to_twilio(transcript, websocket, stream_sid)
+                            )
 
                 # ── Errors ────────────────────────────────────────────────
                 elif msg_type == "error":
