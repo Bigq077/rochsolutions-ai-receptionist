@@ -105,11 +105,23 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
                     )
                     return
 
-                # ratecv state carries across chunks so downsampling is seamless
+                # ratecv state and byte remainder carry across chunks
                 ratecv_state = None
+                remainder = b""
                 chunk_count = 0
-                # 640 bytes = 320 samples @ 16 kHz PCM16 = 20 ms; yields 160-byte µ-law chunks
                 async for chunk in resp.aiter_bytes(chunk_size=640):
+                    if not chunk:
+                        continue
+
+                    # Prepend any leftover byte from previous chunk to maintain
+                    # 2-byte (PCM16 frame) alignment — HTTP chunks can arrive at any size
+                    chunk = remainder + chunk
+                    if len(chunk) % 2:
+                        remainder = chunk[-1:]
+                        chunk = chunk[:-1]
+                    else:
+                        remainder = b""
+
                     if not chunk:
                         continue
 
