@@ -617,7 +617,12 @@ async def media_stream(websocket: WebSocket) -> None:
 
                 # ── Errors ────────────────────────────────────────────────
                 elif msg_type == "error":
-                    logger.error("[realtime] OpenAI error event: %s", json.dumps(msg))
+                    error_code = msg.get("error", {}).get("code", "")
+                    if error_code == "response_cancel_not_active":
+                        # Benign race: barge-in fired before OpenAI had an active response
+                        logger.debug("[realtime] OpenAI %s (benign race, ignored)", error_code)
+                    else:
+                        logger.error("[realtime] OpenAI error event: %s", json.dumps(msg))
 
         except websockets.exceptions.ConnectionClosed as exc:
             logger.warning("[realtime] OpenAI WebSocket closed: %s", exc)
@@ -687,4 +692,7 @@ async def media_stream(websocket: WebSocket) -> None:
         except Exception:
             pass
 
-        logger.info("[realtime] media_stream handler exited call_sid=%s", call_sid)
+        if call_sid:
+            logger.info("[realtime] media_stream handler exited call_sid=%s", call_sid)
+        else:
+            logger.debug("[realtime] media_stream handler exited (no stream start received)")
