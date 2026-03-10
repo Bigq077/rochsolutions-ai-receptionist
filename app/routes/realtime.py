@@ -14,7 +14,7 @@ Architecture:
   Claude Sonnet  (handle_turn via escalate_to_claude tool)
 
 Key design points:
-- ElevenLabs PCM 16 kHz is transcoded (downsample + lin2ulaw) to G.711 µ-law 8 kHz for Twilio.
+- ElevenLabs outputs ulaw_8000 natively — zero transcoding, direct forward to Twilio.
 - Server-side VAD handles end-of-speech; no Twilio STT round-trip needed.
 - Barge-in: speech_started → cancel response + clear Twilio audio buffer.
 - Transfer: Twilio REST API calls(sid).update(twiml=…) — can't return TwiML mid-stream.
@@ -24,7 +24,6 @@ Key design points:
 from __future__ import annotations
 
 import asyncio
-import audioop
 import base64
 import json
 import logging
@@ -59,19 +58,14 @@ ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
 
 
 # ---------------------------------------------------------------------------
-# ElevenLabs TTS  (Flash v2.5 PCM 16 kHz → downsample + lin2ulaw → µ-law 8 kHz → Twilio)
+# ElevenLabs TTS  (Flash v2.5 → ulaw_8000 → Twilio, zero transcoding)
 # ---------------------------------------------------------------------------
 
 async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     """
-    Call ElevenLabs Flash v2.5 streaming TTS and forward audio chunks to Twilio
-    as G.711 µ-law 8 kHz.
-
-    Flash v2.5 doesn't reliably support ulaw_8000, so we request pcm_16000
-    (signed 16-bit PCM at 16 kHz) and transcode each chunk before sending:
-      1. Downsample 16 kHz → 8 kHz  (audioop.ratecv)
-      2. Convert linear PCM → µ-law  (audioop.lin2ulaw)
-      3. Base64-encode and forward to Twilio as normal.
+    Call ElevenLabs Flash v2.5 streaming TTS and forward µ-law chunks
+    directly to Twilio. ulaw_8000 is G.711 µ-law 8 kHz — the native
+    Twilio format — so no codec conversion is needed at all.
 
     Runs as an asyncio Task so it can be cancelled instantly on barge-in.
     """
@@ -86,7 +80,7 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     body = {
         "text": text,
         "model_id": ELEVENLABS_MODEL_ID,
-        "output_format": "pcm_16000",          # Flash v2.5 reliable format; we transcode below
+        "output_format": "ulaw_8000",          # native Twilio G.711 µ-law 8 kHz
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75,
@@ -105,40 +99,16 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
                     )
                     return
 
-                # ratecv state and byte remainder carry across chunks
-                ratecv_state = None
-                remainder = b""
                 chunk_count = 0
-                async for chunk in resp.aiter_bytes(chunk_size=640):
-                    if not chunk:
-                        continue
-
-                    # Prepend any leftover byte from previous chunk to maintain
-                    # 2-byte (PCM16 frame) alignment — HTTP chunks can arrive at any size
-                    chunk = remainder + chunk
-                    if len(chunk) % 2:
-                        remainder = chunk[-1:]
-                        chunk = chunk[:-1]
-                    else:
-                        remainder = b""
-
-                    if not chunk:
-                        continue
-
-                    # 1. Downsample 16000 Hz → 8000 Hz (2 bytes/sample, 1 channel)
-                    downsampled, ratecv_state = audioop.ratecv(
-                        chunk, 2, 1, 16000, 8000, ratecv_state
-                    )
-
-                    # 2. Convert signed 16-bit linear PCM → µ-law (8-bit)
-                    ulaw_chunk = audioop.lin2ulaw(downsampled, 2)
-
-                    await websocket.send_json({
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {"payload": base64.b64encode(ulaw_chunk).decode()},
-                    })
-                    chunk_count += 1
+                # 160 bytes = 20 ms at 8 kHz µ-law (1 byte/sample)
+                async for chunk in resp.aiter_bytes(chunk_size=160):
+                    if chunk:
+                        await websocket.send_json({
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": base64.b64encode(chunk).decode()},
+                        })
+                        chunk_count += 1
 
                 logger.info("[realtime] ElevenLabs TTS done: %d chunks sent", chunk_count)
 
