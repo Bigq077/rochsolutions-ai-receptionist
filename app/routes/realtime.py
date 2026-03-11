@@ -716,11 +716,14 @@ async def media_stream(websocket: WebSocket) -> None:
         except Exception as exc:
             logger.error("[realtime] _twilio_to_assemblyai error: %r", exc, exc_info=True)
         finally:
-            # Tell AssemblyAI the session is over
-            try:
-                await assemblyai_ws.send(json.dumps({"terminate_session": True}))
-            except Exception:
-                pass
+            # Tell AssemblyAI the session is over.
+            # v3 just needs the WebSocket closed — the terminate_session JSON message
+            # is v2 only; sending it to v3 produces error 3006 (Invalid Message Type).
+            if ASSEMBLYAI_USE_V2:
+                try:
+                    await assemblyai_ws.send(json.dumps({"terminate_session": True}))
+                except Exception:
+                    pass
 
     # ── Task 2: AssemblyAI events → Groq LLM → ElevenLabs TTS ────────────
 
@@ -744,6 +747,8 @@ async def media_stream(websocket: WebSocket) -> None:
                 # ── Barge-in: user started speaking ───────────────────────
                 elif msg_type == "PartialTranscript":
                     text = (msg.get("text") or "").strip()
+                    if text:
+                        logger.debug("[realtime] PartialTranscript: %r", text)
                     if text and _elevenlabs_task and not _elevenlabs_task.done():
                         logger.info(
                             "[realtime] barge-in detected call_sid=%s partial=%r",
@@ -765,6 +770,7 @@ async def media_stream(websocket: WebSocket) -> None:
                 elif msg_type == "FinalTranscript":
                     text      = (msg.get("text") or "").strip()
                     _clearing = False
+                    logger.info("[realtime] FinalTranscript: %r", text)
 
                     if not text:
                         continue  # silence / noise — ignore
@@ -828,6 +834,14 @@ async def media_stream(websocket: WebSocket) -> None:
                 # ── Errors ────────────────────────────────────────────────
                 elif msg_type in ("Error", "RealtimeError"):
                     logger.error("[realtime] AssemblyAI error: %s", msg.get("error"))
+
+                else:
+                    # Log any unrecognised event so we can see what v3 actually sends
+                    if msg_type:
+                        logger.info(
+                            "[realtime] AssemblyAI unrecognised msg_type=%r msg=%s",
+                            msg_type, json.dumps(msg, default=str)[:200],
+                        )
 
         except websockets.exceptions.ConnectionClosed as exc:
             rcvd   = exc.rcvd
