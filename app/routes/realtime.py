@@ -64,15 +64,13 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
-# URL built at runtime so the API key can be embedded as a query parameter.
-# AssemblyAI official examples use ?token= not an Authorization header.
+# AssemblyAI v3 Universal Streaming — auth via Authorization header, NOT ?token= URL param.
 # sample_rate=16000: Universal model works best at 16 kHz; Twilio audio
 # (8 kHz µ-law) is upsampled before forwarding (see _twilio_to_assemblyai).
-def _assemblyai_ws_url() -> str:
-    return (
-        "wss://streaming.assemblyai.com/v3/ws"
-        f"?speech_model=universal&sample_rate=16000&token={ASSEMBLYAI_API_KEY}"
-    )
+ASSEMBLYAI_WS_URL = (
+    "wss://streaming.assemblyai.com/v3/ws"
+    "?speech_model=universal&sample_rate=16000&encoding=pcm_s16le&format_turns=false"
+)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
@@ -598,7 +596,8 @@ async def media_stream(websocket: WebSocket) -> None:
 
     try:
         assemblyai_ws = await websockets.connect(
-            _assemblyai_ws_url(),
+            ASSEMBLYAI_WS_URL,
+            additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
             ping_interval=None,   # AssemblyAI handles keepalive server-side
             open_timeout=10,
         )
@@ -609,7 +608,7 @@ async def media_stream(websocket: WebSocket) -> None:
             "  reason : %r\n"
             "  url    : %s\n"
             + "="*60,
-            exc, _assemblyai_ws_url().split("token=")[0] + "token=<redacted>",
+            exc, ASSEMBLYAI_WS_URL,
         )
         await websocket.close()
         return
