@@ -66,7 +66,7 @@ router = APIRouter()
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
-    "?speech_model=universal&sample_rate=8000&encoding=pcm_s16le&format_turns=false"
+    "?speech_model=universal&sample_rate=8000"
 )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -216,6 +216,13 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     except asyncio.CancelledError:
         logger.info("[realtime] ElevenLabs TTS cancelled (barge-in)")
         raise  # propagate so the task is marked cancelled
+    except RuntimeError as exc:
+        # Happens when the Twilio WebSocket closes while TTS is still streaming.
+        # Not a real error — just the connection going away before we finished.
+        if "close message" in str(exc):
+            logger.warning("[realtime] ElevenLabs TTS aborted (WebSocket already closed)")
+        else:
+            logger.error("[realtime] ElevenLabs TTS runtime error: %r", exc)
     except Exception as exc:
         logger.error("[realtime] ElevenLabs TTS stream error: %r", exc)
 
