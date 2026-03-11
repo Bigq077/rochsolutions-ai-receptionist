@@ -64,10 +64,15 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
-ASSEMBLYAI_WS_URL = (
-    "wss://streaming.assemblyai.com/v3/ws"
-    "?speech_model=universal&sample_rate=8000"
-)
+# URL built at runtime so the API key can be embedded as a query parameter.
+# AssemblyAI official examples use ?token= not an Authorization header.
+# sample_rate=16000: Universal model works best at 16 kHz; Twilio audio
+# (8 kHz µ-law) is upsampled before forwarding (see _twilio_to_assemblyai).
+def _assemblyai_ws_url() -> str:
+    return (
+        "wss://streaming.assemblyai.com/v3/ws"
+        f"?speech_model=universal&sample_rate=16000&token={ASSEMBLYAI_API_KEY}"
+    )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
@@ -430,7 +435,15 @@ async def _groq_turn(
                 timeout=12.0,
             )
         except Exception as exc:
-            logger.error("[realtime] Groq API error iteration=%d: %r", iteration, exc)
+            logger.error(
+                "\n" + "="*60 + "\n"
+                "[PIPELINE ERROR] Groq LLM call failed\n"
+                "  model     : %s\n"
+                "  iteration : %d\n"
+                "  error     : %r\n"
+                + "="*60,
+                GROQ_MODEL, iteration, exc,
+            )
             return _SAFE_FALLBACK, False
 
         choice       = response.choices[0]
@@ -574,6 +587,8 @@ async def media_stream(websocket: WebSocket) -> None:
 
     # Signal: Twilio "start" event received — session is ready
     _twilio_started = asyncio.Event()
+    # Signal: AssemblyAI SessionBegins received — safe to forward audio
+    _assemblyai_ready = asyncio.Event()
 
     # ── Connect to AssemblyAI ──────────────────────────────────────────────
     if not ASSEMBLYAI_API_KEY:
@@ -583,13 +598,19 @@ async def media_stream(websocket: WebSocket) -> None:
 
     try:
         assemblyai_ws = await websockets.connect(
-            ASSEMBLYAI_WS_URL,
-            additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
-            ping_interval=5,
-            ping_timeout=20,
+            _assemblyai_ws_url(),
+            ping_interval=None,   # AssemblyAI handles keepalive server-side
+            open_timeout=10,
         )
     except Exception as exc:
-        logger.error("[realtime] Failed to connect to AssemblyAI: %r", exc)
+        logger.error(
+            "\n" + "="*60 + "\n"
+            "[PIPELINE ERROR] AssemblyAI connection failed\n"
+            "  reason : %r\n"
+            "  url    : %s\n"
+            + "="*60,
+            exc, _assemblyai_ws_url().split("token=")[0] + "token=<redacted>",
+        )
         await websocket.close()
         return
 
@@ -597,6 +618,7 @@ async def media_stream(websocket: WebSocket) -> None:
 
     async def _twilio_to_assemblyai() -> None:
         nonlocal call_sid, stream_sid, session, _elevenlabs_task, _clearing
+        _ratecv_state = None  # per-stream ratecv state for 8 kHz → 16 kHz
 
         try:
             async for raw in websocket.iter_text():
@@ -635,13 +657,18 @@ async def media_stream(websocket: WebSocket) -> None:
                     _elevenlabs_task = await _inject_greeting(session, websocket, stream_sid)
 
                 elif event == "media":
+                    if not _assemblyai_ready.is_set():
+                        continue  # drop until SessionBegins confirms session is live
                     payload = msg.get("media", {}).get("payload", "")
                     if payload and not _clearing:
-                        # Decode base64 → µ-law, then transcode to PCM16 LE.
-                        # AssemblyAI universal model requires pcm_s16le; it does
-                        # not accept pcm_mulaw (causes 1011 internal error).
+                        # µ-law 8 kHz → PCM16 LE 16 kHz for AssemblyAI Universal.
+                        # audioop.ratecv state is carried across frames to avoid
+                        # discontinuities at chunk boundaries.
                         ulaw_bytes = base64.b64decode(payload)
-                        pcm_bytes  = audioop.ulaw2lin(ulaw_bytes, 2)
+                        pcm_8k     = audioop.ulaw2lin(ulaw_bytes, 2)
+                        pcm_bytes, _ratecv_state = audioop.ratecv(
+                            pcm_8k, 2, 1, 8000, 16000, _ratecv_state
+                        )
                         try:
                             await assemblyai_ws.send(pcm_bytes)
                         except websockets.exceptions.ConnectionClosed:
@@ -683,6 +710,7 @@ async def media_stream(websocket: WebSocket) -> None:
                         "[realtime] AssemblyAI session started: %s",
                         msg.get("session_id", ""),
                     )
+                    _assemblyai_ready.set()  # allow audio forwarding to begin
 
                 # ── Barge-in: user started speaking ───────────────────────
                 elif msg_type == "PartialTranscript":
@@ -730,7 +758,14 @@ async def media_stream(websocket: WebSocket) -> None:
                     try:
                         reply, transfer = await _groq_turn(text, session, call_sid)
                     except Exception as exc:
-                        logger.error("[realtime] _groq_turn error: %r", exc, exc_info=True)
+                        logger.error(
+                            "\n" + "="*60 + "\n"
+                            "[PIPELINE ERROR] _groq_turn raised unexpectedly\n"
+                            "  call_sid : %s\n"
+                            "  error    : %r\n"
+                            + "="*60,
+                            call_sid, exc, exc_info=True,
+                        )
                         reply, transfer = _SAFE_FALLBACK, False
                     finally:
                         _groq_busy = False
@@ -766,7 +801,19 @@ async def media_stream(websocket: WebSocket) -> None:
                     logger.error("[realtime] AssemblyAI error: %s", msg.get("error"))
 
         except websockets.exceptions.ConnectionClosed as exc:
-            logger.warning("[realtime] AssemblyAI WebSocket closed: %s", exc)
+            rcvd   = exc.rcvd
+            code   = rcvd.code   if rcvd else "?"
+            reason = rcvd.reason if rcvd else "?"
+            level  = logger.warning if code in (1000, 1001) else logger.error
+            level(
+                "\n" + "="*60 + "\n"
+                "[PIPELINE ERROR] AssemblyAI WebSocket closed unexpectedly\n"
+                "  close_code   : %s\n"
+                "  close_reason : %r\n"
+                "  call_sid     : %s\n"
+                + "="*60,
+                code, reason, call_sid,
+            )
         except Exception as exc:
             logger.error("[realtime] _assemblyai_events error: %r", exc, exc_info=True)
 
