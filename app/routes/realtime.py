@@ -89,7 +89,7 @@ ASSEMBLYAI_WS_URL_V2 = (
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GROQ_MAX_TOKENS = 220
+GROQ_MAX_TOKENS = 150
 
 # ElevenLabs TTS — Flash v2.5 (unchanged)
 ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
@@ -445,6 +445,10 @@ async def _groq_turn(
                 tools=tools,
                 tool_choice="auto",
                 max_tokens=GROQ_MAX_TOKENS,
+                temperature=0.3,
+                top_p=0.9,
+                frequency_penalty=1.4,
+                presence_penalty=1.0,
                 timeout=12.0,
             )
         except Exception as exc:
