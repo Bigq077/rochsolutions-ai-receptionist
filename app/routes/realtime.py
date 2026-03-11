@@ -882,16 +882,7 @@ async def media_stream(websocket: WebSocket) -> None:
                                     )
                                 except Exception as exc:
                                     logger.error(
-                                        "
-" + "="*60 + "
-"
-                                        "[PIPELINE ERROR] _groq_turn raised unexpectedly
-"
-                                        "  call_sid : %s
-"
-                                        "  error    : %r
-"
-                                        + "="*60,
+                                        "[PIPELINE ERROR] _groq_turn: call_sid=%s error=%r",
                                         call_sid, exc, exc_info=True,
                                     )
                                     reply, transfer = _SAFE_FALLBACK, False
