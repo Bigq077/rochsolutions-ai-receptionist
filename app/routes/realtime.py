@@ -88,7 +88,7 @@ ASSEMBLYAI_WS_URL_V2 = (
 )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_MAX_TOKENS = 150
 
 # ElevenLabs TTS — Flash v2.5 (unchanged)
