@@ -66,7 +66,7 @@ router = APIRouter()
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
-    "?sample_rate=8000&encoding=pcm_mulaw&format_turns=false"
+    "?speech_model=universal&sample_rate=8000&encoding=pcm_mulaw&format_turns=false"
 )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
