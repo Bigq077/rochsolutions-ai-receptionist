@@ -66,7 +66,7 @@ router = APIRouter()
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
-    "?speech_model=universal&sample_rate=8000&encoding=pcm_mulaw&format_turns=false"
+    "?speech_model=universal&sample_rate=8000&encoding=pcm_s16le&format_turns=false"
 )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -630,10 +630,13 @@ async def media_stream(websocket: WebSocket) -> None:
                 elif event == "media":
                     payload = msg.get("media", {}).get("payload", "")
                     if payload and not _clearing:
-                        # Decode base64 → raw µ-law bytes and forward to AssemblyAI
+                        # Decode base64 → µ-law, then transcode to PCM16 LE.
+                        # AssemblyAI universal model requires pcm_s16le; it does
+                        # not accept pcm_mulaw (causes 1011 internal error).
                         ulaw_bytes = base64.b64decode(payload)
+                        pcm_bytes  = audioop.ulaw2lin(ulaw_bytes, 2)
                         try:
-                            await assemblyai_ws.send(ulaw_bytes)
+                            await assemblyai_ws.send(pcm_bytes)
                         except websockets.exceptions.ConnectionClosed:
                             logger.warning(
                                 "[realtime] AssemblyAI connection closed — stopping audio"
