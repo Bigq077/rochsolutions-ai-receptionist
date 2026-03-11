@@ -636,6 +636,13 @@ async def media_stream(websocket: WebSocket) -> None:
         nonlocal call_sid, stream_sid, session, _elevenlabs_task, _clearing
         _ratecv_state = None  # per-stream ratecv state for 8 kHz → 16 kHz
 
+        # AssemblyAI v3 requires audio chunks of 50–1000 ms.
+        # Twilio sends 20ms frames, so we buffer 3 frames (60ms) before sending.
+        # v3: 640 bytes/frame (PCM16 16kHz) → flush at 1920 bytes = 60ms
+        # v2: 320 bytes/frame (PCM16  8kHz) → flush at  960 bytes = 60ms
+        _pcm_buffer   = b""
+        _pcm_flush_at = 320 * 3 if ASSEMBLYAI_USE_V2 else 640 * 3
+
         try:
             async for raw in websocket.iter_text():
                 msg   = json.loads(raw)
@@ -687,15 +694,18 @@ async def media_stream(websocket: WebSocket) -> None:
                             pcm_bytes, _ratecv_state = audioop.ratecv(
                                 pcm_8k, 2, 1, 8000, 16000, _ratecv_state
                             )
-                        try:
-                            await assemblyai_ws.send(pcm_bytes)
-                        except websockets.exceptions.ConnectionClosed:
-                            logger.warning(
-                                "[realtime] AssemblyAI connection closed — stopping audio"
-                            )
-                            break
-                        except Exception as exc:
-                            logger.warning("[realtime] AssemblyAI send error: %r", exc)
+                        _pcm_buffer += pcm_bytes
+                        if len(_pcm_buffer) >= _pcm_flush_at:
+                            try:
+                                await assemblyai_ws.send(_pcm_buffer)
+                            except websockets.exceptions.ConnectionClosed:
+                                logger.warning(
+                                    "[realtime] AssemblyAI connection closed — stopping audio"
+                                )
+                                break
+                            except Exception as exc:
+                                logger.warning("[realtime] AssemblyAI send error: %r", exc)
+                            _pcm_buffer = b""
 
                 elif event == "stop":
                     logger.info("[realtime] Twilio stream stop call_sid=%s", call_sid)
