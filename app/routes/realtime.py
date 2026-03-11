@@ -67,14 +67,24 @@ ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 # AssemblyAI v3 Universal Streaming — auth via Authorization header, NOT ?token= URL param.
 # sample_rate=16000: Universal model works best at 16 kHz; Twilio audio
 # (8 kHz µ-law) is upsampled before forwarding (see _twilio_to_assemblyai).
+# v3 Universal Streaming (primary).
+# Remove min_turn_silence/max_turn_silence — those are U3-Pro-only params.
+# Minimal required params: speech_model + sample_rate + encoding.
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
     "?speech_model=universal-streaming-english"
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
-    "&min_turn_silence=300"
-    "&max_turn_silence=1500"
+)
+
+# v2 fallback (older, battle-tested, 8 kHz PCM16, no upsampling needed).
+# Set ASSEMBLYAI_USE_V2=true on Render to use this instead.
+ASSEMBLYAI_USE_V2 = os.getenv("ASSEMBLYAI_USE_V2", "false").lower() == "true"
+ASSEMBLYAI_WS_URL_V2 = (
+    "wss://api.assemblyai.com/v2/realtime/ws"
+    "?sample_rate=8000"
+    "&end_utterance_silence_threshold=700"
 )
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -599,9 +609,11 @@ async def media_stream(websocket: WebSocket) -> None:
         await websocket.close()
         return
 
+    _ws_url = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
+    logger.info("[realtime] AssemblyAI connect url=%s", _ws_url)
     try:
         assemblyai_ws = await websockets.connect(
-            ASSEMBLYAI_WS_URL,
+            _ws_url,
             additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
             ping_interval=None,   # AssemblyAI handles keepalive server-side
             open_timeout=10,
@@ -665,14 +677,16 @@ async def media_stream(websocket: WebSocket) -> None:
                         continue  # drop until SessionBegins confirms session is live
                     payload = msg.get("media", {}).get("payload", "")
                     if payload and not _clearing:
-                        # µ-law 8 kHz → PCM16 LE 16 kHz for AssemblyAI Universal.
-                        # audioop.ratecv state is carried across frames to avoid
-                        # discontinuities at chunk boundaries.
                         ulaw_bytes = base64.b64decode(payload)
-                        pcm_8k     = audioop.ulaw2lin(ulaw_bytes, 2)
-                        pcm_bytes, _ratecv_state = audioop.ratecv(
-                            pcm_8k, 2, 1, 8000, 16000, _ratecv_state
-                        )
+                        if ASSEMBLYAI_USE_V2:
+                            # v2 wants 8 kHz PCM16 — no upsampling needed.
+                            pcm_bytes = audioop.ulaw2lin(ulaw_bytes, 2)
+                        else:
+                            # v3 wants 16 kHz PCM16 — upsample from Twilio 8 kHz.
+                            pcm_8k    = audioop.ulaw2lin(ulaw_bytes, 2)
+                            pcm_bytes, _ratecv_state = audioop.ratecv(
+                                pcm_8k, 2, 1, 8000, 16000, _ratecv_state
+                            )
                         try:
                             await assemblyai_ws.send(pcm_bytes)
                         except websockets.exceptions.ConnectionClosed:
@@ -857,3 +871,124 @@ async def media_stream(websocket: WebSocket) -> None:
             logger.info("[realtime] media_stream handler exited call_sid=%s", call_sid)
         else:
             logger.debug("[realtime] media_stream handler exited (no stream start received)")
+
+# ---------------------------------------------------------------------------
+# Diagnostic endpoint  — GET /realtime/test/assemblyai
+# ---------------------------------------------------------------------------
+
+@router.get("/realtime/test/assemblyai")
+async def test_assemblyai():
+    """
+    Diagnose AssemblyAI connection issues without making a real call.
+
+    Visit  /realtime/test/assemblyai  in your browser (or Render shell) to see:
+      - Whether ASSEMBLYAI_API_KEY is set
+      - Whether the REST API accepts the key (invalid key → 401)
+      - Whether the WebSocket connects and returns SessionBegins
+      - The verdict: what is actually wrong
+
+    Typical failures:
+      rest_api 401  → API key is wrong — update ASSEMBLYAI_API_KEY on Render
+      ws 1011       → API key is valid but plan does not include streaming,
+                      OR the speech_model value is wrong for your plan.
+                      Set ASSEMBLYAI_USE_V2=true on Render to fall back to v2.
+      ws 1000/1001  → Clean close (should not happen immediately).
+    """
+    from fastapi.responses import JSONResponse
+
+    result: Dict[str, Any] = {
+        "api_key_set":    bool(ASSEMBLYAI_API_KEY),
+        "api_key_prefix": (ASSEMBLYAI_API_KEY[:8] + "...") if ASSEMBLYAI_API_KEY else None,
+        "use_v2":         ASSEMBLYAI_USE_V2,
+        "active_ws_url":  ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL,
+        "rest_api":       None,
+        "websocket":      None,
+        "verdict":        None,
+    }
+
+    if not ASSEMBLYAI_API_KEY:
+        result["verdict"] = "FAIL: ASSEMBLYAI_API_KEY is not set. Add it on Render."
+        return JSONResponse(result, status_code=500)
+
+    # ── 1. REST API check (validates the key) ─────────────────────────────
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                "https://api.assemblyai.com/v2/transcript",
+                headers={"Authorization": ASSEMBLYAI_API_KEY},
+                params={"limit": 1},
+            )
+            result["rest_api"] = {
+                "status_code": resp.status_code,
+                "ok":          resp.status_code == 200,
+                "body_preview": "(ok)" if resp.status_code == 200 else resp.text[:300],
+            }
+    except Exception as exc:
+        result["rest_api"] = {"ok": False, "error": str(exc)}
+
+    # ── 2. WebSocket connection test ───────────────────────────────────────
+    ws_url = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
+    try:
+        _ws = await asyncio.wait_for(
+            websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
+                ping_interval=None,
+                open_timeout=5,
+            ),
+            timeout=6.0,
+        )
+        try:
+            raw = await asyncio.wait_for(_ws.recv(), timeout=4.0)
+            data = json.loads(raw)
+            result["websocket"] = {
+                "connected":          True,
+                "first_message_type": data.get("message_type"),
+                "session_id":         data.get("session_id"),
+            }
+        except websockets.exceptions.ConnectionClosed as exc:
+            rcvd = exc.rcvd
+            result["websocket"] = {
+                "connected":    False,
+                "close_code":   rcvd.code   if rcvd else "?",
+                "close_reason": rcvd.reason if rcvd else "?",
+            }
+        except asyncio.TimeoutError:
+            result["websocket"] = {
+                "connected": True,
+                "note": "No message in 4 s — session may need audio before responding.",
+            }
+        try:
+            await _ws.close()
+        except Exception:
+            pass
+    except asyncio.TimeoutError:
+        result["websocket"] = {"connected": False, "error": "connect timed out after 6 s"}
+    except Exception as exc:
+        result["websocket"] = {"connected": False, "error": repr(exc)}
+
+    # ── Verdict ────────────────────────────────────────────────────────────
+    rest_ok = (result["rest_api"] or {}).get("ok")
+    ws_info  = result["websocket"] or {}
+    ws_ok    = ws_info.get("connected") or ws_info.get("first_message_type")
+
+    if not rest_ok:
+        result["verdict"] = (
+            "FAIL: API key rejected by REST API (status "
+            + str((result["rest_api"] or {}).get("status_code", "?"))
+            + "). Update ASSEMBLYAI_API_KEY on Render."
+        )
+    elif not ws_ok:
+        code = ws_info.get("close_code", "?")
+        result["verdict"] = (
+            f"FAIL: REST API OK but WebSocket closed with code {code}. "
+            "Likely cause: your AssemblyAI plan does not include real-time streaming, "
+            "or the speech_model is not available on your plan. "
+            "Try setting ASSEMBLYAI_USE_V2=true on Render (uses the older v2 endpoint)."
+        )
+    else:
+        result["verdict"] = "OK: AssemblyAI is reachable and the session opened correctly."
+
+    status = 200 if ws_ok else 500
+    return JSONResponse(result, status_code=status)
+
