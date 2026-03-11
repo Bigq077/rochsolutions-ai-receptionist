@@ -826,6 +826,100 @@ async def media_stream(websocket: WebSocket) -> None:
                         except Exception as exc:
                             logger.warning("[realtime] session save failed: %r", exc)
 
+                # ── AssemblyAI v3 Turn event ───────────────────────────────
+                # v3 sends Turn events (not PartialTranscript/FinalTranscript).
+                # end_of_turn=False → partial (barge-in); end_of_turn=True → run Groq.
+                # The transcript text is in msg["transcript"], not msg["text"].
+                elif msg_type == "Turn":
+                    transcript  = (msg.get("transcript") or "").strip()
+                    end_of_turn = msg.get("end_of_turn", False)
+
+                    if not end_of_turn:
+                        # Partial — barge-in if TTS is currently playing
+                        if transcript and _elevenlabs_task and not _elevenlabs_task.done():
+                            logger.info(
+                                "[realtime] barge-in call_sid=%s partial=%r",
+                                call_sid, transcript[:40],
+                            )
+                            _elevenlabs_task.cancel()
+                            _elevenlabs_task = None
+                            _clearing = True
+                            if stream_sid:
+                                try:
+                                    await websocket.send_json({
+                                        "event":     "clear",
+                                        "streamSid": stream_sid,
+                                    })
+                                except Exception:
+                                    pass
+                    else:
+                        # End of turn — send utterance to Groq
+                        _clearing = False
+                        logger.info("[realtime] Turn complete: %r", transcript)
+
+                        if not transcript:
+                            pass  # silence — skip
+                        elif _groq_busy:
+                            logger.info("[realtime] Groq busy — dropping: %r", transcript)
+                        else:
+                            logger.info("[realtime] caller said: %r", transcript)
+                            session.setdefault("turns", []).append(
+                                {"role": "caller", "text": transcript}
+                            )
+
+                            try:
+                                await asyncio.wait_for(_twilio_started.wait(), timeout=5.0)
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "[realtime] session not ready after 5 s — skipping"
+                                )
+                                pass
+                            else:
+                                _groq_busy = True
+                                try:
+                                    reply, transfer = await _groq_turn(
+                                        transcript, session, call_sid
+                                    )
+                                except Exception as exc:
+                                    logger.error(
+                                        "
+" + "="*60 + "
+"
+                                        "[PIPELINE ERROR] _groq_turn raised unexpectedly
+"
+                                        "  call_sid : %s
+"
+                                        "  error    : %r
+"
+                                        + "="*60,
+                                        call_sid, exc, exc_info=True,
+                                    )
+                                    reply, transfer = _SAFE_FALLBACK, False
+                                finally:
+                                    _groq_busy = False
+
+                                if transfer:
+                                    return  # call handed off
+
+                                if reply and stream_sid and not _clearing:
+                                    if _elevenlabs_task and not _elevenlabs_task.done():
+                                        _elevenlabs_task.cancel()
+                                    _elevenlabs_task = asyncio.create_task(
+                                        _tts_to_twilio(reply, websocket, stream_sid)
+                                    )
+                                    session.setdefault("turns", []).append(
+                                        {"role": "assistant", "text": reply}
+                                    )
+
+                                if call_sid:
+                                    try:
+                                        from app.storage.redis_store import save_session
+                                        await save_session(call_sid, session)
+                                    except Exception as exc:
+                                        logger.warning(
+                                            "[realtime] session save failed: %r", exc
+                                        )
+
                 # ── AssemblyAI closed the session ──────────────────────────
                 elif msg_type in ("Terminate", "SessionTerminated"):
                     logger.info("[realtime] AssemblyAI session terminated")
