@@ -720,10 +720,11 @@ async def media_stream(websocket: WebSocket) -> None:
         try:
             async for raw in assemblyai_ws:
                 msg      = json.loads(raw)
-                msg_type = msg.get("message_type", "")
+                # v3 uses "type" field; v2 uses "message_type" — handle both.
+                msg_type = msg.get("type") or msg.get("message_type", "")
 
                 # ── Session ready ──────────────────────────────────────────
-                if msg_type == "SessionBegins":
+                if msg_type in ("Begin", "SessionBegins"):
                     logger.info(
                         "[realtime] AssemblyAI session started: %s",
                         msg.get("session_id", ""),
@@ -810,12 +811,12 @@ async def media_stream(websocket: WebSocket) -> None:
                             logger.warning("[realtime] session save failed: %r", exc)
 
                 # ── AssemblyAI closed the session ──────────────────────────
-                elif msg_type == "SessionTerminated":
+                elif msg_type in ("Terminate", "SessionTerminated"):
                     logger.info("[realtime] AssemblyAI session terminated")
                     break
 
                 # ── Errors ────────────────────────────────────────────────
-                elif msg_type == "RealtimeError":
+                elif msg_type in ("Error", "RealtimeError"):
                     logger.error("[realtime] AssemblyAI error: %s", msg.get("error"))
 
         except websockets.exceptions.ConnectionClosed as exc:
@@ -943,8 +944,10 @@ async def test_assemblyai():
             data = json.loads(raw)
             result["websocket"] = {
                 "connected":          True,
-                "first_message_type": data.get("message_type"),
-                "session_id":         data.get("session_id"),
+                # v3 uses 'type'; v2 uses 'message_type'
+                "first_message_type": data.get("type") or data.get("message_type"),
+                "session_id":         data.get("id") or data.get("session_id"),
+                "raw_message":        data,
             }
         except websockets.exceptions.ConnectionClosed as exc:
             rcvd = exc.rcvd
