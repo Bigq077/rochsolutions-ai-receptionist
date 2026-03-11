@@ -1382,7 +1382,7 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
         session["location_selected"] = True
 
     session["collected"][field] = value
-    return {"stored": field, "value": value}
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
