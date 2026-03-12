@@ -1,6 +1,6 @@
 # app/routes/realtime.py
 """
-AssemblyAI Universal-Streaming STT + OpenAI GPT-4.1-mini LLM + ElevenLabs TTS voice bridge.
+AssemblyAI Universal-Streaming STT + Claude Sonnet LLM + ElevenLabs TTS voice bridge.
 
 Architecture:
   Twilio call → <Connect><Stream url="wss://.../twilio/media-stream"/>
@@ -16,7 +16,7 @@ Architecture:
   └─────────────────────────────────────────────────────────────┘
 
   STT:  AssemblyAI Universal-2 (pcm_mulaw 8 kHz, format_turns=false)
-  LLM:  OpenAI GPT-4.1-mini (max_tokens=150, streaming, sentence-level TTS)
+  LLM:  Claude Sonnet (claude-sonnet-4-6, max_tokens=150, streaming)
   TTS:  ElevenLabs Flash v2.5  (pcm_16000 → audioop → µ-law 8 kHz → Twilio)
 
 Key design points:
@@ -24,7 +24,8 @@ Key design points:
   (no codec conversion needed on the STT path).
 - Barge-in: a non-empty PartialTranscript while TTS is playing cancels the TTS
   task and clears the Twilio audio buffer immediately.
-- OpenAI tool-calling loop reuses the same TOOL_EXECUTORS as before.
+- Claude tool-calling loop (Anthropic native format) drives all booking/info tools.
+  Sentence-level TTS: first sentence fires immediately on boundary detection.
   escalate_to_claude → Claude Sonnet (conversation.py) is completely unchanged.
 - Greeting is injected directly via ElevenLabs TTS on call start — no LLM
   round-trip required (saves ~500 ms on the opening greeting latency).
@@ -88,12 +89,64 @@ ASSEMBLYAI_WS_URL_V2 = (
     "&end_utterance_silence_threshold=700"
 )
 
-OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_MAX_TOKENS = 150
+ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL       = "claude-sonnet-4-6"
+CLAUDE_MAX_TOKENS  = 150
+CLAUDE_TEMPERATURE = 0.4
 
-# Regex for first-sentence boundary detection (streaming TTS)
-_SENTENCE_END = re.compile(r'[.!?](?:\s|$)')
+# ---------------------------------------------------------------------------
+# Sentence boundary detection  (streaming TTS — sentence-level chunking)
+# ---------------------------------------------------------------------------
+
+# Words that must NOT trigger a sentence split when followed by a period
+_ABBREVS = frozenset({"dr", "mr", "mrs", "ms", "st", "no", "vs"})
+
+
+def _find_sentence_boundary(buf: str, min_chars: int = 20) -> "int | None":
+    """Return the index just after the first valid sentence boundary, or None.
+
+    Rules:
+    - Sentence ends with . ? ! followed by whitespace+uppercase or end of string.
+    - Never split on: Dr. Mr. Mrs. Ms. St. No. vs. (common abbreviations).
+    - Never split on decimal numbers like 9.30.
+    - Need at least min_chars before the punctuation.
+    """
+    for m in re.finditer(r"[.!?]", buf):
+        pos = m.start()
+        end = m.end()
+
+        if pos < min_chars:
+            continue
+
+        punct = m.group()
+        after = buf[end:]
+
+        # Must be followed by whitespace+uppercase, or end of string
+        if after:
+            stripped = after.lstrip()
+            if stripped:
+                if not stripped[0].isupper():
+                    continue   # next word starts lowercase → not a sentence end
+            # else only whitespace follows → valid boundary
+        # else end of string → valid
+
+        if punct == ".":
+            # Check for abbreviation: look at last word before the dot
+            word_m = re.search(r"(\w+)$", buf[:pos])
+            if word_m:
+                word = word_m.group(1).lower()
+                if word in _ABBREVS:
+                    continue
+                # Single capital letter = initial (e.g. "J. Smith")
+                if len(word) == 1 and word_m.group(1).isupper():
+                    continue
+            # Check for decimal: digit immediately before dot
+            if pos > 0 and buf[pos - 1].isdigit():
+                continue
+
+        return end
+
+    return None
 
 # ElevenLabs TTS — Flash v2.5 (unchanged)
 ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
@@ -110,21 +163,21 @@ _SAFE_FALLBACK = (
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client singleton
+# Anthropic client singleton
 # ---------------------------------------------------------------------------
 
-_openai_client = None
+_anthropic_client = None
 
 
-def _get_openai_client():
-    """Return the shared AsyncOpenAI singleton, initialised on first call."""
-    global _openai_client
-    if _openai_client is None:
-        from openai import AsyncOpenAI
-        if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY is not set.")
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai_client
+def _get_anthropic_client():
+    """Return the shared AsyncAnthropic singleton, initialised on first call."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        from anthropic import AsyncAnthropic
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+        _anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
 
 
 # ---------------------------------------------------------------------------
@@ -250,51 +303,36 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool schema conversion  (Anthropic → OpenAI Chat Completions format)
+# Tool definitions  (Anthropic native format — used directly with Claude)
 # ---------------------------------------------------------------------------
 
-def _build_tools() -> list:
+def _build_claude_tools() -> list:
     """
-    Convert Anthropic-format TOOL_SCHEMAS to OpenAI tool definitions.
-    Also appends the special escalate_to_claude tool.
-
-    Format: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+    Return tool definitions in Anthropic native format.
+    TOOL_SCHEMAS from receptionist_tools.py is already in Anthropic format
+    (uses input_schema, not parameters) — used directly without conversion.
     """
     from app.tools.receptionist_tools import TOOL_SCHEMAS
 
-    tools = []
-    for tool in TOOL_SCHEMAS:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        })
+    tools = list(TOOL_SCHEMAS)  # already in Anthropic format
 
-    # escalate_to_claude — delegates to Claude Sonnet for complex reasoning
+    # escalate_to_claude — delegates to Claude Sonnet conversation.py
     tools.append({
-        "type": "function",
-        "function": {
-            "name": "escalate_to_claude",
-            "description": (
-                "Use ONLY when you need complex multi-step reasoning that is beyond a simple "
-                "conversational reply — for example, unusual edge cases in the booking flow, "
-                "complex insurance questions, or when you are genuinely unsure how to proceed. "
-                "Pass the patient's question or situation as 'question'. "
-                "Do NOT use this for standard greetings, FAQs, availability checks, or bookings."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The caller's question or situation requiring deep reasoning.",
-                    }
-                },
-                "required": ["question"],
+        "name": "escalate_to_claude",
+        "description": (
+            "Use ONLY for genuine clinical or legal complexity requiring deep reasoning. "
+            "Never for standard greetings, FAQs, availability, booking, pricing, hours, "
+            "or common conditions — handle all of those directly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The caller's question or situation requiring deep reasoning.",
+                }
             },
+            "required": ["question"],
         },
     })
 
@@ -402,7 +440,7 @@ async def _inject_greeting(
 
 
 # ---------------------------------------------------------------------------
-# OpenAI LLM turn  (streaming tool-calling loop)
+# Claude Sonnet LLM turn  (streaming tool-calling loop)
 # ---------------------------------------------------------------------------
 
 async def _llm_turn(
@@ -413,28 +451,23 @@ async def _llm_turn(
     stream_sid: str | None = None,
 ) -> Tuple[str, bool, "asyncio.Task | None"]:
     """
-    Run one caller turn through OpenAI GPT-4.1-mini with streaming.
+    Run one caller turn through Claude Sonnet with streaming.
 
-    Streaming enables sentence-level TTS: as soon as the first sentence
-    boundary is detected in the streamed tokens, TTS starts immediately
-    rather than waiting for the full response.
+    Sentence-level TTS: first sentence fires to ElevenLabs as soon as the
+    sentence boundary is detected in the streamed tokens.
 
     Returns:
       (reply_text, transfer_initiated, tts_task)
-      - reply_text        : full spoken response (for conversation history)
-      - transfer_initiated: True if transfer_to_human fired
-      - tts_task          : running asyncio.Task for TTS, or None if not started
     """
     from app.prompts.susie_system_prompt import get_system_prompt
     from app.tools.receptionist_tools import TOOL_EXECUTORS
 
-    client        = _get_openai_client()
+    client        = _get_anthropic_client()
     system_prompt = get_system_prompt(session)
-    tools         = _build_tools()
+    tools         = _build_claude_tools()
 
     history: list  = session.setdefault("conversation_history", [])
-    messages: list = [{"role": "system", "content": system_prompt}]
-    messages.extend(history[-MAX_HISTORY_TURNS:])
+    messages: list = list(history[-MAX_HISTORY_TURNS:])
     messages.append({"role": "user", "content": user_text})
 
     reply_text         = _SAFE_FALLBACK
@@ -442,105 +475,103 @@ async def _llm_turn(
     tts_task: "asyncio.Task | None" = None
 
     for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
-        logger.info("[realtime] LLM iteration=%d model=%s", iteration, OPENAI_MODEL)
+        logger.info("[realtime] LLM iteration=%d model=%s", iteration, CLAUDE_MODEL)
+
+        text_parts: list = []
+        tool_uses:  list = []
+        current_block    = None
+        stop_reason: str | None = None
+        sentence_buf     = ""
+        first_tts_task: "asyncio.Task | None" = None
 
         try:
-            stream = await client.chat.completions.create(
-                model=OPENAI_MODEL,
+            async with client.messages.stream(
+                model=CLAUDE_MODEL,
+                system=system_prompt,
                 messages=messages,
                 tools=tools,
-                tool_choice="auto",
-                max_tokens=OPENAI_MAX_TOKENS,
-                temperature=0.4,
-                stream=True,
-            )
+                max_tokens=CLAUDE_MAX_TOKENS,
+                temperature=CLAUDE_TEMPERATURE,
+            ) as stream:
+                async for event in stream:
+                    etype = getattr(event, "type", "")
+
+                    if etype == "content_block_start":
+                        blk = event.content_block
+                        if blk.type == "text":
+                            current_block = {"type": "text", "text": ""}
+                        elif blk.type == "tool_use":
+                            current_block = {
+                                "type":       "tool_use",
+                                "id":         blk.id,
+                                "name":       blk.name,
+                                "input_json": "",
+                            }
+
+                    elif etype == "content_block_delta":
+                        d = event.delta
+                        if (
+                            d.type == "text_delta"
+                            and current_block
+                            and current_block["type"] == "text"
+                        ):
+                            chunk = d.text
+                            text_parts.append(chunk)
+                            current_block["text"] += chunk
+                            sentence_buf += chunk
+                            if first_tts_task is None and websocket and stream_sid:
+                                boundary = _find_sentence_boundary(sentence_buf)
+                                if boundary is not None:
+                                    first_sent   = sentence_buf[:boundary].strip()
+                                    sentence_buf = sentence_buf[boundary:].lstrip()
+                                    if first_sent:
+                                        logger.info(
+                                            "[realtime] sentence TTS sent1: %r",
+                                            first_sent[:60],
+                                        )
+                                        first_tts_task = asyncio.create_task(
+                                            _tts_to_twilio(first_sent, websocket, stream_sid)
+                                        )
+                        elif (
+                            d.type == "input_json_delta"
+                            and current_block
+                            and current_block["type"] == "tool_use"
+                        ):
+                            current_block["input_json"] += d.partial_json
+
+                    elif etype == "content_block_stop":
+                        if current_block:
+                            if current_block["type"] == "tool_use":
+                                tool_uses.append(current_block)
+                            current_block = None
+
+                    elif etype == "message_delta":
+                        stop_reason = getattr(event.delta, "stop_reason", None)
+
         except Exception as exc:
             logger.error(
                 "\n" + "="*60 + "\n"
-                "[PIPELINE ERROR] OpenAI LLM call failed\n"
+                "[PIPELINE ERROR] Claude LLM stream failed\n"
                 "  model     : %s\n"
                 "  iteration : %d\n"
                 "  error     : %r\n"
                 + "="*60,
-                OPENAI_MODEL, iteration, exc,
+                CLAUDE_MODEL, iteration, exc,
             )
             return _SAFE_FALLBACK, False, None
 
-        # ── Accumulate streamed response ───────────────────────────────────
-        content_parts: list = []
-        tool_calls_raw: dict = {}   # index → {id, name, arguments}
-        finish_reason: str | None = None
-        sentence_buf  = ""
-        first_tts_task: "asyncio.Task | None" = None
-
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            delta = choice.delta
-
-            if delta.content:
-                content_parts.append(delta.content)
-                sentence_buf += delta.content
-                # Fire TTS for first complete sentence immediately
-                if first_tts_task is None and websocket and stream_sid:
-                    m = _SENTENCE_END.search(sentence_buf)
-                    if m:
-                        first_sent = sentence_buf[: m.end()].strip()
-                        sentence_buf = sentence_buf[m.end():]
-                        if first_sent:
-                            logger.info(
-                                "[realtime] streaming TTS — sentence 1: %r",
-                                first_sent[:60],
-                            )
-                            first_tts_task = asyncio.create_task(
-                                _tts_to_twilio(first_sent, websocket, stream_sid)
-                            )
-
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tool_calls_raw:
-                        tool_calls_raw[idx] = {"id": "", "name": "", "arguments": ""}
-                    if tc_delta.id:
-                        tool_calls_raw[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_calls_raw[idx]["name"] += tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tool_calls_raw[idx]["arguments"] += tc_delta.function.arguments
-
-        full_content = "".join(content_parts)
+        full_content = "".join(text_parts)
         logger.info(
-            "[realtime] LLM finish_reason=%s tool_calls=%d content_len=%d",
-            finish_reason, len(tool_calls_raw), len(full_content),
+            "[realtime] LLM stop_reason=%s tool_calls=%d content_len=%d",
+            stop_reason, len(tool_uses), len(full_content),
         )
 
-        # Rebuild assistant message for history
-        assistant_msg: Dict = {"role": "assistant", "content": full_content}
-        if tool_calls_raw:
-            assistant_msg["tool_calls"] = [
-                {
-                    "id":   tool_calls_raw[i]["id"],
-                    "type": "function",
-                    "function": {
-                        "name":      tool_calls_raw[i]["name"],
-                        "arguments": tool_calls_raw[i]["arguments"],
-                    },
-                }
-                for i in sorted(tool_calls_raw)
-            ]
-        messages.append(assistant_msg)
-
-        # ── Final spoken response (no tool calls) ─────────────────────────
-        if not tool_calls_raw:
+        # Final response (no tool calls)
+        if stop_reason != "tool_use" or not tool_uses:
             reply_text = full_content.strip() or _SAFE_FALLBACK
             remaining  = sentence_buf.strip()
             if websocket and stream_sid:
                 if first_tts_task and remaining:
-                    # Chain: sentence 1 TTS already running → append rest after
                     async def _chain(
                         t=first_tts_task, rest=remaining,
                         ws=websocket, sid=stream_sid,
@@ -550,33 +581,46 @@ async def _llm_turn(
                     tts_task = asyncio.create_task(_chain())
                 elif first_tts_task:
                     tts_task = first_tts_task
-                # If no sentence boundary found, caller creates TTS task as before
             break
 
-        # ── Execute tool calls ─────────────────────────────────────────────
-        tool_list = [
-            tool_calls_raw[i] for i in sorted(tool_calls_raw)
-        ]
-        tool_results: list = []
-        for tc in tool_list:
-            tool_name = tc["name"]
+        # Build assistant message (Anthropic content-blocks format)
+        assistant_content: list = []
+        if full_content:
+            assistant_content.append({"type": "text", "text": full_content})
+        for tu in tool_uses:
             try:
-                args = json.loads(tc["arguments"])
+                input_data = json.loads(tu["input_json"]) if tu["input_json"] else {}
             except Exception:
-                args = {}
+                input_data = {}
+            assistant_content.append({
+                "type":  "tool_use",
+                "id":    tu["id"],
+                "name":  tu["name"],
+                "input": input_data,
+            })
+        messages.append({"role": "assistant", "content": assistant_content})
+
+        # Execute tool calls
+        tool_result_blocks: list = []
+        for tu in tool_uses:
+            tool_name = tu["name"]
+            try:
+                input_data = json.loads(tu["input_json"]) if tu["input_json"] else {}
+            except Exception:
+                input_data = {}
 
             logger.info(
-                "[realtime] tool call: name=%s call_id=%s args=%s",
-                tool_name, tc["id"], json.dumps(args, default=str),
+                "[realtime] tool call: name=%s id=%s args=%s",
+                tool_name, tu["id"], json.dumps(input_data, default=str)[:200],
             )
 
             if tool_name == "escalate_to_claude":
-                result = await _exec_escalate_to_claude(args, session)
+                result = await _exec_escalate_to_claude(input_data, session)
             else:
                 executor = TOOL_EXECUTORS.get(tool_name)
                 if executor:
                     try:
-                        result = await executor(args, session)
+                        result = await executor(input_data, session)
                     except Exception as exc:
                         logger.error("[realtime] tool %s error: %r", tool_name, exc)
                         result = {"error": str(exc)}
@@ -586,15 +630,16 @@ async def _llm_turn(
 
             logger.info(
                 "[realtime] tool result: name=%s result=%s",
-                tool_name, json.dumps(result, default=str),
+                tool_name, json.dumps(result, default=str)[:200],
             )
-            tool_results.append({
-                "role":        "tool",
-                "tool_call_id": tc["id"],
+            tool_result_blocks.append({
+                "type":        "tool_result",
+                "tool_use_id": tu["id"],
                 "content":     json.dumps(result, default=str),
             })
 
-        messages.extend(tool_results)
+        # Tool results go back as a user message (Anthropic format)
+        messages.append({"role": "user", "content": tool_result_blocks})
 
         # Persist session after each tool round
         if call_sid:
@@ -629,7 +674,6 @@ async def _llm_turn(
         session["last_bot_prompt"]      = reply_text
 
     return reply_text, transfer_initiated, tts_task
-
 
 # ---------------------------------------------------------------------------
 # Main WebSocket handler

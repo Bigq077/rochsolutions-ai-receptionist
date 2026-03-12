@@ -52,7 +52,7 @@ pytz==2024.2
 python-dateutil==2.9.0
 
 # ============================================================================
-# OpenAI (primary LLM for the Realtime voice pipeline — GPT-4.1-mini)
+# OpenAI (kept as dependency — no longer used in realtime pipeline)
 # ============================================================================
 openai>=1.50.0
 
