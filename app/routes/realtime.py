@@ -176,7 +176,11 @@ def _get_anthropic_client():
         from anthropic import AsyncAnthropic
         if not ANTHROPIC_API_KEY:
             raise RuntimeError("ANTHROPIC_API_KEY is not set.")
-        _anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        import httpx as _httpx
+        _anthropic_client = AsyncAnthropic(
+            api_key=ANTHROPIC_API_KEY,
+            timeout=_httpx.Timeout(7.0),  # voice pipeline: fail fast
+        )
     return _anthropic_client
 
 
@@ -479,9 +483,10 @@ async def _llm_turn(
 
         first_tts_task: "asyncio.Task | None" = None
 
-        # Retry up to 2 times on overloaded (529) — transient Anthropic issue
+        # Two attempts max — on first overload/timeout, speak immediately so
+        # the caller hears something rather than 10+ seconds of silence.
         _stream_exc = None
-        for _attempt in range(3):
+        for _attempt in range(2):
             text_parts    = []
             tool_uses     = []
             current_block = None
@@ -558,12 +563,16 @@ async def _llm_turn(
                 _overloaded = (
                     getattr(exc, "status_code", None) == 529
                     or "overloaded" in str(exc).lower()
+                    or isinstance(exc, __import__("httpx").TimeoutException)
                 )
-                if _overloaded and _attempt < 2:
-                    logger.warning(
-                        "[realtime] Anthropic overloaded, retry %d/2 in 1s...", _attempt + 1
-                    )
-                    await asyncio.sleep(1)
+                if _overloaded and _attempt == 0:
+                    logger.warning("[realtime] Anthropic overloaded/timeout on attempt 1 — speaking filler, retrying once")
+                    # Speak immediately so caller hears something, not silence
+                    if websocket and stream_sid:
+                        asyncio.create_task(
+                            _tts_to_twilio("Bear with me just one moment...", websocket, stream_sid)
+                        )
+                    await asyncio.sleep(0.5)
                     continue
                 _stream_exc = exc
                 break
