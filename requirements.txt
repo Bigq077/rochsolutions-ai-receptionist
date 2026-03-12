@@ -52,7 +52,7 @@ pytz==2024.2
 python-dateutil==2.9.0
 
 # ============================================================================
-# OpenAI (Realtime API bridge + intent classifier, smart fallback, LLM router)
+# OpenAI (primary LLM for the Realtime voice pipeline — GPT-4.1-mini)
 # ============================================================================
 openai>=1.50.0
 
@@ -61,12 +61,6 @@ openai>=1.50.0
 # Already a transitive dep via uvicorn[standard] — pinned here for clarity
 # ============================================================================
 websockets>=13.0
-
-# ============================================================================
-# Groq (primary LLM for the Realtime voice pipeline)
-# Model: meta-llama/llama-4-maverick-17b-128e-instruct
-# ============================================================================
-groq>=0.7.0
 
 # ============================================================================
 # Anthropic (Phase 3 tool-calling receptionist — Claude Sonnet 4.6)

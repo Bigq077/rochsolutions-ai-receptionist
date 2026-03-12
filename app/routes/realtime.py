@@ -1,6 +1,6 @@
 # app/routes/realtime.py
 """
-AssemblyAI Universal-Streaming STT + Groq LLM + ElevenLabs TTS voice bridge.
+AssemblyAI Universal-Streaming STT + OpenAI GPT-4.1-mini LLM + ElevenLabs TTS voice bridge.
 
 Architecture:
   Twilio call → <Connect><Stream url="wss://.../twilio/media-stream"/>
@@ -12,11 +12,11 @@ Architecture:
   │                                                             │
   │  Task 2: _assemblyai_events                                 │
   │    PartialTranscript (non-empty) → barge-in: cancel TTS     │
-  │    FinalTranscript              → Groq LLM → ElevenLabs TTS │
+  │    FinalTranscript              → OpenAI LLM → ElevenLabs TTS │
   └─────────────────────────────────────────────────────────────┘
 
   STT:  AssemblyAI Universal-2 (pcm_mulaw 8 kHz, format_turns=false)
-  LLM:  Groq  meta-llama/llama-4-maverick-17b-128e-instruct  (max_tokens=150)
+  LLM:  OpenAI GPT-4.1-mini (max_tokens=150, streaming, sentence-level TTS)
   TTS:  ElevenLabs Flash v2.5  (pcm_16000 → audioop → µ-law 8 kHz → Twilio)
 
 Key design points:
@@ -24,7 +24,7 @@ Key design points:
   (no codec conversion needed on the STT path).
 - Barge-in: a non-empty PartialTranscript while TTS is playing cancels the TTS
   task and clears the Twilio audio buffer immediately.
-- Groq tool-calling loop reuses the same TOOL_EXECUTORS as before.
+- OpenAI tool-calling loop reuses the same TOOL_EXECUTORS as before.
   escalate_to_claude → Claude Sonnet (conversation.py) is completely unchanged.
 - Greeting is injected directly via ElevenLabs TTS on call start — no LLM
   round-trip required (saves ~500 ms on the opening greeting latency).
@@ -48,6 +48,7 @@ import base64
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, Tuple
 
 import httpx
@@ -87,9 +88,12 @@ ASSEMBLYAI_WS_URL_V2 = (
     "&end_utterance_silence_threshold=700"
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GROQ_MAX_TOKENS = 150
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_MAX_TOKENS = 150
+
+# Regex for first-sentence boundary detection (streaming TTS)
+_SENTENCE_END = re.compile(r'[.!?](?:\s|$)')
 
 # ElevenLabs TTS — Flash v2.5 (unchanged)
 ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
@@ -106,21 +110,21 @@ _SAFE_FALLBACK = (
 
 
 # ---------------------------------------------------------------------------
-# Groq client singleton
+# OpenAI client singleton
 # ---------------------------------------------------------------------------
 
-_groq_client = None
+_openai_client = None
 
 
-def _get_groq_client():
-    """Return the shared AsyncGroq singleton, initialised on first call."""
-    global _groq_client
-    if _groq_client is None:
-        from groq import AsyncGroq
-        if not GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set.")
-        _groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-    return _groq_client
+def _get_openai_client():
+    """Return the shared AsyncOpenAI singleton, initialised on first call."""
+    global _openai_client
+    if _openai_client is None:
+        from openai import AsyncOpenAI
+        if not OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not set.")
+        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
 
 
 # ---------------------------------------------------------------------------
@@ -246,17 +250,15 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool schema conversion  (Anthropic → Groq / OpenAI Chat Completions format)
+# Tool schema conversion  (Anthropic → OpenAI Chat Completions format)
 # ---------------------------------------------------------------------------
 
-def _build_groq_tools() -> list:
+def _build_tools() -> list:
     """
-    Convert Anthropic-format TOOL_SCHEMAS to Groq/OpenAI tool definitions.
+    Convert Anthropic-format TOOL_SCHEMAS to OpenAI tool definitions.
     Also appends the special escalate_to_claude tool.
 
-    Groq uses the OpenAI Chat Completions format:
-      {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
-    (Different from the OpenAI Realtime format which omits the nested "function" key.)
+    Format: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
     """
     from app.tools.receptionist_tools import TOOL_SCHEMAS
 
@@ -370,10 +372,10 @@ async def _inject_greeting(
 ) -> "asyncio.Task | None":
     """
     Speak Susie's opening greeting directly via ElevenLabs TTS without a
-    Groq round-trip — saves ~500 ms on the first word of the call.
+    LLM round-trip — saves ~500 ms on the first word of the call.
 
     Stores the greeting in conversation_history as a user→assistant exchange
-    so Groq has full call context from the very first caller turn.
+    so the LLM has full call context from the very first caller turn.
     """
     from app.clinic_config import get_clinic
     from app.routes.twilio import _build_greeting
@@ -386,7 +388,7 @@ async def _inject_greeting(
     session.setdefault("turns", []).append({"role": "assistant", "text": greeting})
 
     # Seed conversation history with a user→assistant exchange so every
-    # subsequent Groq call has context about how the call opened.
+    # subsequent LLM call has context about how the call opened.
     history = session.setdefault("conversation_history", [])
     history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
     history.append({"role": "assistant", "content": greeting})
@@ -400,32 +402,35 @@ async def _inject_greeting(
 
 
 # ---------------------------------------------------------------------------
-# Groq LLM turn  (tool-calling loop)
+# OpenAI LLM turn  (streaming tool-calling loop)
 # ---------------------------------------------------------------------------
 
-async def _groq_turn(
+async def _llm_turn(
     user_text: str,
     session: Dict[str, Any],
     call_sid: str | None,
-) -> Tuple[str, bool]:
+    websocket=None,
+    stream_sid: str | None = None,
+) -> Tuple[str, bool, "asyncio.Task | None"]:
     """
-    Run one caller turn through Groq (meta-llama/llama-4-maverick-17b-128e-instruct).
+    Run one caller turn through OpenAI GPT-4.1-mini with streaming.
 
-    Handles the full tool-calling loop, per-tool session persistence, and
-    transfer detection.
+    Streaming enables sentence-level TTS: as soon as the first sentence
+    boundary is detected in the streamed tokens, TTS starts immediately
+    rather than waiting for the full response.
 
     Returns:
-      (reply_text, transfer_initiated)
-      - reply_text        : spoken response for ElevenLabs TTS
-                            (empty string if a transfer was triggered)
+      (reply_text, transfer_initiated, tts_task)
+      - reply_text        : full spoken response (for conversation history)
       - transfer_initiated: True if transfer_to_human fired
+      - tts_task          : running asyncio.Task for TTS, or None if not started
     """
     from app.prompts.susie_system_prompt import get_system_prompt
     from app.tools.receptionist_tools import TOOL_EXECUTORS
 
-    client        = _get_groq_client()
+    client        = _get_openai_client()
     system_prompt = get_system_prompt(session)
-    tools         = _build_groq_tools()
+    tools         = _build_tools()
 
     history: list  = session.setdefault("conversation_history", [])
     messages: list = [{"role": "system", "content": system_prompt}]
@@ -434,81 +439,135 @@ async def _groq_turn(
 
     reply_text         = _SAFE_FALLBACK
     transfer_initiated = False
+    tts_task: "asyncio.Task | None" = None
 
     for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
-        logger.info("[realtime] Groq iteration=%d model=%s", iteration, GROQ_MODEL)
+        logger.info("[realtime] LLM iteration=%d model=%s", iteration, OPENAI_MODEL)
 
         try:
-            response = await client.chat.completions.create(
-                model=GROQ_MODEL,
+            stream = await client.chat.completions.create(
+                model=OPENAI_MODEL,
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
-                max_tokens=GROQ_MAX_TOKENS,
-                temperature=0.3,
-                top_p=0.9,
-                frequency_penalty=1.4,
-                presence_penalty=1.0,
-                timeout=12.0,
+                max_tokens=OPENAI_MAX_TOKENS,
+                temperature=0.4,
+                stream=True,
             )
         except Exception as exc:
             logger.error(
                 "\n" + "="*60 + "\n"
-                "[PIPELINE ERROR] Groq LLM call failed\n"
+                "[PIPELINE ERROR] OpenAI LLM call failed\n"
                 "  model     : %s\n"
                 "  iteration : %d\n"
                 "  error     : %r\n"
                 + "="*60,
-                GROQ_MODEL, iteration, exc,
+                OPENAI_MODEL, iteration, exc,
             )
-            return _SAFE_FALLBACK, False
+            return _SAFE_FALLBACK, False, None
 
-        choice       = response.choices[0]
-        message      = choice.message
-        finish_reason = choice.finish_reason
+        # ── Accumulate streamed response ───────────────────────────────────
+        content_parts: list = []
+        tool_calls_raw: dict = {}   # index → {id, name, arguments}
+        finish_reason: str | None = None
+        sentence_buf  = ""
+        first_tts_task: "asyncio.Task | None" = None
 
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            delta = choice.delta
+
+            if delta.content:
+                content_parts.append(delta.content)
+                sentence_buf += delta.content
+                # Fire TTS for first complete sentence immediately
+                if first_tts_task is None and websocket and stream_sid:
+                    m = _SENTENCE_END.search(sentence_buf)
+                    if m:
+                        first_sent = sentence_buf[: m.end()].strip()
+                        sentence_buf = sentence_buf[m.end():]
+                        if first_sent:
+                            logger.info(
+                                "[realtime] streaming TTS — sentence 1: %r",
+                                first_sent[:60],
+                            )
+                            first_tts_task = asyncio.create_task(
+                                _tts_to_twilio(first_sent, websocket, stream_sid)
+                            )
+
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_raw:
+                        tool_calls_raw[idx] = {"id": "", "name": "", "arguments": ""}
+                    if tc_delta.id:
+                        tool_calls_raw[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_raw[idx]["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_raw[idx]["arguments"] += tc_delta.function.arguments
+
+        full_content = "".join(content_parts)
         logger.info(
-            "[realtime] Groq finish_reason=%s tool_calls=%d",
-            finish_reason,
-            len(message.tool_calls or []),
+            "[realtime] LLM finish_reason=%s tool_calls=%d content_len=%d",
+            finish_reason, len(tool_calls_raw), len(full_content),
         )
 
-        # Append assistant message to local working messages list
-        assistant_msg: Dict = {
-            "role":    "assistant",
-            "content": message.content or "",
-        }
-        if message.tool_calls:
+        # Rebuild assistant message for history
+        assistant_msg: Dict = {"role": "assistant", "content": full_content}
+        if tool_calls_raw:
             assistant_msg["tool_calls"] = [
                 {
-                    "id":   tc.id,
+                    "id":   tool_calls_raw[i]["id"],
                     "type": "function",
                     "function": {
-                        "name":      tc.function.name,
-                        "arguments": tc.function.arguments,
+                        "name":      tool_calls_raw[i]["name"],
+                        "arguments": tool_calls_raw[i]["arguments"],
                     },
                 }
-                for tc in message.tool_calls
+                for i in sorted(tool_calls_raw)
             ]
         messages.append(assistant_msg)
 
         # ── Final spoken response (no tool calls) ─────────────────────────
-        if finish_reason == "stop" or not message.tool_calls:
-            reply_text = (message.content or "").strip() or _SAFE_FALLBACK
+        if not tool_calls_raw:
+            reply_text = full_content.strip() or _SAFE_FALLBACK
+            remaining  = sentence_buf.strip()
+            if websocket and stream_sid:
+                if first_tts_task and remaining:
+                    # Chain: sentence 1 TTS already running → append rest after
+                    async def _chain(
+                        t=first_tts_task, rest=remaining,
+                        ws=websocket, sid=stream_sid,
+                    ):
+                        await t
+                        await _tts_to_twilio(rest, ws, sid)
+                    tts_task = asyncio.create_task(_chain())
+                elif first_tts_task:
+                    tts_task = first_tts_task
+                # If no sentence boundary found, caller creates TTS task as before
             break
 
         # ── Execute tool calls ─────────────────────────────────────────────
+        tool_list = [
+            tool_calls_raw[i] for i in sorted(tool_calls_raw)
+        ]
         tool_results: list = []
-        for tc in message.tool_calls:
-            tool_name = tc.function.name
+        for tc in tool_list:
+            tool_name = tc["name"]
             try:
-                args = json.loads(tc.function.arguments)
+                args = json.loads(tc["arguments"])
             except Exception:
                 args = {}
 
             logger.info(
                 "[realtime] tool call: name=%s call_id=%s args=%s",
-                tool_name, tc.id, json.dumps(args, default=str),
+                tool_name, tc["id"], json.dumps(args, default=str),
             )
 
             if tool_name == "escalate_to_claude":
@@ -529,10 +588,9 @@ async def _groq_turn(
                 "[realtime] tool result: name=%s result=%s",
                 tool_name, json.dumps(result, default=str),
             )
-
             tool_results.append({
                 "role":        "tool",
-                "tool_call_id": tc.id,
+                "tool_call_id": tc["id"],
                 "content":     json.dumps(result, default=str),
             })
 
@@ -553,13 +611,15 @@ async def _groq_turn(
                 await _handle_transfer(call_sid, session)
             transfer_initiated = True
             reply_text         = ""
+            tts_task           = None
             break
 
     else:
-        logger.warning("[realtime] Groq hit MAX_TOOL_ITERATIONS")
+        logger.warning("[realtime] LLM hit MAX_TOOL_ITERATIONS")
         reply_text = _SAFE_FALLBACK
+        tts_task   = None
 
-    # Persist clean text turns to conversation history (tool intermediates excluded)
+    # Persist clean text turns to conversation history
     if not transfer_initiated:
         history.append({"role": "user",      "content": user_text})
         history.append({"role": "assistant", "content": reply_text})
@@ -568,7 +628,7 @@ async def _groq_turn(
         session["conversation_history"] = history
         session["last_bot_prompt"]      = reply_text
 
-    return reply_text, transfer_initiated
+    return reply_text, transfer_initiated, tts_task
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +648,7 @@ async def media_stream(websocket: WebSocket) -> None:
            Forward Twilio µ-law audio bytes → AssemblyAI (no codec conversion)
       5. Task 2 (_assemblyai_events):
            PartialTranscript (non-empty) → barge-in: cancel TTS + clear Twilio buffer
-           FinalTranscript              → _groq_turn → ElevenLabs TTS
+           FinalTranscript              → _llm_turn  → ElevenLabs TTS
       6. Save session to Redis on disconnect
     """
     await websocket.accept()
@@ -599,7 +659,7 @@ async def media_stream(websocket: WebSocket) -> None:
     session:   Dict[str, Any] = {}
 
     _clearing      = False   # True while draining audio after barge-in
-    _groq_busy     = False   # True while Groq is processing a turn
+    _groq_busy     = False   # True while LLM is processing a turn
     _elevenlabs_task: asyncio.Task | None = None
 
     # Signal: Twilio "start" event received — session is ready
@@ -783,7 +843,7 @@ async def media_stream(websocket: WebSocket) -> None:
                     session.setdefault("turns", []).append({"role": "caller", "text": text})
 
                     if _groq_busy:
-                        logger.info("[realtime] Groq busy — dropping utterance: %r", text)
+                        logger.info("[realtime] LLM busy — dropping utterance: %r", text)
                         continue
 
                     # Safety guard: ensure session is initialised before first LLM call
@@ -795,32 +855,40 @@ async def media_stream(websocket: WebSocket) -> None:
 
                     _groq_busy = True
                     try:
-                        reply, transfer = await _groq_turn(text, session, call_sid)
+                        reply, transfer, llm_tts = await _llm_turn(
+                            text, session, call_sid, websocket, stream_sid
+                        )
                     except Exception as exc:
                         logger.error(
                             "\n" + "="*60 + "\n"
-                            "[PIPELINE ERROR] _groq_turn raised unexpectedly\n"
+                            "[PIPELINE ERROR] _llm_turn raised unexpectedly\n"
                             "  call_sid : %s\n"
                             "  error    : %r\n"
                             + "="*60,
                             call_sid, exc, exc_info=True,
                         )
-                        reply, transfer = _SAFE_FALLBACK, False
+                        reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
                     finally:
                         _groq_busy = False
 
                     if transfer:
                         return  # call handed off — stop processing events
 
-                    if reply and stream_sid and not _clearing:
-                        if _elevenlabs_task and not _elevenlabs_task.done():
-                            _elevenlabs_task.cancel()
-                        _elevenlabs_task = asyncio.create_task(
-                            _tts_to_twilio(reply, websocket, stream_sid)
-                        )
-                        session.setdefault("turns", []).append(
-                            {"role": "assistant", "text": reply}
-                        )
+                    if not _clearing:
+                        if llm_tts:
+                            if _elevenlabs_task and not _elevenlabs_task.done():
+                                _elevenlabs_task.cancel()
+                            _elevenlabs_task = llm_tts
+                        elif reply and stream_sid:
+                            if _elevenlabs_task and not _elevenlabs_task.done():
+                                _elevenlabs_task.cancel()
+                            _elevenlabs_task = asyncio.create_task(
+                                _tts_to_twilio(reply, websocket, stream_sid)
+                            )
+                        if reply:
+                            session.setdefault("turns", []).append(
+                                {"role": "assistant", "text": reply}
+                            )
 
                     # Persist session after each completed turn
                     if call_sid:
@@ -832,7 +900,7 @@ async def media_stream(websocket: WebSocket) -> None:
 
                 # ── AssemblyAI v3 Turn event ───────────────────────────────
                 # v3 sends Turn events (not PartialTranscript/FinalTranscript).
-                # end_of_turn=False → partial (barge-in); end_of_turn=True → run Groq.
+                # end_of_turn=False → partial (barge-in); end_of_turn=True → run LLM.
                 # The transcript text is in msg["transcript"], not msg["text"].
                 elif msg_type == "Turn":
                     transcript  = (msg.get("transcript") or "").strip()
@@ -857,14 +925,14 @@ async def media_stream(websocket: WebSocket) -> None:
                                 except Exception:
                                     pass
                     else:
-                        # End of turn — send utterance to Groq
+                        # End of turn — send utterance to LLM
                         _clearing = False
                         logger.info("[realtime] Turn complete: %r", transcript)
 
                         if not transcript:
                             pass  # silence — skip
                         elif _groq_busy:
-                            logger.info("[realtime] Groq busy — dropping: %r", transcript)
+                            logger.info("[realtime] LLM busy — dropping: %r", transcript)
                         else:
                             logger.info("[realtime] caller said: %r", transcript)
                             session.setdefault("turns", []).append(
@@ -881,30 +949,37 @@ async def media_stream(websocket: WebSocket) -> None:
                             else:
                                 _groq_busy = True
                                 try:
-                                    reply, transfer = await _groq_turn(
-                                        transcript, session, call_sid
+                                    reply, transfer, llm_tts = await _llm_turn(
+                                        transcript, session, call_sid,
+                                        websocket, stream_sid,
                                     )
                                 except Exception as exc:
                                     logger.error(
-                                        "[PIPELINE ERROR] _groq_turn: call_sid=%s error=%r",
+                                        "[PIPELINE ERROR] _llm_turn: call_sid=%s error=%r",
                                         call_sid, exc, exc_info=True,
                                     )
-                                    reply, transfer = _SAFE_FALLBACK, False
+                                    reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
                                 finally:
                                     _groq_busy = False
 
                                 if transfer:
                                     return  # call handed off
 
-                                if reply and stream_sid and not _clearing:
-                                    if _elevenlabs_task and not _elevenlabs_task.done():
-                                        _elevenlabs_task.cancel()
-                                    _elevenlabs_task = asyncio.create_task(
-                                        _tts_to_twilio(reply, websocket, stream_sid)
-                                    )
-                                    session.setdefault("turns", []).append(
-                                        {"role": "assistant", "text": reply}
-                                    )
+                                if not _clearing:
+                                    if llm_tts:
+                                        if _elevenlabs_task and not _elevenlabs_task.done():
+                                            _elevenlabs_task.cancel()
+                                        _elevenlabs_task = llm_tts
+                                    elif reply and stream_sid:
+                                        if _elevenlabs_task and not _elevenlabs_task.done():
+                                            _elevenlabs_task.cancel()
+                                        _elevenlabs_task = asyncio.create_task(
+                                            _tts_to_twilio(reply, websocket, stream_sid)
+                                        )
+                                    if reply:
+                                        session.setdefault("turns", []).append(
+                                            {"role": "assistant", "text": reply}
+                                        )
 
                                 if call_sid:
                                     try:
