@@ -460,53 +460,122 @@ async def _fetch_acuity_type_cache(adapter) -> Dict[str, str]:
     return _acuity_type_id_cache
 
 
-def _match_service_to_acuity_id(service: str, type_cache: Dict[str, str]) -> str:
+# Types that should never be booked by the AI receptionist
+_SKIP_TYPES = [
+    "blocked", "training course", "home visit", "outreach",
+    "gong bath", "sound therapy", "meditation", "breathe work",
+    "nada gb cert", "package x",
+]
+
+
+def _match_service_to_acuity_id(
+    service: str,
+    type_cache: Dict[str, str],
+    location: str = "",
+) -> str:
     """
     Map a free-text service description to an Acuity appointment type ID.
 
-    Priority order (specific → general):
-      follow-up / returning → physio follow-up
-      psychotherapy / mental → psychotherapy
-      acupuncture / needling → acupuncture
-      prescrib → prescribing consultation
-      rehab / rehabilitation → remedial rehabilitation
-      assessment / initial / first / new → physiotherapy assessment
+    Theorem's Acuity types are named by location and practitioner
+    (e.g. "theorem clinics alcester.", "theorem clinics redditch",
+    "theorem clinics alcester. leanne "), not by service name.
 
-    Falls back to the first "assessment"-type in the cache, then the first entry.
+    Priority:
+      1. Exact match
+      2. Location-first: if location is known, find the primary type for
+         that location (prefers the "main" entry, avoids practitioner-specific
+         or blocked entries).
+      3. Service keyword fallback (for specialist types: acupuncture,
+         rehab, psychotherapy, shockwave, prescribing).
+      4. Absolute fallback: first non-blocked entry.
     """
     s = service.lower().strip()
+    loc = location.lower().strip()
+
+    # Helper: is this type name something we should skip?
+    def _skippable(name: str) -> bool:
+        n = name.lower()
+        return any(skip in n for skip in _SKIP_TYPES)
 
     # 1. Exact match
     if s in type_cache:
         return type_cache[s]
 
-    # 2. Keyword priority table
+    # 2. Location-first matching (handles Theorem's location-named types)
+    #    When location is known, find the PRIMARY type for that location.
+    #    "Primary" = contains the location name but NOT practitioner-specific
+    #    suffixes like "leanne" (unless specifically requested).
+    if loc:
+        # 2a. Look for a main location type (location name, no practitioner suffix)
+        #     Prefer the shortest/cleanest matching name.
+        location_matches = [
+            (name, tid) for name, tid in type_cache.items()
+            if loc in name and not _skippable(name)
+        ]
+        # Sort: prefer entries that DON'T contain practitioner names
+        # (i.e. the generic location-level type)
+        practitioner_suffixes = ["leanne", "mark", "ins-", "insurance"]
+        generic = [
+            (n, t) for n, t in location_matches
+            if not any(p in n for p in practitioner_suffixes)
+        ]
+        if generic:
+            # Among generics, pick the shortest name (most likely to be the main type)
+            best = min(generic, key=lambda x: len(x[0]))
+            logger.info(
+                "_match_service_to_acuity_id: location=%r → matched type %r (id=%s)",
+                loc, best[0], best[1],
+            )
+            return best[1]
+        # 2b. If only practitioner-specific types exist for this location, use first one
+        if location_matches:
+            best = location_matches[0]
+            logger.info(
+                "_match_service_to_acuity_id: location=%r → practitioner type %r (id=%s)",
+                loc, best[0], best[1],
+            )
+            return best[1]
+
+    # 3. Service keyword table (for specialist services or when no location given)
     _PRIORITY = [
-        (["follow-up", "follow up", "followup", "follow", "returning"],
-         ["follow-up", "followup", "follow up"]),
-        (["psychotherapy", "therapy", "mental", "hypno", "spiritual"],
-         ["psychotherapy"]),
         (["acupuncture", "needle", "needling"],
          ["acupuncture"]),
+        (["psychotherapy", "therapy", "mental", "hypno", "spiritual"],
+         ["psychotherapy"]),
         (["prescrib", "medication", "prescription"],
          ["prescribing"]),
-        (["rehab", "rehabilitation", "remedial"],
-         ["rehab", "remedial"]),
-        (["assessment", "initial", "first", "new", "physio"],
-         ["assessment", "physiotherapy"]),
+        (["shockwave", "laser", "mls"],
+         ["laser", "shockwave", "mls"]),
+        (["rehab", "rehabilitation", "remedial", "yoga", "training"],
+         ["rehab", "remedial", "yoga", "training"]),
+        (["massage"],
+         ["massage"]),
+        (["follow-up", "follow up", "followup", "follow", "returning"],
+         ["follow-up", "followup", "follow up"]),
+        (["assessment", "initial", "first", "new", "physio", "consultation"],
+         ["assessment", "physiotherapy", "clinics"]),
     ]
     for input_keywords, cache_keywords in _PRIORITY:
         if any(kw in s for kw in input_keywords):
             for cached_name, cached_id in type_cache.items():
+                if _skippable(cached_name):
+                    continue
                 if any(kw in cached_name for kw in cache_keywords):
+                    logger.info(
+                        "_match_service_to_acuity_id: service keyword match %r → %r (id=%s)",
+                        s, cached_name, cached_id,
+                    )
                     return cached_id
 
-    # 3. Fall back: first "assessment" in cache
+    # 4. Absolute fallback: first non-blocked entry
     for name, tid in type_cache.items():
-        if "assessment" in name:
+        if not _skippable(name):
+            logger.warning(
+                "_match_service_to_acuity_id: fallback to first non-blocked type %r (id=%s)",
+                name, tid,
+            )
             return tid
 
-    # 4. Absolute fallback: first entry
     if type_cache:
         return next(iter(type_cache.values()))
 
@@ -546,7 +615,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
     try:
         type_cache = await _fetch_acuity_type_cache(adapter)
-        appointment_type_id = _match_service_to_acuity_id(service, type_cache)
+        appointment_type_id = _match_service_to_acuity_id(service, type_cache, location=location)
         if not appointment_type_id:
             return {"error": "Could not match service to an Acuity appointment type.", "slots": []}
 
@@ -685,7 +754,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         appointment_type_id = session.get("_acuity_appointment_type_id")
         if not appointment_type_id:
             type_cache = await _fetch_acuity_type_cache(adapter)
-            appointment_type_id = _match_service_to_acuity_id(service, type_cache)
+            appointment_type_id = _match_service_to_acuity_id(service, type_cache, location=location)
         if not appointment_type_id:
             return {"success": False, "error": "Could not map service to Acuity appointment type."}
 

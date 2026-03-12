@@ -104,8 +104,8 @@ MAX_TOOL_ITERATIONS = 6
 MAX_HISTORY_TURNS   = 20
 
 _SAFE_FALLBACK = (
-    "I'm sorry, something went wrong on my end. "
-    "Could you give me just a moment and try again?"
+    "Sorry, I had a bit of a blip there -- "
+    "could you give me just a moment and try again?"
 )
 
 
@@ -638,7 +638,7 @@ async def _llm_turn(
 @router.websocket("/twilio/media-stream")
 async def media_stream(websocket: WebSocket) -> None:
     """
-    Bidirectional bridge: Twilio Media Stream → AssemblyAI STT → Groq LLM → ElevenLabs TTS.
+    Bidirectional bridge: Twilio Media Stream → AssemblyAI STT → OpenAI LLM → ElevenLabs TTS.
 
     Lifecycle:
       1. Accept Twilio WebSocket
@@ -659,7 +659,7 @@ async def media_stream(websocket: WebSocket) -> None:
     session:   Dict[str, Any] = {}
 
     _clearing      = False   # True while draining audio after barge-in
-    _groq_busy     = False   # True while LLM is processing a turn
+    _llm_busy      = False   # True while LLM is processing a turn
     _elevenlabs_task: asyncio.Task | None = None
 
     # Signal: Twilio "start" event received — session is ready
@@ -792,7 +792,7 @@ async def media_stream(websocket: WebSocket) -> None:
     # ── Task 2: AssemblyAI events → Groq LLM → ElevenLabs TTS ────────────
 
     async def _assemblyai_events() -> None:
-        nonlocal session, _clearing, _groq_busy, _elevenlabs_task
+        nonlocal session, _clearing, _llm_busy, _elevenlabs_task
 
         try:
             async for raw in assemblyai_ws:
@@ -842,7 +842,7 @@ async def media_stream(websocket: WebSocket) -> None:
                     logger.info("[realtime] caller said: %r", text)
                     session.setdefault("turns", []).append({"role": "caller", "text": text})
 
-                    if _groq_busy:
+                    if _llm_busy:
                         logger.info("[realtime] LLM busy — dropping utterance: %r", text)
                         continue
 
@@ -853,7 +853,7 @@ async def media_stream(websocket: WebSocket) -> None:
                         logger.warning("[realtime] session not initialised after 5 s — skipping")
                         continue
 
-                    _groq_busy = True
+                    _llm_busy = True
                     try:
                         reply, transfer, llm_tts = await _llm_turn(
                             text, session, call_sid, websocket, stream_sid
@@ -869,7 +869,7 @@ async def media_stream(websocket: WebSocket) -> None:
                         )
                         reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
                     finally:
-                        _groq_busy = False
+                        _llm_busy = False
 
                     if transfer:
                         return  # call handed off — stop processing events
@@ -931,7 +931,7 @@ async def media_stream(websocket: WebSocket) -> None:
 
                         if not transcript:
                             pass  # silence — skip
-                        elif _groq_busy:
+                        elif _llm_busy:
                             logger.info("[realtime] LLM busy — dropping: %r", transcript)
                         else:
                             logger.info("[realtime] caller said: %r", transcript)
@@ -947,7 +947,7 @@ async def media_stream(websocket: WebSocket) -> None:
                                 )
                                 pass
                             else:
-                                _groq_busy = True
+                                _llm_busy = True
                                 try:
                                     reply, transfer, llm_tts = await _llm_turn(
                                         transcript, session, call_sid,
@@ -960,7 +960,7 @@ async def media_stream(websocket: WebSocket) -> None:
                                     )
                                     reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
                                 finally:
-                                    _groq_busy = False
+                                    _llm_busy = False
 
                                 if transfer:
                                     return  # call handed off
