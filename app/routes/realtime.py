@@ -16,7 +16,7 @@ Architecture:
   └─────────────────────────────────────────────────────────────┘
 
   STT:  AssemblyAI Universal-2 (pcm_mulaw 8 kHz, format_turns=false)
-  LLM:  Claude Sonnet (claude-sonnet-4-6, max_tokens=150, streaming)
+  LLM:  Claude Sonnet (claude-sonnet-4-6, max_tokens=1024, non-streaming + prompt-cache + 3s filler)
   TTS:  ElevenLabs Flash v2.5  (pcm_16000 → audioop → µ-law 8 kHz → Twilio)
 
 Key design points:
@@ -25,7 +25,7 @@ Key design points:
 - Barge-in: a non-empty PartialTranscript while TTS is playing cancels the TTS
   task and clears the Twilio audio buffer immediately.
 - Claude tool-calling loop (Anthropic native format) drives all booking/info tools.
-  Sentence-level TTS: first sentence fires immediately on boundary detection.
+  Full-response TTS: complete response sent to ElevenLabs; audio streams to Twilio.
   escalate_to_claude → Claude Sonnet (conversation.py) is completely unchanged.
 - Greeting is injected directly via ElevenLabs TTS on call start — no LLM
   round-trip required (saves ~500 ms on the opening greeting latency).
@@ -49,7 +49,6 @@ import base64
 import json
 import logging
 import os
-import re
 from typing import Any, Dict, Tuple
 
 import httpx
@@ -94,59 +93,9 @@ CLAUDE_MODEL       = "claude-sonnet-4-6"
 CLAUDE_MAX_TOKENS  = 1024
 CLAUDE_TEMPERATURE = 0.4
 
-# ---------------------------------------------------------------------------
-# Sentence boundary detection  (streaming TTS — sentence-level chunking)
-# ---------------------------------------------------------------------------
-
-# Words that must NOT trigger a sentence split when followed by a period
-_ABBREVS = frozenset({"dr", "mr", "mrs", "ms", "st", "no", "vs"})
-
-
-def _find_sentence_boundary(buf: str, min_chars: int = 20) -> "int | None":
-    """Return the index just after the first valid sentence boundary, or None.
-
-    Rules:
-    - Sentence ends with . ? ! followed by whitespace+uppercase or end of string.
-    - Never split on: Dr. Mr. Mrs. Ms. St. No. vs. (common abbreviations).
-    - Never split on decimal numbers like 9.30.
-    - Need at least min_chars before the punctuation.
-    """
-    for m in re.finditer(r"[.!?]", buf):
-        pos = m.start()
-        end = m.end()
-
-        if pos < min_chars:
-            continue
-
-        punct = m.group()
-        after = buf[end:]
-
-        # Must be followed by whitespace+uppercase, or end of string
-        if after:
-            stripped = after.lstrip()
-            if stripped:
-                if not stripped[0].isupper():
-                    continue   # next word starts lowercase → not a sentence end
-            # else only whitespace follows → valid boundary
-        # else end of string → valid
-
-        if punct == ".":
-            # Check for abbreviation: look at last word before the dot
-            word_m = re.search(r"(\w+)$", buf[:pos])
-            if word_m:
-                word = word_m.group(1).lower()
-                if word in _ABBREVS:
-                    continue
-                # Single capital letter = initial (e.g. "J. Smith")
-                if len(word) == 1 and word_m.group(1).isupper():
-                    continue
-            # Check for decimal: digit immediately before dot
-            if pos > 0 and buf[pos - 1].isdigit():
-                continue
-
-        return end
-
-    return None
+# GPT-4.1-mini — automatic fallback when Claude Sonnet is overloaded / unavailable
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GPT_MODEL      = "gpt-4.1-mini"
 
 # ElevenLabs TTS — Flash v2.5 (unchanged)
 ELEVENLABS_API_KEY  = os.getenv("ELEVENLABS_API_KEY", "")
@@ -154,7 +103,7 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "kBag1HOZlaVBH7ICPE8x")
 ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
 
 MAX_TOOL_ITERATIONS = 6
-MAX_HISTORY_TURNS   = 20
+MAX_HISTORY_TURNS   = 12   # 6 back-and-forth turns; older history adds tokens with minimal benefit
 
 _SAFE_FALLBACK = (
     "Sorry, I had a bit of a blip there -- "
@@ -179,16 +128,43 @@ def _get_anthropic_client():
         import httpx as _httpx
         _anthropic_client = AsyncAnthropic(
             api_key=ANTHROPIC_API_KEY,
-            timeout=_httpx.Timeout(7.0),  # voice pipeline: fail fast
+            timeout=_httpx.Timeout(15.0),  # non-streaming: allow full response time
         )
     return _anthropic_client
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs persistent HTTP client  (connection pooling — avoids TLS re-handshake)
+# ---------------------------------------------------------------------------
+
+_elevenlabs_client: "httpx.AsyncClient | None" = None
+
+
+def _get_elevenlabs_client() -> "httpx.AsyncClient":
+    """Return the shared ElevenLabs HTTP client. Created once, reused across TTS calls.
+
+    Persistent connections save ~50-100 ms per TTS call by reusing the existing
+    TLS socket rather than re-establishing a new TCP+TLS handshake each time.
+    """
+    global _elevenlabs_client
+    if _elevenlabs_client is None or _elevenlabs_client.is_closed:
+        _elevenlabs_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0),
+            limits=httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0,
+            ),
+        )
+    return _elevenlabs_client
 
 
 # ---------------------------------------------------------------------------
 # ElevenLabs TTS  (pcm_16000 → audioop tomono 2:1 decimation → lin2ulaw → Twilio)
 # ---------------------------------------------------------------------------
 
-async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
+async def _tts_to_twilio(text: str, websocket, stream_sid: str,
+                         fallback_text: str | None = None) -> None:
     """
     Call ElevenLabs Flash v2.5 streaming TTS (pcm_16000) and forward audio
     to Twilio as G.711 µ-law 8 kHz.
@@ -203,6 +179,8 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
     """
     if not text.strip() or not stream_sid:
         return
+
+    _is_fallback_attempt = (fallback_text is None or fallback_text == text)
 
     # output_format is a QUERY PARAMETER, not a body field.
     # Placing it in the body causes ElevenLabs to silently ignore it and
@@ -229,68 +207,70 @@ async def _tts_to_twilio(text: str, websocket, stream_sid: str) -> None:
         ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID, text[:80],
     )
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            async with client.stream("POST", url, json=body, headers=headers) as resp:
-                logger.info(
-                    "[realtime][diag] ElevenLabs response status=%d content-type=%r",
-                    resp.status_code,
-                    resp.headers.get("content-type", "MISSING"),
-                )
+        async with _get_elevenlabs_client().stream("POST", url, json=body, headers=headers) as resp:
+            logger.info(
+                "[realtime][diag] ElevenLabs response status=%d content-type=%r",
+                resp.status_code,
+                resp.headers.get("content-type", "MISSING"),
+            )
 
-                if resp.status_code != 200:
-                    err = await resp.aread()
-                    logger.error(
-                        "[realtime] ElevenLabs TTS error %d: %s",
-                        resp.status_code, err[:300],
+            if resp.status_code != 200:
+                err = await resp.aread()
+                logger.error(
+                    "[realtime] ElevenLabs TTS error %d: %s",
+                    resp.status_code, err[:300],
+                )
+                if fallback_text and not _is_fallback_attempt:
+                    logger.warning("[realtime] ElevenLabs failed — retrying with fallback text")
+                    await _tts_to_twilio(fallback_text, websocket, stream_sid)
+                return
+
+            # tomono requires chunks aligned to 4 bytes (2 samples × 2 bytes)
+            remainder   = b""
+            chunk_count = 0
+            total_bytes = 0
+
+            # 640 bytes in → 160 µ-law bytes out (20 ms at 8 kHz)
+            async for chunk in resp.aiter_bytes(chunk_size=640):
+                if not chunk:
+                    continue
+
+                chunk    = remainder + chunk
+                leftover = len(chunk) % 4
+                if leftover:
+                    remainder = chunk[-leftover:]
+                    chunk     = chunk[:-leftover]
+                else:
+                    remainder = b""
+
+                if len(chunk) < 4:
+                    continue
+
+                if chunk_count == 0:
+                    logger.info(
+                        "[realtime][diag] first chunk: len=%d hex_head=%s",
+                        len(chunk), chunk[:16].hex(),
                     )
-                    return
 
-                # tomono requires chunks aligned to 4 bytes (2 samples × 2 bytes)
-                remainder   = b""
-                chunk_count = 0
-                total_bytes = 0
+                # Anti-aliased 2:1 decimation: treat mono 16 kHz as
+                # stereo 8 kHz and average L+R → mono 8 kHz
+                downsampled = audioop.tomono(chunk, 2, 0.5, 0.5)
 
-                # 640 bytes in → 160 µ-law bytes out (20 ms at 8 kHz)
-                async for chunk in resp.aiter_bytes(chunk_size=640):
-                    if not chunk:
-                        continue
+                # PCM16 → G.711 µ-law
+                ulaw_chunk = audioop.lin2ulaw(downsampled, 2)
 
-                    chunk    = remainder + chunk
-                    leftover = len(chunk) % 4
-                    if leftover:
-                        remainder = chunk[-leftover:]
-                        chunk     = chunk[:-leftover]
-                    else:
-                        remainder = b""
+                total_bytes += len(ulaw_chunk)
+                await websocket.send_json({
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": base64.b64encode(ulaw_chunk).decode()},
+                })
+                chunk_count += 1
 
-                    if len(chunk) < 4:
-                        continue
-
-                    if chunk_count == 0:
-                        logger.info(
-                            "[realtime][diag] first chunk: len=%d hex_head=%s",
-                            len(chunk), chunk[:16].hex(),
-                        )
-
-                    # Anti-aliased 2:1 decimation: treat mono 16 kHz as
-                    # stereo 8 kHz and average L+R → mono 8 kHz
-                    downsampled = audioop.tomono(chunk, 2, 0.5, 0.5)
-
-                    # PCM16 → G.711 µ-law
-                    ulaw_chunk = audioop.lin2ulaw(downsampled, 2)
-
-                    total_bytes += len(ulaw_chunk)
-                    await websocket.send_json({
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {"payload": base64.b64encode(ulaw_chunk).decode()},
-                    })
-                    chunk_count += 1
-
-                logger.info(
-                    "[realtime][diag] TTS done: chunks=%d ulaw_bytes=%d approx_ms=%d",
-                    chunk_count, total_bytes, (total_bytes * 1000 // 8000),
-                )
+            logger.info(
+                "[realtime][diag] TTS done: chunks=%d ulaw_bytes=%d approx_ms=%d",
+                chunk_count, total_bytes, (total_bytes * 1000 // 8000),
+            )
 
     except asyncio.CancelledError:
         logger.info("[realtime] ElevenLabs TTS cancelled (barge-in)")
@@ -341,6 +321,50 @@ def _build_claude_tools() -> list:
     })
 
     return tools
+
+
+# ---------------------------------------------------------------------------
+# OpenAI tool definitions  (converted from Anthropic format for GPT fallback)
+# ---------------------------------------------------------------------------
+
+def _build_openai_tools() -> list:
+    """Return tool definitions in OpenAI function-calling format (for GPT fallback)."""
+    from app.tools.receptionist_tools import TOOL_SCHEMAS
+
+    openai_tools = []
+    for tool in TOOL_SCHEMAS:
+        openai_tools.append({
+            "type": "function",
+            "function": {
+                "name":        tool["name"],
+                "description": tool.get("description", ""),
+                "parameters":  tool.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        })
+
+    openai_tools.append({
+        "type": "function",
+        "function": {
+            "name": "escalate_to_claude",
+            "description": (
+                "Use ONLY for genuine clinical or legal complexity requiring deep reasoning. "
+                "Never for standard greetings, FAQs, availability, booking, pricing, hours, "
+                "or common conditions — handle all of those directly."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type":        "string",
+                        "description": "The caller's question or situation requiring deep reasoning.",
+                    }
+                },
+                "required": ["question"],
+            },
+        },
+    })
+
+    return openai_tools
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +468,7 @@ async def _inject_greeting(
 
 
 # ---------------------------------------------------------------------------
-# Claude Sonnet LLM turn  (streaming tool-calling loop)
+# Claude Sonnet LLM turn  (non-streaming, full-response buffering)
 # ---------------------------------------------------------------------------
 
 async def _llm_turn(
@@ -455,10 +479,12 @@ async def _llm_turn(
     stream_sid: str | None = None,
 ) -> Tuple[str, bool, "asyncio.Task | None"]:
     """
-    Run one caller turn through Claude Sonnet with streaming.
+    Run one caller turn through Claude Sonnet (non-streaming).
+    Claude generates the complete response before TTS begins.
 
-    Sentence-level TTS: first sentence fires to ElevenLabs as soon as the
-    sentence boundary is detected in the streamed tokens.
+    3-second filler guard: if Claude has not responded within 3 s, play
+    'Bear with me just one moment...' so the caller never hears dead air.
+    On any Claude failure, falls back automatically to GPT-4.1-mini.
 
     Returns:
       (reply_text, transfer_initiated, tts_task)
@@ -481,113 +507,80 @@ async def _llm_turn(
     for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
         logger.info("[realtime] LLM iteration=%d model=%s", iteration, CLAUDE_MODEL)
 
-        first_tts_task: "asyncio.Task | None" = None
+        filler_task: "asyncio.Task | None" = None
 
-        # Two attempts max — on first overload/timeout, speak immediately so
-        # the caller hears something rather than 10+ seconds of silence.
-        _stream_exc = None
-        for _attempt in range(2):
-            text_parts    = []
-            tool_uses     = []
-            current_block = None
-            stop_reason   = None
-            sentence_buf  = ""
-            try:
-                async with client.messages.stream(
-                    model=CLAUDE_MODEL,
-                    system=system_prompt,
-                    messages=messages,
-                    tools=tools,
-                    max_tokens=CLAUDE_MAX_TOKENS,
-                    temperature=CLAUDE_TEMPERATURE,
-                ) as stream:
-                    async for event in stream:
-                        etype = getattr(event, "type", "")
-
-                        if etype == "content_block_start":
-                            blk = event.content_block
-                            if blk.type == "text":
-                                current_block = {"type": "text", "text": ""}
-                            elif blk.type == "tool_use":
-                                current_block = {
-                                    "type":       "tool_use",
-                                    "id":         blk.id,
-                                    "name":       blk.name,
-                                    "input_json": "",
-                                }
-
-                        elif etype == "content_block_delta":
-                            d = event.delta
-                            if (
-                                d.type == "text_delta"
-                                and current_block
-                                and current_block["type"] == "text"
-                            ):
-                                chunk = d.text
-                                text_parts.append(chunk)
-                                current_block["text"] += chunk
-                                sentence_buf += chunk
-                                if first_tts_task is None and websocket and stream_sid:
-                                    boundary = _find_sentence_boundary(sentence_buf)
-                                    if boundary is not None:
-                                        first_sent   = sentence_buf[:boundary].strip()
-                                        sentence_buf = sentence_buf[boundary:].lstrip()
-                                        if first_sent:
-                                            logger.info(
-                                                "[realtime] sentence TTS sent1: %r",
-                                                first_sent[:60],
-                                            )
-                                            first_tts_task = asyncio.create_task(
-                                                _tts_to_twilio(first_sent, websocket, stream_sid)
-                                            )
-                            elif (
-                                d.type == "input_json_delta"
-                                and current_block
-                                and current_block["type"] == "tool_use"
-                            ):
-                                current_block["input_json"] += d.partial_json
-
-                        elif etype == "content_block_stop":
-                            if current_block:
-                                if current_block["type"] == "tool_use":
-                                    tool_uses.append(current_block)
-                                current_block = None
-
-                        elif etype == "message_delta":
-                            stop_reason = getattr(event.delta, "stop_reason", None)
-
-                _stream_exc = None
-                break  # success
-
-            except Exception as exc:
-                _overloaded = (
-                    getattr(exc, "status_code", None) == 529
-                    or "overloaded" in str(exc).lower()
-                    or isinstance(exc, __import__("httpx").TimeoutException)
-                )
-                if _overloaded and _attempt == 0:
-                    logger.warning("[realtime] Anthropic overloaded/timeout on attempt 1 — speaking filler, retrying once")
-                    # Speak immediately so caller hears something, not silence
-                    if websocket and stream_sid:
-                        asyncio.create_task(
-                            _tts_to_twilio("Bear with me just one moment...", websocket, stream_sid)
-                        )
-                    await asyncio.sleep(0.5)
-                    continue
-                _stream_exc = exc
-                break
-
-        if _stream_exc is not None:
-            logger.error(
-                "\n" + "="*60 + "\n"
-                "[PIPELINE ERROR] Claude LLM stream failed\n"
-                "  model     : %s\n"
-                "  iteration : %d\n"
-                "  error     : %r\n"
-                + "="*60,
-                CLAUDE_MODEL, iteration, _stream_exc,
+        # ── Call Claude (non-streaming) with 3-second filler guard ─────
+        async def _do_claude(
+            _sys=system_prompt, _msgs=messages, _tools=tools,
+        ):
+            return await client.messages.create(
+                model=CLAUDE_MODEL,
+                system=[{
+                    "type": "text",
+                    "text": _sys,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=_msgs,
+                tools=_tools,
+                max_tokens=CLAUDE_MAX_TOKENS,
+                temperature=CLAUDE_TEMPERATURE,
             )
-            return _SAFE_FALLBACK, False, None
+
+        claude_task = asyncio.create_task(_do_claude())
+
+        # Wait up to 3 s — if still pending, speak filler immediately
+        done, _ = await asyncio.wait({claude_task}, timeout=3.0)
+        if not done:
+            logger.info("[realtime] Claude >3 s on iter %d -- playing filler", iteration)
+            if websocket and stream_sid:
+                filler_task = asyncio.create_task(
+                    _tts_to_twilio("Bear with me just one moment...", websocket, stream_sid)
+                )
+
+        # Await the full response (may already be done)
+        try:
+            response = await claude_task
+        except Exception as exc:
+            logger.error(
+                "[PIPELINE ERROR] Claude API failed model=%s iter=%d err=%r",
+                CLAUDE_MODEL, iteration, exc,
+            )
+            # Let filler finish before speaking fallback
+            if filler_task and not filler_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
+                except Exception:
+                    pass
+            if OPENAI_API_KEY:
+                logger.warning("[realtime] Claude failed -- switching to GPT-4.1-mini")
+                reply_text, transfer_initiated, tts_task = await _llm_turn_gpt(
+                    system_prompt, messages, session, call_sid, websocket, stream_sid
+                )
+            else:
+                reply_text = _SAFE_FALLBACK
+                transfer_initiated = False
+                if websocket and stream_sid:
+                    tts_task = asyncio.create_task(
+                        _tts_to_twilio(_SAFE_FALLBACK, websocket, stream_sid)
+                    )
+                else:
+                    tts_task = None
+            break
+
+        # ── Parse response ──────────────────────────────────────────────
+        stop_reason = response.stop_reason
+        text_parts: list = []
+        tool_uses:  list = []
+
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_uses.append({
+                    "id":    block.id,
+                    "name":  block.name,
+                    "input": block.input,
+                })
 
         full_content = "".join(text_parts)
         logger.info(
@@ -595,72 +588,76 @@ async def _llm_turn(
             stop_reason, len(tool_uses), len(full_content),
         )
 
-        # Final response (no tool calls)
+        # ── Final response (no tool calls) ──────────────────────────────
         if not tool_uses:
             if not full_content.strip() and stop_reason == "end_turn":
-                # Claude returned empty text after a tool call — nudge it to continue
-                logger.warning("[realtime] Empty response on iter %d — nudging Claude", iteration)
-                messages.append({"role": "user", "content": "Please continue with the next question for the caller."})
+                logger.warning("[realtime] Empty response iter %d -- nudging Claude", iteration)
+                messages.append({
+                    "role": "user",
+                    "content": "Please continue with the next question for the caller.",
+                })
+                if filler_task and not filler_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
+                    except Exception:
+                        pass
                 continue
+
             reply_text = full_content.strip() or _SAFE_FALLBACK
-            remaining  = sentence_buf.strip()
+
+            # Let filler finish before response TTS to prevent overlap
+            if filler_task and not filler_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
+                except Exception:
+                    pass
+
             if websocket and stream_sid:
-                if first_tts_task and remaining:
-                    async def _chain(
-                        t=first_tts_task, rest=remaining,
-                        ws=websocket, sid=stream_sid,
-                    ):
-                        await t
-                        await _tts_to_twilio(rest, ws, sid)
-                    tts_task = asyncio.create_task(_chain())
-                elif first_tts_task:
-                    tts_task = first_tts_task
+                tts_task = asyncio.create_task(
+                    _tts_to_twilio(
+                        reply_text, websocket, stream_sid,
+                        fallback_text="I'm sorry, could you give me just a moment?",
+                    )
+                )
             break
 
-        # Build assistant message (Anthropic content-blocks format)
+        # ── Build assistant message (Anthropic content-blocks format) ───
         assistant_content: list = []
         if full_content:
             assistant_content.append({"type": "text", "text": full_content})
         for tu in tool_uses:
-            try:
-                input_data = json.loads(tu["input_json"]) if tu["input_json"] else {}
-            except Exception:
-                input_data = {}
             assistant_content.append({
                 "type":  "tool_use",
                 "id":    tu["id"],
                 "name":  tu["name"],
-                "input": input_data,
+                "input": tu["input"],
             })
         messages.append({"role": "assistant", "content": assistant_content})
 
-        # Execute tool calls
+        # ── Execute tool calls ──────────────────────────────────────────
         tool_result_blocks: list = []
         for tu in tool_uses:
             tool_name = tu["name"]
-            try:
-                input_data = json.loads(tu["input_json"]) if tu["input_json"] else {}
-            except Exception:
-                input_data = {}
+            args      = tu["input"]
 
             logger.info(
                 "[realtime] tool call: name=%s id=%s args=%s",
-                tool_name, tu["id"], json.dumps(input_data, default=str)[:200],
+                tool_name, tu["id"], json.dumps(args, default=str)[:200],
             )
 
-            if tool_name == "escalate_to_claude":
-                result = await _exec_escalate_to_claude(input_data, session)
-            else:
-                executor = TOOL_EXECUTORS.get(tool_name)
-                if executor:
-                    try:
-                        result = await executor(input_data, session)
-                    except Exception as exc:
-                        logger.error("[realtime] tool %s error: %r", tool_name, exc)
-                        result = {"error": str(exc)}
+            try:
+                if tool_name == "escalate_to_claude":
+                    result = await _exec_escalate_to_claude(args, session)
                 else:
-                    logger.warning("[realtime] unknown tool: %s", tool_name)
-                    result = {"error": f"Unknown tool: {tool_name}"}
+                    executor = TOOL_EXECUTORS.get(tool_name)
+                    if executor:
+                        result = await executor(args, session)
+                    else:
+                        logger.warning("[realtime] unknown tool: %s", tool_name)
+                        result = {"error": f"Unknown tool: {tool_name}"}
+            except Exception as exc:
+                logger.error("[realtime] tool %s error: %r", tool_name, exc)
+                result = {"error": str(exc)}
 
             logger.info(
                 "[realtime] tool result: name=%s result=%s",
@@ -672,18 +669,15 @@ async def _llm_turn(
                 "content":     json.dumps(result, default=str),
             })
 
-        # Tool results go back as a user message (Anthropic format)
+        # Tool results go back as user message (Anthropic format)
         messages.append({"role": "user", "content": tool_result_blocks})
 
-        # Await filler TTS from this iteration before starting the next one
-        # so iteration-1 audio ("Right, just bear with me...") cannot
-        # overlap with iteration-2 audio (the actual response).
-        if first_tts_task is not None:
+        # Await filler before next iteration to prevent audio overlap
+        if filler_task and not filler_task.done():
             try:
-                await asyncio.wait_for(asyncio.shield(first_tts_task), timeout=6.0)
+                await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
             except Exception:
                 pass
-            first_tts_task = None
 
         # Persist session after each tool round
         if call_sid:
@@ -693,7 +687,7 @@ async def _llm_turn(
             except Exception as exc:
                 logger.warning("[realtime] session save failed: %r", exc)
 
-        # Check for transfer request (set by transfer_to_human executor)
+        # Check for transfer request
         if session.pop("request_transfer", False):
             logger.info("[realtime] transfer requested call_sid=%s", call_sid)
             if call_sid:
@@ -708,7 +702,7 @@ async def _llm_turn(
         reply_text = _SAFE_FALLBACK
         tts_task   = None
 
-    # Persist clean text turns to conversation history
+    # Persist conversation history
     if not transfer_initiated:
         history.append({"role": "user",      "content": user_text})
         history.append({"role": "assistant", "content": reply_text})
@@ -718,6 +712,142 @@ async def _llm_turn(
         session["last_bot_prompt"]      = reply_text
 
     return reply_text, transfer_initiated, tts_task
+
+
+# ---------------------------------------------------------------------------
+# GPT-4.1-mini fallback LLM turn  (non-streaming, full tool-calling loop)
+# ---------------------------------------------------------------------------
+
+async def _llm_turn_gpt(
+    system_prompt: str,
+    messages: list,
+    session: Dict[str, Any],
+    call_sid: str | None,
+    websocket=None,
+    stream_sid: str | None = None,
+) -> Tuple[str, bool, "asyncio.Task | None"]:
+    """
+    Run one caller turn through GPT-4.1-mini with tool calling.
+    Called automatically when Claude Sonnet is overloaded or unavailable.
+    Returns the same (reply_text, transfer_initiated, tts_task) tuple as _llm_turn.
+    """
+    from app.tools.receptionist_tools import TOOL_EXECUTORS
+
+    if not OPENAI_API_KEY:
+        logger.error("[realtime] GPT fallback: OPENAI_API_KEY not set")
+        return _SAFE_FALLBACK, False, None
+
+    try:
+        from openai import AsyncOpenAI
+        gpt_client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=15.0)
+    except Exception as exc:
+        logger.error("[realtime] GPT fallback: failed to init client: %r", exc)
+        return _SAFE_FALLBACK, False, None
+
+    tools         = _build_openai_tools()
+    oai_messages  = [{"role": "system", "content": system_prompt}] + list(messages)
+    reply_text    = _SAFE_FALLBACK
+    transfer_initiated = False
+    tts_task      = None
+
+    for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
+        logger.info("[realtime] GPT fallback iter=%d model=%s", iteration, GPT_MODEL)
+
+        try:
+            response = await gpt_client.chat.completions.create(
+                model=GPT_MODEL,
+                messages=oai_messages,
+                tools=tools,
+                tool_choice="auto",
+                max_tokens=CLAUDE_MAX_TOKENS,
+                temperature=CLAUDE_TEMPERATURE,
+            )
+        except Exception as exc:
+            logger.error("[realtime] GPT fallback API error: %r", exc)
+            return _SAFE_FALLBACK, False, None
+
+        choice = response.choices[0]
+        msg    = choice.message
+
+        logger.info(
+            "[realtime] GPT fallback finish_reason=%s tool_calls=%d",
+            choice.finish_reason, len(msg.tool_calls or []),
+        )
+
+        if not msg.tool_calls:
+            reply_text = (msg.content or "").strip() or _SAFE_FALLBACK
+            if websocket and stream_sid:
+                tts_task = asyncio.create_task(
+                    _tts_to_twilio(
+                        reply_text, websocket, stream_sid,
+                        fallback_text="I'm sorry, could you give me just a moment?",
+                    )
+                )
+            break
+
+        oai_messages.append({
+            "role":    "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id":       tc.id,
+                    "type":     "function",
+                    "function": {
+                        "name":      tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ],
+        })
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except Exception:
+                args = {}
+
+            logger.info("[realtime] GPT tool: name=%s id=%s", tool_name, tc.id)
+
+            try:
+                if tool_name == "escalate_to_claude":
+                    result = await _exec_escalate_to_claude(args, session)
+                else:
+                    executor = TOOL_EXECUTORS.get(tool_name)
+                    if executor:
+                        result = await executor(args, session)
+                    else:
+                        result = {"error": f"Unknown tool: {tool_name}"}
+            except Exception as exc:
+                logger.error("[realtime] GPT tool %s error: %r", tool_name, exc)
+                result = {"error": str(exc)}
+
+            oai_messages.append({
+                "role":         "tool",
+                "tool_call_id": tc.id,
+                "content":      json.dumps(result, default=str),
+            })
+
+        if session.pop("request_transfer", False):
+            logger.info("[realtime] GPT fallback: transfer requested call_sid=%s", call_sid)
+            if call_sid:
+                await _handle_transfer(call_sid, session)
+            return "", True, None
+
+        if call_sid:
+            try:
+                from app.storage.redis_store import save_session
+                await save_session(call_sid, session)
+            except Exception as exc:
+                logger.warning("[realtime] GPT fallback session save: %r", exc)
+
+    else:
+        logger.warning("[realtime] GPT fallback hit MAX_TOOL_ITERATIONS")
+        reply_text = _SAFE_FALLBACK
+
+    return reply_text, transfer_initiated, tts_task
+
 
 # ---------------------------------------------------------------------------
 # Main WebSocket handler
@@ -852,9 +982,19 @@ async def media_stream(websocket: WebSocket) -> None:
                                 await assemblyai_ws.send(_pcm_buffer)
                             except websockets.exceptions.ConnectionClosed:
                                 logger.warning(
-                                    "[realtime] AssemblyAI connection closed — stopping audio"
+                                    "[realtime] AssemblyAI send failed -- waiting for reconnect"
                                 )
-                                break
+                                _assemblyai_ready.clear()
+                                try:
+                                    await asyncio.wait_for(
+                                        _assemblyai_ready.wait(), timeout=5.0
+                                    )
+                                    logger.info("[realtime] AssemblyAI reconnected -- resuming audio")
+                                except asyncio.TimeoutError:
+                                    logger.error(
+                                        "[realtime] AssemblyAI did not reconnect in 5 s -- stopping audio"
+                                    )
+                                    break
                             except Exception as exc:
                                 logger.warning("[realtime] AssemblyAI send error: %r", exc)
                             _pcm_buffer = b""
@@ -880,126 +1020,35 @@ async def media_stream(websocket: WebSocket) -> None:
     # ── Task 2: AssemblyAI events → Groq LLM → ElevenLabs TTS ────────────
 
     async def _assemblyai_events() -> None:
-        nonlocal session, _clearing, _llm_busy, _elevenlabs_task
+        nonlocal session, _clearing, _llm_busy, _elevenlabs_task, assemblyai_ws
 
-        try:
-            async for raw in assemblyai_ws:
-                msg      = json.loads(raw)
-                # v3 uses "type" field; v2 uses "message_type" — handle both.
-                msg_type = msg.get("type") or msg.get("message_type", "")
+        _aai_max_reconnects  = 2
+        _aai_reconnect_count = 0
 
-                # ── Session ready ──────────────────────────────────────────
-                if msg_type in ("Begin", "SessionBegins"):
-                    logger.info(
-                        "[realtime] AssemblyAI session started: %s",
-                        msg.get("session_id", ""),
-                    )
-                    _assemblyai_ready.set()  # allow audio forwarding to begin
+        while True:
+            try:
+                async for raw in assemblyai_ws:
+                    msg      = json.loads(raw)
+                    # v3 uses "type" field; v2 uses "message_type" — handle both.
+                    msg_type = msg.get("type") or msg.get("message_type", "")
 
-                # ── Barge-in: user started speaking ───────────────────────
-                elif msg_type == "PartialTranscript":
-                    text = (msg.get("text") or "").strip()
-                    if text:
-                        logger.debug("[realtime] PartialTranscript: %r", text)
-                    if text and _elevenlabs_task and not _elevenlabs_task.done():
+                    # ── Session ready ──────────────────────────────────────────
+                    if msg_type in ("Begin", "SessionBegins"):
                         logger.info(
-                            "[realtime] barge-in detected call_sid=%s partial=%r",
-                            call_sid, text[:40],
+                            "[realtime] AssemblyAI session started: %s",
+                            msg.get("session_id", ""),
                         )
-                        _elevenlabs_task.cancel()
-                        _elevenlabs_task = None
-                        _clearing = True
-                        if stream_sid:
-                            try:
-                                await websocket.send_json({
-                                    "event":     "clear",
-                                    "streamSid": stream_sid,
-                                })
-                            except Exception:
-                                pass
+                        _assemblyai_ready.set()  # allow audio forwarding to begin
 
-                # ── Caller utterance complete → call Groq ─────────────────
-                elif msg_type == "FinalTranscript":
-                    text      = (msg.get("text") or "").strip()
-                    _clearing = False
-                    logger.info("[realtime] FinalTranscript: %r", text)
-
-                    if not text:
-                        continue  # silence / noise — ignore
-
-                    logger.info("[realtime] caller said: %r", text)
-                    session.setdefault("turns", []).append({"role": "caller", "text": text})
-
-                    if _llm_busy:
-                        logger.info("[realtime] LLM busy — dropping utterance: %r", text)
-                        continue
-
-                    # Safety guard: ensure session is initialised before first LLM call
-                    try:
-                        await asyncio.wait_for(_twilio_started.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        logger.warning("[realtime] session not initialised after 5 s — skipping")
-                        continue
-
-                    _llm_busy = True
-                    try:
-                        reply, transfer, llm_tts = await _llm_turn(
-                            text, session, call_sid, websocket, stream_sid
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "\n" + "="*60 + "\n"
-                            "[PIPELINE ERROR] _llm_turn raised unexpectedly\n"
-                            "  call_sid : %s\n"
-                            "  error    : %r\n"
-                            + "="*60,
-                            call_sid, exc, exc_info=True,
-                        )
-                        reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
-                    finally:
-                        _llm_busy = False
-
-                    if transfer:
-                        return  # call handed off — stop processing events
-
-                    if not _clearing:
-                        if llm_tts:
-                            if _elevenlabs_task and not _elevenlabs_task.done():
-                                _elevenlabs_task.cancel()
-                            _elevenlabs_task = llm_tts
-                        elif reply and stream_sid:
-                            if _elevenlabs_task and not _elevenlabs_task.done():
-                                _elevenlabs_task.cancel()
-                            _elevenlabs_task = asyncio.create_task(
-                                _tts_to_twilio(reply, websocket, stream_sid)
-                            )
-                        if reply:
-                            session.setdefault("turns", []).append(
-                                {"role": "assistant", "text": reply}
-                            )
-
-                    # Persist session after each completed turn
-                    if call_sid:
-                        try:
-                            from app.storage.redis_store import save_session
-                            await save_session(call_sid, session)
-                        except Exception as exc:
-                            logger.warning("[realtime] session save failed: %r", exc)
-
-                # ── AssemblyAI v3 Turn event ───────────────────────────────
-                # v3 sends Turn events (not PartialTranscript/FinalTranscript).
-                # end_of_turn=False → partial (barge-in); end_of_turn=True → run LLM.
-                # The transcript text is in msg["transcript"], not msg["text"].
-                elif msg_type == "Turn":
-                    transcript  = (msg.get("transcript") or "").strip()
-                    end_of_turn = msg.get("end_of_turn", False)
-
-                    if not end_of_turn:
-                        # Partial — barge-in if TTS is currently playing
-                        if transcript and _elevenlabs_task and not _elevenlabs_task.done():
+                    # ── Barge-in: user started speaking ───────────────────────
+                    elif msg_type == "PartialTranscript":
+                        text = (msg.get("text") or "").strip()
+                        if text:
+                            logger.debug("[realtime] PartialTranscript: %r", text)
+                        if text and _elevenlabs_task and not _elevenlabs_task.done():
                             logger.info(
-                                "[realtime] barge-in call_sid=%s partial=%r",
-                                call_sid, transcript[:40],
+                                "[realtime] barge-in detected call_sid=%s partial=%r",
+                                call_sid, text[:40],
                             )
                             _elevenlabs_task.cancel()
                             _elevenlabs_task = None
@@ -1012,106 +1061,219 @@ async def media_stream(websocket: WebSocket) -> None:
                                     })
                                 except Exception:
                                     pass
-                    else:
-                        # End of turn — send utterance to LLM
-                        _clearing = False
-                        logger.info("[realtime] Turn complete: %r", transcript)
 
-                        if not transcript:
-                            pass  # silence — skip
-                        elif _llm_busy:
-                            logger.info("[realtime] LLM busy — dropping: %r", transcript)
+                    # ── Caller utterance complete → call Groq ─────────────────
+                    elif msg_type == "FinalTranscript":
+                        text      = (msg.get("text") or "").strip()
+                        _clearing = False
+                        logger.info("[realtime] FinalTranscript: %r", text)
+
+                        if not text:
+                            continue  # silence / noise — ignore
+
+                        logger.info("[realtime] caller said: %r", text)
+                        session.setdefault("turns", []).append({"role": "caller", "text": text})
+
+                        if _llm_busy:
+                            logger.info("[realtime] LLM busy — dropping utterance: %r", text)
+                            continue
+
+                        # Safety guard: ensure session is initialised before first LLM call
+                        try:
+                            await asyncio.wait_for(_twilio_started.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("[realtime] session not initialised after 5 s — skipping")
+                            continue
+
+                        _llm_busy = True
+                        try:
+                            reply, transfer, llm_tts = await _llm_turn(
+                                text, session, call_sid, websocket, stream_sid
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                "\n" + "="*60 + "\n"
+                                "[PIPELINE ERROR] _llm_turn raised unexpectedly\n"
+                                "  call_sid : %s\n"
+                                "  error    : %r\n"
+                                + "="*60,
+                                call_sid, exc, exc_info=True,
+                            )
+                            reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
+                        finally:
+                            _llm_busy = False
+
+                        if transfer:
+                            return  # call handed off — stop processing events
+
+                        if not _clearing:
+                            if llm_tts:
+                                if _elevenlabs_task and not _elevenlabs_task.done():
+                                    _elevenlabs_task.cancel()
+                                _elevenlabs_task = llm_tts
+                            elif reply and stream_sid:
+                                if _elevenlabs_task and not _elevenlabs_task.done():
+                                    _elevenlabs_task.cancel()
+                                _elevenlabs_task = asyncio.create_task(
+                                    _tts_to_twilio(reply, websocket, stream_sid)
+                                )
+                            if reply:
+                                session.setdefault("turns", []).append(
+                                    {"role": "assistant", "text": reply}
+                                )
+
+                        # Persist session after each completed turn
+                        if call_sid:
+                            try:
+                                from app.storage.redis_store import save_session
+                                await save_session(call_sid, session)
+                            except Exception as exc:
+                                logger.warning("[realtime] session save failed: %r", exc)
+
+                    # ── AssemblyAI v3 Turn event ───────────────────────────────
+                    # v3 sends Turn events (not PartialTranscript/FinalTranscript).
+                    # end_of_turn=False → partial (barge-in); end_of_turn=True → run LLM.
+                    # The transcript text is in msg["transcript"], not msg["text"].
+                    elif msg_type == "Turn":
+                        transcript  = (msg.get("transcript") or "").strip()
+                        end_of_turn = msg.get("end_of_turn", False)
+
+                        if not end_of_turn:
+                            # Partial — barge-in if TTS is currently playing
+                            if transcript and _elevenlabs_task and not _elevenlabs_task.done():
+                                logger.info(
+                                    "[realtime] barge-in call_sid=%s partial=%r",
+                                    call_sid, transcript[:40],
+                                )
+                                _elevenlabs_task.cancel()
+                                _elevenlabs_task = None
+                                _clearing = True
+                                if stream_sid:
+                                    try:
+                                        await websocket.send_json({
+                                            "event":     "clear",
+                                            "streamSid": stream_sid,
+                                        })
+                                    except Exception:
+                                        pass
                         else:
-                            logger.info("[realtime] caller said: %r", transcript)
-                            session.setdefault("turns", []).append(
-                                {"role": "caller", "text": transcript}
+                            # End of turn — send utterance to LLM
+                            _clearing = False
+                            logger.info("[realtime] Turn complete: %r", transcript)
+
+                            if not transcript:
+                                pass  # silence — skip
+                            elif _llm_busy:
+                                logger.info("[realtime] LLM busy — dropping: %r", transcript)
+                            else:
+                                logger.info("[realtime] caller said: %r", transcript)
+                                session.setdefault("turns", []).append(
+                                    {"role": "caller", "text": transcript}
+                                )
+
+                                try:
+                                    await asyncio.wait_for(_twilio_started.wait(), timeout=5.0)
+                                except asyncio.TimeoutError:
+                                    logger.warning(
+                                        "[realtime] session not ready after 5 s — skipping"
+                                    )
+                                    pass
+                                else:
+                                    _llm_busy = True
+                                    try:
+                                        reply, transfer, llm_tts = await _llm_turn(
+                                            transcript, session, call_sid,
+                                            websocket, stream_sid,
+                                        )
+                                    except Exception as exc:
+                                        logger.error(
+                                            "[PIPELINE ERROR] _llm_turn: call_sid=%s error=%r",
+                                            call_sid, exc, exc_info=True,
+                                        )
+                                        reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
+                                    finally:
+                                        _llm_busy = False
+
+                                    if transfer:
+                                        return  # call handed off
+
+                                    if not _clearing:
+                                        if llm_tts:
+                                            if _elevenlabs_task and not _elevenlabs_task.done():
+                                                _elevenlabs_task.cancel()
+                                            _elevenlabs_task = llm_tts
+                                        elif reply and stream_sid:
+                                            if _elevenlabs_task and not _elevenlabs_task.done():
+                                                _elevenlabs_task.cancel()
+                                            _elevenlabs_task = asyncio.create_task(
+                                                _tts_to_twilio(reply, websocket, stream_sid)
+                                            )
+                                        if reply:
+                                            session.setdefault("turns", []).append(
+                                                {"role": "assistant", "text": reply}
+                                            )
+
+                                    if call_sid:
+                                        try:
+                                            from app.storage.redis_store import save_session
+                                            await save_session(call_sid, session)
+                                        except Exception as exc:
+                                            logger.warning(
+                                                "[realtime] session save failed: %r", exc
+                                            )
+
+                    # ── AssemblyAI closed the session ──────────────────────────
+                    elif msg_type in ("Terminate", "SessionTerminated"):
+                        logger.info("[realtime] AssemblyAI session terminated")
+                        break
+
+                    # ── Errors ────────────────────────────────────────────────
+                    elif msg_type in ("Error", "RealtimeError"):
+                        logger.error("[realtime] AssemblyAI error: %s", msg.get("error"))
+
+                    else:
+                        # Log any unrecognised event so we can see what v3 actually sends
+                        if msg_type:
+                            logger.info(
+                                "[realtime] AssemblyAI unrecognised msg_type=%r msg=%s",
+                                msg_type, json.dumps(msg, default=str)[:200],
                             )
 
-                            try:
-                                await asyncio.wait_for(_twilio_started.wait(), timeout=5.0)
-                            except asyncio.TimeoutError:
-                                logger.warning(
-                                    "[realtime] session not ready after 5 s — skipping"
-                                )
-                                pass
-                            else:
-                                _llm_busy = True
-                                try:
-                                    reply, transfer, llm_tts = await _llm_turn(
-                                        transcript, session, call_sid,
-                                        websocket, stream_sid,
-                                    )
-                                except Exception as exc:
-                                    logger.error(
-                                        "[PIPELINE ERROR] _llm_turn: call_sid=%s error=%r",
-                                        call_sid, exc, exc_info=True,
-                                    )
-                                    reply, transfer, llm_tts = _SAFE_FALLBACK, False, None
-                                finally:
-                                    _llm_busy = False
-
-                                if transfer:
-                                    return  # call handed off
-
-                                if not _clearing:
-                                    if llm_tts:
-                                        if _elevenlabs_task and not _elevenlabs_task.done():
-                                            _elevenlabs_task.cancel()
-                                        _elevenlabs_task = llm_tts
-                                    elif reply and stream_sid:
-                                        if _elevenlabs_task and not _elevenlabs_task.done():
-                                            _elevenlabs_task.cancel()
-                                        _elevenlabs_task = asyncio.create_task(
-                                            _tts_to_twilio(reply, websocket, stream_sid)
-                                        )
-                                    if reply:
-                                        session.setdefault("turns", []).append(
-                                            {"role": "assistant", "text": reply}
-                                        )
-
-                                if call_sid:
-                                    try:
-                                        from app.storage.redis_store import save_session
-                                        await save_session(call_sid, session)
-                                    except Exception as exc:
-                                        logger.warning(
-                                            "[realtime] session save failed: %r", exc
-                                        )
-
-                # ── AssemblyAI closed the session ──────────────────────────
-                elif msg_type in ("Terminate", "SessionTerminated"):
-                    logger.info("[realtime] AssemblyAI session terminated")
+            except websockets.exceptions.ConnectionClosed as exc:
+                rcvd   = exc.rcvd
+                code   = rcvd.code   if rcvd else '?'
+                reason = rcvd.reason if rcvd else '?'
+                if code in (1000, 1001):
+                    logger.info('[realtime] AssemblyAI closed normally code=%s', code)
                     break
-
-                # ── Errors ────────────────────────────────────────────────
-                elif msg_type in ("Error", "RealtimeError"):
-                    logger.error("[realtime] AssemblyAI error: %s", msg.get("error"))
-
-                else:
-                    # Log any unrecognised event so we can see what v3 actually sends
-                    if msg_type:
-                        logger.info(
-                            "[realtime] AssemblyAI unrecognised msg_type=%r msg=%s",
-                            msg_type, json.dumps(msg, default=str)[:200],
-                        )
-
-        except websockets.exceptions.ConnectionClosed as exc:
-            rcvd   = exc.rcvd
-            code   = rcvd.code   if rcvd else "?"
-            reason = rcvd.reason if rcvd else "?"
-            level  = logger.warning if code in (1000, 1001) else logger.error
-            level(
-                "\n" + "="*60 + "\n"
-                "[PIPELINE ERROR] AssemblyAI WebSocket closed unexpectedly\n"
-                "  close_code   : %s\n"
-                "  close_reason : %r\n"
-                "  call_sid     : %s\n"
-                + "="*60,
-                code, reason, call_sid,
-            )
-        except Exception as exc:
-            logger.error("[realtime] _assemblyai_events error: %r", exc, exc_info=True)
-
+                if _aai_reconnect_count >= _aai_max_reconnects:
+                    logger.error(
+                        '[realtime] AssemblyAI closed code=%s reason=%r -- max reconnects. call_sid=%s',
+                        code, reason, call_sid,
+                    )
+                    break
+                _aai_reconnect_count += 1
+                logger.warning(
+                    '[realtime] AssemblyAI disconnected code=%s -- reconnecting %d/%d',
+                    code, _aai_reconnect_count, _aai_max_reconnects,
+                )
+                _assemblyai_ready.clear()
+                await asyncio.sleep(min(_aai_reconnect_count * 0.5, 2.0))
+                try:
+                    assemblyai_ws = await websockets.connect(
+                        _ws_url,
+                        additional_headers={'Authorization': ASSEMBLYAI_API_KEY},
+                        ping_interval=None,
+                        open_timeout=10,
+                    )
+                    _assemblyai_ready.set()
+                    logger.info('[realtime] AssemblyAI reconnected (attempt %d)', _aai_reconnect_count)
+                except Exception as reconnect_exc:
+                    logger.error('[realtime] AssemblyAI reconnect failed: %r', reconnect_exc)
+                    break
+            except Exception as exc:
+                logger.error('[realtime] _assemblyai_events error: %r', exc, exc_info=True)
+                break
     # ── Run both tasks concurrently ────────────────────────────────────────
 
     try:

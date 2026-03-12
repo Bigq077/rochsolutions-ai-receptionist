@@ -1,3 +1,5 @@
+# Region: Frankfurt (EU Central) — confirmed in Render dashboard 12/03/2026.
+# Optimal for UK/EU callers. ~80-150 ms lower RTT vs us-west (Oregon).
 services:
   - type: web
     name: rochsolutions-ai-receptionist
