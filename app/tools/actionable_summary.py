@@ -257,49 +257,64 @@ Rules for followup_notes:
 - Max 3 sentences
 """
 
-    try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.post(
-                _ANTHROPIC_URL,
-                headers={
-                    "x-api-key":         _ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type":      "application/json",
-                },
-                json={
-                    "model":      _ANTHROPIC_MODEL,
-                    "max_tokens": 300,
-                    "system":     _SYSTEM_PROMPT,
-                    "messages":   [{"role": "user", "content": user_prompt}],
-                },
-            )
-
-        if resp.status_code != 200:
-            logger.error("Anthropic API %s — %s", resp.status_code, resp.text[:200])
+    for _attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.post(
+                    _ANTHROPIC_URL,
+                    headers={
+                        "x-api-key":         _ANTHROPIC_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type":      "application/json",
+                    },
+                    json={
+                        "model":      _ANTHROPIC_MODEL,
+                        "max_tokens": 300,
+                        "system":     _SYSTEM_PROMPT,
+                        "messages":   [{"role": "user", "content": user_prompt}],
+                    },
+                )
+        except httpx.TimeoutException:
+            logger.warning("Anthropic API timed out — using rule-based fallback")
+            return _fallback(outcome, patient_name, service, duration, handoff_reason)
+        except Exception as e:
+            logger.warning("LLM summary network error (%s) — using rule-based fallback", repr(e))
             return _fallback(outcome, patient_name, service, duration, handoff_reason)
 
-        data     = resp.json()
-        raw_text = data["content"][0]["text"].strip()
+        if resp.status_code == 529:
+            if _attempt < 2:
+                import asyncio as _aio
+                logger.warning("Anthropic overloaded (529), retry %d/2...", _attempt + 1)
+                await _aio.sleep(1)
+                continue
+            logger.warning("Anthropic overloaded (529) after retries — using rule-based fallback")
+            return _fallback(outcome, patient_name, service, duration, handoff_reason)
 
-        # Strip markdown fences if present
-        if raw_text.startswith("```"):
-            parts    = raw_text.split("```")
-            raw_text = parts[1].lstrip("json").strip() if len(parts) > 1 else raw_text
+        if resp.status_code != 200:
+            logger.error("Anthropic API error %s — %s", resp.status_code, resp.text[:200])
+            return _fallback(outcome, patient_name, service, duration, handoff_reason)
 
+        break  # success
+
+    data     = resp.json()
+    raw_text = data["content"][0]["text"].strip()
+
+    # Strip markdown fences if present
+    if raw_text.startswith("```"):
+        parts    = raw_text.split("```")
+        raw_text = parts[1].lstrip("json").strip() if len(parts) > 1 else raw_text
+
+    try:
         parsed = json.loads(raw_text)
-
-        return {
-            "summary_text":   str(parsed.get("summary_text", "")).strip()[:150],
-            "followup_notes": str(parsed.get("followup_notes", "")).strip()[:500],
-            "source":         "llm",
-        }
-
-    except httpx.TimeoutException:
-        logger.warning("Anthropic API timed out — falling back to rule-based summary")
-        return _fallback(outcome, patient_name, service, duration, handoff_reason)
     except Exception as e:
-        logger.warning("LLM summary failed (%s) — falling back", repr(e))
+        logger.warning("LLM summary JSON parse failed (%s) — using rule-based fallback", repr(e))
         return _fallback(outcome, patient_name, service, duration, handoff_reason)
+
+    return {
+        "summary_text":   str(parsed.get("summary_text", "")).strip()[:150],
+        "followup_notes": str(parsed.get("followup_notes", "")).strip()[:500],
+        "source":         "llm",
+    }
 
 
 # ---------------------------------------------------------------------------

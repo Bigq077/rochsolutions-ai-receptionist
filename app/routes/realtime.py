@@ -477,78 +477,98 @@ async def _llm_turn(
     for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
         logger.info("[realtime] LLM iteration=%d model=%s", iteration, CLAUDE_MODEL)
 
-        text_parts: list = []
-        tool_uses:  list = []
-        current_block    = None
-        stop_reason: str | None = None
-        sentence_buf     = ""
         first_tts_task: "asyncio.Task | None" = None
 
-        try:
-            async with client.messages.stream(
-                model=CLAUDE_MODEL,
-                system=system_prompt,
-                messages=messages,
-                tools=tools,
-                max_tokens=CLAUDE_MAX_TOKENS,
-                temperature=CLAUDE_TEMPERATURE,
-            ) as stream:
-                async for event in stream:
-                    etype = getattr(event, "type", "")
+        # Retry up to 2 times on overloaded (529) — transient Anthropic issue
+        _stream_exc = None
+        for _attempt in range(3):
+            text_parts    = []
+            tool_uses     = []
+            current_block = None
+            stop_reason   = None
+            sentence_buf  = ""
+            try:
+                async with client.messages.stream(
+                    model=CLAUDE_MODEL,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=CLAUDE_MAX_TOKENS,
+                    temperature=CLAUDE_TEMPERATURE,
+                ) as stream:
+                    async for event in stream:
+                        etype = getattr(event, "type", "")
 
-                    if etype == "content_block_start":
-                        blk = event.content_block
-                        if blk.type == "text":
-                            current_block = {"type": "text", "text": ""}
-                        elif blk.type == "tool_use":
-                            current_block = {
-                                "type":       "tool_use",
-                                "id":         blk.id,
-                                "name":       blk.name,
-                                "input_json": "",
-                            }
+                        if etype == "content_block_start":
+                            blk = event.content_block
+                            if blk.type == "text":
+                                current_block = {"type": "text", "text": ""}
+                            elif blk.type == "tool_use":
+                                current_block = {
+                                    "type":       "tool_use",
+                                    "id":         blk.id,
+                                    "name":       blk.name,
+                                    "input_json": "",
+                                }
 
-                    elif etype == "content_block_delta":
-                        d = event.delta
-                        if (
-                            d.type == "text_delta"
-                            and current_block
-                            and current_block["type"] == "text"
-                        ):
-                            chunk = d.text
-                            text_parts.append(chunk)
-                            current_block["text"] += chunk
-                            sentence_buf += chunk
-                            if first_tts_task is None and websocket and stream_sid:
-                                boundary = _find_sentence_boundary(sentence_buf)
-                                if boundary is not None:
-                                    first_sent   = sentence_buf[:boundary].strip()
-                                    sentence_buf = sentence_buf[boundary:].lstrip()
-                                    if first_sent:
-                                        logger.info(
-                                            "[realtime] sentence TTS sent1: %r",
-                                            first_sent[:60],
-                                        )
-                                        first_tts_task = asyncio.create_task(
-                                            _tts_to_twilio(first_sent, websocket, stream_sid)
-                                        )
-                        elif (
-                            d.type == "input_json_delta"
-                            and current_block
-                            and current_block["type"] == "tool_use"
-                        ):
-                            current_block["input_json"] += d.partial_json
+                        elif etype == "content_block_delta":
+                            d = event.delta
+                            if (
+                                d.type == "text_delta"
+                                and current_block
+                                and current_block["type"] == "text"
+                            ):
+                                chunk = d.text
+                                text_parts.append(chunk)
+                                current_block["text"] += chunk
+                                sentence_buf += chunk
+                                if first_tts_task is None and websocket and stream_sid:
+                                    boundary = _find_sentence_boundary(sentence_buf)
+                                    if boundary is not None:
+                                        first_sent   = sentence_buf[:boundary].strip()
+                                        sentence_buf = sentence_buf[boundary:].lstrip()
+                                        if first_sent:
+                                            logger.info(
+                                                "[realtime] sentence TTS sent1: %r",
+                                                first_sent[:60],
+                                            )
+                                            first_tts_task = asyncio.create_task(
+                                                _tts_to_twilio(first_sent, websocket, stream_sid)
+                                            )
+                            elif (
+                                d.type == "input_json_delta"
+                                and current_block
+                                and current_block["type"] == "tool_use"
+                            ):
+                                current_block["input_json"] += d.partial_json
 
-                    elif etype == "content_block_stop":
-                        if current_block:
-                            if current_block["type"] == "tool_use":
-                                tool_uses.append(current_block)
-                            current_block = None
+                        elif etype == "content_block_stop":
+                            if current_block:
+                                if current_block["type"] == "tool_use":
+                                    tool_uses.append(current_block)
+                                current_block = None
 
-                    elif etype == "message_delta":
-                        stop_reason = getattr(event.delta, "stop_reason", None)
+                        elif etype == "message_delta":
+                            stop_reason = getattr(event.delta, "stop_reason", None)
 
-        except Exception as exc:
+                _stream_exc = None
+                break  # success
+
+            except Exception as exc:
+                _overloaded = (
+                    getattr(exc, "status_code", None) == 529
+                    or "overloaded" in str(exc).lower()
+                )
+                if _overloaded and _attempt < 2:
+                    logger.warning(
+                        "[realtime] Anthropic overloaded, retry %d/2 in 1s...", _attempt + 1
+                    )
+                    await asyncio.sleep(1)
+                    continue
+                _stream_exc = exc
+                break
+
+        if _stream_exc is not None:
             logger.error(
                 "\n" + "="*60 + "\n"
                 "[PIPELINE ERROR] Claude LLM stream failed\n"
@@ -556,7 +576,7 @@ async def _llm_turn(
                 "  iteration : %d\n"
                 "  error     : %r\n"
                 + "="*60,
-                CLAUDE_MODEL, iteration, exc,
+                CLAUDE_MODEL, iteration, _stream_exc,
             )
             return _SAFE_FALLBACK, False, None
 
