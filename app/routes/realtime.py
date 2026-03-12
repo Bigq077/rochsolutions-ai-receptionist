@@ -91,7 +91,7 @@ ASSEMBLYAI_WS_URL_V2 = (
 
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL       = "claude-sonnet-4-6"
-CLAUDE_MAX_TOKENS  = 150
+CLAUDE_MAX_TOKENS  = 1024
 CLAUDE_TEMPERATURE = 0.4
 
 # ---------------------------------------------------------------------------
@@ -567,7 +567,7 @@ async def _llm_turn(
         )
 
         # Final response (no tool calls)
-        if stop_reason != "tool_use" or not tool_uses:
+        if not tool_uses:
             reply_text = full_content.strip() or _SAFE_FALLBACK
             remaining  = sentence_buf.strip()
             if websocket and stream_sid:
