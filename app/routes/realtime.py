@@ -588,6 +588,11 @@ async def _llm_turn(
 
         # Final response (no tool calls)
         if not tool_uses:
+            if not full_content.strip() and stop_reason == "end_turn":
+                # Claude returned empty text after a tool call — nudge it to continue
+                logger.warning("[realtime] Empty response on iter %d — nudging Claude", iteration)
+                messages.append({"role": "user", "content": "Please continue with the next question for the caller."})
+                continue
             reply_text = full_content.strip() or _SAFE_FALLBACK
             remaining  = sentence_buf.strip()
             if websocket and stream_sid:
@@ -660,6 +665,16 @@ async def _llm_turn(
 
         # Tool results go back as a user message (Anthropic format)
         messages.append({"role": "user", "content": tool_result_blocks})
+
+        # Await filler TTS from this iteration before starting the next one
+        # so iteration-1 audio ("Right, just bear with me...") cannot
+        # overlap with iteration-2 audio (the actual response).
+        if first_tts_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(first_tts_task), timeout=6.0)
+            except Exception:
+                pass
+            first_tts_task = None
 
         # Persist session after each tool round
         if call_sid:
