@@ -16,7 +16,7 @@ Architecture:
   └─────────────────────────────────────────────────────────────┘
 
   STT:  AssemblyAI Universal-2 (pcm_mulaw 8 kHz, format_turns=false)
-  LLM:  Claude Sonnet (claude-sonnet-4-6, max_tokens=1024, non-streaming + prompt-cache + 3s filler)
+  LLM:  Claude Sonnet (claude-sonnet-4-6, max_tokens=1024, non-streaming + prompt-cache + 5s filler/20s cooldown)
   TTS:  ElevenLabs Flash v2.5  (pcm_16000 → audioop → µ-law 8 kHz → Twilio)
 
 Key design points:
@@ -109,6 +109,11 @@ _SAFE_FALLBACK = (
     "Sorry, I had a bit of a blip there -- "
     "could you give me just a moment and try again?"
 )
+
+# Micro-acknowledgment phrases played instantly when STT finalises, BEFORE Claude
+# returns — covers the processing gap without sounding like a broken record.
+# Rotated per-session via session["_ack_idx"].
+_ACK_PHRASES = ["Right.", "Mm-hmm.", "Got that.", "Of course."]
 
 
 # ---------------------------------------------------------------------------
@@ -482,8 +487,9 @@ async def _llm_turn(
     Run one caller turn through Claude Sonnet (non-streaming).
     Claude generates the complete response before TTS begins.
 
-    3-second filler guard: if Claude has not responded within 3 s, play
-    'Bear with me just one moment...' so the caller never hears dead air.
+    5-second filler guard: if Claude has not responded within 5 s, play
+    'Just one moment...' so the caller never hears dead air.
+    Filler is rate-limited to once every 20 s so it never repeats back-to-back.
     On any Claude failure, falls back automatically to GPT-4.1-mini.
 
     Returns:
@@ -507,9 +513,7 @@ async def _llm_turn(
     for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
         logger.info("[realtime] LLM iteration=%d model=%s", iteration, CLAUDE_MODEL)
 
-        filler_task: "asyncio.Task | None" = None
-
-        # ── Call Claude (non-streaming) with 3-second filler guard ─────
+        # ── Call Claude (non-streaming, direct await) ────────────────────
         async def _do_claude(
             _sys=system_prompt, _msgs=messages, _tools=tools,
         ):
@@ -526,31 +530,13 @@ async def _llm_turn(
                 temperature=CLAUDE_TEMPERATURE,
             )
 
-        claude_task = asyncio.create_task(_do_claude())
-
-        # Wait up to 3 s — if still pending, speak filler immediately
-        done, _ = await asyncio.wait({claude_task}, timeout=3.0)
-        if not done:
-            logger.info("[realtime] Claude >3 s on iter %d -- playing filler", iteration)
-            if websocket and stream_sid:
-                filler_task = asyncio.create_task(
-                    _tts_to_twilio("Bear with me just one moment...", websocket, stream_sid)
-                )
-
-        # Await the full response (may already be done)
         try:
-            response = await claude_task
+            response = await _do_claude()
         except Exception as exc:
             logger.error(
                 "[PIPELINE ERROR] Claude API failed model=%s iter=%d err=%r",
                 CLAUDE_MODEL, iteration, exc,
             )
-            # Let filler finish before speaking fallback
-            if filler_task and not filler_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
-                except Exception:
-                    pass
             if OPENAI_API_KEY:
                 logger.warning("[realtime] Claude failed -- switching to GPT-4.1-mini")
                 reply_text, transfer_initiated, tts_task = await _llm_turn_gpt(
@@ -596,21 +582,9 @@ async def _llm_turn(
                     "role": "user",
                     "content": "Please continue with the next question for the caller.",
                 })
-                if filler_task and not filler_task.done():
-                    try:
-                        await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
-                    except Exception:
-                        pass
                 continue
 
             reply_text = full_content.strip() or _SAFE_FALLBACK
-
-            # Let filler finish before response TTS to prevent overlap
-            if filler_task and not filler_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
-                except Exception:
-                    pass
 
             if websocket and stream_sid:
                 tts_task = asyncio.create_task(
@@ -671,13 +645,6 @@ async def _llm_turn(
 
         # Tool results go back as user message (Anthropic format)
         messages.append({"role": "user", "content": tool_result_blocks})
-
-        # Await filler before next iteration to prevent audio overlap
-        if filler_task and not filler_task.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
-            except Exception:
-                pass
 
         # Persist session after each tool round
         if call_sid:
@@ -1087,6 +1054,19 @@ async def media_stream(websocket: WebSocket) -> None:
 
                         _llm_busy = True
                         try:
+                            # ── Instant micro-ack: fires NOW, covers Claude gap ──
+                            _n_turns = len(session.get("conversation_history", []))
+                            if _n_turns > 0 and stream_sid and not _clearing:
+                                _ack_idx = session.get("_ack_idx", 0)
+                                _ack     = _ACK_PHRASES[_ack_idx % len(_ACK_PHRASES)]
+                                session["_ack_idx"] = _ack_idx + 1
+                                if _elevenlabs_task and not _elevenlabs_task.done():
+                                    _elevenlabs_task.cancel()
+                                _elevenlabs_task = asyncio.create_task(
+                                    _tts_to_twilio(_ack, websocket, stream_sid)
+                                )
+                                logger.debug("[realtime] micro-ack=%r", _ack)
+
                             reply, transfer, llm_tts = await _llm_turn(
                                 text, session, call_sid, websocket, stream_sid
                             )
@@ -1181,6 +1161,19 @@ async def media_stream(websocket: WebSocket) -> None:
                                 else:
                                     _llm_busy = True
                                     try:
+                                        # ── Instant micro-ack: fires NOW, covers Claude gap ──
+                                        _n_turns = len(session.get("conversation_history", []))
+                                        if _n_turns > 0 and stream_sid and not _clearing:
+                                            _ack_idx = session.get("_ack_idx", 0)
+                                            _ack     = _ACK_PHRASES[_ack_idx % len(_ACK_PHRASES)]
+                                            session["_ack_idx"] = _ack_idx + 1
+                                            if _elevenlabs_task and not _elevenlabs_task.done():
+                                                _elevenlabs_task.cancel()
+                                            _elevenlabs_task = asyncio.create_task(
+                                                _tts_to_twilio(_ack, websocket, stream_sid)
+                                            )
+                                            logger.debug("[realtime] micro-ack=%r", _ack)
+
                                         reply, transfer, llm_tts = await _llm_turn(
                                             transcript, session, call_sid,
                                             websocket, stream_sid,
