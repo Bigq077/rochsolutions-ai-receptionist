@@ -589,6 +589,90 @@ def _split_name(full_name: str):
 
 
 # ---------------------------------------------------------------------------
+# Manual slot generator (fallback when Acuity working hours aren't configured)
+# ---------------------------------------------------------------------------
+
+async def _generate_manual_slots(
+    adapter,
+    appointment_type_id: str,
+    practitioner_id,
+    start_date,
+    end_date,
+    slot_minutes: int = 50,
+) -> list:
+    """
+    Build slots from Theorem's known working hours (Mon–Thu 08:30–21:00, 50-min)
+    and subtract already-booked Acuity appointments.
+
+    Used as a fallback when Acuity /availability/times returns 0 slots because
+    working hours aren't configured inside the Acuity admin panel.
+    The booking POST still works fine regardless of that config gap.
+    """
+    from app.booking.booking.models import Slot as _Slot
+
+    # Theorem: Mon–Thu (0–3), 08:30 start, last slot starts at 20:10 so it ends at 21:00
+    WORK_START_H, WORK_START_M = 8, 30
+    WORKING_WEEKDAYS = {0, 1, 2, 3}  # Mon=0 … Thu=3
+
+    # ── fetch existing appointments to exclude conflicts ──────────────────
+    booked_times: set = set()
+    try:
+        existing = await adapter.list_appointments(min_date=start_date, max_date=end_date)
+        for appt in existing:
+            dt_str = appt.get("datetime") or appt.get("time") or ""
+            if dt_str:
+                try:
+                    dt = datetime.fromisoformat(dt_str)
+                    if dt.tzinfo is None:
+                        dt = LONDON_TZ.localize(dt)
+                    else:
+                        dt = dt.astimezone(LONDON_TZ)
+                    booked_times.add((dt.date(), dt.hour, dt.minute))
+                except Exception:
+                    pass
+    except Exception as fetch_err:
+        logger.warning(
+            "_generate_manual_slots: could not fetch existing appointments to check conflicts: %r",
+            fetch_err,
+        )
+
+    # ── generate slots ────────────────────────────────────────────────────
+    slots: list = []
+    current = start_date
+    # End of last allowed slot must be <= 21:00, so last START is 21:00 - slot_minutes
+    work_end_minutes = 21 * 60  # 21:00 in minutes from midnight
+    start_minutes = WORK_START_H * 60 + WORK_START_M
+
+    while current <= end_date:
+        if current.weekday() in WORKING_WEEKDAYS:
+            t_min = start_minutes
+            while t_min + slot_minutes <= work_end_minutes:
+                h, m = divmod(t_min, 60)
+                naive_start = datetime(current.year, current.month, current.day, h, m)
+                slot_start = LONDON_TZ.localize(naive_start)
+                slot_end = slot_start + timedelta(minutes=slot_minutes)
+
+                if (current, h, m) not in booked_times:
+                    slots.append(
+                        _Slot(
+                            start_time=slot_start,
+                            end_time=slot_end,
+                            appointment_type_id=appointment_type_id,
+                            practitioner_id=practitioner_id,
+                            provider_slot_id=slot_start.isoformat(),
+                        )
+                    )
+                t_min += slot_minutes
+        current += timedelta(days=1)
+
+    logger.info(
+        "_generate_manual_slots: generated %d slots between %s and %s",
+        len(slots), start_date, end_date,
+    )
+    return slots
+
+
+# ---------------------------------------------------------------------------
 # Acuity executor: check_availability
 # ---------------------------------------------------------------------------
 
@@ -678,14 +762,38 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 )
 
         if not slots:
-            return {
-                "error": (
-                    f"No appointments available at {location.title()} in the next "
-                    f"{used_window} days. The clinic may be fully booked — "
-                    "please try the other location, or let the caller know the team will be in touch."
-                ),
-                "slots": [],
-            }
+            # ── Fallback: Acuity working hours not configured in admin panel ──
+            # Generate slots ourselves from known working hours (Mon–Thu 08:30–21:00)
+            # and subtract existing bookings fetched directly from Acuity.
+            logger.warning(
+                "_check_availability_acuity: 0 slots from Acuity for %s in %d days — "
+                "attempting manual slot generation (Acuity working hours may not be configured).",
+                location, used_window,
+            )
+            from datetime import date as _date
+            fallback_end = _date.today() + timedelta(days=60)
+            slots = await _generate_manual_slots(
+                adapter=adapter,
+                appointment_type_id=appointment_type_id,
+                practitioner_id=practitioner_id,
+                start_date=_date.today(),
+                end_date=fallback_end,
+                slot_minutes=50,
+            )
+            if slots:
+                logger.info(
+                    "_check_availability_acuity: manual fallback produced %d slots for %s",
+                    len(slots), location,
+                )
+            else:
+                return {
+                    "error": (
+                        f"No appointments available at {location.title()} in the next "
+                        f"60 days. The clinic may be fully booked — "
+                        "please try the other location, or let the caller know the team will be in touch."
+                    ),
+                    "slots": [],
+                }
 
         top3 = slots[:3]
         labels = [s.start_time.strftime("%a %d %b at %H:%M") for s in top3]
