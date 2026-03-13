@@ -510,9 +510,10 @@ async def voice(request: Request):
     if request.method in ("HEAD", "GET"):
         return Response(status_code=200)
 
-    form      = await request.form()
-    call_sid  = (form.get("CallSid") or "").strip()
-    to_number = (form.get("To")      or "").strip() or None
+    form        = await request.form()
+    call_sid    = (form.get("CallSid") or "").strip()
+    to_number   = (form.get("To")      or "").strip() or None
+    from_number = (form.get("From")    or "").strip()  # caller ID — captured once, used in both paths
 
     try:
         session = await get_session(call_sid) or {}
@@ -521,6 +522,10 @@ async def voice(request: Request):
 
     session = _init_session(session, call_sid)
     session = _ensure_clinic_on_session(session, to_number)
+
+    # Persist caller ID so the system prompt can offer "is that the number you're calling from?"
+    if from_number:
+        session["twilio_from"] = from_number
 
     # ── OpenAI Realtime path ──────────────────────────────────────────────
     # When REALTIME_ENABLED=true, hand the call off to the WebSocket bridge
@@ -544,6 +549,7 @@ async def voice(request: Request):
         connect = Connect()
         stream = Stream(url=stream_url)
         stream.parameter(name="to", value=to_number or "")
+        stream.parameter(name="from", value=from_number)
         connect.append(stream)
         vr.append(connect)
 

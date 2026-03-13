@@ -117,6 +117,21 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
             except Exception:
                 pass
 
+    # 2b. "Last" / "final" keywords — dynamic index to the final offered slot
+    _last_keywords = {
+        "last", "last one", "last slot", "the last", "the last one",
+        "that last one", "that last slot", "final", "final one", "final slot",
+        "the final", "the final one", "that final one",
+    }
+    if s_lower in _last_keywords and offered:
+        idx = len(offered) - 1
+        try:
+            dt = _to_london(datetime.fromisoformat(offered[idx]["start"]))
+            logger.info("_resolve_slot_iso: 'last' match %r → slot[%d] %s", slot_iso, idx, offered[idx]["start"])
+            return dt
+        except Exception:
+            pass
+
     # 3. Fuzzy match against human-readable labels
     for i, label in enumerate(labels):
         if i < len(offered):
@@ -1567,21 +1582,35 @@ _WORD_DIGIT_MAP: Dict[str, str] = {
 
 def _spoken_to_digits(text: str) -> str:
     """
-    Convert a spoken UK phone number to digit string.
+    Convert a spoken/transcribed UK phone number to a digit string.
 
-    Handles:
-    - Pure digit strings (already normalised): "07870166861" → unchanged
-    - Word-based: "zero seven eight seven oh one six six eight six one" → "07870166861"
+    Handles every format ASR may produce:
+    - Pure digit string: "07870166861" → "07870166861"
+    - E.164 / with prefix: "+447870166861" → returned as-is (normalize_phone handles it)
+    - Spoken words: "zero seven eight seven oh one six six eight six one" → "07870166861"
+    - Space-separated single digits: "0 7 8 7 0 1 6 6 8 6 1" → "07870166861"
+    - Grouped digits: "07870 166861" → "07870166861"
     - Mixed: "07870 one six six eight six one" → "07870166861"
-    - "double X" / "treble X" shorthand: "double six" → "66"
+    - Letter O for zero: "O 7 8 7 0" → "07870"
+    - double/treble shorthand: "double six" → "66"
+    - Digits with punctuation: "078-701-66-861" → "07870166861"
     """
     import re as _re
+
+    stripped = text.strip()
+
+    # Fast path: already looks like a formatted phone number (only digits, spaces,
+    # hyphens, dots, parens, and optional leading +)
+    # Let normalize_phone handle E.164 / already-formatted strings directly.
+    _clean = _re.sub(r'[\s\-\.\(\)\+]', '', stripped)
+    if _clean.isdigit() and len(_clean) >= 7:
+        return stripped  # pass through unchanged; normalize_phone strips non-digits
 
     # Expand "double X" → "X X" and "treble X" → "X X X"
     text = _re.sub(
         r'\bdouble\s+(\w+)',
         lambda m: f"{m.group(1)} {m.group(1)}",
-        text, flags=_re.IGNORECASE,
+        stripped, flags=_re.IGNORECASE,
     )
     text = _re.sub(
         r'\btreble\s+(\w+)',
@@ -1589,14 +1618,41 @@ def _spoken_to_digits(text: str) -> str:
         text, flags=_re.IGNORECASE,
     )
 
-    tokens = _re.split(r'[\s\-,\.]+', text.lower())
-    digits: list = []
+    tokens = _re.split(r'[\s\-,\.\;\(\)]+', text.lower())
+    digits: list[str] = []
     for token in tokens:
+        if not token:
+            continue
+        # Pure digit chunk (e.g. "07870", "7", "166")
         if token.isdigit():
             digits.append(token)
-        elif token in _WORD_DIGIT_MAP:
+            continue
+        # Exact word match (e.g. "zero", "oh", "seven")
+        if token in _WORD_DIGIT_MAP:
             digits.append(_WORD_DIGIT_MAP[token])
-        # ignore any other tokens (e.g. "my number is", "it's")
+            continue
+        # Mixed token like "o7870" or "oh7" — scan char by char
+        # Try longest-matching word first, then single char
+        i = 0
+        local: list[str] = []
+        while i < len(token):
+            if token[i].isdigit():
+                local.append(token[i])
+                i += 1
+                continue
+            # Try to match a known word at this position (longest match first)
+            matched = False
+            for word in sorted(_WORD_DIGIT_MAP.keys(), key=len, reverse=True):
+                if token[i:i + len(word)] == word:
+                    local.append(_WORD_DIGIT_MAP[word])
+                    i += len(word)
+                    matched = True
+                    break
+            if not matched:
+                i += 1  # skip unrecognised character
+        if local:
+            digits.append("".join(local))
+        # non-digit, non-word tokens ("my", "number", "is") → ignored
 
     return "".join(digits)
 

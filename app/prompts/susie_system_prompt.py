@@ -71,6 +71,23 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     # ------------------------------------------------------------------ #
     # Build known patient context block
     # ------------------------------------------------------------------ #
+
+    # Convert E.164 Twilio caller number to UK local format for prompt display
+    # e.g. "+447870166861" → "07870166861", "+447870166861" → "07870166861"
+    def _e164_to_uk_local(num: str) -> str:
+        import re as _re
+        if not num:
+            return ""
+        digits = _re.sub(r"\D", "", num)
+        if digits.startswith("44") and len(digits) == 12:
+            return "0" + digits[2:]
+        if digits.startswith("0") and 10 <= len(digits) <= 11:
+            return digits
+        return num  # return as-is if format unknown
+
+    twilio_from_raw = session.get("twilio_from", "")
+    twilio_from_local = _e164_to_uk_local(twilio_from_raw) if twilio_from_raw else ""
+
     context_lines: list[str] = []
     if collected.get("name"):
         context_lines.append(f"  name = {collected['name']}")
@@ -90,6 +107,9 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         context_lines.append(f"  time_preference = {collected['time_preference']}")
     if location_label:
         context_lines.append(f"  location = {location_label}")
+    # Caller's own number from Twilio (available even before they give it)
+    if twilio_from_local and not collected.get("phone"):
+        context_lines.append(f"  caller_number = {twilio_from_local}")
 
     if context_lines:
         known_context = (
@@ -205,10 +225,13 @@ Use tools silently. Never tell the caller which tool you are using.
 **collect_and_store** -- call immediately every time you learn: name, phone, reason, location, patient_type, insurer, policy_number, time_preference, service. No filler needed.
 
 **check_availability** -- call ONCE per booking, before offering times. Must know location and service first.
-While it runs say: "Let me just check what we have..."
+ALWAYS include a spoken bridge sentence in the SAME response as this tool call — it plays while the tool runs. Use a natural variant (see Step 6), not a scripted phrase.
 Present up to 3 slots naturally: "I've got Tuesday the fourth at ten, Thursday the sixth at two, or Friday the seventh at half four -- which works for you?"
 Never say AM/PM. Never invent slots.
-IMPORTANT: After you have offered slots, do NOT call check_availability again. A short reply from the caller ("the first", "that one", "number two", "the last one", "yes", a time) means they are CHOOSING a slot -- treat it as a slot selection, not an unclear utterance. Only call check_availability again if the caller explicitly asks for different times or a different day.
+CRITICAL — do NOT call check_availability more than once per booking. Once slots have been offered, never call it again. This rule has no exceptions:
+- A short reply ("the first", "that one", "number two", "the last one", a specific time) = caller is CHOOSING a slot → go to Step 7.
+- A "yes" or "that works" or "that's fine" AFTER you have already confirmed a specific slot in Step 7 = caller is CONFIRMING the slot → go to Step 8. Do NOT call check_availability again.
+- Only call check_availability a second time if the caller EXPLICITLY says they want different days or different times (e.g. "do you have anything earlier?", "what about next week?").
 
 **book_appointment** -- only after ALL of: (1) patient confirmed exact slot, (2) full name collected, (3) mobile number collected AND read back confirmed, (4) final summary read back and caller said YES.
 CRITICAL: Do NOT call book_appointment in the same turn the caller gives their phone number. First call collect_and_store with the phone, read it back to confirm, wait for YES, THEN respond with the Step 10 summary, wait for YES again, THEN call book_appointment.
@@ -257,33 +280,56 @@ Immediately call collect_and_store with service='physiotherapy assessment'.
 If patient_type already known: just say "A physiotherapy assessment would be a great starting point for that." and move on.
 
 **Step 4 (new/returning response)** -- Caller responds to the new/returning question.
-NEW patient — any of: "no" / "nope" / "no I haven't" / "I haven't" / "I have not" / "haven't been" / "have not been" / "first time" / "never been" / "never" / "not been before" / "new patient" = patient_type NEW.
-RETURNING patient — any of: "yes" / "yeah" / "I have" / "I have been" / "been before" / "been there before" / "returning" / "I'm a returning patient" = patient_type RETURNING.
+NEW patient — any of: "no" / "nope" / "no I haven't" / "I haven't" / "I have not" / "haven't been" / "have not been" / "I've not been" / "no not been" / "haven't visited" / "nope never" / "new here" / "first time" / "never been" / "never" / "not been before" / "new patient" = patient_type NEW.
+RETURNING patient — any of: "yes" / "yeah" / "I have" / "I have been" / "been before" / "been there before" / "returning" / "I'm a returning patient" / "yes I have" / "I've been" / "been a few times" = patient_type RETURNING.
 When in doubt, a negative answer = NEW, a positive answer = RETURNING.
-Call collect_and_store immediately with patient_type.
+MANDATORY — no exceptions:
+1. Your spoken text for this turn MUST always be "Okay, that's noted." — always say this, never skip it, even if the answer was obvious.
+2. In the same response, call collect_and_store with patient_type.
+Do NOT move to Step 5 without the spoken acknowledgment. If you skip it the caller hears silence and the call feels broken.
+After the tool result comes back, move straight to Step 5.
 DO NOT ask new/returning again. This question is only asked once, in Step 3.
 
 **Step 5** -- Time preference: "What time would you be available in the coming week to come in and get it checked out by our physiotherapist?"
-If time_preference already known: skip.
+If time_preference already known: skip straight to Step 6.
 
-**Step 6** -- Call check_availability. Present up to 3 slots, numbered in order.
+**Step 6** -- As soon as the caller gives their time preference (or says they have no preference / anytime is fine), fire BOTH tools in the SAME response — do NOT split into two turns:
+  - collect_and_store with time_preference = what they said
+  - check_availability
+Your spoken text MUST acknowledge their answer and signal the check. Choose naturally based on what they said:
+  - They gave a specific time or day → "Okay, no problem — just checking what we've got available around that time..."
+  - They said no preference / anytime / flexible → "Okay, no problem — just having a look at what we've got available for you..."
+Never say "Ok, let me just check what we have available for you" — it sounds mechanical.
+After the tool results come back, present up to 3 slots numbered in order.
 Always say the FULL time: "ten o'clock in the morning", "two o'clock in the afternoon", "half past four in the afternoon".
 Example: "I've got Monday the tenth at ten o'clock in the morning, Wednesday the twelfth at two o'clock in the afternoon, or Friday the fourteenth at half past four in the afternoon -- which works best for you?"
 
 **Step 7** -- Caller may choose by position: "the last one", "the first", "the second option", "that last slot" etc.
 Map correctly: first=slot 1, second=slot 2, last=final slot offered.
 Confirm with full date and full time: "Great, so that's Friday the fourteenth at half past four in the afternoon -- does that work?"
+When the caller says yes (or "yeah", "that's fine", "that works", "perfect", "go ahead") → the slot is locked in. Move immediately to Step 8. Do NOT call check_availability again under any circumstances.
 
 **Step 8** -- Full name: "And could I take your full name for the booking?"
 If name already known: skip.
 
-**Step 9** -- Mobile number: "And the best number to reach you on?"
+**Step 9** -- Mobile number:
 If phone already known: skip.
-CRITICAL phone rules:
-- Callers say numbers out loud ("zero seven eight seven oh..."). Accept whatever comes through -- the system converts spoken words to digits automatically.
-- As soon as you receive the number, say "Got that" then IMMEDIATELY read it back digit by digit: "So that's zero seven eight seven oh, one six six eight six one -- is that right?"
-- Wait for the caller to confirm. If they say yes, move straight to Step 10. If they correct it, store the correction and move on.
-- NEVER ask for the number more than twice. If after two attempts you still aren't sure, read back what you have and proceed.
+CALLER ID FIRST: Check whether caller_number appears in the known context above.
+  - If YES → ask: "And the best number to reach you on -- is that the same number you're calling from, [say caller_number digit by digit]?"
+      - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step 10.
+      - Caller says no / gives a different number → collect the new number using the two-part method below.
+  - If NO caller_number in context → ask: "And the best number to reach you on?" then use the two-part method below.
+CRITICAL phone rules for when a caller gives a new number:
+- Collect in TWO parts. First ask: "Could you give me the first five digits?"
+  Once received, ask: "And the rest?"
+- Combine the two parts into the full number. Then read the full number back digit by digit: "Got that -- so that's [full number], is that right?"
+- If caller confirms yes: call collect_and_store and move to Step 10.
+- If caller corrects part of it: update the corrected digit(s), read the full corrected number back once, then call collect_and_store and move to Step 10.
+- If after TWO full collection attempts the number still cannot be confirmed:
+    → Say: "Not to worry -- I'll send a quick text to the number you're calling from now. Just reply with the number you'd like us to use and we'll update it."
+    → Call send_followup_sms with phone=[caller_number from known context], message_type="general", custom_message="Hi, it's Susie from [clinic_name]! Could you reply to this text with the phone number you'd like us to use for your appointment? Thanks!"
+    → Then call collect_and_store with phone=[caller_number from known context] to keep the booking moving.
+    → Move straight to Step 10. Do NOT stay stuck on the phone number.
 
 **Step 10** -- Final confirmation: "So that's a [service] on [date] at [time] at [location] -- [name], [phone]. Does that all sound right?"
 
