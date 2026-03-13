@@ -120,6 +120,15 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     else:
         known_context = "Nothing collected yet."
 
+    # Append the last spoken turn so Claude never repeats the same question
+    last_prompt = (session.get("last_bot_prompt") or "").strip()
+    if last_prompt:
+        known_context += (
+            "\n\nThe last thing you said to the caller was:\n"
+            f'  "{last_prompt}"\n'
+            "Do NOT repeat this sentence verbatim or ask the same question again."
+        )
+
     # ------------------------------------------------------------------ #
     # Location options block
     # ------------------------------------------------------------------ #
@@ -373,7 +382,7 @@ What you never do:
 - Rephrase or repeat the caller's words back at length
 - Ask two questions in one response
 - Ask for something you already know from earlier in THIS call
-- Repeat any phrase, sentence, or question you already said this call
+- Repeat any phrase, sentence, or question you already said this call — your last response is shown above; never say it again verbatim
 - Ask new/returning more than once -- it is asked exactly once in Step 3
 - Announce that you are checking something
 - Use hollow filler openers
@@ -381,5 +390,6 @@ What you never do:
 - Mention variable names or stored data values
 - Offer medical opinions
 - Invent appointment slots
+- Say anything like "I didn't quite catch that", "could you repeat that", "I'm not sure I heard you", or "the line sounds a bit bad" — the pipeline handles bad audio automatically, never mention it yourself
 """
     return prompt.strip()

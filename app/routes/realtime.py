@@ -79,6 +79,7 @@ ASSEMBLYAI_WS_URL = (
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
+    "&end_utterance_silence_threshold=1200"
 )
 
 # v2 fallback (older, battle-tested, 8 kHz PCM16, no upsampling needed).
@@ -87,7 +88,7 @@ ASSEMBLYAI_USE_V2 = os.getenv("ASSEMBLYAI_USE_V2", "false").lower() == "true"
 ASSEMBLYAI_WS_URL_V2 = (
     "wss://api.assemblyai.com/v2/realtime/ws"
     "?sample_rate=8000"
-    "&end_utterance_silence_threshold=700"
+    "&end_utterance_silence_threshold=1200"
 )
 
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
@@ -113,10 +114,9 @@ _SAFE_FALLBACK = (
 )
 
 # Played directly by the pipeline (no LLM round-trip) when a transcript
-# contains no intelligible words AND >= 5 s have passed since Susie last spoke.
-_BAD_LINE_PHRASE = (
-    "I'm sorry, I can't quite hear you -- the line sounds a bit bad, could you try again?"
-)
+# contains no intelligible words AND >= 10 s have passed since Susie last spoke.
+# Fires at most once per call to avoid repeating.
+_BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 
 # Words that count as "nothing" — pure filler sounds that ASR sometimes transcribes.
 _NOISE_ONLY_WORDS: frozenset = frozenset({
@@ -124,7 +124,7 @@ _NOISE_ONLY_WORDS: frozenset = frozenset({
     "oh", "er", "erm", "ha", "huh",
 })
 
-_BAD_LINE_SILENCE_THRESHOLD = 5.0  # seconds since Susie last spoke
+_BAD_LINE_SILENCE_THRESHOLD = 10.0  # seconds since Susie last spoke
 
 
 def _is_garbage_transcript(text: str) -> bool:
@@ -908,8 +908,9 @@ async def media_stream(websocket: WebSocket) -> None:
     stream_sid: str | None = None
     session:   Dict[str, Any] = {}
 
-    _clearing      = False   # True while draining audio after barge-in
-    _llm_busy      = False   # True while LLM is processing a turn
+    _clearing          = False   # True while draining audio after barge-in
+    _llm_busy          = False   # True while LLM is processing a turn
+    _bad_line_fired    = False   # True after bad-line phrase played once this call
     _elevenlabs_task: asyncio.Task | None = None
     _susie_last_spoke_at: float = 0.0  # monotonic time when Susie last started TTS
 
@@ -1111,14 +1112,18 @@ async def media_stream(websocket: WebSocket) -> None:
                             continue  # silence / noise — ignore
 
                         # Bad-line detection: if transcript has no intelligible words AND
-                        # >= 5 s have passed since Susie last spoke, play the bad-line
-                        # phrase directly without an LLM round-trip.
+                        # >= 10 s have passed since Susie last spoke, play the bad-line
+                        # phrase once per call — then stay silent for subsequent garbage.
                         if _is_garbage_transcript(text):
                             silence_gap = time.monotonic() - _susie_last_spoke_at
-                            if silence_gap >= _BAD_LINE_SILENCE_THRESHOLD and stream_sid:
+                            if (
+                                silence_gap >= _BAD_LINE_SILENCE_THRESHOLD
+                                and stream_sid
+                                and not _bad_line_fired
+                            ):
                                 logger.info(
                                     "[realtime] garbage transcript after %.1fs silence — "
-                                    "playing bad-line phrase directly: %r", silence_gap, text,
+                                    "playing bad-line phrase: %r", silence_gap, text,
                                 )
                                 if _elevenlabs_task and not _elevenlabs_task.done():
                                     _elevenlabs_task.cancel()
@@ -1126,10 +1131,12 @@ async def media_stream(websocket: WebSocket) -> None:
                                     _tts_to_twilio(_BAD_LINE_PHRASE, websocket, stream_sid)
                                 )
                                 _susie_last_spoke_at = time.monotonic()
+                                _bad_line_fired = True
                             else:
                                 logger.info(
-                                    "[realtime] garbage transcript ignored (gap=%.1fs < 5s): %r",
-                                    silence_gap, text,
+                                    "[realtime] garbage transcript ignored "
+                                    "(gap=%.1fs, fired=%s): %r",
+                                    silence_gap, _bad_line_fired, text,
                                 )
                             continue
 
