@@ -633,6 +633,24 @@ async def _llm_turn(
             })
         messages.append({"role": "assistant", "content": assistant_content})
 
+        # ── Speak text that accompanies tool calls ──────────────────────
+        # When the LLM returns text alongside a tool call (e.g. "Ok, let me
+        # just check what we have available for you..." before check_availability,
+        # or "Ok, that's noted." before collect_and_store), that text must be
+        # spoken NOW — before the tool runs — otherwise the caller hears only
+        # silence while the tool executes.  We launch the TTS immediately and
+        # run the tools concurrently, then wait for TTS to finish before the
+        # next LLM reply starts playing so the audio never overlaps.
+        _pre_tool_tts: "asyncio.Task | None" = None
+        if full_content.strip() and websocket and stream_sid:
+            logger.info(
+                "[realtime] pre-tool speech: %r",
+                full_content.strip()[:80],
+            )
+            _pre_tool_tts = asyncio.create_task(
+                _tts_to_twilio(full_content.strip(), websocket, stream_sid)
+            )
+
         # ── Execute tool calls ──────────────────────────────────────────
         tool_result_blocks: list = []
         for tu in tool_uses:
@@ -667,6 +685,14 @@ async def _llm_turn(
                 "tool_use_id": tu["id"],
                 "content":     json.dumps(result, default=str),
             })
+
+        # Wait for pre-tool TTS to finish before the next LLM reply plays
+        # (prevents the two audio streams from overlapping)
+        if _pre_tool_tts and not _pre_tool_tts.done():
+            try:
+                await asyncio.wait_for(_pre_tool_tts, timeout=10.0)
+            except Exception as _e:
+                logger.warning("[realtime] pre-tool TTS wait error: %r", _e)
 
         # Tool results go back as user message (Anthropic format)
         messages.append({"role": "user", "content": tool_result_blocks})
@@ -793,6 +819,13 @@ async def _llm_turn_gpt(
             ],
         })
 
+        # Speak text that accompanies tool calls (same logic as Claude path)
+        _pre_tool_tts_gpt: "asyncio.Task | None" = None
+        if (msg.content or "").strip() and websocket and stream_sid:
+            _pre_tool_tts_gpt = asyncio.create_task(
+                _tts_to_twilio((msg.content or "").strip(), websocket, stream_sid)
+            )
+
         for tc in msg.tool_calls:
             tool_name = tc.function.name
             try:
@@ -820,6 +853,13 @@ async def _llm_turn_gpt(
                 "tool_call_id": tc.id,
                 "content":      json.dumps(result, default=str),
             })
+
+        # Wait for pre-tool TTS to finish before next reply plays
+        if _pre_tool_tts_gpt and not _pre_tool_tts_gpt.done():
+            try:
+                await asyncio.wait_for(_pre_tool_tts_gpt, timeout=10.0)
+            except Exception as _e:
+                logger.warning("[realtime] GPT pre-tool TTS wait error: %r", _e)
 
         if session.pop("request_transfer", False):
             logger.info("[realtime] GPT fallback: transfer requested call_sid=%s", call_sid)
@@ -930,12 +970,13 @@ async def media_stream(websocket: WebSocket) -> None:
                     start      = msg.get("start", {})
                     call_sid   = start.get("callSid", "")
                     stream_sid = start.get("streamSid", "")
-                    custom     = start.get("customParameters", {})
-                    to_number  = custom.get("to", "")
+                    custom      = start.get("customParameters", {})
+                    to_number   = custom.get("to", "")
+                    from_number = custom.get("from", "")
 
                     logger.info(
-                        "[realtime] stream start call_sid=%s stream_sid=%s to=%s",
-                        call_sid, stream_sid, to_number,
+                        "[realtime] stream start call_sid=%s stream_sid=%s to=%s from=%s",
+                        call_sid, stream_sid, to_number, from_number,
                     )
 
                     from app.storage.redis_store import get_session
@@ -945,6 +986,10 @@ async def media_stream(websocket: WebSocket) -> None:
                     session = await get_session(call_sid) or {}
                     session = _init_session(session, call_sid)
                     session = _ensure_clinic_on_session(session, to_number or None)
+
+                    # Store caller's Twilio number so Susie can offer it back in Step 9
+                    if from_number and not from_number.startswith("client:"):
+                        session["twilio_from"] = from_number
 
                     if not session.get("call_start_time"):
                         session["call_start_time"] = datetime.utcnow().isoformat() + "Z"
