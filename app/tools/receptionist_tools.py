@@ -852,18 +852,33 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             "practitioner": booking.practitioner_name or "your practitioner",
         }
 
-    except SlotUnavailable:
+    except SlotUnavailable as e:
+        logger.error(
+            "[BOOKING FAILED] SlotUnavailable: location=%r service=%r slot=%r err=%r",
+            args.get("location"), args.get("service"), args.get("slot_iso"), e,
+        )
         return {
             "success": False,
             "error": "That slot has just been taken. Please call check_availability again for alternative times.",
         }
-    except ProviderAuthError:
+    except ProviderAuthError as e:
+        logger.error(
+            "[BOOKING FAILED] ProviderAuthError (Acuity credentials wrong or expired): %r", e,
+        )
         return {
             "success": False,
             "error": "Booking system authentication error. Please ask the caller to call the clinic directly.",
         }
     except Exception as e:
-        logger.error("_book_appointment_acuity error: %r", e)
+        logger.error(
+            "[BOOKING FAILED] Unexpected error: location=%r service=%r slot=%r "
+            "patient=%r phone=%r appointment_type_id=%r practitioner_id=%r err=%r",
+            args.get("location"), args.get("service"), args.get("slot_iso"),
+            args.get("patient_name"), args.get("phone"),
+            session.get("_acuity_appointment_type_id"),
+            session.get("_acuity_practitioner_id"),
+            e, exc_info=True,
+        )
         return {"success": False, "error": str(e)}
 
 
