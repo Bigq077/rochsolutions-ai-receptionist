@@ -151,6 +151,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "booking_system": "acuity",
         "calendar_id": None,
 
+        # Use streamlined fast-track booking flow (skips duration + time-preference questions)
+        "fast_booking": True,
+
         # Core booking rules (from Mark)
         "slot_minutes": 50,
         "days_ahead": 180,  # up to 6 months in advance
