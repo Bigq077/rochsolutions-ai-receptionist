@@ -112,17 +112,6 @@ _SAFE_FALLBACK = (
     "could you give me just a moment and try again?"
 )
 
-# Contextual filler phrases spoken while slow tools (check_availability,
-# book_appointment, etc.) are executing.  Each phrase is tailored to the
-# action so it sounds natural rather than generic.
-_TOOL_FILLERS: dict = {
-    "check_availability":    "Let me just check what we have for you...",
-    "book_appointment":      "Brilliant, just getting that booked in for you...",
-    "cancel_appointment":    "Of course, just sorting that for you now...",
-    "reschedule_appointment":"No problem, let me move that for you now...",
-    "get_clinic_info":       "Just one moment...",
-}
-
 # Played directly by the pipeline (no LLM round-trip) when a transcript
 # contains no intelligible words AND >= 5 s have passed since Susie last spoke.
 _BAD_LINE_PHRASE = (
@@ -545,7 +534,6 @@ async def _llm_turn(
     reply_text         = _SAFE_FALLBACK
     transfer_initiated = False
     tts_task: "asyncio.Task | None" = None
-    filler_task: "asyncio.Task | None" = None   # contextual tool filler (fired once)
 
     for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
         logger.info("[realtime] LLM iteration=%d model=%s", iteration, CLAUDE_MODEL)
@@ -623,14 +611,6 @@ async def _llm_turn(
 
             reply_text = full_content.strip() or _SAFE_FALLBACK
 
-            # Wait for any tool filler to finish before playing the response
-            # (prevents the two audio streams from overlapping)
-            if filler_task and not filler_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(filler_task), timeout=8.0)
-                except Exception:
-                    pass
-
             if websocket and stream_sid:
                 tts_task = asyncio.create_task(
                     _tts_to_twilio(
@@ -654,19 +634,6 @@ async def _llm_turn(
         messages.append({"role": "assistant", "content": assistant_content})
 
         # ── Execute tool calls ──────────────────────────────────────────
-        # Fire contextual filler for the first slow tool in this iteration.
-        # It plays while the tool + next Claude round run, covering the silence
-        # without generic phrases.
-        if filler_task is None and websocket and stream_sid:
-            for tu in tool_uses:
-                phrase = _TOOL_FILLERS.get(tu["name"])
-                if phrase:
-                    filler_task = asyncio.create_task(
-                        _tts_to_twilio(phrase, websocket, stream_sid)
-                    )
-                    logger.debug("[realtime] tool-filler=%r for %s", phrase, tu["name"])
-                    break
-
         tool_result_blocks: list = []
         for tu in tool_uses:
             tool_name = tu["name"]

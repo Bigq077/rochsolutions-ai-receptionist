@@ -1551,6 +1551,56 @@ async def _exec_get_clinic_info(args: Dict[str, Any], session: Dict[str, Any]) -
 # Executor: collect_and_store
 # ---------------------------------------------------------------------------
 
+_WORD_DIGIT_MAP: Dict[str, str] = {
+    "zero": "0", "oh": "0", "o": "0",
+    "one": "1", "won": "1",
+    "two": "2", "to": "2", "too": "2",
+    "three": "3",
+    "four": "4", "for": "4", "fore": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8", "ate": "8",
+    "nine": "9", "niner": "9",
+}
+
+
+def _spoken_to_digits(text: str) -> str:
+    """
+    Convert a spoken UK phone number to digit string.
+
+    Handles:
+    - Pure digit strings (already normalised): "07870166861" → unchanged
+    - Word-based: "zero seven eight seven oh one six six eight six one" → "07870166861"
+    - Mixed: "07870 one six six eight six one" → "07870166861"
+    - "double X" / "treble X" shorthand: "double six" → "66"
+    """
+    import re as _re
+
+    # Expand "double X" → "X X" and "treble X" → "X X X"
+    text = _re.sub(
+        r'\bdouble\s+(\w+)',
+        lambda m: f"{m.group(1)} {m.group(1)}",
+        text, flags=_re.IGNORECASE,
+    )
+    text = _re.sub(
+        r'\btreble\s+(\w+)',
+        lambda m: f"{m.group(1)} {m.group(1)} {m.group(1)}",
+        text, flags=_re.IGNORECASE,
+    )
+
+    tokens = _re.split(r'[\s\-,\.]+', text.lower())
+    digits: list = []
+    for token in tokens:
+        if token.isdigit():
+            digits.append(token)
+        elif token in _WORD_DIGIT_MAP:
+            digits.append(_WORD_DIGIT_MAP[token])
+        # ignore any other tokens (e.g. "my number is", "it's")
+
+    return "".join(digits)
+
+
 async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     field = args.get("field", "")
     value = (args.get("value") or "").strip()
@@ -1560,8 +1610,12 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
 
     session.setdefault("collected", {})
 
-    # Normalise phone to E.164
+    # Normalise phone: convert spoken words to digits, then to E.164
     if field == "phone":
+        # First convert any word-based digits ("zero seven eight..." → "0780...")
+        converted = _spoken_to_digits(value)
+        if converted:
+            value = converted
         try:
             from app.flows.triage_legacy import normalize_phone
             value = normalize_phone(value)
