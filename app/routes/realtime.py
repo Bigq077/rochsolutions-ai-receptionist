@@ -605,7 +605,7 @@ async def _llm_turn(
                 logger.warning("[realtime] Empty response iter %d -- nudging Claude", iteration)
                 messages.append({
                     "role": "user",
-                    "content": "Please continue with the next question for the caller.",
+                    "content": "Please give the caller a natural spoken response based on the most recent tool result and continue the conversation.",
                 })
                 continue
 

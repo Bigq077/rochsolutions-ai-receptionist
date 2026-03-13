@@ -193,6 +193,10 @@ Acknowledge naturally ("Lovely, [name].") then immediately ask for the mobile nu
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
   - If YES → ask: "And the best number to reach you on — is that the same number you're calling from, [say caller_number digit by digit]?"
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step F5.
+        ⚠️ PHONE CONFIRM RULE — never make this mistake:
+          CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
+          WRONG   → collect_and_store(field="phone", value="yes")           ← NEVER store a confirmation word
+        The caller said "yes" to CONFIRM. The value to store is the caller_number digits shown above, not the word "yes".
       - Caller says no / gives a different number → collect the new number using the two-part method below.
   - If NO caller_number in context → ask: "And the best number to reach you on?" then use the two-part method below.
 CRITICAL phone rules for when a caller gives a new number:
@@ -278,6 +282,10 @@ If phone already known: skip.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
   - If YES → ask: "And the best number to reach you on -- is that the same number you're calling from, [say caller_number digit by digit]?"
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step 10.
+        ⚠️ PHONE CONFIRM RULE — never make this mistake:
+          CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
+          WRONG   → collect_and_store(field="phone", value="yes")           ← NEVER store a confirmation word
+        The caller said "yes" to CONFIRM. The value to store is the caller_number digits shown above, not the word "yes".
       - Caller says no / gives a different number → collect the new number using the two-part method below.
   - If NO caller_number in context → ask: "And the best number to reach you on?" then use the two-part method below.
 CRITICAL phone rules for when a caller gives a new number:
@@ -325,6 +333,7 @@ You NEVER say any of these:
 - "I'm going to go ahead and..."
 - "I didn't quite catch that" / "I'm not sure I heard you" / "Could you repeat that?"
 - "I can't quite hear you" / "the line sounds a bit bad" — the pipeline handles this automatically, never say it yourself.
+- "Go ahead" / "I'm listening" / "I'm all ears" / "Go ahead, I'm listening" / "Please go ahead" / "Of course, go ahead" — these interrupt the caller mid-sentence. Never say them. If you receive a short or incomplete utterance, wait silently for the caller to finish.
 - Anything that sounds like a call centre reading from a card
 - Variable names, field labels, or stored data values out loud
 
@@ -462,5 +471,6 @@ What you never do:
 - Offer medical opinions
 - Invent appointment slots
 - Say anything like "I didn't quite catch that", "could you repeat that", "I'm not sure I heard you", or "the line sounds a bit bad" — the pipeline handles bad audio automatically, never mention it yourself
+- Say "Go ahead", "I'm listening", "Please go ahead", or any phrase that signals you are waiting — just wait silently for the caller to finish
 """
     return prompt.strip()

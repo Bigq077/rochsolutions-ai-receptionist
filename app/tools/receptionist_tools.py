@@ -1664,6 +1664,24 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
     if not field or not value:
         return {"error": "field and value are required"}
 
+    # Guard: reject confirmation words stored as phone numbers.
+    # Catches the common LLM mistake of collect_and_store(field="phone", value="yes")
+    # when the caller confirmed their caller_number — the actual digits must be stored.
+    if field == "phone":
+        _CONFIRM_WORDS = {
+            "yes", "yeah", "yep", "yup", "correct", "that's right", "that's it",
+            "right", "sure", "ok", "okay", "confirmed", "affirmative",
+        }
+        if value.lower() in _CONFIRM_WORDS:
+            return {
+                "error": (
+                    f"'{value}' is not a valid phone number — you stored a confirmation word. "
+                    "Store the actual phone number digits, not the caller's spoken confirmation. "
+                    "Check caller_number in the known context and call collect_and_store again "
+                    "with those exact digits as the value."
+                )
+            }
+
     session.setdefault("collected", {})
 
     # Normalise phone: convert spoken words to digits, then to E.164
