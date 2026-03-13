@@ -49,6 +49,8 @@ import base64
 import json
 import logging
 import os
+import re
+import time
 from typing import Any, Dict, Tuple
 
 import httpx
@@ -120,6 +122,34 @@ _TOOL_FILLERS: dict = {
     "reschedule_appointment":"No problem, let me move that for you now...",
     "get_clinic_info":       "Just one moment...",
 }
+
+# Played directly by the pipeline (no LLM round-trip) when a transcript
+# contains no intelligible words AND >= 5 s have passed since Susie last spoke.
+_BAD_LINE_PHRASE = (
+    "I'm sorry, I can't quite hear you -- the line sounds a bit bad, could you try again?"
+)
+
+# Words that count as "nothing" — pure filler sounds that ASR sometimes transcribes.
+_NOISE_ONLY_WORDS: frozenset = frozenset({
+    "mm", "mmm", "mhm", "hmm", "hm", "uh", "um", "ah", "eh",
+    "oh", "er", "erm", "ha", "huh",
+})
+
+_BAD_LINE_SILENCE_THRESHOLD = 5.0  # seconds since Susie last spoke
+
+
+def _is_garbage_transcript(text: str) -> bool:
+    """
+    Return True if the transcript contains no recognizable words.
+    Catches empty strings, pure noise sounds ('mm', 'uh', etc.),
+    and transcripts made up only of digits/punctuation.
+    """
+    if not text.strip():
+        return True
+    # Find any token with 2+ alphabetic characters
+    words = re.findall(r"[a-zA-Z]{2,}", text.lower())
+    real_words = [w for w in words if w not in _NOISE_ONLY_WORDS]
+    return len(real_words) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +904,7 @@ async def media_stream(websocket: WebSocket) -> None:
     _clearing      = False   # True while draining audio after barge-in
     _llm_busy      = False   # True while LLM is processing a turn
     _elevenlabs_task: asyncio.Task | None = None
+    _susie_last_spoke_at: float = 0.0  # monotonic time when Susie last started TTS
 
     # Signal: Twilio "start" event received — session is ready
     _twilio_started = asyncio.Event()
@@ -955,6 +986,7 @@ async def media_stream(websocket: WebSocket) -> None:
 
                     # Speak the greeting immediately via ElevenLabs TTS
                     _elevenlabs_task = await _inject_greeting(session, websocket, stream_sid)
+                    _susie_last_spoke_at = time.monotonic()
 
                 elif event == "media":
                     if not _assemblyai_ready.is_set():
@@ -1066,6 +1098,29 @@ async def media_stream(websocket: WebSocket) -> None:
                         if not text:
                             continue  # silence / noise — ignore
 
+                        # Bad-line detection: if transcript has no intelligible words AND
+                        # >= 5 s have passed since Susie last spoke, play the bad-line
+                        # phrase directly without an LLM round-trip.
+                        if _is_garbage_transcript(text):
+                            silence_gap = time.monotonic() - _susie_last_spoke_at
+                            if silence_gap >= _BAD_LINE_SILENCE_THRESHOLD and stream_sid:
+                                logger.info(
+                                    "[realtime] garbage transcript after %.1fs silence — "
+                                    "playing bad-line phrase directly: %r", silence_gap, text,
+                                )
+                                if _elevenlabs_task and not _elevenlabs_task.done():
+                                    _elevenlabs_task.cancel()
+                                _elevenlabs_task = asyncio.create_task(
+                                    _tts_to_twilio(_BAD_LINE_PHRASE, websocket, stream_sid)
+                                )
+                                _susie_last_spoke_at = time.monotonic()
+                            else:
+                                logger.info(
+                                    "[realtime] garbage transcript ignored (gap=%.1fs < 5s): %r",
+                                    silence_gap, text,
+                                )
+                            continue
+
                         logger.info("[realtime] caller said: %r", text)
                         session.setdefault("turns", []).append({"role": "caller", "text": text})
 
@@ -1106,12 +1161,14 @@ async def media_stream(websocket: WebSocket) -> None:
                                 if _elevenlabs_task and not _elevenlabs_task.done():
                                     _elevenlabs_task.cancel()
                                 _elevenlabs_task = llm_tts
+                                _susie_last_spoke_at = time.monotonic()
                             elif reply and stream_sid:
                                 if _elevenlabs_task and not _elevenlabs_task.done():
                                     _elevenlabs_task.cancel()
                                 _elevenlabs_task = asyncio.create_task(
                                     _tts_to_twilio(reply, websocket, stream_sid)
                                 )
+                                _susie_last_spoke_at = time.monotonic()
                             if reply:
                                 session.setdefault("turns", []).append(
                                     {"role": "assistant", "text": reply}
@@ -1158,6 +1215,25 @@ async def media_stream(websocket: WebSocket) -> None:
 
                             if not transcript:
                                 pass  # silence — skip
+                            elif _is_garbage_transcript(transcript):
+                                # Bad-line detection (same logic as v2 handler)
+                                silence_gap = time.monotonic() - _susie_last_spoke_at
+                                if silence_gap >= _BAD_LINE_SILENCE_THRESHOLD and stream_sid:
+                                    logger.info(
+                                        "[realtime] garbage transcript after %.1fs silence — "
+                                        "bad-line phrase: %r", silence_gap, transcript,
+                                    )
+                                    if _elevenlabs_task and not _elevenlabs_task.done():
+                                        _elevenlabs_task.cancel()
+                                    _elevenlabs_task = asyncio.create_task(
+                                        _tts_to_twilio(_BAD_LINE_PHRASE, websocket, stream_sid)
+                                    )
+                                    _susie_last_spoke_at = time.monotonic()
+                                else:
+                                    logger.info(
+                                        "[realtime] garbage transcript ignored (gap=%.1fs): %r",
+                                        silence_gap, transcript,
+                                    )
                             elif _llm_busy:
                                 logger.info("[realtime] LLM busy — dropping: %r", transcript)
                             else:
@@ -1197,12 +1273,14 @@ async def media_stream(websocket: WebSocket) -> None:
                                             if _elevenlabs_task and not _elevenlabs_task.done():
                                                 _elevenlabs_task.cancel()
                                             _elevenlabs_task = llm_tts
+                                            _susie_last_spoke_at = time.monotonic()
                                         elif reply and stream_sid:
                                             if _elevenlabs_task and not _elevenlabs_task.done():
                                                 _elevenlabs_task.cancel()
                                             _elevenlabs_task = asyncio.create_task(
                                                 _tts_to_twilio(reply, websocket, stream_sid)
                                             )
+                                            _susie_last_spoke_at = time.monotonic()
                                         if reply:
                                             session.setdefault("turns", []).append(
                                                 {"role": "assistant", "text": reply}
