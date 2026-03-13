@@ -422,6 +422,33 @@ TOOL_SCHEMAS = [
 # Populated on first call, reused for the lifetime of the worker process.
 _acuity_type_id_cache: Dict[str, str] = {}
 
+# ---------------------------------------------------------------------------
+# Location normalisation — maps spoken/STT variants to canonical location IDs
+# ---------------------------------------------------------------------------
+_ALCESTER_VARIANTS = {
+    "alcester", "alce", "alchester", "alcest",
+    "allster", "alster", "all ster", "all chester", "all-ster",
+    "awlster", "olster", "ulster", "alcester road",
+}
+_REDDITCH_VARIANTS = {
+    "redditch", "reditch", "reddich", "redich",
+    "reddich road", "bromsgrove road",
+}
+
+
+def _normalize_location(value: str) -> str:
+    """
+    Map a spoken or STT-transcribed location string to a canonical location ID.
+    Returns "alcester", "redditch", or the lowercased original (for single-location
+    clinics or already-canonical values).
+    """
+    v = (value or "").lower().strip()
+    if any(variant in v for variant in _ALCESTER_VARIANTS):
+        return "alcester"
+    if any(variant in v for variant in _REDDITCH_VARIANTS):
+        return "redditch"
+    return v
+
 
 def _make_acuity_adapter():
     """
@@ -702,7 +729,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
     from datetime import date as _date
     from app.clinic_config import THEOREM_LOCATIONS
 
-    location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+    location = _normalize_location(args.get("location") or session.get("selected_location", ""))
     service = (args.get("service") or "physiotherapy assessment").strip()
 
     # Explicit day_window from the LLM bypasses progressive search
@@ -844,7 +871,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
 
     try:
         clinic = get_clinic(session.get("clinic_id"))
-        location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+        location = _normalize_location(args.get("location") or session.get("selected_location", ""))
         service = (args.get("service") or "physiotherapy assessment").strip()
         patient_name = (args.get("patient_name") or "").strip()
         phone = (args.get("phone") or "").strip()
@@ -1696,9 +1723,9 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
         except Exception:
             pass
 
-    # Keep session location keys in sync
+    # Keep session location keys in sync (normalise STT variants → canonical ID)
     if field == "location":
-        session["selected_location"] = value.lower()
+        session["selected_location"] = _normalize_location(value)
         session["location_selected"] = True
 
     session["collected"][field] = value

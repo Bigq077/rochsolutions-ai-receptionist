@@ -986,7 +986,10 @@ async def media_stream(websocket: WebSocket) -> None:
 
                     session = await get_session(call_sid) or {}
                     session = _init_session(session, call_sid)
-                    session = _ensure_clinic_on_session(session, to_number or None)
+                    # Use customParameters.to first; fall back to twilio_to stored
+                    # by /voice in Redis (guards against empty customParameters).
+                    effective_to = to_number or session.get("twilio_to") or None
+                    session = _ensure_clinic_on_session(session, effective_to)
 
                     # Store caller's Twilio number so Susie can offer it back in Step 9
                     if from_number and not from_number.startswith("client:"):

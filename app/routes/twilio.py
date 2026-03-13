@@ -523,9 +523,12 @@ async def voice(request: Request):
     session = _init_session(session, call_sid)
     session = _ensure_clinic_on_session(session, to_number)
 
-    # Persist caller ID so the system prompt can offer "is that the number you're calling from?"
+    # Persist inbound numbers so realtime.py can recover clinic routing even
+    # if Twilio's customParameters are empty (Redis-backed fallback).
     if from_number:
         session["twilio_from"] = from_number
+    if to_number:
+        session["twilio_to"] = to_number
 
     # ── OpenAI Realtime path ──────────────────────────────────────────────
     # When REALTIME_ENABLED=true, hand the call off to the WebSocket bridge
