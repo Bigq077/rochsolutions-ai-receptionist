@@ -1,4 +1,5 @@
 # app/routes/admin.py
+import asyncio
 import os
 import httpx
 from fastapi import APIRouter
@@ -210,46 +211,47 @@ async def test_acuity_slots(key: str):
                 }
         report["calendar_id_check"] = cal_id_check
 
-        # ── 4. Test actual slot availability for each location ──────────
-        # Find the best appointment type for a standard physio assessment
-        physio_type = None
-        physio_type_name = None
-        for t in all_types:
-            name_lower = t["name"].lower()
-            if any(k in name_lower for k in ["physio", "physiotherapy", "assessment", "theorem"]):
-                physio_type = t["id"]
-                physio_type_name = t["name"]
-                break
+        # ── 4. Per-location correct type matching ───────────────────────
+        # Alcester → "Theorem Clinics Alcester." (type with "alcester" in name, no practitioner)
+        # Redditch → "Theorem Clinics Redditch" (type with "redditch" in name)
+        skip_words = ["blocked", "training", "gong", "meditation", "breathe",
+                      "nada", "package", "home visit", "outreach", "ins-",
+                      "massage", "laser", "shockwave", "yoga", "rehab"]
 
-        if not physio_type and all_types:
-            # Fallback: first non-blocked type
-            skip_words = ["blocked", "training", "gong", "meditation", "breathe", "nada", "package"]
-            for t in all_types:
-                if not any(s in t["name"].lower() for s in skip_words):
-                    physio_type = t["id"]
-                    physio_type_name = t["name"]
-                    break
+        def _best_type_for_loc(loc_keyword: str):
+            """Return (id, name) of the primary booking type for this location."""
+            practitioner_words = ["leanne", "mark", " ins", "insurance"]
+            candidates = [
+                t for t in all_types
+                if loc_keyword in t["name"].lower()
+                and not any(s in t["name"].lower() for s in skip_words)
+                and not any(p in t["name"].lower() for p in practitioner_words)
+            ]
+            if candidates:
+                return candidates[0]["id"], candidates[0]["name"]
+            # Fallback: any type with the location keyword
+            fallback = [t for t in all_types if loc_keyword in t["name"].lower()]
+            if fallback:
+                return fallback[0]["id"], fallback[0]["name"]
+            return None, None
 
-        report["matched_appointment_type"] = {
-            "id": physio_type,
-            "name": physio_type_name,
-            "note": "This is the type used when caller books a physio assessment",
+        alcester_type_id, alcester_type_name = _best_type_for_loc("alcester")
+        redditch_type_id, redditch_type_name = _best_type_for_loc("redditch")
+
+        report["correct_type_mapping"] = {
+            "alcester": {"type_id": alcester_type_id, "type_name": alcester_type_name},
+            "redditch": {"type_id": redditch_type_id, "type_name": redditch_type_name},
         }
 
-        slot_tests = {}
-        test_cases = [
-            ("alcester (no calendar filter)", None),
-            ("alcester (with calendar ID)", env_cal_vars.get("ACUITY_CALENDAR_ID_ALCESTER") or None),
-            ("redditch (with calendar ID)", env_cal_vars.get("ACUITY_CALENDAR_ID_REDDITCH") or None),
-            ("mark calendar direct",        env_cal_vars.get("ACUITY_CALENDAR_ID_MARK") or None),
-        ]
+        # ── 5. Targeted slot tests — correct type + correct calendar ────
+        alcester_cal = env_cal_vars.get("ACUITY_CALENDAR_ID_ALCESTER") or None
+        redditch_cal = env_cal_vars.get("ACUITY_CALENDAR_ID_REDDITCH") or None
 
-        for label, cal_id in test_cases:
-            if physio_type is None:
-                slot_tests[label] = {"error": "No usable appointment type found"}
-                continue
+        async def _check_slots(label, type_id, cal_id):
+            if not type_id:
+                return label, {"error": "No appointment type found for this location"}
             params = {
-                "appointmentTypeID": physio_type,
+                "appointmentTypeID": type_id,
                 "date": today.isoformat(),
                 "endDate": end_date.isoformat(),
                 "timezone": "Europe/London",
@@ -259,24 +261,71 @@ async def test_acuity_slots(key: str):
             try:
                 r = await client.get(f"{base}/availability/times", params=params)
                 if r.status_code == 200:
-                    slots = r.json()
-                    first3 = [s.get("time") for s in slots[:3]] if isinstance(slots, list) else []
-                    slot_tests[label] = {
+                    slots = r.json() if isinstance(r.json(), list) else []
+                    return label, {
                         "ok": True,
-                        "total_slots_60_days": len(slots) if isinstance(slots, list) else "?",
-                        "first_3_slots": first3,
-                        "calendar_id_used": _mask(cal_id) if cal_id else "none (all calendars)",
+                        "type_id": type_id,
+                        "calendar_id": cal_id or "none (all calendars)",
+                        "total_slots_60_days": len(slots),
+                        "first_3_slots": [s.get("time") for s in slots[:3]],
                     }
                 else:
-                    slot_tests[label] = {
+                    return label, {
                         "ok": False,
+                        "type_id": type_id,
+                        "calendar_id": cal_id or "none",
                         "status": r.status_code,
-                        "body": r.text[:400],
-                        "calendar_id_used": _mask(cal_id) if cal_id else "none",
+                        "error": r.text[:300],
                     }
             except Exception as e:
-                slot_tests[label] = {"ok": False, "error": str(e)}
+                return label, {"ok": False, "error": str(e)}
 
+        slot_results = await asyncio.gather(
+            _check_slots("alcester — correct type, correct calendar",
+                         alcester_type_id, alcester_cal),
+            _check_slots("alcester — correct type, NO calendar filter",
+                         alcester_type_id, None),
+            _check_slots("redditch — correct type, correct calendar",
+                         redditch_type_id, redditch_cal),
+            _check_slots("redditch — correct type, NO calendar filter",
+                         redditch_type_id, None),
+        )
+        slot_tests = {label: result for label, result in slot_results}
+
+        # ── 6. Full scan — every non-blocked type with no calendar filter ─
+        # Shows which types actually have ANY availability in Acuity.
+        all_scanned = []
+        for t in all_types:
+            tname = t["name"].lower()
+            if any(s in tname for s in skip_words):
+                continue
+            try:
+                r = await client.get(f"{base}/availability/times", params={
+                    "appointmentTypeID": t["id"],
+                    "date": today.isoformat(),
+                    "endDate": end_date.isoformat(),
+                    "timezone": "Europe/London",
+                })
+                if r.status_code == 200:
+                    slots = r.json() if isinstance(r.json(), list) else []
+                    all_scanned.append({
+                        "id": t["id"],
+                        "name": t["name"],
+                        "slots_60_days": len(slots),
+                        "next_slot": slots[0].get("time") if slots else None,
+                    })
+                else:
+                    all_scanned.append({
+                        "id": t["id"], "name": t["name"],
+                        "slots_60_days": f"ERROR {r.status_code}",
+                    })
+            except Exception as e:
+                all_scanned.append({"id": t["id"], "name": t["name"], "slots_60_days": f"ERROR {e}"})
+
+        report["all_types_availability_scan"] = sorted(
+            all_scanned, key=lambda x: x.get("slots_60_days") if isinstance(x.get("slots_60_days"), int) else -1,
+            reverse=True,
+        )
         report["slot_tests"] = slot_tests
 
     # Overall verdict
