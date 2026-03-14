@@ -325,6 +325,9 @@ async def handle_turn(
             )
         session["conversation_history"] = history
         session["last_bot_prompt"] = reply_text
+        # last_question mirrors last_bot_prompt and is used by the no-input
+        # recovery path in twilio.py to re-ask rather than play a generic menu.
+        session["last_question"] = reply_text
 
         return reply_text, session
 

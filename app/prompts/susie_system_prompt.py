@@ -32,6 +32,16 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     _today_weekday = _now.strftime("%A")          # e.g. "Saturday"
     _today_date    = _now.strftime("%-d %B %Y")   # e.g. "14 March 2026"
 
+    # Compute this week's Sunday and next week's Monday for date-filter injection
+    from datetime import timedelta as _td
+    _weekday_num = _now.weekday()  # Mon=0 … Sun=6
+    _days_until_sunday = (6 - _weekday_num) % 7
+    _this_sunday = _now + _td(days=(_days_until_sunday if _days_until_sunday > 0 else 7))
+    _this_sunday_date = _this_sunday.strftime("%-d %B %Y")
+    _next_monday = _this_sunday + _td(days=1)
+    _next_monday_date = _next_monday.strftime("%-d %B %Y")
+    _next_monday_iso = _next_monday.strftime("%Y-%m-%d")
+
     clinic = get_clinic(session.get("clinic_id"))
     clinic_name = clinic.get("display_name", "the clinic")
     sms_name = clinic.get("sms_name") or clinic_name
@@ -161,13 +171,29 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         location_question = ""
 
     # ------------------------------------------------------------------ #
+    # New/returning session guard — injected at the top of booking workflow
+    # ------------------------------------------------------------------ #
+    _patient_type_already_known = collected.get("patient_type")
+    if _patient_type_already_known:
+        _nr_label = "new" if _patient_type_already_known == "new" else "returning"
+        _nr_guard = (
+            f"\n⚠️ SESSION GUARD — NEW/RETURNING ALREADY ANSWERED: "
+            f"This caller has already confirmed they are a {_nr_label} patient. "
+            f"The new/returning question is DONE and MUST NOT be asked again under any circumstances. "
+            f"Skip every step or instruction that asks 'have you been to us before?' "
+            f"Treat patient_type = {_patient_type_already_known} as already set and proceed to the next uncompleted step.\n"
+        )
+    else:
+        _nr_guard = ""
+
+    # ------------------------------------------------------------------ #
     # Booking workflow — fast-track (Theorem) vs full (demo / default)
     # ------------------------------------------------------------------ #
     fast_booking = clinic.get("fast_booking", False)
 
     if fast_booking:
         booking_workflow_section = f"""## 8. Booking workflow — Fast Track
-
+{_nr_guard}
 Work through these steps in order. Skip any step where you already have the information.
 Every response is ONE sentence. Always acknowledge what the caller just said before asking the next question.
 
@@ -237,7 +263,7 @@ For cancel: collect name, phone, location, verbal confirmation, call cancel_appo
 
     else:
         booking_workflow_section = f"""## 8. Booking workflow
-
+{_nr_guard}
 Work through these steps in order. Skip any step where you already have the information from earlier in the call. Never re-ask something the caller already answered.
 
 **Step 0 (booking intent)** -- When a caller says they want to book or make an appointment:
@@ -404,16 +430,19 @@ Never guess at facts. Use get_clinic_info for anything not listed here.
 
 ## 5. Date and time awareness
 
-Today is {_today_weekday}, {_today_date} (London time). This is injected fresh on every call.
+Today is {_today_weekday}, {_today_date} (London time). This week runs until Sunday {_this_sunday_date}. Next week starts on Monday {_next_monday_date}. This is injected fresh on every call.
 
-When a caller mentions a day preference, reason from today's actual date:
-- If caller says "Monday" and today is Saturday → next Monday is 2 days away; offer that Monday's slots.
-- If caller says "after Monday" and today is Saturday → earliest available slot is Tuesday.
-- "This week" = remaining days of the current week from today.
-- "Next week" = the full week starting the coming Monday.
-- Never offer a date that has already passed today.
-- If the day is ambiguous (could be this week or the week after), ask: "Just to confirm, did you mean this coming [DAY] or the following week?"
-The check_availability tool always filters to future slots from the current moment — you do not need to pass a date manually. But if the caller gives a narrow window (e.g. "in the next 2 days"), pass day_window=2 to the tool so slots are scoped correctly.
+Strict date-filter rules — apply BEFORE offering any slot:
+- "Not available this week" / "not this week" / "busy this week" → NO slots before next Monday ({_next_monday_date}). Pass after_date="{_next_monday_iso}" to check_availability.
+- "Next week" / "from next week" → slots from Monday {_next_monday_date} onwards ONLY. Pass after_date="{_next_monday_iso}" to check_availability.
+- "Not available until Monday" / "starting from Monday" → if the coming Monday is {_next_monday_date}, pass after_date="{_next_monday_iso}".
+- "After Monday" → Tuesday or later of the relevant week. Compute and pass the correct after_date.
+- "This Monday" = the Monday of the current week if it has not yet passed; otherwise next Monday ({_next_monday_date}).
+- Never offer a date that has already passed today ({_today_date}).
+- If the caller's availability window is ambiguous, confirm once: "Just to check — did you mean from Monday the {_next_monday_date}?"
+
+CRITICAL — always pass after_date to check_availability when the caller has said they cannot be seen before a certain date. Format: YYYY-MM-DD. This is the only guaranteed way to ensure no excluded slots are offered. Never rely on the LLM to filter slots after the fact — always pass the filter to the tool.
+If the caller gives a narrow window (e.g. "in the next 2 days"), also pass day_window=2 so the search range is scoped correctly.
 
 ## 6. What you already know about this caller
 
@@ -496,7 +525,7 @@ What you never do:
 - Ask two questions in one response
 - Ask for something you already know from earlier in THIS call
 - Repeat any phrase, sentence, or question you already said this call — your last response is shown above; never say it again verbatim
-- Ask new/returning more than once -- it is asked exactly once in Step 3
+- Ask new/returning more than once -- it is asked exactly once and the answer is stored in session; if new_or_returning is already shown in the known context above, this question CANNOT fire again under any code path
 - Announce that you are checking something
 - Use hollow filler openers
 - Say anything that sounds scripted

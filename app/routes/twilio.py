@@ -193,7 +193,7 @@ def _abs_url(request: Request, path: str) -> str:
 def gather_speech(
     action_url: str,
     prompt: str | None = None,
-    timeout: int = 10,
+    timeout: int = 5,
 ) -> Gather:
     g = Gather(
         input="speech dtmf",
@@ -281,7 +281,7 @@ async def _say(
                 method="POST",
                 language="en-GB",
                 speech_timeout="auto",
-                timeout=10,
+                timeout=5,
                 action_on_empty_result=True,
                 barge_in=True,
             )
@@ -721,7 +721,7 @@ async def turn(request: Request):
                 logger.info("Location passively detected for %s: %s", call_sid, _detected_loc)
 
     # --------------------------------------------------
-    # Handle empty input  (3-tier escalation)
+    # Handle empty input  (3-tier escalation with last-question recovery)
     # --------------------------------------------------
     if not user_said:
         miss = int(session.get("miss_count", 0)) + 1
@@ -729,27 +729,39 @@ async def turn(request: Request):
         await save_session(call_sid, session)
 
         _clinic_obj = get_clinic(session.get("clinic_id"))
-        _cur_state  = session.get("state", "TRIAGE")
+        # Use the last question Susie asked (set by conversation.py on every turn).
+        # Prefer last_question (explicit tracker); fall back to last_bot_prompt.
+        _last_q = (
+            session.get("last_question") or session.get("last_bot_prompt") or ""
+        ).strip()
 
-        # Tier 1 — first silence
+        # Tier 1 — first silence: re-ask last question if mid-flow, else reintro
         if miss == 1:
-            if _cur_state == "TRIAGE":
-                vr.append(gather_speech(turn_url, _build_reintro(_clinic_obj)))
+            if _last_q and PHASE3_ENABLED:
+                recovery = f"Sorry about that — {_last_q}"
             else:
-                vr.append(gather_speech(turn_url, "Sorry — I didn't catch that. Could you say that again?"))
+                recovery = _build_reintro(_clinic_obj)
+            vr.append(gather_speech(turn_url, recovery))
             return xml(vr)
 
-        # Tier 2 — second silence: explicit menu
+        # Tier 2 — second silence: "having trouble hearing" + repeat question
         if miss == 2:
-            vr.append(gather_speech(turn_url, _build_menu()))
+            if _last_q and PHASE3_ENABLED:
+                recovery = (
+                    "I'm having a little trouble hearing you — let me try that again. "
+                    + _last_q
+                )
+            else:
+                recovery = _build_menu()
+            vr.append(gather_speech(turn_url, recovery))
             return xml(vr)
 
-        # Tier 3 — third silence: live transfer
+        # Tier 3 — third silence: live transfer (caller cannot be heard at all)
         _clinic_obj2 = get_clinic(session.get("clinic_id"))
         _xfer_phone  = _clinic_obj2.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
         _append_transfer(
             vr,
-            "Not to worry — let me put you through to the team right now. Please hold.",
+            "I'm sorry, I'm having trouble hearing you. Let me put you straight through to the team now. Please hold.",
             request,
             _xfer_phone,
         )

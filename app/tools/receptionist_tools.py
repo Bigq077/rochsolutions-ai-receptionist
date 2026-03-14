@@ -186,6 +186,16 @@ TOOL_CHECK_AVAILABILITY = {
                     "'physiotherapy follow-up', 'acupuncture'. Required for Acuity clinics."
                 ),
             },
+            "after_date": {
+                "type": "string",
+                "description": (
+                    "Optional ISO date string (YYYY-MM-DD). Only return slots on or after this date. "
+                    "Pass this when the caller says they are unavailable before a specific date — "
+                    "e.g. 'not available this week' → pass next Monday's date; "
+                    "'next week' → pass the coming Monday's date. "
+                    "This is the ONLY guaranteed way to prevent excluded dates being offered."
+                ),
+            },
         },
         "required": ["location", "duration_minutes"],
     },
@@ -767,6 +777,25 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
         today = _date.today()
 
+        # Resolve after_date: earliest allowed date for returned slots
+        after_date_str = (args.get("after_date") or "").strip()
+        after_date_cutoff: "_date | None" = None
+        if after_date_str:
+            try:
+                after_date_cutoff = _date.fromisoformat(after_date_str)
+                logger.info(
+                    "_check_availability_acuity: after_date_cutoff=%s (from args)",
+                    after_date_cutoff,
+                )
+            except Exception:
+                logger.warning(
+                    "_check_availability_acuity: could not parse after_date=%r — ignoring",
+                    after_date_str,
+                )
+
+        # Use after_date as the search start if it is later than today
+        search_start = max(today, after_date_cutoff) if after_date_cutoff else today
+
         # Progressive window: expand until slots are found.
         # Explicit day_window bypasses this and searches that exact range only.
         search_windows = [int(explicit_window)] if explicit_window else [14, 30, 60]
@@ -776,12 +805,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
         for window in search_windows:
             used_window = window
-            end_date = today + timedelta(days=window)
+            end_date = search_start + timedelta(days=window)
 
             try:
                 slots = await adapter.get_available_slots(
                     appointment_type_id=appointment_type_id,
-                    start_date=today,
+                    start_date=search_start,
                     end_date=end_date,
                     practitioner_id=practitioner_id,
                 )
@@ -821,12 +850,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 location, used_window,
             )
             from datetime import date as _date
-            fallback_end = _date.today() + timedelta(days=60)
+            fallback_end = search_start + timedelta(days=60)
             slots = await _generate_manual_slots(
                 adapter=adapter,
                 appointment_type_id=appointment_type_id,
                 practitioner_id=practitioner_id,
-                start_date=_date.today(),
+                start_date=search_start,
                 end_date=fallback_end,
                 slot_minutes=50,
             )
@@ -844,6 +873,15 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     ),
                     "slots": [],
                 }
+
+        # Post-fetch date filter: safety net in case the Acuity API ignores start_date
+        if after_date_cutoff:
+            pre_filter_count = len(slots)
+            slots = [s for s in slots if s.start_time.date() >= after_date_cutoff]
+            logger.info(
+                "_check_availability_acuity: after_date post-filter %s → %d/%d slots remaining",
+                after_date_cutoff, len(slots), pre_filter_count,
+            )
 
         top3 = slots[:3]
         labels = [s.start_time.strftime("%a %d %b at %H:%M") for s in top3]
@@ -1213,7 +1251,30 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     now = datetime.now(LONDON_TZ)
     w_start = now
-    w_end = now + timedelta(days=day_window_days)
+
+    # Apply after_date: shift the search window start forward if caller is unavailable before that date
+    after_date_str = (args.get("after_date") or "").strip()
+    if after_date_str:
+        try:
+            from datetime import date as _gcal_date
+            _after_naive = datetime.combine(
+                _gcal_date.fromisoformat(after_date_str),
+                datetime.min.time(),
+            )
+            _after_dt = LONDON_TZ.localize(_after_naive)
+            if _after_dt > w_start:
+                w_start = _after_dt
+                logger.info(
+                    "_exec_check_availability (gcal): after_date=%s applied, w_start shifted",
+                    after_date_str,
+                )
+        except Exception as _ae:
+            logger.warning(
+                "_exec_check_availability (gcal): could not parse after_date=%r — ignoring: %r",
+                after_date_str, _ae,
+            )
+
+    w_end = w_start + timedelta(days=day_window_days)
 
     candidates = generate_candidate_slots(
         w_start, w_end,
