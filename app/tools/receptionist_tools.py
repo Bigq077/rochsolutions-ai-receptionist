@@ -434,6 +434,9 @@ _REDDITCH_VARIANTS = {
     "redditch", "reditch", "reddich", "redich",
     "reddich road", "bromsgrove road",
 }
+# Number-based location selection (Theorem: "say one for Alcester, two for Redditch")
+_ALCESTER_NUMBERS = {"1", "one", "first", "option one", "option 1", "number one", "number 1"}
+_REDDITCH_NUMBERS = {"2", "two", "second", "option two", "option 2", "number two", "number 2"}
 
 
 def _normalize_location(value: str) -> str:
@@ -443,6 +446,11 @@ def _normalize_location(value: str) -> str:
     clinics or already-canonical values).
     """
     v = (value or "").lower().strip()
+    # Number-based selection ("say one for Alcester, two for Redditch")
+    if v in _ALCESTER_NUMBERS:
+        return "alcester"
+    if v in _REDDITCH_NUMBERS:
+        return "redditch"
     if any(variant in v for variant in _ALCESTER_VARIANTS):
         return "alcester"
     if any(variant in v for variant in _REDDITCH_VARIANTS):
