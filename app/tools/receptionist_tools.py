@@ -1731,6 +1731,21 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
         except Exception:
             pass
 
+        # Guard: reject partial phone numbers — UK mobiles are 11 digits (07xxx xxxxxxx).
+        # Catching 5-digit partials here prevents the "first five digits" mid-collection
+        # from being silently stored and causing the booking to proceed with bad data.
+        import re as _re
+        _digit_count = len(_re.sub(r"\D", "", value))
+        if _digit_count < 10:
+            return {
+                "error": (
+                    f"Partial phone number — only {_digit_count} digit(s) received. "
+                    "Do NOT store phone after the first five digits alone. "
+                    "Ask for the remaining digits (Part 2), combine both parts into the "
+                    "full number, confirm it with the caller, THEN call collect_and_store."
+                )
+            }
+
     # Keep session location keys in sync (normalise STT variants → canonical ID)
     if field == "location":
         session["selected_location"] = _normalize_location(value)
