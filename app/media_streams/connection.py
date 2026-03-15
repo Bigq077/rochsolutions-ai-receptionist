@@ -177,6 +177,7 @@ class WebSocketCallHandler:
         Raises nothing — all exceptions are caught internally.
         """
         logger.info("[ms_conn] new WebSocket connection")
+        await self._ws.accept()
 
         tasks = [
             asyncio.create_task(self._receive_loop(),       name="ms_receive"),
