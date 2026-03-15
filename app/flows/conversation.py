@@ -227,7 +227,11 @@ async def handle_turn(
             response = await client.messages.create(
                 model=model,
                 max_tokens=300,  # Increased from 200 — complex name/phone turns need headroom
-                system=system_prompt,
+                system=[{
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=messages,
                 tools=TOOL_SCHEMAS,
                 timeout=12.0,  # Stay well within Twilio's 15-second webhook limit

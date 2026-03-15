@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import base64
 import uuid
@@ -74,7 +75,7 @@ def _eleven_tts_bytes(text: str) -> bytes:
     }
 
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=25)
+        r = requests.post(url, json=payload, headers=headers, timeout=8)
         r.raise_for_status()
         return r.content
     except requests.HTTPError:
@@ -82,6 +83,18 @@ def _eleven_tts_bytes(text: str) -> bytes:
         raise HTTPException(status_code=502, detail=detail or "ElevenLabs HTTP error")
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"TTS request failed: {str(e)}")
+
+
+async def _eleven_tts_bytes_async(text: str) -> bytes:
+    """
+    Non-blocking wrapper around the synchronous ElevenLabs API call.
+
+    Runs _eleven_tts_bytes() in the default thread pool executor so the
+    asyncio event loop is never blocked — other webhook coroutines
+    (e.g. /turn) can be handled while ElevenLabs is generating audio.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _eleven_tts_bytes, text)
 
 
 # -----------------------------------------------------------------------------

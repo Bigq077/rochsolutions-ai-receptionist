@@ -271,9 +271,15 @@ async def _say(
     caller can barge in.
     """
     try:
-        from app.routes.tts_eleven import tts_eleven_url, TTSReq
-        data = tts_eleven_url(TTSReq(text=text), request)
-        audio_url = data["audio_url"]
+        from app.routes.tts_eleven import _eleven_tts_bytes_async
+        from pathlib import Path as _Path
+        audio_bytes = await _eleven_tts_bytes_async(text)
+        _tts_dir = _Path("/tmp/tts")
+        _tts_dir.mkdir(parents=True, exist_ok=True)
+        _filename = f"{uuid.uuid4().hex}.mp3"
+        (_tts_dir / _filename).write_bytes(audio_bytes)
+        _base = str(request.base_url).rstrip("/")
+        audio_url = f"{_base}/avatar/audio/{_filename}"
         if gather_action:
             g = Gather(
                 input="speech dtmf",
@@ -827,8 +833,27 @@ async def turn(request: Request):
 
     try:
         if PHASE3_ENABLED:
+            import asyncio as _asyncio
             from app.flows.conversation import handle_turn
-            reply_text, session = await handle_turn(user_said, session)
+            from app.fast_path import resolve_fast_path
+
+            _fp = resolve_fast_path(session, user_said)
+            if _fp is not None:
+                reply_text, session = _fp
+            else:
+                try:
+                    reply_text, session = await _asyncio.wait_for(
+                        handle_turn(user_said, session),
+                        timeout=13.0,
+                    )
+                except _asyncio.TimeoutError:
+                    logger.warning(
+                        "handle_turn wall-clock timeout (call_sid=%s)", call_sid
+                    )
+                    reply_text = (
+                        "I'm sorry, just bear with me one moment — "
+                        "I'll get that sorted for you."
+                    )
         else:
             reply_text, session = await triage_turn(user_said, session)
         session.pop("error_count", None)   # reset on success
@@ -882,6 +907,11 @@ async def turn(request: Request):
         await save_session(call_sid, session)
         _append_transfer(vr, reply_text, request, _xfer_phone)
         return xml(vr)
+
+    # Guard: never send an empty string to gather_speech — it creates a silent Gather
+    if not reply_text or not reply_text.strip():
+        logger.error("Empty reply_text — using fallback (call_sid=%s)", call_sid)
+        reply_text = "I'm sorry, something went wrong on my end. Could you repeat that?"
 
     await save_session(call_sid, session)
     vr.append(gather_speech(turn_url, reply_text))

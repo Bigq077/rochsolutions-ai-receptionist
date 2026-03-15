@@ -51,6 +51,15 @@ DEFAULT_SESSION: Dict[str, Any] = {
     "transfer_attempted": False,
     "transfer_failed_status": None,
     "request_transfer": False,
+    # Fast-path state
+    "phone_part_one": None,          # First 5 digits of a caller-dictated phone number
+    "phone_part_two": None,          # Last 6 digits of a caller-dictated phone number
+    "selected_slot": None,           # Slot chosen by fast-path slot-selection handler
+    "_fast_path_phone_confirmed": False,   # Caller confirmed caller-ID number is correct
+    "_fast_path_slot_confirmed": False,    # Caller confirmed chosen slot
+    "_fast_path_final_confirmed": False,   # Caller confirmed final booking summary
+    "_fast_path_correction_needed": False, # Caller said "no" to a confirmation
+    "_fast_path_full_phone": None,         # Assembled 11-digit phone from two-part collection
 }
 
 
