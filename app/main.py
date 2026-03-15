@@ -18,6 +18,11 @@ from app.routes.admin import router as admin_router
 # OpenAI Realtime API WebSocket bridge (active when REALTIME_ENABLED=true)
 from app.routes.realtime import router as realtime_router
 
+# Parallel Media Streams pipeline (active when MEDIA_STREAMS_ENABLED=true)
+# Routes: POST /ms/incoming (TwiML), WS /ms/stream (WebSocket handler)
+from app.media_streams.config import MEDIA_STREAMS_ENABLED
+from app.media_streams.router import router as media_streams_router
+
 # ============================================================================
 # LOGGING CONFIGURATION
 # ============================================================================
@@ -203,6 +208,13 @@ app.include_router(redis_debug_router)
 app.include_router(avatar_router)
 app.include_router(admin_router)   # temporary admin router
 app.include_router(realtime_router)  # OpenAI Realtime WebSocket bridge
+
+# Media Streams parallel pipeline — feature-gated
+if MEDIA_STREAMS_ENABLED:
+    app.include_router(media_streams_router)
+    logger.info("✅ Media Streams system: ENABLED (/ms/incoming, /ms/stream)")
+else:
+    logger.info("ℹ️  Media Streams system: DISABLED (set MEDIA_STREAMS_ENABLED=true to enable)")
 
 logger.info("✅ All routes registered successfully")
 
