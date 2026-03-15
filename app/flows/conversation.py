@@ -16,7 +16,7 @@ Anthropic API format notes:
 Latency optimisations (no quality reduction):
   - Parallel tool execution via asyncio.gather() — multiple tools in one turn run concurrently
   - Hybrid model: Haiku for turns after simple-only tools; Sonnet for booking/calendar/transfer
-  - max_tokens capped at 400 — phone responses are always 1-3 sentences
+  - max_tokens capped at 300 — phone responses are always 1-3 sentences; headroom for name+phone turns
 """
 from __future__ import annotations
 
@@ -226,7 +226,7 @@ async def handle_turn(
 
             response = await client.messages.create(
                 model=model,
-                max_tokens=200,  # Phone replies are 1-3 sentences; 400 was wasteful
+                max_tokens=300,  # Increased from 200 — complex name/phone turns need headroom
                 system=system_prompt,
                 messages=messages,
                 tools=TOOL_SCHEMAS,

@@ -328,10 +328,14 @@ TOOL_COLLECT_AND_STORE = {
             "field": {
                 "type": "string",
                 "enum": [
-                    "name", "phone", "location", "reason", "insurer",
+                    "name", "full_name", "phone", "location", "reason", "insurer",
                     "policy_number", "time_preference", "patient_type", "service",
                 ],
-                "description": "Which field to store.",
+                "description": (
+                    "Which field to store. Use 'full_name' when collecting the caller's name "
+                    "(always collected as a single full name, never split into first/last). "
+                    "'full_name' and 'name' are equivalent — both are stored together."
+                ),
             },
             "value": {
                 "type": "string",
@@ -1811,6 +1815,15 @@ async def _exec_collect_and_store(args: Dict[str, Any], session: Dict[str, Any])
     if field == "location":
         session["selected_location"] = _normalize_location(value)
         session["location_selected"] = True
+
+    # full_name is the preferred field for collecting the caller's name as a
+    # single utterance.  Store under both "full_name" and "name" so all
+    # downstream code (booking, context display, call summary) continues to
+    # work regardless of which key it reads from.
+    if field == "full_name":
+        session["collected"]["full_name"] = value
+        session["collected"]["name"] = value
+        return {"ok": True}
 
     session["collected"][field] = value
     return {"ok": True}

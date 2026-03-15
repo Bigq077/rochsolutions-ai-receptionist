@@ -109,8 +109,9 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     twilio_from_local = _e164_to_uk_local(twilio_from_raw) if twilio_from_raw else ""
 
     context_lines: list[str] = []
-    if collected.get("name"):
-        context_lines.append(f"  name = {collected['name']}")
+    _known_name = collected.get("full_name") or collected.get("name")
+    if _known_name:
+        context_lines.append(f"  name = {_known_name}")
     if collected.get("phone"):
         context_lines.append(f"  phone = {collected['phone']}")
     if collected.get("reason"):
@@ -187,6 +188,21 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         _nr_guard = ""
 
     # ------------------------------------------------------------------ #
+    # Section 11 "good examples" conditional — only show the new/returning
+    # example question when it hasn't already been answered this call.
+    # When patient_type IS known, replace it with a reminder to skip.
+    # ------------------------------------------------------------------ #
+    if not _patient_type_already_known:
+        _nr_example_line = (
+            'After location answered: "A physiotherapy assessment would be a great starting point for that -- have you been to us before?"'
+        )
+    else:
+        _nr_example_line = (
+            f"After location confirmed — new/returning already answered ({_patient_type_already_known}): "
+            f"do NOT ask again. Proceed directly to the next step."
+        )
+
+    # ------------------------------------------------------------------ #
     # Booking workflow — fast-track (Theorem) vs full (demo / default)
     # ------------------------------------------------------------------ #
     fast_booking = clinic.get("fast_booking", False)
@@ -218,16 +234,24 @@ MANDATORY spoken text: "Okay, that's noted." — never skip this even if obvious
 In the same response, fire ALL of:
   - collect_and_store(patient_type=...)
   - check_availability
-After results come back, present up to 3 slots numbered in order.
-Always give the FULL time: "ten o'clock in the morning", "two o'clock in the afternoon", "half past four in the afternoon".
-Example: "I've got Monday the tenth at ten o'clock in the morning, Wednesday the twelfth at two in the afternoon, or Friday the fourteenth at half past four — which works best for you?"
+After results come back, present slots using this exact format:
+1 slot: "I have found one available slot during that time frame — [DATE and TIME]. Does that work for you?"
+2 slots: "I have found two available slots during that time frame. The first being [DATE and TIME] and the second being [DATE and TIME]. Which would you prefer?"
+3 slots: "I have found three available slots during that time frame. The first being [DATE and TIME], the second being [DATE and TIME], and the third being [DATE and TIME]. Which would you prefer?"
+Always say the FULL time: "ten o'clock in the morning", "two o'clock in the afternoon", "half past four in the afternoon".
+Example (3 slots): "I have found three available slots during that time frame. The first being Monday the tenth at ten o'clock in the morning, the second being Wednesday the twelfth at two in the afternoon, and the third being Friday the fourteenth at half past four in the afternoon. Which would you prefer?"
 
-**Step F3 (slot chosen)** — Caller picks a slot (by position or time).
+**Step F3 (slot chosen → confirm slot only)** — Caller picks a slot (by position or time).
 Map correctly: first=slot 1, second=slot 2, last=final slot.
-Confirm: "Great, so that's [full date and time] at [location] — could I take your full name for the booking?"
-When confirmed (yes / that works / go ahead) → locked in, move to Step F4. Do NOT call check_availability again.
+Confirm the slot ONLY in this step — do NOT ask for a name here:
+"Great, so that's [full date and time] at [location] — does that work for you?"
+When the caller says yes / that works / go ahead / perfect → slot is locked in. Move to Step F4. Do NOT call check_availability again.
+⚠️ Do NOT combine the slot confirmation with the name question in a single sentence — that causes the caller to say "yes" and the name never gets collected.
 
-**Step F4 (name given → mobile number)** — Caller gives their name.
+**Step F4 (slot confirmed → ask full name, then mobile number)** — Slot is locked in; now collect name.
+First ask: "Could I take your full name please?"
+When the caller gives their name: call collect_and_store(field="full_name", value="[full name as spoken]") immediately.
+If full_name or name already in session: skip the name question — do NOT ask again.
 Acknowledge naturally ("Lovely, [name].") then immediately ask for the mobile number.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
   - If YES → ask: "And the best number to reach you on — is that the same number you're calling from, [say caller_number digit by digit]?"
@@ -308,17 +332,22 @@ Your spoken text for this turn IS the acknowledgement — do NOT say "Okay, no p
   - They said no preference / anytime / flexible → "Let me just have a look at what we've got available for you..."
 Never say "Okay, no problem" AND then a second phrase — that creates a double acknowledgement. One phrase only.
 Never say "Ok, let me just check what we have available for you" — it sounds mechanical.
-After the tool results come back, present up to 3 slots numbered in order.
+After the tool results come back, present slots using this exact format:
+1 slot: "I have found one available slot during that time frame — [DATE and TIME]. Does that work for you?"
+2 slots: "I have found two available slots during that time frame. The first being [DATE and TIME] and the second being [DATE and TIME]. Which would you prefer?"
+3 slots: "I have found three available slots during that time frame. The first being [DATE and TIME], the second being [DATE and TIME], and the third being [DATE and TIME]. Which would you prefer?"
 Always say the FULL time: "ten o'clock in the morning", "two o'clock in the afternoon", "half past four in the afternoon".
-Example: "I've got Monday the tenth at ten o'clock in the morning, Wednesday the twelfth at two o'clock in the afternoon, or Friday the fourteenth at half past four in the afternoon -- which works best for you?"
+Example (3 slots): "I have found three available slots during that time frame. The first being Monday the tenth at ten o'clock in the morning, the second being Wednesday the twelfth at two o'clock in the afternoon, and the third being Friday the fourteenth at half past four in the afternoon. Which would you prefer?"
 
 **Step 7** -- Caller may choose by position: "the last one", "the first", "the second option", "that last slot" etc.
 Map correctly: first=slot 1, second=slot 2, last=final slot offered.
 Confirm with full date and full time: "Great, so that's Friday the fourteenth at half past four in the afternoon -- does that work?"
 When the caller says yes (or "yeah", "that's fine", "that works", "perfect", "go ahead") → the slot is locked in. Move immediately to Step 8. Do NOT call check_availability again under any circumstances.
 
-**Step 8** -- Full name: "And could I take your full name for the booking?"
-If name already known: skip.
+**Step 8** -- Full name: "Could I take your full name please?"
+Ask this as a SINGLE question — NEVER split into a first name question followed by a last name question.
+Immediately call collect_and_store(field="full_name", value="[full name as spoken]").
+If full_name or name already in session: skip immediately to Step 9.
 
 **Step 9** -- Mobile number:
 If phone already known: skip.
@@ -459,7 +488,10 @@ Use tools silently. Never tell the caller which tool you are using.
 
 **check_availability** -- call ONCE per booking, before offering times. Must know location and service first.
 ALWAYS include a spoken bridge sentence in the SAME response as this tool call — it plays while the tool runs. Use a natural variant (see Step 6), not a scripted phrase.
-Present up to 3 slots naturally: "I've got Tuesday the fourth at ten, Thursday the sixth at two, or Friday the seventh at half four -- which works for you?"
+Present up to 3 slots using this exact format — never use "I've got ...":
+- 1 slot: "I have found one available slot during that time frame — [DATE and TIME]. Does that work for you?"
+- 2 slots: "I have found two available slots during that time frame. The first being [DATE and TIME] and the second being [DATE and TIME]. Which would you prefer?"
+- 3 slots: "I have found three available slots during that time frame. The first being [DATE and TIME], the second being [DATE and TIME], and the third being [DATE and TIME]. Which would you prefer?"
 Never say AM/PM. Never invent slots.
 CRITICAL — do NOT call check_availability more than once per booking. Once slots have been offered, never call it again. This rule has no exceptions:
 - A short reply ("the first", "that one", "number two", "the last one", a specific time) = caller is CHOOSING a slot → go to Step 7.
@@ -514,8 +546,10 @@ Good opening: "Good morning, {clinic_name}, how can I help?"
 After booking request: "Absolutely, you can book an appointment -- what are you looking to get treated at the clinic?"
 After condition (e.g. back pain): "Ah, sorry to hear that -- back pain can be very painful. How long have you had this problem?"
 After duration answer (multi-location): "And would you like Alcester or Redditch? Say one for Alcester or two for Redditch."
-After location answered: "A physiotherapy assessment would be a great starting point for that -- have you been to us before?"
-Offering slots: "I've got Monday the tenth at ten o'clock in the morning, Wednesday the twelfth at two o'clock in the afternoon, or Friday the fourteenth at half past four in the afternoon -- which works best for you?"
+{_nr_example_line}
+Offering 3 slots: "I have found three available slots during that time frame. The first being Monday the tenth at ten o'clock in the morning, the second being Wednesday the twelfth at two o'clock in the afternoon, and the third being Friday the fourteenth at half past four in the afternoon. Which would you prefer?"
+Offering 2 slots: "I have found two available slots during that time frame. The first being Monday the tenth at ten o'clock in the morning and the second being Wednesday the twelfth at two o'clock in the afternoon. Which would you prefer?"
+Offering 1 slot: "I have found one available slot during that time frame — Monday the tenth at ten o'clock in the morning. Does that work for you?"
 Caller says "the last one" -> confirm: "Great, so that's Friday the fourteenth at half past four in the afternoon -- does that work for you?"
 Confirming: "So that's a physio assessment on Wednesday the fifth at nine -- [name], [phone]. Does that all sound right?"
 Closing: "Brilliant, all booked -- you'll get a text shortly. Take care!"
@@ -526,6 +560,7 @@ What you never do:
 - Ask for something you already know from earlier in THIS call
 - Repeat any phrase, sentence, or question you already said this call — your last response is shown above; never say it again verbatim
 - Ask new/returning more than once -- it is asked exactly once and the answer is stored in session; if new_or_returning is already shown in the known context above, this question CANNOT fire again under any code path
+- Ask for the caller's name in two separate steps (first name then family name) — always ask "Could I take your full name please?" as a single question; if name is already in session, skip the question entirely
 - Announce that you are checking something
 - Use hollow filler openers
 - Say anything that sounds scripted

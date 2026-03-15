@@ -735,10 +735,10 @@ async def turn(request: Request):
             session.get("last_question") or session.get("last_bot_prompt") or ""
         ).strip()
 
-        # Tier 1 — first silence: re-ask last question if mid-flow, else reintro
+        # Tier 1 — first silence: re-ask last question with catch-phrase
         if miss == 1:
             if _last_q and PHASE3_ENABLED:
-                recovery = f"Sorry about that — {_last_q}"
+                recovery = f"I didn't quite catch that — {_last_q}"
             else:
                 recovery = _build_reintro(_clinic_obj)
             vr.append(gather_speech(turn_url, recovery))
