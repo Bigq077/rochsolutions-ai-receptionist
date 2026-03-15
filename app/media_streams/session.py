@@ -26,9 +26,69 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from enum import Enum
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Call state machine
+# ---------------------------------------------------------------------------
+
+class CallState(str, Enum):
+    GREETING               = "GREETING"
+    CLINIC_SELECTION       = "CLINIC_SELECTION"
+    NEW_OR_RETURNING       = "NEW_OR_RETURNING"
+    COLLECT_NAME           = "COLLECT_NAME"
+    COLLECT_PHONE_PART_ONE = "COLLECT_PHONE_PART_ONE"
+    COLLECT_PHONE_PART_TWO = "COLLECT_PHONE_PART_TWO"
+    COLLECT_AVAILABILITY   = "COLLECT_AVAILABILITY"
+    PRESENT_SLOTS          = "PRESENT_SLOTS"
+    CONFIRM_BOOKING        = "CONFIRM_BOOKING"
+    TRANSFER               = "TRANSFER"
+    COMPLETE               = "COMPLETE"
+
+
+# Ordered list for forward-only enforcement (TRANSFER/COMPLETE handled separately)
+_STATE_ORDER = [
+    CallState.GREETING,
+    CallState.CLINIC_SELECTION,
+    CallState.NEW_OR_RETURNING,
+    CallState.COLLECT_NAME,
+    CallState.COLLECT_PHONE_PART_ONE,
+    CallState.COLLECT_PHONE_PART_TWO,
+    CallState.COLLECT_AVAILABILITY,
+    CallState.PRESENT_SLOTS,
+    CallState.CONFIRM_BOOKING,
+    CallState.COMPLETE,
+]
+
+
+def get_call_state(session: Dict[str, Any]) -> CallState:
+    """Return the current CallState, defaulting to GREETING on unknown values."""
+    try:
+        return CallState(session.get("state", "GREETING"))
+    except ValueError:
+        return CallState.GREETING
+
+
+def advance_state(session: Dict[str, Any], new_state: CallState) -> None:
+    """
+    Move state forward only. Never moves backward.
+    TRANSFER and COMPLETE are always allowed regardless of current state.
+    Logs every transition.
+    """
+    current = get_call_state(session)
+    try:
+        if _STATE_ORDER.index(new_state) > _STATE_ORDER.index(current):
+            logger.info("[ms_state] %s → %s", current.value, new_state.value)
+            session["state"] = new_state.value
+    except ValueError:
+        # new_state not in _STATE_ORDER (TRANSFER or COMPLETE)
+        if new_state in (CallState.TRANSFER, CallState.COMPLETE):
+            logger.info("[ms_state] %s → %s", current.value, new_state.value)
+            session["state"] = new_state.value
 
 # Redis key prefix — distinct from legacy "call:" prefix
 MS_SESSION_PREFIX = "ms_session:"
@@ -45,9 +105,9 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     # Fields carried over from redis_store.py DEFAULT_SESSION
     # ------------------------------------------------------------------ #
 
-    # Core state (legacy triage / Phase 3 fallback)
+    # Core state
     "intent":         None,
-    "state":          "TRIAGE",
+    "state":          "GREETING",
     "collected":      {},       # mutable — always deep-copied
     "miss_count":     0,
     "error_count":    0,

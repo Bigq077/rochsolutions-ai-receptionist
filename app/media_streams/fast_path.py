@@ -35,6 +35,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+from .session import CallState, get_call_state
 from .config import (
     FastPathTurnType,
     F_LAST_BOT_PROMPT,
@@ -128,24 +129,37 @@ def try_fast_path(
     last_prompt = (session.get(F_LAST_BOT_PROMPT) or "").lower()
     norm        = _normalize(transcript)
 
-    handlers = [
-        _try_phone_last_six,
-        _try_phone_first_five,
-        _try_full_name,
-        _try_clinic_selection,
-        _try_new_returning,
-        _try_yes_no_confirmation,
-        _try_slot_selection,
-    ]
+    # State-aware handler dispatch — only run handlers valid for current step.
+    # Falls back to full list if state is unrecognised (safe default).
+    state = get_call_state(session)
+    if state == CallState.COLLECT_PHONE_PART_TWO:
+        handlers = [_try_phone_last_six, _try_yes_no_confirmation]
+    elif state == CallState.COLLECT_PHONE_PART_ONE:
+        handlers = [_try_phone_first_five, _try_yes_no_confirmation]
+    elif state == CallState.COLLECT_NAME:
+        handlers = [_try_full_name]
+    elif state in (CallState.GREETING, CallState.CLINIC_SELECTION):
+        handlers = [_try_clinic_selection]
+    elif state == CallState.NEW_OR_RETURNING:
+        handlers = [_try_new_returning]
+    elif state == CallState.PRESENT_SLOTS:
+        handlers = [_try_slot_selection, _try_yes_no_confirmation]
+    elif state == CallState.CONFIRM_BOOKING:
+        handlers = [_try_yes_no_confirmation]
+    else:
+        handlers = [
+            _try_phone_last_six, _try_phone_first_five, _try_full_name,
+            _try_clinic_selection, _try_new_returning,
+            _try_yes_no_confirmation, _try_slot_selection,
+        ]
 
     for handler in handlers:
         result = handler(last_prompt, norm, transcript, session)
         if result is not None:
-            # Stamp the session with the matched turn type for diagnostics
             session[F_FAST_PATH_LAST_RESOLVED] = result.turn_type.value
             logger.info(
-                "[ms_fast_path] resolved turn_type=%s needs_llm=%s value=%r",
-                result.turn_type.value, result.needs_llm_followup, result.value,
+                "[ms_fast_path] resolved turn_type=%s needs_llm=%s value=%r state=%s",
+                result.turn_type.value, result.needs_llm_followup, result.value, state.value,
             )
             return result
 

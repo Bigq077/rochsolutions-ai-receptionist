@@ -61,7 +61,7 @@ from .config import (
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
-from .session import save_session
+from .session import save_session, advance_state, CallState
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,7 @@ class LLMStream:
         fp_result = try_fast_path(session, user_text)
         if fp_result is not None:
             await tts_text_queue.put(fp_result.response_text)
+            _advance_fp_state(session, fp_result.turn_type)
             if not fp_result.needs_llm_followup:
                 # Update history with fast-path exchange
                 _append_history(session, user_text, fp_result.response_text)
@@ -251,8 +252,30 @@ class LLMStream:
 
         # ── Step 5: System prompt ────────────────────────────────────────
         from app.prompts.susie_system_prompt import get_system_prompt
-        date_prefix   = _build_date_prefix()
-        system_prompt = f"{date_prefix}\n\n{get_system_prompt(session)}"
+        date_prefix = _build_date_prefix()
+
+        # Inject current call state so Claude knows exactly where we are
+        # and never re-asks something already answered.
+        # ~100 tokens prepended; cached via cache_control=ephemeral after first call.
+        call_state = session.get("state", "GREETING")
+        collected  = session.get("collected") or {}
+        known_lines: List[str] = []
+        if collected.get("full_name") or collected.get("name"):
+            known_lines.append(f"- Name: {collected.get('full_name') or collected.get('name')}")
+        if collected.get("phone"):
+            known_lines.append(f"- Phone: {collected['phone']}")
+        if session.get("selected_location"):
+            known_lines.append(f"- Location: {session['selected_location']}")
+        if collected.get("patient_type"):
+            known_lines.append(f"- New/returning: {collected['patient_type']}")
+        if session.get("last_offered_slots"):
+            known_lines.append(f"- Slots offered: {session['last_offered_slots']}")
+        state_ctx = (
+            f"[CALL STATE: {call_state} — greeting already delivered. "
+            f"Do not re-introduce yourself or re-ask anything already answered.]\n"
+            + ("\n".join(known_lines) if known_lines else "")
+        )
+        system_prompt = f"{date_prefix}\n\n{state_ctx}\n\n{get_system_prompt(session)}"
 
         # ── Step 6-8: LLM streaming with tool loop ───────────────────────
         history: List[dict] = session.setdefault("conversation_history", [])
@@ -688,6 +711,22 @@ class LLMStream:
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
+def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
+    """Advance call state after a fast-path resolution."""
+    from .config import FastPathTurnType
+    _MAP = {
+        FastPathTurnType.CLINIC_SELECTION:  CallState.NEW_OR_RETURNING,
+        FastPathTurnType.NEW_RETURNING:     CallState.COLLECT_NAME,
+        FastPathTurnType.FULL_NAME:         CallState.COLLECT_PHONE_PART_ONE,
+        FastPathTurnType.PHONE_FIRST_FIVE:  CallState.COLLECT_PHONE_PART_TWO,
+        FastPathTurnType.PHONE_LAST_SIX:    CallState.COLLECT_AVAILABILITY,
+        FastPathTurnType.SLOT_SELECTION:    CallState.CONFIRM_BOOKING,
+    }
+    next_state = _MAP.get(turn_type)
+    if next_state:
+        advance_state(session, next_state)
+
 
 def _append_history(
     session: Dict[str, Any],

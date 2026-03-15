@@ -683,6 +683,10 @@ class WebSocketCallHandler:
                         "[ms_reask] max re-asks reached (%d) — offering transfer",
                         MAX_REASK_ATTEMPTS,
                     )
+                    # Increment counter so _should_allow_transfer passes
+                    self.session["failed_understanding_count"] = (
+                        self.session.get("failed_understanding_count", 0) + 1
+                    )
                     await self.tts_text_queue.put(TRANSFER_OFFER_PHRASE)
                     # Attempt actual transfer after phrase plays
                     asyncio.create_task(self._on_transfer_request())
@@ -822,8 +826,29 @@ class WebSocketCallHandler:
     # Transfer callback
     # ========================================================================
 
+    def _should_allow_transfer(self) -> bool:
+        """
+        Single choke-point for transfer authorisation.
+        Transfer fires ONLY under these exact conditions — nothing else can trigger it.
+        """
+        return (
+            self.session.get("transfer_requested_by_caller") is True
+            or self.session.get("medical_emergency_detected") is True
+            or self.session.get("failed_understanding_count", 0) >= 3
+            or self.session.get("request_transfer") is True  # set by transfer_to_human tool
+        )
+
     async def _on_transfer_request(self) -> None:
         """Initiate live call transfer via Twilio REST API."""
+        if not self._should_allow_transfer():
+            logger.warning("[ms_conn] transfer blocked — guard conditions not met session=%s", {
+                "transfer_requested_by_caller": self.session.get("transfer_requested_by_caller"),
+                "medical_emergency_detected":   self.session.get("medical_emergency_detected"),
+                "failed_understanding_count":   self.session.get("failed_understanding_count"),
+                "request_transfer":             self.session.get("request_transfer"),
+            })
+            return
+        logger.info("[ms_conn] transfer authorised — initiating")
         try:
             from app.routes.realtime import _handle_transfer
             await _handle_transfer(self.call_sid, self.session)
