@@ -797,8 +797,15 @@ class WebSocketCallHandler:
         Speak Susie's opening greeting directly via ElevenLabs TTS without
         an LLM round-trip — saves ~500ms on the first word of the call.
 
-        Arms the watchdog timer once the greeting has been queued.
+        Guards against double-fire (Twilio reconnect / duplicate start events).
+        Advances state from GREETING → CLINIC_SELECTION so the LLM never
+        sees GREETING state and tries to re-introduce itself.
         """
+        # Guard: only fire once per call
+        if self.session.get("greeting_delivered"):
+            logger.info("[ms_conn] greeting already delivered — skipping")
+            return
+
         try:
             from app.clinic_config import get_clinic
             from app.routes.twilio import _build_greeting
@@ -813,7 +820,14 @@ class WebSocketCallHandler:
         history = self.session.setdefault("conversation_history", [])
         history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
         history.append({"role": "assistant", "content": greeting})
-        self.session["last_bot_prompt"] = greeting
+        self.session["last_bot_prompt"]    = greeting
+        self.session["greeting_delivered"] = True
+
+        # Advance state: greeting done → now waiting for clinic selection.
+        # This ensures the LLM never sees state=GREETING and re-introduces itself.
+        from .session import advance_state, CallState
+        advance_state(self.session, CallState.CLINIC_SELECTION)
+
         await save_session(self.call_sid, self.session)
 
         await self.tts_text_queue.put(greeting)

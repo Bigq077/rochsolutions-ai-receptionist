@@ -108,6 +108,7 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     # Core state
     "intent":         None,
     "state":          "GREETING",
+    "greeting_delivered": False,  # set True the moment greeting fires; guards re-entry
     "collected":      {},       # mutable — always deep-copied
     "miss_count":     0,
     "error_count":    0,

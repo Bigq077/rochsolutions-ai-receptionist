@@ -274,6 +274,11 @@ class LLMStream:
             f"[CALL STATE: {call_state} — greeting already delivered. "
             f"Do not re-introduce yourself or re-ask anything already answered.]\n"
             + ("\n".join(known_lines) if known_lines else "")
+            + "\n[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
+            "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
+            "response UNLESS the caller has explicitly asked to speak to a person OR "
+            "mentioned a medical emergency. If you are unsure what the caller wants, "
+            "ask a single clarifying question instead of offering a transfer.]"
         )
         system_prompt = f"{date_prefix}\n\n{state_ctx}\n\n{get_system_prompt(session)}"
 
