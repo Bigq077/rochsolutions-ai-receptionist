@@ -203,6 +203,24 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         )
 
     # ------------------------------------------------------------------ #
+    # Inline new/returning conditionals — injected directly into the step
+    # text so Claude NEVER sees the question when patient_type is known.
+    # A soft "if known: skip" on a separate line is too easy to ignore.
+    # ------------------------------------------------------------------ #
+    if _patient_type_already_known:
+        _f1_nr_ask = (
+            f"⚠️ SKIP — patient_type is already known ({_patient_type_already_known}). "
+            f"Do NOT ask about new/returning. Proceed directly to Step F2."
+        )
+        _step3_nr_text = (
+            f'"A physiotherapy assessment would be a great starting point for that." '
+            f'(patient_type already known — DO NOT add the new/returning question)'
+        )
+    else:
+        _f1_nr_ask = 'ask: "And have you been to us before?"'
+        _step3_nr_text = '"A physiotherapy assessment would be a great starting point for that -- have you been to us before?"'
+
+    # ------------------------------------------------------------------ #
     # Booking workflow — fast-track (Theorem) vs full (demo / default)
     # ------------------------------------------------------------------ #
     fast_booking = clinic.get("fast_booking", False)
@@ -223,8 +241,7 @@ If location already known from earlier in the call: skip straight to Step F1.
 
 **Step F1 (location given → ask new/returning)** — Caller gives location.
 Acknowledge ("Right, [location] — no problem.") and call collect_and_store(location=..., service='physiotherapy assessment'),
-then ask: "And have you been to us before?"
-If patient_type already known: skip to Step F2.
+then {_f1_nr_ask}
 
 **Step F2 (new/returning response → check availability)** — Caller answers new/returning.
 NEW = no / nope / haven't / first time / never been / new patient.
@@ -254,7 +271,7 @@ When the caller gives their name: call collect_and_store(field="full_name", valu
 If full_name or name already in session: skip the name question — do NOT ask again.
 Acknowledge naturally ("Lovely, [name].") then immediately ask for the mobile number.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
-  - If YES → ask: "And the best number to reach you on — is that the same number you're calling from, [say caller_number digit by digit]?"
+  - If YES → ask: "And the best number to reach you on — is that the same number you're calling from, [say each digit of caller_number separately with a space between each digit]?"
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step F5.
         ⚠️ PHONE CONFIRM RULE — never make this mistake:
           CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
@@ -267,7 +284,7 @@ CRITICAL phone rules for when a caller gives a new number:
   Part 1 — your entire response must be: "Not a problem — could you please give me the first five digits?"
   Part 2 — once you have received the first five digits, your entire response must be: "Thank you — and the last six digits?"
 - ⚠️ DO NOT call collect_and_store after Part 1 alone. The first five digits are INCOMPLETE. Hold them in working memory only.
-- Only AFTER you have received BOTH parts: combine them into the full number, then read it back digit by digit: "Got that — so that's [full number], is that right?"
+- Only AFTER you have received BOTH parts: combine them into the full number, then read it back with each digit separated by a space: "Got that — so that's [d1] [d2] [d3] [d4] [d5] [d6] [d7] [d8] [d9] [d10] [d11] — is that correct?" Wait for an explicit yes before proceeding.
 - If caller confirms yes: call collect_and_store with the complete combined number and move to Step F5.
 - If caller corrects part of it: update the corrected digit(s), read the full corrected number back once, then call collect_and_store and move to Step F5.
 - If after TWO full collection attempts the number still cannot be confirmed:
@@ -305,10 +322,9 @@ Call collect_and_store with reason immediately.
 Single-location clinic: skip this step entirely and go straight to Step 3.
 If location already known from earlier in the call: skip.
 
-**Step 3** -- Suggest physiotherapy assessment and ask new/returning IN ONE SENTENCE:
-"A physiotherapy assessment would be a great starting point for that -- have you been to us before?"
+**Step 3** -- Suggest physiotherapy assessment{' and ask new/returning IN ONE SENTENCE' if not _patient_type_already_known else ' (new/returning already known — do NOT ask)'}:
+{_step3_nr_text}
 Immediately call collect_and_store with service='physiotherapy assessment'.
-If patient_type already known: just say "A physiotherapy assessment would be a great starting point for that." and move on.
 
 **Step 4 (new/returning response)** -- Caller responds to the new/returning question.
 NEW patient — any of: "no" / "nope" / "no I haven't" / "I haven't" / "I have not" / "haven't been" / "have not been" / "I've not been" / "no not been" / "haven't visited" / "nope never" / "new here" / "first time" / "never been" / "never" / "not been before" / "new patient" = patient_type NEW.
@@ -352,7 +368,7 @@ If full_name or name already in session: skip immediately to Step 9.
 **Step 9** -- Mobile number:
 If phone already known: skip.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
-  - If YES → ask: "And the best number to reach you on -- is that the same number you're calling from, [say caller_number digit by digit]?"
+  - If YES → ask: "And the best number to reach you on -- is that the same number you're calling from, [say each digit of caller_number separately with a space between each digit]?"
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step 10.
         ⚠️ PHONE CONFIRM RULE — never make this mistake:
           CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
@@ -365,7 +381,7 @@ CRITICAL phone rules for when a caller gives a new number:
   Part 1 — your entire response must be: "Not a problem — could you please give me the first five digits?"
   Part 2 — once you have received the first five digits, your entire response must be: "Thank you — and the last six digits?"
 - ⚠️ DO NOT call collect_and_store after Part 1 alone. The first five digits are INCOMPLETE. Hold them in working memory only.
-- Only AFTER you have received BOTH parts: combine them into the full number, then read it back digit by digit: "Got that — so that's [full number], is that right?"
+- Only AFTER you have received BOTH parts: combine them into the full number, then read it back with each digit separated by a space: "Got that — so that's [d1] [d2] [d3] [d4] [d5] [d6] [d7] [d8] [d9] [d10] [d11] — is that correct?" Wait for an explicit yes before proceeding.
 - If caller confirms yes: call collect_and_store with the complete combined number and move to Step 10.
 - If caller corrects part of it: update the corrected digit(s), read the full corrected number back once, then call collect_and_store and move to Step 10.
 - If after TWO full collection attempts the number still cannot be confirmed:
@@ -418,7 +434,7 @@ Examples -- copy this style exactly:
 - Caller says NEW patient → "No problem at all." then move straight on
 - Caller says RETURNING patient → "Oh brilliant, welcome back." then move straight on
 - Caller gives name → "Lovely, [name]." then ask for their number
-- Caller gives phone number → "Got that." then read the number back: "So that's [number] -- is that right?" -- wait for yes before moving on
+- Caller gives phone number → "Got that." then read it back DIGIT BY DIGIT (each digit separated by a space): "So that's 0 7 8 7 0 1 6 6 8 6 1 — is that correct?" — wait for explicit yes before moving on
 - Caller picks a slot → "Perfect, so that's [full date and time]..." then ask to confirm
 NEVER move on without any acknowledgment -- silence feels broken.
 
@@ -483,6 +499,13 @@ If you know their name, use it naturally once or twice -- not every sentence.
 ## 7. Tool rules
 
 Use tools silently. Never tell the caller which tool you are using.
+
+**PHONE NUMBER READBACK FORMAT** — This rule applies everywhere a phone number is read back:
+When reading back any phone number, output each digit separated by a single space so the text-to-speech engine says each digit individually.
+CORRECT: "So that's 0 7 8 7 0 1 6 6 8 6 1 — is that correct?"
+WRONG:   "So that's 07870166861 — is that right?"
+Use "is that correct?" (not "is that right?") and always wait for explicit confirmation before proceeding.
+This applies equally to the caller_number from context and to numbers the caller has given you.
 
 **collect_and_store** -- call immediately every time you learn: name, phone, reason, location, patient_type, insurer, policy_number, time_preference, service. No filler needed.
 

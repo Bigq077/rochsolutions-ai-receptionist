@@ -832,6 +832,23 @@ async def turn(request: Request):
         else:
             reply_text, session = await triage_turn(user_said, session)
         session.pop("error_count", None)   # reset on success
+
+        # Hard guard: if patient_type is already set but Claude still produced
+        # the new/returning question, strip it before it reaches the caller.
+        # This catches cases where the LLM ignores the inline prompt conditional.
+        _pt = (session.get("collected") or {}).get("patient_type")
+        if _pt and "been to us before" in reply_text.lower():
+            _cleaned = re.sub(
+                r"[.–—\-]?\s*(?:(?:And|and)\s+)?[Hh]ave you been to us before\??",
+                "",
+                reply_text,
+            ).strip().rstrip(",").strip()
+            if _cleaned:
+                logger.warning(
+                    "Stripped duplicate new/returning question from LLM reply "
+                    "(patient_type=%s call_sid=%s)", _pt, call_sid
+                )
+                reply_text = _cleaned
     except Exception as e:
         print("TRIAGE ERROR:", repr(e))
 
