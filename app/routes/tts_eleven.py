@@ -49,7 +49,7 @@ class TTSTokenReq(BaseModel):
 def _eleven_tts_bytes(text: str) -> bytes:
     api_key = os.getenv("ELEVENLABS_API_KEY")
     voice_id = os.getenv("ELEVENLABS_VOICE_ID")
-    model_id = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+    model_id = os.getenv("ELEVENLABS_MODEL_ID", "eleven_turbo_v2_5")
 
     if not api_key or not voice_id:
         raise HTTPException(
