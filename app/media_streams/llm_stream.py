@@ -10,8 +10,8 @@ Key difference from realtime.py (non-streaming):
 
 Fast-path integration:
   - try_fast_path() is called BEFORE the LLM on every turn
-  - If matched with needs_llm_followup=False: play response, skip LLM
-  - If matched with needs_llm_followup=True: play interim response, then LLM
+  - If FastPathResult returned (needs_llm=False): play response_text, skip LLM
+  - If None returned (session updated silently): LLM handles the full response
   - If no match: LLM handles the full turn
 
 Filler guard:

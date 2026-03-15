@@ -2,31 +2,19 @@
 """
 Fast-path resolver for the Media Streams pipeline.
 
-Adapted from app/fast_path.py with three changes:
-  1. Return type extended to a 3-tuple:
-       (resolved_value, response_text, needs_llm_followup)
-     needs_llm_followup=True means: play response_text immediately via TTS,
-     but ALSO fire the LLM for the full response.
-  2. Session field references use F_ constants from config.py for consistency.
-  3. INTERIM_ACKNOWLEDGEMENT turn type added: instant filler responses played
-     while the LLM generates ("Right, let me check that for you...").
+Mirrors app/fast_path.py exactly in return semantics:
+  - None                             → no match, fall through to LLM
+  - FastPathResult(needs_llm=False)  → matched, play response_text, skip LLM
+  - None (session already updated)   → matched silently, LLM generates response
 
-ALL original pattern matching rules are preserved exactly -- no patterns
-have been narrowed, removed, or changed.
+Handlers that return FastPathResult (skip LLM):
+  _try_clinic_selection, _try_full_name, _try_phone_first_five, _try_phone_last_six
 
-Usage in LLMStream:
-    result = try_fast_path(session, transcript)
-    if result:
-        value, reply_text, needs_llm = result
-        await tts_text_queue.put(reply_text)   # play immediately
-        if not needs_llm:
-            return                              # skip LLM entirely
-        # else: fall through to LLM call
+Handlers that return None (LLM generates response):
+  _try_new_returning, _try_yes_no_confirmation, _try_slot_selection
+  (session is updated before returning None so LLM sees the resolved values)
 
-Return semantics:
-  None          -> no fast-path match, fall through to LLM
-  (v, t, False) -> matched, play t, skip LLM entirely
-  (v, t, True)  -> matched, play t, THEN also run LLM for full response
+ALL original pattern matching rules are preserved exactly.
 """
 from __future__ import annotations
 
@@ -96,18 +84,6 @@ def _digits_only(text: str) -> str:
 
 def _fmt_phone(digits: str) -> str:
     return " ".join(digits)
-
-
-# ---------------------------------------------------------------------------
-# Interim acknowledgement phrases (needs_llm_followup=True)
-# These are played immediately while the LLM generates the full response.
-# ---------------------------------------------------------------------------
-
-_INTERIM_PHRASES: Dict[FastPathTurnType, str] = {
-    FastPathTurnType.NEW_RETURNING:  "Right, let me just note that for you.",
-    FastPathTurnType.YES_NO:         "Perfect, just give me one moment.",
-    FastPathTurnType.SLOT_SELECTION: "Great choice, let me confirm that for you.",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +280,9 @@ def _try_new_returning(
     session.setdefault(F_COLLECTED, {})
     session[F_COLLECTED]["patient_type"] = patient_type
 
-    # Return interim + LLM followup (LLM checks availability / continues flow)
-    interim = _INTERIM_PHRASES[FastPathTurnType.NEW_RETURNING]
-    return FastPathResult(
-        turn_type=FastPathTurnType.NEW_RETURNING,
-        value=patient_type,
-        response_text=interim,
-        needs_llm_followup=True,
-    )
+    # Return None — LLM handles the full acknowledgement and continues the flow.
+    # Session already has patient_type set so LLM skips re-asking.
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -372,13 +343,8 @@ def _try_yes_no_confirmation(
         session[F_FAST_PATH_CORRECTION] = True
         value = "no"
 
-    interim = _INTERIM_PHRASES[FastPathTurnType.YES_NO]
-    return FastPathResult(
-        turn_type=FastPathTurnType.YES_NO,
-        value=value,
-        response_text=interim,
-        needs_llm_followup=True,
-    )
+    # Return None — LLM handles the full response based on the confirmed/denied flags.
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -559,11 +525,5 @@ def _try_slot_selection(
 
     session[F_SELECTED_SLOT] = offered[idx]
 
-    # LLM generates the full confirmation sentence with date/time wording
-    interim = _INTERIM_PHRASES[FastPathTurnType.SLOT_SELECTION]
-    return FastPathResult(
-        turn_type=FastPathTurnType.SLOT_SELECTION,
-        value=offered[idx],
-        response_text=interim,
-        needs_llm_followup=True,
-    )
+    # Return None — LLM generates the full confirmation sentence with date/time wording.
+    return None
