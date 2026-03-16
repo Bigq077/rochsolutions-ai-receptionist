@@ -420,10 +420,15 @@ class LLMStream:
             await save_session(call_sid, session)
 
             # ── Transfer requested by a tool ─────────────────────────────
-            if session.pop("request_transfer", False):
+            # Use .get() NOT .pop() — _on_transfer_request() calls
+            # _should_allow_transfer() which reads session["request_transfer"].
+            # If we pop it first, the guard sees False and blocks the transfer.
+            # Clear it manually after on_transfer() fires instead.
+            if session.get("request_transfer"):
                 logger.info("[ms_llm] transfer requested call_sid=%s", call_sid)
                 if on_transfer:
                     await on_transfer()
+                session["request_transfer"] = False  # clear after guard consumed it
                 transfer_initiated = True
                 break
 
@@ -702,7 +707,8 @@ class LLMStream:
                         "content":      json.dumps(result, default=str),
                     })
 
-                if session.pop("request_transfer", False):
+                if session.get("request_transfer"):
+                    session["request_transfer"] = False
                     return ""
 
         except Exception as exc:
