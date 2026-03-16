@@ -683,10 +683,11 @@ class WebSocketCallHandler:
                         "[ms_reask] max re-asks reached (%d) — offering transfer",
                         MAX_REASK_ATTEMPTS,
                     )
-                    # Increment counter so _should_allow_transfer passes
-                    self.session["failed_understanding_count"] = (
-                        self.session.get("failed_understanding_count", 0) + 1
-                    )
+                    # Set request_transfer=True so _should_allow_transfer() passes.
+                    # (Incrementing failed_understanding_count alone never reached
+                    # the >= 3 threshold — transfer was blocked and TTS said
+                    # "let me transfer you" with nothing actually happening.)
+                    self.session["request_transfer"] = True
                     await self.tts_text_queue.put(TRANSFER_OFFER_PHRASE)
                     # Attempt actual transfer after phrase plays
                     asyncio.create_task(self._on_transfer_request())
@@ -831,7 +832,11 @@ class WebSocketCallHandler:
         await save_session(self.call_sid, self.session)
 
         await self.tts_text_queue.put(greeting)
-        self._record_question(greeting)
+        # NOTE: do NOT call _record_question(greeting) here.
+        # The greeting is not a re-askable question — storing it causes the
+        # silence re-ask loop to replay the full greeting text verbatim after
+        # 5 s of caller silence. The question tracker is set by the LLM loop
+        # after the first real exchange.
 
         # Arm the watchdog now that the call is underway
         self._watchdog_armed = True
