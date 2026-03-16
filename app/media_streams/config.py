@@ -61,9 +61,12 @@ ELEVENLABS_SIMILARITY_BOOST = 0.75
 # ---------------------------------------------------------------------------
 
 # v3 Universal Streaming (primary) — 16kHz PCM16 input, no upsampling on the STT side
+# Valid speech_model values: slam-1 | universal | nano
+# "universal-streaming-english" is NOT valid — AssemblyAI closes the connection
+# immediately with that name (800ms rejection, seen in logs 2026-03-16).
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
-    "?speech_model=universal-streaming-english"
+    "?speech_model=slam-1"
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
@@ -158,7 +161,9 @@ LLM_FILLER_COOLDOWN_SEC = 20.0
 BAD_LINE_SILENCE_THRESHOLD_SEC = 10.0
 
 # AssemblyAI reconnect config
-ASSEMBLYAI_MAX_RECONNECTS = 2
+# 2 was too low — after 2 drops the STT gave up entirely mid-call.
+# Real calls can run 5+ minutes; set high enough to survive transient drops.
+ASSEMBLYAI_MAX_RECONNECTS = 10
 
 # Twilio WebSocket / session startup wait
 TWILIO_STARTED_TIMEOUT_SEC = 5.0
