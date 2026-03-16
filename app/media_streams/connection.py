@@ -206,11 +206,18 @@ def _extract_question(text: str) -> str:
 
 def _post_question_guard(session: dict, transcript: str) -> bool:
     """
-    Return True (block) if a short transcript arrives while we are still
-    awaiting a meaningful caller response after asking a question.
+    Return True (block) if a transcript arrives while we are still awaiting
+    a meaningful caller response after asking a question.
 
-    Prevents the LLM from being called on noise/filler while the caller
-    is thinking, which was causing 'I am waiting...' commentary.
+    Prevents the LLM from being called on noise/filler while the caller is
+    thinking, which was causing 'I am waiting...' commentary.
+
+    Always-allow list covers all valid short answers that would incorrectly
+    be blocked by a naive word-count threshold: "yes", "no", "new",
+    "returning", day names, "i have not", etc.
+
+    Only single-word transcripts that do not appear in the always-allow list
+    are blocked (true noise: "mm", "erm", "uh", etc.).
 
     Auto-clears the flag if 8 seconds have passed since the question
     (genuine abandonment — let the silence re-ask loop handle it instead).
@@ -224,15 +231,37 @@ def _post_question_guard(session: dict, transcript: str) -> bool:
         session["awaiting_caller_response"] = False
         return False
 
-    word_count = len(transcript.strip().split())
-    if word_count < 5:
+    text = transcript.strip().lower()
+    word_count = len(text.split())
+
+    # Always allow through — meaningful short answers that a naive word-count
+    # threshold would wrongly block
+    _ALWAYS_ALLOW = (
+        "yes", "yeah", "yep", "yup", "no", "nope", "nah",
+        "new", "returning", "existing",
+        "morning", "afternoon", "evening",
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday", "next week", "this week",
+        "one", "two", "three", "first", "second",
+        "i have", "i have not", "i haven't",
+        "not been", "been before", "first time",
+        "never been", "i'm new", "im new",
+    )
+    for phrase in _ALWAYS_ALLOW:
+        if phrase in text:
+            session["awaiting_caller_response"] = False
+            logger.info("[ms_guard] allowed short answer: %r", transcript[:80])
+            return False  # allow through
+
+    # Block only truly empty or single-word noise (< 2 words, not in allow-list)
+    if word_count < 2:
         logger.info(
-            "[ms_guard] discarded short transcript (%d words) while awaiting response: %r",
-            word_count, transcript[:80],
+            "[ms_guard] discarded single-word noise while awaiting response: %r",
+            transcript[:80],
         )
         return True  # block — do not call LLM
 
-    # 5+ words = meaningful response — clear the flag and allow through
+    # 2+ words that don't match any always-allow phrase — allow through
     session["awaiting_caller_response"] = False
     return False
 
