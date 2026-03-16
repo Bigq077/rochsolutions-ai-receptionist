@@ -246,7 +246,10 @@ class LLMStream:
                 _append_history(session, user_text, fp_result.response_text)
                 await save_session(call_sid, session)
                 return
-            # needs_llm_followup=True: interim queued, continue to LLM
+            # needs_llm_followup=True: interim phrase already queued.
+            # Mark it so _one_streaming_call strips the duplicate from the
+            # start of the LLM response (BUG 2 fix).
+            session["interim_played"] = True
 
         # ── Step 4: Model selection ──────────────────────────────────────
         model = _pick_model(session)
@@ -264,17 +267,29 @@ class LLMStream:
         if collected.get("full_name") or collected.get("name"):
             known_lines.append(f"- Name: {collected.get('full_name') or collected.get('name')}")
         if collected.get("phone"):
-            known_lines.append(f"- Phone: {collected['phone']}")
+            if session.get("phone_from_twilio"):
+                known_lines.append(
+                    f"- Phone (auto-detected from caller-ID — do NOT ask for it): {collected['phone']}"
+                )
+            else:
+                known_lines.append(f"- Phone: {collected['phone']}")
         if session.get("selected_location"):
             known_lines.append(f"- Location: {session['selected_location']}")
         if collected.get("patient_type"):
             known_lines.append(f"- New/returning: {collected['patient_type']}")
         if session.get("last_offered_slots"):
             known_lines.append(f"- Slots offered: {session['last_offered_slots']}")
+        phone_rule = (
+            "\n[PHONE ALREADY KNOWN via caller-ID: Do NOT ask for the caller's phone number. "
+            "When you reach that step, say 'I have your number from this call — "
+            "I'll use that for the booking.' and move straight on.]"
+            if session.get("phone_from_twilio") else ""
+        )
         state_ctx = (
             f"[CALL STATE: {call_state} — greeting already delivered. "
             f"Do not re-introduce yourself or re-ask anything already answered.]\n"
             + ("\n".join(known_lines) if known_lines else "")
+            + phone_rule
             + "\n[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
             "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
             "response UNLESS the caller has explicitly asked to speak to a person OR "
@@ -292,6 +307,8 @@ class LLMStream:
         full_reply  = ""     # assembled from all chunks for history
         transfer_initiated = False
 
+        interim_played: bool = bool(session.pop("interim_played", False))
+
         try:
             full_reply, transfer_initiated = await self._streaming_tool_loop(
                 model=model,
@@ -302,6 +319,7 @@ class LLMStream:
                 call_sid=call_sid,
                 tts_text_queue=tts_text_queue,
                 on_transfer=on_transfer,
+                interim_played=interim_played,
             )
         except Exception as exc:
             logger.error("[ms_llm] streaming_tool_loop error: %r", exc)
@@ -334,6 +352,7 @@ class LLMStream:
         call_sid: Optional[str],
         tts_text_queue: asyncio.Queue,
         on_transfer: Optional[Callable[[], Coroutine]],
+        interim_played: bool = False,
     ) -> tuple:
         """
         Run the Claude streaming + tool-calling loop.
@@ -359,6 +378,9 @@ class LLMStream:
                     session=session,
                     tts_text_queue=tts_text_queue,
                     filler_sent=filler_sent,
+                    # Only suppress on first iteration — subsequent iterations
+                    # (after tool calls) generate genuinely new text.
+                    interim_played=(interim_played and iteration == 1),
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
 
@@ -458,6 +480,7 @@ class LLMStream:
         session: Dict[str, Any],
         tts_text_queue: asyncio.Queue,
         filler_sent: bool,
+        interim_played: bool = False,
     ) -> tuple:
         """
         Open one Claude streaming session, feed tokens through the chunker,
@@ -472,7 +495,8 @@ class LLMStream:
         first_chunk_deadline = (
             time.monotonic() + LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0
         )
-        got_first_chunk = False
+        got_first_chunk      = False
+        _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
 
         async with client.messages.stream(
             model=model,
@@ -504,7 +528,17 @@ class LLMStream:
 
                             chunk = chunker.add_token(token)
                             if chunk:
-                                await tts_text_queue.put(chunk)
+                                if not _first_tts_emitted:
+                                    _first_tts_emitted = True
+                                    if interim_played:
+                                        chunk = _strip_interim_opener(chunk)
+                                        if chunk:
+                                            logger.debug(
+                                                "[ms_llm] interim stripped; first chunk: %r",
+                                                chunk[:60],
+                                            )
+                                if chunk:
+                                    await tts_text_queue.put(chunk)
 
                         continue
 
@@ -527,7 +561,12 @@ class LLMStream:
             # ── Flush remaining buffer ─────────────────────────────────────
             final_chunk = chunker.flush()
             if final_chunk:
-                await tts_text_queue.put(final_chunk)
+                if not _first_tts_emitted and interim_played:
+                    # Entire response was a single short flush — strip interim opener
+                    final_chunk = _strip_interim_opener(final_chunk)
+                    _first_tts_emitted = True
+                if final_chunk:
+                    await tts_text_queue.put(final_chunk)
 
             # ── Collect tool uses from final message ──────────────────────
             final_message = await stream.get_final_message()
@@ -756,6 +795,53 @@ def _append_history(
     if len(history) > MAX_HISTORY_TURNS:
         session["conversation_history"] = history[-MAX_HISTORY_TURNS:]
     session.setdefault("turns", []).append({"role": "assistant", "text": assistant_text})
+
+
+# ---------------------------------------------------------------------------
+# Interim-phrase duplicate suppression (BUG 2)
+# ---------------------------------------------------------------------------
+
+# Matches phrases that fast-path plays as interim ("Let me check…") so they
+# can be stripped from the start of the subsequent LLM response if both would
+# otherwise be spoken back-to-back.
+_INTERIM_DUPE_RE = re.compile(
+    r"^(?:"
+    r"Let me check(?:\s+that)?(?:\s+for\s+you)?[\.,]?\s*"
+    r"|One\s+moment(?:\.{1,3})?\s*"
+    r"|Just\s+a\s+moment(?:\.{1,3})?\s*"
+    r"|Just\s+bear\s+with\s+me(?:\.{1,3})?\s*"
+    r"|Bear\s+with\s+me(?:\.{1,3})?\s*"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _strip_interim_opener(text: str) -> str:
+    """
+    Remove a known interim phrase from the start of an LLM first chunk to
+    prevent it being spoken twice (once from fast-path, once from the LLM).
+
+    Also removes the first sentence if it contains "check" within the first
+    15 words (catches paraphrases like "Let me just check what we have…").
+    """
+    stripped = _INTERIM_DUPE_RE.sub("", text).lstrip()
+    if stripped != text:
+        # Capitalise after stripping if needed
+        if stripped:
+            stripped = stripped[0].upper() + stripped[1:]
+        return stripped
+
+    # Fallback: strip first sentence if it contains "check" in first 15 words
+    dot = text.find(".")
+    if dot > 0:
+        first_sentence = text[: dot + 1]
+        words = first_sentence.split()[:15]
+        if any("check" in w.lower() for w in words):
+            remainder = text[dot + 1 :].lstrip()
+            if remainder:
+                return remainder[0].upper() + remainder[1:]
+
+    return text
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")

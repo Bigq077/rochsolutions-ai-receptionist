@@ -105,14 +105,25 @@ def try_fast_path(
     last_prompt = (session.get(F_LAST_BOT_PROMPT) or "").lower()
     norm        = _normalize(transcript)
 
+    # If the caller's number came from Twilio caller-ID, phone collection is
+    # skipped entirely — no point running phone handlers.
+    phone_already_known = bool(session.get("phone_from_twilio"))
+
     # State-aware handler dispatch — only run handlers valid for current step.
     # Falls back to full list if state is unrecognised (safe default).
     state = get_call_state(session)
-    logger.debug("[ms_fast] checking transcript=%r state=%s", transcript[:60], state.value)
+    logger.debug("[ms_fast] checking transcript=%r state=%s phone_from_twilio=%s",
+                 transcript[:60], state.value, phone_already_known)
     if state == CallState.COLLECT_PHONE_PART_TWO:
-        handlers = [_try_phone_last_six, _try_yes_no_confirmation]
+        if phone_already_known:
+            handlers = [_try_yes_no_confirmation]
+        else:
+            handlers = [_try_phone_last_six, _try_yes_no_confirmation]
     elif state == CallState.COLLECT_PHONE_PART_ONE:
-        handlers = [_try_phone_first_five, _try_yes_no_confirmation]
+        if phone_already_known:
+            handlers = [_try_yes_no_confirmation]
+        else:
+            handlers = [_try_phone_first_five, _try_yes_no_confirmation]
     elif state == CallState.COLLECT_NAME:
         handlers = [_try_full_name]
     elif state in (CallState.GREETING, CallState.CLINIC_SELECTION):
@@ -124,11 +135,17 @@ def try_fast_path(
     elif state == CallState.CONFIRM_BOOKING:
         handlers = [_try_yes_no_confirmation]
     else:
-        handlers = [
-            _try_phone_last_six, _try_phone_first_five, _try_full_name,
-            _try_clinic_selection, _try_new_returning,
-            _try_yes_no_confirmation, _try_slot_selection,
-        ]
+        if phone_already_known:
+            handlers = [
+                _try_full_name, _try_clinic_selection, _try_new_returning,
+                _try_yes_no_confirmation, _try_slot_selection,
+            ]
+        else:
+            handlers = [
+                _try_phone_last_six, _try_phone_first_five, _try_full_name,
+                _try_clinic_selection, _try_new_returning,
+                _try_yes_no_confirmation, _try_slot_selection,
+            ]
 
     for handler in handlers:
         result = handler(last_prompt, norm, transcript, session)

@@ -166,6 +166,7 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "twilio_from":       None,   # Caller's inbound number (E.164)
     "twilio_from_local": None,   # UK local format (07xxxxxxxxx)
     "twilio_to":         None,   # Dialled number (used for clinic_id lookup)
+    "phone_from_twilio": False,  # True when phone was auto-detected from caller-ID
 
     # ------------------------------------------------------------------ #
     # New fields specific to the Media Streams parallel pipeline

@@ -319,6 +319,7 @@ F_CURRENT_CHUNK_INDEX       = "current_chunk_index"
 F_LAST_AUDIO_SENT_AT        = "last_audio_sent_at"
 F_LLM_GENERATION_ACTIVE     = "llm_generation_active"
 F_FAST_PATH_LAST_RESOLVED   = "fast_path_last_resolved"
+F_PHONE_COLLECTED_FROM_TWILIO = "phone_from_twilio"   # True when phone came from caller-ID
 
 # Noise-only ASR transcriptions that count as silence (not real speech)
 NOISE_ONLY_WORDS: frozenset = frozenset({

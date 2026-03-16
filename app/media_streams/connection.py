@@ -398,6 +398,21 @@ class WebSocketCallHandler:
             self.call_sid, self.stream_sid, twilio_from, twilio_to,
         )
 
+        # Check Redis for caller number pre-cached by /ms/incoming POST handler.
+        # Twilio includes From in the HTTP POST but not always in the WS start event.
+        if not twilio_from and self.call_sid:
+            try:
+                from .session import _get_redis
+                _redis = _get_redis()
+                if _redis:
+                    _cached = await _redis.get(f"ms_caller:{self.call_sid}")
+                    if _cached:
+                        twilio_from = _cached.decode() if isinstance(_cached, bytes) else _cached
+                        logger.info("[ms_conn] caller number from Redis cache: %s", twilio_from)
+                        await _redis.delete(f"ms_caller:{self.call_sid}")
+            except Exception as _exc:
+                logger.warning("[ms_conn] Redis caller lookup failed: %r", _exc)
+
         initial: Dict[str, Any] = {}
         if twilio_from:
             initial["twilio_from"] = twilio_from
@@ -409,6 +424,17 @@ class WebSocketCallHandler:
         self.session = await get_or_create_session(self.call_sid, initial=initial)
         self.session["stream_sid"]   = self.stream_sid
         self.session["ws_connected"] = True
+
+        # Populate collected.phone from Twilio caller-ID so Susie never asks for it.
+        if twilio_from:
+            logger.info("[ms_conn] caller number from Twilio: %s", twilio_from)
+            collected = self.session.setdefault("collected", {})
+            if not collected.get("phone"):
+                collected["phone"] = twilio_from
+            self.session["phone_from_twilio"] = True
+        else:
+            logger.info("[ms_conn] no caller number from Twilio — will collect manually")
+
         await save_session(self.call_sid, self.session)
 
         self._started_event.set()
@@ -532,6 +558,12 @@ class WebSocketCallHandler:
 
                 logger.info("[ms_conn] TRANSCRIPT ← queue: %r", utterance[:120])
                 self._llm_busy                         = True
+                # BUG 1 FIX: reset watchdog clock NOW so the 3-second countdown
+                # starts from the moment the LLM is called, not from the last
+                # time audio was sent (which could be many seconds ago if the
+                # caller was silent after the greeting). Without this reset the
+                # watchdog fires instantly on every turn.
+                self._last_audio_at                    = time.monotonic()
                 self.session["llm_generation_active"]  = True
                 await save_session(self.call_sid, self.session)
 
@@ -619,6 +651,7 @@ class WebSocketCallHandler:
 
         from .tts_stream import TTSStream
         tts = TTSStream()
+        _last_tts_chunk: str = ""  # BUG 2: dedup — track last synthesised text chunk
 
         try:
             while not self._stop_event.is_set():
@@ -632,6 +665,17 @@ class WebSocketCallHandler:
 
                 if not chunk_text or not chunk_text.strip():
                     continue
+
+                # BUG 2 FIX: skip consecutive identical chunks.
+                # This prevents fast-path interim phrases ("Let me check for you")
+                # from playing twice when the LLM response starts with the same text.
+                if chunk_text.strip().lower() == _last_tts_chunk.lower():
+                    logger.info(
+                        "[ms_conn] TTS dedup: skipping duplicate chunk %r",
+                        chunk_text[:80],
+                    )
+                    continue
+                _last_tts_chunk = chunk_text.strip()
 
                 self._tts_task = asyncio.create_task(
                     tts.synthesise_chunk(
