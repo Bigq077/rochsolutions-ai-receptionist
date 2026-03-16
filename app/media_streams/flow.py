@@ -98,11 +98,12 @@ FLOW: List[Dict[str, Any]] = [
             "duration_minutes=50, preference='{availability}'. "
             "Do NOT ask the caller about location — use {selected_location}. "
             "Present up to 3 slots in this exact format: "
-            "'I have found [N] available slots during that "
-            "time frame. The first being [DAY DATE at TIME]"
-            ", the second being [DAY DATE at TIME], the "
-            "third being [DAY DATE at TIME]. "
+            "'I have found [N] available slots during that time frame. "
+            "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
+            "the second being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
+            "the third being [DAY] the [DDth] of [MONTH] at [H:MMam/pm]. "
             "Which would you prefer?' "
+            "Use ordinal dates like 'Monday the 23rd of March at 9am'. "
             "Never deviate from this format."
         ),
         "extract": "slot_selection",
@@ -118,6 +119,18 @@ FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 7,
+        "state": "CONFIRM_PHONE",
+        "question": (
+            "Just to confirm — shall I use the number "
+            "you're calling from for the booking?"
+        ),
+        "answer_field": "phone_confirmed",
+        "use_llm": False,
+        "extract": "phone_confirm",
+        "llm_instruction": None,
+    },
+    {
+        "step": 8,
         "state": "COLLECT_PHONE",
         "question": "And the best number to reach you on?",
         "answer_field": "phone_number",
@@ -126,7 +139,7 @@ FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 8,
+        "step": 9,
         "state": "CONFIRM_BOOKING",
         "question": None,   # LLM generates this
         "answer_field": "booking_confirmed",
@@ -207,8 +220,15 @@ class FlowEngine:
                 self.session["selected_location"],
             )
 
-        # Auto-skip phone collection when caller's number came from Twilio
-        if step["state"] == "COLLECT_PHONE" and self.session.get("phone_from_twilio"):
+        # CONFIRM_PHONE: skip if no Twilio number — go straight to COLLECT_PHONE
+        if step["state"] == "CONFIRM_PHONE" and not self.session.get("phone_from_twilio"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE")
+            await self.ask_current_question()
+            return
+
+        # COLLECT_PHONE: skip if Twilio number was confirmed in CONFIRM_PHONE
+        if step["state"] == "COLLECT_PHONE" and self.session.get("phone_confirmed"):
             phone = (
                 self.session.get("phone_number")
                 or self.session.get("collected", {}).get("phone")
@@ -216,8 +236,8 @@ class FlowEngine:
             )
             self.session[step["answer_field"]] = phone
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] phone from Twilio caller-ID — skipping COLLECT_PHONE")
-            await self.ask_current_question()   # recurse to next step
+            logger.info("[ms_flow] phone confirmed from Twilio — skipping COLLECT_PHONE")
+            await self.ask_current_question()
             return
 
         if step["use_llm"]:
@@ -276,6 +296,22 @@ class FlowEngine:
             )
             await self._tts.put(phrase)
             # Keep last_question unchanged so SilenceHandler can re-ask again
+            return
+
+        # CONFIRM_PHONE: declined path — clear Twilio number, collect manually
+        if step["state"] == "CONFIRM_PHONE" and answer is False:
+            self.session["phone_confirmed"]  = False
+            self.session["phone_from_twilio"] = False
+            self.session["phone_number"]     = None
+            collected = self.session.setdefault("collected", {})
+            collected.pop("phone", None)
+            self.session["flow_step"] = step["step"] + 1  # → COLLECT_PHONE
+            phrase = (
+                "No problem — what number would you like to use for the booking?"
+            )
+            await self._tts.put(phrase)
+            self.session["last_question"] = phrase
+            logger.info("[ms_flow] CONFIRM_PHONE declined — will collect manually")
             return
 
         # Store the answer
@@ -419,6 +455,27 @@ class FlowEngine:
                     if any(p in text for p in patterns):
                         logger.info("[ms_flow] slot_selection idx=%d", idx)
                         return _pick(idx)
+            return None
+
+        # ----- phone_confirm: yes/no to using the Twilio caller-ID number --
+        if method == "phone_confirm":
+            yes_p = (
+                "yes", "yeah", "yep", "yup", "sure", "that's fine",
+                "thats fine", "correct", "that one", "use that",
+                "yes please", "that's the one", "go ahead", "ok",
+                "okay", "fine", "sounds good", "that works",
+            )
+            no_p = (
+                "no", "nope", "different", "another", "use another",
+                "different number", "no different", "actually no",
+                "not that one", "different one",
+            )
+            for p in yes_p:
+                if p in text:
+                    return True
+            for p in no_p:
+                if p in text:
+                    return False
             return None
 
         # ----- name: 1-5 word name ---------------------------------------

@@ -45,6 +45,7 @@ class CallState(str, Enum):
     COLLECT_AVAILABILITY = "COLLECT_AVAILABILITY"
     PRESENT_SLOTS        = "PRESENT_SLOTS"
     COLLECT_NAME         = "COLLECT_NAME"
+    CONFIRM_PHONE        = "CONFIRM_PHONE"
     COLLECT_PHONE        = "COLLECT_PHONE"
     CONFIRM_BOOKING      = "CONFIRM_BOOKING"
     TRANSFER             = "TRANSFER"
@@ -61,6 +62,7 @@ _STATE_ORDER = [
     CallState.COLLECT_AVAILABILITY,
     CallState.PRESENT_SLOTS,
     CallState.COLLECT_NAME,
+    CallState.CONFIRM_PHONE,
     CallState.COLLECT_PHONE,
     CallState.CONFIRM_BOOKING,
     CallState.COMPLETE,
@@ -215,8 +217,9 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "slots_count":         0,        # set by llm_stream when slots are returned
     "selected_slot":       None,     # step 5 — the slot the caller chose
     "full_name":           None,     # step 6 — caller's full name
-    "phone_number":        None,     # step 7 — caller's phone number
-    "booking_confirmed":   None,     # step 8 — booking acknowledged
+    "phone_confirmed":     None,     # step 7 — True/False from CONFIRM_PHONE
+    "phone_number":        None,     # step 8 — caller's phone number
+    "booking_confirmed":   None,     # step 9 — booking acknowledged
     "last_question":       "",       # last question Susie asked (for SilenceHandler re-ask)
 }
 
