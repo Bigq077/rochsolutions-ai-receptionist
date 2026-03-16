@@ -102,17 +102,25 @@ class SilenceHandler:
     Fires a re-ask phrase if the caller has been silent for 4 seconds after
     Susie asked a question.
 
-    on_audio_received()         — call on every inbound Twilio audio chunk
-    on_question_asked(text)     — call whenever any text is sent to TTS
-    on_transcript_received()    — call whenever a FinalTranscript arrives
-    cancel()                    — call when the call ends
+    Hooks (call from _tts_loop and _on_final_transcript_clear):
+        on_audio_received()        — every inbound Twilio audio chunk
+        on_question_asked(text)    — updates last_question (timer NOT started here)
+        on_tts_started()           — before each TTS synthesis chunk starts
+        on_tts_finished(text)      — after each TTS synthesis chunk completes
+        on_transcript_received()   — every FinalTranscript from STT
+        cancel()                   — call when the call ends
 
-    Behaviour:
-      - 1st silence  → "Sorry, I didn't quite catch that — <question>"
-      - 2nd silence  → "Sorry about that — <question>"
-      - 3rd silence  → transfer phrase + trigger_transfer()
-      - Timer resets whenever the caller speaks (on_transcript_received)
-      - Timer postpones if caller audio was received < 3 s ago
+    Timer lifecycle:
+        Timer starts  → on_tts_finished() detects a question was spoken
+        Timer cancels → on_tts_started() (Susie speaking), on_transcript_received()
+        Re-ask fires  → currently_reasking=True; _pending_reask set; phrase queued
+        Timer restarts → on_tts_finished() when the re-ask phrase finishes playing
+        Double-fire prevention → currently_reasking flag + _pending_reask sentinel
+
+    Silence windows:
+        1st (4 s) → "Sorry, I didn't quite catch that — <question>"
+        2nd (4 s) → "Sorry about that — <question>"
+        3rd (4 s) → transfer phrase + trigger_transfer()
     """
 
     def __init__(
@@ -123,6 +131,8 @@ class SilenceHandler:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
         self.last_question:           str   = ""
+        self.currently_reasking:      bool  = False
+        self._pending_reask:          str   = ""   # phrase queued but not yet played
         self._task: Optional[asyncio.Task]  = None
         self._tts_text_queue                = tts_text_queue
         self._trigger_transfer              = trigger_transfer_fn
@@ -134,23 +144,79 @@ class SilenceHandler:
         self.last_audio_received_at = time.time()
 
     def on_question_asked(self, question: str) -> None:
-        """Call whenever any text is sent to TTS (so it can be re-asked)."""
+        """
+        Update last_question so re-asks have the right text.
+        Timer is NOT started here — on_tts_finished() handles that
+        so the timer only runs after audio has actually finished playing.
+        """
         if not question or not question.strip():
             return
         self.last_question = question.strip()
         self.reask_count   = 0
-        self._restart_timer()
+
+    def on_tts_started(self) -> None:
+        """
+        Call before each TTS synthesis chunk.
+        Cancels the silence timer — caller cannot respond while Susie speaks.
+        """
+        self._cancel_timer()
+        logger.debug("[ms_silence] TTS started — timer cancelled")
+
+    def on_tts_finished(self, text: str) -> None:
+        """
+        Call after a TTS synthesis chunk completes successfully (not cancelled).
+
+        Two cases:
+          1. Pending re-ask phrase just finished → clear flag, restart timer.
+          2. Regular question from the flow finished → start fresh timer.
+        """
+        t = text.strip()
+
+        # Case 1: the re-ask phrase queued by _run() just finished playing
+        if self._pending_reask and t == self._pending_reask.strip():
+            logger.info("[ms_silence] reask TTS done — restarting timer")
+            self._pending_reask     = ""
+            self.currently_reasking = False
+            self._restart_timer()
+            return
+
+        # Case 2: a normal flow question finished — arm the silence timer
+        if not self.currently_reasking and self._is_question(t):
+            # Don't overwrite last_question with "Sorry…" re-ask phrases from
+            # flow.py's handle_transcript path (they already contain the original Q)
+            if not t.lower().startswith("sorry"):
+                self.last_question = t
+                self.reask_count   = 0
+            self._restart_timer()
+            logger.info("[ms_silence] timer started — question: %r", t[:80])
 
     def on_transcript_received(self) -> None:
         """Call whenever a FinalTranscript arrives from STT."""
-        self.reask_count = 0
+        self.reask_count        = 0
+        self.currently_reasking = False
+        self._pending_reask     = ""
         self._cancel_timer()
+        logger.info("[ms_silence] transcript received — timer cancelled reask_count reset")
 
     def cancel(self) -> None:
         """Cancel the timer. Call when the call ends."""
         self._cancel_timer()
 
     # ── internal ───────────────────────────────────────────────────────────
+
+    def _is_question(self, text: str) -> bool:
+        """Return True if text looks like a question Susie just asked."""
+        t = text.strip().lower()
+        if t.endswith("?"):
+            return True
+        # Catch non-"?" questions and the greeting
+        question_phrases = (
+            "what brings", "how long", "does that", "been with us",
+            "work best", "full name", "reach you", "which would",
+            "catch that", "about that", "help you", "how can i",
+            "your name", "your number", "shall i",
+        )
+        return any(q in t for q in question_phrases)
 
     def _restart_timer(self) -> None:
         self._cancel_timer()
@@ -167,6 +233,10 @@ class SilenceHandler:
         except asyncio.CancelledError:
             return
 
+        # Guard: a previous reask is still being spoken — don't double-fire
+        if self.currently_reasking:
+            return
+
         # If caller audio arrived very recently, they may be mid-speech —
         # postpone and wait another 4 s rather than interrupting.
         since_audio = time.time() - self.last_audio_received_at
@@ -174,6 +244,8 @@ class SilenceHandler:
             self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
             return
 
+        self.currently_reasking = True
+        self._cancel_timer()
         self.reask_count += 1
         q = self.last_question.strip()
 
@@ -186,9 +258,11 @@ class SilenceHandler:
             return
 
         logger.info("[ms_silence] reask #%d: %r", self.reask_count, phrase[:80])
+        # Store the phrase so on_tts_finished can identify when it finishes playing
+        self._pending_reask = phrase
         await self._tts_text_queue.put(phrase)
-        # Restart timer for the next silence window
-        self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
+        # Do NOT restart the timer here — on_tts_finished() will restart it
+        # once the re-ask audio has actually finished playing.
 
     async def _transfer(self) -> None:
         logger.info("[ms_silence] max reasks reached — transferring")
@@ -665,9 +739,7 @@ class WebSocketCallHandler:
                 if not chunk_text or not chunk_text.strip():
                     continue
 
-                # BUG 2 FIX: skip consecutive identical chunks.
-                # This prevents fast-path interim phrases ("Let me check for you")
-                # from playing twice when the LLM response starts with the same text.
+                # Skip consecutive identical chunks (dedup guard)
                 if chunk_text.strip().lower() == _last_tts_chunk.lower():
                     logger.info(
                         "[ms_conn] TTS dedup: skipping duplicate chunk %r",
@@ -675,6 +747,10 @@ class WebSocketCallHandler:
                     )
                     continue
                 _last_tts_chunk = chunk_text.strip()
+
+                # Tell the silence handler Susie is about to speak —
+                # timer must be cancelled while audio is playing.
+                self._silence_handler.on_tts_started()
 
                 self._tts_task = asyncio.create_task(
                     tts.synthesise_chunk(
@@ -689,6 +765,11 @@ class WebSocketCallHandler:
                     logger.info("[ms_conn] TTS chunk cancelled (barge-in)")
                 except Exception as exc:
                     logger.error("[ms_conn] TTS chunk error: %r", exc)
+                else:
+                    # Synthesis completed successfully (not cancelled, no error).
+                    # Tell the silence handler — it will restart the timer if
+                    # the chunk was a question.
+                    self._silence_handler.on_tts_finished(chunk_text)
                 finally:
                     self._tts_task = None
 
@@ -850,9 +931,8 @@ class WebSocketCallHandler:
         await save_session(self.call_sid, self.session)
 
         await self.tts_text_queue.put(greeting)
-        # NOTE: do NOT call silence_handler.on_question_asked(greeting) here.
-        # The greeting is not a re-askable question — the SilenceHandler timer
-        # is only armed after the first real question in the conversation.
+        # The silence timer is armed automatically by _tts_loop's on_tts_finished()
+        # hook once the greeting audio finishes playing.  No explicit call needed here.
 
     # ========================================================================
     # Transfer callback
