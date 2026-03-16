@@ -258,9 +258,10 @@ class WebSocketCallHandler:
         self._llm_busy   = False   # True while Claude is generating
 
         # ── Latency / timing ──────────────────────────────────────────────
-        self._last_audio_at:  float = 0.0   # epoch time of last audio sent to Twilio
-        self._last_filler_at: float = 0.0   # epoch time of last filler phrase played
-        self._bad_line_played = False        # once-per-call bad-line phrase guard
+        self._last_audio_at:          float = 0.0   # epoch time of last audio sent to Twilio
+        self._last_filler_at:         float = 0.0   # epoch time of last filler phrase played
+        self._bad_line_played         = False        # once-per-call bad-line phrase guard
+        self._last_audio_received_at: float = 0.0   # monotonic time of last inbound Twilio audio
 
         # ── Watchdog / silence tracking ────────────────────────────────────
         self._watchdog_phrase_idx: int  = 0     # cycles through WATCHDOG_PHRASES
@@ -420,11 +421,11 @@ class WebSocketCallHandler:
         Process a Twilio "media" event.
 
         Decodes the base64 mulaw payload and puts raw bytes onto audio_in_queue.
-        Drops audio silently while _clearing (Twilio buffer draining after barge-in).
+        Audio ALWAYS flows to AssemblyAI regardless of _clearing state.
+        Dropping audio while _clearing=True was the barge-in deadlock:
+          _clearing=True → no audio → no STT final → _on_final_transcript_clear
+          never fires → _clearing stays True forever.
         """
-        if self._clearing:
-            return
-
         payload_b64 = msg.get("media", {}).get("payload", "")
         if not payload_b64:
             return
@@ -435,6 +436,7 @@ class WebSocketCallHandler:
             logger.warning("[ms_conn] base64 decode error: %r", exc)
             return
 
+        self._last_audio_received_at = time.monotonic()
         self.audio_in_queue.put_nowait(raw_mulaw)
 
     # ========================================================================
@@ -528,13 +530,18 @@ class WebSocketCallHandler:
                     )
                     continue
 
-                logger.info("[ms_conn] transcript received: %r", utterance[:120])
+                logger.info("[ms_conn] TRANSCRIPT ← queue: %r", utterance[:120])
                 self._llm_busy                         = True
                 self.session["llm_generation_active"]  = True
                 await save_session(self.call_sid, self.session)
 
                 tts_had_output = False
                 try:
+                    logger.info(
+                        "[ms_conn] LLM INPUT: %r  state=%s",
+                        utterance[:120],
+                        self.session.get("state", "UNKNOWN"),
+                    )
                     await llm.run_turn(
                         user_text=utterance,
                         session=self.session,
@@ -801,6 +808,13 @@ class WebSocketCallHandler:
                 now = time.monotonic()
                 since_question   = now - self._last_question_at
                 since_transcript = now - self._last_transcript_at if self._last_transcript_at > 0 else float("inf")
+
+                # Don't re-ask if Twilio is actively sending audio — the caller
+                # is speaking right now and AssemblyAI hasn't finalised yet.
+                if self._last_audio_received_at > 0:
+                    since_audio = now - self._last_audio_received_at
+                    if since_audio < 2.0:
+                        continue
 
                 # Must be silent for both thresholds
                 if since_question < QUESTION_SILENCE_SEC:

@@ -383,8 +383,8 @@ class STTStream:
         # flush() sends if >= 50ms, silently discards if too short.
         pre_begin = chunk_buffer.flush()
         if pre_begin:
-            logger.debug(
-                "[ms_stt] send: flushed %d pre-Begin bytes (%.1fms) to new session",
+            logger.info(
+                "[ms_stt] post-reconnect flush: %d bytes (%.1fms) → new session",
                 len(pre_begin),
                 len(pre_begin) / (AudioChunkBuffer.SAMPLE_RATE
                                   * AudioChunkBuffer.BYTES_PER_SAMPLE) * 1000,
@@ -396,7 +396,7 @@ class STTStream:
         else:
             if chunk_buffer.buffer:
                 logger.debug(
-                    "[ms_stt] send: discarded %d pre-Begin bytes (< 50ms minimum)",
+                    "[ms_stt] post-reconnect: discarded %d bytes (< 50ms minimum)",
                     len(chunk_buffer.buffer),
                 )
                 chunk_buffer.buffer = bytearray()
@@ -518,6 +518,10 @@ class STTStream:
                     msg.get("transcript") or msg.get("text") or ""
                 ).strip()
 
+                # Per-message diagnostic log (debug level — high frequency)
+                if msg_type not in ("Begin", "SessionBegins", "session_begins", "Termination"):
+                    logger.debug("[ms_stt] msg type=%s text=%r", msg_type, text[:60] if text else "")
+
                 # ── v3: Begin (session ready) ──────────────────────────────────
                 if msg_type == "Begin":
                     logger.info(
@@ -562,7 +566,7 @@ class STTStream:
                         if _is_garbage_transcript(text):
                             logger.info("[ms_stt] garbage transcript: %r", text)
                             continue
-                        logger.info("[ms_stt] final: %r", text)
+                        logger.info("[ms_stt] FINAL → queue: %r", text)
                         self._put_transcript(transcript_queue, text)
 
                 # ── v2 compat: PartialTranscript ───────────────────────────────
@@ -587,7 +591,7 @@ class STTStream:
                     if _is_garbage_transcript(text):
                         logger.info("[ms_stt] garbage transcript: %r", text)
                         continue
-                    logger.info("[ms_stt] final: %r", text)
+                    logger.info("[ms_stt] FINAL → queue: %r", text)
                     self._put_transcript(transcript_queue, text)
 
                 # ── v3: Termination (normal session end) ───────────────────────
