@@ -16,6 +16,13 @@ v2 (fallback, ASSEMBLYAI_USE_V2=true): wss://api.assemblyai.com/v2/realtime/ws
   Input:   PCM16 8kHz mono
   Events:  PartialTranscript, FinalTranscript
 
+Audio chunk sizing (AssemblyAI v3 requires 50–1000ms per send):
+  Twilio mulaw is 20ms frames → audio_in.py converts to PCM16 and buffers to 60ms.
+  The keepalive was 10ms (320 bytes), violating the 50ms minimum.
+  AudioChunkBuffer accumulates all audio — real chunks and keepalives — to 100ms
+  (3200 bytes) before sending. The buffer lives on the STTStream instance so it
+  persists across reconnects (no audio lost during the reconnect window).
+
 Audio gating:
   _send_audio_loop blocks until connection_ready is set.
   connection_ready is set when the "Begin" message arrives from AssemblyAI.
@@ -28,8 +35,7 @@ Reconnect classification:
     Retry up to ASSEMBLYAI_MAX_RECONNECTS times.
 
 Diagnostics:
-  Every message received from AssemblyAI is logged at DEBUG level for the
-  first 10 messages after connect, so close-before-Begin can be diagnosed.
+  First 10 messages received from AssemblyAI are logged verbatim at DEBUG level.
   Close frame codes and reasons are logged on all disconnects.
 """
 from __future__ import annotations
@@ -67,6 +73,74 @@ _IMMEDIATE_THRESHOLD_SEC = 0.5
 _MAX_IMMEDIATE_STREAK    = 3
 
 
+# ---------------------------------------------------------------------------
+# Audio chunk buffer
+# ---------------------------------------------------------------------------
+
+class AudioChunkBuffer:
+    """
+    Accumulates PCM16 audio bytes until a full 100ms chunk is ready to send.
+
+    AssemblyAI v3 requires chunks of 50–1000ms.
+    Incoming chunks are smaller:
+      - Real audio: ~60ms bursts from audio_in.py
+      - Keepalive:   10ms silence (320 bytes) — the direct cause of the error
+
+    Both real audio and keepalives flow through this buffer so AssemblyAI
+    always receives correctly-sized frames.
+
+    Math (PCM16 @ 16kHz):
+      TARGET_BYTES = 16000 Hz * 2 bytes/sample * 100ms / 1000 = 3200 bytes
+      MIN_BYTES    = 16000 Hz * 2 bytes/sample *  50ms / 1000 = 1600 bytes
+    """
+    SAMPLE_RATE        = 16000
+    BYTES_PER_SAMPLE   = 2            # pcm_s16le = 16-bit = 2 bytes per sample
+    TARGET_DURATION_MS = 100
+    TARGET_BYTES       = (SAMPLE_RATE * BYTES_PER_SAMPLE * TARGET_DURATION_MS) // 1000
+    # = 16000 * 2 * 100 / 1000 = 3200 bytes
+    MIN_BYTES          = (SAMPLE_RATE * BYTES_PER_SAMPLE * 50) // 1000
+    # = 16000 * 2 *  50 / 1000 = 1600 bytes
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+
+    def add(self, chunk: bytes) -> Optional[bytes]:
+        """
+        Append chunk to the internal buffer.
+        Returns a 100ms chunk if enough data has accumulated; None otherwise.
+        Excess bytes are kept for the next call.
+        """
+        self.buffer.extend(chunk)
+        if len(self.buffer) >= self.TARGET_BYTES:
+            output       = bytes(self.buffer[:self.TARGET_BYTES])
+            self.buffer  = bytearray(self.buffer[self.TARGET_BYTES:])
+            return output
+        return None
+
+    def flush(self) -> Optional[bytes]:
+        """
+        Return whatever remains in the buffer if it meets the 50ms minimum.
+        Discards the buffer in either case (too-small remainder would be
+        rejected by AssemblyAI with an Input Duration Violation error).
+        """
+        if len(self.buffer) >= self.MIN_BYTES:
+            output      = bytes(self.buffer)
+            self.buffer = bytearray()
+            return output
+        # Too small to send — discard to avoid the duration violation
+        if self.buffer:
+            logger.debug(
+                "[ms_stt] flush: discarding %d bytes (< 50ms minimum)",
+                len(self.buffer),
+            )
+        self.buffer = bytearray()
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _is_garbage_transcript(text: str) -> bool:
     """Return True if transcript contains no recognisable words."""
     if not text.strip():
@@ -91,17 +165,25 @@ def _close_info(exc: websockets.exceptions.ConnectionClosed) -> str:
     return "no close frame"
 
 
+# ---------------------------------------------------------------------------
+# STTStream
+# ---------------------------------------------------------------------------
+
 class STTStream:
     """
     Manages one AssemblyAI WebSocket session per call.
 
     start() opens the WebSocket and runs send + receive loops concurrently.
     Audio is held until the "Begin" message is received (connection_ready gate).
+    The AudioChunkBuffer lives on the instance so it survives reconnects.
     """
 
     def __init__(self) -> None:
-        self._ws: Optional[Any] = None
-        self._last_final_at: float = 0.0
+        self._ws:            Optional[Any]      = None
+        self._last_final_at: float              = 0.0
+        # Instance-level buffer: persists across reconnects so no audio is
+        # lost during the reconnect window.
+        self._chunk_buffer:  AudioChunkBuffer   = AudioChunkBuffer()
 
     async def start(
         self,
@@ -125,17 +207,16 @@ class STTStream:
         tts_text_queue   : If set, failure phrase is played here on fatal STT error
         """
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
-        # ?token= in the URL is for *temporary* browser tokens obtained from the
-        # /v3/token endpoint — NOT the raw API key. The Authorization header is
-        # the correct method for server-to-server use.
+        # ?token= in the URL is for *temporary* browser tokens — NOT the raw key.
         url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
         ws_headers = {"Authorization": ASSEMBLYAI_API_KEY}
 
         masked_url = _mask_key(url, ASSEMBLYAI_API_KEY)
         audio_fmt  = "pcm_s16le@16kHz" if not ASSEMBLYAI_USE_V2 else "pcm_s16le@8kHz"
         logger.info(
-            "[ms_stt] init — url=%s audio=%s",
+            "[ms_stt] init — url=%s audio=%s chunk_target=%dms(%dB)",
             masked_url, audio_fmt,
+            AudioChunkBuffer.TARGET_DURATION_MS, AudioChunkBuffer.TARGET_BYTES,
         )
 
         attempt          = 0
@@ -163,7 +244,8 @@ class STTStream:
 
                     send_task = asyncio.create_task(
                         self._send_audio_loop(
-                            ws, stt_input_queue, stop_event, connection_ready,
+                            ws, stt_input_queue, stop_event,
+                            connection_ready, self._chunk_buffer,
                         ),
                         name="stt_send",
                     )
@@ -210,9 +292,8 @@ class STTStream:
                         if immediate_streak >= _MAX_IMMEDIATE_STREAK:
                             logger.error(
                                 "[ms_stt] FATAL: %d immediate disconnects — "
-                                "AssemblyAI rejecting the connection. "
-                                "Check API key (Authorization header) and URL params. "
-                                "URL: %s",
+                                "AssemblyAI rejecting connection. "
+                                "Check API key and URL params. URL: %s",
                                 immediate_streak, masked_url,
                             )
                             _notify_stt_failure(tts_text_queue)
@@ -225,10 +306,7 @@ class STTStream:
                         )
 
             except websockets.exceptions.ConnectionClosedError as exc:
-                logger.warning(
-                    "[ms_stt] ConnectionClosedError %s",
-                    _close_info(exc),
-                )
+                logger.warning("[ms_stt] ConnectionClosedError %s", _close_info(exc))
                 if connect_time > 0 and (time.monotonic() - connect_time) < _IMMEDIATE_THRESHOLD_SEC:
                     immediate_streak += 1
                     if immediate_streak >= _MAX_IMMEDIATE_STREAK:
@@ -260,7 +338,10 @@ class STTStream:
             delay = 2.0 if immediate_streak > 0 else (
                 backoff_delays[min(attempt - 1, len(backoff_delays) - 1)]
             )
-            logger.info("[ms_stt] reconnecting in %.1fs (attempt %d)...", delay, attempt + 1)
+            logger.info(
+                "[ms_stt] reconnecting in %.1fs (attempt %d)...",
+                delay, attempt + 1,
+            )
             await asyncio.sleep(delay)
 
     # -------------------------------------------------------------------------
@@ -273,14 +354,19 @@ class STTStream:
         stt_input_queue: asyncio.Queue,
         stop_event: asyncio.Event,
         connection_ready: asyncio.Event,
+        chunk_buffer: AudioChunkBuffer,
     ) -> None:
         """
-        Wait for the "Begin" message (connection_ready), then stream PCM16 bytes.
+        Wait for the "Begin" message, then stream buffered PCM16 to AssemblyAI.
 
-        Blocks all audio until AssemblyAI confirms the session is open.
-        Times out after 5s with a warning (defensive — should not happen).
-        Sends 10ms silence keepalives when the queue is empty to hold the connection.
+        All audio — both real speech and keepalive silence — passes through
+        chunk_buffer before being sent. This ensures every send is exactly
+        100ms (3200 bytes), which is safely within AssemblyAI's 50–1000ms window.
+
+        chunk_buffer is the instance-level AudioChunkBuffer from STTStream so it
+        persists across reconnects — buffered audio is not lost on reconnect.
         """
+        # Block until AssemblyAI confirms the session is ready
         try:
             await asyncio.wait_for(connection_ready.wait(), timeout=5.0)
             logger.info("[ms_stt] send: Begin received — audio stream open")
@@ -290,8 +376,11 @@ class STTStream:
                 "sending audio anyway (check Begin message handling)"
             )
 
-        # 10ms silence at 16kHz PCM16: 16000 Hz * 2 bytes/sample * 0.01s = 320 bytes
-        KEEPALIVE = bytes(320)
+        # 10ms silence at 16kHz PCM16 = 320 bytes.
+        # Goes through chunk_buffer so it never reaches AssemblyAI at 10ms size.
+        KEEPALIVE_BYTES = bytes(320)
+
+        first_send_done = False
 
         try:
             while not stop_event.is_set():
@@ -300,28 +389,56 @@ class STTStream:
                         stt_input_queue.get(), timeout=0.1,
                     )
                 except asyncio.TimeoutError:
-                    try:
-                        await ws.send(KEEPALIVE)
-                    except Exception:
-                        return
+                    # No audio — feed silence keepalive through the buffer
+                    buffered = chunk_buffer.add(KEEPALIVE_BYTES)
+                    if buffered is not None:
+                        try:
+                            await ws.send(buffered)
+                        except Exception:
+                            return
                     continue
 
                 if not pcm_chunk:
                     continue
 
-                try:
-                    await ws.send(pcm_chunk)
-                except websockets.exceptions.ConnectionClosed:
-                    logger.warning("[ms_stt] send: connection closed")
-                    return
-                except Exception as exc:
-                    logger.error("[ms_stt] send error: %r", exc)
-                    return
+                # Route real audio through buffer
+                buffered = chunk_buffer.add(pcm_chunk)
+                if buffered is not None:
+                    if not first_send_done:
+                        first_send_done = True
+                        logger.info(
+                            "[ms_stt] first chunk sent: %d bytes = %.1fms",
+                            len(buffered),
+                            len(buffered) / (AudioChunkBuffer.SAMPLE_RATE
+                                             * AudioChunkBuffer.BYTES_PER_SAMPLE) * 1000,
+                        )
+                    try:
+                        await ws.send(buffered)
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.warning("[ms_stt] send: connection closed")
+                        return
+                    except Exception as exc:
+                        logger.error("[ms_stt] send error: %r", exc)
+                        return
 
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             logger.error("[ms_stt] _send_audio_loop error: %r", exc)
+        finally:
+            # Flush any remaining buffered audio before closing (call ended).
+            # Only attempt if stop_event is set (clean call end) so we don't
+            # try to send on an already-dead reconnect socket.
+            if stop_event.is_set():
+                remainder = chunk_buffer.flush()
+                if remainder:
+                    try:
+                        await ws.send(remainder)
+                        logger.debug(
+                            "[ms_stt] flushed %d bytes on call end", len(remainder),
+                        )
+                    except Exception:
+                        pass  # WebSocket may already be closing — best effort only
 
     # -------------------------------------------------------------------------
     # Receive loop
@@ -340,17 +457,17 @@ class STTStream:
         Route AssemblyAI v3 events.
 
         v3 message types (field: "type"):
-          Begin       → set connection_ready, log full message for diagnostics
-          Turn        → end_of_turn=false: partial (barge-in)
+          Begin       → set connection_ready, log session details
+          Turn        → end_of_turn=false: partial (barge-in trigger)
                         end_of_turn=true:  final   (enqueue transcript)
-                        text is in "transcript" field (NOT "text")
+                        NOTE: text is in "transcript" field (NOT "text")
           Termination → session ended normally
           error       → log and exit
 
         v2 message types (field: "message_type") handled for fallback:
           PartialTranscript, FinalTranscript
         """
-        msg_count = 0   # diagnostic counter: log first N messages verbatim
+        msg_count = 0  # log first N messages verbatim for diagnostics
 
         try:
             async for raw_msg in ws:
@@ -371,7 +488,7 @@ class STTStream:
                 # v3 uses "type"; v2 uses "message_type"
                 msg_type = msg.get("type") or msg.get("message_type") or ""
 
-                # v3 transcript text is in "transcript"; v2 uses "text"
+                # v3 text is in "transcript"; v2 uses "text"
                 text = (
                     msg.get("transcript") or msg.get("text") or ""
                 ).strip()
@@ -400,7 +517,7 @@ class STTStream:
                     end_of_turn = msg.get("end_of_turn", False)
 
                     if not end_of_turn:
-                        # Partial — trigger barge-in if caller started speaking
+                        # Partial — trigger barge-in if caller is speaking
                         if text and on_partial:
                             try:
                                 await on_partial(text)
@@ -495,7 +612,7 @@ class STTStream:
 def _notify_stt_failure(tts_text_queue: Optional[asyncio.Queue]) -> None:
     """
     Put the failure phrase on tts_text_queue so the caller hears something.
-    Does not set stop_event — TTS plays the phrase and the caller hangs up.
+    Does not set stop_event — TTS plays the phrase and the caller hangs up naturally.
     """
     if tts_text_queue is not None:
         try:
