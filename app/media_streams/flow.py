@@ -463,6 +463,17 @@ class FlowEngine:
             response = await self._llm(instruction)
             # Store the LLM-generated question so SilenceHandler can re-ask it
             self.session["last_question"] = response or (step["question"] or "")
+            # After check_availability runs (inside _llm), save slots_offered so
+            # the slot confirmation phrase can reference the full slot text strings.
+            if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
+                offered = self.session.get("last_offered_slots") or []
+                if offered:
+                    self.session["slots_offered"] = list(offered)
+                    self.session["slots_count"]   = len(offered)
+                    logger.info(
+                        "[ms_flow] slots_offered saved: %d slots",
+                        len(offered),
+                    )
         else:
             await self._tts.put(step["question"])
             self.session["last_question"] = step["question"]
@@ -487,6 +498,11 @@ class FlowEngine:
             return
 
         text = transcript.strip().lower()
+
+        # ── SLOT CONFIRMATION: waiting for yes/no after slot selection ────────
+        if self.session.get("slot_pending_confirmation"):
+            await self._handle_slot_confirmation(text, transcript)
+            return
 
         # ── DETECT_INTENT: route to correct flow on first utterance ───────────
         if step["state"] == "DETECT_INTENT":
@@ -568,6 +584,22 @@ class FlowEngine:
             step["step"], step["answer_field"], str(answer)[:60],
         )
 
+        # ── SLOT CONFIRMATION: intercept before advancing ──────────────────
+        # After slot selection, confirm with the caller before moving to name
+        # collection.  flow_step is NOT advanced here — it advances in
+        # _handle_slot_confirmation when the caller says yes.
+        if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
+            self.session["slot_pending_confirmation"] = True
+            slot_text = str(answer)
+            phrase = (
+                f"Just to confirm — you'd like the {slot_text} appointment. "
+                f"Is that right?"
+            )
+            await self._tts.put(phrase)
+            self.session["last_question"] = phrase
+            logger.info("[ms_flow] slot confirmation requested: %r", phrase[:80])
+            return
+
         # Advance to next step
         self.session["flow_step"] = step["step"] + 1
         logger.info("[ms_flow] → step %d", step["step"] + 1)
@@ -644,6 +676,61 @@ class FlowEngine:
             intent, self._active_flow[0]["state"],
         )
 
+    # ── slot confirmation ─────────────────────────────────────────────────
+
+    async def _handle_slot_confirmation(self, text: str, transcript: str) -> None:
+        """
+        Handle the yes/no response after Susie has confirmed a slot selection.
+
+        yes → clear flag, advance flow_step past PRESENT_SLOTS, ask next question
+        no  → clear flag, clear selected_slot, re-ask which slot they prefer
+              (does NOT re-run LLM/check_availability — slots are still offered)
+        no match → re-ask the confirmation phrase
+        """
+        yes_patterns = [
+            "yes", "yeah", "ya", "yep", "yup", "correct",
+            "that's right", "thats right", "perfect",
+            "sounds good", "that works", "go ahead",
+            "please", "ok", "okay", "sure", "fine",
+            "that one", "confirmed",
+        ]
+        no_patterns = [
+            "no", "nope", "wrong", "different",
+            "not that", "actually no", "change",
+            "other one", "different one",
+        ]
+
+        for p in yes_patterns:
+            if p in text:
+                logger.info("[ms_flow] slot confirmation: YES matched=%r", p)
+                self.session["slot_pending_confirmation"] = False
+                step = self.current_step()
+                if step:
+                    self.session["flow_step"] = step["step"] + 1
+                await self.ask_current_question()
+                return
+
+        for p in no_patterns:
+            if p in text:
+                logger.info("[ms_flow] slot confirmation: NO matched=%r", p)
+                self.session["slot_pending_confirmation"] = False
+                self.session["selected_slot"] = None
+                # Stay at PRESENT_SLOTS — caller picks again from already-offered slots.
+                # Do NOT re-run ask_current_question (that would re-call the LLM).
+                phrase = "No problem — which slot would you prefer?"
+                await self._tts.put(phrase)
+                self.session["last_question"] = phrase
+                return
+
+        # No match — re-ask the confirmation phrase
+        last_q = self.session.get("last_question", "")
+        phrase = (
+            f"Sorry, I didn't quite catch that — {last_q}"
+            if last_q
+            else "Sorry, I didn't quite catch that."
+        )
+        await self._tts.put(phrase)
+
     # ── extraction ────────────────────────────────────────────────────────
 
     def _extract(self, method: str, text: str, raw: str) -> Optional[Any]:
@@ -681,35 +768,45 @@ class FlowEngine:
 
         # ----- new_or_returning ------------------------------------------
         if method == "new_or_returning":
-            new_p = (
-                "not been", "never been", "i have not", "i haven't",
-                "i havent", "havent been", "haven t been",
-                "first time", "new patient", "i'm new", "im new",
-                "haven't been", "have not been", "never", "first visit",
-                "never visited", "not visited", "no i", "no,", "nope",
-                "nah", "not really",
-            )
-            ret_p = (
-                "yes", "yeah", "ya", "yep", "yup", "been before",
-                "i have been", "existing", "returning", "been there",
-                "come before", "visited before", "been with you",
-                "been a patient", "been here", "i've been", "i ve been",
-                "have been",
-            )
-            # Returning checked FIRST — strongest signal wins
-            for p in ret_p:
+            # CRITICAL: new_patterns checked FIRST.
+            # "i have not" contains "i have" — if returning were checked first
+            # it would incorrectly match as returning.  Order must never change.
+            new_patterns = [
+                "i have not", "i haven't", "i havent",
+                "have not been", "haven't been", "havent been",
+                "not been", "never been", "never visited",
+                "never", "first time", "first visit",
+                "new patient", "i'm new", "im new",
+                "no i", "nah", "nope",
+                "no never", "not visited", "don't think",
+                "dont think", "no not", "not really",
+            ]
+            returning_patterns = [
+                "i have been", "i've been", "ive been",
+                "yeah i have", "yes i have", "yep i have",
+                "been before", "been there", "been with you",
+                "been a patient", "been here", "come before",
+                "visited before", "existing", "returning",
+                "yeah", "yes", "yep", "yup", "ya",
+                "i have", "have been",
+            ]
+            matched = False
+            for p in new_patterns:
                 if p in text:
-                    return "returning"
-            # Explicit new-patient phrases
-            if text.strip() in ("no", "nope", "nah", "never"):
-                return "new"
-            for p in new_p:
-                if p in text:
+                    logger.info(
+                        "[ms_extract] new_or_returning=new matched=%r transcript=%r",
+                        p, raw[:60],
+                    )
+                    matched = True
                     return "new"
-            # Word-level negative fallback: catches "I have not", "No I haven't", etc.
-            _neg_words = {"no", "not", "never", "nope", "nah", "havent", "haven't"}
-            if any(w in _neg_words for w in text.split()):
-                return "new"
+            if not matched:
+                for p in returning_patterns:
+                    if p in text:
+                        logger.info(
+                            "[ms_extract] new_or_returning=returning matched=%r transcript=%r",
+                            p, raw[:60],
+                        )
+                        return "returning"
             return None
 
         # ----- availability: day / time references ----------------------

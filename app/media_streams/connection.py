@@ -82,6 +82,12 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Sentinel object placed on audio_out_queue AFTER the last audio chunk for a
+# TTS utterance.  send_loop detects it and fires on_tts_finished() only once
+# all audio for that utterance has actually been sent to Twilio.
+_TTS_DONE_SENTINEL = object()
+
+
 # ---------------------------------------------------------------------------
 # Hardcoded greeting (fast startup, no LLM round-trip)
 # ---------------------------------------------------------------------------
@@ -333,6 +339,10 @@ class WebSocketCallHandler:
         self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
         self._bad_line_played         = False        # once-per-call bad-line phrase guard
         self._last_audio_received_at: float = 0.0   # monotonic time of last inbound Twilio audio
+        # Text of the TTS utterance currently in-flight through audio_out_queue.
+        # Set in _tts_loop when synthesis completes; cleared in send_loop when
+        # the _TTS_DONE_SENTINEL is drained — at that point on_tts_finished fires.
+        self._tts_text_pending: str = ""
 
         # ── Silence handler (4-second re-ask) ─────────────────────────────
         # Created eagerly so _handle_media can call on_audio_received() before
@@ -767,9 +777,12 @@ class WebSocketCallHandler:
                     logger.error("[ms_conn] TTS chunk error: %r", exc)
                 else:
                     # Synthesis completed successfully (not cancelled, no error).
-                    # Tell the silence handler — it will restart the timer if
-                    # the chunk was a question.
-                    self._silence_handler.on_tts_finished(chunk_text)
+                    # All audio chunks for this utterance are now on audio_out_queue.
+                    # Place a sentinel AFTER them so send_loop can fire on_tts_finished
+                    # only once every byte has actually been sent to Twilio — that is
+                    # the correct moment to start the silence timer.
+                    self._tts_text_pending = chunk_text
+                    await self.audio_out_queue.put(_TTS_DONE_SENTINEL)
                 finally:
                     self._tts_task = None
 
@@ -801,6 +814,18 @@ class WebSocketCallHandler:
                     continue
 
                 if not b64_payload:
+                    continue
+
+                # TTS-done sentinel: all audio for the previous utterance has
+                # been sent.  Fire on_tts_finished so the silence timer starts
+                # from the correct moment (after the caller actually hears the
+                # last word, not when synthesis was merely enqueued).
+                if b64_payload is _TTS_DONE_SENTINEL:
+                    text = self._tts_text_pending
+                    self._tts_text_pending = ""
+                    if text:
+                        logger.info("[ms_silence] tts_finished: %r", text[:60])
+                        self._silence_handler.on_tts_finished(text)
                     continue
 
                 try:
