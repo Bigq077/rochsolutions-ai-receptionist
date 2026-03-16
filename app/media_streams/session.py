@@ -53,12 +53,10 @@ class CallState(str, Enum):
     # Multi-intent states
     DETECT_INTENT                   = "DETECT_INTENT"
     COLLECT_NAME_RESCHEDULE         = "COLLECT_NAME_RESCHEDULE"
-    COLLECT_LOCATION_RESCHEDULE     = "COLLECT_LOCATION_RESCHEDULE"
     COLLECT_AVAILABILITY_RESCHEDULE = "COLLECT_AVAILABILITY_RESCHEDULE"
     PRESENT_NEW_SLOTS               = "PRESENT_NEW_SLOTS"
     CONFIRM_RESCHEDULE              = "CONFIRM_RESCHEDULE"
     COLLECT_NAME_CANCEL             = "COLLECT_NAME_CANCEL"
-    COLLECT_LOCATION_CANCEL         = "COLLECT_LOCATION_CANCEL"
     CONFIRM_CANCEL                  = "CONFIRM_CANCEL"
     ANSWER_FAQ                      = "ANSWER_FAQ"
     FAQ_BOOKING_OFFER               = "FAQ_BOOKING_OFFER"
@@ -136,9 +134,9 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "session_id":     "",
     "clinic_id":      None,
 
-    # Location
-    "location_selected":          False,
-    "selected_location":          None,
+    # Location — always Alcester; never asked on phone calls
+    "location_selected":          True,
+    "selected_location":          "alcester",
     "location_miss":              0,
     "location_redirect_count":    0,
 

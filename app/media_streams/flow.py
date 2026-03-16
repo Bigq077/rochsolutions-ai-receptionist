@@ -120,9 +120,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "answer_field": "selected_slot",
         "use_llm": True,
         "llm_instruction": (
-            "Call check_availability with location='{selected_location}', "
+            "Call check_availability with location='alcester', "
             "duration_minutes=50, preference='{availability}'. "
-            "Do NOT ask the caller about location — use {selected_location}. "
             "Present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that time frame. "
             "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
@@ -199,19 +198,10 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 1,
-        "state": "COLLECT_LOCATION_RESCHEDULE",
-        "question": "Was that at our Alcester or Redditch clinic?",
-        "answer_field": "selected_location",
-        "use_llm": False,
-        "extract": "location_selection",
-        "llm_instruction": None,
-    },
-    {
-        "step": 2,
         "state": "CONFIRM_PHONE",
         "question": (
             "Just to confirm — shall I use the number "
-            "you're calling from for the booking?"
+            "you're calling from for the reschedule?"
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -219,7 +209,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 3,
+        "step": 2,
         "state": "COLLECT_PHONE",
         "question": "And the best number to reach you on?",
         "answer_field": "phone_number",
@@ -228,7 +218,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 4,
+        "step": 3,
         "state": "COLLECT_AVAILABILITY_RESCHEDULE",
         "question": "What days or times work best for the new appointment?",
         "answer_field": "availability",
@@ -237,15 +227,14 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 5,
+        "step": 4,
         "state": "PRESENT_NEW_SLOTS",
         "question": "Let me check what we have available.",
         "answer_field": "selected_slot",
         "use_llm": True,
         "llm_instruction": (
-            "Call check_availability with location='{selected_location}', "
+            "Call check_availability with location='alcester', "
             "duration_minutes=50, preference='{availability}'. "
-            "Do NOT ask the caller about location — use {selected_location}. "
             "Present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that time frame. "
             "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
@@ -258,14 +247,14 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "extract": "slot_selection",
     },
     {
-        "step": 6,
+        "step": 5,
         "state": "CONFIRM_RESCHEDULE",
         "question": None,
         "answer_field": "reschedule_confirmed",
         "use_llm": True,
         "llm_instruction": (
             "Call reschedule_appointment with patient_name='{full_name}', "
-            "phone='{phone_number}', location='{selected_location}', "
+            "phone='{phone_number}', location='alcester', "
             "new_slot_iso='{selected_slot}', duration_minutes=50. "
             "After rescheduling confirm warmly: "
             "'I've rescheduled your appointment to [new date/time]. "
@@ -291,19 +280,10 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 1,
-        "state": "COLLECT_LOCATION_CANCEL",
-        "question": "Was that at our Alcester or Redditch clinic?",
-        "answer_field": "selected_location",
-        "use_llm": False,
-        "extract": "location_selection",
-        "llm_instruction": None,
-    },
-    {
-        "step": 2,
         "state": "CONFIRM_PHONE",
         "question": (
             "Just to confirm — shall I use the number "
-            "you're calling from for the booking?"
+            "you're calling from for the cancellation?"
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -311,7 +291,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 3,
+        "step": 2,
         "state": "COLLECT_PHONE",
         "question": "And the best number we have on file for you?",
         "answer_field": "phone_number",
@@ -320,14 +300,14 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 4,
+        "step": 3,
         "state": "CONFIRM_CANCEL",
         "question": None,
         "answer_field": "cancel_confirmed",
         "use_llm": True,
         "llm_instruction": (
             "Call cancel_appointment with patient_name='{full_name}', "
-            "phone='{phone_number}', location='{selected_location}'. "
+            "phone='{phone_number}', location='alcester'. "
             "After cancelling confirm briefly: "
             "'I've cancelled your appointment. "
             "You'll receive a confirmation text shortly. "
@@ -573,7 +553,7 @@ class FlowEngine:
         # Store the answer
         self.session[step["answer_field"]] = answer
         # Mirror into collected{} for LLM context
-        if step["answer_field"] in ("full_name", "phone_number", "new_or_returning", "selected_location"):
+        if step["answer_field"] in ("full_name", "phone_number", "new_or_returning"):
             col = self.session.setdefault("collected", {})
             if step["answer_field"] == "full_name":
                 col["full_name"] = answer
@@ -582,8 +562,6 @@ class FlowEngine:
                 col["phone"] = answer
             elif step["answer_field"] == "new_or_returning":
                 col["patient_type"] = answer
-            elif step["answer_field"] == "selected_location":
-                self.session["location_selected"] = True
 
         logger.info(
             "[ms_flow] step %d %s=%r",
@@ -659,6 +637,7 @@ class FlowEngine:
         else:
             self._active_flow = BOOKING_FLOW
         self.session["flow_step"] = 0
+        self.session["selected_location"] = "alcester"   # always alcester — no question asked
         self._intent_detected = True
         logger.info(
             "[ms_flow] intent=%s → flow[0]=%s",
