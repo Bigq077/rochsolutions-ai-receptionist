@@ -94,7 +94,9 @@ FLOW: List[Dict[str, Any]] = [
         "answer_field": "selected_slot",
         "use_llm": True,
         "llm_instruction": (
-            "Check availability for: '{availability}'. "
+            "Call check_availability with location='{selected_location}', "
+            "duration_minutes=50, preference='{availability}'. "
+            "Do NOT ask the caller about location — use {selected_location}. "
             "Present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that "
             "time frame. The first being [DAY DATE at TIME]"
@@ -353,15 +355,20 @@ class FlowEngine:
                 "been a patient", "been here", "i've been", "i ve been",
                 "have been",
             )
-            # "no" / "never" checked FIRST so "i have not" doesn't match "i have"
+            # Returning checked FIRST — strongest signal wins
+            for p in ret_p:
+                if p in text:
+                    return "returning"
+            # Explicit new-patient phrases
             if text.strip() in ("no", "nope", "nah", "never"):
                 return "new"
             for p in new_p:
                 if p in text:
                     return "new"
-            for p in ret_p:
-                if p in text:
-                    return "returning"
+            # Word-level negative fallback: catches "I have not", "No I haven't", etc.
+            _neg_words = {"no", "not", "never", "nope", "nah", "havent", "haven't"}
+            if any(w in _neg_words for w in text.split()):
+                return "new"
             return None
 
         # ----- availability: day / time references ----------------------

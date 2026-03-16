@@ -445,11 +445,15 @@ class LLMStream:
 
         Returns the full response text (also stored in session["last_bot_prompt"]).
         """
-        date_prefix  = _build_date_prefix()
+        date_prefix = _build_date_prefix()
+        location    = session.get("selected_location", "alcester")
         system_prompt = (
             f"You are Susie, a warm and professional AI receptionist at Theorem Health. "
             f"Respond naturally and conversationally. Keep responses brief — one or two "
             f"sentences at most. Never ask more than one question per response. "
+            f"The clinic location for this booking is {location}. "
+            f"Always use location='{location}' in any tool calls. "
+            f"Never ask the caller which location they prefer. "
             f"{SILENCE_RULE}\n\n"
             f"{date_prefix}"
         )
