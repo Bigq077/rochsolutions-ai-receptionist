@@ -789,12 +789,38 @@ class WebSocketCallHandler:
                 if self._last_audio_at <= 0:
                     continue
                 if self._tts_task is not None and not self._tts_task.done():
+                    # TTS is actively playing — suppress watchdog, audio is flowing
+                    silence_secs_check = time.monotonic() - self._last_audio_at
+                    logger.debug(
+                        "[ms_watchdog] suppressed — TTS task active, audio sent %.1fs ago",
+                        silence_secs_check,
+                    )
                     continue
                 if not self.audio_out_queue.empty():
                     continue
 
                 silence_secs = time.monotonic() - self._last_audio_at
+
+                # Bug 3 fix: suppress bridge phrase if audio was sent within the
+                # last 2 seconds.  This catches the gap between TTS chunks where
+                # audio_out_queue is briefly empty and _tts_task is briefly None
+                # (between synthesise_chunk calls) even though audio is flowing.
+                if silence_secs < 2.0:
+                    logger.debug(
+                        "[ms_watchdog] suppressed — audio sent %.1fs ago (< 2.0s threshold)",
+                        silence_secs,
+                    )
+                    continue
+
                 if silence_secs < WATCHDOG_SILENCE_SEC:
+                    continue
+
+                # Final guard: if LLM has already delivered its first chunk (i.e.
+                # tts_text_queue has items or recently had items), don't fire.
+                # The 2.0s guard above already handles this in most cases, but
+                # an extra queue check is cheap.
+                if not self.tts_text_queue.empty():
+                    logger.debug("[ms_watchdog] suppressed — tts_text_queue non-empty")
                     continue
 
                 # Fire a bridge phrase

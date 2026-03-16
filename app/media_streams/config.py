@@ -126,6 +126,8 @@ class FastPathTurnType(str, Enum):
     Used to tag session["fast_path_last_resolved"] for debugging and metrics.
     """
     CLINIC_SELECTION  = "clinic_selection"
+    PHONE_CONFIRM_YES = "phone_confirm_yes"   # caller confirmed Twilio caller-ID number
+    PHONE_CONFIRM_NO  = "phone_confirm_no"    # caller rejected Twilio caller-ID number
     NEW_RETURNING     = "new_returning"
     YES_NO            = "yes_no"
     FULL_NAME         = "full_name"
@@ -322,6 +324,73 @@ F_FAST_PATH_LAST_RESOLVED   = "fast_path_last_resolved"
 F_PHONE_COLLECTED_FROM_TWILIO = "phone_from_twilio"   # True when phone came from caller-ID
 
 # Noise-only ASR transcriptions that count as silence (not real speech)
+# ---------------------------------------------------------------------------
+# Booking opening line (Bug 2 fix — hardcoded, never varies)
+# ---------------------------------------------------------------------------
+
+# This EXACT line is injected via TTS whenever booking intent is detected,
+# bypassing the LLM entirely so the wording is deterministic every time.
+BOOKING_OPEN = (
+    "Of course you can book an appointment — "
+    "are you looking to visit our Alcester clinic "
+    "or our Redditch one?"
+)
+
+# Booking intent keywords — matched against normalised transcript to detect
+# when the caller wants to book before they have named a clinic.
+BOOKING_INTENT_KEYWORDS = (
+    "book", "appointment", "schedule", "see a physio", "see someone",
+    "come in", "come and see", "see you", "visit", "treatment",
+    "consultation", "get seen", "get an appointment", "make an appointment",
+)
+
+# ---------------------------------------------------------------------------
+# Silence rule (Bug 1 fix — injected into every system prompt)
+# ---------------------------------------------------------------------------
+
+# Prepended to the system prompt so it is the FIRST thing Claude reads.
+# Prevents LLM from generating "I am waiting..." / "Are you still there?" filler.
+SILENCE_RULE = (
+    "SILENCE RULE — CRITICAL:\n"
+    "After asking a question, say NOTHING until the caller responds. "
+    "Do not comment on silence. Do not say you are waiting. "
+    "Do not ask if they are still there.\n"
+    "Silence after a question is completely normal in a phone call — wait for it.\n"
+    "NEVER output any of the following (or any variation):\n"
+    "  - 'I am waiting for your answer'\n"
+    "  - 'I'm waiting for you to respond'\n"
+    "  - 'Are you still there?'\n"
+    "  - 'Hello?'\n"
+    "  - 'Just waiting for your response'\n"
+    "  - Any sentence that comments on the caller being silent or slow to respond\n"
+    "Simply stop after your question. The re-ask system handles genuine silence "
+    "automatically — you must never do this yourself.\n"
+)
+
+# ---------------------------------------------------------------------------
+# Phone confirm prompts (Bug 4 fix)
+# ---------------------------------------------------------------------------
+
+# Played (via fast-path, no LLM) when the Twilio caller-ID number is present
+# and we need to confirm whether to use it for the booking.
+PHONE_CONFIRM_QUESTION = (
+    "Just to confirm — shall I use the number you're calling from "
+    "for the booking?"
+)
+
+PHONE_CONFIRM_YES_REPLY = (
+    "Perfect — and could I take your full name please?"
+)
+
+PHONE_CONFIRM_NO_REPLY = (
+    "No problem — what number would you like to use for the booking? "
+    "Could you give me the first five digits?"
+)
+
+# ---------------------------------------------------------------------------
+# Noise-only words
+# ---------------------------------------------------------------------------
+
 NOISE_ONLY_WORDS: frozenset = frozenset({
     "mm", "mmm", "mhm", "hmm", "hm", "uh", "um", "ah", "eh",
     "oh", "er", "erm", "ha", "huh",

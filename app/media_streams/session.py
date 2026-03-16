@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 class CallState(str, Enum):
     GREETING               = "GREETING"
     CLINIC_SELECTION       = "CLINIC_SELECTION"
+    PHONE_CONFIRM          = "PHONE_CONFIRM"    # confirm Twilio caller-ID number (Bug 4)
     NEW_OR_RETURNING       = "NEW_OR_RETURNING"
     COLLECT_NAME           = "COLLECT_NAME"
     COLLECT_PHONE_PART_ONE = "COLLECT_PHONE_PART_ONE"
@@ -54,6 +55,7 @@ class CallState(str, Enum):
 _STATE_ORDER = [
     CallState.GREETING,
     CallState.CLINIC_SELECTION,
+    CallState.PHONE_CONFIRM,          # between CLINIC_SELECTION and NEW_OR_RETURNING
     CallState.NEW_OR_RETURNING,
     CallState.COLLECT_NAME,
     CallState.COLLECT_PHONE_PART_ONE,

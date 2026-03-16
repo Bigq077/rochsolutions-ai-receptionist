@@ -59,6 +59,9 @@ from .config import (
     F_LAST_QUESTION,
     F_COLLECTED,
     F_FAST_PATH_LAST_RESOLVED,
+    SILENCE_RULE,
+    BOOKING_OPEN,
+    BOOKING_INTENT_KEYWORDS,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
@@ -236,6 +239,30 @@ class LLMStream:
           8. GPT-4.1-mini fallback on Claude 529/500
           9. Update conversation history and session
         """
+        # ── Step 0: Booking-intent fast-path (Bug 2 fix) ────────────────
+        # When the caller expresses booking intent without naming a clinic,
+        # play the exact hardcoded BOOKING_OPEN line (no LLM round-trip).
+        # This guarantees the opening line is always deterministic.
+        from .session import get_call_state, CallState, advance_state
+        _state_now = get_call_state(session)
+        if _state_now in (CallState.GREETING, CallState.CLINIC_SELECTION):
+            _norm = user_text.lower()
+            # Check booking intent: keyword present but no clinic named yet
+            _has_intent = any(kw in _norm for kw in BOOKING_INTENT_KEYWORDS)
+            _has_clinic = any(c in _norm for c in ("alcester", "redditch", "alchester"))
+            if _has_intent and not _has_clinic:
+                logger.info(
+                    "[ms_llm] booking intent detected — injecting BOOKING_OPEN "
+                    "transcript=%r", user_text[:80],
+                )
+                await tts_text_queue.put(BOOKING_OPEN)
+                session[F_LAST_BOT_PROMPT] = BOOKING_OPEN
+                session[F_LAST_QUESTION]   = BOOKING_OPEN
+                advance_state(session, CallState.CLINIC_SELECTION)
+                _append_history(session, user_text, BOOKING_OPEN)
+                await save_session(call_sid, session)
+                return
+
         # ── Step 1-3: Fast-path ──────────────────────────────────────────
         fp_result = try_fast_path(session, user_text)
         if fp_result is not None:
@@ -290,13 +317,25 @@ class LLMStream:
             f"Do not re-introduce yourself or re-ask anything already answered.]\n"
             + ("\n".join(known_lines) if known_lines else "")
             + phone_rule
-            + "\n[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
+            + "\n[BOOKING OPENING LINE RULE: When a caller wants to book an appointment, "
+            "always open with EXACTLY: "
+            "'Of course you can book an appointment — are you looking to visit our "
+            "Alcester clinic or our Redditch one?' — never vary this line.]\n"
+            "[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
             "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
             "response UNLESS the caller has explicitly asked to speak to a person OR "
             "mentioned a medical emergency. If you are unsure what the caller wants, "
             "ask a single clarifying question instead of offering a transfer.]"
         )
-        system_prompt = f"{date_prefix}\n\n{state_ctx}\n\n{get_system_prompt(session)}"
+        # SILENCE_RULE is prepended first so it is the very first thing Claude
+        # reads — before date, before state context, before the main prompt.
+        # This maximises compliance with the no-commentary-on-silence rule.
+        system_prompt = (
+            f"{SILENCE_RULE}\n\n"
+            f"{date_prefix}\n\n"
+            f"{state_ctx}\n\n"
+            f"{get_system_prompt(session)}"
+        )
 
         # ── Step 6-8: LLM streaming with tool loop ───────────────────────
         history: List[dict] = session.setdefault("conversation_history", [])
@@ -768,12 +807,49 @@ class LLMStream:
 # ---------------------------------------------------------------------------
 
 def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
-    """Advance call state after a fast-path resolution."""
-    from .config import FastPathTurnType
+    """
+    Advance call state after a fast-path resolution.
+
+    Some transitions are conditional on session state (e.g. CLINIC_SELECTION
+    advances to PHONE_CONFIRM when Twilio caller-ID is present, otherwise to
+    NEW_OR_RETURNING; FULL_NAME skips phone collection when phone is confirmed).
+    """
+    from .config import FastPathTurnType, F_PHONE_COLLECTED_FROM_TWILIO, F_COLLECTED
+
+    # ── CLINIC_SELECTION: branch on whether Twilio number is present ─────────
+    if turn_type == FastPathTurnType.CLINIC_SELECTION:
+        if session.get(F_PHONE_COLLECTED_FROM_TWILIO):
+            advance_state(session, CallState.PHONE_CONFIRM)
+        else:
+            advance_state(session, CallState.NEW_OR_RETURNING)
+        return
+
+    # ── PHONE_CONFIRM responses ───────────────────────────────────────────────
+    if turn_type == FastPathTurnType.PHONE_CONFIRM_YES:
+        # Phone confirmed — go straight to name collection (skips NEW_OR_RETURNING
+        # since the LLM will naturally ask new/returning as part of COLLECT_NAME flow)
+        advance_state(session, CallState.COLLECT_NAME)
+        return
+
+    if turn_type == FastPathTurnType.PHONE_CONFIRM_NO:
+        # Phone rejected — go to NEW_OR_RETURNING; phone will be collected
+        # after name via COLLECT_PHONE_PART_ONE flow
+        advance_state(session, CallState.NEW_OR_RETURNING)
+        return
+
+    # ── FULL_NAME: skip phone collection if phone already confirmed ───────────
+    if turn_type == FastPathTurnType.FULL_NAME:
+        collected = session.get(F_COLLECTED) or {}
+        if session.get(F_PHONE_COLLECTED_FROM_TWILIO) and collected.get("phone"):
+            # Phone already confirmed — jump straight to availability
+            advance_state(session, CallState.COLLECT_AVAILABILITY)
+        else:
+            advance_state(session, CallState.COLLECT_PHONE_PART_ONE)
+        return
+
+    # ── Static transitions ────────────────────────────────────────────────────
     _MAP = {
-        FastPathTurnType.CLINIC_SELECTION:  CallState.NEW_OR_RETURNING,
         FastPathTurnType.NEW_RETURNING:     CallState.COLLECT_NAME,
-        FastPathTurnType.FULL_NAME:         CallState.COLLECT_PHONE_PART_ONE,
         FastPathTurnType.PHONE_FIRST_FIVE:  CallState.COLLECT_PHONE_PART_TWO,
         FastPathTurnType.PHONE_LAST_SIX:    CallState.COLLECT_AVAILABILITY,
         FastPathTurnType.SLOT_SELECTION:    CallState.CONFIRM_BOOKING,
