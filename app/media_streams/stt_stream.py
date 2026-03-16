@@ -3,30 +3,34 @@
 AssemblyAI Universal Streaming STT integration.
 
 v3 (primary): wss://streaming.assemblyai.com/v3/ws
-  Auth:   ?token=API_KEY as a URL query parameter (NOT Authorization header)
-  Input:  PCM16 16kHz mono (upsampled from Twilio 8kHz in audio_in.py)
-  Events: session_begins, PartialTranscript, FinalTranscript, Turn, error
+  Auth:    Authorization: <api_key> header  (server-to-server, recommended by AssemblyAI)
+           NOTE: ?token= is for TEMPORARY tokens from /v3/token, NOT the raw API key.
+  Input:   PCM16 16kHz mono (upsampled from Twilio 8kHz in audio_in.py)
+  Events (v3 message types):
+    {"type": "Begin",       "id": "...", "expires_at": ...}           → session ready
+    {"type": "Turn",        "transcript": "...", "end_of_turn": bool} → speech
+    {"type": "Termination", "audio_duration_seconds": ...}            → session ended
 
 v2 (fallback, ASSEMBLYAI_USE_V2=true): wss://api.assemblyai.com/v2/realtime/ws
-  Auth:   Authorization: API_KEY header
-  Input:  PCM16 8kHz mono
-  Events: PartialTranscript, FinalTranscript, error
+  Auth:    Authorization: <api_key> header
+  Input:   PCM16 8kHz mono
+  Events:  PartialTranscript, FinalTranscript
 
 Audio gating:
   _send_audio_loop blocks until connection_ready is set.
-  connection_ready is set when SessionBegins is received from AssemblyAI.
-  This prevents sending audio before the session handshake completes.
+  connection_ready is set when the "Begin" message arrives from AssemblyAI.
+  Prevents sending audio before the session handshake completes.
 
 Reconnect classification:
-  Immediate disconnect (< 0.5s after connect) → auth/config error.
-    After 3 consecutive immediate disconnects: play failure phrase and give up.
+  Immediate disconnect (< 0.5s) → auth/config rejection.
+    3 consecutive immediate disconnects → log FATAL, play failure phrase, give up.
   Late disconnect (>= 0.5s) → network drop.
-    Retry up to ASSEMBLYAI_MAX_RECONNECTS times with backoff.
+    Retry up to ASSEMBLYAI_MAX_RECONNECTS times.
 
-STT failure fallback:
-  On permanent failure: put STT_FAILURE_PHRASE on tts_text_queue so the
-  caller hears something, then return (STT loop exits; call continues briefly
-  so TTS can play the phrase before the caller hangs up).
+Diagnostics:
+  Every message received from AssemblyAI is logged at DEBUG level for the
+  first 10 messages after connect, so close-before-Begin can be diagnosed.
+  Close frame codes and reasons are logged on all disconnects.
 """
 from __future__ import annotations
 
@@ -53,18 +57,14 @@ logger = logging.getLogger(__name__)
 
 AsyncCallback = Callable[..., Coroutine[Any, Any, None]]
 
-# Played to the caller when STT has permanently failed.
 _STT_FAILURE_PHRASE = (
     "I'm really sorry, I'm having a small technical issue right now. "
     "Please call back in a moment and I'll be ready to help you."
 )
 
-# Immediate-disconnect threshold: connections that close faster than this are
-# treated as auth/config rejections rather than normal network drops.
+# Connections that close faster than this are treated as protocol/auth rejections.
 _IMMEDIATE_THRESHOLD_SEC = 0.5
-
-# Maximum consecutive immediate disconnects before giving up entirely.
-_MAX_IMMEDIATE_STREAK = 3
+_MAX_IMMEDIATE_STREAK    = 3
 
 
 def _is_garbage_transcript(text: str) -> bool:
@@ -76,12 +76,19 @@ def _is_garbage_transcript(text: str) -> bool:
     return len(real_words) == 0
 
 
-def _mask_key(url: str, key: str) -> str:
-    """Replace the full API key in a URL with first-8-chars + '...' for safe logging."""
+def _mask_key(url_or_str: str, key: str) -> str:
+    """Mask API key to first-8-chars + '...' for safe logging."""
     if not key:
-        return url
+        return url_or_str
     masked = key[:8] + "..." if len(key) > 8 else "***"
-    return url.replace(key, masked)
+    return url_or_str.replace(key, masked)
+
+
+def _close_info(exc: websockets.exceptions.ConnectionClosed) -> str:
+    """Extract close code + reason from a ConnectionClosed exception."""
+    if exc.rcvd:
+        return f"code={exc.rcvd.code} reason={exc.rcvd.reason!r}"
+    return "no close frame"
 
 
 class STTStream:
@@ -89,8 +96,7 @@ class STTStream:
     Manages one AssemblyAI WebSocket session per call.
 
     start() opens the WebSocket and runs send + receive loops concurrently.
-    Audio is held until SessionBegins is received (connection_ready gate).
-    Reconnects on network drops; gives up fast on auth/config rejections.
+    Audio is held until the "Begin" message is received (connection_ready gate).
     """
 
     def __init__(self) -> None:
@@ -114,45 +120,34 @@ class STTStream:
         stt_input_queue  : Queue of PCM16 bytes to forward to AssemblyAI
         transcript_queue : Queue where final transcript strings are placed
         stop_event       : Set when the call ends
-        on_partial       : async(text: str) called on non-empty PartialTranscript
-        on_final_clear   : async() called on each FinalTranscript
-        tts_text_queue   : If provided, failure phrase is played here on fatal error
+        on_partial       : async(text: str) called on partial Turn (barge-in)
+        on_final_clear   : async() called on each end-of-turn to reset _clearing
+        tts_text_queue   : If set, failure phrase is played here on fatal STT error
         """
-        # ── Build authenticated URL ────────────────────────────────────────────
-        # v3: token must be a URL query parameter (?token=KEY).
-        #     AssemblyAI v3 does NOT accept the Authorization header — it closes
-        #     the WebSocket immediately (< 500ms) if the key is missing from the URL.
-        # v2: uses the Authorization header (legacy, battle-tested).
-        base_url = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
-        if ASSEMBLYAI_USE_V2:
-            url         = base_url
-            ws_headers  = {"Authorization": ASSEMBLYAI_API_KEY}
-        else:
-            sep         = "&" if "?" in base_url else "?"
-            url         = f"{base_url}{sep}token={ASSEMBLYAI_API_KEY}"
-            ws_headers  = {}
+        # ── Auth: raw API key in Authorization header (server-to-server) ──────
+        # ?token= in the URL is for *temporary* browser tokens obtained from the
+        # /v3/token endpoint — NOT the raw API key. The Authorization header is
+        # the correct method for server-to-server use.
+        url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
+        ws_headers = {"Authorization": ASSEMBLYAI_API_KEY}
 
         masked_url = _mask_key(url, ASSEMBLYAI_API_KEY)
-        audio_fmt  = "pcm_s16le @ 16000 Hz" if not ASSEMBLYAI_USE_V2 else "pcm_s16le @ 8000 Hz"
+        audio_fmt  = "pcm_s16le@16kHz" if not ASSEMBLYAI_USE_V2 else "pcm_s16le@8kHz"
         logger.info(
-            "[ms_stt] STT init — url=%s audio_format=%s",
+            "[ms_stt] init — url=%s audio=%s",
             masked_url, audio_fmt,
         )
 
-        attempt                  = 0
-        immediate_streak         = 0   # consecutive immediate disconnects
-        backoff_delays           = [0.5, 1.0, 2.0]
+        attempt          = 0
+        immediate_streak = 0
+        backoff_delays   = [0.5, 1.0, 2.0]
 
         while not stop_event.is_set():
-            attempt += 1
-            # Fresh ready-event for this connection attempt.
-            connection_ready = asyncio.Event()
-            connect_time     = 0.0
+            attempt          += 1
+            connection_ready  = asyncio.Event()   # fresh per attempt
+            connect_time      = 0.0
 
-            logger.info(
-                "[ms_stt] connecting attempt=%d url=%s",
-                attempt, masked_url,
-            )
+            logger.info("[ms_stt] connecting attempt=%d", attempt)
 
             try:
                 async with websockets.connect(
@@ -162,9 +157,9 @@ class STTStream:
                     ping_timeout=10,
                     close_timeout=5,
                 ) as ws:
-                    self._ws   = ws
+                    self._ws     = ws
                     connect_time = time.monotonic()
-                    logger.info("[ms_stt] connected to AssemblyAI attempt=%d", attempt)
+                    logger.info("[ms_stt] TCP+TLS connected attempt=%d", attempt)
 
                     send_task = asyncio.create_task(
                         self._send_audio_loop(
@@ -206,39 +201,40 @@ class STTStream:
                     if duration < _IMMEDIATE_THRESHOLD_SEC:
                         immediate_streak += 1
                         logger.warning(
-                            "[ms_stt] immediate disconnect (%.3fs) — "
-                            "likely auth/config rejection "
-                            "(streak=%d/%d)",
+                            "[ms_stt] immediate disconnect %.3fs — "
+                            "likely protocol/config rejection "
+                            "(streak=%d/%d) url=%s",
                             duration, immediate_streak, _MAX_IMMEDIATE_STREAK,
+                            masked_url,
                         )
                         if immediate_streak >= _MAX_IMMEDIATE_STREAK:
                             logger.error(
-                                "[ms_stt] FATAL: %d consecutive immediate disconnects — "
-                                "AssemblyAI is rejecting the connection. "
-                                "Check API key and URL configuration. "
-                                "Masked URL: %s",
+                                "[ms_stt] FATAL: %d immediate disconnects — "
+                                "AssemblyAI rejecting the connection. "
+                                "Check API key (Authorization header) and URL params. "
+                                "URL: %s",
                                 immediate_streak, masked_url,
                             )
                             _notify_stt_failure(tts_text_queue)
                             return
                     else:
-                        # Genuine network drop — reset streak, log and retry
                         immediate_streak = 0
                         logger.warning(
-                            "[ms_stt] WebSocket closed after %.1fs — will reconnect",
+                            "[ms_stt] connection closed after %.1fs — will reconnect",
                             duration,
                         )
 
             except websockets.exceptions.ConnectionClosedError as exc:
-                logger.warning("[ms_stt] ConnectionClosedError: %r", exc)
-                # Count as immediate if we never got past the handshake
+                logger.warning(
+                    "[ms_stt] ConnectionClosedError %s",
+                    _close_info(exc),
+                )
                 if connect_time > 0 and (time.monotonic() - connect_time) < _IMMEDIATE_THRESHOLD_SEC:
                     immediate_streak += 1
                     if immediate_streak >= _MAX_IMMEDIATE_STREAK:
                         logger.error(
-                            "[ms_stt] FATAL: %d consecutive immediate disconnects — "
-                            "check API key and URL. Masked URL: %s",
-                            immediate_streak, masked_url,
+                            "[ms_stt] FATAL: %d consecutive immediate disconnects",
+                            immediate_streak,
                         )
                         _notify_stt_failure(tts_text_queue)
                         return
@@ -261,16 +257,10 @@ class STTStream:
                 _notify_stt_failure(tts_text_queue)
                 return
 
-            # Longer back-off for auth-style failures to avoid hammering the API
-            if immediate_streak > 0:
-                delay = 2.0
-            else:
-                delay = backoff_delays[min(attempt - 1, len(backoff_delays) - 1)]
-
-            logger.info(
-                "[ms_stt] reconnecting in %.1fs (attempt %d)...",
-                delay, attempt + 1,
+            delay = 2.0 if immediate_streak > 0 else (
+                backoff_delays[min(attempt - 1, len(backoff_delays) - 1)]
             )
+            logger.info("[ms_stt] reconnecting in %.1fs (attempt %d)...", delay, attempt + 1)
             await asyncio.sleep(delay)
 
     # -------------------------------------------------------------------------
@@ -285,26 +275,23 @@ class STTStream:
         connection_ready: asyncio.Event,
     ) -> None:
         """
-        Wait for SessionBegins (connection_ready), then stream PCM16 to AssemblyAI.
+        Wait for the "Begin" message (connection_ready), then stream PCM16 bytes.
 
         Blocks all audio until AssemblyAI confirms the session is open.
-        If SessionBegins doesn't arrive within 5 s, logs a warning and sends anyway
-        (defensive fallback — should not happen with a valid key and URL).
-
-        Sends 10ms of silence as a keepalive when the queue is empty to prevent
-        AssemblyAI from timing out the connection during natural pauses.
+        Times out after 5s with a warning (defensive — should not happen).
+        Sends 10ms silence keepalives when the queue is empty to hold the connection.
         """
-        # Block until AssemblyAI session is ready
         try:
             await asyncio.wait_for(connection_ready.wait(), timeout=5.0)
-            logger.info("[ms_stt] send: SessionBegins received — audio stream open")
+            logger.info("[ms_stt] send: Begin received — audio stream open")
         except asyncio.TimeoutError:
             logger.warning(
-                "[ms_stt] send: no SessionBegins within 5s — "
-                "proceeding anyway (check session_begins event handling)"
+                "[ms_stt] send: no Begin within 5s — "
+                "sending audio anyway (check Begin message handling)"
             )
 
-        KEEPALIVE = bytes(320)  # 10ms silence at 16kHz PCM16 (2 * 16000 * 0.01 = 320 bytes)
+        # 10ms silence at 16kHz PCM16: 16000 Hz * 2 bytes/sample * 0.01s = 320 bytes
+        KEEPALIVE = bytes(320)
 
         try:
             while not stop_event.is_set():
@@ -313,7 +300,6 @@ class STTStream:
                         stt_input_queue.get(), timeout=0.1,
                     )
                 except asyncio.TimeoutError:
-                    # Queue empty — send keepalive to hold the connection open
                     try:
                         await ws.send(KEEPALIVE)
                     except Exception:
@@ -351,14 +337,21 @@ class STTStream:
         connection_ready: Optional[asyncio.Event] = None,
     ) -> None:
         """
-        Route AssemblyAI events:
+        Route AssemblyAI v3 events.
 
-          session_begins / SessionBegins  -> set connection_ready, log session_id
-          PartialTranscript (non-empty)   -> on_partial callback (barge-in trigger)
-          FinalTranscript (non-garbage)   -> transcript_queue
-          Turn (end_of_turn=True)         -> transcript_queue (v3 equivalent of Final)
-          error                           -> log and exit
+        v3 message types (field: "type"):
+          Begin       → set connection_ready, log full message for diagnostics
+          Turn        → end_of_turn=false: partial (barge-in)
+                        end_of_turn=true:  final   (enqueue transcript)
+                        text is in "transcript" field (NOT "text")
+          Termination → session ended normally
+          error       → log and exit
+
+        v2 message types (field: "message_type") handled for fallback:
+          PartialTranscript, FinalTranscript
         """
+        msg_count = 0   # diagnostic counter: log first N messages verbatim
+
         try:
             async for raw_msg in ws:
                 if stop_event.is_set():
@@ -370,18 +363,67 @@ class STTStream:
                     logger.warning("[ms_stt] non-JSON: %r", str(raw_msg)[:80])
                     continue
 
-                msg_type = msg.get("message_type") or msg.get("type") or ""
-                text      = (msg.get("text") or "").strip()
+                # Log first 10 messages in full for connection diagnostics
+                msg_count += 1
+                if msg_count <= 10:
+                    logger.debug("[ms_stt] msg#%d raw=%r", msg_count, msg)
 
-                if msg_type in ("SessionBegins", "session_begins"):
+                # v3 uses "type"; v2 uses "message_type"
+                msg_type = msg.get("type") or msg.get("message_type") or ""
+
+                # v3 transcript text is in "transcript"; v2 uses "text"
+                text = (
+                    msg.get("transcript") or msg.get("text") or ""
+                ).strip()
+
+                # ── v3: Begin (session ready) ──────────────────────────────────
+                if msg_type == "Begin":
                     logger.info(
-                        "[ms_stt] SessionBegins session_id=%s — "
-                        "connection ready, unblocking audio stream",
+                        "[ms_stt] Begin received — session_id=%s expires_at=%s — "
+                        "unblocking audio stream",
+                        msg.get("id"), msg.get("expires_at"),
+                    )
+                    if connection_ready is not None:
+                        connection_ready.set()
+
+                # ── v2 compat: SessionBegins ───────────────────────────────────
+                elif msg_type in ("SessionBegins", "session_begins"):
+                    logger.info(
+                        "[ms_stt] SessionBegins session_id=%s — unblocking audio stream",
                         msg.get("session_id"),
                     )
                     if connection_ready is not None:
                         connection_ready.set()
 
+                # ── v3: Turn (partial or final) ────────────────────────────────
+                elif msg_type == "Turn":
+                    end_of_turn = msg.get("end_of_turn", False)
+
+                    if not end_of_turn:
+                        # Partial — trigger barge-in if caller started speaking
+                        if text and on_partial:
+                            try:
+                                await on_partial(text)
+                            except Exception as exc:
+                                logger.warning("[ms_stt] on_partial error: %r", exc)
+                    else:
+                        # Final — enqueue for LLM
+                        if on_final_clear:
+                            try:
+                                await on_final_clear()
+                            except Exception:
+                                pass
+                        self._last_final_at = time.monotonic()
+                        if not text:
+                            logger.debug("[ms_stt] empty Turn final — ignoring")
+                            continue
+                        if _is_garbage_transcript(text):
+                            logger.info("[ms_stt] garbage transcript: %r", text)
+                            continue
+                        logger.info("[ms_stt] final: %r", text)
+                        self._put_transcript(transcript_queue, text)
+
+                # ── v2 compat: PartialTranscript ───────────────────────────────
                 elif msg_type == "PartialTranscript":
                     if text and on_partial:
                         try:
@@ -389,6 +431,7 @@ class STTStream:
                         except Exception as exc:
                             logger.warning("[ms_stt] on_partial error: %r", exc)
 
+                # ── v2 compat: FinalTranscript ─────────────────────────────────
                 elif msg_type == "FinalTranscript":
                     if on_final_clear:
                         try:
@@ -397,7 +440,7 @@ class STTStream:
                             pass
                     self._last_final_at = time.monotonic()
                     if not text:
-                        logger.debug("[ms_stt] empty FinalTranscript -- ignoring")
+                        logger.debug("[ms_stt] empty FinalTranscript — ignoring")
                         continue
                     if _is_garbage_transcript(text):
                         logger.info("[ms_stt] garbage transcript: %r", text)
@@ -405,27 +448,27 @@ class STTStream:
                     logger.info("[ms_stt] final: %r", text)
                     self._put_transcript(transcript_queue, text)
 
-                elif msg_type == "Turn":
-                    if msg.get("end_of_turn") and text:
-                        if on_final_clear:
-                            try:
-                                await on_final_clear()
-                            except Exception:
-                                pass
-                        self._last_final_at = time.monotonic()
-                        if not _is_garbage_transcript(text):
-                            logger.info("[ms_stt] turn final: %r", text)
-                            self._put_transcript(transcript_queue, text)
+                # ── v3: Termination (normal session end) ───────────────────────
+                elif msg_type == "Termination":
+                    logger.info(
+                        "[ms_stt] Termination audio_duration=%.1fs session_duration=%.1fs",
+                        msg.get("audio_duration_seconds", 0),
+                        msg.get("session_duration_seconds", 0),
+                    )
+                    return
 
+                # ── Error (any version) ────────────────────────────────────────
                 elif msg_type == "error":
                     logger.error("[ms_stt] AssemblyAI error: %s", msg.get("error"))
                     return
 
                 else:
-                    logger.debug("[ms_stt] unhandled type=%r", msg_type)
+                    logger.debug("[ms_stt] unhandled type=%r msg=%r", msg_type, msg)
 
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("[ms_stt] receive: connection closed")
+        except websockets.exceptions.ConnectionClosedError as exc:
+            logger.info("[ms_stt] receive: connection closed %s", _close_info(exc))
+        except websockets.exceptions.ConnectionClosedOK as exc:
+            logger.info("[ms_stt] receive: connection closed OK %s", _close_info(exc))
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -433,7 +476,7 @@ class STTStream:
 
     @staticmethod
     def _put_transcript(q: asyncio.Queue, text: str) -> None:
-        """Put text onto transcript_queue; discard oldest entry if full."""
+        """Put text onto transcript_queue; discard oldest if full."""
         try:
             q.put_nowait(text)
         except asyncio.QueueFull:
@@ -446,18 +489,17 @@ class STTStream:
 
 
 # ---------------------------------------------------------------------------
-# STT failure helper (module-level, no class access needed)
+# STT failure helper
 # ---------------------------------------------------------------------------
 
 def _notify_stt_failure(tts_text_queue: Optional[asyncio.Queue]) -> None:
     """
-    Put the STT failure phrase onto tts_text_queue so the caller hears something.
-    Does NOT set stop_event — the TTS will play the phrase and then the caller
-    will hang up naturally (or Twilio will close the connection after inactivity).
+    Put the failure phrase on tts_text_queue so the caller hears something.
+    Does not set stop_event — TTS plays the phrase and the caller hangs up.
     """
     if tts_text_queue is not None:
         try:
             tts_text_queue.put_nowait(_STT_FAILURE_PHRASE)
-            logger.info("[ms_stt] STT failure phrase queued for TTS playback")
+            logger.info("[ms_stt] STT failure phrase queued")
         except Exception as exc:
             logger.warning("[ms_stt] could not queue failure phrase: %r", exc)

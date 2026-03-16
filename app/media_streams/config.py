@@ -61,16 +61,23 @@ ELEVENLABS_SIMILARITY_BOOST = 0.75
 # ---------------------------------------------------------------------------
 
 # v3 Universal Streaming (primary) — 16kHz PCM16 input, no upsampling on the STT side
-# Valid speech_model values: slam-1 | universal | nano
-# "universal-streaming-english" is NOT valid — AssemblyAI closes the connection
-# immediately with that name (800ms rejection, seen in logs 2026-03-16).
+#
+# Authentication: raw API key goes in the Authorization HEADER (server-to-server).
+#   ?token= is for TEMPORARY tokens from /v3/token endpoint — NOT the raw API key.
+#
+# Valid speech_model values (v3):
+#   universal-streaming-english | universal-streaming-multilingual | whisper-rt | u3-rt-pro
+#   "slam-1" and "universal" are NOT valid v3 model names — connection rejected instantly.
+#
+# end_utterance_silence_threshold does NOT exist in v3.
+#   v3 equivalent: min_turn_silence (ms, URL param).
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
-    "?speech_model=slam-1"
+    "?speech_model=universal-streaming-english"
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
-    "&end_utterance_silence_threshold=1200"
+    "&min_turn_silence=800"
 )
 
 # v2 fallback — 8kHz input, no upsampling needed (battle-tested, older)

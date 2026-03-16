@@ -43,15 +43,24 @@ import logging
 import os
 import traceback
 
+import asyncio
+import json as _json
+import time as _time
+
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from .config import (
+    ASSEMBLYAI_API_KEY,
+    ASSEMBLYAI_WS_URL,
+    ASSEMBLYAI_WS_URL_V2,
+    ASSEMBLYAI_USE_V2,
     MEDIA_STREAMS_ENABLED,
     RENDER_EXTERNAL_URL,
     LEGACY_VOICE_URL,
 )
 from .connection import WebSocketCallHandler
+from .stt_stream import _mask_key, _close_info
 
 logger = logging.getLogger(__name__)
 
@@ -202,3 +211,106 @@ async def ms_stream(websocket: WebSocket) -> None:
                 "[ms_router] call ended without reaching stable state call_sid=%s",
                 handler.call_sid,
             )
+
+
+# ---------------------------------------------------------------------------
+# Route 3: AssemblyAI connection diagnostic
+# ---------------------------------------------------------------------------
+
+@router.get("/ms/test-stt")
+async def ms_test_stt() -> JSONResponse:
+    """
+    Standalone AssemblyAI connection test.
+
+    Opens a WebSocket to AssemblyAI with the current URL and credentials,
+    waits up to 5 seconds for any message, then closes cleanly.
+
+    Returns JSON:
+      {
+        "connected": bool,
+        "begin_received": bool,
+        "messages_received": [...],
+        "close_info": "...",
+        "url_masked": "...",
+        "error": "..." or null,
+        "duration_ms": float
+      }
+
+    Use: GET https://your-domain.onrender.com/ms/test-stt
+    """
+    try:
+        import websockets
+        import websockets.exceptions
+    except ImportError:
+        return JSONResponse({"error": "websockets not installed"}, status_code=500)
+
+    url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
+    ws_headers = {"Authorization": ASSEMBLYAI_API_KEY}
+    masked_url = _mask_key(url, ASSEMBLYAI_API_KEY)
+
+    result = {
+        "connected":         False,
+        "begin_received":    False,
+        "messages_received": [],
+        "close_info":        None,
+        "url_masked":        masked_url,
+        "error":             None,
+        "duration_ms":       0.0,
+    }
+
+    t0 = _time.monotonic()
+
+    try:
+        async with websockets.connect(
+            url,
+            additional_headers=ws_headers,
+            open_timeout=5,
+            close_timeout=3,
+        ) as ws:
+            result["connected"] = True
+            logger.info("[ms_test_stt] connected to AssemblyAI — waiting for Begin")
+
+            deadline = _time.monotonic() + 5.0
+            while _time.monotonic() < deadline:
+                remaining = deadline - _time.monotonic()
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=min(remaining, 1.0))
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    msg = _json.loads(raw)
+                except Exception:
+                    msg = {"raw": str(raw)[:200]}
+
+                result["messages_received"].append(msg)
+                logger.info("[ms_test_stt] received: %r", msg)
+
+                msg_type = msg.get("type") or msg.get("message_type") or ""
+                if msg_type in ("Begin", "SessionBegins", "session_begins"):
+                    result["begin_received"] = True
+                    break
+                if msg_type == "error":
+                    result["error"] = msg.get("error", "unknown AssemblyAI error")
+                    break
+
+            await ws.close()
+
+    except websockets.exceptions.ConnectionClosedError as exc:
+        info = _close_info(exc)
+        result["close_info"] = info
+        result["error"]      = f"Connection closed immediately: {info}"
+        logger.warning("[ms_test_stt] ConnectionClosedError: %s", info)
+    except websockets.exceptions.WebSocketException as exc:
+        result["error"] = f"WebSocketException: {exc!r}"
+        logger.error("[ms_test_stt] WebSocketException: %r", exc)
+    except OSError as exc:
+        result["error"] = f"OS/network error: {exc!r}"
+        logger.error("[ms_test_stt] OSError: %r", exc)
+    except Exception as exc:
+        result["error"] = f"Unexpected: {exc!r}"
+        logger.error("[ms_test_stt] error: %r", exc)
+
+    result["duration_ms"] = round((_time.monotonic() - t0) * 1000, 1)
+    logger.info("[ms_test_stt] result: %r", result)
+    return JSONResponse(result)
