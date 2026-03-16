@@ -72,6 +72,7 @@ from .config import (
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
 from .session import save_session, advance_state, CallState
+from .turn_handler import sanitise_response
 
 logger = logging.getLogger(__name__)
 
@@ -609,6 +610,8 @@ class LLMStream:
                                                 "[ms_llm] interim stripped; first chunk: %r",
                                                 chunk[:60],
                                             )
+                                # GATE 5: sanitise before TTS
+                                chunk = sanitise_response(chunk, session)
                                 if chunk:
                                     await tts_text_queue.put(chunk)
 
@@ -637,6 +640,8 @@ class LLMStream:
                     # Entire response was a single short flush — strip interim opener
                     final_chunk = _strip_interim_opener(final_chunk)
                     _first_tts_emitted = True
+                # GATE 5: sanitise flush chunk before TTS
+                final_chunk = sanitise_response(final_chunk, session)
                 if final_chunk:
                     await tts_text_queue.put(final_chunk)
 

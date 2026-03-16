@@ -62,6 +62,11 @@ from .config import (
 from .session import (
     get_or_create_session,
     save_session,
+    advance_state,
+)
+from .config import (
+    F_LAST_BOT_PROMPT,
+    F_LAST_QUESTION,
 )
 from .audio_in import AudioInputProcessor
 from .audio_out import AudioOutputProcessor
@@ -742,15 +747,31 @@ class WebSocketCallHandler:
                         self._record_question(reask)
                         continue
 
-                # Bug 5: full_name guard — if COLLECT_NAME but name already
-                # collected (e.g. by fast-path), skip calling the LLM
-                if get_call_state(self.session) == CallState.COLLECT_NAME:
-                    if self.session.get("collected", {}).get("full_name"):
-                        logger.info(
-                            "[ms_conn] full_name guard — name already collected, skipping LLM"
-                        )
-                        continue
+                # GATE 2: extract answers from transcript before LLM sees them
+                from .turn_handler import update_session_from_transcript, get_next_action
+                update_session_from_transcript(self.session, utterance)
 
+                # GATE 3: state machine decides what to do next
+                action = get_next_action(self.session)
+
+                if action.type == "skip":
+                    logger.info("[ms_conn] gate3=skip — no output needed this turn")
+                    continue
+
+                if action.type == "hardcoded":
+                    logger.info("[ms_conn] gate3=hardcoded: %r", action.text[:80])
+                    if action.next_state:
+                        advance_state(self.session, action.next_state)
+                    self.session[F_LAST_BOT_PROMPT] = action.text
+                    self.session[F_LAST_QUESTION]   = action.text
+                    await self.tts_text_queue.put(action.text)
+                    self._record_question(action.text)
+                    self.session["awaiting_caller_response"]    = True
+                    self.session["awaiting_caller_response_at"] = time.monotonic()
+                    await save_session(self.call_sid, self.session)
+                    continue
+
+                # action.type == "llm" — fall through to LLM call below
                 logger.info("[ms_conn] TRANSCRIPT ← queue: %r", utterance[:120])
                 self._llm_busy                         = True
                 # BUG 1 FIX: reset watchdog clock NOW so the 3-second countdown
