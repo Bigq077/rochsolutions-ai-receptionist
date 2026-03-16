@@ -124,8 +124,8 @@ class FastPathTurnType(str, Enum):
     """
     Enumerates the turn types handled by the fast-path pattern matcher.
     Used to tag session["fast_path_last_resolved"] for debugging and metrics.
+    NOTE: CLINIC_SELECTION removed — single-site deployment, no clinic routing.
     """
-    CLINIC_SELECTION  = "clinic_selection"
     PHONE_CONFIRM_YES = "phone_confirm_yes"   # caller confirmed Twilio caller-ID number
     PHONE_CONFIRM_NO  = "phone_confirm_no"    # caller rejected Twilio caller-ID number
     NEW_RETURNING     = "new_returning"
@@ -330,14 +330,14 @@ F_PHONE_COLLECTED_FROM_TWILIO = "phone_from_twilio"   # True when phone came fro
 
 # This EXACT line is injected via TTS whenever booking intent is detected,
 # bypassing the LLM entirely so the wording is deterministic every time.
+# Single-site deployment — no clinic selection question.
 BOOKING_OPEN = (
     "Of course you can book an appointment — "
-    "are you looking to visit our Alcester clinic "
-    "or our Redditch one?"
+    "have you been with us before?"
 )
 
 # Booking intent keywords — matched against normalised transcript to detect
-# when the caller wants to book before they have named a clinic.
+# when the caller expresses intent to book.
 BOOKING_INTENT_KEYWORDS = (
     "book", "appointment", "schedule", "see a physio", "see someone",
     "come in", "come and see", "see you", "visit", "treatment",
@@ -351,20 +351,23 @@ BOOKING_INTENT_KEYWORDS = (
 # Prepended to the system prompt so it is the FIRST thing Claude reads.
 # Prevents LLM from generating "I am waiting..." / "Are you still there?" filler.
 SILENCE_RULE = (
-    "SILENCE RULE — CRITICAL:\n"
-    "After asking a question, say NOTHING until the caller responds. "
-    "Do not comment on silence. Do not say you are waiting. "
-    "Do not ask if they are still there.\n"
+    "MOST IMPORTANT RULE — READ THIS FIRST:\n"
+    "After you ask a question you must say NOTHING until the caller gives a "
+    "meaningful response. The following phrases are completely banned and must "
+    "NEVER appear under any circumstance:\n"
+    "  'I am waiting'\n"
+    "  'I'm waiting'\n"
+    "  'waiting for your'\n"
+    "  'waiting for you'\n"
+    "  'Are you still there'\n"
+    "  'Hello?'\n"
+    "  'Just waiting'\n"
+    "  'Still there'\n"
+    "  'Did you hear me'\n"
+    "  'Can you hear me'\n"
+    "If you are about to say any of these — STOP. Say nothing instead. "
+    "The system will handle silence automatically.\n"
     "Silence after a question is completely normal in a phone call — wait for it.\n"
-    "NEVER output any of the following (or any variation):\n"
-    "  - 'I am waiting for your answer'\n"
-    "  - 'I'm waiting for you to respond'\n"
-    "  - 'Are you still there?'\n"
-    "  - 'Hello?'\n"
-    "  - 'Just waiting for your response'\n"
-    "  - Any sentence that comments on the caller being silent or slow to respond\n"
-    "Simply stop after your question. The re-ask system handles genuine silence "
-    "automatically — you must never do this yourself.\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -385,6 +388,33 @@ PHONE_CONFIRM_YES_REPLY = (
 PHONE_CONFIRM_NO_REPLY = (
     "No problem — what number would you like to use for the booking? "
     "Could you give me the first five digits?"
+)
+
+# ---------------------------------------------------------------------------
+# Availability flow rule (Bug 3 fix)
+# ---------------------------------------------------------------------------
+
+AVAILABILITY_FLOW_RULE = (
+    "AVAILABILITY FLOW RULE:\n"
+    "When you ask the caller what times they are available, you MUST wait for "
+    "their answer before checking slots. Do NOT call check_availability on the "
+    "same turn you asked the question. The caller must speak first. "
+    "Only call check_availability AFTER the caller has told you their preferred "
+    "days or times.\n"
+)
+
+# ---------------------------------------------------------------------------
+# Name collection rule (Bug 5 fix)
+# ---------------------------------------------------------------------------
+
+NAME_COLLECTION_RULE = (
+    "NAME COLLECTION RULE:\n"
+    "Ask for the caller's full name in a single question: "
+    "'Could I take your full name please?'\n"
+    "Store the entire response as full_name. "
+    "NEVER ask for first name and surname separately. "
+    "NEVER ask a follow-up question about the surname after receiving a name. "
+    "If the caller gives only one name, accept it and move on — do not ask for more.\n"
 )
 
 # ---------------------------------------------------------------------------

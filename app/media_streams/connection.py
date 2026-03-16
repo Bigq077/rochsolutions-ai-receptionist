@@ -52,8 +52,6 @@ from fastapi import WebSocket, WebSocketDisconnect
 from .config import (
     SAFE_FALLBACK_PHRASE,
     TWILIO_STARTED_TIMEOUT_SEC,
-    WATCHDOG_SILENCE_SEC,
-    WATCHDOG_PHRASES,
     QUESTION_SILENCE_SEC,
     MAX_REASK_ATTEMPTS,
     REASK_PREFIX,
@@ -120,16 +118,13 @@ def _strip_apology_prefix(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Hardcoded greeting (Bug 4 — fast startup, no LLM round-trip)
+# Hardcoded greeting (fast startup, no LLM round-trip)
 # ---------------------------------------------------------------------------
 
-# Deterministic Theorem Health greeting. Used as the immediate default so
-# TTS starts within one asyncio tick of call connect — before the dynamic
-# _build_greeting import completes on first call. Falls back to the dynamic
-# clinic-specific greeting if _build_greeting returns a valid string.
+# Single-site deployment: no clinic selection question in the greeting.
 _THEOREM_GREETING = (
     "Hi there, this is Susie, Theorem Health's AI receptionist. "
-    "Are you calling about our Alcester clinic or our Redditch one?"
+    "How can I help you today?"
 )
 
 
@@ -206,6 +201,152 @@ def _extract_question(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Post-question guard (Bug 2 fix)
+# ---------------------------------------------------------------------------
+
+def _post_question_guard(session: dict, transcript: str) -> bool:
+    """
+    Return True (block) if a short transcript arrives while we are still
+    awaiting a meaningful caller response after asking a question.
+
+    Prevents the LLM from being called on noise/filler while the caller
+    is thinking, which was causing 'I am waiting...' commentary.
+
+    Auto-clears the flag if 8 seconds have passed since the question
+    (genuine abandonment — let the silence re-ask loop handle it instead).
+    """
+    if not session.get("awaiting_caller_response"):
+        return False
+
+    # Auto-expire after 8 seconds of genuine silence
+    asked_at = session.get("awaiting_caller_response_at", 0.0)
+    if asked_at and (time.monotonic() - asked_at) > 8.0:
+        session["awaiting_caller_response"] = False
+        return False
+
+    word_count = len(transcript.strip().split())
+    if word_count < 5:
+        logger.info(
+            "[ms_guard] discarded short transcript (%d words) while awaiting response: %r",
+            word_count, transcript[:80],
+        )
+        return True  # block — do not call LLM
+
+    # 5+ words = meaningful response — clear the flag and allow through
+    session["awaiting_caller_response"] = False
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Availability info detection (Bug 3 fix)
+# ---------------------------------------------------------------------------
+
+_AVAILABILITY_WORDS = (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "morning", "afternoon", "evening", "tonight", "next week", "this week",
+    "next month", "today", "tomorrow", "available", "free", "anytime", "flexible",
+    "after", "before", "around", "o'clock", "oclock", "half past", "quarter",
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    "early", "late", "lunchtime", "midday", "noon", "weekend", "weekday",
+)
+_TIME_DIGIT_RE = re.compile(
+    r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock)?\b',
+    re.IGNORECASE,
+)
+
+
+def _has_availability_info(transcript: str) -> bool:
+    """Return True if the transcript contains a day, time, or date reference."""
+    norm = transcript.lower()
+    if any(w in norm for w in _AVAILABILITY_WORDS):
+        return True
+    if _TIME_DIGIT_RE.search(transcript):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# WatchdogTimer (Bug 4 fix — replaces _watchdog_loop coroutine)
+# ---------------------------------------------------------------------------
+
+class WatchdogTimer:
+    """
+    Fires a rotating bridge phrase if no audio has been sent to the caller
+    for 4 seconds after the LLM was called.
+
+    arm()    — call when LLM turn starts (transcript received, LLM called)
+    disarm() — call the MOMENT any audio is sent to the caller
+
+    Design guarantees:
+      - Only one timer task is running at a time (arm() cancels previous)
+      - disarm() is idempotent and safe to call from any coroutine
+      - 4s wait (vs old 3s) reduces false positives on fast turns
+      - Additional 3.5s audio-recency check inside _run() as belt-and-suspenders
+    """
+
+    def __init__(
+        self,
+        tts_text_queue: asyncio.Queue,
+        session: dict,
+        handler: "WebSocketCallHandler",
+    ) -> None:
+        self._tts_text_queue = tts_text_queue
+        self._session        = session
+        self._handler        = handler     # used to read _last_audio_at float
+        self._task: Optional[asyncio.Task] = None
+        self.armed: bool = False
+
+    def arm(self) -> None:
+        """Arm the watchdog. Must be called from the asyncio event loop."""
+        self.disarm()          # cancel any previous timer
+        self.armed = True
+        self._task = asyncio.create_task(self._run(), name="ms_watchdog_timer")
+        logger.debug("[ms_watchdog] armed")
+
+    def disarm(self) -> None:
+        """Disarm immediately. Safe to call multiple times."""
+        self.armed = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+
+    async def _run(self) -> None:
+        """Wait 4 s then fire bridge phrase if no audio has been sent recently."""
+        try:
+            await asyncio.sleep(4.0)
+        except asyncio.CancelledError:
+            return
+
+        if not self.armed:
+            return  # disarm() was called while we were sleeping
+
+        # Belt-and-suspenders: check if audio was sent within the last 3.5 s.
+        # This catches the case where disarm() races with the sleep completing.
+        since = time.monotonic() - self._handler._last_audio_at
+        if since < 3.5:
+            logger.debug("[ms_watchdog] suppressed — audio sent %.1fs ago", since)
+            return
+
+        # Rotate through bridge phrases
+        phrases = [
+            "Just bear with me one moment...",
+            "Let me just check that for you...",
+            "One moment please...",
+        ]
+        idx    = self._session.get("bridge_phrase_idx", 0)
+        phrase = phrases[idx % len(phrases)]
+        self._session["bridge_phrase_idx"] = idx + 1
+
+        logger.warning(
+            "[ms_watchdog] firing bridge phrase after %.1fs silence: %r",
+            since, phrase,
+        )
+        self.armed = False  # single-shot; re-arm only on next LLM call
+        await self._tts_text_queue.put(phrase)
+
+
+# ---------------------------------------------------------------------------
 # Main handler class
 # ---------------------------------------------------------------------------
 
@@ -264,8 +405,7 @@ class WebSocketCallHandler:
         self._last_audio_received_at: float = 0.0   # monotonic time of last inbound Twilio audio
 
         # ── Watchdog / silence tracking ────────────────────────────────────
-        self._watchdog_phrase_idx: int  = 0     # cycles through WATCHDOG_PHRASES
-        self._watchdog_armed:      bool = False  # only arm after greeting completes
+        self._watchdog: Optional[WatchdogTimer] = None  # armed on each LLM call; disarmed on first audio
         self._last_transcript_at:  float = 0.0  # time of last FinalTranscript
         self._last_question_text:  str   = ""    # last thing Susie said (question)
         self._last_question_at:    float = 0.0   # when last_question was asked
@@ -301,7 +441,6 @@ class WebSocketCallHandler:
             asyncio.create_task(self._llm_loop(),           name="ms_llm"),
             asyncio.create_task(self._tts_loop(),           name="ms_tts"),
             asyncio.create_task(self._send_loop(),          name="ms_send"),
-            asyncio.create_task(self._watchdog_loop(),      name="ms_watchdog"),
             asyncio.create_task(self._silence_reask_loop(), name="ms_reask"),
         ]
 
@@ -533,7 +672,9 @@ class WebSocketCallHandler:
         await self._wait_for_start("llm_loop")
 
         from .llm_stream import LLMStream
+        from .session import CallState, get_call_state
         llm = LLMStream()
+        self._watchdog = WatchdogTimer(self.tts_text_queue, self.session, self)
 
         try:
             while not self._stop_event.is_set():
@@ -556,6 +697,36 @@ class WebSocketCallHandler:
                     )
                     continue
 
+                # Bug 2: post-question guard — block short/noise transcripts while
+                # awaiting a meaningful caller response after Susie asked a question
+                if _post_question_guard(self.session, utterance):
+                    continue
+
+                # Bug 3: availability guard — if COLLECT_AVAILABILITY and the
+                # transcript has no time/day info, re-ask instead of calling LLM
+                if get_call_state(self.session) == CallState.COLLECT_AVAILABILITY:
+                    if not _has_availability_info(utterance):
+                        logger.info(
+                            "[ms_conn] availability guard — no time info in: %r — re-asking",
+                            utterance[:80],
+                        )
+                        last_q = self._last_question_text or (
+                            "What days or times work best for you?"
+                        )
+                        reask = REASK_PREFIX + _strip_apology_prefix(last_q)
+                        await self.tts_text_queue.put(reask)
+                        self._record_question(reask)
+                        continue
+
+                # Bug 5: full_name guard — if COLLECT_NAME but name already
+                # collected (e.g. by fast-path), skip calling the LLM
+                if get_call_state(self.session) == CallState.COLLECT_NAME:
+                    if self.session.get("collected", {}).get("full_name"):
+                        logger.info(
+                            "[ms_conn] full_name guard — name already collected, skipping LLM"
+                        )
+                        continue
+
                 logger.info("[ms_conn] TRANSCRIPT ← queue: %r", utterance[:120])
                 self._llm_busy                         = True
                 # BUG 1 FIX: reset watchdog clock NOW so the 3-second countdown
@@ -566,6 +737,10 @@ class WebSocketCallHandler:
                 self._last_audio_at                    = time.monotonic()
                 self.session["llm_generation_active"]  = True
                 await save_session(self.call_sid, self.session)
+
+                # Bug 4: arm watchdog now — disarmed on first audio out or in finally
+                if self._watchdog:
+                    self._watchdog.arm()
 
                 tts_had_output = False
                 try:
@@ -599,6 +774,8 @@ class WebSocketCallHandler:
                     await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
 
                 finally:
+                    if self._watchdog:
+                        self._watchdog.disarm()   # Bug 4
                     self._llm_busy                         = False
                     self.session["llm_generation_active"]  = False
                     await save_session(self.call_sid, self.session)
@@ -620,6 +797,10 @@ class WebSocketCallHandler:
                     if question:
                         logger.info("[ms_conn] last_question stored: %r", question)
                         self._record_question(question)
+                        # Bug 2: set awaiting_caller_response so the post-question
+                        # guard blocks short filler transcripts until a real reply
+                        self.session["awaiting_caller_response"]    = True
+                        self.session["awaiting_caller_response_at"] = time.monotonic()
                     else:
                         logger.debug(
                             "[ms_conn] no question in LLM response — re-ask timer not set"
@@ -732,6 +913,9 @@ class WebSocketCallHandler:
                     now = time.monotonic()
                     self._last_audio_at                = now
                     self.session["last_audio_sent_at"] = _iso_now()
+                    # Bug 4: disarm watchdog the moment audio reaches the caller
+                    if self._watchdog:
+                        self._watchdog.disarm()
 
                 except WebSocketDisconnect:
                     logger.info("[ms_conn] send_loop: WS closed")
@@ -749,95 +933,6 @@ class WebSocketCallHandler:
             pass
         except Exception as exc:
             logger.error("[ms_conn] _send_loop fatal: %r", exc)
-
-    # ========================================================================
-    # Watchdog timer loop
-    # ========================================================================
-
-    async def _watchdog_loop(self) -> None:
-        """
-        Dead-air watchdog: prevents silence > WATCHDOG_SILENCE_SEC while LLM is active.
-
-        Runs every 0.5 seconds after the call starts. Fires a rotating bridge phrase
-        onto tts_text_queue when ALL of:
-          - LLM is actively generating (_llm_busy = True)
-          - No audio sent to caller for > WATCHDOG_SILENCE_SEC seconds
-          - No TTS task is currently running
-          - audio_out_queue is empty
-
-        The bridge phrase resets _last_audio_at to prevent cascading fires.
-        Each fire advances to the next phrase in WATCHDOG_PHRASES.
-
-        Example sequence on a slow Claude response:
-          t=0.0s  LLM starts  (_llm_busy = True)
-          t=3.0s  Watchdog fires "Just bear with me one moment..."
-          t=3.5s  Phrase starts playing, _last_audio_at resets
-          t=6.5s  If still no LLM output: "Let me just check that for you..."
-        """
-        await self._wait_for_start("watchdog_loop")
-
-        try:
-            while not self._stop_event.is_set():
-                await asyncio.sleep(0.5)
-
-                if not self._watchdog_armed:
-                    continue
-                if not self._llm_busy:
-                    continue
-                if self._clearing:
-                    continue
-                if self._last_audio_at <= 0:
-                    continue
-                if self._tts_task is not None and not self._tts_task.done():
-                    # TTS is actively playing — suppress watchdog, audio is flowing
-                    silence_secs_check = time.monotonic() - self._last_audio_at
-                    logger.debug(
-                        "[ms_watchdog] suppressed — TTS task active, audio sent %.1fs ago",
-                        silence_secs_check,
-                    )
-                    continue
-                if not self.audio_out_queue.empty():
-                    continue
-
-                silence_secs = time.monotonic() - self._last_audio_at
-
-                # Bug 3 fix: suppress bridge phrase if audio was sent within the
-                # last 2 seconds.  This catches the gap between TTS chunks where
-                # audio_out_queue is briefly empty and _tts_task is briefly None
-                # (between synthesise_chunk calls) even though audio is flowing.
-                if silence_secs < 2.0:
-                    logger.debug(
-                        "[ms_watchdog] suppressed — audio sent %.1fs ago (< 2.0s threshold)",
-                        silence_secs,
-                    )
-                    continue
-
-                if silence_secs < WATCHDOG_SILENCE_SEC:
-                    continue
-
-                # Final guard: if LLM has already delivered its first chunk (i.e.
-                # tts_text_queue has items or recently had items), don't fire.
-                # The 2.0s guard above already handles this in most cases, but
-                # an extra queue check is cheap.
-                if not self.tts_text_queue.empty():
-                    logger.debug("[ms_watchdog] suppressed — tts_text_queue non-empty")
-                    continue
-
-                # Fire a bridge phrase
-                phrase = WATCHDOG_PHRASES[self._watchdog_phrase_idx % len(WATCHDOG_PHRASES)]
-                self._watchdog_phrase_idx += 1
-                logger.warning(
-                    "[ms_watchdog] dead air %.1fs — playing bridge phrase: %r",
-                    silence_secs, phrase,
-                )
-                # Reset timer so watchdog doesn't immediately re-fire
-                self._last_audio_at = time.monotonic()
-                await self.tts_text_queue.put(phrase)
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.error("[ms_conn] _watchdog_loop error: %r", exc)
 
     # ========================================================================
     # Silence / re-ask loop
@@ -1047,10 +1142,15 @@ class WebSocketCallHandler:
         self.session["last_bot_prompt"]    = greeting
         self.session["greeting_delivered"] = True
 
-        # Advance state: greeting done → now waiting for clinic selection.
-        # This ensures the LLM never sees state=GREETING and re-introduces itself.
+        # Advance state: greeting done → PHONE_CONFIRM if we have a Twilio
+        # caller-ID number (must confirm before collecting anything else),
+        # otherwise straight to NEW_OR_RETURNING.
+        # Single-site deployment — no CLINIC_SELECTION state.
         from .session import advance_state, CallState
-        advance_state(self.session, CallState.CLINIC_SELECTION)
+        if self.session.get("phone_from_twilio"):
+            advance_state(self.session, CallState.PHONE_CONFIRM)
+        else:
+            advance_state(self.session, CallState.NEW_OR_RETURNING)
 
         await save_session(self.call_sid, self.session)
 
@@ -1060,9 +1160,6 @@ class WebSocketCallHandler:
         # silence re-ask loop to replay the full greeting text verbatim after
         # 5 s of caller silence. The question tracker is set by the LLM loop
         # after the first real exchange.
-
-        # Arm the watchdog now that the call is underway
-        self._watchdog_armed = True
 
     # ========================================================================
     # Transfer callback

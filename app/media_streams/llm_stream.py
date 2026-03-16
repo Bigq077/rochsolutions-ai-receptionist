@@ -59,9 +59,12 @@ from .config import (
     F_LAST_QUESTION,
     F_COLLECTED,
     F_FAST_PATH_LAST_RESOLVED,
+    F_PHONE_COLLECTED_FROM_TWILIO,
     SILENCE_RULE,
     BOOKING_OPEN,
     BOOKING_INTENT_KEYWORDS,
+    AVAILABILITY_FLOW_RULE,
+    NAME_COLLECTION_RULE,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
@@ -239,18 +242,15 @@ class LLMStream:
           8. GPT-4.1-mini fallback on Claude 529/500
           9. Update conversation history and session
         """
-        # ── Step 0: Booking-intent fast-path (Bug 2 fix) ────────────────
-        # When the caller expresses booking intent without naming a clinic,
-        # play the exact hardcoded BOOKING_OPEN line (no LLM round-trip).
-        # This guarantees the opening line is always deterministic.
+        # ── Step 0: Booking-intent fast-path ────────────────────────────
+        # When the caller expresses booking intent, play BOOKING_OPEN directly
+        # (no LLM round-trip) so the wording is always deterministic.
         from .session import get_call_state, CallState, advance_state
         _state_now = get_call_state(session)
-        if _state_now in (CallState.GREETING, CallState.CLINIC_SELECTION):
+        if _state_now in (CallState.GREETING, CallState.PHONE_CONFIRM, CallState.NEW_OR_RETURNING):
             _norm = user_text.lower()
-            # Check booking intent: keyword present but no clinic named yet
             _has_intent = any(kw in _norm for kw in BOOKING_INTENT_KEYWORDS)
-            _has_clinic = any(c in _norm for c in ("alcester", "redditch", "alchester"))
-            if _has_intent and not _has_clinic:
+            if _has_intent:
                 logger.info(
                     "[ms_llm] booking intent detected — injecting BOOKING_OPEN "
                     "transcript=%r", user_text[:80],
@@ -258,7 +258,8 @@ class LLMStream:
                 await tts_text_queue.put(BOOKING_OPEN)
                 session[F_LAST_BOT_PROMPT] = BOOKING_OPEN
                 session[F_LAST_QUESTION]   = BOOKING_OPEN
-                advance_state(session, CallState.CLINIC_SELECTION)
+                # Advance to NEW_OR_RETURNING — BOOKING_OPEN asks new/returning
+                advance_state(session, CallState.NEW_OR_RETURNING)
                 _append_history(session, user_text, BOOKING_OPEN)
                 await save_session(call_sid, session)
                 return
@@ -319,23 +320,32 @@ class LLMStream:
             + phone_rule
             + "\n[BOOKING OPENING LINE RULE: When a caller wants to book an appointment, "
             "always open with EXACTLY: "
-            "'Of course you can book an appointment — are you looking to visit our "
-            "Alcester clinic or our Redditch one?' — never vary this line.]\n"
+            "'Of course you can book an appointment — have you been with us before?' "
+            "— never vary this line.]\n"
             "[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
             "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
             "response UNLESS the caller has explicitly asked to speak to a person OR "
             "mentioned a medical emergency. If you are unsure what the caller wants, "
             "ask a single clarifying question instead of offering a transfer.]"
         )
-        # SILENCE_RULE is prepended first so it is the very first thing Claude
-        # reads — before date, before state context, before the main prompt.
-        # This maximises compliance with the no-commentary-on-silence rule.
+        # Rules are prepended in priority order so Claude reads them first.
+        # SILENCE_RULE is first (most critical), then content rules, then main prompt.
         system_prompt = (
             f"{SILENCE_RULE}\n\n"
+            f"{AVAILABILITY_FLOW_RULE}\n\n"
+            f"{NAME_COLLECTION_RULE}\n\n"
             f"{date_prefix}\n\n"
             f"{state_ctx}\n\n"
             f"{get_system_prompt(session)}"
         )
+
+        # Bug 3: if we're in COLLECT_AVAILABILITY state, block check_availability
+        # on THIS turn so Claude cannot call it on the same turn it asked the question.
+        # The flag is read and consumed in _execute_tools.
+        if get_call_state(session) == CallState.COLLECT_AVAILABILITY:
+            if not session.get("_availability_response_received"):
+                session["block_check_availability"] = True
+                logger.debug("[ms_llm] block_check_availability set for this turn")
 
         # ── Step 6-8: LLM streaming with tool loop ───────────────────────
         history: List[dict] = session.setdefault("conversation_history", [])
@@ -664,11 +674,33 @@ class LLMStream:
             )
 
             try:
-                if tool_name == "escalate_to_claude":
+                # Bug 3: block check_availability if it was called on the same
+                # turn the availability question was asked — force Claude to wait
+                # for the caller's response on a subsequent turn.
+                if tool_name == "check_availability" and session.get("block_check_availability"):
+                    logger.warning(
+                        "[ms_llm] check_availability BLOCKED — same turn as availability "
+                        "question; caller has not yet responded call_sid=%s", call_sid,
+                    )
+                    session.pop("block_check_availability", None)
+                    result = {
+                        "status": "blocked",
+                        "message": (
+                            "You asked the caller about their availability on this same turn. "
+                            "Do not check slots yet — wait for the caller to tell you their "
+                            "preferred days or times, then call check_availability."
+                        ),
+                    }
+                elif tool_name == "escalate_to_claude":
                     result = await self._exec_escalate(args, session)
                 else:
                     executor = TOOL_EXECUTORS.get(tool_name)
                     if executor:
+                        # If check_availability is called and succeeds, mark that
+                        # availability has been collected so the block doesn't re-fire.
+                        if tool_name == "check_availability":
+                            session.pop("block_check_availability", None)
+                            session["_availability_response_received"] = True
                         result = await executor(args, session)
                     else:
                         logger.warning("[ms_llm] unknown tool: %s", tool_name)
@@ -814,30 +846,20 @@ def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
     advances to PHONE_CONFIRM when Twilio caller-ID is present, otherwise to
     NEW_OR_RETURNING; FULL_NAME skips phone collection when phone is confirmed).
     """
-    from .config import FastPathTurnType, F_PHONE_COLLECTED_FROM_TWILIO, F_COLLECTED
-
-    # ── CLINIC_SELECTION: branch on whether Twilio number is present ─────────
-    if turn_type == FastPathTurnType.CLINIC_SELECTION:
-        if session.get(F_PHONE_COLLECTED_FROM_TWILIO):
-            advance_state(session, CallState.PHONE_CONFIRM)
-        else:
-            advance_state(session, CallState.NEW_OR_RETURNING)
-        return
+    from .config import FastPathTurnType
 
     # ── PHONE_CONFIRM responses ───────────────────────────────────────────────
+    # PHONE_CONFIRM_YES: phone confirmed, reply asks for full name → COLLECT_NAME
     if turn_type == FastPathTurnType.PHONE_CONFIRM_YES:
-        # Phone confirmed — go straight to name collection (skips NEW_OR_RETURNING
-        # since the LLM will naturally ask new/returning as part of COLLECT_NAME flow)
         advance_state(session, CallState.COLLECT_NAME)
         return
 
+    # PHONE_CONFIRM_NO: phone cleared, need new/returning → COLLECT_NAME → phone later
     if turn_type == FastPathTurnType.PHONE_CONFIRM_NO:
-        # Phone rejected — go to NEW_OR_RETURNING; phone will be collected
-        # after name via COLLECT_PHONE_PART_ONE flow
         advance_state(session, CallState.NEW_OR_RETURNING)
         return
 
-    # ── FULL_NAME: skip phone collection if phone already confirmed ───────────
+    # ── FULL_NAME: skip phone collection if Twilio number was confirmed ───────
     if turn_type == FastPathTurnType.FULL_NAME:
         collected = session.get(F_COLLECTED) or {}
         if session.get(F_PHONE_COLLECTED_FROM_TWILIO) and collected.get("phone"):

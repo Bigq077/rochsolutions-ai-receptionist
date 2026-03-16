@@ -28,8 +28,6 @@ from .config import (
     FastPathTurnType,
     F_LAST_BOT_PROMPT,
     F_LAST_QUESTION,
-    F_SELECTED_LOCATION,
-    F_LOCATION_SELECTED,
     F_COLLECTED,
     F_PHONE_PART_ONE,
     F_PHONE_PART_TWO,
@@ -132,8 +130,6 @@ def try_fast_path(
             handlers = [_try_phone_first_five, _try_yes_no_confirmation]
     elif state == CallState.COLLECT_NAME:
         handlers = [_try_full_name]
-    elif state in (CallState.GREETING, CallState.CLINIC_SELECTION):
-        handlers = [_try_clinic_selection]
     elif state == CallState.NEW_OR_RETURNING:
         handlers = [_try_new_returning]
     elif state == CallState.PRESENT_SLOTS:
@@ -141,16 +137,16 @@ def try_fast_path(
     elif state == CallState.CONFIRM_BOOKING:
         handlers = [_try_yes_no_confirmation]
     else:
+        # GREETING and any unrecognised state — no clinic selection any more.
         if phone_already_known:
             handlers = [
-                _try_phone_confirm, _try_full_name, _try_clinic_selection,
+                _try_phone_confirm, _try_full_name,
                 _try_new_returning, _try_yes_no_confirmation, _try_slot_selection,
             ]
         else:
             handlers = [
                 _try_phone_last_six, _try_phone_first_five, _try_full_name,
-                _try_clinic_selection, _try_new_returning,
-                _try_yes_no_confirmation, _try_slot_selection,
+                _try_new_returning, _try_yes_no_confirmation, _try_slot_selection,
             ]
 
     for handler in handlers:
@@ -171,113 +167,8 @@ def try_fast_path(
 
 
 # ---------------------------------------------------------------------------
-# Slot 1 -- Clinic selection (preserved exactly)
-# ---------------------------------------------------------------------------
-
-_ALCESTER_PATTERNS = (
-    "alcester", "alchester", "alster", "all ster", "all-ster", "allster",
-    "alce", "awlster", "olster", "ulster", "alcest",
-    " one", "^one", "number one", "option one", "the first", "first one",
-    "first option", "that one", "option 1",
-)
-_REDDITCH_PATTERNS = (
-    "redditch", "reditch", "reddich", "red ditch", "red witch", "reddit",
-    " two", "^two", "number two", "option two", "the second", "second one",
-    "second option", "option 2",
-)
-_LOCATION_TRIGGER_PHRASES = (
-    "say one for",
-    "alcester or redditch",
-    "which clinic",
-    "redditch or alcester",
-    "which location",
-    "which branch",
-    "press one",
-    "option one for",
-)
-
-
-def _try_clinic_selection(
-    last_prompt: str, norm: str, raw: str, session: Dict[str, Any],
-) -> Optional[FastPathResult]:
-    if not any(p in last_prompt for p in _LOCATION_TRIGGER_PHRASES):
-        return None
-
-    alcester = _matches_location(norm, _ALCESTER_PATTERNS, ("1",))
-    redditch = _matches_location(norm, _REDDITCH_PATTERNS, ("2",))
-
-    if alcester and redditch:
-        logger.info("[ms_fast_path] clinic_selection conflict norm=%r", norm)
-        return None
-    if not alcester and not redditch:
-        return None
-
-    location_id    = "alcester" if alcester else "redditch"
-    location_label = "Alcester" if alcester else "Redditch"
-
-    session.setdefault(F_COLLECTED, {})
-    session[F_SELECTED_LOCATION]            = location_id
-    session[F_LOCATION_SELECTED]            = True
-    session[F_COLLECTED]["location"]        = location_id
-    session[F_COLLECTED].setdefault("service", "physiotherapy assessment")
-
-    # If patient_type already known, fall through to LLM
-    if session.get(F_COLLECTED, {}).get("patient_type"):
-        return None
-
-    # Bug 4: if Twilio caller-ID number is present, confirm it now instead of
-    # asking new/returning — this keeps admin info at the top of the flow.
-    if session.get(F_PHONE_COLLECTED_FROM_TWILIO):
-        caller_local = session.get("twilio_from_local") or session.get(F_TWILIO_FROM, "")
-        digits    = _digits_only(caller_local)
-        formatted = _fmt_phone(digits) if len(digits) >= 10 else caller_local
-        reply = (
-            f"Right, {location_label} — just to confirm, "
-            f"shall I use the number you're calling from, "
-            f"{formatted}, for the booking?"
-        )
-        session[F_LAST_BOT_PROMPT] = reply
-        session[F_LAST_QUESTION]   = reply
-        return FastPathResult(
-            turn_type=FastPathTurnType.CLINIC_SELECTION,
-            value=location_id,
-            response_text=reply,
-            needs_llm_followup=False,
-        )
-
-    reply = f"Right, {location_label} -- no problem. And have you been to us before?"
-    session[F_LAST_BOT_PROMPT] = reply
-    session[F_LAST_QUESTION]   = reply
-
-    return FastPathResult(
-        turn_type=FastPathTurnType.CLINIC_SELECTION,
-        value=location_id,
-        response_text=reply,
-        needs_llm_followup=False,
-    )
-
-
-def _matches_location(norm: str, patterns: tuple, digit_tokens: tuple) -> bool:
-    for p in patterns:
-        if p.startswith("^"):
-            if norm == p[1:] or norm.startswith(p[1:] + " "):
-                return True
-        elif p.startswith(" "):
-            word = p.strip()
-            if re.search(r"\b" + re.escape(word) + r"\b", norm):
-                return True
-        else:
-            if p in norm:
-                return True
-    stripped = norm.strip()
-    for d in digit_tokens:
-        if stripped == d:
-            return True
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Slot 2 -- New / returning patient (preserved exactly)
+# Slot 1 -- New / returning patient
+# (Clinic selection removed — single-site deployment)
 # ---------------------------------------------------------------------------
 
 _NEW_PATTERNS = (
