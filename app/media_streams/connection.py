@@ -236,8 +236,10 @@ def _post_question_guard(session: dict, transcript: str) -> bool:
 
     # Always allow through — meaningful short answers that a naive word-count
     # threshold would wrongly block
+    # Fix 6: all informal yes variants included
     _ALWAYS_ALLOW = (
-        "yes", "yeah", "yep", "yup", "no", "nope", "nah",
+        "yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup",
+        "no", "nope", "nah",
         "new", "returning", "existing",
         "morning", "afternoon", "evening",
         "monday", "tuesday", "wednesday", "thursday", "friday",
@@ -341,7 +343,13 @@ class WatchdogTimer:
         self._task = None
 
     async def _run(self) -> None:
-        """Wait 4 s then fire bridge phrase if no audio has been sent recently."""
+        """
+        Wait 4 s — if still armed and no recent audio, log silently.
+
+        Fix 3: bridge phrases ("bear with me", "one moment") are completely
+        banned.  The silence re-ask loop handles all silence recovery with the
+        "Sorry, I didn't quite catch that" family of phrases.
+        """
         try:
             await asyncio.sleep(4.0)
         except asyncio.CancelledError:
@@ -350,29 +358,16 @@ class WatchdogTimer:
         if not self.armed:
             return  # disarm() was called while we were sleeping
 
-        # Belt-and-suspenders: check if audio was sent within the last 3.5 s.
-        # This catches the case where disarm() races with the sleep completing.
         since = time.monotonic() - self._handler._last_audio_at
         if since < 3.5:
             logger.debug("[ms_watchdog] suppressed — audio sent %.1fs ago", since)
             return
 
-        # Rotate through bridge phrases
-        phrases = [
-            "Just bear with me one moment...",
-            "Let me just check that for you...",
-            "One moment please...",
-        ]
-        idx    = self._session.get("bridge_phrase_idx", 0)
-        phrase = phrases[idx % len(phrases)]
-        self._session["bridge_phrase_idx"] = idx + 1
-
-        logger.warning(
-            "[ms_watchdog] firing bridge phrase after %.1fs silence: %r",
-            since, phrase,
+        logger.debug(
+            "[ms_watchdog] %.1fs silence — no bridge phrase emitted (banned per Fix 3)",
+            since,
         )
-        self.armed = False  # single-shot; re-arm only on next LLM call
-        await self._tts_text_queue.put(phrase)
+        self.armed = False  # single-shot
 
 
 # ---------------------------------------------------------------------------
@@ -1016,19 +1011,21 @@ class WebSocketCallHandler:
                 if since_transcript < QUESTION_SILENCE_SEC:
                     continue
 
-                # Decide: re-ask or transfer
+                # Decide: re-ask (levels 1-2) or transfer (level 3+)
+                clean_q = _strip_apology_prefix(self._last_question_text)
+
                 if self._reask_count >= MAX_REASK_ATTEMPTS:
+                    # Fix 4 level 3: beyond MAX_REASK_ATTEMPTS → transfer
                     logger.warning(
                         "[ms_reask] max re-asks reached (%d) — offering transfer",
                         MAX_REASK_ATTEMPTS,
                     )
-                    # Set request_transfer=True so _should_allow_transfer() passes.
-                    # (Incrementing failed_understanding_count alone never reached
-                    # the >= 3 threshold — transfer was blocked and TTS said
-                    # "let me transfer you" with nothing actually happening.)
+                    transfer_phrase = (
+                        "I'm sorry, I'm having difficulty hearing you. "
+                        "Let me get someone to help — one moment."
+                    )
                     self.session["request_transfer"] = True
-                    await self.tts_text_queue.put(TRANSFER_OFFER_PHRASE)
-                    # Attempt actual transfer after phrase plays
+                    await self.tts_text_queue.put(transfer_phrase)
                     asyncio.create_task(self._on_transfer_request())
                     # Reset so this doesn't fire again
                     self._last_question_at = 0.0
@@ -1036,9 +1033,14 @@ class WebSocketCallHandler:
                     self._reask_count = 0
                     continue
 
-                # Re-ask — strip any apology prefix from the stored question first
-                # so we never get "Sorry about that — Sorry, could you..." double-up.
-                reask_text = REASK_PREFIX + _strip_apology_prefix(self._last_question_text)
+                # Fix 4: level-based re-ask phrases with last question repeated
+                if self._reask_count == 0:
+                    # First silence: gentle re-ask
+                    reask_text = f"Sorry, I didn't quite catch that — {clean_q}"
+                else:
+                    # Second silence: softer apology
+                    reask_text = f"Sorry, I'm having a little trouble hearing you — {clean_q}"
+
                 self._reask_count    += 1
                 self._last_question_at = time.monotonic()  # reset timer for next check
                 logger.info(

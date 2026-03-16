@@ -85,7 +85,8 @@ def _digits_only(text: str) -> str:
 
 
 def _fmt_phone(digits: str) -> str:
-    return " ".join(digits)
+    """Format digits for TTS readback: each digit separated by ' — ' pause."""
+    return " — ".join(list(digits))
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +185,8 @@ _RETURNING_PATTERNS = (
     "come before", "visited before", "regular", "already registered",
     "new or returning",
 )
-_RETURNING_SINGLE = {"yes", "yeah", "yep", "yup", "i have"}
+# Fix 6: add all "yeah" variants to returning single-word matches
+_RETURNING_SINGLE = {"yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup", "i have"}
 _NR_TRIGGER_PHRASES = (
     "been to us before",
     "been here before",
@@ -197,6 +199,10 @@ _NR_TRIGGER_PHRASES = (
 def _try_new_returning(
     last_prompt: str, norm: str, raw: str, session: Dict[str, Any],
 ) -> Optional[FastPathResult]:
+    # Fix 1: session guard — if already answered, never update or re-trigger
+    if session.get(F_COLLECTED, {}).get("patient_type"):
+        logger.debug("[ms_fast] new_returning guard — patient_type already set, skipping")
+        return None
     if not any(p in last_prompt for p in _NR_TRIGGER_PHRASES):
         return None
 
@@ -228,8 +234,10 @@ def _try_new_returning(
 # Slot 3 -- Yes / No confirmation (preserved exactly)
 # ---------------------------------------------------------------------------
 
+# Fix 6: all informal yes variants included
 _YES_PATTERNS = (
-    "yes", "yeah", "yep", "yup", "correct", "that's right", "thats right",
+    "yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup",
+    "correct", "that's right", "thats right",
     "perfect", "great", "sure", "go ahead", "yes please", "that works",
     "sounds good", "that's fine", "thats fine", "ok", "okay", "fine",
     "do it", "book it", "confirmed", "please",
@@ -459,8 +467,10 @@ _PHONE_CONFIRM_TRIGGER_PHRASES = (
     PHONE_CONFIRM_QUESTION.lower(),
 )
 
+# Fix 6: all informal yes variants included
 _PHONE_CONFIRM_YES_WORDS = frozenset({
-    "yes", "yeah", "yep", "yup", "sure", "correct", "that's fine", "thats fine",
+    "yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup",
+    "sure", "correct", "that's fine", "thats fine",
     "that one", "use that", "yes please", "that's the one", "go ahead",
     "ok", "okay", "fine", "sounds good", "that works", "please", "perfect",
     "great",

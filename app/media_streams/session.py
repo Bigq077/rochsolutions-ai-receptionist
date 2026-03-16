@@ -190,6 +190,10 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
 
     # Fast-path diagnostics
     "fast_path_last_resolved": None, # FastPathTurnType value of last fast-path match
+
+    # Slot presentation guard (Fix 2) — set True the moment slots are first
+    # presented to the caller so the LLM never re-presents them.
+    "slots_presented":         False,
 }
 
 

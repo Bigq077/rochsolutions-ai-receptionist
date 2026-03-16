@@ -65,6 +65,9 @@ from .config import (
     BOOKING_INTENT_KEYWORDS,
     AVAILABILITY_FLOW_RULE,
     NAME_COLLECTION_RULE,
+    NEW_OR_RETURNING_RULE,
+    PHONE_READBACK_RULE,
+    INFORMAL_SPEECH_RULE,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
@@ -322,7 +325,11 @@ class LLMStream:
             "always open with EXACTLY: "
             "'Of course you can book an appointment — have you been with us before?' "
             "— never vary this line.]\n"
-            "[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
+            + ("[SLOTS ALREADY PRESENTED: Do NOT present slots again or ask 'which would you prefer' "
+               "again — the caller has already been given the options. Wait for their response.]\n"
+               if session.get("slots_presented") else ""
+            )
+            + "[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
             "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
             "response UNLESS the caller has explicitly asked to speak to a person OR "
             "mentioned a medical emergency. If you are unsure what the caller wants, "
@@ -334,6 +341,9 @@ class LLMStream:
             f"{SILENCE_RULE}\n\n"
             f"{AVAILABILITY_FLOW_RULE}\n\n"
             f"{NAME_COLLECTION_RULE}\n\n"
+            f"{NEW_OR_RETURNING_RULE}\n\n"
+            f"{PHONE_READBACK_RULE}\n\n"
+            f"{INFORMAL_SPEECH_RULE}\n\n"
             f"{date_prefix}\n\n"
             f"{state_ctx}\n\n"
             f"{get_system_prompt(session)}"
@@ -376,6 +386,19 @@ class LLMStream:
             await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
 
         # ── Step 9: Update history ───────────────────────────────────────
+        # Fix 2: deduplication — discard if LLM generated the same first 50
+        # characters as the previous response (e.g. slot question asked twice).
+        if full_reply.strip():
+            _prev_resp = session.get("_last_llm_response", "")
+            if (
+                _prev_resp.strip()
+                and full_reply.strip()[:50] == _prev_resp.strip()[:50]
+            ):
+                logger.info("[ms_llm] duplicate response discarded (matches previous)")
+                full_reply = ""
+            else:
+                session["_last_llm_response"] = full_reply
+
         if not transfer_initiated:
             _append_history(session, user_text, full_reply)
             session[F_LAST_BOT_PROMPT] = full_reply
@@ -702,6 +725,11 @@ class LLMStream:
                             session.pop("block_check_availability", None)
                             session["_availability_response_received"] = True
                         result = await executor(args, session)
+                        # Fix 2: mark slots as presented the moment check_availability
+                        # returns slots so the LLM knows not to re-present them.
+                        if tool_name == "check_availability" and session.get("last_offered_slots"):
+                            session["slots_presented"] = True
+                            logger.info("[ms_llm] slots_presented=True (slots returned by check_availability)")
                     else:
                         logger.warning("[ms_llm] unknown tool: %s", tool_name)
                         result = {"error": f"Unknown tool: {tool_name}"}

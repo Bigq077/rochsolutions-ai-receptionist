@@ -198,7 +198,7 @@ WATCHDOG_PHRASES = [
 
 # If the caller has been silent for this many seconds after Susie asked a
 # question, re-ask the question with a "Sorry about that — " prefix.
-QUESTION_SILENCE_SEC = 5.0
+QUESTION_SILENCE_SEC = 4.0
 
 # Maximum number of times the same question is re-asked before giving up
 # and offering a transfer.
@@ -365,6 +365,11 @@ SILENCE_RULE = (
     "  'Still there'\n"
     "  'Did you hear me'\n"
     "  'Can you hear me'\n"
+    "  'bear with me'\n"
+    "  'bare with me'\n"
+    "  'one moment please'\n"
+    "  'just a moment'\n"
+    "  'bear with'\n"
     "If you are about to say any of these — STOP. Say nothing instead. "
     "The system will handle silence automatically.\n"
     "Silence after a question is completely normal in a phone call — wait for it.\n"
@@ -415,6 +420,52 @@ NAME_COLLECTION_RULE = (
     "NEVER ask for first name and surname separately. "
     "NEVER ask a follow-up question about the surname after receiving a name. "
     "If the caller gives only one name, accept it and move on — do not ask for more.\n"
+)
+
+# ---------------------------------------------------------------------------
+# Noise-only words
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# New or returning rule (Fix 1)
+# ---------------------------------------------------------------------------
+
+NEW_OR_RETURNING_RULE = (
+    "NEW OR RETURNING RULE:\n"
+    "Ask the caller whether they have been with us before EXACTLY ONCE — "
+    "at the very start of the booking flow, before anything else. "
+    "If the session already contains a 'new_or_returning' or 'patient_type' value, "
+    "NEVER ask this question again under any circumstance. "
+    "Move straight on to the next step without repeating it.\n"
+)
+
+# ---------------------------------------------------------------------------
+# Phone readback rule (Fix 5)
+# ---------------------------------------------------------------------------
+
+PHONE_READBACK_RULE = (
+    "PHONE NUMBER READ BACK RULE:\n"
+    "When confirming a phone number with the caller, read each digit "
+    "individually with a natural pause between each one. "
+    "Never read digits in groups. "
+    "Example: 07502211207 must be spoken as: "
+    "'zero — seven — five — zero — two — two — one — one — two — zero — seven'. "
+    "Always read every digit individually. Never say the number as a whole. "
+    "Never group digits together. "
+    "Always confirm the number is correct before proceeding.\n"
+)
+
+# ---------------------------------------------------------------------------
+# Informal speech rule (Fix 6)
+# ---------------------------------------------------------------------------
+
+INFORMAL_SPEECH_RULE = (
+    "UNDERSTANDING INFORMAL SPEECH:\n"
+    "The following words all mean YES and must be treated as positive "
+    "confirmation in every context:\n"
+    "  yes, yeah, ya, yah, yea, ye, yep, yup, sure, correct, that's right, "
+    "go ahead, ok, okay, fine, sounds good, that works, perfect, great, do it.\n"
+    "Never fail to recognise these as positive confirmations.\n"
 )
 
 # ---------------------------------------------------------------------------
