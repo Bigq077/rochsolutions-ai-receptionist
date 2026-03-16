@@ -100,6 +100,40 @@ _THEOREM_GREETING = (
 
 
 # ---------------------------------------------------------------------------
+# Question-worth-storing guard (mirrors the one in flow.py)
+# ---------------------------------------------------------------------------
+
+_NEVER_STORE_AS_QUESTION = [
+    "hi there",
+    "hello",
+    "this is susie",
+    "roch solutions",
+    "theorem health",
+    "of course you can book",
+]
+_KNOWN_QUESTION_PHRASES = [
+    "what brings you in", "how long have you had", "does that sound ok",
+    "been with us before", "work best for you", "full name please",
+    "reach you on", "which would you prefer", "that right", "sound ok",
+    "catch that", "about that", "would you like", "no problem — which",
+]
+
+
+def _is_question_worth_storing(text: str) -> bool:
+    """Return True only if text is a real question — never the greeting."""
+    t = text.strip().lower()
+    for phrase in _NEVER_STORE_AS_QUESTION:
+        if t.startswith(phrase):
+            return False
+    for q in _KNOWN_QUESTION_PHRASES:
+        if q in t:
+            return True
+    if t.endswith("?"):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # SilenceHandler — re-ask after 4 s of caller silence
 # ---------------------------------------------------------------------------
 
@@ -150,8 +184,9 @@ class SilenceHandler:
         """Update last_question so re-asks have the right text."""
         if not question or not question.strip():
             return
-        self.last_question = question.strip()
-        self.reask_count   = 0
+        if _is_question_worth_storing(question):
+            self.last_question = question.strip()
+            self.reask_count   = 0
 
     def on_tts_started(self) -> None:
         """Cancel silence timer before Susie speaks."""
@@ -175,7 +210,7 @@ class SilenceHandler:
             ])
         )
         if is_question:
-            if not t.lower().startswith("sorry"):
+            if _is_question_worth_storing(t):
                 self.last_question = t
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
@@ -817,6 +852,8 @@ class WebSocketCallHandler:
         Updates _last_audio_at on every successful send (used by watchdog).
         If the WebSocket closes mid-call, drain the queue and exit.
         """
+        _tts_bytes_sent: int = 0  # mulaw bytes sent for the current TTS utterance
+
         try:
             while not self._stop_event.is_set():
                 try:
@@ -830,16 +867,23 @@ class WebSocketCallHandler:
                 if not b64_payload:
                     continue
 
-                # TTS-done sentinel: all audio for the previous utterance has
-                # been sent.  Fire on_tts_finished so the silence timer starts
-                # from the correct moment (after the caller actually hears the
-                # last word, not when synthesis was merely enqueued).
+                # TTS-done sentinel: all audio for this utterance has been sent
+                # to Twilio.  Schedule on_tts_finished to fire after the audio
+                # has actually played out (bytes_sent / 8000 Hz = play duration).
                 if b64_payload is _TTS_DONE_SENTINEL:
                     text = self._tts_text_pending
                     self._tts_text_pending = ""
+                    play_secs = _tts_bytes_sent / 8000.0
+                    _tts_bytes_sent = 0
                     if text:
-                        logger.info("[ms_silence] tts_finished: %r", text[:60])
-                        self._silence_handler.on_tts_finished(text)
+                        logger.info(
+                            "[ms_silence] tts_finished in %.1fs: %r",
+                            play_secs, text[:60],
+                        )
+                        asyncio.create_task(
+                            self._delayed_tts_finished(play_secs, text),
+                            name="ms_silence_tts_delay",
+                        )
                     continue
 
                 try:
@@ -851,6 +895,9 @@ class WebSocketCallHandler:
                     now = time.monotonic()
                     self._last_audio_at                = now
                     self.session["last_audio_sent_at"] = _iso_now()
+                    # Count raw mulaw bytes for play-duration estimate.
+                    # base64 encodes 3 bytes as 4 chars → multiply by 0.75.
+                    _tts_bytes_sent += int(len(b64_payload) * 0.75)
 
                 except WebSocketDisconnect:
                     logger.info("[ms_conn] send_loop: WS closed")
@@ -868,6 +915,21 @@ class WebSocketCallHandler:
             pass
         except Exception as exc:
             logger.error("[ms_conn] _send_loop fatal: %r", exc)
+
+    async def _delayed_tts_finished(self, delay: float, text: str) -> None:
+        """
+        Fire on_tts_finished after `delay` seconds so the silence timer starts
+        only once the caller has actually heard the last word, not when the
+        audio was merely enqueued into Twilio's buffer.
+        delay = mulaw_bytes_sent / 8000 Hz
+        """
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._silence_handler.on_tts_finished(text)
+            logger.debug("[ms_silence] tts_finished fired after %.1fs delay", delay)
+        except asyncio.CancelledError:
+            pass
 
     # ========================================================================
     # Barge-in

@@ -35,6 +35,50 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Question-worth-storing guard
+# ---------------------------------------------------------------------------
+
+_NEVER_STORE_AS_QUESTION = [
+    "hi there",
+    "hello",
+    "this is susie",
+    "roch solutions",
+    "theorem health",
+    "of course you can book",
+]
+_KNOWN_QUESTION_PHRASES = [
+    "what brings you in",
+    "how long have you had",
+    "does that sound ok",
+    "been with us before",
+    "work best for you",
+    "full name please",
+    "reach you on",
+    "which would you prefer",
+    "that right",
+    "sound ok",
+    "catch that",
+    "about that",
+    "would you like",
+    "no problem — which",
+]
+
+
+def _is_question_worth_storing(text: str) -> bool:
+    """Return True only if text is a real question Susie asked — not the greeting."""
+    t = text.strip().lower()
+    for phrase in _NEVER_STORE_AS_QUESTION:
+        if t.startswith(phrase):
+            return False
+    for q in _KNOWN_QUESTION_PHRASES:
+        if q in t:
+            return True
+    if t.endswith("?"):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Flow definitions
 # ---------------------------------------------------------------------------
 
@@ -462,7 +506,9 @@ class FlowEngine:
                 instruction = step["llm_instruction"] or ""
             response = await self._llm(instruction)
             # Store the LLM-generated question so SilenceHandler can re-ask it
-            self.session["last_question"] = response or (step["question"] or "")
+            _q = response or (step["question"] or "")
+            if _is_question_worth_storing(_q):
+                self.session["last_question"] = _q
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
             if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
@@ -476,7 +522,8 @@ class FlowEngine:
                     )
         else:
             await self._tts.put(step["question"])
-            self.session["last_question"] = step["question"]
+            if _is_question_worth_storing(step["question"]):
+                self.session["last_question"] = step["question"]
 
         logger.info(
             "[ms_flow] asked step %d (%s) last_question=%r",
@@ -562,7 +609,8 @@ class FlowEngine:
                 "No problem — what number would you like to use for the booking?"
             )
             await self._tts.put(phrase)
-            self.session["last_question"] = phrase
+            if _is_question_worth_storing(phrase):
+                self.session["last_question"] = phrase
             logger.info("[ms_flow] CONFIRM_PHONE declined — will collect manually")
             return
 
@@ -596,7 +644,8 @@ class FlowEngine:
                 f"Is that right?"
             )
             await self._tts.put(phrase)
-            self.session["last_question"] = phrase
+            if _is_question_worth_storing(phrase):
+                self.session["last_question"] = phrase
             logger.info("[ms_flow] slot confirmation requested: %r", phrase[:80])
             return
 
@@ -719,7 +768,8 @@ class FlowEngine:
                 # Do NOT re-run ask_current_question (that would re-call the LLM).
                 phrase = "No problem — which slot would you prefer?"
                 await self._tts.put(phrase)
-                self.session["last_question"] = phrase
+                if _is_question_worth_storing(phrase):
+                    self.session["last_question"] = phrase
                 return
 
         # No match — re-ask the confirmation phrase
