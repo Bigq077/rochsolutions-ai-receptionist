@@ -365,6 +365,7 @@ class WebSocketCallHandler:
                 stop_event=self._stop_event,
                 on_partial=self._on_partial_transcript,
                 on_final_clear=self._on_final_transcript_clear,
+                tts_text_queue=self.tts_text_queue,
             )
         except asyncio.CancelledError:
             pass
