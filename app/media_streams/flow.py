@@ -196,6 +196,15 @@ class FlowEngine:
             logger.info("[ms_flow] ask_current_question: flow already complete")
             return
 
+        # For PRESENT_SLOTS: ensure a location is set so check_availability doesn't
+        # ask the caller about Alcester vs Redditch mid-booking.
+        if step["state"] == "PRESENT_SLOTS":
+            self.session.setdefault("selected_location", "alcester")
+            logger.info(
+                "[ms_flow] PRESENT_SLOTS: selected_location=%r",
+                self.session["selected_location"],
+            )
+
         # Auto-skip phone collection when caller's number came from Twilio
         if step["state"] == "COLLECT_PHONE" and self.session.get("phone_from_twilio"):
             phone = (
@@ -331,16 +340,18 @@ class FlowEngine:
         if method == "new_or_returning":
             new_p = (
                 "not been", "never been", "i have not", "i haven't",
+                "i havent", "havent been", "haven t been",
                 "first time", "new patient", "i'm new", "im new",
                 "haven't been", "have not been", "never", "first visit",
                 "never visited", "not visited", "no i", "no,", "nope",
-                "nah",
+                "nah", "not really",
             )
             ret_p = (
                 "yes", "yeah", "ya", "yep", "yup", "been before",
                 "i have been", "existing", "returning", "been there",
                 "come before", "visited before", "been with you",
-                "been a patient", "been here", "i've been", "have been",
+                "been a patient", "been here", "i've been", "i ve been",
+                "have been",
             )
             # "no" / "never" checked FIRST so "i have not" doesn't match "i have"
             if text.strip() in ("no", "nope", "nah", "never"):
