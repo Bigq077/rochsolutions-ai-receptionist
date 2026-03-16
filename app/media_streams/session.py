@@ -201,6 +201,23 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     # Slot presentation guard (Fix 2) — set True the moment slots are first
     # presented to the caller so the LLM never re-presents them.
     "slots_presented":         False,
+
+    # ------------------------------------------------------------------ #
+    # Linear flow engine fields (flow.py / FlowEngine)
+    # ------------------------------------------------------------------ #
+    "flow_step":           0,        # index into FLOW[] — advances forward only
+    "flow_started":        False,    # True after first caller utterance starts flow
+    "reason":              None,     # step 0 — why the caller is booking
+    "duration":            None,     # step 1 — how long they've had the condition
+    "assessment_confirmed": None,    # step 2 — accepted physio assessment recommendation
+    "new_or_returning":    None,     # step 3 — "new" or "returning"
+    "availability":        None,     # step 4 — caller's preferred days/times
+    "slots_count":         0,        # set by llm_stream when slots are returned
+    "selected_slot":       None,     # step 5 — the slot the caller chose
+    "full_name":           None,     # step 6 — caller's full name
+    "phone_number":        None,     # step 7 — caller's phone number
+    "booking_confirmed":   None,     # step 8 — booking acknowledged
+    "last_question":       "",       # last question Susie asked (for SilenceHandler re-ask)
 }
 
 

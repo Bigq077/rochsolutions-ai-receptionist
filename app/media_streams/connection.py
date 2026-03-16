@@ -39,7 +39,6 @@ import asyncio
 import base64
 import json
 import logging
-import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -49,18 +48,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import (
     TWILIO_STARTED_TIMEOUT_SEC,
-    REASK_PREFIX,
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
 )
 from .session import (
     get_or_create_session,
     save_session,
-    advance_state,
-)
-from .config import (
-    F_LAST_BOT_PROMPT,
-    F_LAST_QUESTION,
 )
 from .audio_in import AudioInputProcessor
 from .audio_out import AudioOutputProcessor
@@ -89,33 +82,6 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# Prefixes that Susie sometimes opens her question with — strip them before
-# prepending REASK_PREFIX so the re-ask never reads "Sorry about that — Sorry, ..."
-_APOLOGY_PREFIXES = (
-    "Sorry about that — ",
-    "Sorry about that — ",   # em-dash variant (U+2014)
-    "Sorry about that - ",
-    "I'm sorry — ",
-    "I'm sorry, ",
-    "Sorry — ",
-    "Sorry, ",
-    "Apologies — ",
-    "Apologies, ",
-)
-
-def _strip_apology_prefix(text: str) -> str:
-    """
-    Strip any leading apology phrase from a question so re-asks don't
-    double-up: "Sorry about that — Sorry, could you...".
-    """
-    stripped = text
-    for prefix in _APOLOGY_PREFIXES:
-        if stripped.lower().startswith(prefix.lower()):
-            stripped = stripped[len(prefix):].lstrip()
-            break   # only strip once (no nested apologies)
-    return stripped or text  # never return empty
-
-
 # ---------------------------------------------------------------------------
 # Hardcoded greeting (fast startup, no LLM round-trip)
 # ---------------------------------------------------------------------------
@@ -125,175 +91,6 @@ _THEOREM_GREETING = (
     "Hi there, this is Susie, Theorem Health's AI receptionist. "
     "How can I help you today?"
 )
-
-
-# ---------------------------------------------------------------------------
-# Question extraction helper (Bug 1 — store only question, not full response)
-# ---------------------------------------------------------------------------
-
-# Splits on sentence boundaries: after . ! ? followed by whitespace
-_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
-
-# Opener affirmations to strip from the extracted question before storing.
-# These are the phrases that Claude sometimes prepends even though they're
-# banned — stripping here ensures the re-ask sounds natural regardless.
-_RESPONSE_OPENER_PREFIXES = (
-    "Absolutely, ",
-    "Certainly, ",
-    "Of course, ",
-    "Sure, ",
-    "Great, ",
-    "Sorry, ",
-)
-
-
-def _extract_question(text: str) -> str:
-    """
-    Extract the question portion from an LLM response.
-
-    Splits the response into sentences and returns the LAST sentence that
-    ends with '?'.  If no sentence ends with '?', returns '' — meaning the
-    response was a statement, not a question, and the re-ask watchdog should
-    NOT be set (re-asking a statement like "Okay, that's noted." makes no sense).
-
-    Also strips any banned opener affirmation from the front of the extracted
-    question before returning it, so re-asks never sound like
-    "Sorry about that — Absolutely, could you...".
-
-    Examples:
-      "Right, Alcester. And have you been to us before?"
-        → "And have you been to us before?"
-      "Okay, that's noted."
-        → ""  (statement — no re-ask)
-      "Absolutely, what time works best for you?"
-        → "What time works best for you?"
-      "Right, just checking what we have available around that time..."
-        → ""  (no '?' — don't re-ask a bridge phrase)
-    """
-    if not text or "?" not in text:
-        return ""
-
-    # Split into individual sentences
-    sentences = _SENTENCE_END_RE.split(text.strip())
-
-    # Walk backwards: take the LAST question sentence
-    question = ""
-    for sentence in reversed(sentences):
-        s = sentence.strip()
-        if s.endswith("?"):
-            question = s
-            break
-
-    if not question:
-        return ""
-
-    # Strip any banned opener prefix (case-insensitive, strip only once)
-    for prefix in _RESPONSE_OPENER_PREFIXES:
-        if question.lower().startswith(prefix.lower()):
-            question = question[len(prefix):].lstrip()
-            # Re-capitalise after stripping
-            if question:
-                question = question[0].upper() + question[1:]
-            break
-
-    return question.strip()
-
-
-# ---------------------------------------------------------------------------
-# Post-question guard (Bug 2 fix)
-# ---------------------------------------------------------------------------
-
-def _post_question_guard(session: dict, transcript: str) -> bool:
-    """
-    Return True (block) if a transcript arrives while we are still awaiting
-    a meaningful caller response after asking a question.
-
-    Prevents the LLM from being called on noise/filler while the caller is
-    thinking, which was causing 'I am waiting...' commentary.
-
-    Always-allow list covers all valid short answers that would incorrectly
-    be blocked by a naive word-count threshold: "yes", "no", "new",
-    "returning", day names, "i have not", etc.
-
-    Only single-word transcripts that do not appear in the always-allow list
-    are blocked (true noise: "mm", "erm", "uh", etc.).
-
-    Auto-clears the flag if 8 seconds have passed since the question
-    (genuine abandonment — let the silence re-ask loop handle it instead).
-    """
-    if not session.get("awaiting_caller_response"):
-        return False
-
-    # Auto-expire after 8 seconds of genuine silence
-    asked_at = session.get("awaiting_caller_response_at", 0.0)
-    if asked_at and (time.monotonic() - asked_at) > 8.0:
-        session["awaiting_caller_response"] = False
-        return False
-
-    text = transcript.strip().lower()
-    word_count = len(text.split())
-
-    # Always allow through — meaningful short answers that a naive word-count
-    # threshold would wrongly block
-    # Fix 6: all informal yes variants included
-    _ALWAYS_ALLOW = (
-        "yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup",
-        "no", "nope", "nah",
-        "new", "returning", "existing",
-        "morning", "afternoon", "evening",
-        "monday", "tuesday", "wednesday", "thursday", "friday",
-        "saturday", "sunday", "next week", "this week",
-        "one", "two", "three", "first", "second",
-        "i have", "i have not", "i haven't",
-        "not been", "been before", "first time",
-        "never been", "i'm new", "im new",
-    )
-    for phrase in _ALWAYS_ALLOW:
-        if phrase in text:
-            session["awaiting_caller_response"] = False
-            logger.info("[ms_guard] allowed short answer: %r", transcript[:80])
-            return False  # allow through
-
-    # Block only truly empty or single-word noise (< 2 words, not in allow-list)
-    if word_count < 2:
-        logger.info(
-            "[ms_guard] discarded single-word noise while awaiting response: %r",
-            transcript[:80],
-        )
-        return True  # block — do not call LLM
-
-    # 2+ words that don't match any always-allow phrase — allow through
-    session["awaiting_caller_response"] = False
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Availability info detection (Bug 3 fix)
-# ---------------------------------------------------------------------------
-
-_AVAILABILITY_WORDS = (
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    "morning", "afternoon", "evening", "tonight", "next week", "this week",
-    "next month", "today", "tomorrow", "available", "free", "anytime", "flexible",
-    "after", "before", "around", "o'clock", "oclock", "half past", "quarter",
-    "january", "february", "march", "april", "may", "june", "july",
-    "august", "september", "october", "november", "december",
-    "early", "late", "lunchtime", "midday", "noon", "weekend", "weekday",
-)
-_TIME_DIGIT_RE = re.compile(
-    r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock)?\b',
-    re.IGNORECASE,
-)
-
-
-def _has_availability_info(transcript: str) -> bool:
-    """Return True if the transcript contains a day, time, or date reference."""
-    norm = transcript.lower()
-    if any(w in norm for w in _AVAILABILITY_WORDS):
-        return True
-    if _TIME_DIGIT_RE.search(transcript):
-        return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -716,26 +513,46 @@ class WebSocketCallHandler:
             logger.error("[ms_conn] _stt_loop error: %r", exc)
 
     # ========================================================================
-    # LLM loop
+    # LLM loop  (FlowEngine-driven — single point of decision)
     # ========================================================================
 
     async def _llm_loop(self) -> None:
         """
-        Wait for the "start" event, then consume utterances from transcript_queue
-        and run an LLM turn for each one.
+        Wait for the "start" event, then drive the booking flow.
 
-        Error handling:
-          - Claude API error: play CLAUDE_ERROR_PHRASE and allow one retry on the
-            next transcript (the retry is implicit — the loop continues)
-          - Repeated failures: each turn plays the error phrase; monitoring catches
-            the error logs
-          - On first successful complete turn: sets _call_stable = True
+        First caller utterance → flow.ask_current_question()  (starts the flow)
+        Every subsequent utterance → flow.handle_transcript()  (advances the flow)
+
+        That is the entire conversation logic.  Nothing else here makes
+        a decision about what Susie says.
         """
         await self._wait_for_start("llm_loop")
 
         from .llm_stream import LLMStream
-        from .session import CallState, get_call_state, advance_state
+        from .flow import FlowEngine
+
         llm = LLMStream()
+
+        # Build the LLM callable the flow engine will use for LLM steps.
+        # It streams output directly to tts_text_queue and returns full text.
+        async def _llm_fn(instruction: str) -> str:
+            return await llm.run_instruction(
+                instruction=instruction,
+                session=self.session,
+                tts_text_queue=self.tts_text_queue,
+                call_sid=self.call_sid,
+                stream_sid=self.stream_sid,
+                audio_out_queue=self.audio_out_queue,
+                websocket=self.websocket,
+                on_transfer=self._on_transfer_request,
+            )
+
+        flow = FlowEngine(
+            session=self.session,
+            tts_queue=self.tts_text_queue,
+            llm_fn=_llm_fn,
+        )
+        self._flow = flow
 
         try:
             while not self._stop_event.is_set():
@@ -750,134 +567,59 @@ class WebSocketCallHandler:
                 if not utterance or not utterance.strip():
                     continue
 
-                # Drop utterance if LLM is already mid-generation
+                # Drop if the previous turn is still generating
                 if self._llm_busy:
                     logger.info(
-                        "[ms_conn] LLM busy — dropping utterance: %r",
-                        utterance[:80],
+                        "[ms_conn] busy — dropping utterance: %r", utterance[:80],
                     )
                     continue
 
-                # Bug 2: post-question guard — block short/noise transcripts while
-                # awaiting a meaningful caller response after Susie asked a question
-                if _post_question_guard(self.session, utterance):
-                    continue
-
-                # Availability guard — if COLLECT_AVAILABILITY and the transcript
-                # has no time/day info, re-ask instead of calling LLM.
-                if get_call_state(self.session) == CallState.COLLECT_AVAILABILITY:
-                    if not _has_availability_info(utterance):
-                        logger.info(
-                            "[ms_conn] availability guard — no time info in: %r — re-asking",
-                            utterance[:80],
-                        )
-                        from .config import Q_AVAILABILITY
-                        last_q = self._silence_handler.last_question or Q_AVAILABILITY
-                        reask = REASK_PREFIX + _strip_apology_prefix(last_q)
-                        await self.tts_text_queue.put(reask)
-                        self._silence_handler.on_question_asked(reask)
-                        continue
-
-                # GATE 2: extract answers from transcript before LLM sees them
-                from .turn_handler import update_session_from_transcript, get_next_action
-                update_session_from_transcript(self.session, utterance)
-
-                # GATE 3: state machine decides what to do next
-                action = get_next_action(self.session)
-
-                if action.type == "skip":
-                    logger.info("[ms_conn] gate3=skip — no output needed this turn")
-                    continue
-
-                if action.type == "hardcoded":
-                    logger.info("[ms_conn] gate3=hardcoded: %r", action.text[:80])
-                    if action.next_state:
-                        advance_state(self.session, action.next_state)
-                    self.session[F_LAST_BOT_PROMPT] = action.text
-                    self.session[F_LAST_QUESTION]   = action.text
-                    await self.tts_text_queue.put(action.text)
-                    self._silence_handler.on_question_asked(action.text)
-                    self.session["awaiting_caller_response"]    = True
-                    self.session["awaiting_caller_response_at"] = time.monotonic()
-                    await save_session(self.call_sid, self.session)
-                    continue
-
-                # action.type == "llm" — advance state if gate3 specified one,
-                # then fall through to LLM call below.
-                if action.next_state:
-                    advance_state(self.session, action.next_state)
-
-                logger.info("[ms_conn] TRANSCRIPT ← queue: %r", utterance[:120])
-                self._llm_busy                         = True
-                # BUG 1 FIX: reset watchdog clock NOW so the 3-second countdown
-                # starts from the moment the LLM is called, not from the last
-                # time audio was sent (which could be many seconds ago if the
-                # caller was silent after the greeting). Without this reset the
-                # watchdog fires instantly on every turn.
-                self._last_audio_at                    = time.monotonic()
-                self.session["llm_generation_active"]  = True
+                self._llm_busy          = True
+                self._last_audio_at     = time.monotonic()
+                self.session["llm_generation_active"] = True
                 await save_session(self.call_sid, self.session)
 
-                tts_had_output = False
                 try:
+                    if not self.session.get("flow_started"):
+                        # First caller utterance — kick off the flow
+                        self.session["flow_started"] = True
+                        logger.info(
+                            "[ms_conn] flow start — first utterance: %r", utterance[:80],
+                        )
+                        await flow.ask_current_question()
+                    else:
+                        logger.info(
+                            "[ms_conn] flow transcript: %r  step=%s",
+                            utterance[:80], self.session.get("flow_step", 0),
+                        )
+                        await flow.handle_transcript(utterance)
+
+                    if not self._call_stable:
+                        self._call_stable = True
+                        logger.info("[ms_conn] call reached stable state")
+
+                    # Arm the silence handler with whatever question was just asked
+                    last_q = self.session.get("last_question", "")
+                    if last_q:
+                        self._silence_handler.on_question_asked(last_q)
+
+                    await save_session(self.call_sid, self.session)
                     logger.info(
-                        "[ms_conn] LLM INPUT: %r  state=%s",
-                        utterance[:120],
-                        self.session.get("state", "UNKNOWN"),
+                        "[ms_conn] flow_step=%s after turn",
+                        self.session.get("flow_step", 0),
                     )
-                    await llm.run_turn(
-                        user_text=utterance,
-                        session=self.session,
-                        call_sid=self.call_sid,
-                        stream_sid=self.stream_sid,
-                        tts_text_queue=self.tts_text_queue,
-                        audio_out_queue=self.audio_out_queue,
-                        websocket=self.websocket,
-                        on_transfer=self._on_transfer_request,
-                    )
-                    tts_had_output = True
-                    # Diagnostic: log the assembled LLM response
-                    _resp = self.session.get("last_bot_prompt", "")
-                    if _resp:
-                        logger.info("[ms_conn] LLM response: %r", _resp[:120])
 
                 except asyncio.CancelledError:
                     pass
-
                 except Exception as exc:
-                    logger.error("[ms_conn] LLM turn error: %r\n%s", exc, traceback.format_exc())
-                    # Play error phrase so caller hears something, not dead air
+                    logger.error(
+                        "[ms_conn] flow error: %r\n%s", exc, traceback.format_exc(),
+                    )
                     await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
-
                 finally:
-                    self._llm_busy                         = False
-                    self.session["llm_generation_active"]  = False
+                    self._llm_busy                        = False
+                    self.session["llm_generation_active"] = False
                     await save_session(self.call_sid, self.session)
-
-                # Mark call stable after first complete cycle
-                if tts_had_output and not self._call_stable:
-                    self._call_stable = True
-                    logger.info("[ms_conn] call reached stable state")
-
-                # Log call state after this turn
-                logger.info("[ms_conn] state after turn: %s", self.session.get("state", "UNKNOWN"))
-
-                # Extract the question from Susie's last LLM response and arm
-                # the silence handler so it can re-ask if the caller goes quiet.
-                # If the response was a statement (no '?') nothing is armed —
-                # re-asking a statement makes no sense.
-                last_prompt = self.session.get("last_bot_prompt", "")
-                if last_prompt:
-                    question = _extract_question(last_prompt)
-                    if question:
-                        logger.info("[ms_conn] last_question stored: %r", question)
-                        self._silence_handler.on_question_asked(question)
-                        self.session["awaiting_caller_response"]    = True
-                        self.session["awaiting_caller_response_at"] = time.monotonic()
-                    else:
-                        logger.debug(
-                            "[ms_conn] no question in LLM response — silence timer not armed"
-                        )
 
         except asyncio.CancelledError:
             pass
@@ -986,9 +728,6 @@ class WebSocketCallHandler:
                     now = time.monotonic()
                     self._last_audio_at                = now
                     self.session["last_audio_sent_at"] = _iso_now()
-                    # Bug 4: disarm watchdog the moment audio reaches the caller
-                    if self._watchdog:
-                        self._watchdog.disarm()
 
                 except WebSocketDisconnect:
                     logger.info("[ms_conn] send_loop: WS closed")

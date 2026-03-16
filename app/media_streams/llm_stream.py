@@ -422,6 +422,63 @@ class LLMStream:
         await save_session(call_sid, session)
 
     # -----------------------------------------------------------------------
+    # Flow-engine instruction runner (used by FlowEngine in flow.py)
+    # -----------------------------------------------------------------------
+
+    async def run_instruction(
+        self,
+        instruction: str,
+        session: Dict[str, Any],
+        tts_text_queue: asyncio.Queue,
+        call_sid: Optional[str] = None,
+        stream_sid: Optional[str] = None,
+        audio_out_queue: Optional[asyncio.Queue] = None,
+        websocket: Any = None,
+        on_transfer: Optional[Callable] = None,
+    ) -> str:
+        """
+        Simple single-instruction LLM call for the FlowEngine.
+
+        Streams the Claude response directly to tts_text_queue using the
+        existing tool-loop infrastructure (so check_availability still works
+        for the PRESENT_SLOTS step).
+
+        Returns the full response text (also stored in session["last_bot_prompt"]).
+        """
+        date_prefix  = _build_date_prefix()
+        system_prompt = (
+            f"You are Susie, a warm and professional AI receptionist at Theorem Health. "
+            f"Respond naturally and conversationally. Keep responses brief — one or two "
+            f"sentences at most. Never ask more than one question per response. "
+            f"{SILENCE_RULE}\n\n"
+            f"{date_prefix}"
+        )
+
+        messages = [{"role": "user", "content": instruction}]
+        tools    = _build_claude_tools()
+
+        full_reply = ""
+        try:
+            full_reply, _ = await self._streaming_tool_loop(
+                model=SONNET,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                session=session,
+                call_sid=call_sid,
+                tts_text_queue=tts_text_queue,
+                on_transfer=on_transfer,
+                interim_played=False,
+            )
+        except Exception as exc:
+            logger.error("[ms_llm] run_instruction error: %r", exc)
+            full_reply = SAFE_FALLBACK_PHRASE
+            await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
+
+        session["last_bot_prompt"] = full_reply
+        return full_reply
+
+    # -----------------------------------------------------------------------
     # Streaming tool loop
     # -----------------------------------------------------------------------
 
