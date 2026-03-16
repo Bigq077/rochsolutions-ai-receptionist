@@ -1,15 +1,25 @@
 # app/media_streams/flow.py
 """
-Linear booking flow for the Susie AI receptionist.
+Multi-intent conversation flow for the Susie AI receptionist.
 
 All conversation decisions live here.  Nothing else in the pipeline
 decides what Susie says next.
 
-The entire booking conversation is one linear array of steps.
-Susie asks a question.  Caller answers.  Step advances.  Repeat.
-That is the entire logic.
+Each intent maps to a dedicated flow array (a list of step dicts).
+The FlowEngine starts in DETECT_INTENT_FLOW.  The first caller utterance
+classifies the intent and switches to the correct flow.  From that point
+the engine works identically to the original single-flow design:
 
-Usage from connection.py:
+    Susie asks a question.  Caller answers.  Step advances.  Repeat.
+
+Flows:
+    DETECT_INTENT_FLOW  — entry point (1 step, no spoken question)
+    BOOKING_FLOW        — new appointment booking (10 steps)
+    RESCHEDULE_FLOW     — reschedule existing appointment (7 steps)
+    CANCEL_FLOW         — cancel existing appointment (5 steps)
+    FAQ_FLOW            — price / insurance / hours / services questions (2 steps)
+
+Usage from connection.py (unchanged):
     flow = FlowEngine(session, tts_text_queue, llm_fn)
     # First caller utterance starts the flow:
     await flow.ask_current_question()
@@ -25,10 +35,26 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Flow definition
+# Flow definitions
 # ---------------------------------------------------------------------------
 
-FLOW: List[Dict[str, Any]] = [
+# ---------- Entry-point flow (intent detection) ---------------------------
+
+DETECT_INTENT_FLOW: List[Dict[str, Any]] = [
+    {
+        "step": 0,
+        "state": "DETECT_INTENT",
+        "question": None,       # greeting already played by connection.py
+        "answer_field": "intent",
+        "use_llm": False,
+        "extract": "intent",
+        "llm_instruction": None,
+    },
+]
+
+# ---------- Booking flow (new appointment) --------------------------------
+
+BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_REASON",
@@ -156,6 +182,199 @@ FLOW: List[Dict[str, Any]] = [
     },
 ]
 
+# Backward-compat alias
+FLOW = BOOKING_FLOW
+
+# ---------- Reschedule flow -----------------------------------------------
+
+RESCHEDULE_FLOW: List[Dict[str, Any]] = [
+    {
+        "step": 0,
+        "state": "COLLECT_NAME_RESCHEDULE",
+        "question": "Of course — could I take your full name please?",
+        "answer_field": "full_name",
+        "use_llm": False,
+        "extract": "name",
+        "llm_instruction": None,
+    },
+    {
+        "step": 1,
+        "state": "COLLECT_LOCATION_RESCHEDULE",
+        "question": "Was that at our Alcester or Redditch clinic?",
+        "answer_field": "selected_location",
+        "use_llm": False,
+        "extract": "location_selection",
+        "llm_instruction": None,
+    },
+    {
+        "step": 2,
+        "state": "CONFIRM_PHONE",
+        "question": (
+            "Just to confirm — shall I use the number "
+            "you're calling from for the booking?"
+        ),
+        "answer_field": "phone_confirmed",
+        "use_llm": False,
+        "extract": "phone_confirm",
+        "llm_instruction": None,
+    },
+    {
+        "step": 3,
+        "state": "COLLECT_PHONE",
+        "question": "And the best number to reach you on?",
+        "answer_field": "phone_number",
+        "use_llm": False,
+        "extract": "phone",
+        "llm_instruction": None,
+    },
+    {
+        "step": 4,
+        "state": "COLLECT_AVAILABILITY_RESCHEDULE",
+        "question": "What days or times work best for the new appointment?",
+        "answer_field": "availability",
+        "use_llm": False,
+        "extract": "availability",
+        "llm_instruction": None,
+    },
+    {
+        "step": 5,
+        "state": "PRESENT_NEW_SLOTS",
+        "question": "Let me check what we have available.",
+        "answer_field": "selected_slot",
+        "use_llm": True,
+        "llm_instruction": (
+            "Call check_availability with location='{selected_location}', "
+            "duration_minutes=50, preference='{availability}'. "
+            "Do NOT ask the caller about location — use {selected_location}. "
+            "Present up to 3 slots in this exact format: "
+            "'I have found [N] available slots during that time frame. "
+            "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
+            "the second being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
+            "the third being [DAY] the [DDth] of [MONTH] at [H:MMam/pm]. "
+            "Which would you prefer?' "
+            "Use ordinal dates like 'Monday the 23rd of March at 9am'. "
+            "Never deviate from this format."
+        ),
+        "extract": "slot_selection",
+    },
+    {
+        "step": 6,
+        "state": "CONFIRM_RESCHEDULE",
+        "question": None,
+        "answer_field": "reschedule_confirmed",
+        "use_llm": True,
+        "llm_instruction": (
+            "Call reschedule_appointment with patient_name='{full_name}', "
+            "phone='{phone_number}', location='{selected_location}', "
+            "new_slot_iso='{selected_slot}', duration_minutes=50. "
+            "After rescheduling confirm warmly: "
+            "'I've rescheduled your appointment to [new date/time]. "
+            "You'll receive a confirmation text shortly. "
+            "Is there anything else I can help you with?' "
+            "Use ordinal dates like 'Monday the 23rd of March at 9am'."
+        ),
+        "extract": "none",
+    },
+]
+
+# ---------- Cancel flow ---------------------------------------------------
+
+CANCEL_FLOW: List[Dict[str, Any]] = [
+    {
+        "step": 0,
+        "state": "COLLECT_NAME_CANCEL",
+        "question": "Of course — could I take your full name please?",
+        "answer_field": "full_name",
+        "use_llm": False,
+        "extract": "name",
+        "llm_instruction": None,
+    },
+    {
+        "step": 1,
+        "state": "COLLECT_LOCATION_CANCEL",
+        "question": "Was that at our Alcester or Redditch clinic?",
+        "answer_field": "selected_location",
+        "use_llm": False,
+        "extract": "location_selection",
+        "llm_instruction": None,
+    },
+    {
+        "step": 2,
+        "state": "CONFIRM_PHONE",
+        "question": (
+            "Just to confirm — shall I use the number "
+            "you're calling from for the booking?"
+        ),
+        "answer_field": "phone_confirmed",
+        "use_llm": False,
+        "extract": "phone_confirm",
+        "llm_instruction": None,
+    },
+    {
+        "step": 3,
+        "state": "COLLECT_PHONE",
+        "question": "And the best number we have on file for you?",
+        "answer_field": "phone_number",
+        "use_llm": False,
+        "extract": "phone",
+        "llm_instruction": None,
+    },
+    {
+        "step": 4,
+        "state": "CONFIRM_CANCEL",
+        "question": None,
+        "answer_field": "cancel_confirmed",
+        "use_llm": True,
+        "llm_instruction": (
+            "Call cancel_appointment with patient_name='{full_name}', "
+            "phone='{phone_number}', location='{selected_location}'. "
+            "After cancelling confirm briefly: "
+            "'I've cancelled your appointment. "
+            "You'll receive a confirmation text shortly. "
+            "Is there anything else I can help you with?'"
+        ),
+        "extract": "none",
+    },
+]
+
+# ---------- FAQ flow (price / insurance / hours / services) ---------------
+
+FAQ_FLOW: List[Dict[str, Any]] = [
+    {
+        "step": 0,
+        "state": "ANSWER_FAQ",
+        "question": None,   # LLM generates the full answer
+        "answer_field": "faq_answered",
+        "use_llm": True,
+        "llm_instruction": (
+            "Call get_clinic_info with topic='{faq_topic}'. "
+            "Answer the caller's question naturally and concisely — "
+            "one or two sentences. "
+            "After answering ask: 'Is there anything else I can help "
+            "you with, or would you like to book an appointment?'"
+        ),
+        "extract": "none",
+    },
+    {
+        "step": 1,
+        "state": "FAQ_BOOKING_OFFER",
+        "question": None,   # LLM already asked — wait for caller reply
+        "answer_field": "faq_booking_response",
+        "use_llm": False,
+        "extract": "faq_booking",
+        "llm_instruction": None,
+    },
+]
+
+# Intent → FAQ topic mapping
+_INTENT_TO_FAQ_TOPIC = {
+    "faq_prices":    "prices",
+    "faq_insurance": "insurance",
+    "faq_hours":     "hours",
+    "faq_location":  "address",
+    "faq_services":  "services",
+}
+
 
 # ---------------------------------------------------------------------------
 # Flow engine
@@ -182,22 +401,24 @@ class FlowEngine:
         tts_queue: Any,             # asyncio.Queue
         llm_fn: Callable,           # async (instruction: str) -> str
     ) -> None:
-        self.session   = session
-        self._tts      = tts_queue
-        self._llm      = llm_fn
+        self.session          = session
+        self._tts             = tts_queue
+        self._llm             = llm_fn
+        self._active_flow: List[Dict[str, Any]] = DETECT_INTENT_FLOW
+        self._intent_detected: bool = False
 
     # ── public API ────────────────────────────────────────────────────────
 
     def current_step(self) -> Optional[Dict[str, Any]]:
-        """Return the current FLOW step dict, or None if flow is complete."""
+        """Return the current active-flow step dict, or None if flow is complete."""
         idx = self.session.get("flow_step", 0)
-        if idx >= len(FLOW):
+        if idx >= len(self._active_flow):
             return None
-        return FLOW[idx]
+        return self._active_flow[idx]
 
     def is_complete(self) -> bool:
-        """True when all steps have been completed."""
-        return self.session.get("flow_step", 0) >= len(FLOW)
+        """True when all steps in the active flow have been completed."""
+        return self.session.get("flow_step", 0) >= len(self._active_flow)
 
     async def ask_current_question(self) -> None:
         """
@@ -211,13 +432,19 @@ class FlowEngine:
             logger.info("[ms_flow] ask_current_question: flow already complete")
             return
 
-        # For PRESENT_SLOTS: ensure a location is set so check_availability doesn't
-        # ask the caller about Alcester vs Redditch mid-booking.
-        if step["state"] == "PRESENT_SLOTS":
+        # DETECT_INTENT step has no question — wait silently for caller to speak
+        if not step["use_llm"] and step["question"] is None:
+            logger.info("[ms_flow] step %d (%s): no question to play — waiting for transcript",
+                        step["step"], step["state"])
+            return
+
+        # For PRESENT_SLOTS / PRESENT_NEW_SLOTS: ensure location is set so
+        # check_availability never asks the caller mid-booking.
+        if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
             self.session.setdefault("selected_location", "alcester")
             logger.info(
-                "[ms_flow] PRESENT_SLOTS: selected_location=%r",
-                self.session["selected_location"],
+                "[ms_flow] %s: selected_location=%r",
+                step["state"], self.session["selected_location"],
             )
 
         # CONFIRM_PHONE: skip if no Twilio number — go straight to COLLECT_PHONE
@@ -279,7 +506,36 @@ class FlowEngine:
             logger.info("[ms_flow] flow complete — ignoring transcript: %r", transcript[:60])
             return
 
-        text   = transcript.strip().lower()
+        text = transcript.strip().lower()
+
+        # ── DETECT_INTENT: route to correct flow on first utterance ───────────
+        if step["state"] == "DETECT_INTENT":
+            intent = self._detect_intent(text)
+            self.session["intent"] = intent
+            self._switch_flow(intent)
+            await self.ask_current_question()
+            return
+
+        # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
+        if step["state"] == "FAQ_BOOKING_OFFER":
+            answer = self._extract("faq_booking", text, transcript)
+            if answer == "book":
+                self._switch_flow("booking")
+                await self.ask_current_question()
+                return
+            elif answer == "done":
+                await self._tts.put(
+                    "Great — thanks for calling Theorem Health. Have a lovely day!"
+                )
+                self.session["flow_step"] = len(self._active_flow)
+                return
+            else:
+                await self._tts.put(
+                    "Sorry, I didn't quite catch that — "
+                    "would you like to book an appointment?"
+                )
+                return
+
         answer = self._extract(step["extract"], text, transcript)
 
         if answer is None:
@@ -317,7 +573,7 @@ class FlowEngine:
         # Store the answer
         self.session[step["answer_field"]] = answer
         # Mirror into collected{} for LLM context
-        if step["answer_field"] in ("full_name", "phone_number", "new_or_returning"):
+        if step["answer_field"] in ("full_name", "phone_number", "new_or_returning", "selected_location"):
             col = self.session.setdefault("collected", {})
             if step["answer_field"] == "full_name":
                 col["full_name"] = answer
@@ -326,6 +582,8 @@ class FlowEngine:
                 col["phone"] = answer
             elif step["answer_field"] == "new_or_returning":
                 col["patient_type"] = answer
+            elif step["answer_field"] == "selected_location":
+                self.session["location_selected"] = True
 
         logger.info(
             "[ms_flow] step %d %s=%r",
@@ -338,6 +596,74 @@ class FlowEngine:
 
         # Ask the next question
         await self.ask_current_question()
+
+    # ── intent routing ────────────────────────────────────────────────────
+
+    def _detect_intent(self, text: str) -> str:
+        """
+        Classify the caller's first utterance into one of seven intent strings.
+        Returns "booking" as the default fallback.
+        """
+        reschedule_p = (
+            "reschedule", "change my appointment", "move my appointment",
+            "change the time", "different time", "different day",
+            "rebook", "move it",
+        )
+        cancel_p = (
+            "cancel", "cancellation", "don't want", "dont want", "not coming",
+            "won't be able", "wont be able", "need to cancel", "want to cancel",
+        )
+        insurance_p = (
+            "insurance", "bupa", "axa", "aviva", "vitality",
+            "covered", "cover", "claim", "health insurance",
+        )
+        price_p = (
+            "price", "cost", "how much", "charge", "fee", "rates", "pricing",
+        )
+        hours_p = (
+            "hours", "opening hours", "open", "close",
+            "when are you", "what time are you",
+        )
+        location_p = (
+            "where are you", "address", "parking", "directions", "how do i get",
+        )
+        services_p = (
+            "services", "treatments", "what do you offer", "what do you do",
+            "what can you help", "what conditions",
+        )
+        if any(p in text for p in reschedule_p): return "reschedule"
+        if any(p in text for p in cancel_p):     return "cancel"
+        if any(p in text for p in insurance_p):  return "faq_insurance"
+        if any(p in text for p in price_p):      return "faq_prices"
+        if any(p in text for p in hours_p):      return "faq_hours"
+        if any(p in text for p in location_p):   return "faq_location"
+        if any(p in text for p in services_p):   return "faq_services"
+        return "booking"
+
+    def _switch_flow(self, intent: str) -> None:
+        """
+        Switch _active_flow to the flow matching the given intent and
+        reset flow_step to 0.
+        """
+        _faq_intents = {
+            "faq_prices", "faq_insurance", "faq_hours",
+            "faq_location", "faq_services",
+        }
+        if intent == "reschedule":
+            self._active_flow = RESCHEDULE_FLOW
+        elif intent == "cancel":
+            self._active_flow = CANCEL_FLOW
+        elif intent in _faq_intents:
+            self._active_flow = FAQ_FLOW
+            self.session["faq_topic"] = _INTENT_TO_FAQ_TOPIC.get(intent, "services")
+        else:
+            self._active_flow = BOOKING_FLOW
+        self.session["flow_step"] = 0
+        self._intent_detected = True
+        logger.info(
+            "[ms_flow] intent=%s → flow[0]=%s",
+            intent, self._active_flow[0]["state"],
+        )
 
     # ── extraction ────────────────────────────────────────────────────────
 
@@ -491,6 +817,36 @@ class FlowEngine:
         # ----- none: no extraction needed (LLM confirmation steps) ------
         if method == "none":
             return True
+
+        # ----- location_selection: Alcester or Redditch ------------------
+        if method == "location_selection":
+            if any(p in text for p in ("alcester", "alchester", "alster", "first", "one", "1")):
+                return "alcester"
+            if any(p in text for p in ("redditch", "reditch", "second", "two", "2")):
+                return "redditch"
+            return None
+
+        # ----- faq_booking: wants to book after FAQ answer ---------------
+        if method == "faq_booking":
+            yes_p = (
+                "yes", "yeah", "book", "booking", "appointment",
+                "please", "sure", "i would", "i'd like",
+            )
+            no_p = (
+                "no", "nope", "that's all", "thats all", "nothing else",
+                "thanks", "thank you", "bye", "goodbye", "no thank",
+            )
+            for p in yes_p:
+                if p in text: return "book"
+            for p in no_p:
+                if p in text: return "done"
+            return None
+
+        # ----- intent: classify first caller utterance -------------------
+        if method == "intent":
+            # Handled as a special case in handle_transcript(); this path
+            # is a safety fallback so _extract() never returns None for it.
+            return self._detect_intent(text)
 
         logger.warning("[ms_flow] unknown extract method: %r", method)
         return None

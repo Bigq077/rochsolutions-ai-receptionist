@@ -581,12 +581,15 @@ class WebSocketCallHandler:
 
                 try:
                     if not self.session.get("flow_started"):
-                        # First caller utterance — kick off the flow
+                        # First caller utterance — detect intent then kick off the flow.
+                        # ask_current_question() is a no-op for DETECT_INTENT (no question
+                        # to play); handle_transcript() classifies the utterance and routes
+                        # to the correct flow, which then asks its first question.
                         self.session["flow_started"] = True
                         logger.info(
                             "[ms_conn] flow start — first utterance: %r", utterance[:80],
                         )
-                        await flow.ask_current_question()
+                        await flow.handle_transcript(utterance)
                     else:
                         logger.info(
                             "[ms_conn] flow transcript: %r  step=%s",

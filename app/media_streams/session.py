@@ -50,6 +50,18 @@ class CallState(str, Enum):
     CONFIRM_BOOKING      = "CONFIRM_BOOKING"
     TRANSFER             = "TRANSFER"
     COMPLETE             = "COMPLETE"
+    # Multi-intent states
+    DETECT_INTENT                   = "DETECT_INTENT"
+    COLLECT_NAME_RESCHEDULE         = "COLLECT_NAME_RESCHEDULE"
+    COLLECT_LOCATION_RESCHEDULE     = "COLLECT_LOCATION_RESCHEDULE"
+    COLLECT_AVAILABILITY_RESCHEDULE = "COLLECT_AVAILABILITY_RESCHEDULE"
+    PRESENT_NEW_SLOTS               = "PRESENT_NEW_SLOTS"
+    CONFIRM_RESCHEDULE              = "CONFIRM_RESCHEDULE"
+    COLLECT_NAME_CANCEL             = "COLLECT_NAME_CANCEL"
+    COLLECT_LOCATION_CANCEL         = "COLLECT_LOCATION_CANCEL"
+    CONFIRM_CANCEL                  = "CONFIRM_CANCEL"
+    ANSWER_FAQ                      = "ANSWER_FAQ"
+    FAQ_BOOKING_OFFER               = "FAQ_BOOKING_OFFER"
 
 
 # Ordered list for forward-only enforcement (TRANSFER/COMPLETE handled separately)
@@ -196,6 +208,13 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
 
     # Timestamps for latency tracking and bad-line detection
     "last_audio_sent_at":    None,   # ISO timestamp of last TTS audio packet sent
+
+    # Multi-intent fields
+    "faq_topic":             None,   # topic passed to get_clinic_info
+    "reschedule_confirmed":  None,   # True after reschedule_appointment succeeds
+    "cancel_confirmed":      None,   # True after cancel_appointment succeeds
+    "faq_answered":          False,  # True after ANSWER_FAQ LLM step completes
+    "faq_booking_response":  None,   # "book" or "done" from FAQ_BOOKING_OFFER
 
     # Fast-path diagnostics
     "fast_path_last_resolved": None, # FastPathTurnType value of last fast-path match
