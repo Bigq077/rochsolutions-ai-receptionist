@@ -149,6 +149,16 @@ class SilenceHandler:
         """Call every time a Twilio audio chunk arrives."""
         self.last_audio_received_at = time.time()
 
+    def on_speech_started(self) -> None:
+        """
+        Call when STT detects the start of a speech segment (partial transcript).
+        Cancels the silence timer so we don't fire a re-ask while the caller
+        is mid-sentence.  on_transcript_received() handles the full reset when
+        the utterance ends.
+        """
+        self._cancel_timer()
+        logger.debug("[ms_silence] speech started — timer cancelled")
+
     def on_question_asked(self, question: str) -> None:
         """
         Update last_question so re-asks have the right text.
@@ -243,12 +253,12 @@ class SilenceHandler:
         if self.currently_reasking:
             return
 
-        # If caller audio arrived very recently, they may be mid-speech —
-        # postpone and wait another 4 s rather than interrupting.
-        since_audio = time.time() - self.last_audio_received_at
-        if since_audio < 3.0:
-            self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
-            return
+        # Note: the old `since_audio < 3.0` guard was removed because Twilio
+        # sends audio packets continuously (every ~20ms) even during silence,
+        # so it caused on_audio_received() to fire constantly and the timer
+        # would never fire.  Speech activity is now handled by on_speech_started()
+        # (called from _on_partial_transcript) which cancels the timer when the
+        # caller is actually speaking.
 
         self.currently_reasking = True
         self._cancel_timer()
@@ -874,6 +884,10 @@ class WebSocketCallHandler:
             return
 
         logger.info("[ms_conn] barge-in: partial=%r", text[:60])
+
+        # Cancel silence timer — caller is speaking, re-ask must not fire mid-sentence.
+        # on_transcript_received() handles the full reset when the utterance ends.
+        self._silence_handler.on_speech_started()
 
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()

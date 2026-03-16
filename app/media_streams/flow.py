@@ -823,10 +823,17 @@ class FlowEngine:
         # ----- slot_selection: which appointment slot the caller chose ---
         if method == "slot_selection":
             offered     = self.session.get("last_offered_slots") or []
+            labels      = self.session.get("slot_labels") or []
             slots_count = self.session.get("slots_count", len(offered) or 3)
 
             def _pick(idx: int) -> Optional[Any]:
-                """Return the slot at 0-based index, or the index string as fallback."""
+                """Return the human-readable slot label at 0-based index.
+                slot_labels contains strings like 'Mon 23 Mar at 09:00'
+                which book_appointment can resolve AND the confirmation phrase
+                can repeat verbatim.  Falls back to raw slot dict (book_appointment
+                handles that too), then to a plain number."""
+                if labels and idx < len(labels):
+                    return labels[idx]
                 if offered and idx < len(offered):
                     return offered[idx]
                 return str(idx + 1)
@@ -838,7 +845,8 @@ class FlowEngine:
                 "final option", "that last one", "the final",
             )
             if any(p in text for p in last_p):
-                idx = min(slots_count, len(offered) if offered else slots_count) - 1
+                available = len(labels) or len(offered) or slots_count
+                idx = min(slots_count, available) - 1
                 logger.info("[ms_flow] slot_selection last/final → idx=%d", idx)
                 return _pick(idx)
 
