@@ -436,13 +436,29 @@ _SLOT_TRIGGER_PHRASES = (
     "would you like",
     "which one works",
 )
-_SLOT_ONE_PATTERNS   = ("one", "1", "first", "the first", "first one", "first slot",
-                        "option one", "that one", "number one", "the first one", "first option")
-_SLOT_TWO_PATTERNS   = ("two", "2", "second", "the second", "second one", "second slot",
-                        "option two", "number two", "second option")
-_SLOT_THREE_PATTERNS = ("three", "3", "third", "the third", "third one", "last",
-                        "last one", "the last one", "third slot", "final one",
-                        "number three", "third option")
+_SLOT_ONE_PATTERNS   = (
+    "first", "one", "1", "the first", "first one", "first slot",
+    "option one", "option 1", "that first", "number one",
+    "the first one", "first option", "the one",
+)
+_SLOT_TWO_PATTERNS   = (
+    "second", "two", "2", "the second", "second one", "second slot",
+    "option two", "option 2", "that second", "number two",
+    "the second one", "second option", "middle one", "the middle one",
+)
+_SLOT_THREE_PATTERNS = (
+    "third", "three", "3", "the third", "third one", "third slot",
+    "option three", "option 3", "that third", "number three",
+    "the third one", "third option",
+)
+# "Last / final" catch-all — maps to the HIGHEST slot presented (slots_count).
+# Checked before numbered patterns to prevent "the last one" matching slot-1
+# via the "one" substring.
+_SLOT_LAST_PATTERNS  = (
+    "last one", "the last one", "final one", "the final one",
+    "the last", "last option", "last slot", "final slot", "final option",
+    "that last one", "the final", "last", "final",
+)
 
 
 def _try_slot_selection(
@@ -454,6 +470,17 @@ def _try_slot_selection(
     if not any(p in last_prompt for p in _SLOT_TRIGGER_PHRASES):
         return None
 
+    slots_count = session.get("slots_count", len(offered))
+
+    # "Last / final" catch-all — maps to the highest slot regardless of number.
+    # Checked first so "the last one" doesn't also match slot-1 via "one".
+    if any(p in norm for p in _SLOT_LAST_PATTERNS):
+        idx = min(slots_count, len(offered)) - 1
+        logger.info("[ms_fast] slot_selection last/final → idx=%d norm=%r", idx, norm)
+        session[F_SELECTED_SLOT] = offered[idx]
+        return None
+
+    # Numbered slot matching
     one   = any(p in norm for p in _SLOT_ONE_PATTERNS)
     two   = any(p in norm for p in _SLOT_TWO_PATTERNS)
     three = any(p in norm for p in _SLOT_THREE_PATTERNS) and len(offered) >= 3
@@ -468,6 +495,7 @@ def _try_slot_selection(
     if idx >= len(offered):
         return None
 
+    logger.info("[ms_fast] slot_selection idx=%d norm=%r", idx, norm)
     session[F_SELECTED_SLOT] = offered[idx]
 
     # Return None — LLM generates the full confirmation sentence with date/time wording.

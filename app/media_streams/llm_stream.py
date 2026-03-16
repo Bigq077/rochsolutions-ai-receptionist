@@ -744,7 +744,11 @@ class LLMStream:
                         # returns slots so the LLM knows not to re-present them.
                         if tool_name == "check_availability" and session.get("last_offered_slots"):
                             session["slots_presented"] = True
-                            logger.info("[ms_llm] slots_presented=True (slots returned by check_availability)")
+                            n = len(session["last_offered_slots"])
+                            session["slots_count"] = n
+                            logger.info(
+                                "[ms_llm] slots_presented=True slots_count=%d", n,
+                            )
                     else:
                         logger.warning("[ms_llm] unknown tool: %s", tool_name)
                         result = {"error": f"Unknown tool: {tool_name}"}

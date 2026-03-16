@@ -26,10 +26,8 @@ Pipeline queues (all asyncio.Queue, unbounded):
   audio_out_queue   : base64-encoded mulaw strings         -> send_loop -> Twilio
 
 Error handling contract:
-  - Dead air rule: no more than 3 seconds of silence while Susie should be speaking
-  - Watchdog timer fires rotating bridge phrases if LLM takes > 3s with no audio
-  - Silence re-ask: if caller silent 5s after a question, re-ask (max 2 times)
-  - After 2 failed re-asks: offer transfer
+  - Silence re-ask: SilenceHandler fires after 4s of caller silence, re-asks
+    the last question up to 2 times; 3rd silence triggers transfer
   - Pipeline failures: each component has fallback phrases; complete failure plays
     pre-recorded message then closes cleanly
   - Unstable call tracking: if call never completes one STT->LLM->TTS cycle,
@@ -50,12 +48,8 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import (
-    SAFE_FALLBACK_PHRASE,
     TWILIO_STARTED_TIMEOUT_SEC,
-    QUESTION_SILENCE_SEC,
-    MAX_REASK_ATTEMPTS,
     REASK_PREFIX,
-    TRANSFER_OFFER_PHRASE,
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
 )
@@ -303,76 +297,112 @@ def _has_availability_info(transcript: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# WatchdogTimer (Bug 4 fix — replaces _watchdog_loop coroutine)
+# SilenceHandler — re-ask after 4 s of caller silence
 # ---------------------------------------------------------------------------
 
-class WatchdogTimer:
+class SilenceHandler:
     """
-    Fires a rotating bridge phrase if no audio has been sent to the caller
-    for 4 seconds after the LLM was called.
+    Fires a re-ask phrase if the caller has been silent for 4 seconds after
+    Susie asked a question.
 
-    arm()    — call when LLM turn starts (transcript received, LLM called)
-    disarm() — call the MOMENT any audio is sent to the caller
+    on_audio_received()         — call on every inbound Twilio audio chunk
+    on_question_asked(text)     — call whenever any text is sent to TTS
+    on_transcript_received()    — call whenever a FinalTranscript arrives
+    cancel()                    — call when the call ends
 
-    Design guarantees:
-      - Only one timer task is running at a time (arm() cancels previous)
-      - disarm() is idempotent and safe to call from any coroutine
-      - 4s wait (vs old 3s) reduces false positives on fast turns
-      - Additional 3.5s audio-recency check inside _run() as belt-and-suspenders
+    Behaviour:
+      - 1st silence  → "Sorry, I didn't quite catch that — <question>"
+      - 2nd silence  → "Sorry about that — <question>"
+      - 3rd silence  → transfer phrase + trigger_transfer()
+      - Timer resets whenever the caller speaks (on_transcript_received)
+      - Timer postpones if caller audio was received < 3 s ago
     """
 
     def __init__(
         self,
         tts_text_queue: asyncio.Queue,
-        session: dict,
-        handler: "WebSocketCallHandler",
+        trigger_transfer_fn,
     ) -> None:
-        self._tts_text_queue = tts_text_queue
-        self._session        = session
-        self._handler        = handler     # used to read _last_audio_at float
-        self._task: Optional[asyncio.Task] = None
-        self.armed: bool = False
+        self.reask_count:             int   = 0
+        self.last_audio_received_at:  float = time.time()
+        self.last_question:           str   = ""
+        self._task: Optional[asyncio.Task]  = None
+        self._tts_text_queue                = tts_text_queue
+        self._trigger_transfer              = trigger_transfer_fn
 
-    def arm(self) -> None:
-        """Arm the watchdog. Must be called from the asyncio event loop."""
-        self.disarm()          # cancel any previous timer
-        self.armed = True
-        self._task = asyncio.create_task(self._run(), name="ms_watchdog_timer")
-        logger.debug("[ms_watchdog] armed")
+    # ── public API ─────────────────────────────────────────────────────────
 
-    def disarm(self) -> None:
-        """Disarm immediately. Safe to call multiple times."""
-        self.armed = False
+    def on_audio_received(self) -> None:
+        """Call every time a Twilio audio chunk arrives."""
+        self.last_audio_received_at = time.time()
+
+    def on_question_asked(self, question: str) -> None:
+        """Call whenever any text is sent to TTS (so it can be re-asked)."""
+        if not question or not question.strip():
+            return
+        self.last_question = question.strip()
+        self.reask_count   = 0
+        self._restart_timer()
+
+    def on_transcript_received(self) -> None:
+        """Call whenever a FinalTranscript arrives from STT."""
+        self.reask_count = 0
+        self._cancel_timer()
+
+    def cancel(self) -> None:
+        """Cancel the timer. Call when the call ends."""
+        self._cancel_timer()
+
+    # ── internal ───────────────────────────────────────────────────────────
+
+    def _restart_timer(self) -> None:
+        self._cancel_timer()
+        self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
+
+    def _cancel_timer(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
 
     async def _run(self) -> None:
-        """
-        Wait 4 s — if still armed and no recent audio, log silently.
-
-        Fix 3: bridge phrases ("bear with me", "one moment") are completely
-        banned.  The silence re-ask loop handles all silence recovery with the
-        "Sorry, I didn't quite catch that" family of phrases.
-        """
         try:
             await asyncio.sleep(4.0)
         except asyncio.CancelledError:
             return
 
-        if not self.armed:
-            return  # disarm() was called while we were sleeping
-
-        since = time.monotonic() - self._handler._last_audio_at
-        if since < 3.5:
-            logger.debug("[ms_watchdog] suppressed — audio sent %.1fs ago", since)
+        # If caller audio arrived very recently, they may be mid-speech —
+        # postpone and wait another 4 s rather than interrupting.
+        since_audio = time.time() - self.last_audio_received_at
+        if since_audio < 3.0:
+            self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
             return
 
-        logger.debug(
-            "[ms_watchdog] %.1fs silence — no bridge phrase emitted (banned per Fix 3)",
-            since,
+        self.reask_count += 1
+        q = self.last_question.strip()
+
+        if self.reask_count == 1:
+            phrase = f"Sorry, I didn't quite catch that — {q}"
+        elif self.reask_count == 2:
+            phrase = f"Sorry about that — {q}"
+        else:
+            await self._transfer()
+            return
+
+        logger.info("[ms_silence] reask #%d: %r", self.reask_count, phrase[:80])
+        await self._tts_text_queue.put(phrase)
+        # Restart timer for the next silence window
+        self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
+
+    async def _transfer(self) -> None:
+        logger.info("[ms_silence] max reasks reached — transferring")
+        await self._tts_text_queue.put(
+            "I'm sorry, I'm having a little trouble "
+            "hearing you — let me get someone to help."
         )
-        self.armed = False  # single-shot
+        try:
+            await self._trigger_transfer()
+        except Exception as exc:
+            logger.error("[ms_silence] transfer error: %r", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -428,17 +458,19 @@ class WebSocketCallHandler:
         self._llm_busy   = False   # True while Claude is generating
 
         # ── Latency / timing ──────────────────────────────────────────────
-        self._last_audio_at:          float = 0.0   # epoch time of last audio sent to Twilio
-        self._last_filler_at:         float = 0.0   # epoch time of last filler phrase played
+        self._last_audio_at:          float = 0.0   # monotonic time of last audio sent to Twilio
+        self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
         self._bad_line_played         = False        # once-per-call bad-line phrase guard
         self._last_audio_received_at: float = 0.0   # monotonic time of last inbound Twilio audio
 
-        # ── Watchdog / silence tracking ────────────────────────────────────
-        self._watchdog: Optional[WatchdogTimer] = None  # armed on each LLM call; disarmed on first audio
-        self._last_transcript_at:  float = 0.0  # time of last FinalTranscript
-        self._last_question_text:  str   = ""    # last thing Susie said (question)
-        self._last_question_at:    float = 0.0   # when last_question was asked
-        self._reask_count:         int   = 0     # how many times we've re-asked
+        # ── Silence handler (4-second re-ask) ─────────────────────────────
+        # Created eagerly so _handle_media can call on_audio_received() before
+        # the LLM loop starts.  tts_text_queue exists from __init__ so it's
+        # safe to pass here.
+        self._silence_handler = SilenceHandler(
+            tts_text_queue=self.tts_text_queue,
+            trigger_transfer_fn=self._on_transfer_request,
+        )
 
         # ── Call stability ─────────────────────────────────────────────────
         # Set True after the first complete STT -> LLM -> TTS cycle.
@@ -464,13 +496,13 @@ class WebSocketCallHandler:
         await self.websocket.accept()
 
         tasks = [
-            asyncio.create_task(self._receive_loop(),       name="ms_receive"),
-            asyncio.create_task(self._audio_in_loop(),      name="ms_audio_in"),
-            asyncio.create_task(self._stt_loop(),           name="ms_stt"),
-            asyncio.create_task(self._llm_loop(),           name="ms_llm"),
-            asyncio.create_task(self._tts_loop(),           name="ms_tts"),
-            asyncio.create_task(self._send_loop(),          name="ms_send"),
-            asyncio.create_task(self._silence_reask_loop(), name="ms_reask"),
+            asyncio.create_task(self._receive_loop(),  name="ms_receive"),
+            asyncio.create_task(self._audio_in_loop(), name="ms_audio_in"),
+            asyncio.create_task(self._stt_loop(),      name="ms_stt"),
+            asyncio.create_task(self._llm_loop(),      name="ms_llm"),
+            asyncio.create_task(self._tts_loop(),      name="ms_tts"),
+            asyncio.create_task(self._send_loop(),     name="ms_send"),
+            # _silence_reask_loop replaced by SilenceHandler (event-driven)
         ]
 
         try:
@@ -631,6 +663,7 @@ class WebSocketCallHandler:
             return
 
         self._last_audio_received_at = time.monotonic()
+        self._silence_handler.on_audio_received()
         self.audio_in_queue.put_nowait(raw_mulaw)
 
     # ========================================================================
@@ -703,7 +736,6 @@ class WebSocketCallHandler:
         from .llm_stream import LLMStream
         from .session import CallState, get_call_state, advance_state
         llm = LLMStream()
-        self._watchdog = WatchdogTimer(self.tts_text_queue, self.session, self)
 
         try:
             while not self._stop_event.is_set():
@@ -740,10 +772,10 @@ class WebSocketCallHandler:
                             utterance[:80],
                         )
                         from .config import Q_AVAILABILITY
-                        last_q = self._last_question_text or Q_AVAILABILITY
+                        last_q = self._silence_handler.last_question or Q_AVAILABILITY
                         reask = REASK_PREFIX + _strip_apology_prefix(last_q)
                         await self.tts_text_queue.put(reask)
-                        self._record_question(reask)
+                        self._silence_handler.on_question_asked(reask)
                         continue
 
                 # GATE 2: extract answers from transcript before LLM sees them
@@ -764,7 +796,7 @@ class WebSocketCallHandler:
                     self.session[F_LAST_BOT_PROMPT] = action.text
                     self.session[F_LAST_QUESTION]   = action.text
                     await self.tts_text_queue.put(action.text)
-                    self._record_question(action.text)
+                    self._silence_handler.on_question_asked(action.text)
                     self.session["awaiting_caller_response"]    = True
                     self.session["awaiting_caller_response_at"] = time.monotonic()
                     await save_session(self.call_sid, self.session)
@@ -785,10 +817,6 @@ class WebSocketCallHandler:
                 self._last_audio_at                    = time.monotonic()
                 self.session["llm_generation_active"]  = True
                 await save_session(self.call_sid, self.session)
-
-                # Bug 4: arm watchdog now — disarmed on first audio out or in finally
-                if self._watchdog:
-                    self._watchdog.arm()
 
                 tts_had_output = False
                 try:
@@ -822,8 +850,6 @@ class WebSocketCallHandler:
                     await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
 
                 finally:
-                    if self._watchdog:
-                        self._watchdog.disarm()   # Bug 4
                     self._llm_busy                         = False
                     self.session["llm_generation_active"]  = False
                     await save_session(self.call_sid, self.session)
@@ -836,22 +862,21 @@ class WebSocketCallHandler:
                 # Log call state after this turn
                 logger.info("[ms_conn] state after turn: %s", self.session.get("state", "UNKNOWN"))
 
-                # Record the QUESTION portion of Susie's last response for the
-                # re-ask watchdog. If the response was a statement (no '?'),
-                # nothing is stored — re-asking a statement makes no sense.
+                # Extract the question from Susie's last LLM response and arm
+                # the silence handler so it can re-ask if the caller goes quiet.
+                # If the response was a statement (no '?') nothing is armed —
+                # re-asking a statement makes no sense.
                 last_prompt = self.session.get("last_bot_prompt", "")
                 if last_prompt:
                     question = _extract_question(last_prompt)
                     if question:
                         logger.info("[ms_conn] last_question stored: %r", question)
-                        self._record_question(question)
-                        # Bug 2: set awaiting_caller_response so the post-question
-                        # guard blocks short filler transcripts until a real reply
+                        self._silence_handler.on_question_asked(question)
                         self.session["awaiting_caller_response"]    = True
                         self.session["awaiting_caller_response_at"] = time.monotonic()
                     else:
                         logger.debug(
-                            "[ms_conn] no question in LLM response — re-ask timer not set"
+                            "[ms_conn] no question in LLM response — silence timer not armed"
                         )
 
         except asyncio.CancelledError:
@@ -983,102 +1008,6 @@ class WebSocketCallHandler:
             logger.error("[ms_conn] _send_loop fatal: %r", exc)
 
     # ========================================================================
-    # Silence / re-ask loop
-    # ========================================================================
-
-    async def _silence_reask_loop(self) -> None:
-        """
-        Re-ask watchdog: if caller has been silent for QUESTION_SILENCE_SEC
-        seconds after Susie asked a question, re-ask (max MAX_REASK_ATTEMPTS times).
-
-        After MAX_REASK_ATTEMPTS failed re-asks, play TRANSFER_OFFER_PHRASE
-        and trigger a transfer attempt.
-
-        Reset by _on_final_transcript_clear() whenever any FinalTranscript arrives.
-
-        Checks every 1 second to keep latency acceptable (1s granularity is fine
-        for a 5-second threshold).
-        """
-        await self._wait_for_start("silence_reask_loop")
-
-        try:
-            while not self._stop_event.is_set():
-                await asyncio.sleep(1.0)
-
-                # Only check if a question has been recorded
-                if self._last_question_at <= 0 or not self._last_question_text:
-                    continue
-
-                # Don't interrupt while something is already playing/generating
-                if self._llm_busy:
-                    continue
-                if self._tts_task is not None and not self._tts_task.done():
-                    continue
-                if not self.tts_text_queue.empty():
-                    continue
-
-                # Check if caller has been silent since the question was asked
-                now = time.monotonic()
-                since_question   = now - self._last_question_at
-                since_transcript = now - self._last_transcript_at if self._last_transcript_at > 0 else float("inf")
-
-                # Don't re-ask if Twilio is actively sending audio — the caller
-                # is speaking right now and AssemblyAI hasn't finalised yet.
-                if self._last_audio_received_at > 0:
-                    since_audio = now - self._last_audio_received_at
-                    if since_audio < 2.0:
-                        continue
-
-                # Must be silent for both thresholds
-                if since_question < QUESTION_SILENCE_SEC:
-                    continue
-                if since_transcript < QUESTION_SILENCE_SEC:
-                    continue
-
-                # Decide: re-ask (levels 1-2) or transfer (level 3+)
-                clean_q = _strip_apology_prefix(self._last_question_text)
-
-                if self._reask_count >= MAX_REASK_ATTEMPTS:
-                    # Fix 4 level 3: beyond MAX_REASK_ATTEMPTS → transfer
-                    logger.warning(
-                        "[ms_reask] max re-asks reached (%d) — offering transfer",
-                        MAX_REASK_ATTEMPTS,
-                    )
-                    transfer_phrase = (
-                        "I'm sorry, I'm having difficulty hearing you. "
-                        "Let me get someone to help — one moment."
-                    )
-                    self.session["request_transfer"] = True
-                    await self.tts_text_queue.put(transfer_phrase)
-                    asyncio.create_task(self._on_transfer_request())
-                    # Reset so this doesn't fire again
-                    self._last_question_at = 0.0
-                    self._last_question_text = ""
-                    self._reask_count = 0
-                    continue
-
-                # Fix 4: level-based re-ask phrases with last question repeated
-                if self._reask_count == 0:
-                    # First silence: gentle re-ask
-                    reask_text = f"Sorry, I didn't quite catch that — {clean_q}"
-                else:
-                    # Second silence: softer apology
-                    reask_text = f"Sorry, I'm having a little trouble hearing you — {clean_q}"
-
-                self._reask_count    += 1
-                self._last_question_at = time.monotonic()  # reset timer for next check
-                logger.info(
-                    "[ms_reask] firing re-ask #%d time_since_question=%.1fs last_question=%r",
-                    self._reask_count, since_question, self._last_question_text[:80],
-                )
-                await self.tts_text_queue.put(reask_text)
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.error("[ms_conn] _silence_reask_loop error: %r", exc)
-
-    # ========================================================================
     # Barge-in
     # ========================================================================
 
@@ -1124,36 +1053,10 @@ class WebSocketCallHandler:
         """
         Called by STTStream on each FinalTranscript to reset _clearing.
         Ensures audio is no longer dropped once the caller finishes speaking.
-        Also resets the silence re-ask tracking.
+        Also resets the SilenceHandler so the re-ask timer is cancelled.
         """
-        self._clearing             = False
-        self._last_transcript_at   = time.monotonic()
-        # Receiving a transcript resets the re-ask counter and question timer
-        self._reask_count          = 0
-        self._last_question_at     = 0.0
-        self._last_question_text   = ""
-
-    # ========================================================================
-    # Question tracking
-    # ========================================================================
-
-    def _record_question(self, text: str) -> None:
-        """
-        Record the last thing Susie said as a potential re-ask candidate.
-
-        Called after each TTS phrase is sent and after each LLM turn.
-        Resets the re-ask counter only when the text actually changes
-        (prevents spamming the same question multiple times from one LLM turn).
-        """
-        text = text.strip()
-        if not text:
-            return
-
-        if text != self._last_question_text:
-            self._last_question_text = text
-            self._last_question_at   = time.monotonic()
-            # Only reset reask_count when a NEW question is recorded
-            # (if the same question is re-asked by the watchdog, count stays)
+        self._clearing = False
+        self._silence_handler.on_transcript_received()
 
     # ========================================================================
     # Greeting injection
@@ -1205,11 +1108,9 @@ class WebSocketCallHandler:
         await save_session(self.call_sid, self.session)
 
         await self.tts_text_queue.put(greeting)
-        # NOTE: do NOT call _record_question(greeting) here.
-        # The greeting is not a re-askable question — storing it causes the
-        # silence re-ask loop to replay the full greeting text verbatim after
-        # 5 s of caller silence. The question tracker is set by the LLM loop
-        # after the first real exchange.
+        # NOTE: do NOT call silence_handler.on_question_asked(greeting) here.
+        # The greeting is not a re-askable question — the SilenceHandler timer
+        # is only armed after the first real question in the conversation.
 
     # ========================================================================
     # Transfer callback
@@ -1282,6 +1183,9 @@ class WebSocketCallHandler:
             return
 
         logger.info("[ms_conn] cleanup call_sid=%s stable=%s", self.call_sid, self._call_stable)
+
+        # Cancel the silence handler timer so it doesn't fire after the call ends
+        self._silence_handler.cancel()
 
         self.session["ws_connected"]          = False
         self.session["stt_active"]            = False

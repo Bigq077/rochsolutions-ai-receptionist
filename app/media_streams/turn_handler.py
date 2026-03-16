@@ -100,12 +100,29 @@ _RETURNING_SIGNALS: frozenset = frozenset({
 })
 
 # Slot ordinals (substring-in-norm matching)
-_SLOT_ONE_PATTERNS   = ("one", "1", "first", "the first", "first one",
-                         "option one", "number one", "first option")
-_SLOT_TWO_PATTERNS   = ("two", "2", "second", "the second", "second one",
-                         "option two", "number two", "second option")
-_SLOT_THREE_PATTERNS = ("three", "3", "third", "the third", "third one",
-                         "option three", "number three", "last", "last one")
+_SLOT_ONE_PATTERNS   = (
+    "first", "one", "1", "the first", "first one", "first slot",
+    "option one", "option 1", "that first", "number one",
+    "the first one", "first option",
+)
+_SLOT_TWO_PATTERNS   = (
+    "second", "two", "2", "the second", "second one", "second slot",
+    "option two", "option 2", "that second", "number two",
+    "the second one", "second option", "middle one", "the middle one",
+)
+_SLOT_THREE_PATTERNS = (
+    "third", "three", "3", "the third", "third one", "third slot",
+    "option three", "option 3", "that third", "number three",
+    "the third one", "third option",
+)
+# "Last/final" catch-all — always maps to the highest slot presented.
+# Checked BEFORE numbered patterns so "the last one" can't ambiguously
+# match both "last" (→ slot 3) and "one" (→ slot 1) at the same time.
+_SLOT_LAST_PATTERNS  = (
+    "last one", "the last one", "final one", "the final one",
+    "the last", "last option", "last slot", "final slot", "final option",
+    "that last one", "the final",
+)
 
 
 def update_session_from_transcript(session: dict, transcript: str) -> None:
@@ -194,15 +211,30 @@ def update_session_from_transcript(session: dict, transcript: str) -> None:
     elif state == CallState.PRESENT_SLOTS:
         offered = session.get("last_offered_slots") or []
         if offered and not session.get("selected_slot"):
-            one   = any(p in norm for p in _SLOT_ONE_PATTERNS)
-            two   = any(p in norm for p in _SLOT_TWO_PATTERNS)
-            three = any(p in norm for p in _SLOT_THREE_PATTERNS) and len(offered) >= 3
-            matches = sum([one, two, three])
-            if matches == 1:
-                idx = 0 if one else (1 if two else 2)
-                if idx < len(offered):
-                    session["selected_slot"] = offered[idx]
-                    logger.info("[ms_gate2] selected_slot idx=%d from %r", idx, transcript[:60])
+            slots_count = session.get("slots_count", len(offered))
+
+            # "Last / final" catch-all — maps to the highest slot presented.
+            # Checked first so "the last one" is never split across matchers.
+            if any(p in norm for p in _SLOT_LAST_PATTERNS):
+                idx = min(slots_count, len(offered)) - 1
+                session["selected_slot"] = offered[idx]
+                logger.info(
+                    "[ms_gate2] selected_slot idx=%d (last/final) from %r",
+                    idx, transcript[:60],
+                )
+            else:
+                one   = any(p in norm for p in _SLOT_ONE_PATTERNS)
+                two   = any(p in norm for p in _SLOT_TWO_PATTERNS)
+                three = any(p in norm for p in _SLOT_THREE_PATTERNS) and len(offered) >= 3
+                matches = sum([one, two, three])
+                if matches == 1:
+                    idx = 0 if one else (1 if two else 2)
+                    if idx < len(offered):
+                        session["selected_slot"] = offered[idx]
+                        logger.info(
+                            "[ms_gate2] selected_slot idx=%d from %r",
+                            idx, transcript[:60],
+                        )
 
     # ── full_name ─────────────────────────────────────────────────────────────
     elif state == CallState.COLLECT_NAME and not collected.get("full_name"):
