@@ -126,8 +126,6 @@ class FastPathTurnType(str, Enum):
     Used to tag session["fast_path_last_resolved"] for debugging and metrics.
     NOTE: CLINIC_SELECTION removed — single-site deployment, no clinic routing.
     """
-    PHONE_CONFIRM_YES = "phone_confirm_yes"   # caller confirmed Twilio caller-ID number
-    PHONE_CONFIRM_NO  = "phone_confirm_no"    # caller rejected Twilio caller-ID number
     NEW_RETURNING     = "new_returning"
     YES_NO            = "yes_no"
     FULL_NAME         = "full_name"
@@ -427,26 +425,6 @@ SILENCE_RULE = (
     "If you are about to say any of these — STOP. Say nothing instead. "
     "The system will handle silence automatically.\n"
     "Silence after a question is completely normal in a phone call — wait for it.\n"
-)
-
-# ---------------------------------------------------------------------------
-# Phone confirm prompts (Bug 4 fix)
-# ---------------------------------------------------------------------------
-
-# Played (via fast-path, no LLM) when the Twilio caller-ID number is present
-# and we need to confirm whether to use it for the booking.
-PHONE_CONFIRM_QUESTION = (
-    "Just to confirm — shall I use the number you're calling from "
-    "for the booking?"
-)
-
-PHONE_CONFIRM_YES_REPLY = (
-    "Perfect — and could I take your full name please?"
-)
-
-PHONE_CONFIRM_NO_REPLY = (
-    "No problem — what number would you like to use for the booking? "
-    "Could you give me the first five digits?"
 )
 
 # ---------------------------------------------------------------------------

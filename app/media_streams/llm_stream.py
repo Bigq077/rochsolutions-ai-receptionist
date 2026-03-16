@@ -253,7 +253,7 @@ class LLMStream:
         # (no LLM round-trip) so the wording is always deterministic.
         from .session import get_call_state, CallState, advance_state
         _state_now = get_call_state(session)
-        if _state_now in (CallState.GREETING, CallState.PHONE_CONFIRM, CallState.NEW_OR_RETURNING):
+        if _state_now in (CallState.GREETING, CallState.NEW_OR_RETURNING):
             _norm = user_text.lower()
             _has_intent = any(kw in _norm for kw in BOOKING_INTENT_KEYWORDS)
             if _has_intent:
@@ -885,39 +885,24 @@ def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
     """
     Advance call state after a fast-path resolution.
 
-    Some transitions are conditional on session state (e.g. CLINIC_SELECTION
-    advances to PHONE_CONFIRM when Twilio caller-ID is present, otherwise to
-    NEW_OR_RETURNING; FULL_NAME skips phone collection when phone is confirmed).
+    FULL_NAME skips phone collection when phone is already known from Twilio.
     """
     from .config import FastPathTurnType
 
-    # ── PHONE_CONFIRM responses ───────────────────────────────────────────────
-    # PHONE_CONFIRM_YES: phone confirmed, reply asks for full name → COLLECT_NAME
-    if turn_type == FastPathTurnType.PHONE_CONFIRM_YES:
-        advance_state(session, CallState.COLLECT_NAME)
-        return
-
-    # PHONE_CONFIRM_NO: phone cleared, need new/returning → COLLECT_NAME → phone later
-    if turn_type == FastPathTurnType.PHONE_CONFIRM_NO:
-        advance_state(session, CallState.NEW_OR_RETURNING)
-        return
-
-    # ── FULL_NAME: skip phone collection if Twilio number was confirmed ───────
+    # ── FULL_NAME: skip phone collection if Twilio number is already known ────
     if turn_type == FastPathTurnType.FULL_NAME:
         collected = session.get(F_COLLECTED) or {}
         if session.get(F_PHONE_COLLECTED_FROM_TWILIO) and collected.get("phone"):
-            # Phone already confirmed — jump straight to availability
+            # Phone already known — jump straight to availability
             advance_state(session, CallState.COLLECT_AVAILABILITY)
         else:
-            advance_state(session, CallState.COLLECT_PHONE_PART_ONE)
+            advance_state(session, CallState.COLLECT_PHONE)
         return
 
     # ── Static transitions ────────────────────────────────────────────────────
     _MAP = {
-        FastPathTurnType.NEW_RETURNING:     CallState.COLLECT_NAME,
-        FastPathTurnType.PHONE_FIRST_FIVE:  CallState.COLLECT_PHONE_PART_TWO,
-        FastPathTurnType.PHONE_LAST_SIX:    CallState.COLLECT_AVAILABILITY,
-        FastPathTurnType.SLOT_SELECTION:    CallState.CONFIRM_BOOKING,
+        FastPathTurnType.NEW_RETURNING:  CallState.COLLECT_NAME,
+        FastPathTurnType.SLOT_SELECTION: CallState.CONFIRM_BOOKING,
     }
     next_state = _MAP.get(turn_type)
     if next_state:

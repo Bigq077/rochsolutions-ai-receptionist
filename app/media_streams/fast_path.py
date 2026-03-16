@@ -40,9 +40,6 @@ from .config import (
     F_FAST_PATH_LAST_RESOLVED,
     F_TWILIO_FROM,
     F_PHONE_COLLECTED_FROM_TWILIO,
-    PHONE_CONFIRM_QUESTION,
-    PHONE_CONFIRM_YES_REPLY,
-    PHONE_CONFIRM_NO_REPLY,
 )
 
 logger = logging.getLogger(__name__)
@@ -307,9 +304,9 @@ def _try_full_name(
     session[F_COLLECTED]["full_name"] = name_stored
     session[F_COLLECTED]["name"]      = name_stored
 
-    # Build reply — fork on whether phone was already confirmed via PHONE_CONFIRM.
-    # If confirmed: phone is in collected["phone"], skip directly to availability.
-    # If not confirmed: either ask to confirm Twilio number or ask for first 5 digits.
+    # Build reply — fork on whether phone is already known from Twilio caller-ID.
+    # If known: phone is in collected["phone"], skip directly to availability.
+    # If not: ask for the phone number.
     phone_already_confirmed = (
         session.get(F_PHONE_COLLECTED_FROM_TWILIO)
         and bool(session.get(F_COLLECTED, {}).get("phone"))
@@ -423,112 +420,6 @@ def _try_phone_last_six(
         response_text=reply,
         needs_llm_followup=False,
     )
-
-
-# ---------------------------------------------------------------------------
-# Slot 6b -- Phone number confirmation (Bug 4)
-# ---------------------------------------------------------------------------
-#
-# Fires when state == PHONE_CONFIRM: caller has been asked whether to use
-# the Twilio caller-ID number.  Handles yes and no paths explicitly.
-#
-# YES → keep phone, advance to COLLECT_NAME (fast-path replies directly)
-# NO  → clear phone / phone_from_twilio, advance to NEW_OR_RETURNING
-#       (LLM will ask new/returning, then name, then first-5 for phone)
-# ---------------------------------------------------------------------------
-
-_PHONE_CONFIRM_TRIGGER_PHRASES = (
-    "use the number you're calling from",
-    "use the number you are calling from",
-    "shall i use",
-    "shall we use",
-    "calling from for the booking",
-    "number you're calling",
-    "number you are calling",
-    "use that number",
-    "that number for the booking",
-    PHONE_CONFIRM_QUESTION.lower(),
-)
-
-# Fix 6: all informal yes variants included
-_PHONE_CONFIRM_YES_WORDS = frozenset({
-    "yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup",
-    "sure", "correct", "that's fine", "thats fine",
-    "that one", "use that", "yes please", "that's the one", "go ahead",
-    "ok", "okay", "fine", "sounds good", "that works", "please", "perfect",
-    "great",
-})
-
-_PHONE_CONFIRM_NO_WORDS = frozenset({
-    "no", "nope", "different", "another", "use another", "different number",
-    "no different", "actually no", "not that one", "different one", "nah",
-    "no thanks",
-})
-
-
-def _try_phone_confirm(
-    last_prompt: str, norm: str, raw: str, session: Dict[str, Any],
-) -> Optional[FastPathResult]:
-    """
-    Handles caller's yes/no response to the phone-number confirmation question.
-
-    Trigger: state == PHONE_CONFIRM (checked in dispatch) AND last_prompt
-    contains phone-confirm language — double-checked here for safety.
-    """
-    # Double-check: only fire if last prompt was actually asking about the phone.
-    if not any(p in last_prompt for p in _PHONE_CONFIRM_TRIGGER_PHRASES):
-        # Fallback: state==PHONE_CONFIRM without trigger phrase is unusual;
-        # fire anyway since the state guard already scoped us here.
-        logger.debug("[ms_fast] phone_confirm: no trigger in last_prompt — firing anyway")
-
-    words = set(norm.strip().split())
-    is_yes = bool(words & _PHONE_CONFIRM_YES_WORDS) or any(p in norm for p in (
-        "use that", "sounds good", "that works", "that's fine", "thats fine",
-        "yes please", "go ahead",
-    ))
-    is_no = bool(words & _PHONE_CONFIRM_NO_WORDS) or any(p in norm for p in (
-        "use another", "different number", "actually no", "not that one",
-    ))
-
-    if is_yes and is_no:
-        logger.info("[ms_fast_path] phone_confirm conflict norm=%r", norm)
-        return None
-    if not is_yes and not is_no:
-        return None
-
-    if is_yes:
-        logger.info("[ms_fast_path] phone_confirm YES — keeping Twilio number")
-        # Phone stays in collected["phone"]; phone_from_twilio stays True.
-        # Set the explicit confirmed flag so _try_full_name skips asking again.
-        session[F_PHONE_COLLECTED_FROM_TWILIO] = True
-
-        reply = PHONE_CONFIRM_YES_REPLY
-        session[F_LAST_BOT_PROMPT] = reply
-        session[F_LAST_QUESTION]   = reply
-
-        return FastPathResult(
-            turn_type=FastPathTurnType.PHONE_CONFIRM_YES,
-            value="yes",
-            response_text=reply,
-            needs_llm_followup=False,
-        )
-    else:
-        logger.info("[ms_fast_path] phone_confirm NO — clearing Twilio number")
-        # Caller wants a different number: clear it so normal 5+6 flow kicks in.
-        session[F_PHONE_COLLECTED_FROM_TWILIO] = False
-        session.setdefault(F_COLLECTED, {})
-        session[F_COLLECTED].pop("phone", None)
-
-        reply = PHONE_CONFIRM_NO_REPLY
-        session[F_LAST_BOT_PROMPT] = reply
-        session[F_LAST_QUESTION]   = reply
-
-        return FastPathResult(
-            turn_type=FastPathTurnType.PHONE_CONFIRM_NO,
-            value="no",
-            response_text=reply,
-            needs_llm_followup=False,
-        )
 
 
 # ---------------------------------------------------------------------------
