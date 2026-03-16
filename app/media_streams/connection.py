@@ -41,6 +41,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -89,6 +90,119 @@ def _drain_queue(q: asyncio.Queue) -> int:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Prefixes that Susie sometimes opens her question with — strip them before
+# prepending REASK_PREFIX so the re-ask never reads "Sorry about that — Sorry, ..."
+_APOLOGY_PREFIXES = (
+    "Sorry about that — ",
+    "Sorry about that — ",   # em-dash variant (U+2014)
+    "Sorry about that - ",
+    "I'm sorry — ",
+    "I'm sorry, ",
+    "Sorry — ",
+    "Sorry, ",
+    "Apologies — ",
+    "Apologies, ",
+)
+
+def _strip_apology_prefix(text: str) -> str:
+    """
+    Strip any leading apology phrase from a question so re-asks don't
+    double-up: "Sorry about that — Sorry, could you...".
+    """
+    stripped = text
+    for prefix in _APOLOGY_PREFIXES:
+        if stripped.lower().startswith(prefix.lower()):
+            stripped = stripped[len(prefix):].lstrip()
+            break   # only strip once (no nested apologies)
+    return stripped or text  # never return empty
+
+
+# ---------------------------------------------------------------------------
+# Hardcoded greeting (Bug 4 — fast startup, no LLM round-trip)
+# ---------------------------------------------------------------------------
+
+# Deterministic Theorem Health greeting. Used as the immediate default so
+# TTS starts within one asyncio tick of call connect — before the dynamic
+# _build_greeting import completes on first call. Falls back to the dynamic
+# clinic-specific greeting if _build_greeting returns a valid string.
+_THEOREM_GREETING = (
+    "Hi there, this is Susie, Theorem Health's AI receptionist. "
+    "Are you calling about our Alcester clinic or our Redditch one?"
+)
+
+
+# ---------------------------------------------------------------------------
+# Question extraction helper (Bug 1 — store only question, not full response)
+# ---------------------------------------------------------------------------
+
+# Splits on sentence boundaries: after . ! ? followed by whitespace
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+# Opener affirmations to strip from the extracted question before storing.
+# These are the phrases that Claude sometimes prepends even though they're
+# banned — stripping here ensures the re-ask sounds natural regardless.
+_RESPONSE_OPENER_PREFIXES = (
+    "Absolutely, ",
+    "Certainly, ",
+    "Of course, ",
+    "Sure, ",
+    "Great, ",
+    "Sorry, ",
+)
+
+
+def _extract_question(text: str) -> str:
+    """
+    Extract the question portion from an LLM response.
+
+    Splits the response into sentences and returns the LAST sentence that
+    ends with '?'.  If no sentence ends with '?', returns '' — meaning the
+    response was a statement, not a question, and the re-ask watchdog should
+    NOT be set (re-asking a statement like "Okay, that's noted." makes no sense).
+
+    Also strips any banned opener affirmation from the front of the extracted
+    question before returning it, so re-asks never sound like
+    "Sorry about that — Absolutely, could you...".
+
+    Examples:
+      "Right, Alcester. And have you been to us before?"
+        → "And have you been to us before?"
+      "Okay, that's noted."
+        → ""  (statement — no re-ask)
+      "Absolutely, what time works best for you?"
+        → "What time works best for you?"
+      "Right, just checking what we have available around that time..."
+        → ""  (no '?' — don't re-ask a bridge phrase)
+    """
+    if not text or "?" not in text:
+        return ""
+
+    # Split into individual sentences
+    sentences = _SENTENCE_END_RE.split(text.strip())
+
+    # Walk backwards: take the LAST question sentence
+    question = ""
+    for sentence in reversed(sentences):
+        s = sentence.strip()
+        if s.endswith("?"):
+            question = s
+            break
+
+    if not question:
+        return ""
+
+    # Strip any banned opener prefix (case-insensitive, strip only once)
+    for prefix in _RESPONSE_OPENER_PREFIXES:
+        if question.lower().startswith(prefix.lower()):
+            question = question[len(prefix):].lstrip()
+            # Re-capitalise after stripping
+            if question:
+                question = question[0].upper() + question[1:]
+            break
+
+    return question.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +528,7 @@ class WebSocketCallHandler:
                     )
                     continue
 
-                logger.info("[ms_conn] LLM turn: %r", utterance[:120])
+                logger.info("[ms_conn] transcript received: %r", utterance[:120])
                 self._llm_busy                         = True
                 self.session["llm_generation_active"]  = True
                 await save_session(self.call_sid, self.session)
@@ -432,6 +546,10 @@ class WebSocketCallHandler:
                         on_transfer=self._on_transfer_request,
                     )
                     tts_had_output = True
+                    # Diagnostic: log the assembled LLM response
+                    _resp = self.session.get("last_bot_prompt", "")
+                    if _resp:
+                        logger.info("[ms_conn] LLM response: %r", _resp[:120])
 
                 except asyncio.CancelledError:
                     pass
@@ -451,10 +569,22 @@ class WebSocketCallHandler:
                     self._call_stable = True
                     logger.info("[ms_conn] call reached stable state")
 
-                # Record last question for re-ask watchdog
+                # Log call state after this turn
+                logger.info("[ms_conn] state after turn: %s", self.session.get("state", "UNKNOWN"))
+
+                # Record the QUESTION portion of Susie's last response for the
+                # re-ask watchdog. If the response was a statement (no '?'),
+                # nothing is stored — re-asking a statement makes no sense.
                 last_prompt = self.session.get("last_bot_prompt", "")
                 if last_prompt:
-                    self._record_question(last_prompt)
+                    question = _extract_question(last_prompt)
+                    if question:
+                        logger.info("[ms_conn] last_question stored: %r", question)
+                        self._record_question(question)
+                    else:
+                        logger.debug(
+                            "[ms_conn] no question in LLM response — re-ask timer not set"
+                        )
 
         except asyncio.CancelledError:
             pass
@@ -698,13 +828,14 @@ class WebSocketCallHandler:
                     self._reask_count = 0
                     continue
 
-                # Re-ask
-                reask_text = REASK_PREFIX + self._last_question_text
+                # Re-ask — strip any apology prefix from the stored question first
+                # so we never get "Sorry about that — Sorry, could you..." double-up.
+                reask_text = REASK_PREFIX + _strip_apology_prefix(self._last_question_text)
                 self._reask_count    += 1
                 self._last_question_at = time.monotonic()  # reset timer for next check
                 logger.info(
-                    "[ms_reask] re-ask #%d: %r",
-                    self._reask_count, reask_text[:80],
+                    "[ms_reask] firing re-ask #%d time_since_question=%.1fs last_question=%r",
+                    self._reask_count, since_question, self._last_question_text[:80],
                 )
                 await self.tts_text_queue.put(reask_text)
 
@@ -808,13 +939,20 @@ class WebSocketCallHandler:
             logger.info("[ms_conn] greeting already delivered — skipping")
             return
 
+        # Fast path: use hardcoded constant so TTS starts within one asyncio
+        # tick of the start event — no imports, no function calls required.
+        # _build_greeting is still called to support multi-clinic deployments;
+        # its result overrides the constant only when it returns a valid string.
+        greeting = _THEOREM_GREETING
         try:
             from app.clinic_config import get_clinic
             from app.routes.twilio import _build_greeting
             clinic   = get_clinic(self.session.get("clinic_id"))
-            greeting = _build_greeting(clinic)
+            _dynamic = _build_greeting(clinic)
+            if _dynamic and len(_dynamic.strip()) > 20:
+                greeting = _dynamic
         except Exception:
-            greeting = "Hello, this is Susie. How can I help you today?"
+            pass  # fall through to hardcoded _THEOREM_GREETING
 
         logger.info("[ms_conn] greeting: %r", greeting[:80])
 

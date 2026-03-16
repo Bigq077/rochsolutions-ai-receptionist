@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import date, timedelta
 from typing import Any, Callable, Coroutine, Dict, List, Optional
@@ -311,7 +312,11 @@ class LLMStream:
         if not transfer_initiated:
             _append_history(session, user_text, full_reply)
             session[F_LAST_BOT_PROMPT] = full_reply
-            session[F_LAST_QUESTION]   = full_reply
+            # Store only the question portion in F_LAST_QUESTION.
+            # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
+            # matching; F_LAST_QUESTION is narrowed to the actual question
+            # sentence so the re-ask watchdog only replays real questions.
+            session[F_LAST_QUESTION] = _question_from_response(full_reply)
 
         await save_session(call_sid, session)
 
@@ -751,3 +756,49 @@ def _append_history(
     if len(history) > MAX_HISTORY_TURNS:
         session["conversation_history"] = history[-MAX_HISTORY_TURNS:]
     session.setdefault("turns", []).append({"role": "assistant", "text": assistant_text})
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_LLM_OPENER_PREFIXES = (
+    "Absolutely, ",
+    "Certainly, ",
+    "Of course, ",
+    "Sure, ",
+    "Great, ",
+    "Sorry, ",
+)
+
+
+def _question_from_response(text: str) -> str:
+    """
+    Extract the last question sentence from an LLM response for F_LAST_QUESTION.
+
+    Returns the last sentence ending with '?', with any banned opener affirmation
+    stripped from the start.  Returns '' if the response contains no question
+    (so the re-ask watchdog is not incorrectly armed on statement-only responses).
+
+    Mirrors the logic in connection._extract_question — kept as a local copy
+    to avoid a circular import between llm_stream.py and connection.py.
+    """
+    if not text or "?" not in text:
+        return ""
+
+    sentences = _SENTENCE_SPLIT_RE.split(text.strip())
+    question  = ""
+    for sentence in reversed(sentences):
+        s = sentence.strip()
+        if s.endswith("?"):
+            question = s
+            break
+
+    if not question:
+        return ""
+
+    for prefix in _LLM_OPENER_PREFIXES:
+        if question.lower().startswith(prefix.lower()):
+            question = question[len(prefix):].lstrip()
+            if question:
+                question = question[0].upper() + question[1:]
+            break
+
+    return question.strip()

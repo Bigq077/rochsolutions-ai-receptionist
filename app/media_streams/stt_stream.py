@@ -376,6 +376,31 @@ class STTStream:
                 "sending audio anyway (check Begin message handling)"
             )
 
+        # Flush any audio that accumulated in the buffer DURING the handshake.
+        # On reconnects this prevents stale pre-Begin audio from corrupting the
+        # new session (which would make the first real word appear cut-off because
+        # AssemblyAI was confused by out-of-context audio at the session start).
+        # flush() sends if >= 50ms, silently discards if too short.
+        pre_begin = chunk_buffer.flush()
+        if pre_begin:
+            logger.debug(
+                "[ms_stt] send: flushed %d pre-Begin bytes (%.1fms) to new session",
+                len(pre_begin),
+                len(pre_begin) / (AudioChunkBuffer.SAMPLE_RATE
+                                  * AudioChunkBuffer.BYTES_PER_SAMPLE) * 1000,
+            )
+            try:
+                await ws.send(pre_begin)
+            except Exception:
+                return
+        else:
+            if chunk_buffer.buffer:
+                logger.debug(
+                    "[ms_stt] send: discarded %d pre-Begin bytes (< 50ms minimum)",
+                    len(chunk_buffer.buffer),
+                )
+                chunk_buffer.buffer = bytearray()
+
         # 10ms silence at 16kHz PCM16 = 320 bytes.
         # Goes through chunk_buffer so it never reaches AssemblyAI at 10ms size.
         KEEPALIVE_BYTES = bytes(320)

@@ -108,6 +108,7 @@ def try_fast_path(
     # State-aware handler dispatch — only run handlers valid for current step.
     # Falls back to full list if state is unrecognised (safe default).
     state = get_call_state(session)
+    logger.debug("[ms_fast] checking transcript=%r state=%s", transcript[:60], state.value)
     if state == CallState.COLLECT_PHONE_PART_TWO:
         handlers = [_try_phone_last_six, _try_yes_no_confirmation]
     elif state == CallState.COLLECT_PHONE_PART_ONE:
@@ -134,11 +135,15 @@ def try_fast_path(
         if result is not None:
             session[F_FAST_PATH_LAST_RESOLVED] = result.turn_type.value
             logger.info(
-                "[ms_fast_path] resolved turn_type=%s needs_llm=%s value=%r state=%s",
-                result.turn_type.value, result.needs_llm_followup, result.value, state.value,
+                "[ms_fast] transcript=%r state=%s resolved=%s",
+                transcript[:60], state.value, result.turn_type.value,
             )
             return result
 
+    logger.debug(
+        "[ms_fast] transcript=%r state=%s resolved=None",
+        transcript[:60], state.value,
+    )
     return None
 
 
