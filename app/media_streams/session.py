@@ -37,30 +37,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class CallState(str, Enum):
-    GREETING               = "GREETING"
-    # CLINIC_SELECTION removed — single-site deployment, no clinic routing needed.
-    PHONE_CONFIRM          = "PHONE_CONFIRM"    # confirm Twilio caller-ID number
-    NEW_OR_RETURNING       = "NEW_OR_RETURNING"
-    COLLECT_NAME           = "COLLECT_NAME"
-    COLLECT_PHONE_PART_ONE = "COLLECT_PHONE_PART_ONE"
-    COLLECT_PHONE_PART_TWO = "COLLECT_PHONE_PART_TWO"
-    COLLECT_AVAILABILITY   = "COLLECT_AVAILABILITY"
-    PRESENT_SLOTS          = "PRESENT_SLOTS"
-    CONFIRM_BOOKING        = "CONFIRM_BOOKING"
-    TRANSFER               = "TRANSFER"
-    COMPLETE               = "COMPLETE"
+    GREETING             = "GREETING"
+    COLLECT_REASON       = "COLLECT_REASON"
+    COLLECT_DURATION     = "COLLECT_DURATION"
+    CONFIRM_ASSESSMENT   = "CONFIRM_ASSESSMENT"
+    NEW_OR_RETURNING     = "NEW_OR_RETURNING"
+    COLLECT_AVAILABILITY = "COLLECT_AVAILABILITY"
+    PRESENT_SLOTS        = "PRESENT_SLOTS"
+    COLLECT_NAME         = "COLLECT_NAME"
+    COLLECT_PHONE        = "COLLECT_PHONE"
+    CONFIRM_BOOKING      = "CONFIRM_BOOKING"
+    TRANSFER             = "TRANSFER"
+    COMPLETE             = "COMPLETE"
 
 
 # Ordered list for forward-only enforcement (TRANSFER/COMPLETE handled separately)
 _STATE_ORDER = [
     CallState.GREETING,
-    CallState.PHONE_CONFIRM,          # confirm Twilio number (if present) before new/returning
+    CallState.COLLECT_REASON,
+    CallState.COLLECT_DURATION,
+    CallState.CONFIRM_ASSESSMENT,
     CallState.NEW_OR_RETURNING,
-    CallState.COLLECT_NAME,
-    CallState.COLLECT_PHONE_PART_ONE,
-    CallState.COLLECT_PHONE_PART_TWO,
     CallState.COLLECT_AVAILABILITY,
     CallState.PRESENT_SLOTS,
+    CallState.COLLECT_NAME,
+    CallState.COLLECT_PHONE,
     CallState.CONFIRM_BOOKING,
     CallState.COMPLETE,
 ]
@@ -162,6 +163,12 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "_fast_path_final_confirmed":  False,  # Caller confirmed final booking summary
     "_fast_path_correction_needed": False, # Caller said "no" to a confirmation
     "_fast_path_full_phone":       None,   # Assembled 11-digit phone from two-part
+
+    # New booking flow intake fields
+    "reason":              None,   # Why caller is booking (their condition)
+    "duration":            None,   # How long they've had the condition
+    "assessment_confirmed": None,  # True when caller confirms physiotherapy assessment
+    "phone_number":        None,   # Caller phone number (single field, replaces two-part)
 
     # Caller phone numbers from Twilio
     "twilio_from":       None,   # Caller's inbound number (E.164)

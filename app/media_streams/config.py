@@ -207,6 +207,64 @@ MAX_REASK_ATTEMPTS = 2
 # Prefix added before the re-asked question text
 REASK_PREFIX = "Sorry about that — "
 
+# ---------------------------------------------------------------------------
+# Booking flow: hardcoded question constants
+# ---------------------------------------------------------------------------
+# These are spoken verbatim — the LLM never touches these turns.
+
+BOOKING_OPEN = (
+    "Of course you can book an appointment — "
+    "what brings you in today?"
+)
+Q_RECOMMEND = (
+    "OK, that's noted. To get the best possible "
+    "diagnosis initially I would recommend a "
+    "physiotherapy assessment — does that sound OK?"
+)
+Q_NEW_OR_RETURNING = "Have you been with us before?"
+Q_AVAILABILITY     = "What days or times work best for you?"
+Q_CHECKING         = "Let me check what we have available for you."
+Q_NAME             = "Could I take your full name please?"
+Q_PHONE            = "And the best number to reach you on?"
+
+# ---------------------------------------------------------------------------
+# Per-state LLM instructions (injected into system prompt for LLM-only turns)
+# ---------------------------------------------------------------------------
+# Keyed by CallState value string. Injected into state_ctx in llm_stream.py.
+
+LLM_STATE_INSTRUCTIONS: dict = {
+    "COLLECT_DURATION": (
+        "[LLM INSTRUCTION FOR THIS TURN ONLY]\n"
+        "The caller has just told you why they are coming in.\n"
+        "Your response MUST:\n"
+        "1. Be exactly ONE sentence of genuine empathy about their specific condition — not generic.\n"
+        "2. End with EXACTLY: '— how long have you had that?'\n"
+        "3. Contain NOTHING else. No other questions. No filler.\n"
+        "Correct example: 'I'm sorry to hear that, back pain can be really debilitating "
+        "— how long have you had that?'\n"
+        "Do not deviate from this format under any circumstances."
+    ),
+    "PRESENT_SLOTS": (
+        "[LLM INSTRUCTION FOR THIS TURN]\n"
+        "You are in the slot-presentation step.\n"
+        "Your FIRST sentence must be EXACTLY: 'Let me check what we have available for you.'\n"
+        "Then call the check_availability tool.\n"
+        "After receiving the tool result, present up to 3 slots in EXACTLY this format:\n"
+        "'I have found [number] available slots during that time frame. "
+        "The first being [DAY DATE at TIME], the second being [DAY DATE at TIME], "
+        "the third being [DAY DATE at TIME]. Which would you prefer?'\n"
+        "Never deviate from this format."
+    ),
+    "CONFIRM_BOOKING": (
+        "[LLM INSTRUCTION FOR THIS TURN]\n"
+        "Confirm the booking with a warm, brief spoken summary.\n"
+        "Include: patient name, appointment type (physiotherapy assessment), "
+        "the confirmed date and time, and the clinic location.\n"
+        "Tell them a confirmation text will follow.\n"
+        "Keep it under 3 sentences. Warm and reassuring."
+    ),
+}
+
 # Played if caller is still silent after MAX_REASK_ATTEMPTS re-asks
 TRANSFER_OFFER_PHRASE = (
     "I'm having a little trouble hearing you — "
@@ -325,16 +383,12 @@ F_PHONE_COLLECTED_FROM_TWILIO = "phone_from_twilio"   # True when phone came fro
 
 # Noise-only ASR transcriptions that count as silence (not real speech)
 # ---------------------------------------------------------------------------
-# Booking opening line (Bug 2 fix — hardcoded, never varies)
+# Booking opening line (hardcoded, never varies)
 # ---------------------------------------------------------------------------
 
-# This EXACT line is injected via TTS whenever booking intent is detected,
+# This EXACT line is injected via TTS on the first caller utterance,
 # bypassing the LLM entirely so the wording is deterministic every time.
-# Single-site deployment — no clinic selection question.
-BOOKING_OPEN = (
-    "Of course you can book an appointment — "
-    "have you been with us before?"
-)
+# NOTE: BOOKING_OPEN is now defined above in the booking flow constants section.
 
 # Booking intent keywords — matched against normalised transcript to detect
 # when the caller expresses intent to book.

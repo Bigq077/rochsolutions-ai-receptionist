@@ -117,38 +117,20 @@ def try_fast_path(
     state = get_call_state(session)
     logger.debug("[ms_fast] checking transcript=%r state=%s phone_from_twilio=%s",
                  transcript[:60], state.value, phone_already_known)
-    if state == CallState.PHONE_CONFIRM:
-        handlers = [_try_phone_confirm]
-    elif state == CallState.COLLECT_PHONE_PART_TWO:
-        if phone_already_known:
-            handlers = [_try_yes_no_confirmation]
-        else:
-            handlers = [_try_phone_last_six, _try_yes_no_confirmation]
-    elif state == CallState.COLLECT_PHONE_PART_ONE:
-        if phone_already_known:
-            handlers = [_try_yes_no_confirmation]
-        else:
-            handlers = [_try_phone_first_five, _try_yes_no_confirmation]
-    elif state == CallState.COLLECT_NAME:
-        handlers = [_try_full_name]
+    # New booking flow state dispatch
+    if state == CallState.PRESENT_SLOTS:
+        handlers = [_try_slot_selection, _try_yes_no_confirmation]
     elif state == CallState.NEW_OR_RETURNING:
         handlers = [_try_new_returning]
-    elif state == CallState.PRESENT_SLOTS:
-        handlers = [_try_slot_selection, _try_yes_no_confirmation]
     elif state == CallState.CONFIRM_BOOKING:
         handlers = [_try_yes_no_confirmation]
+    elif state == CallState.COLLECT_NAME:
+        handlers = [_try_full_name]
     else:
-        # GREETING and any unrecognised state — no clinic selection any more.
-        if phone_already_known:
-            handlers = [
-                _try_phone_confirm, _try_full_name,
-                _try_new_returning, _try_yes_no_confirmation, _try_slot_selection,
-            ]
-        else:
-            handlers = [
-                _try_phone_last_six, _try_phone_first_five, _try_full_name,
-                _try_new_returning, _try_yes_no_confirmation, _try_slot_selection,
-            ]
+        # For all other states (GREETING, COLLECT_REASON, COLLECT_DURATION,
+        # CONFIRM_ASSESSMENT, COLLECT_AVAILABILITY, COLLECT_PHONE, etc.)
+        # the gate3 state machine handles responses — fast-path is not active.
+        handlers = []
 
     for handler in handlers:
         result = handler(last_prompt, norm, transcript, session)
@@ -190,6 +172,7 @@ _RETURNING_SINGLE = {"yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup
 _NR_TRIGGER_PHRASES = (
     "been to us before",
     "been here before",
+    "been with us before",   # matches Q_NEW_OR_RETURNING = "Have you been with us before?"
     "new or returning",
     "visited us before",
     "seen us before",

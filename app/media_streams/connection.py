@@ -701,7 +701,7 @@ class WebSocketCallHandler:
         await self._wait_for_start("llm_loop")
 
         from .llm_stream import LLMStream
-        from .session import CallState, get_call_state
+        from .session import CallState, get_call_state, advance_state
         llm = LLMStream()
         self._watchdog = WatchdogTimer(self.tts_text_queue, self.session, self)
 
@@ -731,17 +731,16 @@ class WebSocketCallHandler:
                 if _post_question_guard(self.session, utterance):
                     continue
 
-                # Bug 3: availability guard — if COLLECT_AVAILABILITY and the
-                # transcript has no time/day info, re-ask instead of calling LLM
+                # Availability guard — if COLLECT_AVAILABILITY and the transcript
+                # has no time/day info, re-ask instead of calling LLM.
                 if get_call_state(self.session) == CallState.COLLECT_AVAILABILITY:
                     if not _has_availability_info(utterance):
                         logger.info(
                             "[ms_conn] availability guard — no time info in: %r — re-asking",
                             utterance[:80],
                         )
-                        last_q = self._last_question_text or (
-                            "What days or times work best for you?"
-                        )
+                        from .config import Q_AVAILABILITY
+                        last_q = self._last_question_text or Q_AVAILABILITY
                         reask = REASK_PREFIX + _strip_apology_prefix(last_q)
                         await self.tts_text_queue.put(reask)
                         self._record_question(reask)
@@ -771,7 +770,11 @@ class WebSocketCallHandler:
                     await save_session(self.call_sid, self.session)
                     continue
 
-                # action.type == "llm" — fall through to LLM call below
+                # action.type == "llm" — advance state if gate3 specified one,
+                # then fall through to LLM call below.
+                if action.next_state:
+                    advance_state(self.session, action.next_state)
+
                 logger.info("[ms_conn] TRANSCRIPT ← queue: %r", utterance[:120])
                 self._llm_busy                         = True
                 # BUG 1 FIX: reset watchdog clock NOW so the 3-second countdown
@@ -1194,15 +1197,10 @@ class WebSocketCallHandler:
         self.session["last_bot_prompt"]    = greeting
         self.session["greeting_delivered"] = True
 
-        # Advance state: greeting done → PHONE_CONFIRM if we have a Twilio
-        # caller-ID number (must confirm before collecting anything else),
-        # otherwise straight to NEW_OR_RETURNING.
-        # Single-site deployment — no CLINIC_SELECTION state.
-        from .session import advance_state, CallState
-        if self.session.get("phone_from_twilio"):
-            advance_state(self.session, CallState.PHONE_CONFIRM)
-        else:
-            advance_state(self.session, CallState.NEW_OR_RETURNING)
+        # State stays at GREETING after the initial greeting plays.
+        # Gate3 handles the GREETING → COLLECT_REASON transition by playing
+        # BOOKING_OPEN on the caller's first utterance.
+        # (No state advance here — keep GREETING until caller speaks.)
 
         await save_session(self.call_sid, self.session)
 

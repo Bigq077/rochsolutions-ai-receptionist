@@ -68,6 +68,8 @@ from .config import (
     NEW_OR_RETURNING_RULE,
     PHONE_READBACK_RULE,
     INFORMAL_SPEECH_RULE,
+    LLM_STATE_INSTRUCTIONS,
+    Q_CHECKING,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
@@ -296,9 +298,21 @@ class LLMStream:
         call_state = session.get("state", "GREETING")
         collected  = session.get("collected") or {}
         known_lines: List[str] = []
+        if session.get("reason"):
+            known_lines.append(f"- Reason for visit: {session['reason']}")
+        if session.get("duration"):
+            known_lines.append(f"- Duration: {session['duration']}")
+        if collected.get("patient_type"):
+            known_lines.append(f"- New/returning: {collected['patient_type']}")
+        if session.get("availability_preference"):
+            known_lines.append(f"- Availability: {session['availability_preference']}")
+        if session.get("selected_slot"):
+            known_lines.append(f"- Selected slot: {session['selected_slot']}")
         if collected.get("full_name") or collected.get("name"):
             known_lines.append(f"- Name: {collected.get('full_name') or collected.get('name')}")
-        if collected.get("phone"):
+        if session.get("phone_number"):
+            known_lines.append(f"- Phone: {session['phone_number']}")
+        elif collected.get("phone"):
             if session.get("phone_from_twilio"):
                 known_lines.append(
                     f"- Phone (auto-detected from caller-ID — do NOT ask for it): {collected['phone']}"
@@ -307,8 +321,6 @@ class LLMStream:
                 known_lines.append(f"- Phone: {collected['phone']}")
         if session.get("selected_location"):
             known_lines.append(f"- Location: {session['selected_location']}")
-        if collected.get("patient_type"):
-            known_lines.append(f"- New/returning: {collected['patient_type']}")
         if session.get("last_offered_slots"):
             known_lines.append(f"- Slots offered: {session['last_offered_slots']}")
         phone_rule = (
@@ -317,20 +329,18 @@ class LLMStream:
             "I'll use that for the booking.' and move straight on.]"
             if session.get("phone_from_twilio") else ""
         )
+        # Inject per-state LLM instructions (only for the 3 states that use LLM)
+        state_instruction = LLM_STATE_INSTRUCTIONS.get(call_state, "")
+        if state_instruction:
+            state_instruction = "\n" + state_instruction
+
         state_ctx = (
             f"[CALL STATE: {call_state} — greeting already delivered. "
             f"Do not re-introduce yourself or re-ask anything already answered.]\n"
             + ("\n".join(known_lines) if known_lines else "")
             + phone_rule
-            + "\n[BOOKING OPENING LINE RULE: When a caller wants to book an appointment, "
-            "always open with EXACTLY: "
-            "'Of course you can book an appointment — have you been with us before?' "
-            "— never vary this line.]\n"
-            + ("[SLOTS ALREADY PRESENTED: Do NOT present slots again or ask 'which would you prefer' "
-               "again — the caller has already been given the options. Wait for their response.]\n"
-               if session.get("slots_presented") else ""
-            )
-            + "[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
+            + state_instruction
+            + "\n[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
             "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
             "response UNLESS the caller has explicitly asked to speak to a person OR "
             "mentioned a medical emergency. If you are unsure what the caller wants, "

@@ -35,7 +35,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .session import CallState, get_call_state, advance_state
-from .config import F_COLLECTED, F_LAST_BOT_PROMPT, F_LAST_QUESTION
+from .config import (
+    F_COLLECTED, F_LAST_BOT_PROMPT, F_LAST_QUESTION,
+    BOOKING_OPEN, Q_RECOMMEND, Q_NEW_OR_RETURNING,
+    Q_AVAILABILITY, Q_CHECKING, Q_NAME, Q_PHONE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,22 +112,63 @@ def update_session_from_transcript(session: dict, transcript: str) -> None:
     """
     GATE 2: Extract caller answers from transcript and store in session.
 
-    Called for EVERY utterance before the LLM or fast-path runs.
+    Called for EVERY utterance before get_next_action() runs.
     Only updates fields that are not yet set — never overwrites.
-    Completely safe to call when the state / transcript don't match
-    (all branches have an early return).
 
-    Side-effects on session:
-      collected["patient_type"]    — if state==NEW_OR_RETURNING and not yet set
-      availability_preference      — if state==COLLECT_AVAILABILITY and not yet set
-      selected_slot                — if state==PRESENT_SLOTS and not yet set
+    Side-effects on session (by state):
+      reason              — COLLECT_REASON: any transcript >= 2 words
+      duration            — COLLECT_DURATION: transcript with duration signals
+      assessment_confirmed — CONFIRM_ASSESSMENT: yes/ok/sure etc.
+      collected.patient_type — NEW_OR_RETURNING
+      availability_preference — COLLECT_AVAILABILITY
+      selected_slot       — PRESENT_SLOTS
+      collected.full_name — COLLECT_NAME
+      phone_number        — COLLECT_PHONE
     """
     state     = get_call_state(session)
     norm      = _norm(transcript)
     collected = session.setdefault("collected", {})
 
-    # ── patient_type ─────────────────────────────────────────────────────────
-    if state == CallState.NEW_OR_RETURNING and not collected.get("patient_type"):
+    # ── reason ───────────────────────────────────────────────────────────────
+    if state == CallState.COLLECT_REASON and not session.get("reason"):
+        # Any transcript of 2+ words is the caller's medical reason.
+        # Single-word noise ("erm", "mm") is excluded by the word-count guard.
+        if len(transcript.strip().split()) >= 2:
+            session["reason"] = transcript.strip()
+            logger.info("[ms_gate2] reason=%r", transcript[:60])
+
+    # ── duration ─────────────────────────────────────────────────────────────
+    elif state == CallState.COLLECT_DURATION and not session.get("duration"):
+        _DURATION_SIGNALS = (
+            "day", "days", "week", "weeks", "month", "months", "year", "years",
+            "hour", "hours", "long", "while", "yesterday", "today", "ago",
+            "since", "morning", "recently", "just", "about", "around",
+            "couple", "few", "always", "forever", "a while",
+            "one", "two", "three", "four", "five", "six", "seven",
+            "eight", "nine", "ten",
+        )
+        if any(sig in norm for sig in _DURATION_SIGNALS):
+            session["duration"] = transcript.strip()
+            logger.info("[ms_gate2] duration=%r", transcript[:60])
+        elif len(transcript.strip().split()) >= 2:
+            # Accept any multi-word answer (e.g. "since the summer")
+            session["duration"] = transcript.strip()
+            logger.info("[ms_gate2] duration (fallback)=%r", transcript[:60])
+
+    # ── assessment_confirmed ──────────────────────────────────────────────────
+    elif state == CallState.CONFIRM_ASSESSMENT and session.get("assessment_confirmed") is None:
+        _YES = (
+            "yes", "yeah", "ya", "yah", "yea", "ye", "yer", "yep", "yup",
+            "ok", "okay", "sure", "fine", "sounds good", "that's fine",
+            "go ahead", "please", "that works", "correct", "absolutely",
+            "definitely", "of course", "alright", "great",
+        )
+        if any(p in norm for p in _YES):
+            session["assessment_confirmed"] = True
+            logger.info("[ms_gate2] assessment_confirmed=True")
+
+    # ── patient_type (new or returning) ──────────────────────────────────────
+    elif state == CallState.NEW_OR_RETURNING and not collected.get("patient_type"):
         is_new = (
             any(sig in norm for sig in _NEW_SIGNALS if len(sig) > 3)
             or norm.strip() in _NEW_SINGLE
@@ -132,29 +177,21 @@ def update_session_from_transcript(session: dict, transcript: str) -> None:
             any(sig in norm for sig in _RETURNING_SIGNALS if len(sig) > 3)
             or norm.strip() in _RETURNING_SIGNALS
         )
-        # Only update on unambiguous match
         if is_new and not is_ret:
             collected["patient_type"] = "new"
-            logger.info(
-                "[ms_gate2] patient_type=new from %r", transcript[:60],
-            )
+            logger.info("[ms_gate2] patient_type=new from %r", transcript[:60])
         elif is_ret and not is_new:
             collected["patient_type"] = "returning"
-            logger.info(
-                "[ms_gate2] patient_type=returning from %r", transcript[:60],
-            )
-        # Conflict or no match → leave as None; LLM handles
+            logger.info("[ms_gate2] patient_type=returning from %r", transcript[:60])
 
     # ── availability_preference ───────────────────────────────────────────────
-    if state == CallState.COLLECT_AVAILABILITY:
+    elif state == CallState.COLLECT_AVAILABILITY:
         if not session.get("availability_preference") and transcript.strip():
             session["availability_preference"] = transcript.strip()
-            logger.info(
-                "[ms_gate2] availability_preference=%r", transcript[:60],
-            )
+            logger.info("[ms_gate2] availability_preference=%r", transcript[:60])
 
     # ── slot selection ────────────────────────────────────────────────────────
-    if state == CallState.PRESENT_SLOTS:
+    elif state == CallState.PRESENT_SLOTS:
         offered = session.get("last_offered_slots") or []
         if offered and not session.get("selected_slot"):
             one   = any(p in norm for p in _SLOT_ONE_PATTERNS)
@@ -165,9 +202,23 @@ def update_session_from_transcript(session: dict, transcript: str) -> None:
                 idx = 0 if one else (1 if two else 2)
                 if idx < len(offered):
                     session["selected_slot"] = offered[idx]
-                    logger.info(
-                        "[ms_gate2] selected_slot idx=%d from %r", idx, transcript[:60],
-                    )
+                    logger.info("[ms_gate2] selected_slot idx=%d from %r", idx, transcript[:60])
+
+    # ── full_name ─────────────────────────────────────────────────────────────
+    elif state == CallState.COLLECT_NAME and not collected.get("full_name"):
+        words = transcript.strip().split()
+        if 1 <= len(words) <= 6:
+            collected["full_name"] = transcript.strip()
+            logger.info("[ms_gate2] full_name=%r", transcript[:60])
+
+    # ── phone_number ──────────────────────────────────────────────────────────
+    elif state == CallState.COLLECT_PHONE and not session.get("phone_number"):
+        digits = "".join(c for c in transcript if c.isdigit())
+        if len(digits) >= 10:
+            session["phone_number"] = digits
+            # Also store in collected for LLM context
+            collected["phone"] = digits
+            logger.info("[ms_gate2] phone_number=%r", digits)
 
 
 # ---------------------------------------------------------------------------
@@ -178,71 +229,108 @@ def get_next_action(session: dict) -> Action:
     """
     GATE 3: Pure state-machine — decide what Susie should do next.
 
-    Called after update_session_from_transcript() so the session already
-    reflects the caller's latest answer before we decide the action.
+    Called after update_session_from_transcript() so session already reflects
+    the caller's latest answer.
 
-    Returns:
-      Action("hardcoded", text, next_state)  — play text, advance state
-      Action("llm")                          — hand off to LLM
-      Action("skip")                         — nothing to do this turn
-
-    Design rule: LLM is called ONLY when the output cannot be determined
-    from session state alone (e.g. tool result needed, complex phrasing).
-    Every deterministic transition is handled here.
+    Flow (in order):
+      GREETING            → hardcoded BOOKING_OPEN → COLLECT_REASON
+      COLLECT_REASON      → hardcoded BOOKING_OPEN (if no reason yet)
+                          → llm empathy turn       (if reason set) → COLLECT_DURATION
+      COLLECT_DURATION    → hardcoded Q_RECOMMEND  (if duration set) → CONFIRM_ASSESSMENT
+      CONFIRM_ASSESSMENT  → hardcoded Q_NEW_OR_RETURNING (if confirmed) → NEW_OR_RETURNING
+      NEW_OR_RETURNING    → hardcoded Q_AVAILABILITY (if patient_type set) → COLLECT_AVAILABILITY
+                          → llm (ambiguous answer)
+      COLLECT_AVAILABILITY→ llm (calls check_availability, presents slots) → PRESENT_SLOTS
+      PRESENT_SLOTS       → llm (present slots / wait)
+                          → hardcoded Q_NAME (if slot selected) → COLLECT_NAME
+      COLLECT_NAME        → hardcoded Q_PHONE (if name set) → COLLECT_PHONE
+      COLLECT_PHONE       → llm confirm booking → CONFIRM_BOOKING
+      Other               → llm
     """
     state     = get_call_state(session)
     collected = session.get("collected", {})
+
+    # ── GREETING ─────────────────────────────────────────────────────────────
+    # Play BOOKING_OPEN on the very first caller utterance.
+    if state == CallState.GREETING:
+        logger.info("[ms_gate3] hardcoded: greeting→collect_reason")
+        return Action("hardcoded", BOOKING_OPEN, CallState.COLLECT_REASON)
+
+    # ── COLLECT_REASON ────────────────────────────────────────────────────────
+    if state == CallState.COLLECT_REASON:
+        if not session.get("reason"):
+            # BOOKING_OPEN already played once (when state advanced to COLLECT_REASON).
+            # If we somehow end up here without a reason, wait — do not re-play.
+            logger.info("[ms_gate3] skip: waiting for reason")
+            return Action("skip")
+        # Reason received — LLM generates one empathy sentence + duration question.
+        logger.info("[ms_gate3] llm: reason set → empathy+duration_q")
+        return Action("llm", next_state=CallState.COLLECT_DURATION)
+
+    # ── COLLECT_DURATION ──────────────────────────────────────────────────────
+    if state == CallState.COLLECT_DURATION:
+        if not session.get("duration"):
+            logger.info("[ms_gate3] skip: waiting for duration")
+            return Action("skip")
+        logger.info("[ms_gate3] hardcoded: duration→confirm_assessment")
+        return Action("hardcoded", Q_RECOMMEND, CallState.CONFIRM_ASSESSMENT)
+
+    # ── CONFIRM_ASSESSMENT ────────────────────────────────────────────────────
+    if state == CallState.CONFIRM_ASSESSMENT:
+        if not session.get("assessment_confirmed"):
+            logger.info("[ms_gate3] skip: waiting for assessment confirmation")
+            return Action("skip")
+        logger.info("[ms_gate3] hardcoded: confirmed→new_or_returning")
+        return Action("hardcoded", Q_NEW_OR_RETURNING, CallState.NEW_OR_RETURNING)
 
     # ── NEW_OR_RETURNING ──────────────────────────────────────────────────────
     if state == CallState.NEW_OR_RETURNING:
         pt = collected.get("patient_type")
         if pt:
-            # Gate2 (or fast-path) already extracted the answer —
-            # emit hardcoded transition and advance state.
-            text = "Great — and could I take your full name please?"
-            logger.info("[ms_gate3] hardcoded: new_or_returning→collect_name")
-            return Action("hardcoded", text, CallState.COLLECT_NAME)
-        # No answer yet — LLM handles ambiguous responses ("erm...", "I think
-        # I was here years ago but not recently")
+            logger.info("[ms_gate3] hardcoded: new_or_returning→collect_availability")
+            return Action("hardcoded", Q_AVAILABILITY, CallState.COLLECT_AVAILABILITY)
+        # Ambiguous answer — LLM handles
+        return Action("llm")
+
+    # ── COLLECT_AVAILABILITY ──────────────────────────────────────────────────
+    if state == CallState.COLLECT_AVAILABILITY:
+        if not session.get("availability_preference"):
+            logger.info("[ms_gate3] skip: waiting for availability")
+            return Action("skip")
+        # Availability captured — LLM says Q_CHECKING, calls tool, presents slots.
+        logger.info("[ms_gate3] llm: availability set → check_slots")
+        return Action("llm", next_state=CallState.PRESENT_SLOTS)
+
+    # ── PRESENT_SLOTS ─────────────────────────────────────────────────────────
+    if state == CallState.PRESENT_SLOTS:
+        if session.get("selected_slot"):
+            logger.info("[ms_gate3] hardcoded: slot_selected→collect_name")
+            return Action("hardcoded", Q_NAME, CallState.COLLECT_NAME)
+        if session.get("slots_presented"):
+            logger.info("[ms_gate3] skip: slots_presented, waiting for selection")
+            return Action("skip")
+        # Slots not yet presented — LLM presents them.
+        logger.info("[ms_gate3] llm: presenting slots")
         return Action("llm")
 
     # ── COLLECT_NAME ──────────────────────────────────────────────────────────
     if state == CallState.COLLECT_NAME:
         if collected.get("full_name"):
-            # Fast-path already captured name; LLM loop should not be called
-            # but guard here as belt-and-suspenders.
-            logger.info("[ms_gate3] skip: full_name already set")
+            logger.info("[ms_gate3] hardcoded: name→collect_phone")
+            return Action("hardcoded", Q_PHONE, CallState.COLLECT_PHONE)
+        logger.info("[ms_gate3] skip: waiting for name")
+        return Action("skip")
+
+    # ── COLLECT_PHONE ─────────────────────────────────────────────────────────
+    if state == CallState.COLLECT_PHONE:
+        if not session.get("phone_number"):
+            logger.info("[ms_gate3] skip: waiting for phone")
             return Action("skip")
-        return Action("llm")
+        # Phone received — LLM generates booking confirmation summary.
+        logger.info("[ms_gate3] llm: phone set → confirm_booking")
+        return Action("llm", next_state=CallState.CONFIRM_BOOKING)
 
-    # ── COLLECT_AVAILABILITY ──────────────────────────────────────────────────
-    if state == CallState.COLLECT_AVAILABILITY:
-        if (
-            session.get("availability_preference")
-            or session.get("_availability_response_received")
-        ):
-            # Have a preference → LLM will call check_availability
-            return Action("llm")
-        # No time/day info in transcript — re-ask without hitting LLM
-        last_q = (
-            session.get("last_question")
-            or "What days or times work best for you?"
-        )
-        reask = f"Sorry, I didn't quite catch that — {last_q}"
-        logger.info("[ms_gate3] hardcoded: availability re-ask")
-        return Action("hardcoded", reask)
-
-    # ── PRESENT_SLOTS ─────────────────────────────────────────────────────────
-    if state == CallState.PRESENT_SLOTS:
-        if session.get("slots_presented") and not session.get("selected_slot"):
-            # Slots already presented — nothing to say; wait for selection
-            logger.info("[ms_gate3] skip: slots_presented, waiting for selection")
-            return Action("skip")
-        # Either slots not yet presented (LLM will read them) or slot selected
-        # (LLM will confirm it)
-        return Action("llm")
-
-    # ── All other states: defer to LLM ───────────────────────────────────────
+    # ── All other states — LLM ────────────────────────────────────────────────
     return Action("llm")
 
 
