@@ -118,6 +118,93 @@ _STRIP_PREFIXES = (
 )
 
 
+def _sanitise_duration_response(response: str) -> str:
+    """
+    Hard guard applied to every COLLECT_DURATION LLM response.
+
+    Algorithm:
+      1. Split into sentences on .  !  ?
+      2. Find the first sentence containing "how long".
+         Keep only sentences up to and including that one — drop everything after.
+      3. If a banned phrase appears before the how-long sentence, drop that
+         sentence and everything after it, then re-append
+         '— how long have you had that?'.
+      4. If no "how long" sentence exists at all:
+           a. Walk sentences; collect the first sentence that contains no banned
+              phrase.  Append '— how long have you had that?' to it.
+           b. If every sentence is banned, return bare 'How long have you had that?'
+      5. Enforce 25-word hard cap — truncate after the how-long sentence.
+
+    Logs whenever any truncation fires.
+    """
+    import re as _re
+
+    _BANNED = (
+        "physiotherapy", "assessment", "been before",
+        "been with us", "been to us", "what time",
+        "available", "when would",
+    )
+
+    original = response.strip()
+    sentences = _re.split(r'(?<=[.!?])\s+', original)
+
+    # ── Step 1–2: find "how long" sentence and truncate after it ──────────
+    how_long_idx = None
+    for i, s in enumerate(sentences):
+        if "how long" in s.lower():
+            how_long_idx = i
+            break
+
+    if how_long_idx is not None:
+        truncated = " ".join(sentences[:how_long_idx + 1]).strip()
+
+        # ── Step 3: strip banned phrase if it crept in before "how long" ──
+        lower = truncated.lower()
+        for banned in _BANNED:
+            if banned in lower:
+                cut = lower.index(banned)
+                base = truncated[:cut].rstrip(" —,.")
+                truncated = (base + " — how long have you had that?") if base \
+                            else "How long have you had that?"
+                logger.info(
+                    "[ms_flow] COLLECT_DURATION response truncated: "
+                    "original=%r final=%r", original, truncated,
+                )
+                break
+
+    else:
+        # ── Step 4: no "how long" anywhere — salvage first clean sentence ─
+        base = ""
+        for s in sentences:
+            s_lower = s.lower()
+            if not any(b in s_lower for b in _BANNED):
+                base = s.rstrip(".!? ")
+                break
+        truncated = (base + " — how long have you had that?") if base \
+                    else "How long have you had that?"
+        logger.info(
+            "[ms_flow] COLLECT_DURATION response truncated: "
+            "original=%r final=%r", original, truncated,
+        )
+
+    # ── Step 5: 25-word hard cap ──────────────────────────────────────────
+    if len(truncated.split()) > 25:
+        _TAIL = " — how long have you had that?"
+        _TAIL_WORDS = len(_TAIL.split())
+        words = truncated.split()
+        # Hard-cut at (25 - tail_words) words from the empathy part, then
+        # re-attach the question so the caller always hears it.
+        empathy_words = words[:25 - _TAIL_WORDS]
+        empathy = " ".join(empathy_words).rstrip(" —,.")
+        truncated = empathy + _TAIL
+        logger.info(
+            "[ms_flow] COLLECT_DURATION response truncated (25-word cap): "
+            "original=%r final=%r", original, truncated,
+        )
+
+    return truncated
+
+
 def _extract_question_sentence(text: str) -> str:
     """
     Extract only the question sentence from a multi-sentence LLM response.
@@ -194,17 +281,24 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "answer_field": "duration",
         "use_llm": True,
         "llm_instruction": (
-            "The caller said: '{reason}'. "
-            "RESPOND WITH EXACTLY ONE SENTENCE — no more. "
-            "Format: '[one empathy sentence about their {reason}] — how long have you had that?' "
-            "HARD RULES — violation is an error:\n"
-            "• STOP after 'how long have you had that?' — do NOT continue\n"
-            "• Do NOT mention assessments, treatments, or recommendations\n"
-            "• Do NOT ask any other question (not new/returning, not availability, not anything)\n"
-            "• Do NOT use 'Lovely', 'Great', 'Perfect', 'Wonderful', 'Absolutely'\n"
-            "CORRECT: 'That sounds really uncomfortable — how long have you had that?'\n"
-            "WRONG: 'That sounds painful — how long have you had that? "
-            "A physiotherapy assessment would be ideal. Have you been with us before?'"
+            "You are a phone receptionist. The caller just told you their reason for booking: {reason}\n"
+            "Your response must be EXACTLY two parts and nothing else:\n"
+            "PART 1: One sentence of genuine empathy about their specific condition. "
+            "Reference the actual condition they mentioned.\n"
+            "PART 2: End with exactly this phrase: 'How long have you had that?'\n"
+            "YOUR ENTIRE RESPONSE MUST BE ONE SENTENCE FOLLOWED BY 'How long have you had that?'\n"
+            "MAXIMUM LENGTH: 20 words total.\n"
+            "DO NOT include anything about physiotherapy assessments.\n"
+            "DO NOT ask if they have been before.\n"
+            "DO NOT ask about availability.\n"
+            "DO NOT say anything after 'How long have you had that?'\n"
+            "DO NOT add any other questions.\n"
+            "CORRECT: \"I'm sorry to hear that, back pain can be really debilitating "
+            "— how long have you had that?\"\n"
+            "WRONG: \"I'm sorry to hear that. A physiotherapy assessment would be great. "
+            "Have you been before? What time works for you?\"\n"
+            "WRONG: \"That sounds painful. How long have you had that? "
+            "Have you visited us before?\""
         ),
         "extract": "duration",
     },
@@ -596,6 +690,9 @@ class FlowEngine:
                 instruction = step["llm_instruction"] or ""
             self.session["question_asked_this_turn"] = True
             response = await self._llm(instruction)
+            # COLLECT_DURATION guard: enforce single-sentence / no-bleed-through
+            if step["state"] == "COLLECT_DURATION":
+                response = _sanitise_duration_response(response or "")
             # Extract only the question sentence from the LLM response so the
             # SilenceHandler re-asks a clean question, not the full paragraph.
             _q = _extract_question_sentence(response or "") or (step["question"] or "")
