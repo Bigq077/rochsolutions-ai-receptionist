@@ -448,11 +448,11 @@ class LLMStream:
         date_prefix = _build_date_prefix()
         location    = session.get("selected_location", "alcester")
         system_prompt = (
-            # v2026-03-17-2 — bumped to bust Anthropic prompt cache
+            # v2026-03-17-3 — bumped to bust Anthropic prompt cache
             "ABSOLUTE RULE — NO EXCEPTIONS:\n"
             "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
             "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
-            "Obviously, Clearly, Right so, Of Course, Sure.\n"
+            "Obviously, Clearly, Right so, Of Course, Sure, Lovely.\n"
             "Start every response with substance. "
             "WRONG: 'Absolutely, I can help.' RIGHT: 'I can help.'\n\n"
             f"You are Susie, a warm and professional AI receptionist at Theorem Health. "

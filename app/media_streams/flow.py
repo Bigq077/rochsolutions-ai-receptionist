@@ -195,10 +195,16 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "use_llm": True,
         "llm_instruction": (
             "The caller said: '{reason}'. "
-            "Respond with ONE sentence of genuine empathy "
-            "about their specific condition. "
-            "End with exactly: '— how long have you had that?' "
-            "Say nothing else. No other questions."
+            "RESPOND WITH EXACTLY ONE SENTENCE — no more. "
+            "Format: '[one empathy sentence about their {reason}] — how long have you had that?' "
+            "HARD RULES — violation is an error:\n"
+            "• STOP after 'how long have you had that?' — do NOT continue\n"
+            "• Do NOT mention assessments, treatments, or recommendations\n"
+            "• Do NOT ask any other question (not new/returning, not availability, not anything)\n"
+            "• Do NOT use 'Lovely', 'Great', 'Perfect', 'Wonderful', 'Absolutely'\n"
+            "CORRECT: 'That sounds really uncomfortable — how long have you had that?'\n"
+            "WRONG: 'That sounds painful — how long have you had that? "
+            "A physiotherapy assessment would be ideal. Have you been with us before?'"
         ),
         "extract": "duration",
     },
@@ -532,6 +538,14 @@ class FlowEngine:
             logger.info("[ms_flow] ask_current_question: flow already complete")
             return
 
+        # Guard: one question per turn — prevent duplicate asks if somehow called twice
+        if self.session.get("question_asked_this_turn"):
+            logger.info(
+                "[ms_flow] question_asked_this_turn guard: skipping step %d (%s)",
+                step["step"], step["state"],
+            )
+            return
+
         # DETECT_INTENT step has no question — wait silently for caller to speak
         if not step["use_llm"] and step["question"] is None:
             logger.info("[ms_flow] step %d (%s): no question to play — waiting for transcript",
@@ -580,6 +594,7 @@ class FlowEngine:
                     step["step"], exc,
                 )
                 instruction = step["llm_instruction"] or ""
+            self.session["question_asked_this_turn"] = True
             response = await self._llm(instruction)
             # Extract only the question sentence from the LLM response so the
             # SilenceHandler re-asks a clean question, not the full paragraph.
@@ -599,6 +614,7 @@ class FlowEngine:
                         len(offered),
                     )
         else:
+            self.session["question_asked_this_turn"] = True
             await self._tts.put(step["question"])
             if _is_question_worth_storing(step["question"]):
                 self.session["last_question"] = step["question"]
@@ -621,6 +637,9 @@ class FlowEngine:
         if step is None:
             logger.info("[ms_flow] flow complete — ignoring transcript: %r", transcript[:60])
             return
+
+        # Reset per-turn guard so ask_current_question() can fire exactly once this turn
+        self.session["question_asked_this_turn"] = False
 
         text = transcript.strip().lower()
 

@@ -110,7 +110,7 @@ class CallRunner:
             """Twilio calls this when the call connects. Listen for Susie's greeting."""
             logger.info(f"[{runner.scenario['id']}] Call connected — listening for greeting")
             return Response(
-                content=runner._twiml_listen(timeout=6),
+                content=runner._twiml_listen(timeout=15),
                 media_type="text/xml",
             )
 
@@ -240,7 +240,7 @@ class CallRunner:
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f"<Response>\n"
             f"  <Play>{audio_url}</Play>\n"
-            f'  <Gather input="speech" timeout="10"\n'
+            f'  <Gather input="speech" timeout="20"\n'
             f'          action="{self._webhook_url}/twiml/gather"\n'
             f'          speechTimeout="2"\n'
             f'          enhanced="true"\n'
