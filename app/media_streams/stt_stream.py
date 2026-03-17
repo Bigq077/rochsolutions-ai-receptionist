@@ -579,12 +579,9 @@ class STTStream:
                 if msg_type == "Begin":
                     logger.info(
                         "[ms_stt] Begin received — session_id=%s expires_at=%s — "
-                        "sending word_boost then unblocking audio stream",
+                        "unblocking audio stream",
                         msg.get("id"), msg.get("expires_at"),
                     )
-                    # Send word boost BEFORE unblocking audio so the config
-                    # reaches AssemblyAI before the first audio frame arrives.
-                    await _send_word_boost(ws)
                     if connection_ready is not None:
                         connection_ready.set()
 
