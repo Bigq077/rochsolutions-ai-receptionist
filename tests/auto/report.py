@@ -24,9 +24,9 @@ def build_report(all_results: list) -> str:
     )
 
     if pass_rate >= MIN_PASS_RATE:
-        lines.append("STATUS: ✅ CLINIC READY")
+        lines.append("STATUS: CLINIC READY")
     else:
-        lines.append("STATUS: ❌ NOT READY")
+        lines.append("STATUS: NOT READY")
 
     lines.append("")
     lines.append("RESULTS BY PHASE:")
@@ -46,7 +46,7 @@ def build_report(all_results: list) -> str:
         lines.append(f"\n{phase}: {phase_pass}/{len(results)}")
         for r in results:
             ev = r.get("evaluation", {})
-            status = "✅" if ev.get("passed") else "❌"
+            status = "PASS" if ev.get("passed") else "FAIL"
             lines.append(f"  {status} {r['scenario_name']}")
             if not ev.get("passed"):
                 lines.append(

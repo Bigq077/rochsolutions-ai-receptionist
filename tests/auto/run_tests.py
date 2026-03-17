@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 run_tests.py — Single entry point for the Susie automated test suite.
 
@@ -67,7 +70,7 @@ async def run_single_scenario(
     result["phase"] = scenario["phase"]
 
     # Print immediate result
-    status = "✅ PASS" if evaluation["passed"] else "❌ FAIL"
+    status = "PASS" if evaluation["passed"] else "FAIL"
     print(f"\n{status}")
     if not evaluation["passed"]:
         print(f"REASON: {evaluation.get('fail_reason')}")
@@ -78,7 +81,7 @@ async def run_single_scenario(
         RESULTS_DIR
         / f"{scenario['id']}_{datetime.utcnow().strftime('%H%M%S')}.json"
     )
-    result_path.write_text(json.dumps(result, indent=2, default=str))
+    result_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     print(f"Saved: {result_path}")
 
     return result
@@ -179,12 +182,12 @@ async def main():
     # Save report
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     report_path = RESULTS_DIR / f"report_{ts}.txt"
-    report_path.write_text(report)
+    report_path.write_text(report, encoding="utf-8")
     print(f"\nReport saved: {report_path}")
 
     # Save all results as JSON
     results_path = RESULTS_DIR / f"results_{ts}.json"
-    results_path.write_text(json.dumps(all_results, indent=2, default=str))
+    results_path.write_text(json.dumps(all_results, indent=2, default=str), encoding="utf-8")
     print(f"Results saved: {results_path}")
 
     # Exit code based on pass rate
@@ -195,10 +198,10 @@ async def main():
     pass_rate = passed / total if total > 0 else 0
 
     if pass_rate >= MIN_PASS_RATE:
-        print("\n✅ CLINIC READY")
+        print("\nCLINIC READY")
         sys.exit(0)
     else:
-        print(f"\n❌ NOT READY — {passed}/{total} passed")
+        print(f"\nNOT READY — {passed}/{total} passed")
         sys.exit(1)
 
 
