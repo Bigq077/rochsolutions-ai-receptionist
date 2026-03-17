@@ -31,7 +31,36 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    _fuzz = None  # type: ignore[assignment]
+    _RAPIDFUZZ_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+if not _RAPIDFUZZ_AVAILABLE:
+    logger.warning(
+        "[ms_flow] rapidfuzz not installed — fuzzy matching disabled. "
+        "Install with: pip install rapidfuzz>=3.0.0"
+    )
+
+
+def _fuzzy_match(text: str, patterns: list, threshold: int = 80) -> bool:
+    """
+    Return True if any pattern fuzzy-matches the text at or above threshold.
+
+    Uses rapidfuzz.fuzz.partial_ratio for substring-aware matching.
+    Falls back gracefully (returns False) if rapidfuzz is not installed.
+    """
+    if not _RAPIDFUZZ_AVAILABLE or _fuzz is None:
+        return False
+    text_clean = text.strip().lower()
+    for pattern in patterns:
+        score = _fuzz.partial_ratio(text_clean, pattern)
+        if score >= threshold:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +832,14 @@ class FlowEngine:
                 "one", "two", "three", "four", "five", "six", "seven",
                 "eight", "nine", "ten", "always", "long", "time",
                 "yesterday", "today", "morning",
+                # Northern English / informal duration expressions
+                "a fair while", "good while", "donkey's years",
+                "ages like", "not long like", "recently like",
+                "not long ago", "a good while",
+                "on and off like", "comes and goes",
+                "been plaguing me", "been at me",
+                "right long time", "forever like",
+                "ages", "forever", "plaguing",
             )
             return raw.strip() if any(s in text for s in signals) else None
 
@@ -813,8 +850,28 @@ class FlowEngine:
                 "sure", "fine", "alright", "sounds good", "go ahead",
                 "please", "that works", "correct", "definitely",
                 "of course", "absolutely",
+                # Northern English / informal affirmatives
+                "aye", "aye go on", "go on then",
+                "right then", "fair enough",
+                "sound", "sorted", "champion",
+                "mint that", "yeah go on",
+                "right okay", "alright then",
+                "that'll do", "that sounds right",
+                "reight", "reight then",
+                "no bother", "yeah that's fine",
+                "that's sound", "perfect that",
             )
-            return True if any(p in text for p in yes) else None
+            if any(p in text for p in yes):
+                return True
+            # Fuzzy fallback for yes_no
+            yes_fuzzy = [
+                "yes", "yeah", "that's fine", "sounds good",
+                "go ahead", "that works",
+            ]
+            if _fuzzy_match(text, yes_fuzzy, threshold=75):
+                logger.info("[ms_extract] fuzzy yes: '%s'", text)
+                return True
+            return None
 
         # ----- new_or_returning ------------------------------------------
         if method == "new_or_returning":
@@ -830,6 +887,15 @@ class FlowEngine:
                 "no i", "nah", "nope",
                 "no never", "not visited", "don't think",
                 "dont think", "no not", "not really",
+                # Northern English / informal variants
+                "never 'ad", "not 'ad", "me first",
+                "first time like", "never like",
+                "nope never", "nah never",
+                "haven't no", "not as such",
+                "don't think so", "not that i know",
+                "new to you", "new here",
+                "no i 'ave not", "no i havent",
+                "no", "never",
             ]
             returning_patterns = [
                 "i have been", "i've been", "ive been",
@@ -839,6 +905,13 @@ class FlowEngine:
                 "visited before", "existing", "returning",
                 "yeah", "yes", "yep", "yup", "ya",
                 "i have", "have been",
+                # Northern English / informal variants
+                "aye", "aye i have", "aye been",
+                "yeah been", "yep been",
+                "been a few times", "few times",
+                "come before like", "been like",
+                "i 'ave", "i ave been",
+                "visited", "existing patient", "registered",
             ]
             matched = False
             for p in new_patterns:
@@ -857,6 +930,21 @@ class FlowEngine:
                             p, raw[:60],
                         )
                         return "returning"
+            # Fuzzy fallback for new_or_returning
+            new_fuzzy = [
+                "not been", "never been", "first time",
+                "have not", "haven't been", "new patient",
+            ]
+            returning_fuzzy = [
+                "been before", "been there", "have been",
+                "visited before", "existing patient",
+            ]
+            if _fuzzy_match(text, new_fuzzy, threshold=75):
+                logger.info("[ms_extract] fuzzy new: '%s'", text)
+                return "new"
+            if _fuzzy_match(text, returning_fuzzy, threshold=75):
+                logger.info("[ms_extract] fuzzy returning: '%s'", text)
+                return "returning"
             return None
 
         # ----- availability: day / time references ----------------------
@@ -867,6 +955,15 @@ class FlowEngine:
                 "next week", "this week", "after", "before", "anytime",
                 "any day", "flexible", "weekday", "weekend", "today",
                 "tomorrow", "week", "from", "starting", "available", "free",
+                # Northern English / informal availability expressions
+                "any road", "whenever suits",
+                "whenever really", "flexible like",
+                "don't mind like", "not bothered",
+                "owt really", "any time like",
+                "whenever tha can", "whenever you can",
+                "as soon as", "sharpish",
+                "fairly soon", "sooner the better",
+                "whenever", "anytime",
             )
             return raw.strip() if any(s in text for s in signals) else None
 
@@ -893,6 +990,8 @@ class FlowEngine:
                 "last one", "the last one", "final one", "the final one",
                 "the last", "last option", "last slot", "final slot",
                 "final option", "that last one", "the final",
+                # Northern English / informal
+                "last un", "t'last", "final un",
             )
             if any(p in text for p in last_p):
                 available = len(labels) or len(offered) or slots_count
@@ -900,13 +999,27 @@ class FlowEngine:
                 logger.info("[ms_flow] slot_selection last/final → idx=%d", idx)
                 return _pick(idx)
 
+            # Generic "that one" patterns — treated as slot 1 (index 0) since
+            # the caller will be asked to confirm and can correct if needed
+            generic_p = (
+                "that un", "that one there",
+                "that'll do", "that suits", "that works for me like",
+            )
+            if any(p in text for p in generic_p):
+                logger.info("[ms_flow] slot_selection generic → idx=0")
+                return _pick(0)
+
             # Numbered patterns
             slot_map = {
                 0: ("first", "one", "1", "option one", "number one",
-                    "first one", "the first", "first slot", "option 1"),
+                    "first one", "the first", "first slot", "option 1",
+                    # Northern English / informal
+                    "first un", "t'first"),
                 1: ("second", "two", "2", "option two", "number two",
                     "second one", "the second", "second slot", "option 2",
-                    "middle"),
+                    "middle",
+                    # Northern English / informal
+                    "middle un", "t'second"),
                 2: ("third", "three", "3", "option three", "number three",
                     "third one", "the third", "third slot", "option 3"),
             }
@@ -915,6 +1028,20 @@ class FlowEngine:
                     if any(p in text for p in patterns):
                         logger.info("[ms_flow] slot_selection idx=%d", idx)
                         return _pick(idx)
+
+            # Fuzzy fallback for slot_selection
+            slot_fuzzy = {
+                "1": ["first one", "first slot", "first option"],
+                "2": ["second one", "second slot", "middle one"],
+                "3": ["third one", "last one", "final one"],
+            }
+            for slot, fuzzy_patterns in slot_fuzzy.items():
+                if int(slot) <= slots_count:
+                    if _fuzzy_match(text, fuzzy_patterns, threshold=70):
+                        logger.info(
+                            "[ms_extract] fuzzy slot=%s: '%s'", slot, text
+                        )
+                        return _pick(int(slot) - 1)
             return None
 
         # ----- phone_confirm: yes/no to using the Twilio caller-ID number --

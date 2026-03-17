@@ -63,6 +63,59 @@ logger = logging.getLogger(__name__)
 
 AsyncCallback = Callable[..., Coroutine[Any, Any, None]]
 
+# ---------------------------------------------------------------------------
+# Word boost — sent once after the AssemblyAI v3 Begin message
+# Improves recognition of physio terms, British idioms, and Northern English
+# ---------------------------------------------------------------------------
+
+_WORD_BOOST_TERMS: list[str] = [
+    # Northern English / informal affirmatives
+    "aye", "yeah", "yep", "nah", "nowt",
+    "owt", "summat", "reight", "sorted",
+    "champion", "mint", "sound",
+    # Body parts and physio conditions
+    "knee", "hip", "shoulder", "ankle",
+    "spine", "elbow", "wrist", "neck",
+    "back", "hamstring", "calf", "achilles",
+    "rotator", "cuff", "sciatic", "sciatica",
+    # Physio / clinical terms
+    "physiotherapy", "physio", "assessment",
+    "physiotherapist", "musculoskeletal",
+    # Clinic / proper nouns
+    "Theorem", "Alcester", "Redditch",
+    # British phrases
+    "fortnight", "whilst", "fortnightly",
+    "go on then", "right then", "fair enough",
+    "no bother", "no worries",
+]
+
+
+async def _send_word_boost(ws: Any) -> None:
+    """
+    Send word boost configuration to AssemblyAI v3 after the Begin handshake.
+
+    AssemblyAI v3 Universal Streaming accepts a JSON config message on the
+    WebSocket after the Begin event to improve recognition of domain-specific
+    vocabulary.  If the server does not support this message type it will
+    silently ignore it or return an error, which is handled gracefully here.
+
+    Ref: https://www.assemblyai.com/docs/speech-to-text/streaming
+    """
+    try:
+        msg = json.dumps({"word_boost": _WORD_BOOST_TERMS})
+        await ws.send(msg)
+        logger.info(
+            "[ms_stt] word boost sent: %d terms", len(_WORD_BOOST_TERMS)
+        )
+    except websockets.exceptions.ConnectionClosed:
+        logger.debug("[ms_stt] word boost: connection closed before send")
+    except Exception as exc:
+        # v3 may not support word_boost in this message format — non-fatal
+        logger.warning(
+            "[ms_stt] word boost not supported in v3 streaming — skipping (%r)", exc
+        )
+
+
 _STT_FAILURE_PHRASE = (
     "I'm really sorry, I'm having a small technical issue right now. "
     "Please call back in a moment and I'll be ready to help you."
@@ -526,9 +579,12 @@ class STTStream:
                 if msg_type == "Begin":
                     logger.info(
                         "[ms_stt] Begin received — session_id=%s expires_at=%s — "
-                        "unblocking audio stream",
+                        "sending word_boost then unblocking audio stream",
                         msg.get("id"), msg.get("expires_at"),
                     )
+                    # Send word boost BEFORE unblocking audio so the config
+                    # reaches AssemblyAI before the first audio frame arrives.
+                    await _send_word_boost(ws)
                     if connection_ready is not None:
                         connection_ready.set()
 
