@@ -107,6 +107,53 @@ def _is_question_worth_storing(text: str) -> bool:
     return False
 
 
+# Filler prefixes the LLM sometimes prepends — strip from re-ask question
+_STRIP_PREFIXES = (
+    "Absolutely, ", "Absolutely! ", "Absolutely — ",
+    "Certainly, ",  "Certainly! ",  "Certainly — ",
+    "Of course, ",  "Of course! ",  "Of course — ",
+    "Sure, ",       "Sure! ",       "Sure — ",
+    "Great, ",      "Great! ",      "Great — ",
+    "Sorry, ",      "Sorry! ",      "Sorry — ",
+)
+
+
+def _extract_question_sentence(text: str) -> str:
+    """
+    Extract only the question sentence from a multi-sentence LLM response.
+
+    Algorithm:
+      1. Split on sentence boundaries (., !, ?, —, newline).
+      2. Return the LAST fragment that ends with '?'.
+      3. Strip any leading filler prefix (Absolutely, Certainly, etc.).
+
+    Returns empty string when no '?' sentence is found (non-question turns
+    should not update last_question at all).
+    """
+    import re
+    # Split on sentence-ending punctuation followed by whitespace/newline,
+    # or on em-dash.
+    parts = re.split(r'(?<=[.!?])\s+|\n+|(?<=—)\s*', text.strip())
+    question = ""
+    for part in parts:
+        s = part.strip()
+        if s.endswith("?"):
+            question = s   # keep iterating — we want the LAST "?" sentence
+
+    if not question:
+        return ""
+
+    # Strip filler prefix
+    for prefix in _STRIP_PREFIXES:
+        if question.startswith(prefix):
+            question = question[len(prefix):].strip()
+            if question:
+                question = question[0].upper() + question[1:]
+            break
+
+    return question.strip()
+
+
 # ---------------------------------------------------------------------------
 # Flow definitions
 # ---------------------------------------------------------------------------
@@ -534,10 +581,12 @@ class FlowEngine:
                 )
                 instruction = step["llm_instruction"] or ""
             response = await self._llm(instruction)
-            # Store the LLM-generated question so SilenceHandler can re-ask it
-            _q = response or (step["question"] or "")
+            # Extract only the question sentence from the LLM response so the
+            # SilenceHandler re-asks a clean question, not the full paragraph.
+            _q = _extract_question_sentence(response or "") or (step["question"] or "")
             if _is_question_worth_storing(_q):
                 self.session["last_question"] = _q
+                logger.info("[ms_flow] last_question stored: %r", _q[:120])
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
             if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):

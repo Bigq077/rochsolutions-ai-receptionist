@@ -402,7 +402,7 @@ For cancel: collect name, phone, location, verbal confirmation, call cancel_appo
     # ------------------------------------------------------------------ #
     # Assemble the full prompt
     # ------------------------------------------------------------------ #
-    prompt = f"""# v2026-03-16-3
+    prompt = f"""# v2026-03-17-2
 
 ABSOLUTE RULE — NO EXCEPTIONS:
 Never begin any response with these words:

@@ -189,6 +189,7 @@ class SilenceHandler:
         self.last_audio_received_at:  float = time.time()
         self.last_question:           str   = ""
         self.currently_reasking:      bool  = False
+        self._last_question_set_at:   float = time.time()
         self._task: Optional[asyncio.Task]  = None
         self._tts_text_queue                = tts_text_queue
         self._trigger_transfer              = trigger_transfer_fn
@@ -212,8 +213,9 @@ class SilenceHandler:
         if not question or not question.strip():
             return
         if _is_question_worth_storing(question):
-            self.last_question = question.strip()
-            self.reask_count   = 0
+            self.last_question         = question.strip()
+            self.reask_count           = 0
+            self._last_question_set_at = time.time()
 
     def on_tts_started(self) -> None:
         """Cancel silence timer before Susie speaks."""
@@ -296,8 +298,12 @@ class SilenceHandler:
 
         self.currently_reasking = True
         self.reask_count += 1
+        secs_since_q = time.time() - self._last_question_set_at
         phrase1 = f"Sorry, I didn't quite catch that — {q}"
-        logger.info("[ms_silence] reask #%d: %r", self.reask_count, phrase1[:80])
+        logger.info(
+            "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
+            self.reask_count, q[:80], secs_since_q,
+        )
         await self._tts_text_queue.put(phrase1)
 
         # Wait for TTS to finish playing
@@ -322,8 +328,12 @@ class SilenceHandler:
 
         self.currently_reasking = True
         self.reask_count += 1
+        secs_since_q = time.time() - self._last_question_set_at
         phrase2 = f"Sorry about that — {q}"
-        logger.info("[ms_silence] reask #%d: %r", self.reask_count, phrase2[:80])
+        logger.info(
+            "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
+            self.reask_count, q[:80], secs_since_q,
+        )
         await self._tts_text_queue.put(phrase2)
 
         # Wait for TTS to finish playing
@@ -750,16 +760,13 @@ class WebSocketCallHandler:
                 self.session["llm_generation_active"] = True
                 await save_session(self.call_sid, self.session)
 
+                logger.info("[ms_conn] transcript received: %r", utterance[:120])
+
                 try:
                     if not self.session.get("flow_started"):
                         # First caller utterance — detect intent then kick off the flow.
-                        # ask_current_question() is a no-op for DETECT_INTENT (no question
-                        # to play); handle_transcript() classifies the utterance and routes
-                        # to the correct flow, which then asks its first question.
                         self.session["flow_started"] = True
-                        logger.info(
-                            "[ms_conn] flow start — first utterance: %r", utterance[:80],
-                        )
+                        logger.info("[ms_conn] flow start — first utterance: %r", utterance[:80])
                         await flow.handle_transcript(utterance)
                     else:
                         logger.info(
@@ -772,16 +779,21 @@ class WebSocketCallHandler:
                         self._call_stable = True
                         logger.info("[ms_conn] call reached stable state")
 
-                    # Arm the silence handler with whatever question was just asked
-                    last_q = self.session.get("last_question", "")
-                    if last_q:
-                        self._silence_handler.on_question_asked(last_q)
-
-                    await save_session(self.call_sid, self.session)
+                    # Diagnostic: log what the LLM last said and what question was stored
+                    _llm_reply = self.session.get("last_bot_prompt", "")
+                    if _llm_reply:
+                        logger.info("[ms_conn] LLM response: %r", _llm_reply[:200])
+                    _last_q = self.session.get("last_question", "")
+                    if _last_q:
+                        logger.info("[ms_conn] last_question stored: %r", _last_q[:120])
+                        self._silence_handler.on_question_asked(_last_q)
                     logger.info(
-                        "[ms_conn] flow_step=%s after turn",
+                        "[ms_conn] state after turn: %s  flow_step=%s",
+                        self.session.get("state", "?"),
                         self.session.get("flow_step", 0),
                     )
+
+                    await save_session(self.call_sid, self.session)
 
                 except asyncio.CancelledError:
                     pass
@@ -1042,22 +1054,10 @@ class WebSocketCallHandler:
             logger.info("[ms_conn] greeting already delivered — skipping")
             return
 
-        # Fast path: use hardcoded constant so TTS starts within one asyncio
-        # tick of the start event — no imports, no function calls required.
-        # _build_greeting is still called to support multi-clinic deployments;
-        # its result overrides the constant only when it returns a valid string.
+        # Always use the hardcoded constant — fastest path, zero imports required.
+        # The greeting is deterministic and never needs an LLM or clinic-config call.
         greeting = _THEOREM_GREETING
-        try:
-            from app.clinic_config import get_clinic
-            from app.routes.twilio import _build_greeting
-            clinic   = get_clinic(self.session.get("clinic_id"))
-            _dynamic = _build_greeting(clinic)
-            if _dynamic and len(_dynamic.strip()) > 20:
-                greeting = _dynamic
-        except Exception:
-            pass  # fall through to hardcoded _THEOREM_GREETING
-
-        logger.info("[ms_conn] greeting: %r", greeting[:80])
+        logger.info("[ms_conn] greeting (hardcoded fast-path): %r", greeting[:80])
 
         self.session.setdefault("turns", []).append({"role": "assistant", "text": greeting})
         history = self.session.setdefault("conversation_history", [])
