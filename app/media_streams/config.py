@@ -73,7 +73,7 @@ ELEVENLABS_SIMILARITY_BOOST = 0.75
 #   v3 equivalent: min_turn_silence (ms, URL param).
 ASSEMBLYAI_WS_URL = (
     "wss://streaming.assemblyai.com/v3/ws"
-    "?speech_model=best"
+    "?speech_model=universal-streaming-english"
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
