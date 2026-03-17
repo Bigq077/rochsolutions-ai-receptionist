@@ -103,7 +103,20 @@ _THEOREM_GREETING = (
 # Question-worth-storing guard (mirrors the one in flow.py)
 # ---------------------------------------------------------------------------
 
-_NEVER_STORE_AS_QUESTION = [
+# Phrases whose presence anywhere in the text means we must NOT store it
+# as last_question.  Checked with `phrase in text_lower` (substring match).
+_NEVER_STORE_PHRASES = [
+    # Re-ask / error phrases — must never overwrite the original question
+    "sorry, i didn't quite catch",
+    "sorry about that",
+    "sorry, i'm having",
+    "i'm having a little trouble",
+    "didn't quite catch",
+    "bear with me",
+    "one moment",
+    "let me check",
+    "just bear",
+    # Greeting / preamble phrases — not actionable questions
     "hi there",
     "hello",
     "this is susie",
@@ -111,19 +124,33 @@ _NEVER_STORE_AS_QUESTION = [
     "theorem health",
     "of course you can book",
 ]
+
 _KNOWN_QUESTION_PHRASES = [
-    "what brings you in", "how long have you had", "does that sound ok",
-    "been with us before", "work best for you", "full name please",
-    "reach you on", "which would you prefer", "that right", "sound ok",
-    "catch that", "about that", "would you like", "no problem — which",
+    "what brings you in",
+    "how long have you had",
+    "does that sound ok",
+    "been with us before",
+    "work best for you",
+    "full name please",
+    "reach you on",
+    "which would you prefer",
+    "that right",
+    "slot would you",
+    "would you like",
+    "no problem — which",
+    "sound ok",
 ]
 
 
 def _is_question_worth_storing(text: str) -> bool:
-    """Return True only if text is a real question — never the greeting."""
+    """
+    Return True only if text is a real question Susie asked.
+    Rejects greetings, re-ask phrases, filler phrases, and error phrases.
+    Uses substring match (not startswith) so "sorry about that — X?" is also rejected.
+    """
     t = text.strip().lower()
-    for phrase in _NEVER_STORE_AS_QUESTION:
-        if t.startswith(phrase):
+    for phrase in _NEVER_STORE_PHRASES:
+        if phrase in t:
             return False
     for q in _KNOWN_QUESTION_PHRASES:
         if q in t:
@@ -205,8 +232,8 @@ class SilenceHandler:
             any(p in t.lower() for p in [
                 "what brings", "how long", "does that", "been with us",
                 "work best", "full name", "reach you", "which would",
-                "catch that", "about that", "sound ok", "that right",
-                "help you", "how can i", "your name", "your number", "shall i",
+                "sound ok", "that right", "help you", "how can i",
+                "your name", "your number", "shall i", "slot would",
             ])
         )
         if is_question:
@@ -325,6 +352,9 @@ class SilenceHandler:
             "I'm sorry, I'm having a little trouble "
             "hearing you — let me get someone to help."
         )
+        # Set the silence_transfer flag so _should_allow_transfer() passes.
+        # _trigger_transfer is a closure that sets session["silence_transfer"]
+        # before calling _on_transfer_request — see SilenceHandler instantiation.
         try:
             await self._trigger_transfer()
         except Exception as exc:
@@ -397,9 +427,17 @@ class WebSocketCallHandler:
         # Created eagerly so _handle_media can call on_audio_received() before
         # the LLM loop starts.  tts_text_queue exists from __init__ so it's
         # safe to pass here.
+        # Wrap _on_transfer_request so silence-triggered transfers set the
+        # silence_transfer flag before the guard runs.  We use a closure
+        # (not a bound-method reference) because self.session is reassigned
+        # on the "start" event — the closure captures `self`, not the dict.
+        async def _silence_transfer_fn() -> None:
+            self.session["silence_transfer"] = True
+            await self._on_transfer_request()
+
         self._silence_handler = SilenceHandler(
             tts_text_queue=self.tts_text_queue,
-            trigger_transfer_fn=self._on_transfer_request,
+            trigger_transfer_fn=_silence_transfer_fn,
         )
 
         # ── Call stability ─────────────────────────────────────────────────
@@ -1052,7 +1090,8 @@ class WebSocketCallHandler:
             self.session.get("transfer_requested_by_caller") is True
             or self.session.get("medical_emergency_detected") is True
             or self.session.get("failed_understanding_count", 0) >= 3
-            or self.session.get("request_transfer") is True  # set by transfer_to_human tool
+            or self.session.get("request_transfer") is True      # set by transfer_to_human tool
+            or self.session.get("silence_transfer") is True      # set by SilenceHandler after 3 re-asks
         )
 
     async def _on_transfer_request(self) -> None:
