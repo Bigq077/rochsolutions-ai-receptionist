@@ -314,6 +314,15 @@ class LLMStream:
         # Rules are prepended in priority order so Claude reads them first.
         # SILENCE_RULE is first (most critical), then content rules, then main prompt.
         system_prompt = (
+            # Hard banned-phrase rule — must appear first so it overrides everything
+            "ABSOLUTE RULE — NO EXCEPTIONS:\n"
+            "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
+            "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
+            "Obviously, Clearly, Right so, Of Course, Sure, Lovely.\n"
+            "NEVER say 'Lovely' anywhere in a response — not as a filler, not as an "
+            "acknowledgement, not after collecting a name. It sounds patronising.\n"
+            "When a caller gives their name: do NOT repeat or echo the name back. "
+            "Ask immediately for their phone number.\n\n"
             f"{SILENCE_RULE}\n\n"
             f"{AVAILABILITY_FLOW_RULE}\n\n"
             f"{NAME_COLLECTION_RULE}\n\n"
@@ -413,7 +422,7 @@ class LLMStream:
         date_prefix = _build_date_prefix()
         location    = session.get("selected_location", "alcester")
         system_prompt = (
-            # v2026-03-17-3 — bumped to bust Anthropic prompt cache
+            # v2026-03-18-1 — bumped to bust Anthropic prompt cache
             "ABSOLUTE RULE — NO EXCEPTIONS:\n"
             "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
             "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
