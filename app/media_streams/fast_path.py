@@ -314,22 +314,18 @@ def _try_full_name(
 
     if phone_already_confirmed:
         # Phone is already locked in — go straight to date/time preference.
-        reply = (
-            f"Lovely, {name_stored}. "
-            "And do you have a preferred day or time in mind for the appointment?"
-        )
+        reply = "And do you have a preferred day or time in mind for the appointment?"
     else:
         caller_number = session.get("twilio_from_local", "")
         if caller_number and not session.get(F_COLLECTED, {}).get("phone"):
             digits    = _digits_only(caller_number)
             formatted = _fmt_phone(digits)
             reply = (
-                f"Lovely, {name_stored}. And the best number to reach you on — "
+                f"And the best number to reach you on — "
                 f"is that the same number you're calling from, {formatted}?"
             )
         else:
             reply = (
-                f"Lovely, {name_stored}. "
                 "What number would you like to use for the booking? "
                 "Could you give me the first five digits?"
             )

@@ -106,24 +106,6 @@ def _build_claude_tools() -> list:
     """Return tool definitions in Anthropic native format."""
     from app.tools.receptionist_tools import TOOL_SCHEMAS
     tools = list(TOOL_SCHEMAS)
-    tools.append({
-        "name": "escalate_to_claude",
-        "description": (
-            "Use ONLY for genuine clinical or legal complexity requiring deep reasoning. "
-            "Never for standard greetings, FAQs, availability, booking, pricing, hours, "
-            "or common conditions -- handle all of those directly."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The caller's question or situation requiring deep reasoning.",
-                }
-            },
-            "required": ["question"],
-        },
-    })
     return tools
 
 
@@ -140,23 +122,6 @@ def _build_openai_tools() -> list:
                 "parameters":  tool.get("input_schema", {"type": "object", "properties": {}}),
             },
         })
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "escalate_to_claude",
-            "description": (
-                "Use ONLY for genuine clinical or legal complexity. "
-                "Never for standard greetings, FAQs, or common booking queries."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {"type": "string", "description": "The caller's question."}
-                },
-                "required": ["question"],
-            },
-        },
-    })
     return tools
 
 
