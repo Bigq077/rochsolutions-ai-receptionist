@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 # Susie's demo number to call
-SUSIE_NUMBER = "+447366530580"
+SUSIE_NUMBER = "+447426779875"
 
 # Twilio credentials — read from environment
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
