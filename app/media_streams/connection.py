@@ -365,7 +365,7 @@ class SilenceHandler:
         logger.info("[ms_silence] max reasks reached — transferring")
         await self._tts_text_queue.put(
             "I'm sorry, I'm having a little trouble "
-            "hearing you — let me get someone to help."
+            "hearing you — let me transfer you to someone who can help."
         )
         # Set the silence_transfer flag so _should_allow_transfer() passes.
         # _trigger_transfer is a closure that sets session["silence_transfer"]

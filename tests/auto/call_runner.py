@@ -173,6 +173,18 @@ class CallRunner:
             )
             runner.current_turn += 1
 
+            # Empty string means the test caller is silent this turn —
+            # just listen without playing anything so Susie's SilenceHandler fires.
+            if not next_response.strip():
+                logger.info(
+                    f"[{runner.scenario['id']}] Turn {runner.current_turn - 1} — "
+                    f"silence turn (no audio played)"
+                )
+                return Response(
+                    content=runner._twiml_listen(timeout=30),
+                    media_type="text/xml",
+                )
+
             # Generate TTS audio and play it, then listen again
             audio_url = await runner._generate_audio(next_response)
             return Response(
