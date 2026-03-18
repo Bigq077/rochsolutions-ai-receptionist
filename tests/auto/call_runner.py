@@ -222,13 +222,13 @@ class CallRunner:
         self._webhook_url = self._ngrok_tunnel.public_url.replace("http://", "https://")
         self._server_task = server_task
 
-    def _twiml_listen(self, timeout: int = 5) -> str:
+    def _twiml_listen(self, timeout: int = 15) -> str:
         return (
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f"<Response>\n"
             f'  <Gather input="speech" timeout="{timeout}"\n'
             f'          action="{self._webhook_url}/twiml/gather"\n'
-            f'          speechTimeout="1"\n'
+            f'          speechTimeout="4"\n'
             f'          enhanced="true"\n'
             f'          language="en-GB">\n'
             f"  </Gather>\n"
@@ -240,9 +240,9 @@ class CallRunner:
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f"<Response>\n"
             f"  <Play>{audio_url}</Play>\n"
-            f'  <Gather input="speech" timeout="20"\n'
+            f'  <Gather input="speech" timeout="25"\n'
             f'          action="{self._webhook_url}/twiml/gather"\n'
-            f'          speechTimeout="2"\n'
+            f'          speechTimeout="4"\n'
             f'          enhanced="true"\n'
             f'          language="en-GB">\n'
             f"  </Gather>\n"
@@ -260,31 +260,45 @@ class CallRunner:
     async def _generate_audio(self, text: str) -> str:
         """
         Generate speech via ElevenLabs, save to results/, return public URL.
+        Retries up to 3 times on network errors.
         """
+        import asyncio as _asyncio
+
         turn_label = f"{self.scenario['id'].replace('.', '_')}_{self.current_turn}"
         audio_filename = f"audio_{turn_label}.mp3"
         audio_path = RESULTS_DIR / audio_filename
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/"
-                f"{ELEVENLABS_PATIENT_VOICE_ID}",
-                headers={"xi-api-key": ELEVENLABS_API_KEY},
-                json={
-                    "text": text,
-                    "model_id": "eleven_flash_v2_5",
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.8,
-                    },
-                },
-            )
-            response.raise_for_status()
+        last_exc = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.post(
+                        f"https://api.elevenlabs.io/v1/text-to-speech/"
+                        f"{ELEVENLABS_PATIENT_VOICE_ID}",
+                        headers={"xi-api-key": ELEVENLABS_API_KEY},
+                        json={
+                            "text": text,
+                            "model_id": "eleven_flash_v2_5",
+                            "voice_settings": {
+                                "stability": 0.5,
+                                "similarity_boost": 0.8,
+                            },
+                        },
+                    )
+                    response.raise_for_status()
+                    audio_path.write_bytes(response.content)
+                    self._audio_files[self.current_turn] = audio_path
+                    return f"{self._webhook_url}/audio/{audio_filename}"
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    f"[{self.scenario['id']}] ElevenLabs attempt {attempt + 1}/3 "
+                    f"failed: {exc!r} — retrying in 2s"
+                )
+                if attempt < 2:
+                    await _asyncio.sleep(2)
 
-        audio_path.write_bytes(response.content)
-        self._audio_files[self.current_turn] = audio_path
-
-        return f"{self._webhook_url}/audio/{audio_filename}"
+        raise last_exc
 
     def _get_next_response(self, susie_text: str) -> str | None:
         """

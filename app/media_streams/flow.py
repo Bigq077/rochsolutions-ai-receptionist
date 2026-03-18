@@ -357,13 +357,15 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "PRESENT_SLOTS",
-        "question": "Let me check what we have available for you.",
+        "question": None,   # preamble lives inside the LLM instruction so TTS is continuous
         "answer_field": "selected_slot",
         "use_llm": True,
         "llm_instruction": (
-            "Call check_availability with location='alcester', "
+            "IMPORTANT: Output this exact phrase FIRST, before calling any tool: "
+            "'Let me just have a look at what we've got available for you...' "
+            "Then call check_availability with location='alcester', "
             "duration_minutes=50, preference='{availability}'. "
-            "Present up to 3 slots in this exact format: "
+            "After the tool returns, present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that time frame. "
             "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
             "the second being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
@@ -470,13 +472,15 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 4,
         "state": "PRESENT_NEW_SLOTS",
-        "question": "Let me check what we have available.",
+        "question": None,   # preamble lives inside LLM instruction — no silence gap
         "answer_field": "selected_slot",
         "use_llm": True,
         "llm_instruction": (
-            "Call check_availability with location='alcester', "
+            "IMPORTANT: Output this exact phrase FIRST, before calling any tool: "
+            "'Let me just have a look at what we've got available for you...' "
+            "Then call check_availability with location='alcester', "
             "duration_minutes=50, preference='{availability}'. "
-            "Present up to 3 slots in this exact format: "
+            "After the tool returns, present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that time frame. "
             "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
             "the second being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
