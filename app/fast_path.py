@@ -367,11 +367,11 @@ def _try_full_name(
         digits = _digits_only(caller_number)
         formatted = _fmt_phone(digits)
         reply = (
-            f"Lovely, {name_stored}. And the best number to reach you on — "
+            f"ok, {name_stored}. And the best number to reach you on — "
             f"is that the same number you're calling from, {formatted}?"
         )
     else:
-        reply = f"Lovely, {name_stored}. And the best number to reach you on?"
+        reply = f"ok, {name_stored}. And the best number to reach you on?"
 
     session["last_bot_prompt"] = reply
     session["last_question"] = reply
