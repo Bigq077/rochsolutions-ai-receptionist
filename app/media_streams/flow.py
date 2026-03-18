@@ -67,37 +67,58 @@ def _fuzzy_match(text: str, patterns: list, threshold: int = 80) -> bool:
 # Question-worth-storing guard
 # ---------------------------------------------------------------------------
 
-_NEVER_STORE_AS_QUESTION = [
+# Phrases whose presence ANYWHERE in the text means we must NOT store it
+# as last_question.  Uses substring match (`phrase in text_lower`).
+_NEVER_STORE_PHRASES = [
+    # Re-ask / error phrases — must never overwrite the original question
+    "sorry, i didn't quite catch",
+    "sorry about that",
+    "sorry, i'm having",
+    "i'm having a little trouble",
+    "didn't quite catch",
+    "bear with me",
+    "one moment",
+    "let me check",
+    "just bear",
+    # Greeting / preamble — not actionable questions
     "hi there",
     "hello",
     "this is susie",
     "roch solutions",
     "theorem health",
     "of course you can book",
+    "of course i can help",
 ]
+
 _KNOWN_QUESTION_PHRASES = [
     "what brings you in",
     "how long have you had",
     "does that sound ok",
     "been with us before",
+    "been to us before",
     "work best for you",
     "full name please",
     "reach you on",
     "which would you prefer",
     "that right",
     "sound ok",
-    "catch that",
-    "about that",
     "would you like",
     "no problem — which",
+    "slot would you",
+    "which clinic",
+    "alcester, or two for redditch",
 ]
 
 
 def _is_question_worth_storing(text: str) -> bool:
-    """Return True only if text is a real question Susie asked — not the greeting."""
+    """
+    Return True only if text is a real question Susie asked.
+    Rejects greetings, re-ask phrases, filler phrases, and error phrases.
+    Uses substring match so 'sorry about that — X?' is also rejected.
+    """
     t = text.strip().lower()
-    for phrase in _NEVER_STORE_AS_QUESTION:
-        if t.startswith(phrase):
+    for phrase in _NEVER_STORE_PHRASES:
+        if phrase in t:
             return False
     for q in _KNOWN_QUESTION_PHRASES:
         if q in t:
@@ -750,6 +771,33 @@ class FlowEngine:
             intent = self._detect_intent(text)
             self.session["intent"] = intent
             self._switch_flow(intent)
+
+            # If caller mentioned a medical condition in their first utterance,
+            # treat it as the reason for booking — store it and skip COLLECT_REASON
+            # (jump straight to COLLECT_DURATION, step 1).
+            # This matches caller behaviour: "I have back pain" is BOTH the booking
+            # intent AND the reason — asking "what brings you in today?" would be
+            # redundant and confusing.
+            if intent == "booking" and not self.session.get("reason"):
+                _condition_signals = (
+                    "pain", "ache", "aching", "hurt", "hurting", "injury",
+                    "injured", "sore", "stiff", "stiffness", "swollen",
+                    "swelling", "pulled", "torn", "sprain", "strain",
+                    "fracture", "headache", "migraine", "knee", "shoulder",
+                    "back", "neck", "hip", "ankle", "wrist", "elbow",
+                    "foot", "leg", "arm", "muscle", "joint", "sports",
+                    "running", "posture", "postural", "physio", "problem",
+                    "issue", "condition", "treatment", "rehab",
+                )
+                if any(sig in text for sig in _condition_signals):
+                    self.session["reason"] = transcript.strip()
+                    self.session["flow_step"] = 1   # skip COLLECT_REASON
+                    logger.info(
+                        "[ms_flow] DETECT_INTENT: condition in first utterance %r "
+                        "→ reason stored, skipping COLLECT_REASON",
+                        transcript.strip()[:60],
+                    )
+
             await self.ask_current_question()
             return
 
