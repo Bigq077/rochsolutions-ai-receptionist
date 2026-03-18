@@ -46,6 +46,41 @@ if not _RAPIDFUZZ_AVAILABLE:
     )
 
 
+def _format_slot_for_speech(label: str) -> str:
+    """
+    Convert a short slot label like 'Mon 23 Mar at 08:20' into a natural
+    spoken form like 'Monday the 23rd of March at 8:20 in the morning'.
+    Falls back to the raw label if the format doesn't match.
+    """
+    from datetime import datetime as _dt
+    _ORDINALS = {
+        1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th", 6: "6th",
+        7: "7th", 8: "8th", 9: "9th", 10: "10th", 11: "11th", 12: "12th",
+        13: "13th", 14: "14th", 15: "15th", 16: "16th", 17: "17th",
+        18: "18th", 19: "19th", 20: "20th", 21: "21st", 22: "22nd",
+        23: "23rd", 24: "24th", 25: "25th", 26: "26th", 27: "27th",
+        28: "28th", 29: "29th", 30: "30th", 31: "31st",
+    }
+    try:
+        parsed = _dt.strptime(label.strip(), "%a %d %b at %H:%M")
+        day_name  = parsed.strftime("%A")
+        ord_str   = _ORDINALS.get(parsed.day, f"{parsed.day}th")
+        month_name = parsed.strftime("%B")
+        h, m = parsed.hour, parsed.minute
+        if m == 0:
+            time_str = f"{h % 12 or 12} o'clock"
+        else:
+            time_str = f"{h % 12 or 12}:{m:02d}"
+        suffix = (
+            "in the morning" if h < 12
+            else "in the afternoon" if h < 18
+            else "in the evening"
+        )
+        return f"{day_name} the {ord_str} of {month_name} at {time_str} {suffix}"
+    except Exception:
+        return label  # fallback to raw label unchanged
+
+
 def _fuzzy_match(text: str, patterns: list, threshold: int = 80) -> bool:
     """
     Return True if any pattern fuzzy-matches the text at or above threshold.
@@ -416,9 +451,9 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "Confirm the booking with a warm summary. "
             "Include: patient name '{full_name}', "
             "appointment type 'physiotherapy assessment', "
-            "date and time '{selected_slot}'. "
-            "Tell them a confirmation will follow. "
-            "Keep it brief and warm."
+            "date and time '{selected_slot_speech}'. "
+            "Tell them a confirmation text will follow. "
+            "Keep it brief and warm. Do not say 'Lovely'."
         ),
         "extract": "none",
     },
@@ -704,9 +739,17 @@ class FlowEngine:
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
             if step["question"]:
                 await self._tts.put(step["question"])
-            # Build instruction, filling in session fields
+            # Build instruction, filling in session fields.
+            # Ensure selected_slot_speech has a fallback so CONFIRM_BOOKING
+            # never blows up with a missing-key error.
+            format_args = dict(self.session)
+            if "selected_slot_speech" not in format_args or not format_args["selected_slot_speech"]:
+                _raw = format_args.get("selected_slot", "")
+                format_args["selected_slot_speech"] = (
+                    _format_slot_for_speech(_raw) if _raw else ""
+                )
             try:
-                instruction = step["llm_instruction"].format(**self.session)
+                instruction = step["llm_instruction"].format(**format_args)
             except (KeyError, AttributeError) as exc:
                 logger.warning(
                     "[ms_flow] instruction format failed step=%d: %r — using raw template",
@@ -885,8 +928,11 @@ class FlowEngine:
         if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
             self.session["slot_pending_confirmation"] = True
             slot_text = str(answer)
+            slot_speech = _format_slot_for_speech(slot_text)
+            # Keep both: raw label for book_appointment, natural form for TTS
+            self.session["selected_slot_speech"] = slot_speech
             phrase = (
-                f"Just to confirm — you'd like the {slot_text} appointment. "
+                f"Just to confirm — you'd like the appointment on {slot_speech}. "
                 f"Is that right?"
             )
             await self._tts.put(phrase)

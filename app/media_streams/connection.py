@@ -161,13 +161,13 @@ def _is_question_worth_storing(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SilenceHandler — re-ask after 4 s of caller silence
+# SilenceHandler — re-ask after caller silence
 # ---------------------------------------------------------------------------
 
 class SilenceHandler:
     """
-    Fires a re-ask phrase if the caller has been silent for 4 seconds after
-    Susie asked a question.
+    Fires a re-ask phrase if the caller has been silent for an extended
+    period after Susie asked a question.
 
     last_audio_received_at is updated ONLY by on_speech_started() and
     on_transcript_received() — NOT by on_audio_received() — so the
@@ -175,9 +175,14 @@ class SilenceHandler:
     silence packets (which arrive every ~20ms regardless of speech).
 
     Silence windows:
-        1st (4 s) → "Sorry, I didn't quite catch that — <question>"
-        2nd (4 s) → "Sorry about that — <question>"
-        3rd (4 s) → transfer phrase + trigger_transfer()
+        1st (12 s) → "Sorry, I didn't quite catch that — <question>"
+        2nd (10 s) → "Sorry about that — <question>"
+        3rd ( 4 s) → transfer phrase + trigger_transfer()
+
+    Window 1 is intentionally generous (12 s) because some callers — and
+    the automated test runner — need several seconds to generate a TTS
+    response before any audio arrives.  The since_audio < 3.5 guard means
+    the window fires only when genuinely no speech has been detected.
     """
 
     def __init__(
@@ -274,9 +279,9 @@ class SilenceHandler:
         """
         Flat sequential re-ask coroutine.
 
-        Window 1: 4s sleep → since_audio guard → re-ask #1 → 5s TTS wait
-        Window 2: 4s sleep → since_audio guard → re-ask #2 → 5s TTS wait
-        Window 3: 4s sleep → since_audio guard → transfer
+        Window 1: 12s sleep → since_audio guard → re-ask #1 → 5s TTS wait
+        Window 2: 10s sleep → since_audio guard → re-ask #2 → 5s TTS wait
+        Window 3:  4s sleep → since_audio guard → transfer
 
         Never recurses with create_task.  CancelledError exits cleanly at
         any sleep — caller spoke (on_speech_started) or Susie spoke
@@ -284,9 +289,9 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 4 s silence ──────────────────────────────────────────
+        # ── Window 1: 12 s silence ─────────────────────────────────────────
         try:
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(12.0)
         except asyncio.CancelledError:
             return
 
@@ -314,9 +319,9 @@ class SilenceHandler:
             return
         self.currently_reasking = False
 
-        # ── Window 2: 4 s silence ──────────────────────────────────────────
+        # ── Window 2: 10 s silence ─────────────────────────────────────────
         try:
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(10.0)
         except asyncio.CancelledError:
             return
 
