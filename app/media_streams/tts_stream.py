@@ -149,57 +149,74 @@ class TTSStream:
             ELEVENLABS_MODEL_ID, len(text), text[:60],
         )
 
-        try:
-            async with _get_http_client().stream(
-                "POST", url, json=body, headers=headers,
-            ) as resp:
-                if resp.status_code != 200:
-                    err = await resp.aread()
-                    logger.error(
-                        "[ms_tts] ElevenLabs error %d: %s",
-                        resp.status_code, err[:300],
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                async with _get_http_client().stream(
+                    "POST", url, json=body, headers=headers,
+                ) as resp:
+                    if resp.status_code == 429:
+                        err = await resp.aread()
+                        retry_after = int(resp.headers.get("Retry-After", 5))
+                        logger.warning(
+                            "[ms_tts] ElevenLabs rate-limited (429) — waiting %ds "
+                            "(attempt %d/%d): %s",
+                            retry_after, attempt + 1, max_attempts, err[:200],
+                        )
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(retry_after)
+                            continue  # retry the for loop
+                        return  # all retries exhausted
+                    if resp.status_code != 200:
+                        err = await resp.aread()
+                        logger.error(
+                            "[ms_tts] ElevenLabs error %d: %s",
+                            resp.status_code, err[:300],
+                        )
+                        return  # non-retryable error
+
+                    logger.debug(
+                        "[ms_tts] ElevenLabs response status=%d content-type=%r",
+                        resp.status_code,
+                        resp.headers.get("content-type", "MISSING"),
                     )
-                    return
 
-                logger.debug(
-                    "[ms_tts] ElevenLabs response status=%d content-type=%r",
-                    resp.status_code,
-                    resp.headers.get("content-type", "MISSING"),
-                )
+                    chunk_count = 0
+                    async for raw_chunk in resp.aiter_bytes(chunk_size=TTS_STREAM_CHUNK_SIZE):
+                        if not raw_chunk:
+                            continue
 
-                chunk_count = 0
-                async for raw_chunk in resp.aiter_bytes(chunk_size=TTS_STREAM_CHUNK_SIZE):
-                    if not raw_chunk:
-                        continue
+                        b64 = audio_out_processor.convert_chunk(raw_chunk)
+                        if b64:
+                            await audio_out_queue.put(b64)
+                            chunk_count += 1
 
-                    b64 = audio_out_processor.convert_chunk(raw_chunk)
+                    # Flush any remaining bytes from the alignment buffer
+                    b64 = audio_out_processor.flush()
                     if b64:
                         await audio_out_queue.put(b64)
-                        chunk_count += 1
 
-                # Flush any remaining bytes from the alignment buffer
-                b64 = audio_out_processor.flush()
-                if b64:
-                    await audio_out_queue.put(b64)
+                    logger.debug("[ms_tts] synthesise_chunk done: %d chunks", chunk_count)
+                    return  # success — exit the retry loop
 
-                logger.debug("[ms_tts] synthesise_chunk done: %d chunks", chunk_count)
+            except asyncio.CancelledError:
+                # Barge-in: reset alignment state so the next chunk starts clean
+                audio_out_processor.reset()
+                logger.info("[ms_tts] synthesise_chunk cancelled (barge-in)")
+                raise
 
-        except asyncio.CancelledError:
-            # Barge-in: reset alignment state so the next chunk starts clean
-            audio_out_processor.reset()
-            logger.info("[ms_tts] synthesise_chunk cancelled (barge-in)")
-            raise
+            except RuntimeError as exc:
+                if "close message" in str(exc):
+                    logger.warning("[ms_tts] WebSocket closed during TTS")
+                else:
+                    logger.error("[ms_tts] runtime error: %r", exc)
+                audio_out_processor.reset()
+                return
 
-        except RuntimeError as exc:
-            if "close message" in str(exc):
-                logger.warning("[ms_tts] WebSocket closed during TTS")
-            else:
-                logger.error("[ms_tts] runtime error: %r", exc)
-            audio_out_processor.reset()
-
-        except Exception as exc:
-            logger.error("[ms_tts] synthesise_chunk error: %r", exc)
-            audio_out_processor.reset()
+            except Exception as exc:
+                logger.error("[ms_tts] synthesise_chunk error: %r", exc)
+                audio_out_processor.reset()
+                return
 
     # =========================================================================
     # MODE B -- WebSocket streaming (persistent connection)

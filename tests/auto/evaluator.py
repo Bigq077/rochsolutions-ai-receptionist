@@ -352,7 +352,7 @@ class Evaluator:
             raw: dict = json.loads(text)
         except json.JSONDecodeError as e:
             logger.error(f"Claude returned invalid JSON: {e}\nRaw: {text[:200]}")
-            return {"claude_evaluation_error": False}
+            return {}  # skip Claude gating; don't add a bool that fails evaluation
 
         # Filter Claude results: only gate on checks relevant to this scenario.
         # Null values are informational, non-bool values are metadata.

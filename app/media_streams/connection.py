@@ -930,7 +930,12 @@ class WebSocketCallHandler:
                     self._tts_text_pending = ""
                     play_secs = _tts_bytes_sent / 8000.0
                     _tts_bytes_sent = 0
-                    if text:
+                    # Only arm the silence timer if audio was actually delivered.
+                    # If ElevenLabs failed (0 bytes sent), play_secs == 0 and we
+                    # must NOT arm the timer — doing so triggers a spurious 26-second
+                    # silence-transfer cascade (12s + 10s + 4s windows) even though
+                    # Susie never spoke.
+                    if text and play_secs > 0.01:
                         logger.info(
                             "[ms_silence] tts_finished in %.1fs: %r",
                             play_secs, text[:60],
@@ -938,6 +943,11 @@ class WebSocketCallHandler:
                         asyncio.create_task(
                             self._delayed_tts_finished(play_secs, text),
                             name="ms_silence_tts_delay",
+                        )
+                    elif text:
+                        logger.warning(
+                            "[ms_silence] TTS sentinel with 0 bytes — ElevenLabs likely "
+                            "rate-limited; silence timer NOT armed to prevent spurious transfer"
                         )
                     continue
 
