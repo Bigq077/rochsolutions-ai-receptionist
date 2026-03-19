@@ -158,16 +158,29 @@ class CallRunner:
             runner._empty_gather_count = 0
 
             # ── Re-ask detection ───────────────────────────────────────────────────
-            # If Susie re-asked (SilenceHandler fired and repeated her question),
-            # the runner should NOT advance — it should replay the previous response.
+            # If Susie re-asked because she didn't hear the caller's REAL response,
+            # step back so the same scripted response is replayed.
+            # CRITICAL: do NOT step back if the previous turn was intentional silence
+            # (empty string response) — silence scenarios depend on advancing past
+            # each silence turn naturally when Susie re-asks.
             susie_lower = susie_speech.lower()
             is_reask = any(p in susie_lower for p in _REASK_PHRASES)
             if is_reask and runner.current_turn > 0:
-                logger.info(
-                    f"[{runner.scenario['id']}] Re-ask detected at turn {runner.current_turn} "
-                    f"— stepping back to repeat turn {runner.current_turn - 1}"
+                last_said = (
+                    runner.test_said[-1]["text"] if runner.test_said else ""
                 )
-                runner.current_turn -= 1
+                if last_said.strip():
+                    # Previous turn was a real spoken response — repeat it
+                    logger.info(
+                        f"[{runner.scenario['id']}] Re-ask detected at turn {runner.current_turn} "
+                        f"— stepping back to repeat turn {runner.current_turn - 1}"
+                    )
+                    runner.current_turn -= 1
+                else:
+                    logger.info(
+                        f"[{runner.scenario['id']}] Re-ask detected but previous turn was silence "
+                        f"— advancing normally to turn {runner.current_turn}"
+                    )
 
             logger.info(
                 f"[{runner.scenario['id']}] Turn {runner.current_turn} — "

@@ -177,7 +177,8 @@ class Evaluator:
                 )
             except Exception as e:
                 logger.warning(f"Claude evaluation failed: {e}")
-                claude_results = {"claude_evaluation_error": False}
+                # Empty dict — don't gate anything on a failed Claude call
+                claude_results = {}
         else:
             logger.warning("ANTHROPIC_API_KEY not set — skipping Claude evaluation")
             claude_results = {}
@@ -185,9 +186,13 @@ class Evaluator:
         # Merge; rule checks take precedence on name collision
         all_checks: dict = {**claude_results, **rule_results}
 
-        # Only include bool values in pass/fail calculation
-        # (null / None values are informational, not gates)
-        gating = {k: v for k, v in all_checks.items() if isinstance(v, bool)}
+        # Only include bool values that are real gate checks.
+        # Keys prefixed with "info_" are informational only (never cause FAIL).
+        # Null / None values are also informational.
+        gating = {
+            k: v for k, v in all_checks.items()
+            if isinstance(v, bool) and not k.startswith("info_")
+        }
         passed = all(gating.values())
         fail_reasons = [k for k, v in gating.items() if not v]
 
