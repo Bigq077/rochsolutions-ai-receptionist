@@ -109,21 +109,69 @@ class CallRunner:
         async def twiml_start(request: Request):
             """Twilio calls this when the call connects. Listen for Susie's greeting."""
             logger.info(f"[{runner.scenario['id']}] Call connected — listening for greeting")
+            # 30s timeout: Susie's greeting (ElevenLabs TTS) can take ~10-12 seconds
+            # to generate and play; 15s was too tight.
             return Response(
-                content=runner._twiml_listen(timeout=15),
+                content=runner._twiml_listen(timeout=30),
                 media_type="text/xml",
             )
+
+        # Phrases that indicate Susie is re-asking (silence handler fired).
+        # When detected we step back so the same scripted response is replayed.
+        _REASK_PHRASES = (
+            "didn't quite catch",
+            "catch that",
+            "sorry about that",
+            "i'm having a little trouble",
+            "trouble hearing",
+        )
 
         @app.post("/twiml/gather")
         async def twiml_gather(request: Request):
             """Twilio calls this after each speech-gather completes."""
             form = await request.form()
-            susie_speech = form.get("SpeechResult", "")
+            susie_speech = form.get("SpeechResult", "").strip()
             susie_confidence = float(form.get("Confidence", 0.0))
+
+            # ── Empty gather: Twilio timed out waiting for speech ──────────────────
+            # This happens if Susie hasn't spoken yet (her greeting is still
+            # generating/playing) or if there was genuine dead air.  Re-issue a
+            # fresh listen rather than treating it as a scripted-response turn.
+            if not susie_speech:
+                runner._empty_gather_count = getattr(runner, "_empty_gather_count", 0) + 1
+                logger.info(
+                    f"[{runner.scenario['id']}] Empty gather #{runner._empty_gather_count} "
+                    f"— re-listening"
+                )
+                if runner._empty_gather_count >= 5:
+                    logger.warning(
+                        f"[{runner.scenario['id']}] Too many empty gathers — ending call"
+                    )
+                    runner._end_call("timeout_no_speech")
+                    return Response(content=runner._twiml_hangup(), media_type="text/xml")
+                return Response(
+                    content=runner._twiml_listen(timeout=30),
+                    media_type="text/xml",
+                )
+
+            # Reset empty-gather counter on any real speech
+            runner._empty_gather_count = 0
+
+            # ── Re-ask detection ───────────────────────────────────────────────────
+            # If Susie re-asked (SilenceHandler fired and repeated her question),
+            # the runner should NOT advance — it should replay the previous response.
+            susie_lower = susie_speech.lower()
+            is_reask = any(p in susie_lower for p in _REASK_PHRASES)
+            if is_reask and runner.current_turn > 0:
+                logger.info(
+                    f"[{runner.scenario['id']}] Re-ask detected at turn {runner.current_turn} "
+                    f"— stepping back to repeat turn {runner.current_turn - 1}"
+                )
+                runner.current_turn -= 1
 
             logger.info(
                 f"[{runner.scenario['id']}] Turn {runner.current_turn} — "
-                f"Susie said: '{susie_speech}' (conf={susie_confidence:.2f})"
+                f"Susie said: '{susie_speech[:80]}' (conf={susie_confidence:.2f})"
             )
 
             runner.susie_said.append(
@@ -185,12 +233,24 @@ class CallRunner:
                     media_type="text/xml",
                 )
 
-            # Generate TTS audio and play it, then listen again
-            audio_url = await runner._generate_audio(next_response)
-            return Response(
-                content=runner._twiml_play_then_listen(audio_url),
-                media_type="text/xml",
-            )
+            # Generate TTS audio and play it, then listen again.
+            # Fall back to Twilio's built-in <Say> if ElevenLabs fails so the call
+            # never crashes — Twilio's voice is less natural but keeps the flow alive.
+            try:
+                audio_url = await runner._generate_audio(next_response)
+                return Response(
+                    content=runner._twiml_play_then_listen(audio_url),
+                    media_type="text/xml",
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[{runner.scenario['id']}] ElevenLabs failed — using Twilio <Say> "
+                    f"fallback: {exc!r}"
+                )
+                return Response(
+                    content=runner._twiml_say_then_listen(next_response),
+                    media_type="text/xml",
+                )
 
         @app.post("/status")
         async def call_status(request: Request):
@@ -267,6 +327,31 @@ class CallRunner:
             "<Response>\n"
             "  <Hangup/>\n"
             "</Response>"
+        )
+
+    def _twiml_say_then_listen(self, text: str) -> str:
+        """
+        Fallback when ElevenLabs is unavailable: use Twilio's built-in <Say>
+        verb with a British voice, then listen for Susie's reply.
+        """
+        # Escape XML special characters
+        safe_text = (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+        )
+        return (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f"<Response>\n"
+            f'  <Say voice="Polly.Brian" language="en-GB">{safe_text}</Say>\n'
+            f'  <Gather input="speech" timeout="25"\n'
+            f'          action="{self._webhook_url}/twiml/gather"\n'
+            f'          speechTimeout="4"\n'
+            f'          enhanced="true"\n'
+            f'          language="en-GB">\n'
+            f"  </Gather>\n"
+            f"</Response>"
         )
 
     async def _generate_audio(self, text: str) -> str:

@@ -24,6 +24,24 @@ logger = logging.getLogger(__name__)
 # Prompt
 # ---------------------------------------------------------------------------
 
+# Mapping: Claude check name → expected dict key that must be present for it to gate.
+# If the scenario's expected dict doesn't have the corresponding key, the Claude
+# check is recorded as informational only and never causes a FAIL.
+_CLAUDE_GATE_MAP: dict[str, str] = {
+    "flow_order_correct":       "correct_order",
+    "no_question_asked_twice":  "no_question_asked_twice",
+    "new_or_returning_correct": "new_or_returning_correct",
+    "empathy_response_present": "empathy_response_present",
+    "empathy_contains_condition": "empathy_contains_condition",
+    "duration_question_asked":  "duration_question_asked",
+    "slot_confirmed":           "slot_confirmed",
+    "booking_confirmed":        "booking_confirmed",
+    "no_state_corruption":      "no_state_corruption",
+    "graceful_end":             "graceful_end",
+    # banned_phrases_absent is handled by the rule-based "not_said" check in 7.4;
+    # never auto-gate here (Claude may hallucinate false negatives on empty transcripts).
+}
+
 _CLAUDE_PROMPT = """\
 You are evaluating a test call with Susie, an AI receptionist for a physiotherapy clinic.
 
@@ -205,9 +223,13 @@ class Evaluator:
             )
 
         # ── flow completed ────────────────────────────────────────────
+        # Only "complete" (set by the runner when all scripted responses are
+        # consumed) counts — NOT "completed" (set by the Twilio status callback
+        # which fires for any call termination including early drops).
         if expected.get("flow_completed"):
-            checks["flow_completed"] = result.get("end_reason") in (
-                "complete", "completed"
+            checks["flow_completed"] = (
+                result.get("end_reason") == "complete"
+                and result.get("turns", 0) > 0
             )
 
         # ── no technical error phrases ────────────────────────────────
@@ -327,19 +349,25 @@ class Evaluator:
             logger.error(f"Claude returned invalid JSON: {e}\nRaw: {text[:200]}")
             return {"claude_evaluation_error": False}
 
-        # Filter out null values (informational only) and non-bool fields
-        # so they don't accidentally gate the pass/fail result
+        # Filter Claude results: only gate on checks relevant to this scenario.
+        # Null values are informational, non-bool values are metadata.
         result: dict = {}
         for key, value in raw.items():
             if key in ("overall_quality", "fail_details"):
-                # Keep as metadata but not as a boolean gate
+                # Always keep as metadata — never a boolean gate
                 result[key] = value
             elif value is None:
                 # Null = not applicable — skip from gating
                 pass
             elif isinstance(value, bool):
-                # Apply only checks that are relevant to this scenario's expected dict
-                result[key] = value
+                # Only include as a gate if the scenario explicitly requires this check.
+                # Checks not in _CLAUDE_GATE_MAP are always informational.
+                expected_key = _CLAUDE_GATE_MAP.get(key)
+                if expected_key is not None and expected_key in expected:
+                    result[key] = value
+                else:
+                    # Store with "info_" prefix so it appears in the report but doesn't gate
+                    result[f"info_{key}"] = value
             # Ignore any other types Claude may hallucinate
 
         return result

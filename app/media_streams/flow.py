@@ -61,9 +61,14 @@ def _format_slot_for_speech(label: str) -> str:
         23: "23rd", 24: "24th", 25: "25th", 26: "26th", 27: "27th",
         28: "28th", 29: "29th", 30: "30th", 31: "31st",
     }
+    _DAY_NAMES = {
+        "Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday",
+        "Thu": "Thursday", "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday",
+    }
     try:
         parsed = _dt.strptime(label.strip(), "%a %d %b at %H:%M")
-        day_name  = parsed.strftime("%A")
+        day_abbr = label.strip().split()[0]
+        day_name  = _DAY_NAMES.get(day_abbr, parsed.strftime("%A"))
         ord_str   = _ORDINALS.get(parsed.day, f"{parsed.day}th")
         month_name = parsed.strftime("%B")
         h, m = parsed.hour, parsed.minute

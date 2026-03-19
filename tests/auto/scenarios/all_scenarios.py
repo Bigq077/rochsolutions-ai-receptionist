@@ -26,11 +26,11 @@ SCENARIOS = [
         "expected": {
             "answered_within_seconds": 5,
             "greeting_contains": [
-                "of course you can book",
-                "what brings you in",
+                "susie",
+                "how can i help",
             ],
             "greeting_not_contains": [
-                "alcester", "redditch", "one or two",
+                "alcester", "redditch", "say one", "say two",
             ],
         },
     },
@@ -41,7 +41,7 @@ SCENARIOS = [
         "name": "Greeting wording exact",
         "responses": [],
         "expected": {
-            "first_susie_turn_contains": "what brings you in today",
+            "first_susie_turn_contains": "how can i help",
             "first_susie_turn_not_contains": [
                 "alcester", "redditch",
                 "say one", "say two",
