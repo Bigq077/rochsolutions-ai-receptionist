@@ -348,13 +348,30 @@ class Healer:
                 )
 
             elif name == "search_code":
+                import re as _re
                 pattern   = inp["pattern"]
                 directory = REPO_ROOT / inp.get("directory", "app")
-                proc = subprocess.run(
-                    ["grep", "-rn", "--include=*.py", pattern, str(directory)],
-                    capture_output=True, text=True, timeout=10,
-                )
-                return (proc.stdout[:3000] or "(no matches)", False)
+                try:
+                    rx = _re.compile(pattern)
+                except _re.error:
+                    rx = _re.compile(_re.escape(pattern))
+                matches: list[str] = []
+                for pyfile in sorted(Path(directory).rglob("*.py")):
+                    try:
+                        for lineno, line in enumerate(
+                            pyfile.read_text(encoding="utf-8", errors="replace").splitlines(),
+                            start=1,
+                        ):
+                            if rx.search(line):
+                                rel = pyfile.relative_to(REPO_ROOT)
+                                matches.append(f"{rel}:{lineno}: {line.rstrip()}")
+                                if len(matches) >= 60:
+                                    break
+                    except Exception:
+                        pass
+                    if len(matches) >= 60:
+                        break
+                return ("\n".join(matches) if matches else "(no matches)", False)
 
             elif name == "edit_file":
                 file_path = inp["path"]
