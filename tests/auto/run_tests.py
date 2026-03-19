@@ -73,8 +73,11 @@ async def _warmup_server() -> None:
             logger.info("Server warmup attempt %d: HTTP %d", attempt, resp.status_code)
             if resp.status_code < 500:
                 print(f"Server ready (HTTP {resp.status_code})")
-                # Brief pause to let any remaining init complete
-                await asyncio.sleep(5)
+                # Render free-tier: HTTP 200 on /health returns quickly but the
+                # WebSocket call-handling pipeline (LLM, TTS, AssemblyAI) can
+                # take 10-15 s more to fully initialise.  A short wait here
+                # avoids 0-turn failures on the very first scenario.
+                await asyncio.sleep(15)
                 return
         except Exception as exc:
             logger.warning("Server warmup attempt %d failed: %r", attempt, exc)

@@ -71,6 +71,12 @@ class CallRunner:
         self.call_sid = call.sid
         logger.info(f"[{self.scenario['id']}] Call started: {self.call_sid}")
 
+        # Monitor ngrok tunnel health in background.
+        # If ngrok dies mid-call (heartbeat timeout / network blip) this
+        # detects it within ~10 s and aborts the call rather than waiting
+        # the full MAX_CALL_DURATION_SECONDS.
+        monitor_task = asyncio.create_task(self._monitor_ngrok())
+
         # Wait for call to complete or timeout
         try:
             await asyncio.wait_for(
@@ -87,10 +93,55 @@ class CallRunner:
                 client.calls(self.call_sid).update(status="completed")
             except Exception:
                 pass
+        finally:
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         self.call_end_time = time.time()
         await self._cleanup()
         return self._build_result()
+
+    async def _monitor_ngrok(self):
+        """
+        Poll the local ngrok API every 10 s to verify the tunnel is still alive.
+
+        If the ngrok process crashes (e.g. heartbeat timeout, DNS blip) the
+        tunnel disappears from the API.  We detect this quickly and end the
+        current call so the runner moves on to the next scenario instead of
+        waiting the full MAX_CALL_DURATION_SECONDS.
+        """
+        await asyncio.sleep(10)  # give call time to connect first
+        while not self.call_complete.is_set():
+            try:
+                async with httpx.AsyncClient(timeout=5) as hc:
+                    resp = await hc.get("http://127.0.0.1:4040/api/tunnels")
+                tunnels = resp.json().get("tunnels", [])
+                urls = {
+                    t.get("public_url", "").replace("https://", "http://")
+                    for t in tunnels
+                }
+                our_http = self._webhook_url.replace("https://", "http://")
+                if our_http not in urls:
+                    logger.warning(
+                        f"[{self.scenario['id']}] ngrok tunnel has disappeared "
+                        f"— aborting call early"
+                    )
+                    self._end_call("ngrok_died")
+                    return
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # ngrok API unreachable → process has died
+                logger.warning(
+                    f"[{self.scenario['id']}] ngrok API unreachable "
+                    f"— aborting call early"
+                )
+                self._end_call("ngrok_died")
+                return
+            await asyncio.sleep(10)
 
     async def _start_webhook_server(self):
         """Start FastAPI + ngrok, store public URL."""
@@ -302,8 +353,26 @@ class CallRunner:
         port = self._server.servers[0].sockets[0].getsockname()[1]
         logger.info(f"[{self.scenario['id']}] Uvicorn listening on port {port}")
 
-        # Expose via ngrok
-        self._ngrok_tunnel = ngrok.connect(port, "http")
+        # Expose via ngrok — if the ngrok process is dead (e.g. after a
+        # prior network blip) kill it and restart before connecting.
+        for _attempt in range(2):
+            try:
+                self._ngrok_tunnel = ngrok.connect(port, "http")
+                break
+            except Exception as _err:
+                if _attempt == 0:
+                    logger.warning(
+                        f"[{self.scenario['id']}] ngrok connect failed "
+                        f"({_err!r}) — killing process and retrying"
+                    )
+                    try:
+                        ngrok.kill()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(5)
+                else:
+                    raise
+
         self._webhook_url = self._ngrok_tunnel.public_url.replace("http://", "https://")
         self._server_task = server_task
 
