@@ -33,6 +33,7 @@ from tests.auto.config import (
     RESULTS_DIR,
     SUSIE_NUMBER,
     MIN_PASS_RATE,
+    RENDER_SERVER_URL,
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
     TWILIO_TEST_NUMBER,
@@ -50,6 +51,39 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("run_tests")
+
+
+async def _warmup_server() -> None:
+    """
+    Ping the Render server health endpoint to wake it from free-tier sleep.
+
+    Render free-tier instances sleep after 15 minutes of inactivity.
+    Without warmup every call gets 0 turns (30s Gather timeout fires before
+    Susie can speak).  A successful /health response confirms the server is
+    ready to handle WebSocket calls.
+    """
+    import httpx
+
+    url = f"{RENDER_SERVER_URL}/health"
+    print(f"\nWarming up server at {url} ...")
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.get(url)
+            logger.info("Server warmup attempt %d: HTTP %d", attempt, resp.status_code)
+            if resp.status_code < 500:
+                print(f"Server ready (HTTP {resp.status_code})")
+                # Brief pause to let any remaining init complete
+                await asyncio.sleep(5)
+                return
+        except Exception as exc:
+            logger.warning("Server warmup attempt %d failed: %r", attempt, exc)
+            if attempt < 3:
+                await asyncio.sleep(10)
+
+    # Server didn't respond cleanly — continue anyway and let Twilio time out
+    # naturally; better than aborting the whole run.
+    logger.warning("Server warmup did not confirm ready — proceeding anyway")
 
 
 async def run_single_scenario(
@@ -148,6 +182,9 @@ async def main():
     print(f"Running {len(scenarios_to_run)} scenario(s)")
     print(f"Target: {SUSIE_NUMBER}")
     print(f"{'=' * 60}")
+
+    # Wake the Render server before making any calls — free-tier sleeps when idle
+    await _warmup_server()
 
     evaluator = Evaluator()
     all_results = []

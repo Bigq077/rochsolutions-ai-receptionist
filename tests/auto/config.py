@@ -37,5 +37,11 @@ RESULTS_DIR = Path(__file__).parent / "results"
 # Pass criteria
 MIN_PASS_RATE = 0.97  # 97% to be clinic ready
 
+# Render server URL — used for warmup ping before running tests
+RENDER_SERVER_URL = os.getenv(
+    "RENDER_SERVER_URL",
+    "https://rochsolutions-ai-receptionist.onrender.com",
+)
+
 # Ensure results directory exists
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)

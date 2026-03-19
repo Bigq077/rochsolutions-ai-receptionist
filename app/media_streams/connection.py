@@ -198,6 +198,7 @@ class SilenceHandler:
         self._task: Optional[asyncio.Task]  = None
         self._tts_text_queue                = tts_text_queue
         self._trigger_transfer              = trigger_transfer_fn
+        self._llm_busy:               bool  = False
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -228,10 +229,27 @@ class SilenceHandler:
             self._cancel_timer()
             logger.debug("[ms_silence] TTS started — timer cancelled")
 
+    def on_llm_started(self) -> None:
+        """Called when the LLM begins processing — suppress silence timer."""
+        self._llm_busy = True
+        self._cancel_timer()
+        logger.debug("[ms_silence] LLM started — timer cancelled")
+
+    def on_llm_finished(self) -> None:
+        """Called when the LLM finishes processing — allow silence timer again."""
+        self._llm_busy = False
+
     def on_tts_finished(self, text: str) -> None:
         """After a flow question finishes playing, arm the silence timer.
-        Never restarts timer while currently_reasking — _run() owns its timing."""
+        Never restarts timer while currently_reasking — _run() owns its timing.
+        Never arms timer while LLM is still processing — the delayed TTS-done
+        callback for the *previous* question can fire after on_transcript_received()
+        cancels the timer but before _llm_busy is set; without this guard the
+        timer re-arms and can fire during the check_availability tool call,
+        causing a spurious re-ask concatenated with the slot list."""
         if self.currently_reasking:
+            return
+        if self._llm_busy:
             return
         t = text.strip()
         is_question = (
@@ -289,9 +307,9 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 12 s silence ─────────────────────────────────────────
+        # ── Window 1: 20 s silence ─────────────────────────────────────────
         try:
-            await asyncio.sleep(12.0)
+            await asyncio.sleep(20.0)
         except asyncio.CancelledError:
             return
 
@@ -299,6 +317,8 @@ class SilenceHandler:
         if since_audio < 3.5:
             return
         if self.currently_reasking:
+            return
+        if self._llm_busy:
             return
 
         self.currently_reasking = True
@@ -329,6 +349,8 @@ class SilenceHandler:
         if since_audio < 3.5:
             return
         if self.currently_reasking:
+            return
+        if self._llm_busy:
             return
 
         self.currently_reasking = True
@@ -761,6 +783,7 @@ class WebSocketCallHandler:
                     continue
 
                 self._llm_busy          = True
+                self._silence_handler.on_llm_started()
                 self._last_audio_at     = time.monotonic()
                 self.session["llm_generation_active"] = True
                 await save_session(self.call_sid, self.session)
@@ -809,6 +832,7 @@ class WebSocketCallHandler:
                     await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
                 finally:
                     self._llm_busy                        = False
+                    self._silence_handler.on_llm_finished()
                     self.session["llm_generation_active"] = False
                     await save_session(self.call_sid, self.session)
 

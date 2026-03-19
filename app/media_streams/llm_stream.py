@@ -422,7 +422,7 @@ class LLMStream:
         date_prefix = _build_date_prefix()
         location    = session.get("selected_location", "alcester")
         system_prompt = (
-            # v2026-03-18-1 — bumped to bust Anthropic prompt cache
+            # v2026-03-19-1 — bumped to bust Anthropic prompt cache
             "ABSOLUTE RULE — NO EXCEPTIONS:\n"
             "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
             "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
@@ -436,6 +436,13 @@ class LLMStream:
             f"Always use location='{location}' in any tool calls. "
             f"Never ask the caller which location they prefer. "
             f"{SILENCE_RULE}\n\n"
+            "SLOT DAY-NAME RULE — ABSOLUTE, NO EXCEPTIONS:\n"
+            "When presenting appointment slots, ALWAYS read the three-letter abbreviation "
+            "at the START of the slot label to determine the day name. "
+            "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, "
+            "Sat=Saturday, Sun=Sunday. "
+            "NEVER calculate or guess the day of week from the date number. "
+            "The abbreviation in the label is always correct — trust it completely.\n\n"
             f"{date_prefix}"
         )
 
