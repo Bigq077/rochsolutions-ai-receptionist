@@ -41,6 +41,7 @@ from tests.auto.config import (
 )
 from tests.auto.call_runner import CallRunner
 from tests.auto.evaluator import Evaluator
+from tests.auto.healer import Healer
 from tests.auto.report import build_report
 from tests.auto.transcript import build_transcript
 from tests.auto.scenarios.all_scenarios import SCENARIOS
@@ -89,39 +90,93 @@ async def _warmup_server() -> None:
     logger.warning("Server warmup did not confirm ready — proceeding anyway")
 
 
-async def run_single_scenario(
+async def run_single_call(scenario: dict, evaluator: Evaluator) -> dict:
+    """Run one Twilio call for a scenario and return the evaluated result."""
+    runner = CallRunner(scenario)
+    result = await runner.run()
+    evaluation = await evaluator.evaluate(result, scenario)
+    result["evaluation"] = evaluation
+    result["phase"] = scenario["phase"]
+    return result
+
+
+async def run_scenario_with_healing(
     scenario: dict,
     evaluator: Evaluator,
+    healer: Healer,
+    max_attempts: int = 3,
 ) -> dict:
+    """
+    Run a scenario, print a per-test diagnosis, and invoke the fixer agent
+    on failure.  Retries up to max_attempts times total.
+    """
     print(f"\n{'=' * 50}")
     print(f"Running: {scenario['id']} — {scenario['name']}")
     print(f"{'=' * 50}")
 
-    # Run the call
-    runner = CallRunner(scenario)
-    result = await runner.run()
+    current_scenario = scenario
+    last_result: dict = {}
 
-    # Evaluate
-    evaluation = await evaluator.evaluate(result, scenario)
-    result["evaluation"] = evaluation
-    result["phase"] = scenario["phase"]
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            print(f"\n  ↺ Retry attempt {attempt}/{max_attempts - 1} for {current_scenario['id']}")
+            await asyncio.sleep(5)
 
-    # Print immediate result
-    status = "PASS" if evaluation["passed"] else "FAIL"
-    print(f"\n{status}")
-    if not evaluation["passed"]:
-        print(f"REASON: {evaluation.get('fail_reason')}")
-        print(f"DETAIL: {evaluation.get('detail')}")
+        try:
+            result = await run_single_call(current_scenario, evaluator)
+        except Exception as exc:
+            logger.error("Exception running %s: %r", scenario["id"], exc, exc_info=True)
+            result = {
+                "scenario_id":   scenario["id"],
+                "scenario_name": scenario["name"],
+                "phase":         scenario.get("phase", ""),
+                "turns":         0,
+                "end_reason":    "exception",
+                "susie_said":    [],
+                "test_said":     [],
+                "duration_seconds": 0,
+                "evaluation": {
+                    "passed":      False,
+                    "fail_reason": "exception",
+                    "detail":      str(exc),
+                    "checks":      {},
+                    "transcript":  "",
+                },
+            }
 
-    # Save result to file
-    result_path = (
-        RESULTS_DIR
-        / f"{scenario['id']}_{datetime.utcnow().strftime('%H%M%S')}.json"
-    )
-    result_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-    print(f"Saved: {result_path}")
+        last_result = result
 
-    return result
+        # ── Per-test diagnosis (always printed) ───────────────────────────
+        diagnosis = healer.build_diagnosis(result, current_scenario)
+        print(diagnosis)
+
+        passed = result.get("evaluation", {}).get("passed", False)
+
+        # Save intermediate result
+        result_path = (
+            RESULTS_DIR
+            / f"{scenario['id']}_{datetime.utcnow().strftime('%H%M%S')}.json"
+        )
+        result_path.write_text(
+            json.dumps(result, indent=2, default=str), encoding="utf-8"
+        )
+        print(f"  Saved: {result_path}")
+
+        if passed:
+            break
+
+        if attempt < max_attempts - 1:
+            print(f"\n  → Spawning fixer agent for {scenario['id']}...")
+            action = await healer.run_fixer_agent(diagnosis, result, current_scenario)
+
+            if action == "skip":
+                print(f"  → Fixer: cannot fix — skipping remaining attempts")
+                break
+            # action == "retry": loop continues
+        else:
+            print(f"  → Max attempts reached for {scenario['id']}")
+
+    return last_result
 
 
 async def main():
@@ -190,30 +245,15 @@ async def main():
     await _warmup_server()
 
     evaluator = Evaluator()
+    healer    = Healer()
     all_results = []
 
-    # Run scenarios sequentially — one call at a time
+    # Run scenarios sequentially with per-test diagnosis and auto-healing
     for scenario in scenarios_to_run:
-        try:
-            result = await run_single_scenario(scenario, evaluator)
-            all_results.append(result)
-            # Small gap between calls
-            await asyncio.sleep(3)
-        except Exception as e:
-            logger.error(f"ERROR in {scenario['id']}: {e}", exc_info=True)
-            all_results.append(
-                {
-                    "scenario_id": scenario["id"],
-                    "scenario_name": scenario["name"],
-                    "phase": scenario["phase"],
-                    "evaluation": {
-                        "passed": False,
-                        "fail_reason": "exception",
-                        "detail": str(e),
-                        "checks": {},
-                    },
-                }
-            )
+        result = await run_scenario_with_healing(scenario, evaluator, healer)
+        all_results.append(result)
+        # Brief pause between scenarios
+        await asyncio.sleep(3)
 
     # Build and print report
     report = build_report(all_results)
