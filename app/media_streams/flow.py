@@ -51,8 +51,13 @@ def _format_slot_for_speech(label: str) -> str:
     Convert a short slot label like 'Mon 23 Mar at 08:20' into a natural
     spoken form like 'Monday the 23rd of March at 8:20 in the morning'.
     Falls back to the raw label if the format doesn't match.
+
+    Uses pure regex parsing — NOT datetime.strptime — to avoid a Python bug
+    where strptime validates the weekday abbreviation (%a) against the date
+    in the default year (1900), and raises ValueError when they don't match
+    (e.g. "Wed 18 Mar" is Wednesday in 2026 but Sunday in 1900).
     """
-    from datetime import datetime as _dt
+    import re as _re
     _ORDINALS = {
         1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th", 6: "6th",
         7: "7th", 8: "8th", 9: "9th", 10: "10th", 11: "11th", 12: "12th",
@@ -65,19 +70,33 @@ def _format_slot_for_speech(label: str) -> str:
         "Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday",
         "Thu": "Thursday", "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday",
     }
+    _MONTH_NAMES = {
+        "Jan": "January",  "Feb": "February", "Mar": "March",
+        "Apr": "April",    "May": "May",       "Jun": "June",
+        "Jul": "July",     "Aug": "August",    "Sep": "September",
+        "Oct": "October",  "Nov": "November",  "Dec": "December",
+    }
     try:
-        parsed = _dt.strptime(label.strip(), "%a %d %b at %H:%M")
-        day_abbr = label.strip().split()[0]
-        day_name  = _DAY_NAMES.get(day_abbr, parsed.strftime("%A"))
-        ord_str   = _ORDINALS.get(parsed.day, f"{parsed.day}th")
-        month_name = parsed.strftime("%B")
-        h, m = parsed.hour, parsed.minute
-        if m == 0:
+        # Parse "Mon 23 Mar at 09:00" with pure regex — no strptime.
+        m = _re.match(
+            r'^([A-Za-z]{3})\s+(\d{1,2})\s+([A-Za-z]{3})\s+at\s+(\d{1,2}):(\d{2})$',
+            label.strip(),
+        )
+        if not m:
+            return label
+        day_abbr, day_str, month_abbr, hour_str, min_str = m.groups()
+        day_name   = _DAY_NAMES.get(day_abbr.capitalize(), day_abbr)
+        month_name = _MONTH_NAMES.get(month_abbr.capitalize(), month_abbr)
+        day_int    = int(day_str)
+        h          = int(hour_str)
+        minute     = int(min_str)
+        ord_str    = _ORDINALS.get(day_int, f"{day_int}th")
+        if minute == 0:
             time_str = f"{h % 12 or 12} o'clock"
         else:
-            time_str = f"{h % 12 or 12}:{m:02d}"
+            time_str = f"{h % 12 or 12}:{minute:02d}"
         suffix = (
-            "in the morning" if h < 12
+            "in the morning"   if h < 12
             else "in the afternoon" if h < 18
             else "in the evening"
         )
@@ -407,11 +426,16 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "duration_minutes=50, preference='{availability}'. "
             "After the tool returns, present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that time frame. "
-            "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
-            "the second being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
-            "the third being [DAY] the [DDth] of [MONTH] at [H:MMam/pm]. "
+            "The first being [DAY] the [DDth] of [MONTH] at [TIME], "
+            "the second being [DAY] the [DDth] of [MONTH] at [TIME], "
+            "the third being [DAY] the [DDth] of [MONTH] at [TIME]. "
             "Which would you prefer?' "
-            "Use ordinal dates like 'Monday the 23rd of March at 9am'. "
+            "CRITICAL day-name rule: Read the THREE-LETTER ABBREVIATION at the START of each slot label "
+            "(e.g. 'Mon 23 Mar at 09:00'). Use ONLY that abbreviation for the day name: "
+            "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, Sat=Saturday, Sun=Sunday. "
+            "NEVER compute the day of week yourself from the date number. "
+            "Use ordinal suffixes: 1st, 2nd, 3rd, 4th, 5th...20th, 21st, 22nd, 23rd, 24th...31st. "
+            "Time format: 9am, 10am, 2pm, 3:30pm (no leading zeros, am/pm lowercase). "
             "Never deviate from this format."
         ),
         "extract": "slot_selection",
@@ -522,11 +546,16 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "duration_minutes=50, preference='{availability}'. "
             "After the tool returns, present up to 3 slots in this exact format: "
             "'I have found [N] available slots during that time frame. "
-            "The first being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
-            "the second being [DAY] the [DDth] of [MONTH] at [H:MMam/pm], "
-            "the third being [DAY] the [DDth] of [MONTH] at [H:MMam/pm]. "
+            "The first being [DAY] the [DDth] of [MONTH] at [TIME], "
+            "the second being [DAY] the [DDth] of [MONTH] at [TIME], "
+            "the third being [DAY] the [DDth] of [MONTH] at [TIME]. "
             "Which would you prefer?' "
-            "Use ordinal dates like 'Monday the 23rd of March at 9am'. "
+            "CRITICAL day-name rule: Read the THREE-LETTER ABBREVIATION at the START of each slot label "
+            "(e.g. 'Mon 23 Mar at 09:00'). Use ONLY that abbreviation for the day name: "
+            "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, Sat=Saturday, Sun=Sunday. "
+            "NEVER compute the day of week yourself from the date number. "
+            "Use ordinal suffixes: 1st, 2nd, 3rd, 4th, 5th...20th, 21st, 22nd, 23rd, 24th...31st. "
+            "Time format: 9am, 10am, 2pm, 3:30pm (no leading zeros, am/pm lowercase). "
             "Never deviate from this format."
         ),
         "extract": "slot_selection",

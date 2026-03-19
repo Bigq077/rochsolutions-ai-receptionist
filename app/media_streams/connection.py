@@ -310,6 +310,11 @@ class SilenceHandler:
         # ── Window 1: 20 s silence ─────────────────────────────────────────
         try:
             await asyncio.sleep(20.0)
+            # Yield once more so any task.cancel() that arrived while we were
+            # sleeping (but after sleep() returned normally) is delivered here
+            # before we check the guards — fixes the race where _llm_busy is
+            # not yet True at the moment we check it.
+            await asyncio.sleep(0)
         except asyncio.CancelledError:
             return
 
@@ -342,6 +347,7 @@ class SilenceHandler:
         # ── Window 2: 10 s silence ─────────────────────────────────────────
         try:
             await asyncio.sleep(10.0)
+            await asyncio.sleep(0)  # deliver any pending cancel before guard checks
         except asyncio.CancelledError:
             return
 

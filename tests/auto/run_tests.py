@@ -43,7 +43,7 @@ from tests.auto.call_runner import CallRunner
 from tests.auto.evaluator import Evaluator
 from tests.auto.healer import Healer
 from tests.auto.report import build_report
-from tests.auto.transcript import build_transcript
+from tests.auto.server_manager import SharedServer
 from tests.auto.scenarios.all_scenarios import SCENARIOS
 
 logging.basicConfig(
@@ -90,9 +90,13 @@ async def _warmup_server() -> None:
     logger.warning("Server warmup did not confirm ready — proceeding anyway")
 
 
-async def run_single_call(scenario: dict, evaluator: Evaluator) -> dict:
+async def run_single_call(
+    scenario: dict,
+    evaluator: Evaluator,
+    shared_server: SharedServer,
+) -> dict:
     """Run one Twilio call for a scenario and return the evaluated result."""
-    runner = CallRunner(scenario)
+    runner = CallRunner(scenario, shared_server)
     result = await runner.run()
     evaluation = await evaluator.evaluate(result, scenario)
     result["evaluation"] = evaluation
@@ -104,26 +108,26 @@ async def run_scenario_with_healing(
     scenario: dict,
     evaluator: Evaluator,
     healer: Healer,
+    shared_server: SharedServer,
     max_attempts: int = 3,
 ) -> dict:
     """
-    Run a scenario, print a per-test diagnosis, and invoke the fixer agent
-    on failure.  Retries up to max_attempts times total.
+    Run a scenario, print a per-test diagnosis, and retry on failure.
+    Retries up to max_attempts times total.
     """
     print(f"\n{'=' * 50}")
     print(f"Running: {scenario['id']} — {scenario['name']}")
     print(f"{'=' * 50}")
 
-    current_scenario = scenario
     last_result: dict = {}
 
     for attempt in range(max_attempts):
         if attempt > 0:
-            print(f"\n  ↺ Retry attempt {attempt}/{max_attempts - 1} for {current_scenario['id']}")
+            print(f"\n  ↺ Retry attempt {attempt}/{max_attempts - 1} for {scenario['id']}")
             await asyncio.sleep(5)
 
         try:
-            result = await run_single_call(current_scenario, evaluator)
+            result = await run_single_call(scenario, evaluator, shared_server)
         except Exception as exc:
             logger.error("Exception running %s: %r", scenario["id"], exc, exc_info=True)
             result = {
@@ -147,7 +151,7 @@ async def run_scenario_with_healing(
         last_result = result
 
         # ── Per-test diagnosis (always printed) ───────────────────────────
-        diagnosis = healer.build_diagnosis(result, current_scenario)
+        diagnosis = healer.build_diagnosis(result, scenario)
         print(diagnosis)
 
         passed = result.get("evaluation", {}).get("passed", False)
@@ -166,11 +170,9 @@ async def run_scenario_with_healing(
             break
 
         if attempt < max_attempts - 1:
-            print(f"\n  → Spawning fixer agent for {scenario['id']}...")
-            action = await healer.run_fixer_agent(diagnosis, result, current_scenario)
-
+            action = await healer.run_fixer_agent(diagnosis, result, scenario)
             if action == "skip":
-                print(f"  → Fixer: cannot fix — skipping remaining attempts")
+                print(f"  → Healer: skipping remaining attempts")
                 break
             # action == "retry": loop continues
         else:
@@ -244,16 +246,32 @@ async def main():
     # Wake the Render server before making any calls — free-tier sleeps when idle
     await _warmup_server()
 
+    # Start ONE shared ngrok + uvicorn server for the entire run.
+    # This prevents the ngrok cascade failures that occurred when a new tunnel
+    # was created per scenario (one failure → all subsequent fail).
+    shared_server = SharedServer()
+    print("\nStarting shared webhook server...")
+    await shared_server.start()
+    print(f"Webhook ready: {shared_server.webhook_url}")
+
     evaluator = Evaluator()
     healer    = Healer()
     all_results = []
 
-    # Run scenarios sequentially with per-test diagnosis and auto-healing
-    for scenario in scenarios_to_run:
-        result = await run_scenario_with_healing(scenario, evaluator, healer)
-        all_results.append(result)
-        # Brief pause between scenarios
-        await asyncio.sleep(3)
+    try:
+        # Run scenarios sequentially
+        for scenario in scenarios_to_run:
+            result = await run_scenario_with_healing(
+                scenario, evaluator, healer, shared_server
+            )
+            all_results.append(result)
+            # Brief pause between scenarios to let Twilio finish recording callbacks
+            await asyncio.sleep(3)
+
+    finally:
+        # Always shut down the shared server cleanly
+        print("\nShutting down shared webhook server...")
+        await shared_server.stop()
 
     # Build and print report
     report = build_report(all_results)
@@ -267,7 +285,9 @@ async def main():
 
     # Save all results as JSON
     results_path = RESULTS_DIR / f"results_{ts}.json"
-    results_path.write_text(json.dumps(all_results, indent=2, default=str), encoding="utf-8")
+    results_path.write_text(
+        json.dumps(all_results, indent=2, default=str), encoding="utf-8"
+    )
     print(f"Results saved: {results_path}")
 
     # Exit code based on pass rate
