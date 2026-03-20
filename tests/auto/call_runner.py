@@ -110,14 +110,22 @@ class CallRunner:
     # ── TwiML builders ──────────────────────────────────────────────────────
 
     def _twiml_listen(self, timeout: int = 15) -> str:
+        # NOTE: enhanced="true" is intentionally absent.
+        # Enhanced STT uses strict voice-activity detection tuned for
+        # human-microphone speech.  Susie's audio is TTS played through a
+        # telephony chain — by the time it arrives here it has been
+        # encoded/decoded several times and enhanced mode silently rejects
+        # it as "not speech", giving 0 turns every time.
+        # Standard mode is more permissive and works with synthesised audio.
+        # language="en" (not "en-GB") accepts all English locale models so
+        # Susie's TTS voice is not filtered out by a locale mismatch.
         return (
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f"<Response>\n"
             f'  <Gather input="speech" timeout="{timeout}"\n'
             f'          action="{self._webhook_url}/twiml/gather"\n'
-            f'          speechTimeout="4"\n'
-            f'          enhanced="true"\n'
-            f'          language="en-GB">\n'
+            f'          speechTimeout="2"\n'
+            f'          language="en">\n'
             f"  </Gather>\n"
             f"</Response>"
         )
@@ -129,9 +137,8 @@ class CallRunner:
             f"  <Play>{audio_url}</Play>\n"
             f'  <Gather input="speech" timeout="25"\n'
             f'          action="{self._webhook_url}/twiml/gather"\n'
-            f'          speechTimeout="4"\n'
-            f'          enhanced="true"\n'
-            f'          language="en-GB">\n'
+            f'          speechTimeout="2"\n'
+            f'          language="en">\n'
             f"  </Gather>\n"
             f"</Response>"
         )
@@ -150,9 +157,8 @@ class CallRunner:
             f'  <Say voice="Polly.Brian" language="en-GB">{safe_text}</Say>\n'
             f'  <Gather input="speech" timeout="25"\n'
             f'          action="{self._webhook_url}/twiml/gather"\n'
-            f'          speechTimeout="4"\n'
-            f'          enhanced="true"\n'
-            f'          language="en-GB">\n'
+            f'          speechTimeout="2"\n'
+            f'          language="en">\n'
             f"  </Gather>\n"
             f"</Response>"
         )

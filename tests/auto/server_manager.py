@@ -239,12 +239,23 @@ async def _handle_gather(
     susie_speech = form.get("SpeechResult", "").strip()
     susie_confidence = float(form.get("Confidence", 0.0))
 
+    # ── Diagnostic: log every field Twilio sends on this callback ─────────
+    # This lets us see whether Twilio heard audio but failed to transcribe it
+    # (SpeechResult absent vs empty) or whether no audio reached the Gather.
+    all_fields = dict(form)
+    logger.info(
+        "[%s] /gather raw fields: %s",
+        runner.scenario["id"],
+        {k: v for k, v in all_fields.items() if k not in ("AccountSid", "AuthToken")},
+    )
+
     # ── Empty gather: no speech detected yet ──────────────────────────────
     if not susie_speech:
         runner._empty_gather_count = getattr(runner, "_empty_gather_count", 0) + 1
         logger.info(
-            "[%s] Empty gather #%d — re-listening",
+            "[%s] Empty gather #%d (SpeechResult=%r, Confidence=%r) — re-listening",
             runner.scenario["id"], runner._empty_gather_count,
+            form.get("SpeechResult"), form.get("Confidence"),
         )
         if runner._empty_gather_count >= 8:
             logger.warning("[%s] Too many empty gathers — ending call", runner.scenario["id"])
