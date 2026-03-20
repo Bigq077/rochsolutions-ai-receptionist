@@ -56,49 +56,92 @@ logger = logging.getLogger("run_tests")
 
 async def _warmup_server() -> None:
     """
-    Ping the Render server health endpoint to wake it from free-tier sleep.
+    Ping the Render server until the full LLM/TTS pipeline is hot.
 
-    Render free-tier instances sleep after 15 minutes of inactivity.
-    Without warmup every call gets 0 turns (30s Gather timeout fires before
-    Susie can speak).  A successful /health response confirms the server is
-    ready to handle WebSocket calls.
+    Strategy:
+      1. Keep pinging /health until we get HTTP 200 (server awake).
+      2. Keep pinging every 10 s, measuring response time.
+         Render's HTTP server responds immediately after wake-up, but the
+         LLM connection pool and TTS worker take 2-4 minutes more.  Once
+         the server is truly hot, /health responds in < 1 s.  We wait for
+         3 consecutive sub-second pings (or 3 minutes total) before
+         declaring the pipeline ready.
+      3. Always wait at least 60 s so the first Twilio call has headroom.
     """
+    import time
     import httpx
 
+    _MAX_WARMUP_S   = 180   # hard ceiling: 3 minutes
+    _MIN_WARMUP_S   = 60    # always wait at least 60 s
+    _FAST_THRESHOLD = 1.0   # response time below this ⇒ server is hot
+    _FAST_NEEDED    = 3     # consecutive fast pings required
+    _POLL_INTERVAL  = 10    # seconds between polls
+
     url = f"{RENDER_SERVER_URL}/health"
-    print(f"\nWarming up server at {url} ...")
-    for attempt in range(1, 4):
+    print(f"\nWarming up Render server at {url} ...")
+
+    # ── Step 1: block until server answers ───────────────────────────────
+    woke_at = None
+    for attempt in range(1, 7):
         try:
+            t0 = time.monotonic()
             async with httpx.AsyncClient(timeout=90) as client:
                 resp = await client.get(url)
-            logger.info("Server warmup attempt %d: HTTP %d", attempt, resp.status_code)
+            elapsed = time.monotonic() - t0
+            logger.info("Warmup ping %d: HTTP %d in %.1fs", attempt, resp.status_code, elapsed)
             if resp.status_code < 500:
-                print(f"Server awake (HTTP {resp.status_code}) — waiting 20s for initial boot...")
-                await asyncio.sleep(20)
-                # Second ping: by now the server has had 20s to initialise workers.
-                # This second request often warms the LLM connection pool.
-                try:
-                    async with httpx.AsyncClient(timeout=30) as client2:
-                        resp2 = await client2.get(url)
-                    logger.info("Server warmup second ping: HTTP %d", resp2.status_code)
-                except Exception:
-                    pass
-                # Render free-tier: HTTP 200 on /health returns quickly but the
-                # WebSocket call-handling pipeline (LLM, TTS, AssemblyAI) can
-                # take 30-45 s more to fully initialise.  Wait long enough here
-                # to avoid 0-turn failures on the very first scenario.
-                print("  Waiting 25s more for full pipeline warmup (LLM + TTS + STT)...")
-                await asyncio.sleep(25)
-                print("  Server ready.")
-                return
+                print(f"  Server awake (HTTP {resp.status_code}, {elapsed:.1f}s)")
+                woke_at = time.monotonic()
+                break
         except Exception as exc:
-            logger.warning("Server warmup attempt %d failed: %r", attempt, exc)
-            if attempt < 3:
-                await asyncio.sleep(10)
+            logger.warning("Warmup ping %d failed: %r", attempt, exc)
+            await asyncio.sleep(10)
 
-    # Server didn't respond cleanly — continue anyway and let Twilio time out
-    # naturally; better than aborting the whole run.
-    logger.warning("Server warmup did not confirm ready — proceeding anyway")
+    if woke_at is None:
+        logger.warning("Server never responded — proceeding anyway")
+        return
+
+    # ── Step 2: poll until response time is consistently fast ────────────
+    print(f"  Polling until pipeline hot (max {_MAX_WARMUP_S}s, min {_MIN_WARMUP_S}s)...")
+    fast_streak = 0
+
+    while True:
+        await asyncio.sleep(_POLL_INTERVAL)
+        total_elapsed = time.monotonic() - woke_at
+
+        if total_elapsed >= _MAX_WARMUP_S:
+            print(f"  Warmup ceiling reached ({_MAX_WARMUP_S}s) — proceeding")
+            break
+
+        try:
+            t0 = time.monotonic()
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url)
+            ping_s = time.monotonic() - t0
+            total_elapsed = time.monotonic() - woke_at
+            print(
+                f"  [{total_elapsed:>5.0f}s] /health → {resp.status_code}"
+                f" in {ping_s:.2f}s"
+            )
+            logger.info(
+                "Warmup poll: HTTP %d in %.2fs (total %.0fs)",
+                resp.status_code, ping_s, total_elapsed,
+            )
+            if ping_s < _FAST_THRESHOLD and total_elapsed >= _MIN_WARMUP_S:
+                fast_streak += 1
+                if fast_streak >= _FAST_NEEDED:
+                    print(
+                        f"  Pipeline hot ({fast_streak} consecutive pings"
+                        f" < {_FAST_THRESHOLD}s) — ready!"
+                    )
+                    break
+            else:
+                fast_streak = 0
+        except Exception as exc:
+            logger.warning("Warmup poll failed: %r", exc)
+            fast_streak = 0
+
+    print("  Server ready.")
 
 
 async def run_single_call(
