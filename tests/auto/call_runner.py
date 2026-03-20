@@ -234,6 +234,18 @@ class CallRunner:
             if self.call_end_time and self.call_start_time
             else 0.0
         )
+
+        # Compute max silence gap between consecutive turns (used by no_dead_air check)
+        all_ts = sorted(
+            [t["timestamp"] for t in self.susie_said]
+            + [t["timestamp"] for t in self.test_said]
+        )
+        max_gap = 0.0
+        for i in range(1, len(all_ts)):
+            gap = all_ts[i] - all_ts[i - 1]
+            if gap > max_gap:
+                max_gap = gap
+
         return {
             "scenario_id":   self.scenario["id"],
             "scenario_name": self.scenario["name"],
@@ -247,4 +259,5 @@ class CallRunner:
             "test_said":     self.test_said,
             "recording_url": self._recording_url,
             "timestamp":     datetime.utcnow().isoformat(),
+            "max_gap_seconds": round(max_gap, 2),
         }

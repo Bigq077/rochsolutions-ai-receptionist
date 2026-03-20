@@ -317,6 +317,41 @@ class Evaluator:
         if expected.get("no_crash"):
             checks["no_crash"] = result.get("end_reason") != "error"
 
+        # ── flow_continues / flow_continues_after_silence ─────────────
+        # True if at least 2 turns happened and the call didn't die on silence.
+        if expected.get("flow_continues") or expected.get("flow_continues_after_silence"):
+            checks["flow_continues"] = (
+                result.get("turns", 0) > 1
+                and result.get("end_reason") not in (
+                    "timeout_no_speech", "timeout", "ngrok_died", "exception"
+                )
+            )
+
+        # ── confirmation_contains ─────────────────────────────────────
+        # Checks that the slot Susie read back contains the expected word,
+        # e.g. "first" for scenario 4.1 where the caller chose slot 1.
+        if "confirmation_contains" in expected:
+            phrase = expected["confirmation_contains"].lower()
+            checks["confirmation_contains"] = phrase in all_susie
+
+        # ── number_confirmed_verbally ─────────────────────────────────
+        # Susie should read the phone number back to the caller before
+        # confirming the booking.  We accept either a digit string (e.g.
+        # "07700900123") or five or more spoken digit words in a row.
+        if expected.get("number_confirmed_verbally"):
+            import re
+            _DIGIT_WORD = (
+                r"(?:zero|one|two|three|four|five|six|seven|eight|nine|oh)"
+            )
+            checks["number_confirmed_verbally"] = bool(
+                # e.g. "07700 900 123" — 5+ consecutive digit characters
+                re.search(r"\d{5,}", all_susie)
+                # e.g. "zero seven seven zero zero nine" — 5+ digit words in a row
+                or re.search(
+                    rf"{_DIGIT_WORD}(?:\s+{_DIGIT_WORD}){{4,}}", all_susie
+                )
+            )
+
         return checks
 
     # ------------------------------------------------------------------
