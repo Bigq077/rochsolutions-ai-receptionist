@@ -1,5 +1,6 @@
 # app/routes/admin.py
 import asyncio
+import json
 import os
 import httpx
 from fastapi import APIRouter
@@ -8,6 +9,56 @@ from app.storage.redis_store import redis_delete_key
 router = APIRouter(prefix="/admin")
 
 ADMIN_KEY = os.getenv("ADMIN_KEY", "")
+
+
+@router.get("/test/session/{call_sid}")
+async def get_test_session(call_sid: str):
+    """
+    Return the Media Streams session for a given call SID.
+    Used by the automated test suite to retrieve what Susie said
+    without needing to record and transcribe the call.
+
+    Returns the conversation_history from the ms_session:{call_sid} Redis key.
+    Also checks the legacy call:{call_sid} key as fallback.
+    """
+    try:
+        from app.media_streams.session import _get_redis
+        redis = _get_redis()
+        if not redis:
+            return {"ok": False, "error": "Redis not available"}
+
+        # Try Media Streams session first
+        ms_key = f"ms_session:{call_sid}"
+        data = await redis.get(ms_key)
+        if data:
+            session = json.loads(data)
+            return {
+                "ok": True,
+                "source": "ms_session",
+                "call_sid": call_sid,
+                "conversation_history": session.get("conversation_history", []),
+                "turns": session.get("turns", []),
+                "state": session.get("state"),
+            }
+
+        # Try legacy session
+        legacy_key = f"call:{call_sid}"
+        data = await redis.get(legacy_key)
+        if data:
+            session = json.loads(data)
+            return {
+                "ok": True,
+                "source": "legacy_session",
+                "call_sid": call_sid,
+                "conversation_history": session.get("conversation_history", []),
+                "turns": session.get("turns", []),
+                "state": session.get("state"),
+            }
+
+        return {"ok": False, "error": f"No session found for {call_sid}"}
+
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @router.get("/clear_google_tokens")

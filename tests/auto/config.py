@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 
 # Susie's demo number to call
+# +447426779875 → /ms/incoming (Media Streams WebSocket pipeline)
+# +447367002651 → /twilio/voice (legacy pipeline)
 SUSIE_NUMBER = "+447426779875"
 
 # Twilio credentials — read from environment
@@ -16,6 +18,9 @@ TWILIO_TEST_NUMBER = os.getenv("TWILIO_TEST_NUMBER")
 
 # Anthropic — for simulator and evaluator
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# AssemblyAI — for transcribing call recordings after the call ends
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
 # Test settings
 MAX_CALL_DURATION_SECONDS = 480  # 8 minutes — allows multiple 120s empty-gather retries

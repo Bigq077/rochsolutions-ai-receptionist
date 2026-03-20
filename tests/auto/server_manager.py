@@ -7,6 +7,12 @@ beginning of the run and keep it alive throughout.
 
 Each CallRunner simply sets `shared_server.current_runner = self` before the
 call starts so the route handlers know which runner to delegate to.
+
+Architecture (WebSocket-compatible):
+  The /twiml/start endpoint now returns a pre-built TwiML script that plays
+  all patient responses with timed pauses — no Gather-based turn detection.
+  This works with ALL Susie pipeline modes (legacy, Realtime, Media Streams).
+  Speech capture is done via Twilio recording + AssemblyAI transcription.
 """
 
 from __future__ import annotations
@@ -33,16 +39,6 @@ logger = logging.getLogger(__name__)
 _HANGUP_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
     "<Response>\n  <Hangup/>\n</Response>"
-)
-
-# Silence re-ask phrases — Susie uses these when she couldn't hear the caller.
-# When detected we step back one turn so the same scripted response is replayed.
-REASK_PHRASES = (
-    "didn't quite catch",
-    "catch that",
-    "sorry about that",
-    "i'm having a little trouble",
-    "trouble hearing",
 )
 
 
@@ -187,21 +183,19 @@ class SharedServer:
 
         @app.post("/twiml/start")
         async def twiml_start(request: Request):
-            runner = server.current_runner
-            if runner is None:
-                return Response(content=_HANGUP_XML, media_type="text/xml")
-            logger.info("[%s] Call connected", runner.scenario["id"])
-            return Response(
-                content=runner._twiml_listen(timeout=120),
-                media_type="text/xml",
-            )
+            """
+            Return the pre-built TwiML script for this scenario.
 
-        @app.post("/twiml/gather")
-        async def twiml_gather(request: Request):
+            The script plays all patient responses with timed pauses —
+            no Gather-based turn detection. Works with all Susie pipeline modes.
+            """
             runner = server.current_runner
             if runner is None:
                 return Response(content=_HANGUP_XML, media_type="text/xml")
-            return await _handle_gather(runner, request, server.webhook_url)
+            logger.info("[%s] Call connected — serving pre-built TwiML", runner.scenario["id"])
+            twiml = runner.build_start_twiml()
+            logger.debug("[%s] TwiML:\n%s", runner.scenario["id"], twiml)
+            return Response(content=twiml, media_type="text/xml")
 
         @app.post("/status")
         async def call_status(request: Request):
@@ -218,128 +212,18 @@ class SharedServer:
             runner = server.current_runner
             form = await request.form()
             recording_url = form.get("RecordingUrl", "")
+            recording_sid = form.get("RecordingSid", "")
+            recording_status = form.get("RecordingStatus", "")
+            logger.info(
+                "[%s] Recording callback: status=%s sid=%s url=%s",
+                runner.scenario["id"] if runner else "?",
+                recording_status, recording_sid, recording_url,
+            )
             if runner:
-                runner._recording_url = recording_url
+                if recording_url:
+                    runner._recording_url = recording_url + ".mp3"
+                if recording_sid:
+                    runner._recording_sid = recording_sid
             return {"ok": True}
 
         return app
-
-
-# ── Gather handler (shared logic used by the shared server) ───────────────────
-
-async def _handle_gather(
-    runner: "CallRunner",
-    request: Request,
-    webhook_url: str,
-) -> Response:
-    """Process one Twilio gather callback.  Returns TwiML response."""
-    from .call_runner import MAX_TURNS_PER_CALL  # avoid circular import
-
-    form = await request.form()
-    susie_speech = form.get("SpeechResult", "").strip()
-    susie_confidence = float(form.get("Confidence", 0.0))
-
-    # ── Diagnostic: log every field Twilio sends on this callback ─────────
-    # This lets us see whether Twilio heard audio but failed to transcribe it
-    # (SpeechResult absent vs empty) or whether no audio reached the Gather.
-    all_fields = dict(form)
-    logger.info(
-        "[%s] /gather raw fields: %s",
-        runner.scenario["id"],
-        {k: v for k, v in all_fields.items() if k not in ("AccountSid", "AuthToken")},
-    )
-
-    # ── Empty gather: no speech detected yet ──────────────────────────────
-    if not susie_speech:
-        runner._empty_gather_count = getattr(runner, "_empty_gather_count", 0) + 1
-        logger.info(
-            "[%s] Empty gather #%d (SpeechResult=%r, Confidence=%r) — re-listening",
-            runner.scenario["id"], runner._empty_gather_count,
-            form.get("SpeechResult"), form.get("Confidence"),
-        )
-        if runner._empty_gather_count >= 8:
-            logger.warning("[%s] Too many empty gathers — ending call", runner.scenario["id"])
-            runner._end_call("timeout_no_speech")
-            return Response(content=runner._twiml_hangup(), media_type="text/xml")
-        # Give maximum time on first few empty gathers — Susie may still be warming up
-        listen_timeout = 120 if runner._empty_gather_count <= 2 else 60
-        return Response(
-            content=runner._twiml_listen(timeout=listen_timeout),
-            media_type="text/xml",
-        )
-
-    runner._empty_gather_count = 0
-
-    # ── Re-ask detection ──────────────────────────────────────────────────
-    susie_lower = susie_speech.lower()
-    is_reask = any(p in susie_lower for p in REASK_PHRASES)
-    if is_reask and runner.current_turn > 0:
-        last_said = runner.test_said[-1]["text"] if runner.test_said else ""
-        if last_said.strip():
-            logger.info(
-                "[%s] Re-ask detected — stepping back to turn %d",
-                runner.scenario["id"], runner.current_turn - 1,
-            )
-            runner.current_turn -= 1
-        else:
-            logger.info(
-                "[%s] Re-ask detected but previous was silence — advancing normally",
-                runner.scenario["id"],
-            )
-
-    logger.info(
-        "[%s] Turn %d — Susie: '%s' (conf=%.2f)",
-        runner.scenario["id"], runner.current_turn,
-        susie_speech[:80], susie_confidence,
-    )
-
-    runner.susie_said.append({
-        "turn": runner.current_turn,
-        "text": susie_speech,
-        "confidence": susie_confidence,
-        "timestamp": time.time(),
-    })
-
-    # Guard against runaway calls
-    if runner.current_turn >= MAX_TURNS_PER_CALL:
-        logger.warning("[%s] Max turns reached — hanging up", runner.scenario["id"])
-        runner._end_call("max_turns")
-        return Response(content=runner._twiml_hangup(), media_type="text/xml")
-
-    # Get next scripted response
-    next_response = runner._get_next_response(susie_speech)
-    if next_response is None:
-        logger.info("[%s] Scenario complete — hanging up", runner.scenario["id"])
-        runner._end_call("complete")
-        return Response(content=runner._twiml_hangup(), media_type="text/xml")
-
-    logger.info("[%s] Turn %d — Saying: '%s'", runner.scenario["id"], runner.current_turn, next_response)
-
-    runner.test_said.append({
-        "turn": runner.current_turn,
-        "text": next_response,
-        "timestamp": time.time(),
-    })
-    runner.current_turn += 1
-
-    # Silence turn — just listen (SilenceHandler will fire on Susie's end)
-    if not next_response.strip():
-        logger.info("[%s] Silence turn", runner.scenario["id"])
-        return Response(
-            content=runner._twiml_listen(timeout=30),
-            media_type="text/xml",
-        )
-
-    # Generate TTS and play it, with <Say> fallback if ElevenLabs fails
-    try:
-        audio_url = await runner._generate_audio(next_response, webhook_url)
-        return Response(
-            content=runner._twiml_play_then_listen(audio_url),
-            media_type="text/xml",
-        )
-    except Exception as exc:
-        logger.warning("[%s] ElevenLabs failed — <Say> fallback: %r", runner.scenario["id"], exc)
-        return Response(
-            content=runner._twiml_say_then_listen(next_response),
-            media_type="text/xml",
-        )
