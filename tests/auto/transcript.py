@@ -11,10 +11,10 @@ def build_transcript(result: dict) -> str:
     lines.append(f"SCENARIO: [{result['scenario_id']}] {result['scenario_name']}")
     lines.append(f"PHASE:     {result.get('phase', 'Unknown')}")
     lines.append(f"CALL SID:  {result.get('call_sid', 'N/A')}")
-    lines.append(f"DURATION:  {result['duration_seconds']:.1f}s")
+    lines.append(f"DURATION:  {result.get('duration_seconds', 0.0):.1f}s")
     lines.append(f"TURNS:     {result['turns']}")
     lines.append(f"END:       {result['end_reason']}")
-    lines.append(f"TIMESTAMP: {result['timestamp']}")
+    lines.append(f"TIMESTAMP: {result.get('timestamp', 'unknown')}")
     lines.append("=" * 60)
 
     # Interleave Susie and patient turns chronologically

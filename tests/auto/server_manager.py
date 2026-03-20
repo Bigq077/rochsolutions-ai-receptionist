@@ -192,7 +192,7 @@ class SharedServer:
                 return Response(content=_HANGUP_XML, media_type="text/xml")
             logger.info("[%s] Call connected", runner.scenario["id"])
             return Response(
-                content=runner._twiml_listen(timeout=30),
+                content=runner._twiml_listen(timeout=60),
                 media_type="text/xml",
             )
 
@@ -246,12 +246,14 @@ async def _handle_gather(
             "[%s] Empty gather #%d — re-listening",
             runner.scenario["id"], runner._empty_gather_count,
         )
-        if runner._empty_gather_count >= 5:
+        if runner._empty_gather_count >= 8:
             logger.warning("[%s] Too many empty gathers — ending call", runner.scenario["id"])
             runner._end_call("timeout_no_speech")
             return Response(content=runner._twiml_hangup(), media_type="text/xml")
+        # Give extra time on first few empty gathers — Susie may still be waking up
+        listen_timeout = 60 if runner._empty_gather_count <= 2 else 45
         return Response(
-            content=runner._twiml_listen(timeout=30),
+            content=runner._twiml_listen(timeout=listen_timeout),
             media_type="text/xml",
         )
 

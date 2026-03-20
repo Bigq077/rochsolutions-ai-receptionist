@@ -73,12 +73,23 @@ async def _warmup_server() -> None:
                 resp = await client.get(url)
             logger.info("Server warmup attempt %d: HTTP %d", attempt, resp.status_code)
             if resp.status_code < 500:
-                print(f"Server ready (HTTP {resp.status_code})")
+                print(f"Server awake (HTTP {resp.status_code}) — waiting 20s for initial boot...")
+                await asyncio.sleep(20)
+                # Second ping: by now the server has had 20s to initialise workers.
+                # This second request often warms the LLM connection pool.
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client2:
+                        resp2 = await client2.get(url)
+                    logger.info("Server warmup second ping: HTTP %d", resp2.status_code)
+                except Exception:
+                    pass
                 # Render free-tier: HTTP 200 on /health returns quickly but the
                 # WebSocket call-handling pipeline (LLM, TTS, AssemblyAI) can
-                # take 10-15 s more to fully initialise.  A short wait here
-                # avoids 0-turn failures on the very first scenario.
-                await asyncio.sleep(15)
+                # take 30-45 s more to fully initialise.  Wait long enough here
+                # to avoid 0-turn failures on the very first scenario.
+                print("  Waiting 25s more for full pipeline warmup (LLM + TTS + STT)...")
+                await asyncio.sleep(25)
+                print("  Server ready.")
                 return
         except Exception as exc:
             logger.warning("Server warmup attempt %d failed: %r", attempt, exc)
@@ -124,7 +135,17 @@ async def run_scenario_with_healing(
     for attempt in range(max_attempts):
         if attempt > 0:
             print(f"\n  ↺ Retry attempt {attempt}/{max_attempts - 1} for {scenario['id']}")
-            await asyncio.sleep(5)
+            # Infrastructure failures need longer wait — Render cold-start takes 30-45s.
+            # Content failures (speech happened but wrong) only need a short pause.
+            prev_turns      = last_result.get("turns", 0)
+            prev_end_reason = last_result.get("end_reason", "unknown")
+            is_infra = (
+                prev_turns == 0
+                or prev_end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception")
+            )
+            retry_wait = 30 if is_infra else 5
+            print(f"  Waiting {retry_wait}s before retry ({'infra' if is_infra else 'content'} failure)...")
+            await asyncio.sleep(retry_wait)
 
         try:
             result = await run_single_call(scenario, evaluator, shared_server)
@@ -139,6 +160,8 @@ async def run_scenario_with_healing(
                 "susie_said":    [],
                 "test_said":     [],
                 "duration_seconds": 0,
+                "timestamp":     datetime.utcnow().isoformat(),
+                "call_sid":      None,
                 "evaluation": {
                     "passed":      False,
                     "fail_reason": "exception",
