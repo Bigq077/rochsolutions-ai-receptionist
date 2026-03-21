@@ -82,39 +82,35 @@ class Healer:
         lines.append("═" * 58)
         return "\n".join(lines)
 
-    async def run_fixer_agent(
-        self,
-        diagnosis: str,
-        result: dict,
-        scenario: dict,
-    ) -> str:
+    def should_retry(self, result: dict) -> bool:
         """
-        Decide whether to retry or skip this scenario.
+        Return True only for transient infrastructure failures worth retrying.
 
-        Returns:
-            "retry" — run the scenario again
-            "skip"  — give up on this scenario
+        Content failures (Susie gave the wrong answer) are NEVER retried —
+        the same call will produce the same wrong answer and just wastes
+        Twilio credits.  Only retry when the conversation never happened at
+        all (ngrok died, Twilio timeout, server cold-start, exception).
         """
         turns      = result.get("turns", 0)
         end_reason = result.get("end_reason", "unknown")
 
-        # Infrastructure failure: server cold, ngrok dead, or no speech
         if self._is_infrastructure_failure(turns, end_reason):
             self._infra_fail_streak += 1
             print(
                 f"  Healer: Infrastructure failure "
-                f"(streak={self._infra_fail_streak}) — retrying"
+                f"(streak={self._infra_fail_streak}) — will retry once"
             )
-            return "retry"
+            return True
 
-        # Real conversation happened but something went wrong with Susie's responses
+        # Susie spoke but gave the wrong answer — retrying won't fix it
         self._infra_fail_streak = 0
         checks      = result.get("evaluation", {}).get("checks", {})
         fail_checks = [k for k, v in checks.items() if v is False]
         print(
-            f"  Healer: Conversation failure ({', '.join(fail_checks[:3])}) — retrying"
+            f"  Healer: Content failure ({', '.join(fail_checks[:3])}) "
+            f"— Susie behaviour issue, skipping retries"
         )
-        return "retry"
+        return False
 
     # ── helpers ──────────────────────────────────────────────────────────────
 

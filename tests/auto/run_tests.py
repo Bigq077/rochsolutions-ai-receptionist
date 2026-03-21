@@ -320,99 +320,85 @@ async def run_scenario_with_healing(
     evaluator: Evaluator,
     healer: Healer,
     shared_server: SharedServer,
-    max_attempts: int = 3,
 ) -> dict:
     """
-    Run a scenario, print a per-test diagnosis, and retry on failure.
-    Retries up to max_attempts times total.
+    Run a scenario and retry ONCE only for infrastructure failures.
+
+    Content failures (Susie spoke but gave the wrong answer) are never
+    retried — the same call will produce the same result and just burns
+    Twilio credits.  Only infrastructure failures (ngrok dead, 0 turns,
+    timeout, exception) get a single retry after a 30 s cool-down.
     """
     print(f"\n{'=' * 50}")
     print(f"Running: {scenario['id']} — {scenario['name']}")
     print(f"{'=' * 50}")
 
-    last_result: dict = {}
+    def _make_exception_result(exc: Exception) -> dict:
+        return {
+            "scenario_id":   scenario["id"],
+            "scenario_name": scenario["name"],
+            "phase":         scenario.get("phase", ""),
+            "turns":         0,
+            "end_reason":    "exception",
+            "susie_said":    [],
+            "test_said":     [],
+            "duration_seconds": 0,
+            "timestamp":     datetime.utcnow().isoformat(),
+            "call_sid":      None,
+            "evaluation": {
+                "passed":      False,
+                "fail_reason": "exception",
+                "detail":      str(exc),
+                "checks":      {},
+                "transcript":  "",
+            },
+        }
 
-    for attempt in range(max_attempts):
-        if attempt > 0:
-            print(f"\n  ↺ Retry attempt {attempt}/{max_attempts - 1} for {scenario['id']}")
-            # Infrastructure failures need longer wait — Render cold-start takes 30-45s.
-            # Content failures (speech happened but wrong) only need a short pause.
-            prev_turns      = last_result.get("turns", 0)
-            prev_end_reason = last_result.get("end_reason", "unknown")
-            is_infra = (
-                prev_turns == 0
-                or prev_end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception")
-            )
-            retry_wait = 30 if is_infra else 5
-            print(f"  Waiting {retry_wait}s before retry ({'infra' if is_infra else 'content'} failure)...")
-            await asyncio.sleep(retry_wait)
+    # ── First attempt ────────────────────────────────────────────────────
+    try:
+        result = await run_single_call(scenario, evaluator, shared_server)
+    except Exception as exc:
+        logger.error("Exception running %s: %r", scenario["id"], exc, exc_info=True)
+        result = _make_exception_result(exc)
 
-        try:
-            result = await run_single_call(scenario, evaluator, shared_server)
-        except Exception as exc:
-            logger.error("Exception running %s: %r", scenario["id"], exc, exc_info=True)
-            result = {
-                "scenario_id":   scenario["id"],
-                "scenario_name": scenario["name"],
-                "phase":         scenario.get("phase", ""),
-                "turns":         0,
-                "end_reason":    "exception",
-                "susie_said":    [],
-                "test_said":     [],
-                "duration_seconds": 0,
-                "timestamp":     datetime.utcnow().isoformat(),
-                "call_sid":      None,
-                "evaluation": {
-                    "passed":      False,
-                    "fail_reason": "exception",
-                    "detail":      str(exc),
-                    "checks":      {},
-                    "transcript":  "",
-                },
-            }
+    diagnosis = healer.build_diagnosis(result, scenario)
+    print(diagnosis)
 
-        last_result = result
+    _save_result(result, scenario)
 
-        # ── Per-test diagnosis (always printed) ───────────────────────────
-        diagnosis = healer.build_diagnosis(result, scenario)
-        print(diagnosis)
+    if result.get("evaluation", {}).get("passed"):
+        return result
 
-        passed = result.get("evaluation", {}).get("passed", False)
+    # ── Decide whether to retry ──────────────────────────────────────────
+    if not healer.should_retry(result):
+        return result   # content failure — bail out immediately
 
-        # Save intermediate result
-        result_path = (
-            RESULTS_DIR
-            / f"{scenario['id']}_{datetime.utcnow().strftime('%H%M%S')}.json"
-        )
-        result_path.write_text(
-            json.dumps(result, indent=2, default=str), encoding="utf-8"
-        )
-        print(f"  Saved: {result_path}")
+    # ── Single infrastructure retry ──────────────────────────────────────
+    print(f"\n  ↺ Retrying {scenario['id']} after 30 s cool-down...")
+    await asyncio.sleep(30)
 
-        if passed:
-            break
+    try:
+        result = await run_single_call(scenario, evaluator, shared_server)
+    except Exception as exc:
+        logger.error("Exception on retry %s: %r", scenario["id"], exc, exc_info=True)
+        result = _make_exception_result(exc)
 
-        # Only retry infrastructure failures (turns=0, timeout, ngrok died, exception).
-        # Content failures (Susie spoke but gave the wrong answer) won't change on
-        # retry — they indicate a Susie behaviour bug, not a transient error.
-        # Retrying content failures wastes Twilio credits without any benefit.
-        prev_turns      = result.get("turns", 0)
-        prev_end_reason = result.get("end_reason", "unknown")
-        is_infra_failure = (
-            prev_turns == 0
-            or prev_end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception")
-        )
-        if not is_infra_failure:
-            print(f"  → Content failure — skipping retries (Susie behaviour issue, not transient)")
-            break
+    diagnosis = healer.build_diagnosis(result, scenario)
+    print(diagnosis)
+    _save_result(result, scenario)
 
-        if attempt < max_attempts - 1:
-            print(f"  ↺ Infra failure — retrying ({attempt + 1}/{max_attempts - 1})")
-            await asyncio.sleep(30)
-        else:
-            print(f"  → Max attempts reached for {scenario['id']}")
+    return result
 
-    return last_result
+
+def _save_result(result: dict, scenario: dict) -> None:
+    result_path = (
+        RESULTS_DIR
+        / f"{scenario['id']}_{datetime.utcnow().strftime('%H%M%S')}.json"
+    )
+    result_path.write_text(
+        json.dumps(result, indent=2, default=str), encoding="utf-8"
+    )
+    print(f"  Saved: {result_path}")
 
 
 async def main():
@@ -430,6 +416,12 @@ async def main():
         "--scenario",
         help="Run specific scenario e.g. '2.1'",
         default=None,
+    )
+    parser.add_argument(
+        "--from-phase",
+        help="Run all scenarios from this phase number onwards e.g. '2'",
+        default=None,
+        dest="from_phase",
     )
     parser.add_argument(
         "--quick",
@@ -456,6 +448,16 @@ async def main():
     elif args.phase:
         scenarios_to_run = [
             s for s in SCENARIOS if s["id"].startswith(args.phase + ".")
+        ]
+    elif args.from_phase:
+        try:
+            from_num = int(args.from_phase)
+        except ValueError:
+            print(f"ERROR — --from-phase must be an integer, got '{args.from_phase}'")
+            sys.exit(1)
+        scenarios_to_run = [
+            s for s in SCENARIOS
+            if int(s["id"].split(".")[0]) >= from_num
         ]
     elif args.quick:
         scenarios_to_run = [
