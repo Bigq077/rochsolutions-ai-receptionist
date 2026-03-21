@@ -1,3 +1,10 @@
+import sys
+# Force UTF-8 output on Windows (avoids cp1252 UnicodeEncodeError for ✓ → ═ etc.)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -22,7 +29,6 @@ import asyncio
 import argparse
 import json
 import logging
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -144,6 +150,157 @@ async def _warmup_server() -> None:
     print("  Server ready.")
 
 
+async def _preflight_check() -> bool:
+    """
+    Validate all external dependencies before making any real Twilio calls.
+
+    Checks (in order):
+      1. Twilio credentials — list 1 call to verify SID + token
+      2. ElevenLabs API key — small TTS request (5 chars) to confirm key is valid
+      3. Anthropic API key — small completion to confirm key is valid
+      4. Render server — /health reachable
+      5. ngrok — start SharedServer briefly to confirm tunnel works
+      6. Scenario integrity — all 35 scenarios have required fields
+
+    Returns True if all checks pass, False otherwise.
+    Prints a clear PASS/FAIL summary for each check.
+    """
+    import httpx
+    import time
+
+    TICK = "[PASS]"
+    CROSS = "[FAIL]"
+    all_ok = True
+
+    print("\n" + "=" * 60)
+    print("PREFLIGHT CHECK — validating all dependencies")
+    print("=" * 60)
+
+    # ── 1. Twilio credentials ─────────────────────────────────────
+    print("\n[1/6] Twilio credentials...")
+    try:
+        from twilio.rest import Client as TwilioClient
+        client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        # Listing calls is a lightweight read-only operation
+        _ = client.calls.list(limit=1)
+        print(f"  {TICK} Twilio: credentials valid (SID={TWILIO_ACCOUNT_SID[:8]}...)")
+    except Exception as exc:
+        print(f"  {CROSS} Twilio: {exc}")
+        all_ok = False
+
+    # ── 2. ElevenLabs API key ─────────────────────────────────────
+    print("\n[2/6] ElevenLabs API key...")
+    from tests.auto.config import ELEVENLABS_PATIENT_VOICE_ID
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_PATIENT_VOICE_ID}",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                json={
+                    "text": "Hi.",
+                    "model_id": "eleven_flash_v2_5",
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
+                },
+            )
+        if resp.status_code == 200:
+            print(f"  {TICK} ElevenLabs: key valid, TTS working")
+        elif resp.status_code == 401:
+            print(f"  [WARN] ElevenLabs: 401 Unauthorized — API key is invalid or expired")
+            print(f"         Key used: {ELEVENLABS_API_KEY[:12]}...")
+            print(f"         Tests will still run using Twilio <Say> TTS fallback (lower audio quality).")
+            # Not fatal — <Say> fallback handles this; do NOT set all_ok = False
+        else:
+            print(f"  [WARN] ElevenLabs: HTTP {resp.status_code} — {resp.text[:200]}")
+    except Exception as exc:
+        print(f"  [WARN] ElevenLabs: {exc}")
+
+    # ── 3. Anthropic API key ──────────────────────────────────────
+    print("\n[3/6] Anthropic API key (evaluator)...")
+    from tests.auto.config import ANTHROPIC_API_KEY
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 5,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            )
+        if resp.status_code in (200, 400):
+            # 400 = malformed request but key was accepted — key is valid
+            print(f"  {TICK} Anthropic: key valid (HTTP {resp.status_code})")
+        elif resp.status_code == 401:
+            print(f"  {CROSS} Anthropic: 401 Unauthorized — API key invalid")
+            all_ok = False
+        else:
+            print(f"  [WARN] Anthropic: HTTP {resp.status_code}")
+    except Exception as exc:
+        print(f"  {CROSS} Anthropic: {exc}")
+        all_ok = False
+
+    # ── 4. Render server /health ──────────────────────────────────
+    print(f"\n[4/6] Render server ({RENDER_SERVER_URL}/health)...")
+    try:
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.get(f"{RENDER_SERVER_URL}/health")
+        elapsed = time.monotonic() - t0
+        if resp.status_code < 500:
+            print(f"  {TICK} Render server: HTTP {resp.status_code} in {elapsed:.1f}s")
+        else:
+            print(f"  {CROSS} Render server: HTTP {resp.status_code} in {elapsed:.1f}s")
+            all_ok = False
+    except Exception as exc:
+        print(f"  {CROSS} Render server: {exc}")
+        all_ok = False
+
+    # ── 5. ngrok tunnel ───────────────────────────────────────────
+    print("\n[5/6] ngrok tunnel (SharedServer)...")
+    try:
+        server = SharedServer()
+        await server.start()
+        print(f"  {TICK} ngrok: tunnel alive at {server.webhook_url}")
+        await server.stop()
+    except Exception as exc:
+        print(f"  {CROSS} ngrok: {exc}")
+        all_ok = False
+
+    # ── 6. Scenario integrity ─────────────────────────────────────
+    print(f"\n[6/6] Scenario integrity ({len(SCENARIOS)} scenarios)...")
+    scenario_errors = []
+    for s in SCENARIOS:
+        sid = s.get("id", "?")
+        if not s.get("name"):
+            scenario_errors.append(f"  {sid}: missing 'name'")
+        if not s.get("phase"):
+            scenario_errors.append(f"  {sid}: missing 'phase'")
+        if "expected" not in s:
+            scenario_errors.append(f"  {sid}: missing 'expected'")
+    if scenario_errors:
+        print(f"  {CROSS} Scenario errors:")
+        for e in scenario_errors:
+            print(e)
+        all_ok = False
+    else:
+        print(f"  {TICK} All {len(SCENARIOS)} scenarios have required fields")
+
+    # ── Summary ───────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    if all_ok:
+        print("PREFLIGHT: ALL CHECKS PASSED — safe to run full test suite")
+    else:
+        print("PREFLIGHT: SOME CHECKS FAILED — fix the issues above before running")
+    print("=" * 60 + "\n")
+
+    return all_ok
+
+
 async def run_single_call(
     scenario: dict,
     evaluator: Evaluator,
@@ -235,12 +392,23 @@ async def run_scenario_with_healing(
         if passed:
             break
 
+        # Only retry infrastructure failures (turns=0, timeout, ngrok died, exception).
+        # Content failures (Susie spoke but gave the wrong answer) won't change on
+        # retry — they indicate a Susie behaviour bug, not a transient error.
+        # Retrying content failures wastes Twilio credits without any benefit.
+        prev_turns      = result.get("turns", 0)
+        prev_end_reason = result.get("end_reason", "unknown")
+        is_infra_failure = (
+            prev_turns == 0
+            or prev_end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception")
+        )
+        if not is_infra_failure:
+            print(f"  → Content failure — skipping retries (Susie behaviour issue, not transient)")
+            break
+
         if attempt < max_attempts - 1:
-            action = await healer.run_fixer_agent(diagnosis, result, scenario)
-            if action == "skip":
-                print(f"  → Healer: skipping remaining attempts")
-                break
-            # action == "retry": loop continues
+            print(f"  ↺ Infra failure — retrying ({attempt + 1}/{max_attempts - 1})")
+            await asyncio.sleep(30)
         else:
             print(f"  → Max attempts reached for {scenario['id']}")
 
@@ -268,7 +436,16 @@ async def main():
         help="Run Phase 8 only (full end-to-end)",
         action="store_true",
     )
+    parser.add_argument(
+        "--preflight",
+        help="Validate all API keys and infrastructure without making real calls",
+        action="store_true",
+    )
     args = parser.parse_args()
+
+    if args.preflight:
+        ok = await _preflight_check()
+        sys.exit(0 if ok else 1)
 
     # Filter scenarios
     scenarios_to_run = SCENARIOS

@@ -145,6 +145,15 @@ class SharedServer:
 
     async def _connect_ngrok(self) -> None:
         """Connect (or reconnect) the ngrok tunnel."""
+        # Kill any leftover ngrok process from a previous run before starting.
+        # This prevents ERR_NGROK_334 ("endpoint already online") when the
+        # preflight or a prior run left a stale tunnel attached to the domain.
+        try:
+            ngrok.kill()
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
         for attempt in range(3):
             try:
                 self._ngrok_tunnel = ngrok.connect(self._ngrok_port, "http")

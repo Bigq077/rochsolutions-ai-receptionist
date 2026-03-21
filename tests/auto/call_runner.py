@@ -134,10 +134,47 @@ class CallRunner:
         logger.info("[%s] Waiting for session to be saved...", self.scenario["id"])
         await asyncio.sleep(5)
 
+        # Find the inbound call SID (Susie's side) — the session is stored under this SID
+        inbound_sid = await self._find_inbound_call_sid(client)
+        logger.info("[%s] Inbound call SID: %s", self.scenario["id"], inbound_sid or "not found")
+
         # Retrieve what Susie said from her Redis session
-        await self._fetch_session_from_server()
+        await self._fetch_session_from_server(inbound_sid)
 
         return self._build_result()
+
+    async def _find_inbound_call_sid(self, client: Client) -> str | None:
+        """
+        Find the inbound call SID for Susie's side of the call.
+
+        When the test makes an outbound call to Susie, Twilio creates:
+          - Outbound leg (test's side): self.call_sid
+          - Inbound leg (Susie's side): a separate inbound call SID
+
+        Susie's session is stored under the inbound SID.
+        We find it by listing recent calls TO Susie's number and filtering
+        for inbound calls (direction not outbound-api).
+        """
+        try:
+            # List recent calls to Susie's number (both inbound and outbound)
+            calls = client.calls.list(to=SUSIE_NUMBER, limit=10)
+            for call in calls:
+                # Skip our own outbound call
+                if call.sid == self.call_sid:
+                    continue
+                # The inbound call is the one that's NOT outbound-api
+                if call.direction != "outbound-api":
+                    logger.info(
+                        "[%s] Found inbound call SID: %s (direction=%s)",
+                        self.scenario["id"], call.sid, call.direction,
+                    )
+                    return call.sid
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to find inbound call SID: %r",
+                self.scenario["id"], exc,
+            )
+        return None
 
     # ── TwiML builders ──────────────────────────────────────────────────────
 
@@ -171,17 +208,30 @@ class CallRunner:
                 continue
 
             audio_filename = self._audio_filename(i)
-            audio_url = f"{self._webhook_url}/audio/{audio_filename}"
+            audio_path = RESULTS_DIR / audio_filename
 
-            # Play patient response
-            lines.append(f"  <Play>{audio_url}</Play>")
+            # Play patient response — use ElevenLabs audio if available,
+            # otherwise fall back to Twilio Polly TTS so the call still works
+            # even when ElevenLabs is unavailable or the API key is invalid.
+            if audio_path.exists():
+                audio_url = f"{self._webhook_url}/audio/{audio_filename}"
+                lines.append(f"  <Play>{audio_url}</Play>")
+            else:
+                safe_text = (
+                    text.replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                        .replace("'", "&apos;")
+                        .replace('"', "&quot;")
+                )
+                lines.append(f'  <Say voice="Polly.Amy">{safe_text}</Say>')
 
             # Wait for Susie to reply (except after last response)
             if i < len(responses) - 1:
                 lines.append(f"  <Pause length=\"{TURN_WAIT_SECONDS}\"/>")
 
-        # Brief pause then hang up explicitly
-        lines.append("  <Pause length=\"3\"/>")
+        # Wait for Susie to respond to the last patient turn before hanging up
+        lines.append(f"  <Pause length=\"{TURN_WAIT_SECONDS}\"/>")
         lines.append("  <Hangup/>")
         lines.append("</Response>")
         return "\n".join(lines)
@@ -210,16 +260,18 @@ class CallRunner:
                 continue
             try:
                 await self._generate_audio_for_turn(text, i)
-                self.test_said.append({
-                    "turn": i,
-                    "text": text,
-                    "timestamp": time.time(),
-                })
             except Exception as exc:
                 logger.warning(
-                    "[%s] Failed to generate audio for turn %d: %r",
+                    "[%s] Failed to generate audio for turn %d: %r — will use <Say> fallback",
                     self.scenario["id"], i, exc,
                 )
+            # Always record what the test intends to say, regardless of whether
+            # ElevenLabs succeeded — the <Say> fallback will still speak the text.
+            self.test_said.append({
+                "turn": i,
+                "text": text,
+                "timestamp": time.time(),
+            })
 
     async def _generate_audio_for_turn(self, text: str, turn_index: int) -> str:
         """Generate speech via ElevenLabs, save to results/, return local path."""
@@ -264,19 +316,32 @@ class CallRunner:
 
     # ── Session retrieval ─────────────────────────────────────────────────────
 
-    async def _fetch_session_from_server(self) -> None:
+    async def _fetch_session_from_server(self, inbound_sid: str | None = None) -> None:
         """
         Retrieve what Susie said by querying her Redis session via the
         /admin/test/session/{call_sid} endpoint on the Render server.
 
+        The session is stored under the INBOUND call SID (Susie's side),
+        not the outbound SID (test's side). We try the inbound SID first,
+        then fall back to the outbound SID.
+
         The session contains conversation_history with assistant turns
         (what Susie said) and user turns (what the caller said).
         """
-        if not self.call_sid:
+        # Try inbound SID first (Susie's side), then outbound SID as fallback
+        sids_to_try = []
+        if inbound_sid:
+            sids_to_try.append(inbound_sid)
+        if self.call_sid:
+            sids_to_try.append(self.call_sid)
+
+        if not sids_to_try:
             logger.warning("[%s] No call SID — cannot fetch session", self.scenario["id"])
             return
 
-        url = f"{RENDER_SERVER_URL}/admin/test/session/{self.call_sid}"
+        # Use the first SID to try (inbound preferred)
+        sid_to_use = sids_to_try[0]
+        url = f"{RENDER_SERVER_URL}/admin/test/session/{sid_to_use}"
         logger.info("[%s] Fetching session from: %s", self.scenario["id"], url)
 
         try:

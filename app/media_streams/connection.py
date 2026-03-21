@@ -189,6 +189,7 @@ class SilenceHandler:
         self,
         tts_text_queue: asyncio.Queue,
         trigger_transfer_fn,
+        on_reask=None,
     ) -> None:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
@@ -199,6 +200,7 @@ class SilenceHandler:
         self._tts_text_queue                = tts_text_queue
         self._trigger_transfer              = trigger_transfer_fn
         self._llm_busy:               bool  = False
+        self._on_reask                      = on_reask  # optional async callback(text)
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -335,6 +337,8 @@ class SilenceHandler:
             self.reask_count, q[:80], secs_since_q,
         )
         await self._tts_text_queue.put(phrase1)
+        if self._on_reask:
+            asyncio.create_task(self._on_reask(phrase1))
 
         # Wait for TTS to finish playing
         try:
@@ -368,6 +372,8 @@ class SilenceHandler:
             self.reask_count, q[:80], secs_since_q,
         )
         await self._tts_text_queue.put(phrase2)
+        if self._on_reask:
+            asyncio.create_task(self._on_reask(phrase2))
 
         # Wait for TTS to finish playing
         try:
@@ -478,9 +484,17 @@ class WebSocketCallHandler:
             self.session["silence_transfer"] = True
             await self._on_transfer_request()
 
+        async def _silence_reask_fn(text: str) -> None:
+            """Save re-ask to conversation_history so the test evaluator can see it."""
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": text}
+            )
+            await save_session(self.call_sid, self.session)
+
         self._silence_handler = SilenceHandler(
             tts_text_queue=self.tts_text_queue,
             trigger_transfer_fn=_silence_transfer_fn,
+            on_reask=_silence_reask_fn,
         )
 
         # ── Call stability ─────────────────────────────────────────────────
