@@ -299,7 +299,7 @@ class SilenceHandler:
         """
         Flat sequential re-ask coroutine.
 
-        Window 1: 12s sleep → since_audio guard → re-ask #1 → 5s TTS wait
+        Window 1: 28s sleep → since_audio guard → re-ask #1 → 5s TTS wait
         Window 2: 10s sleep → since_audio guard → re-ask #2 → 5s TTS wait
         Window 3:  4s sleep → since_audio guard → transfer
 
@@ -309,9 +309,9 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 20 s silence ─────────────────────────────────────────
+        # ── Window 1: 28 s silence ─────────────────────────────────────────
         try:
-            await asyncio.sleep(20.0)
+            await asyncio.sleep(28.0)
             # Yield once more so any task.cancel() that arrived while we were
             # sleeping (but after sleep() returned normally) is delivered here
             # before we check the guards — fixes the race where _llm_busy is
