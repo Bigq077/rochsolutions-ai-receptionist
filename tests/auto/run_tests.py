@@ -47,6 +47,7 @@ from tests.auto.config import (
 )
 from tests.auto.call_runner import CallRunner
 from tests.auto.evaluator import Evaluator
+from tests.auto.fixer import FixerAgent
 from tests.auto.healer import Healer
 from tests.auto.report import build_report
 from tests.auto.server_manager import SharedServer
@@ -58,6 +59,17 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("run_tests")
+
+
+async def _check_network() -> bool:
+    """Return True if basic DNS/HTTP is working."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            await http.get("https://api.twilio.com")
+        return True
+    except Exception:
+        return False
 
 
 async def _warmup_server() -> None:
@@ -319,6 +331,7 @@ async def run_scenario_with_healing(
     scenario: dict,
     evaluator: Evaluator,
     healer: Healer,
+    fixer: FixerAgent,
     shared_server: SharedServer,
 ) -> dict:
     """
@@ -371,9 +384,22 @@ async def run_scenario_with_healing(
 
     # ── Decide whether to retry ──────────────────────────────────────────
     if not healer.should_retry(result):
-        return result   # content failure — bail out immediately
+        # Content failure — run fixer diagnosis then bail out
+        fix_result = fixer.analyze(result, scenario)
+        print(fix_result.format())
+        return result
 
     # ── Single infrastructure retry ──────────────────────────────────────
+    # Check network before retrying — if it's down, wait up to 3×60s
+    for _net_attempt in range(3):
+        if await _check_network():
+            break
+        logger.warning("Network appears down — waiting 60s before retry attempt %d/3", _net_attempt + 1)
+        await asyncio.sleep(60)
+    else:
+        logger.error("Network still down after 3 checks — skipping retry for %s", scenario["id"])
+        return result
+
     print(f"\n  ↺ Retrying {scenario['id']} after 30 s cool-down...")
     await asyncio.sleep(30)
 
@@ -501,13 +527,14 @@ async def main():
 
     evaluator = Evaluator()
     healer    = Healer()
+    fixer     = FixerAgent()
     all_results = []
 
     try:
         # Run scenarios sequentially
         for scenario in scenarios_to_run:
             result = await run_scenario_with_healing(
-                scenario, evaluator, healer, shared_server
+                scenario, evaluator, healer, fixer, shared_server
             )
             all_results.append(result)
             # Brief pause between scenarios to let Twilio finish recording callbacks

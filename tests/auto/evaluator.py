@@ -193,7 +193,12 @@ class Evaluator:
             k: v for k, v in all_checks.items()
             if isinstance(v, bool) and not k.startswith("info_")
         }
-        passed = all(gating.values())
+        if not gating:
+            # No checks = evaluation completely failed (network down, Claude unreachable, etc.)
+            passed = False
+            logger.warning("Evaluation produced zero checks — marking as infrastructure failure")
+        else:
+            passed = all(gating.values())
         fail_reasons = [k for k, v in gating.items() if not v]
 
         return {
@@ -386,8 +391,30 @@ class Evaluator:
         try:
             raw: dict = json.loads(text)
         except json.JSONDecodeError as e:
-            logger.error(f"Claude returned invalid JSON: {e}\nRaw: {text[:200]}")
-            return {}  # skip Claude gating; don't add a bool that fails evaluation
+            logger.warning(f"Claude returned invalid JSON on first attempt: {e}\nRaw: {text[:200]}")
+            # Retry with a stricter prompt
+            retry_prompt = (
+                "You MUST respond with ONLY a raw JSON object. "
+                "No prose, no explanation, no markdown. Just the JSON.\n\n"
+                + prompt
+            )
+            retry_response = await asyncio.to_thread(
+                self.client.messages.create,
+                model="claude-sonnet-4-6",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": retry_prompt}],
+            )
+            retry_text = retry_response.content[0].text.strip()
+            if retry_text.startswith("```"):
+                retry_text = retry_text.split("```")[1]
+                if retry_text.startswith("json"):
+                    retry_text = retry_text[4:]
+                retry_text = retry_text.strip()
+            try:
+                raw: dict = json.loads(retry_text)
+            except json.JSONDecodeError as e2:
+                logger.error(f"Claude returned invalid JSON after retry: {e2}\nRaw: {retry_text[:200]}")
+                return {}  # skip Claude gating; don't add a bool that fails evaluation
 
         # Filter Claude results: only gate on checks relevant to this scenario.
         # Null values are informational, non-bool values are metadata.

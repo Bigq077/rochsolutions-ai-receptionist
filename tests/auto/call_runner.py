@@ -47,12 +47,17 @@ MAX_TURNS_PER_CALL = 20
 #   - Susie's WebSocket pipeline to initialise (~3-5s)
 #   - ElevenLabs TTS to generate and stream the greeting (~3-5s)
 #   - The greeting audio to play (~5-8s)
-# Total: ~15-20s minimum. Use 30s to be safe.
-GREETING_WAIT_SECONDS = 30
+# Total: ~13-18s. Use 15s — Susie's silence timeout fires at ~20s,
+# so we must start speaking before then.
+GREETING_WAIT_SECONDS = 15
 
 # How long to wait (seconds) after each patient response for Susie to reply
 # before playing the next patient response.
 TURN_WAIT_SECONDS = 15
+
+# Module-level flag — set to False after first 401 to skip further ElevenLabs
+# attempts without burning 3 retries × N turns per scenario.
+_ELEVENLABS_AVAILABLE = True
 
 
 class CallRunner:
@@ -275,6 +280,10 @@ class CallRunner:
 
     async def _generate_audio_for_turn(self, text: str, turn_index: int) -> str:
         """Generate speech via ElevenLabs, save to results/, return local path."""
+        global _ELEVENLABS_AVAILABLE
+        if not _ELEVENLABS_AVAILABLE:
+            raise Exception("ElevenLabs disabled — credits exhausted (set globally after 401)")
+
         audio_filename = self._audio_filename(turn_index)
         audio_path = RESULTS_DIR / audio_filename
 
@@ -295,6 +304,10 @@ class CallRunner:
                             },
                         },
                     )
+                    if response.status_code == 401:
+                        _ELEVENLABS_AVAILABLE = False
+                        logger.error("[%s] ElevenLabs 401 — credits exhausted, disabling ElevenLabs for this run", self.scenario["id"])
+                        raise Exception("ElevenLabs 401 Unauthorized — credits exhausted")
                     response.raise_for_status()
                     audio_path.write_bytes(response.content)
                     self._audio_files[turn_index] = audio_path
@@ -305,6 +318,9 @@ class CallRunner:
                     return str(audio_path)
             except Exception as exc:
                 last_exc = exc
+                # Do not retry on 401 — credits exhausted, retrying is pointless
+                if "401 Unauthorized" in str(exc) or not _ELEVENLABS_AVAILABLE:
+                    raise
                 logger.warning(
                     "[%s] ElevenLabs attempt %d/3 failed: %r",
                     self.scenario["id"], attempt + 1, exc,
