@@ -199,7 +199,7 @@ class Evaluator:
         # patient audio.  This prevents false positives on phase 3 scenarios
         # (and any others) that lack flow_completed in their expected dict.
         if scenario.get("responses") and result.get("turns", 0) <= 1:
-            checks["susie_responded_to_patient"] = False
+            all_checks["susie_responded_to_patient"] = False
             gating["susie_responded_to_patient"] = False
 
         if not gating:
