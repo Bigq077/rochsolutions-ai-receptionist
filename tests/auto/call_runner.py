@@ -47,13 +47,18 @@ MAX_TURNS_PER_CALL = 20
 #   - Susie's WebSocket pipeline to initialise (~3-5s)
 #   - ElevenLabs TTS to generate and stream the greeting (~3-5s)
 #   - The greeting audio to play (~5-8s)
-# Total: ~13-18s. Use 15s — Susie's silence timeout fires at ~20s,
-# so we must start speaking before then.
-GREETING_WAIT_SECONDS = 15
+# Total: ~13-18s. Use 20s — gives the full greeting time to play and
+# ensures patient audio does not start before Susie has finished speaking,
+# which would confuse AssemblyAI's end-of-turn detection.
+GREETING_WAIT_SECONDS = 20
 
 # How long to wait (seconds) after each patient response for Susie to reply
 # before playing the next patient response.
-TURN_WAIT_SECONDS = 15
+# Must cover: AssemblyAI end-of-turn detection (~0.3s silence after Polly ends)
+# + LLM round-trip (~3-8s) + ElevenLabs TTS generation (~2-4s)
+# + TTS audio playback (~3-8s depending on Susie's response length).
+# Total worst case: ~20s. Use 22s for safety margin.
+TURN_WAIT_SECONDS = 22
 
 # Module-level flag — set to False after first 401 to skip further ElevenLabs
 # attempts without burning 3 retries × N turns per scenario.

@@ -533,9 +533,71 @@ async def main():
     try:
         # Run scenarios sequentially
         for scenario in scenarios_to_run:
-            result = await run_scenario_with_healing(
-                scenario, evaluator, healer, fixer, shared_server
-            )
+            try:
+                result = await run_scenario_with_healing(
+                    scenario, evaluator, healer, fixer, shared_server
+                )
+            except asyncio.CancelledError as exc:
+                logger.error(
+                    "CancelledError running scenario %s — likely ngrok crash: %r",
+                    scenario["id"], exc,
+                )
+                result = {
+                    "scenario_id":   scenario["id"],
+                    "scenario_name": scenario["name"],
+                    "phase":         scenario.get("phase", ""),
+                    "turns":         0,
+                    "end_reason":    "ngrok_crash",
+                    "susie_said":    [],
+                    "test_said":     [],
+                    "duration_seconds": 0,
+                    "timestamp":     datetime.utcnow().isoformat(),
+                    "call_sid":      None,
+                    "evaluation": {
+                        "passed":      False,
+                        "fail_reason": "ngrok_crash",
+                        "detail":      str(exc),
+                        "checks":      {},
+                        "transcript":  "",
+                    },
+                }
+                _save_result(result, scenario)
+                # Restart the shared server so subsequent tests get a fresh ngrok tunnel
+                logger.info("Restarting shared server after ngrok crash...")
+                try:
+                    await shared_server.stop()
+                except Exception:
+                    pass
+                try:
+                    await shared_server.start()
+                    logger.info("Shared server restarted — new webhook: %s", shared_server.webhook_url)
+                except Exception as restart_exc:
+                    logger.error("Failed to restart shared server: %r — remaining tests may fail", restart_exc)
+            except Exception as exc:
+                logger.error(
+                    "Exception running scenario %s: %r",
+                    scenario["id"], exc, exc_info=True,
+                )
+                result = {
+                    "scenario_id":   scenario["id"],
+                    "scenario_name": scenario["name"],
+                    "phase":         scenario.get("phase", ""),
+                    "turns":         0,
+                    "end_reason":    "infrastructure_failure",
+                    "susie_said":    [],
+                    "test_said":     [],
+                    "duration_seconds": 0,
+                    "timestamp":     datetime.utcnow().isoformat(),
+                    "call_sid":      None,
+                    "evaluation": {
+                        "passed":      False,
+                        "fail_reason": "infrastructure_failure",
+                        "detail":      str(exc),
+                        "checks":      {},
+                        "transcript":  "",
+                    },
+                }
+                _save_result(result, scenario)
             all_results.append(result)
             # Brief pause between scenarios to let Twilio finish recording callbacks
             await asyncio.sleep(3)

@@ -77,7 +77,7 @@ ASSEMBLYAI_WS_URL = (
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
-    "&min_turn_silence=1000"
+    "&min_turn_silence=300"
 )
 
 # v2 fallback — 8kHz input, no upsampling needed (battle-tested, older)

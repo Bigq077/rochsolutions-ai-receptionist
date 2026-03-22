@@ -193,6 +193,15 @@ class Evaluator:
             k: v for k, v in all_checks.items()
             if isinstance(v, bool) and not k.startswith("info_")
         }
+
+        # Guard: a scenario that defines patient responses but only produced 1
+        # Susie turn (the greeting) cannot pass — Susie never processed any
+        # patient audio.  This prevents false positives on phase 3 scenarios
+        # (and any others) that lack flow_completed in their expected dict.
+        if scenario.get("responses") and result.get("turns", 0) <= 1:
+            checks["susie_responded_to_patient"] = False
+            gating["susie_responded_to_patient"] = False
+
         if not gating:
             # No checks = evaluation completely failed (network down, Claude unreachable, etc.)
             passed = False
