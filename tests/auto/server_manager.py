@@ -8,23 +8,27 @@ beginning of the run and keep it alive throughout.
 Each CallRunner simply sets `shared_server.current_runner = self` before the
 call starts so the route handlers know which runner to delegate to.
 
-Architecture (WebSocket-compatible):
-  The /twiml/start endpoint now returns a pre-built TwiML script that plays
-  all patient responses with timed pauses — no Gather-based turn detection.
-  This works with ALL Susie pipeline modes (legacy, Realtime, Media Streams).
-  Speech capture is done via Twilio recording + AssemblyAI transcription.
+Architecture (bidirectional Media Streams injection):
+  /twiml/start returns <Connect><Stream url="wss://.../patient-ws"/> TwiML.
+  The /patient-ws WebSocket endpoint injects G.711 µ-law audio from the test
+  caller's direction — Twilio delivers it as inbound caller audio to Susie's
+  Media Streams pipeline.  This is the only approach that gets audio into
+  Susie's inbound track; <Say>/<Play> verbs only affect the downlink (outbound
+  to caller's earpiece) and are invisible to Susie's inbound stream.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import time
 from typing import TYPE_CHECKING
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pyngrok import ngrok
@@ -234,5 +238,155 @@ class SharedServer:
                 if recording_sid:
                     runner._recording_sid = recording_sid
             return {"ok": True}
+
+        @app.websocket("/patient-ws")
+        async def patient_ws(websocket: WebSocket):
+            """
+            Bidirectional Media Streams endpoint for the TEST CALLER leg.
+
+            When the test caller's TwiML contains <Connect><Stream url="wss://.../patient-ws"/>,
+            Twilio connects here.  We inject the patient's pre-generated G.711 µ-law audio
+            frames at real-time rate (160 bytes = 20 ms per frame).  Twilio delivers these
+            frames as the caller's inbound audio to Susie's Media Streams pipeline —
+            which is the ONLY way to get audio into Susie's inbound track.
+
+            Timeline:
+              1. Accept WebSocket + wait for Twilio "start" event (contains stream_sid)
+              2. Sleep GREETING_WAIT_SECONDS — let Susie deliver her greeting
+              3. For each patient response:
+                   a. Send mulaw frames at 20 ms/frame (real-time rate)
+                   b. Sleep TURN_WAIT_SECONDS — let Susie process and reply
+              4. Close WebSocket → Twilio moves to <Hangup/> → call ends
+            """
+            from .call_runner import GREETING_WAIT_SECONDS, TURN_WAIT_SECONDS
+
+            await websocket.accept()
+            runner = server.current_runner
+            if runner is None:
+                logger.warning("[patient-ws] No active runner — closing immediately")
+                await websocket.close()
+                return
+
+            scenario_id = runner.scenario.get("id", "?")
+            stream_sid: str | None = None
+
+            # ── Wait for Twilio "connected" + "start" events ─────────────────
+            try:
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    remaining = deadline - time.time()
+                    raw = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=max(remaining, 0.1)
+                    )
+                    msg = json.loads(raw)
+                    event = msg.get("event")
+                    if event == "connected":
+                        logger.info("[%s] patient-ws: Twilio connected", scenario_id)
+                    elif event == "start":
+                        stream_sid = msg["start"]["streamSid"]
+                        logger.info(
+                            "[%s] patient-ws: stream started, sid=%s",
+                            scenario_id, stream_sid,
+                        )
+                        break
+                    elif event == "stop":
+                        logger.info("[%s] patient-ws: got early stop", scenario_id)
+                        return
+                else:
+                    logger.warning(
+                        "[%s] patient-ws: timed out waiting for start event", scenario_id
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("[%s] patient-ws: error waiting for start: %r", scenario_id, exc)
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                return
+
+            # ── Consume any incoming Twilio media/stop events in background ──
+            # (We don't use them, but draining prevents back-pressure disconnects.)
+            async def _drain_incoming():
+                try:
+                    while True:
+                        raw = await asyncio.wait_for(websocket.receive_text(), timeout=300)
+                        msg = json.loads(raw)
+                        if msg.get("event") == "stop":
+                            break
+                except Exception:
+                    pass
+
+            drain_task = asyncio.create_task(_drain_incoming())
+
+            try:
+                # ── 1. Wait for Susie's greeting ──────────────────────────────
+                logger.info(
+                    "[%s] patient-ws: waiting %ds for Susie's greeting",
+                    scenario_id, GREETING_WAIT_SECONDS,
+                )
+                await asyncio.sleep(GREETING_WAIT_SECONDS)
+
+                # ── 2. Inject patient responses one by one ────────────────────
+                responses = runner.scenario.get("responses", [])
+                FRAME_SIZE = 160        # 20 ms of 8 kHz µ-law
+                FRAME_SLEEP = 0.020     # 20 ms inter-frame gap
+
+                for i, response in enumerate(responses):
+                    text = response if isinstance(response, str) else response.get("text", "")
+                    mulaw_bytes = runner._audio_mulaw.get(i)
+
+                    if mulaw_bytes:
+                        duration_s = len(mulaw_bytes) / 8000
+                        logger.info(
+                            "[%s] patient-ws: injecting turn %d (%d bytes = %.1fs): %.40s…",
+                            scenario_id, i, len(mulaw_bytes), duration_s, text,
+                        )
+                        # Send audio frames at real-time rate
+                        for offset in range(0, len(mulaw_bytes), FRAME_SIZE):
+                            frame = mulaw_bytes[offset: offset + FRAME_SIZE]
+                            # Pad last frame with silence (0xFF = µ-law zero)
+                            if len(frame) < FRAME_SIZE:
+                                frame = frame + bytes([0xFF] * (FRAME_SIZE - len(frame)))
+                            payload = base64.b64encode(frame).decode()
+                            try:
+                                await websocket.send_text(json.dumps({
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {"payload": payload},
+                                }))
+                            except WebSocketDisconnect:
+                                logger.info(
+                                    "[%s] patient-ws: Twilio disconnected during turn %d",
+                                    scenario_id, i,
+                                )
+                                return
+                            await asyncio.sleep(FRAME_SLEEP)
+                    elif text.strip():
+                        # No audio generated — pause for estimated speaking duration
+                        words = len(text.split())
+                        est_s = max(2.0, words / 2.5)
+                        logger.warning(
+                            "[%s] patient-ws: no audio for turn %d — pausing %.1fs",
+                            scenario_id, i, est_s,
+                        )
+                        await asyncio.sleep(est_s)
+                    # else: silence turn — nothing to inject
+
+                    # Wait for Susie to process and respond
+                    logger.info(
+                        "[%s] patient-ws: waiting %ds for Susie's response to turn %d",
+                        scenario_id, TURN_WAIT_SECONDS, i,
+                    )
+                    await asyncio.sleep(TURN_WAIT_SECONDS)
+
+                logger.info("[%s] patient-ws: all responses injected — closing", scenario_id)
+
+            finally:
+                drain_task.cancel()
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
 
         return app

@@ -17,11 +17,17 @@ created per test.
 """
 
 import asyncio
+import base64
+import json
 import logging
+import subprocess
+import tempfile
 import time
+import wave
 from datetime import datetime
 
 import httpx
+import numpy as np
 from twilio.rest import Client
 
 from .config import (
@@ -79,6 +85,10 @@ class CallRunner:
         self.end_reason = "unknown"
         self._webhook_url: str = ""
         self._audio_files: dict = {}
+        # Raw G.711 µ-law bytes (8000 Hz mono) for each patient response turn.
+        # Sent through the /patient-ws WebSocket so Twilio delivers them as
+        # caller audio to Susie's inbound Media Stream track.
+        self._audio_mulaw: dict[int, bytes] = {}
         self._recording_url: str | None = None
         self._recording_sid: str | None = None
 
@@ -190,61 +200,38 @@ class CallRunner:
 
     def build_start_twiml(self) -> str:
         """
-        Build the complete TwiML script for the outbound call.
+        Build the TwiML script for the outbound (test caller) leg.
 
-        Strategy:
-          1. Pause to let Susie answer and deliver her greeting
-          2. Play patient's first response
-          3. Pause to let Susie reply
-          4. Play patient's second response
-          ... repeat for all scripted responses
-          5. Pause briefly then hang up
+        Strategy — bidirectional Media Streams injection:
+          Use <Connect><Stream> to establish a WebSocket between Twilio and our
+          /patient-ws endpoint. We inject G.711 µ-law audio through that socket;
+          Twilio delivers it as the caller's voice to Susie's inbound Media Stream.
 
-        This works with ALL Susie pipeline modes (legacy, Realtime, Media Streams)
-        because we don't try to capture Susie's audio via Gather — we read
-        directly from Susie's Redis session after the call.
+          This is the only approach that works with Susie's Media Streams pipeline:
+          <Say> and <Play> verbs play audio TO the caller (downlink) not FROM the
+          caller (uplink), so Susie's inbound track would receive silence and never
+          produce transcripts. With <Connect><Stream>, audio we push over the socket
+          reaches Susie's inbound track as genuine caller audio.
+
+        After the WebSocket closes (all responses sent + pauses elapsed), Twilio
+        executes the next TwiML verb — <Hangup/> — ending the test call cleanly.
         """
-        responses = self.scenario.get("responses", [])
-        lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<Response>"]
-
-        # Wait for Susie's greeting
-        lines.append(f"  <Pause length=\"{GREETING_WAIT_SECONDS}\"/>")
-
-        for i, response in enumerate(responses):
-            text = response if isinstance(response, str) else response.get("text", "")
-            if not text.strip():
-                # Silence turn — just pause
-                lines.append(f"  <Pause length=\"{TURN_WAIT_SECONDS}\"/>")
-                continue
-
-            audio_filename = self._audio_filename(i)
-            audio_path = RESULTS_DIR / audio_filename
-
-            # Play patient response — use ElevenLabs audio if available,
-            # otherwise fall back to Twilio Polly TTS so the call still works
-            # even when ElevenLabs is unavailable or the API key is invalid.
-            if audio_path.exists():
-                audio_url = f"{self._webhook_url}/audio/{audio_filename}"
-                lines.append(f"  <Play>{audio_url}</Play>")
-            else:
-                safe_text = (
-                    text.replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;")
-                        .replace("'", "&apos;")
-                        .replace('"', "&quot;")
-                )
-                lines.append(f'  <Say voice="Polly.Amy">{safe_text}</Say>')
-
-            # Wait for Susie to reply (except after last response)
-            if i < len(responses) - 1:
-                lines.append(f"  <Pause length=\"{TURN_WAIT_SECONDS}\"/>")
-
-        # Wait for Susie to respond to the last patient turn before hanging up
-        lines.append(f"  <Pause length=\"{TURN_WAIT_SECONDS}\"/>")
-        lines.append("  <Hangup/>")
-        lines.append("</Response>")
-        return "\n".join(lines)
+        # Convert https:// → wss:// for the WebSocket URL
+        wss_url = (
+            self._webhook_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        )
+        stream_url = f"{wss_url}/patient-ws"
+        return "\n".join([
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            "<Response>",
+            "  <Connect>",
+            f'    <Stream url="{stream_url}"/>',
+            "  </Connect>",
+            "  <Hangup/>",
+            "</Response>",
+        ])
 
     def _twiml_hangup(self) -> str:
         return (
@@ -257,40 +244,104 @@ class CallRunner:
     # ── Audio generation ─────────────────────────────────────────────────────
 
     def _audio_filename(self, turn_index: int) -> str:
-        """Return the audio filename for a given turn index."""
+        """Return the audio filename for a given turn index (kept for compatibility)."""
         turn_label = f"{self.scenario['id'].replace('.', '_')}_{turn_index}"
         return f"audio_{turn_label}.mp3"
 
     async def _pre_generate_audio(self) -> None:
-        """Pre-generate ElevenLabs TTS audio for all patient responses."""
+        """
+        Pre-generate G.711 µ-law audio for all patient responses.
+
+        µ-law bytes are stored in self._audio_mulaw[turn_index] and sent
+        directly through the /patient-ws WebSocket so Twilio delivers them as
+        caller audio to Susie's inbound Media Stream track.
+
+        Priority order per turn:
+          1. ElevenLabs ulaw_8000 — best voice quality, instant if credits available
+          2. Windows SAPI (PowerShell) — good fallback, always available on Windows
+          3. Estimated silence — last resort; test will fail but not hang
+        """
         responses = self.scenario.get("responses", [])
         for i, response in enumerate(responses):
             text = response if isinstance(response, str) else response.get("text", "")
             if not text.strip():
+                # Silence turn — no audio needed; /patient-ws will just pause
+                self.test_said.append({"turn": i, "text": "", "timestamp": time.time()})
                 continue
-            try:
-                await self._generate_audio_for_turn(text, i)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] Failed to generate audio for turn %d: %r — will use <Say> fallback",
-                    self.scenario["id"], i, exc,
+
+            mulaw_bytes = await self._generate_mulaw_for_turn(text, i)
+            if mulaw_bytes:
+                self._audio_mulaw[i] = mulaw_bytes
+            else:
+                logger.error(
+                    "[%s] All audio generation methods failed for turn %d — "
+                    "Susie will hear silence; test will likely fail",
+                    self.scenario["id"], i,
                 )
-            # Always record what the test intends to say, regardless of whether
-            # ElevenLabs succeeded — the <Say> fallback will still speak the text.
+
+            # Record what the test intends to say
             self.test_said.append({
                 "turn": i,
                 "text": text,
                 "timestamp": time.time(),
             })
 
-    async def _generate_audio_for_turn(self, text: str, turn_index: int) -> str:
-        """Generate speech via ElevenLabs, save to results/, return local path."""
+    async def _generate_mulaw_for_turn(self, text: str, turn_index: int) -> bytes | None:
+        """
+        Generate G.711 µ-law bytes for one patient response.
+        Returns None only if every generation method fails.
+        """
+        # ── 1. ElevenLabs ulaw_8000 ───────────────────────────────────────
+        global _ELEVENLABS_AVAILABLE
+        if _ELEVENLABS_AVAILABLE and ELEVENLABS_API_KEY:
+            try:
+                mulaw = await self._elevenlabs_mulaw(text)
+                if mulaw:
+                    logger.info(
+                        "[%s] ElevenLabs µ-law audio for turn %d: %d bytes",
+                        self.scenario["id"], turn_index, len(mulaw),
+                    )
+                    return mulaw
+            except Exception as exc:
+                logger.warning(
+                    "[%s] ElevenLabs µ-law failed for turn %d: %r — trying SAPI",
+                    self.scenario["id"], turn_index, exc,
+                )
+
+        # ── 2. Windows SAPI via PowerShell ───────────────────────────────
+        try:
+            mulaw = await self._sapi_mulaw(text)
+            if mulaw:
+                logger.info(
+                    "[%s] SAPI µ-law audio for turn %d: %d bytes",
+                    self.scenario["id"], turn_index, len(mulaw),
+                )
+                return mulaw
+        except Exception as exc:
+            logger.warning(
+                "[%s] SAPI µ-law failed for turn %d: %r — using silence estimate",
+                self.scenario["id"], turn_index, exc,
+            )
+
+        # ── 3. Estimated silence (last resort) ───────────────────────────
+        words = len(text.split())
+        duration_s = max(2.0, words / 2.5)  # ~150 wpm = 2.5 words/s
+        silence_bytes = bytes([0xFF] * int(duration_s * 8000))
+        logger.warning(
+            "[%s] Using silence for turn %d (%d s, %d bytes)",
+            self.scenario["id"], turn_index, duration_s, len(silence_bytes),
+        )
+        return silence_bytes
+
+    async def _elevenlabs_mulaw(self, text: str) -> bytes | None:
+        """
+        Fetch G.711 µ-law audio from ElevenLabs.
+        Returns raw mulaw bytes (no WAV header) or None on error.
+        Sets _ELEVENLABS_AVAILABLE=False on 401 (credits exhausted).
+        """
         global _ELEVENLABS_AVAILABLE
         if not _ELEVENLABS_AVAILABLE:
-            raise Exception("ElevenLabs disabled — credits exhausted (set globally after 401)")
-
-        audio_filename = self._audio_filename(turn_index)
-        audio_path = RESULTS_DIR / audio_filename
+            return None
 
         last_exc = None
         for attempt in range(3):
@@ -298,7 +349,8 @@ class CallRunner:
                 async with httpx.AsyncClient(timeout=30) as client:
                     response = await client.post(
                         f"https://api.elevenlabs.io/v1/text-to-speech/"
-                        f"{ELEVENLABS_PATIENT_VOICE_ID}",
+                        f"{ELEVENLABS_PATIENT_VOICE_ID}"
+                        f"?output_format=ulaw_8000",
                         headers={"xi-api-key": ELEVENLABS_API_KEY},
                         json={
                             "text": text,
@@ -311,29 +363,116 @@ class CallRunner:
                     )
                     if response.status_code == 401:
                         _ELEVENLABS_AVAILABLE = False
-                        logger.error("[%s] ElevenLabs 401 — credits exhausted, disabling ElevenLabs for this run", self.scenario["id"])
-                        raise Exception("ElevenLabs 401 Unauthorized — credits exhausted")
+                        logger.error(
+                            "ElevenLabs 401 — credits exhausted, disabling ElevenLabs for this run"
+                        )
+                        return None
                     response.raise_for_status()
-                    audio_path.write_bytes(response.content)
-                    self._audio_files[turn_index] = audio_path
-                    logger.info(
-                        "[%s] Generated audio for turn %d: %s",
-                        self.scenario["id"], turn_index, audio_filename,
-                    )
-                    return str(audio_path)
+                    return response.content  # raw µ-law bytes
             except Exception as exc:
                 last_exc = exc
-                # Do not retry on 401 — credits exhausted, retrying is pointless
-                if "401 Unauthorized" in str(exc) or not _ELEVENLABS_AVAILABLE:
-                    raise
-                logger.warning(
-                    "[%s] ElevenLabs attempt %d/3 failed: %r",
-                    self.scenario["id"], attempt + 1, exc,
-                )
+                if not _ELEVENLABS_AVAILABLE:
+                    return None
+                logger.warning("ElevenLabs attempt %d/3 failed: %r", attempt + 1, exc)
                 if attempt < 2:
                     await asyncio.sleep(2)
 
         raise last_exc
+
+    async def _sapi_mulaw(self, text: str) -> bytes | None:
+        """
+        Generate 8kHz PCM16 WAV via Windows SAPI (PowerShell), then convert
+        to G.711 µ-law using numpy.  Returns mulaw bytes or None if unavailable.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+
+        # Escape single-quotes in text for PowerShell
+        ps_text = text.replace("'", "''")
+        ps_script = (
+            "Add-Type -AssemblyName System.Speech; "
+            "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "$fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo("
+            "8000, "
+            "[System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, "
+            "[System.Speech.AudioFormat.AudioChannel]::Mono); "
+            f"$synth.SetOutputToWaveFile('{wav_path}', $fmt); "
+            f"$synth.Speak('{ps_text}'); "
+            "$synth.SetOutputToDefaultAudioDevice()"
+        )
+
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace")
+            raise RuntimeError(f"PowerShell SAPI failed (rc={proc.returncode}): {stderr[:200]}")
+
+        # Read the WAV and extract PCM16 bytes
+        try:
+            with wave.open(wav_path, "rb") as wf:
+                if wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+                    raise ValueError(
+                        f"Unexpected WAV format: ch={wf.getnchannels()} sw={wf.getsampwidth()}"
+                    )
+                pcm_bytes = wf.readframes(wf.getnframes())
+        finally:
+            try:
+                import os
+                os.unlink(wav_path)
+            except Exception:
+                pass
+
+        return self._pcm16_to_ulaw(pcm_bytes)
+
+    @staticmethod
+    def _pcm16_to_ulaw(pcm_bytes: bytes) -> bytes:
+        """
+        Convert 16-bit signed PCM (8 kHz mono) to G.711 µ-law bytes using numpy.
+
+        Implements the standard G.711 µ-law compression formula:
+          µ = 255 (standard telephony µ-law)
+          bias = 33 (standard); we use the ITU-T G.711 variant with BIAS = 132
+
+        Compatible with Python 3.14 (audioop removed in that release).
+        """
+        MULAW_BIAS = 132
+        MULAW_MAX  = 32767
+
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.int32)
+
+        # Sign bit: 0x80 for negative samples, 0x00 for positive
+        sign = np.where(samples < 0, np.int32(0x80), np.int32(0x00))
+        samples = np.abs(samples)
+        samples = np.clip(samples + MULAW_BIAS, 0, MULAW_MAX)
+
+        # Exponent lookup table (maps sample >> 7 → exponent 0..7)
+        exp_lut = np.array([
+            0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+            4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+            6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+            6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+            6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+            6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        ], dtype=np.int32)
+
+        exponent = exp_lut[np.clip(samples >> 7, 0, 255)]
+        mantissa = ((samples >> (exponent + 3)) & 0x0F)
+        ulawbyte = (~(sign | (exponent << 4) | mantissa)) & 0xFF
+        return ulawbyte.astype(np.uint8).tobytes()
 
     # ── Session retrieval ─────────────────────────────────────────────────────
 
