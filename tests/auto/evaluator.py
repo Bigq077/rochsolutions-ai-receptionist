@@ -242,13 +242,16 @@ class Evaluator:
             )
 
         # ── flow completed ────────────────────────────────────────────
-        # Only "complete" (set by the runner when all scripted responses are
-        # consumed) counts — NOT "completed" (set by the Twilio status callback
-        # which fires for any call termination including early drops).
+        # In the TwiML-based architecture the runner never sets end_reason="complete"
+        # — calls always end with "completed" (Twilio status callback after hangup).
+        # We accept both values and require Susie to have had at least as many turns
+        # as there are scripted patient responses, guaranteeing she responded to each.
         if expected.get("flow_completed"):
+            scenario_responses = result.get("scenario", {}).get("responses", [])
+            min_turns_needed = max(2, len(scenario_responses))
             checks["flow_completed"] = (
-                result.get("end_reason") == "complete"
-                and result.get("turns", 0) > 0
+                result.get("end_reason") in ("complete", "completed")
+                and result.get("turns", 0) >= min_turns_needed
             )
 
         # ── no technical error phrases ────────────────────────────────
