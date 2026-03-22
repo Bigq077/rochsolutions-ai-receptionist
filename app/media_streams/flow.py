@@ -801,6 +801,11 @@ class FlowEngine:
             if _is_question_worth_storing(_q):
                 self.session["last_question"] = _q
                 logger.info("[ms_flow] last_question stored: %r", _q[:120])
+            # Record Susie's LLM response to conversation_history
+            if response:
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": response}
+                )
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
             if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
@@ -817,6 +822,10 @@ class FlowEngine:
             await self._tts.put(step["question"])
             if _is_question_worth_storing(step["question"]):
                 self.session["last_question"] = step["question"]
+            # Record fixed-step question to conversation_history
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": step["question"]}
+            )
 
         logger.info(
             "[ms_flow] asked step %d (%s) last_question=%r",
@@ -839,6 +848,11 @@ class FlowEngine:
 
         # Reset per-turn guard so ask_current_question() can fire exactly once this turn
         self.session["question_asked_this_turn"] = False
+
+        # Record patient utterance so conversation_history reflects the full dialogue
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "user", "content": transcript}
+        )
 
         text = transcript.strip().lower()
 
