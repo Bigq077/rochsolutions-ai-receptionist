@@ -39,12 +39,22 @@ async def get_test_session(call_sid: str):
         if data:
             session = json.loads(data)
             return {
-                "ok": True,
-                "source": "ms_session",
-                "call_sid": call_sid,
+                "ok":                   True,
+                "source":               "ms_session",
+                "call_sid":             call_sid,
                 "conversation_history": session.get("conversation_history", []),
-                "turns": session.get("turns", []),
-                "state": session.get("state"),
+                "turns":                session.get("turns", []),
+                "state":                session.get("state"),
+                # Flow-engine progress fields — used by evaluator for flow_completed
+                "flow_step":            session.get("flow_step"),
+                "flow_started":         session.get("flow_started"),
+                "intent":               session.get("intent"),
+                "reason":               session.get("reason"),
+                "booking_confirmed":    session.get("booking_confirmed"),
+                "selected_slot":        session.get("selected_slot"),
+                "full_name":            session.get("full_name"),
+                "phone_confirmed":      session.get("phone_confirmed"),
+                "selected_location":    session.get("selected_location"),
             }
 
         # Try legacy session
@@ -53,12 +63,21 @@ async def get_test_session(call_sid: str):
         if data:
             session = json.loads(data)
             return {
-                "ok": True,
-                "source": "legacy_session",
-                "call_sid": call_sid,
+                "ok":                   True,
+                "source":               "legacy_session",
+                "call_sid":             call_sid,
                 "conversation_history": session.get("conversation_history", []),
-                "turns": session.get("turns", []),
-                "state": session.get("state"),
+                "turns":                session.get("turns", []),
+                "state":                session.get("state"),
+                "flow_step":            session.get("flow_step"),
+                "flow_started":         session.get("flow_started"),
+                "intent":               session.get("intent"),
+                "reason":               session.get("reason"),
+                "booking_confirmed":    session.get("booking_confirmed"),
+                "selected_slot":        session.get("selected_slot"),
+                "full_name":            session.get("full_name"),
+                "phone_confirmed":      session.get("phone_confirmed"),
+                "selected_location":    session.get("selected_location"),
             }
 
         return {"ok": False, "error": f"No session found for {call_sid}"}

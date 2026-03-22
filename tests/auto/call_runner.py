@@ -91,6 +91,14 @@ class CallRunner:
         self._audio_mulaw: dict[int, bytes] = {}
         self._recording_url: str | None = None
         self._recording_sid: str | None = None
+        # Flow-engine progress fields — read from admin session endpoint
+        self._flow_step: int | None = None
+        self._flow_started: bool | None = None
+        self._booking_confirmed: bool | None = None
+        self._selected_slot: str | None = None
+        self._full_name: str | None = None
+        self._intent: str | None = None
+        self._reason: str | None = None
 
     async def run(self) -> dict:
         """Make the call, run the scenario, return full result dict."""
@@ -633,9 +641,20 @@ class CallRunner:
                         history = data.get("conversation_history", [])
                         turns_data = data.get("turns", [])
 
+                        # Read flow-engine progress fields
+                        self._flow_step        = data.get("flow_step")
+                        self._flow_started     = data.get("flow_started")
+                        self._booking_confirmed = data.get("booking_confirmed")
+                        self._selected_slot    = data.get("selected_slot")
+                        self._full_name        = data.get("full_name")
+                        self._intent           = data.get("intent")
+                        self._reason           = data.get("reason")
+
                         logger.info(
-                            "[%s] Session retrieved: %d history entries, %d turns",
+                            "[%s] Session retrieved: %d history entries, %d turns "
+                            "flow_step=%s booking_confirmed=%s",
                             self.scenario["id"], len(history), len(turns_data),
+                            self._flow_step, self._booking_confirmed,
                         )
 
                         # Extract Susie's turns from conversation_history
@@ -746,4 +765,12 @@ class CallRunner:
             "recording_url": self._recording_url,
             "timestamp":     datetime.utcnow().isoformat(),
             "max_gap_seconds": round(max_gap, 2),
+            # Flow-engine progress fields from admin session endpoint
+            "flow_step":         self._flow_step,
+            "flow_started":      self._flow_started,
+            "booking_confirmed": self._booking_confirmed,
+            "selected_slot":     self._selected_slot,
+            "full_name":         self._full_name,
+            "intent":            self._intent,
+            "reason":            self._reason,
         }

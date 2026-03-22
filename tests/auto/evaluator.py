@@ -198,9 +198,18 @@ class Evaluator:
         # Susie turn (the greeting) cannot pass — Susie never processed any
         # patient audio.  This prevents false positives on phase 3 scenarios
         # (and any others) that lack flow_completed in their expected dict.
+        #
+        # Exception: if FlowEngine made progress (flow_step >= 1) or booking was
+        # confirmed, Susie DID respond — the low turns count is just because
+        # run_instruction() skips _append_history() for LLM-path steps.
         if scenario.get("responses") and result.get("turns", 0) <= 1:
-            all_checks["susie_responded_to_patient"] = False
-            gating["susie_responded_to_patient"] = False
+            flow_made_progress = (
+                result.get("flow_step", 0) >= 1
+                or bool(result.get("booking_confirmed"))
+            )
+            if not flow_made_progress:
+                all_checks["susie_responded_to_patient"] = False
+                gating["susie_responded_to_patient"] = False
 
         if not gating:
             # No checks = evaluation completely failed (network down, Claude unreachable, etc.)
@@ -244,14 +253,33 @@ class Evaluator:
         # ── flow completed ────────────────────────────────────────────
         # In the TwiML-based architecture the runner never sets end_reason="complete"
         # — calls always end with "completed" (Twilio status callback after hangup).
-        # We accept both values and require Susie to have had at least as many turns
-        # as there are scripted patient responses, guaranteeing she responded to each.
+        # We accept both values.
+        #
+        # Two ways to confirm Susie processed all turns:
+        #   A) conversation_history-based turns count — works when _append_history()
+        #      is called (old-style LLM path, fast-path, and greeting).
+        #   B) FlowEngine progress — works when run_instruction() is used (new
+        #      LLM path that skips _append_history()).  booking_confirmed=True means
+        #      Susie completed the full booking flow.  flow_step >= 7 means Susie
+        #      reached at least the phone-confirmation step (past slot selection,
+        #      assessment, name collection).
         if expected.get("flow_completed"):
             scenario_responses = result.get("scenario", {}).get("responses", [])
             min_turns_needed = max(2, len(scenario_responses))
+
+            # Path A: conversation_history turns
+            turns_ok = result.get("turns", 0) >= min_turns_needed
+
+            # Path B: FlowEngine session fields (populated when run_instruction() is used)
+            flow_step = result.get("flow_step")
+            booking_confirmed = result.get("booking_confirmed")
+            flow_progress_ok = bool(booking_confirmed) or (
+                flow_step is not None and flow_step >= 7
+            )
+
             checks["flow_completed"] = (
                 result.get("end_reason") in ("complete", "completed")
-                and result.get("turns", 0) >= min_turns_needed
+                and (turns_ok or flow_progress_ok)
             )
 
         # ── no technical error phrases ────────────────────────────────
