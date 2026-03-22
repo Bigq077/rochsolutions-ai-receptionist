@@ -128,6 +128,15 @@ class CallRunner:
         self.call_sid = call.sid
         logger.info("[%s] Call started: %s", self.scenario["id"], self.call_sid)
 
+        # Launch transcript injection in the background.
+        # This coroutine finds Susie's inbound call SID, waits for the greeting,
+        # then POSTs each patient response to /ms/test/inject-transcript/{sid}
+        # — bypassing STT and going straight to Susie's LLM pipeline.
+        inject_task = asyncio.create_task(
+            self._run_transcript_injection(client),
+            name=f"inject_{self.scenario['id']}",
+        )
+
         # Wait for call to complete or timeout
         try:
             await asyncio.wait_for(
@@ -141,8 +150,16 @@ class CallRunner:
             )
             self._end_call("timeout")
             try:
-                client.calls(self.call_sid).update(status="completed")
+                await asyncio.to_thread(
+                    client.calls(self.call_sid).update, status="completed"
+                )
             except Exception:
+                pass
+        finally:
+            inject_task.cancel()
+            try:
+                await inject_task
+            except asyncio.CancelledError:
                 pass
 
         self.call_end_time = time.time()
@@ -202,33 +219,34 @@ class CallRunner:
         """
         Build the TwiML script for the outbound (test caller) leg.
 
-        Strategy — bidirectional Media Streams injection:
-          Use <Connect><Stream> to establish a WebSocket between Twilio and our
-          /patient-ws endpoint. We inject G.711 µ-law audio through that socket;
-          Twilio delivers it as the caller's voice to Susie's inbound Media Stream.
+        Strategy — transcript injection via HTTP:
+          The test caller's leg just holds the call open with a long <Pause>.
+          Meanwhile, the test runner's _run_transcript_injection() background
+          coroutine POSTs patient utterances directly to Susie's
+          /ms/test/inject-transcript/{call_sid} endpoint, which puts them
+          straight onto Susie's transcript_queue — bypassing STT entirely.
 
-          This is the only approach that works with Susie's Media Streams pipeline:
-          <Say> and <Play> verbs play audio TO the caller (downlink) not FROM the
-          caller (uplink), so Susie's inbound track would receive silence and never
-          produce transcripts. With <Connect><Stream>, audio we push over the socket
-          reaches Susie's inbound track as genuine caller audio.
+          This is the correct approach for Susie's Media Streams pipeline:
+          - <Say>/<Play> only affect the downlink (what the test caller hears),
+            not the uplink (what Susie's inbound track receives).
+          - Bidirectional <Connect><Stream> injects into the test caller's
+            outbound audio (what the test caller hears), not toward Susie.
+          - Direct transcript injection bypasses audio routing entirely and
+            feeds text straight into Susie's LLM pipeline.
 
-        After the WebSocket closes (all responses sent + pauses elapsed), Twilio
-        executes the next TwiML verb — <Hangup/> — ending the test call cleanly.
+        The test runner hangs up via Twilio REST API after all transcripts
+        are injected, well before the <Pause> expires.
         """
-        # Convert https:// → wss:// for the WebSocket URL
-        wss_url = (
-            self._webhook_url
-            .replace("https://", "wss://")
-            .replace("http://", "ws://")
+        # Keep the call alive long enough for all scenario turns
+        max_call_seconds = (
+            GREETING_WAIT_SECONDS
+            + len(self.scenario.get("responses", [])) * (TURN_WAIT_SECONDS + 10)
+            + 60
         )
-        stream_url = f"{wss_url}/patient-ws"
         return "\n".join([
             '<?xml version="1.0" encoding="UTF-8"?>',
             "<Response>",
-            "  <Connect>",
-            f'    <Stream url="{stream_url}"/>',
-            "  </Connect>",
+            f'  <Pause length="{max_call_seconds}"/>',
             "  <Hangup/>",
             "</Response>",
         ])
@@ -240,6 +258,104 @@ class CallRunner:
             "  <Hangup/>\n"
             "</Response>"
         )
+
+    # ── Transcript injection ──────────────────────────────────────────────────
+
+    async def _run_transcript_injection(self, client: Client) -> None:
+        """
+        Background coroutine: drives the conversation by POSTing patient
+        utterances directly to Susie's /ms/test/inject-transcript/{call_sid}.
+
+        This bypasses Twilio audio routing entirely — the text goes straight
+        onto Susie's transcript_queue → LLM → TTS pipeline.
+
+        Timeline:
+          1. Poll for the inbound call SID (Susie's side) — needed for the endpoint
+          2. Wait GREETING_WAIT_SECONDS for Susie's greeting to play
+          3. For each patient response:
+               a. POST text to inject endpoint
+               b. Wait TURN_WAIT_SECONDS for Susie to reply
+          4. Hang up via Twilio REST API → triggers /status callback → call ends
+        """
+        # ── 1. Find inbound call SID (Susie's side) ──────────────────────
+        await asyncio.sleep(5)  # give Twilio a few seconds to route the call
+        inbound_sid: str | None = None
+        for attempt in range(15):
+            inbound_sid = await self._find_inbound_call_sid(client)
+            if inbound_sid:
+                logger.info(
+                    "[%s] Transcript injection: found inbound SID %s (attempt %d)",
+                    self.scenario["id"], inbound_sid, attempt + 1,
+                )
+                break
+            logger.debug(
+                "[%s] Inbound SID not found yet (attempt %d) — retrying in 2s",
+                self.scenario["id"], attempt + 1,
+            )
+            await asyncio.sleep(2)
+
+        if not inbound_sid:
+            logger.error(
+                "[%s] Transcript injection aborted — could not find inbound SID after 15 tries",
+                self.scenario["id"],
+            )
+            return
+
+        # ── 2. Wait for Susie's greeting ──────────────────────────────────
+        logger.info(
+            "[%s] Waiting %ds for Susie's greeting...",
+            self.scenario["id"], GREETING_WAIT_SECONDS,
+        )
+        await asyncio.sleep(GREETING_WAIT_SECONDS)
+
+        # ── 3. Inject patient responses one by one ────────────────────────
+        responses = self.scenario.get("responses", [])
+        for i, response in enumerate(responses):
+            text = response if isinstance(response, str) else response.get("text", "")
+            if text.strip():
+                await self._inject_transcript(inbound_sid, text, i)
+            # Wait for Susie to process and respond before next injection
+            logger.info(
+                "[%s] Waiting %ds for Susie's response to turn %d",
+                self.scenario["id"], TURN_WAIT_SECONDS, i,
+            )
+            await asyncio.sleep(TURN_WAIT_SECONDS)
+
+        # ── 4. Hang up the call ───────────────────────────────────────────
+        logger.info("[%s] All transcripts injected — hanging up", self.scenario["id"])
+        try:
+            await asyncio.to_thread(
+                lambda: client.calls(self.call_sid).update(status="completed")
+            )
+        except Exception as exc:
+            logger.warning("[%s] Hang-up via REST failed: %r", self.scenario["id"], exc)
+
+    async def _inject_transcript(
+        self, inbound_sid: str, text: str, turn_index: int
+    ) -> None:
+        """POST a patient utterance to Susie's inject-transcript endpoint."""
+        url = f"{RENDER_SERVER_URL}/ms/test/inject-transcript/{inbound_sid}"
+        logger.info(
+            "[%s] Injecting turn %d → %s: %.60s",
+            self.scenario["id"], turn_index, inbound_sid[:8], text,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(url, json={"text": text})
+                data = resp.json()
+                if data.get("ok"):
+                    logger.info(
+                        "[%s] Injected turn %d OK", self.scenario["id"], turn_index
+                    )
+                else:
+                    logger.warning(
+                        "[%s] Inject turn %d failed: %s",
+                        self.scenario["id"], turn_index, data.get("error"),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Inject turn %d error: %r", self.scenario["id"], turn_index, exc
+            )
 
     # ── Audio generation ─────────────────────────────────────────────────────
 

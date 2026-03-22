@@ -411,6 +411,17 @@ class SilenceHandler:
 
 
 # ---------------------------------------------------------------------------
+# Active handler registry (call_sid → WebSocketCallHandler)
+# ---------------------------------------------------------------------------
+
+# Maps inbound call_sid → active handler for that call.
+# Used by the /ms/test/inject-transcript endpoint so the test runner can
+# drive Susie's conversation pipeline directly without going through STT.
+# Handlers register on "start" event and deregister in _cleanup().
+_active_handlers: Dict[str, "WebSocketCallHandler"] = {}
+
+
+# ---------------------------------------------------------------------------
 # Main handler class
 # ---------------------------------------------------------------------------
 
@@ -649,6 +660,12 @@ class WebSocketCallHandler:
         self.session = await get_or_create_session(self.call_sid, initial=initial)
         self.session["stream_sid"]   = self.stream_sid
         self.session["ws_connected"] = True
+
+        # Register in the active-handler map so /ms/test/inject-transcript
+        # can drive the conversation without going through STT.
+        if self.call_sid:
+            _active_handlers[self.call_sid] = self
+            logger.info("[ms_conn] registered active handler for call_sid=%s", self.call_sid)
 
         # Populate collected.phone from Twilio caller-ID so Susie never asks for it.
         if twilio_from:
@@ -1208,6 +1225,9 @@ class WebSocketCallHandler:
             return
 
         logger.info("[ms_conn] cleanup call_sid=%s stable=%s", self.call_sid, self._call_stable)
+
+        # Deregister from the active-handler map
+        _active_handlers.pop(self.call_sid, None)
 
         # Cancel the silence handler timer so it doesn't fire after the call ends
         self._silence_handler.cancel()

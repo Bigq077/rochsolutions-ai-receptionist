@@ -59,7 +59,7 @@ from .config import (
     RENDER_EXTERNAL_URL,
     LEGACY_VOICE_URL,
 )
-from .connection import WebSocketCallHandler
+from .connection import WebSocketCallHandler, _active_handlers
 from .stt_stream import _mask_key, _close_info
 
 logger = logging.getLogger(__name__)
@@ -233,7 +233,56 @@ async def ms_stream(websocket: WebSocket) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Route 3: AssemblyAI connection diagnostic
+# Route 3: Test-only transcript injection
+# ---------------------------------------------------------------------------
+
+@router.post("/ms/test/inject-transcript/{call_sid}")
+async def inject_test_transcript(call_sid: str, request: Request) -> JSONResponse:
+    """
+    TEST-ONLY endpoint: inject a patient utterance directly into Susie's
+    LLM pipeline for the specified call.
+
+    Bypasses STT entirely — the text goes straight onto the transcript_queue
+    that the LLM loop is waiting on.  Also calls on_speech_started() so the
+    SilenceHandler does not fire a spurious re-ask between injections.
+
+    Request body: {"text": "I have back pain"}
+    Response:     {"ok": true, "text": "..."}  or  {"ok": false, "error": "..."}
+
+    The endpoint is always registered (no kill switch needed) because Twilio
+    has no way to hit this URL — only our local test runner knows about it.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = (body.get("text") or "").strip()
+
+    if not text:
+        return JSONResponse({"ok": False, "error": "empty text"}, status_code=400)
+
+    handler = _active_handlers.get(call_sid)
+    if handler is None:
+        logger.warning("[ms_inject] no active handler for call_sid=%s", call_sid)
+        return JSONResponse(
+            {"ok": False, "error": f"no active session for {call_sid}"},
+            status_code=404,
+        )
+
+    try:
+        # Simulate "caller started speaking" so SilenceHandler cancels its timer
+        handler._silence_handler.on_speech_started()
+        # Inject the transcript directly into the LLM pipeline
+        handler.transcript_queue.put_nowait(text)
+        logger.info("[ms_inject] injected transcript call_sid=%s: %r", call_sid, text[:80])
+        return JSONResponse({"ok": True, "text": text})
+    except Exception as exc:
+        logger.error("[ms_inject] injection failed call_sid=%s: %r", call_sid, exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# Route 4: AssemblyAI connection diagnostic
 # ---------------------------------------------------------------------------
 
 @router.get("/ms/test-stt")
