@@ -5,6 +5,12 @@ import os
 import httpx
 from fastapi import APIRouter
 from app.storage.redis_store import redis_delete_key
+from app.media_streams.config import (
+    ELEVENLABS_API_KEY,
+    ASSEMBLYAI_API_KEY,
+    ASSEMBLYAI_WS_URL,
+    OPENAI_API_KEY,
+)
 
 router = APIRouter(prefix="/admin")
 
@@ -59,6 +65,136 @@ async def get_test_session(call_sid: str):
 
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@router.get("/diagnostics")
+async def diagnostics():
+    """
+    Test ElevenLabs, AssemblyAI, and OpenAI connectivity from Render.
+
+    Returns a JSON report showing which services are reachable and configured.
+    Use this to diagnose why Susie's voice pipeline is failing.
+
+    Usage: GET /admin/diagnostics
+    """
+    import websockets
+    import websockets.exceptions
+
+    results: dict = {}
+
+    # ── ElevenLabs ──────────────────────────────────────────────────────────
+    el_key = ELEVENLABS_API_KEY
+    if not el_key:
+        results["elevenlabs"] = {
+            "ok": False,
+            "error": "ELEVENLABS_API_KEY not set",
+        }
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                r = await client.get(
+                    "https://api.elevenlabs.io/v1/user",
+                    headers={"xi-api-key": el_key},
+                )
+                if r.status_code == 200:
+                    sub = r.json().get("subscription", {})
+                    used  = sub.get("character_count", 0)
+                    limit = sub.get("character_limit", 0)
+                    results["elevenlabs"] = {
+                        "ok":                True,
+                        "key_prefix":        el_key[:8] + "...",
+                        "chars_used":        used,
+                        "chars_limit":       limit,
+                        "chars_remaining":   limit - used,
+                        "exhausted":         used >= limit > 0,
+                    }
+                else:
+                    results["elevenlabs"] = {
+                        "ok":        False,
+                        "status":    r.status_code,
+                        "error":     r.text[:300],
+                        "key_prefix": el_key[:8] + "...",
+                    }
+        except Exception as exc:
+            results["elevenlabs"] = {
+                "ok":        False,
+                "error":     str(exc),
+                "key_prefix": el_key[:8] + "...",
+            }
+
+    # ── AssemblyAI ──────────────────────────────────────────────────────────
+    aa_key = ASSEMBLYAI_API_KEY
+    if not aa_key:
+        results["assemblyai"] = {
+            "ok":    False,
+            "error": "ASSEMBLYAI_API_KEY not set",
+        }
+    else:
+        try:
+            async with websockets.connect(
+                ASSEMBLYAI_WS_URL,
+                additional_headers={"Authorization": aa_key},
+                open_timeout=8.0,
+                close_timeout=3.0,
+            ) as ws:
+                raw = await asyncio.wait_for(ws.recv(), timeout=8.0)
+                data = json.loads(raw)
+                if data.get("type") == "Begin":
+                    results["assemblyai"] = {
+                        "ok":         True,
+                        "key_prefix": aa_key[:8] + "...",
+                        "session_id": data.get("id"),
+                        "expires_at": str(data.get("expires_at")),
+                        "url":        ASSEMBLYAI_WS_URL[:80],
+                    }
+                else:
+                    results["assemblyai"] = {
+                        "ok":    False,
+                        "error": f"Unexpected first message type={data.get('type')!r}",
+                        "msg":   str(data)[:200],
+                    }
+        except asyncio.TimeoutError:
+            results["assemblyai"] = {
+                "ok":    False,
+                "error": "Timeout — no Begin message within 8s",
+                "key_prefix": aa_key[:8] + "...",
+            }
+        except Exception as exc:
+            results["assemblyai"] = {
+                "ok":    False,
+                "error": str(exc),
+                "key_prefix": aa_key[:8] + "...",
+                "url":   ASSEMBLYAI_WS_URL[:80],
+            }
+
+    # ── OpenAI ──────────────────────────────────────────────────────────────
+    oa_key = OPENAI_API_KEY
+    if not oa_key:
+        results["openai"] = {
+            "ok":    False,
+            "error": "OPENAI_API_KEY not set",
+        }
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                r = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {oa_key}"},
+                )
+                results["openai"] = {
+                    "ok":        r.status_code == 200,
+                    "status":    r.status_code,
+                    "key_prefix": oa_key[:8] + "...",
+                }
+        except Exception as exc:
+            results["openai"] = {
+                "ok":        False,
+                "error":     str(exc),
+                "key_prefix": oa_key[:8] + "...",
+            }
+
+    overall = all(v.get("ok") for v in results.values())
+    return {"ok": overall, **results}
 
 
 @router.get("/clear_google_tokens")

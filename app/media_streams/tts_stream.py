@@ -58,6 +58,15 @@ logger = logging.getLogger(__name__)
 # Shared httpx client singleton
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ElevenLabs exhaustion flag (per process lifetime)
+# ---------------------------------------------------------------------------
+
+# Set True the first time ElevenLabs returns 401 (credits exhausted).
+# All subsequent synthesise_chunk() calls skip ElevenLabs and go straight
+# to the OpenAI TTS fallback.
+_ELEVENLABS_EXHAUSTED: bool = False
+
 _elevenlabs_client: Optional[httpx.AsyncClient] = None
 
 
@@ -127,6 +136,12 @@ class TTSStream:
         if not text or not text.strip():
             return
 
+        # Fast-path: ElevenLabs known-exhausted → use OpenAI TTS directly
+        global _ELEVENLABS_EXHAUSTED
+        if _ELEVENLABS_EXHAUSTED:
+            await self._synthesise_openai_fallback(text, audio_out_queue)
+            return
+
         url = (
             f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
             f"?output_format=pcm_16000"
@@ -155,6 +170,16 @@ class TTSStream:
                 async with _get_http_client().stream(
                     "POST", url, json=body, headers=headers,
                 ) as resp:
+                    if resp.status_code == 401:
+                        # Credits exhausted — mark globally and fall back to OpenAI TTS
+                        _ELEVENLABS_EXHAUSTED = True
+                        logger.error(
+                            "[ms_tts] ElevenLabs 401 — credits exhausted; "
+                            "switching to OpenAI TTS fallback for this process"
+                        )
+                        await self._synthesise_openai_fallback(text, audio_out_queue)
+                        return
+
                     if resp.status_code == 429:
                         err = await resp.aread()
                         retry_after = int(resp.headers.get("Retry-After", 5))
@@ -217,6 +242,94 @@ class TTSStream:
                 logger.error("[ms_tts] synthesise_chunk error: %r", exc)
                 audio_out_processor.reset()
                 return
+
+    # =========================================================================
+    # OpenAI TTS fallback (used when ElevenLabs is exhausted / unavailable)
+    # =========================================================================
+
+    async def _synthesise_openai_fallback(
+        self,
+        text: str,
+        audio_out_queue: asyncio.Queue,
+    ) -> None:
+        """
+        Synthesise text using OpenAI TTS when ElevenLabs is unavailable.
+
+        OpenAI TTS returns PCM16 at 24kHz.  We convert to 8kHz mulaw for Twilio:
+          audioop.ratecv(pcm_24k, 2, 1, 24000, 8000, state) → 8kHz PCM16
+          audioop.lin2ulaw(pcm_8k, 2)                        → 8kHz mulaw
+          base64.b64encode(mulaw)                            → Twilio payload
+
+        NOTE: audio_out_processor is NOT used here because we produce mulaw
+        directly.  The sentinel placed by _tts_loop in connection.py will
+        still measure bytes-sent correctly via _send_loop._tts_bytes_sent.
+        """
+        from .config import OPENAI_API_KEY
+
+        if not OPENAI_API_KEY:
+            logger.error("[ms_tts_openai] OPENAI_API_KEY not set — cannot use fallback")
+            return
+
+        try:
+            import audioop
+        except ImportError:
+            logger.error("[ms_tts_openai] audioop not available — cannot convert OpenAI PCM")
+            return
+
+        url = "https://api.openai.com/v1/audio/speech"
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type":  "application/json",
+        }
+        body = {
+            "model":           "tts-1",
+            "voice":           "nova",      # natural, clear female voice
+            "input":           text,
+            "response_format": "pcm",       # 24kHz PCM16 signed little-endian
+        }
+
+        logger.info("[ms_tts_openai] synthesising (fallback): %r", text[:60])
+
+        try:
+            _ratecv_state = None
+            chunk_count   = 0
+
+            async with _get_http_client().stream(
+                "POST", url, json=body, headers=headers
+            ) as resp:
+                if resp.status_code != 200:
+                    err = await resp.aread()
+                    logger.error(
+                        "[ms_tts_openai] error %d: %s",
+                        resp.status_code, err[:300],
+                    )
+                    return
+
+                # Stream PCM24k → convert → enqueue as mulaw
+                # 1920 bytes = 40ms of 24kHz PCM16 stereo-equivalent chunk size
+                async for raw_chunk in resp.aiter_bytes(chunk_size=1920):
+                    if not raw_chunk:
+                        continue
+                    try:
+                        # 3:1 rate conversion: 24000 Hz → 8000 Hz
+                        pcm_8k, _ratecv_state = audioop.ratecv(
+                            raw_chunk, 2, 1, 24000, 8000, _ratecv_state,
+                        )
+                        # PCM16 → G.711 mu-law
+                        ulaw = audioop.lin2ulaw(pcm_8k, 2)
+                        b64  = base64.b64encode(ulaw).decode("ascii")
+                        await audio_out_queue.put(b64)
+                        chunk_count += 1
+                    except Exception as exc:
+                        logger.warning("[ms_tts_openai] conversion error: %r", exc)
+
+            logger.info("[ms_tts_openai] done: %d chunks", chunk_count)
+
+        except asyncio.CancelledError:
+            logger.info("[ms_tts_openai] cancelled (barge-in)")
+            raise
+        except Exception as exc:
+            logger.error("[ms_tts_openai] error: %r", exc)
 
     # =========================================================================
     # MODE B -- WebSocket streaming (persistent connection)
