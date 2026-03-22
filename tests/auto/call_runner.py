@@ -344,8 +344,10 @@ class CallRunner:
                 resp = await http.post(url, json={"text": text})
                 data = resp.json()
                 if data.get("ok"):
+                    diag = data.get("diag", {})
                     logger.info(
-                        "[%s] Injected turn %d OK", self.scenario["id"], turn_index
+                        "[%s] Injected turn %d OK  diag=%s",
+                        self.scenario["id"], turn_index, diag,
                     )
                 else:
                     logger.warning(

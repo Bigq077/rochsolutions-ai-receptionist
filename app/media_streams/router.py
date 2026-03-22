@@ -270,12 +270,34 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
         )
 
     try:
+        # Diagnostic snapshot BEFORE injection
+        stop_set    = handler._stop_event.is_set()
+        started_set = handler._started_event.is_set()
+        llm_busy    = handler._llm_busy
+        q_before    = handler.transcript_queue.qsize()
+
         # Simulate "caller started speaking" so SilenceHandler cancels its timer
         handler._silence_handler.on_speech_started()
         # Inject the transcript directly into the LLM pipeline
         handler.transcript_queue.put_nowait(text)
-        logger.info("[ms_inject] injected transcript call_sid=%s: %r", call_sid, text[:80])
-        return JSONResponse({"ok": True, "text": text})
+
+        q_after = handler.transcript_queue.qsize()
+        logger.info(
+            "[ms_inject] injected call_sid=%s text=%r  "
+            "stop=%s started=%s llm_busy=%s q_before=%d q_after=%d",
+            call_sid, text[:80], stop_set, started_set, llm_busy, q_before, q_after,
+        )
+        return JSONResponse({
+            "ok":          True,
+            "text":        text,
+            "diag": {
+                "stop_set":    stop_set,
+                "started_set": started_set,
+                "llm_busy":    llm_busy,
+                "q_before":    q_before,
+                "q_after":     q_after,
+            },
+        })
     except Exception as exc:
         logger.error("[ms_inject] injection failed call_sid=%s: %r", call_sid, exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
