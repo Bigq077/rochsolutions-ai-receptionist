@@ -282,10 +282,23 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
         handler.transcript_queue.put_nowait(text)
 
         q_after = handler.transcript_queue.qsize()
+
+        # Snapshot key in-memory session fields to detect if flow is updating
+        sess = handler.session
+        sess_snap = {
+            "flow_step":    sess.get("flow_step"),
+            "flow_started": sess.get("flow_started"),
+            "reason":       sess.get("reason"),
+            "intent":       sess.get("intent"),
+            "state":        sess.get("state"),
+            "turns_len":    len(sess.get("turns", [])),
+            "history_len":  len(sess.get("conversation_history", [])),
+        }
+
         logger.info(
             "[ms_inject] injected call_sid=%s text=%r  "
-            "stop=%s started=%s llm_busy=%s q_before=%d q_after=%d",
-            call_sid, text[:80], stop_set, started_set, llm_busy, q_before, q_after,
+            "stop=%s started=%s llm_busy=%s q_before=%d q_after=%d sess=%s",
+            call_sid, text[:80], stop_set, started_set, llm_busy, q_before, q_after, sess_snap,
         )
         return JSONResponse({
             "ok":          True,
@@ -296,6 +309,7 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
                 "llm_busy":    llm_busy,
                 "q_before":    q_before,
                 "q_after":     q_after,
+                "session":     sess_snap,
             },
         })
     except Exception as exc:
