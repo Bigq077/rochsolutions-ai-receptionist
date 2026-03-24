@@ -156,9 +156,9 @@ class SharedServer:
             ngrok.kill()
         except Exception:
             pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
-        for attempt in range(3):
+        for attempt in range(8):  # up to ~3 minutes total
             try:
                 self._ngrok_tunnel = ngrok.connect(self._ngrok_port, "http")
                 self.webhook_url = self._ngrok_tunnel.public_url.replace(
@@ -173,13 +173,17 @@ class SharedServer:
                 logger.warning(
                     "[server] ngrok connect attempt %d failed: %r", attempt + 1, exc
                 )
-                if attempt < 2:
-                    try:
-                        ngrok.kill()
-                    except Exception:
-                        pass
-                    await asyncio.sleep(5)
-        raise RuntimeError("ngrok failed to connect after 3 attempts")
+                try:
+                    ngrok.kill()
+                except Exception:
+                    pass
+                # ERR_NGROK_334 means the static domain is still registered in the
+                # ngrok cloud from a previous crashed run.  The cloud takes ~30s to
+                # detect the dead agent and release the domain — wait accordingly.
+                wait = 30 if "ERR_NGROK_334" in str(exc) else 5
+                logger.info("[server] waiting %ds before retry %d…", wait, attempt + 2)
+                await asyncio.sleep(wait)
+        raise RuntimeError("ngrok failed to connect after 8 attempts")
 
     def _build_app(self) -> FastAPI:
         """Build the FastAPI app whose handlers delegate to self.current_runner."""
@@ -215,9 +219,23 @@ class SharedServer:
             runner = server.current_runner
             form = await request.form()
             status = form.get("CallStatus", "")
-            logger.info("[%s] Call status: %s", runner.scenario["id"] if runner else "?", status)
+            callback_sid = form.get("CallSid", "")
+            logger.info(
+                "[%s] Call status: %s sid=%s",
+                runner.scenario["id"] if runner else "?", status, callback_sid,
+            )
             if runner and status in ("completed", "failed", "busy", "no-answer", "canceled"):
-                runner._end_call(status)
+                # Guard: only end the current test if the callback SID matches.
+                # Stale callbacks from previous test runs (retried by Twilio after
+                # the ngrok tunnel was restarted) must not prematurely cancel the
+                # inject_task for the NEW test call.
+                if callback_sid and runner.call_sid and callback_sid != runner.call_sid:
+                    logger.warning(
+                        "[%s] Ignoring stale status callback sid=%s (current=%s)",
+                        runner.scenario["id"], callback_sid, runner.call_sid,
+                    )
+                else:
+                    runner._end_call(status)
             return {"ok": True}
 
         @app.post("/recording")
