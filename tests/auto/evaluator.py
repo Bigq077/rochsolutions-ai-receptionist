@@ -204,7 +204,7 @@ class Evaluator:
         # run_instruction() skips _append_history() for LLM-path steps.
         if scenario.get("responses") and result.get("turns", 0) <= 1:
             flow_made_progress = (
-                result.get("flow_step", 0) >= 1
+                (result.get("flow_step") or 0) >= 1
                 or bool(result.get("booking_confirmed"))
             )
             if not flow_made_progress:

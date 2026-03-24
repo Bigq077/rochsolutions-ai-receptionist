@@ -76,6 +76,7 @@ class CallRunner:
         self.scenario = scenario
         self._shared_server = shared_server
         self.call_sid = None
+        self.call_placed_at = None   # UTC datetime when outbound call was created
         self.current_turn = 0
         self.call_complete = asyncio.Event()
         self.susie_said = []
@@ -134,6 +135,8 @@ class CallRunner:
             status_callback_method="POST",
         )
         self.call_sid = call.sid
+        import datetime as _dt
+        self.call_placed_at = _dt.datetime.utcnow()
         logger.info("[%s] Call started: %s", self.scenario["id"], self.call_sid)
 
         # Launch transcript injection in the background.
@@ -207,6 +210,7 @@ class CallRunner:
         Pass status="in-progress" when calling during an active call to avoid
         picking up a stale completed inbound SID from a previous test scenario.
         """
+        import datetime as _dt
         try:
             # Only include calls with the requested status (if any)
             list_kwargs: dict = {"to": SUSIE_NUMBER, "limit": 5}
@@ -219,6 +223,21 @@ class CallRunner:
                     continue
                 # The inbound call is the one that's NOT outbound-api
                 if call.direction != "outbound-api":
+                    # Reject stale SIDs from previous test scenarios — only
+                    # accept inbound calls created after our outbound call was placed.
+                    if self.call_placed_at and call.date_created:
+                        created = call.date_created
+                        if hasattr(created, "tzinfo") and created.tzinfo:
+                            import pytz
+                            placed = self.call_placed_at.replace(tzinfo=pytz.UTC)
+                        else:
+                            placed = self.call_placed_at
+                        if created < placed - _dt.timedelta(seconds=30):
+                            logger.info(
+                                "[%s] Skipping stale inbound SID %s (created %s, placed at %s)",
+                                self.scenario["id"], call.sid, created, placed,
+                            )
+                            continue
                     logger.info(
                         "[%s] Found inbound call SID: %s (direction=%s status=%s)",
                         self.scenario["id"], call.sid, call.direction,
