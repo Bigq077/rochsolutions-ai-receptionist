@@ -29,6 +29,8 @@ _BANNED_SENTENCE_RE = [
     ("one_moment",    re.compile(r"[^.!?]*\bone moment please\b[^.!?]*[.!?]?",   re.IGNORECASE)),
     ("are_you_there", re.compile(r"[^.!?]*\bare you still there\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("still_there",   re.compile(r"[^.!?]*\bstill there\b[^.!?]*[.!?]?",         re.IGNORECASE)),
+    # "Lovely, [name]" acknowledgement — patronising opener, banned everywhere
+    ("lovely_opener", re.compile(r"^[Ll]ovely[,\s!]+",                            re.IGNORECASE)),
 ]
 
 _MULTI_SPACE_RE  = re.compile(r" {2,}")
