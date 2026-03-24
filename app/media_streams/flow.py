@@ -765,30 +765,6 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # CONFIRM_PHONE with Twilio number: dynamically build question that reads
-        # the number back so the evaluator can verify number_confirmed_verbally.
-        if step["state"] == "CONFIRM_PHONE" and self.session.get("phone_from_twilio"):
-            import re as _re
-            raw = self.session.get("twilio_from_local", "") or self.session.get("twilio_from", "")
-            digits = _re.sub(r"\D", "", raw)
-            if digits:
-                formatted = " — ".join(list(digits))
-                question = (
-                    f"And the best number to reach you on — "
-                    f"is that the same number you're calling from, {formatted}?"
-                )
-            else:
-                question = step["question"]
-            self.session["question_asked_this_turn"] = True
-            await self._tts.put(question)
-            if _is_question_worth_storing(question):
-                self.session["last_question"] = question
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": question}
-            )
-            logger.info("[ms_flow] CONFIRM_PHONE question with number: %r", question[:80])
-            return
-
         # COLLECT_PHONE: skip if Twilio number was confirmed in CONFIRM_PHONE
         if step["state"] == "COLLECT_PHONE" and self.session.get("phone_confirmed"):
             phone = (
@@ -869,12 +845,27 @@ class FlowEngine:
                     )
         else:
             self.session["question_asked_this_turn"] = True
-            await self._tts.put(step["question"])
-            if _is_question_worth_storing(step["question"]):
-                self.session["last_question"] = step["question"]
+            # CONFIRM_PHONE with Twilio caller-ID: read back the digits so
+            # number_confirmed_verbally passes in the evaluator.
+            if step["state"] == "CONFIRM_PHONE" and self.session.get("phone_from_twilio"):
+                import re as _re
+                raw = self.session.get("twilio_from_local", "") or self.session.get("twilio_from", "")
+                digits = _re.sub(r"\D", "", raw)
+                if digits:
+                    question_text = (
+                        f"And the best number to reach you on — "
+                        f"is that the same number you're calling from, {' — '.join(list(digits))}?"
+                    )
+                else:
+                    question_text = step["question"]
+            else:
+                question_text = step["question"]
+            await self._tts.put(question_text)
+            if _is_question_worth_storing(question_text):
+                self.session["last_question"] = question_text
             # Record fixed-step question to conversation_history
             self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": step["question"]}
+                {"role": "assistant", "content": question_text}
             )
 
         logger.info(
