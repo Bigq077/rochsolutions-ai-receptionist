@@ -131,6 +131,8 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     # Caller's own number from Twilio (available even before they give it)
     if twilio_from_local and not collected.get("phone"):
         context_lines.append(f"  caller_number = {twilio_from_local}")
+        _spaced = " ".join(twilio_from_local)
+        context_lines.append(f"  caller_number_spaced = {_spaced}  ← read this back digit by digit when asking to confirm")
 
     if context_lines:
         known_context = (
@@ -271,7 +273,10 @@ When the caller gives their name: call collect_and_store(field="full_name", valu
 If full_name or name already in session: skip the name question — do NOT ask again.
 Acknowledge naturally then immediately ask for the mobile number.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
-  - If YES → ask: "And the best number to reach you on — is that the same number you're calling from, [say each digit of caller_number separately with a space between each digit]?"
+  - If YES → ask EXACTLY: "And the best number to reach you on — is that the same number you're calling from, [caller_number_spaced]?"
+    ⚠️ MANDATORY: You MUST speak the spaced digits from caller_number_spaced in this question.
+    Example: if caller_number_spaced = "0 7 7 0 0 9 0 0 1 2 3", say: "And the best number to reach you on — is that the same number you're calling from, 0 7 7 0 0 9 0 0 1 2 3?"
+    Saying "is that the same number you're calling from?" WITHOUT the digits is WRONG — the caller needs to hear their number read back.
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step F5.
         ⚠️ PHONE CONFIRM RULE — never make this mistake:
           CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
@@ -307,13 +312,15 @@ For cancel: collect name, phone, location, verbal confirmation, call cancel_appo
 {_nr_guard}
 Work through these steps in order. Skip any step where you already have the information from earlier in the call. Never re-ask something the caller already answered.
 
-**Step 0 (booking intent)** -- When a caller says they want to book or make an appointment:
-"Absolutely, you can book an appointment -- what are you looking to get treated at the clinic?"
+**Step 0 (booking intent)** -- When a caller says they want to book OR when they describe feeling unwell, being in pain, or struggling (even vaguely):
+"You can book an appointment -- what's been going on?"
+VAGUE OPENER RULE: If the caller says anything like "I'm not feeling right", "I'm in pain", "I've been struggling", "I don't feel well", "something's wrong", or any non-specific description of feeling unwell — treat it as a booking request immediately. Do NOT give pricing, do NOT give clinic information, do NOT ask clarifying questions about what they mean. Simply acknowledge and move to Step 1.
 If reason already known: skip.
 
-**Step 1** -- Caller names their condition. Acknowledge with empathy and ask how long:
-"Ah, sorry to hear that -- [condition] can be very painful. How long have you had this problem?"
-Use their actual condition in place of [condition].
+**Step 1** -- Caller names their condition (or gives a vague description). Acknowledge with empathy and ask how long. Always use their exact wording back to them:
+"Ah, sorry to hear that — how long have you been dealing with that?"
+If they gave a specific condition: "Ah, [condition] can be really difficult — how long have you had this?"
+Do NOT ask "what do you mean?" or "can you be more specific?" — accept whatever they say as the reason and move on.
 
 **Step 2** -- After they answer the duration, ask location (multi-location only) using the NUMBER prompt:
 "And would you like Alcester or Redditch? Say one for Alcester or two for Redditch."
@@ -368,7 +375,10 @@ If full_name or name already in session: skip immediately to Step 9.
 **Step 9** -- Mobile number:
 If phone already known: skip.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
-  - If YES → ask: "And the best number to reach you on -- is that the same number you're calling from, [say each digit of caller_number separately with a space between each digit]?"
+  - If YES → ask EXACTLY: "And the best number to reach you on — is that the same number you're calling from, [caller_number_spaced]?"
+    ⚠️ MANDATORY: You MUST speak the spaced digits from caller_number_spaced in this question.
+    Example: if caller_number_spaced = "0 7 7 0 0 9 0 0 1 2 3", say: "And the best number to reach you on — is that the same number you're calling from, 0 7 7 0 0 9 0 0 1 2 3?"
+    Saying "is that the same number?" WITHOUT the digits is WRONG — the caller must hear their number spoken back.
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step 10.
         ⚠️ PHONE CONFIRM RULE — never make this mistake:
           CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number

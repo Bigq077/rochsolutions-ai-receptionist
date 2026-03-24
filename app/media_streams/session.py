@@ -232,12 +232,16 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "new_or_returning":    None,     # step 3 — "new" or "returning"
     "availability":        None,     # step 4 — caller's preferred days/times
     "slots_count":         0,        # set by llm_stream when slots are returned
+    "slots_offered":       [],       # human-readable slot labels presented to caller
     "selected_slot":       None,     # step 5 — the slot the caller chose
     "full_name":           None,     # step 6 — caller's full name
     "phone_confirmed":     None,     # step 7 — True/False from CONFIRM_PHONE
     "phone_number":        None,     # step 8 — caller's phone number
     "booking_confirmed":   None,     # step 9 — booking acknowledged
     "last_question":       "",       # last question Susie asked (for SilenceHandler re-ask)
+    # Per-turn guards (reset each turn by FlowEngine.handle_transcript)
+    "question_asked_this_turn": False,  # prevents ask_current_question firing twice per turn
+    "turn_in_progress":         False,  # mirrors _llm_busy for session-level visibility
 }
 
 

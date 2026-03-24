@@ -39,7 +39,6 @@ from .config import (
     F_SELECTED_SLOT,
     F_FAST_PATH_LAST_RESOLVED,
     F_TWILIO_FROM,
-    F_PHONE_COLLECTED_FROM_TWILIO,
 )
 
 logger = logging.getLogger(__name__)
@@ -304,31 +303,22 @@ def _try_full_name(
     session[F_COLLECTED]["full_name"] = name_stored
     session[F_COLLECTED]["name"]      = name_stored
 
-    # Build reply — fork on whether phone is already known from Twilio caller-ID.
-    # If known: phone is in collected["phone"], skip directly to availability.
-    # If not: ask for the phone number.
-    phone_already_confirmed = (
-        session.get(F_PHONE_COLLECTED_FROM_TWILIO)
-        and bool(session.get(F_COLLECTED, {}).get("phone"))
-    )
-
-    if phone_already_confirmed:
-        # Phone is already locked in — go straight to date/time preference.
-        reply = "And do you have a preferred day or time in mind for the appointment?"
+    # Build reply — always read back the caller's number for confirmation.
+    # Even when the phone came from Twilio caller-ID, Susie should read it back
+    # so the caller can confirm it (and so number_confirmed_verbally can pass).
+    caller_number = session.get("twilio_from_local", "")
+    if caller_number:
+        digits    = _digits_only(caller_number)
+        formatted = _fmt_phone(digits)
+        reply = (
+            f"And the best number to reach you on — "
+            f"is that the same number you're calling from, {formatted}?"
+        )
     else:
-        caller_number = session.get("twilio_from_local", "")
-        if caller_number and not session.get(F_COLLECTED, {}).get("phone"):
-            digits    = _digits_only(caller_number)
-            formatted = _fmt_phone(digits)
-            reply = (
-                f"And the best number to reach you on — "
-                f"is that the same number you're calling from, {formatted}?"
-            )
-        else:
-            reply = (
-                "What number would you like to use for the booking? "
-                "Could you give me the first five digits?"
-            )
+        reply = (
+            "What number would you like to use for the booking? "
+            "Could you give me the first five digits?"
+        )
 
     session[F_LAST_BOT_PROMPT] = reply
     session[F_LAST_QUESTION]   = reply

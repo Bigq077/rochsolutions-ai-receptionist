@@ -440,8 +440,9 @@ async def main():
     )
     parser.add_argument(
         "--scenario",
-        help="Run specific scenario e.g. '2.1'",
+        help="Run specific scenario(s) e.g. '2.1' or multiple: '2.1 3.1 4.2'",
         default=None,
+        nargs="+",
     )
     parser.add_argument(
         "--from-phase",
@@ -468,8 +469,9 @@ async def main():
     # Filter scenarios
     scenarios_to_run = SCENARIOS
     if args.scenario:
+        ids = set(args.scenario)
         scenarios_to_run = [
-            s for s in SCENARIOS if s["id"] == args.scenario
+            s for s in SCENARIOS if s["id"] in ids
         ]
     elif args.phase:
         scenarios_to_run = [

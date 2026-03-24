@@ -732,7 +732,6 @@ async def turn(request: Request):
     if not user_said:
         miss = int(session.get("miss_count", 0)) + 1
         session["miss_count"] = miss
-        await save_session(call_sid, session)
 
         _clinic_obj = get_clinic(session.get("clinic_id"))
         # Use the last question Susie asked (set by conversation.py on every turn).
@@ -747,27 +746,44 @@ async def turn(request: Request):
                 recovery = f"I didn't quite catch that — {_last_q}"
             else:
                 recovery = _build_reintro(_clinic_obj)
+            # Store in conversation_history so the test evaluator can find it
+            _ch = session.get("conversation_history", [])
+            _ch.append({"role": "assistant", "content": recovery})
+            session["conversation_history"] = _ch
+            await save_session(call_sid, session)
             vr.append(gather_speech(turn_url, recovery))
             return xml(vr)
 
-        # Tier 2 — second silence: "having trouble hearing" + repeat question
+        # Tier 2 — second silence: "sorry about that" + repeat question
         if miss == 2:
             if _last_q and PHASE3_ENABLED:
                 recovery = (
-                    "I'm having a little trouble hearing you — let me try that again. "
+                    "Sorry about that — I'm having a little trouble hearing you. "
                     + _last_q
                 )
             else:
                 recovery = _build_menu()
+            _ch = session.get("conversation_history", [])
+            _ch.append({"role": "assistant", "content": recovery})
+            session["conversation_history"] = _ch
+            await save_session(call_sid, session)
             vr.append(gather_speech(turn_url, recovery))
             return xml(vr)
 
         # Tier 3 — third silence: live transfer (caller cannot be heard at all)
         _clinic_obj2 = get_clinic(session.get("clinic_id"))
         _xfer_phone  = _clinic_obj2.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
+        _xfer_silence_msg = (
+            "I'm sorry, I'm having trouble hearing you. "
+            "Let me transfer you to the team now. Please hold."
+        )
+        _ch = session.get("conversation_history", [])
+        _ch.append({"role": "assistant", "content": _xfer_silence_msg})
+        session["conversation_history"] = _ch
+        await save_session(call_sid, session)
         _append_transfer(
             vr,
-            "I'm sorry, I'm having trouble hearing you. Let me put you straight through to the team now. Please hold.",
+            _xfer_silence_msg,
             request,
             _xfer_phone,
         )

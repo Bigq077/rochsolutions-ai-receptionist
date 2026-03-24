@@ -64,7 +64,7 @@ GREETING_WAIT_SECONDS = 20
 # + LLM round-trip (~3-8s) + ElevenLabs TTS generation (~2-4s)
 # + TTS audio playback (~3-8s depending on Susie's response length).
 # Total worst case: ~20s. Use 22s for safety margin.
-TURN_WAIT_SECONDS = 22
+TURN_WAIT_SECONDS = 25
 
 # Module-level flag — set to False after first 401 to skip further ElevenLabs
 # attempts without burning 3 retries × N turns per scenario.
@@ -175,9 +175,11 @@ class CallRunner:
         # Deregister — no more callbacks needed
         self._shared_server.current_runner = None
 
-        # Wait a moment for Susie's session to be saved to Redis
+        # Wait for Susie's session to be fully saved to Redis.
+        # 15 seconds gives the server time to process the final turn and flush all
+        # Redis writes — a 5-second wait was too short for longer calls (9+ turns).
         logger.info("[%s] Waiting for session to be saved...", self.scenario["id"])
-        await asyncio.sleep(5)
+        await asyncio.sleep(15)
 
         # Find the inbound call SID (Susie's side) — the session is stored under this SID
         inbound_sid = await self._find_inbound_call_sid(client)
@@ -188,7 +190,9 @@ class CallRunner:
 
         return self._build_result()
 
-    async def _find_inbound_call_sid(self, client: Client) -> str | None:
+    async def _find_inbound_call_sid(
+        self, client: Client, status: str | None = None
+    ) -> str | None:
         """
         Find the inbound call SID for Susie's side of the call.
 
@@ -199,10 +203,16 @@ class CallRunner:
         Susie's session is stored under the inbound SID.
         We find it by listing recent calls TO Susie's number and filtering
         for inbound calls (direction not outbound-api).
+
+        Pass status="in-progress" when calling during an active call to avoid
+        picking up a stale completed inbound SID from a previous test scenario.
         """
         try:
-            # List recent calls to Susie's number (both inbound and outbound)
-            calls = client.calls.list(to=SUSIE_NUMBER, limit=10)
+            # Only include calls with the requested status (if any)
+            list_kwargs: dict = {"to": SUSIE_NUMBER, "limit": 5}
+            if status:
+                list_kwargs["status"] = status
+            calls = client.calls.list(**list_kwargs)
             for call in calls:
                 # Skip our own outbound call
                 if call.sid == self.call_sid:
@@ -210,8 +220,9 @@ class CallRunner:
                 # The inbound call is the one that's NOT outbound-api
                 if call.direction != "outbound-api":
                     logger.info(
-                        "[%s] Found inbound call SID: %s (direction=%s)",
+                        "[%s] Found inbound call SID: %s (direction=%s status=%s)",
                         self.scenario["id"], call.sid, call.direction,
+                        getattr(call, "status", "?"),
                     )
                     return call.sid
         except Exception as exc:
@@ -286,10 +297,14 @@ class CallRunner:
           4. Hang up via Twilio REST API → triggers /status callback → call ends
         """
         # ── 1. Find inbound call SID (Susie's side) ──────────────────────
+        # Filter by status="in-progress" so we never pick up a stale completed
+        # inbound SID from the previous scenario running moments earlier.
         await asyncio.sleep(5)  # give Twilio a few seconds to route the call
         inbound_sid: str | None = None
-        for attempt in range(15):
-            inbound_sid = await self._find_inbound_call_sid(client)
+        for attempt in range(20):  # 20 × 2 s = 40 s budget
+            inbound_sid = await self._find_inbound_call_sid(
+                client, status="in-progress"
+            )
             if inbound_sid:
                 logger.info(
                     "[%s] Transcript injection: found inbound SID %s (attempt %d)",
@@ -322,6 +337,12 @@ class CallRunner:
             text = response if isinstance(response, str) else response.get("text", "")
             if text.strip():
                 await self._inject_transcript(inbound_sid, text, i)
+                # Record the actual time each transcript was injected.
+                # This gives accurate timestamps for the no_dead_air check —
+                # pre-generation timestamps (set earlier) are meaningless
+                # since they were recorded before the call even started.
+                if i < len(self.test_said):
+                    self.test_said[i]["timestamp"] = time.time()
             # Wait for Susie to process and respond before next injection
             logger.info(
                 "[%s] Waiting %ds for Susie's response to turn %d",
@@ -391,8 +412,9 @@ class CallRunner:
         for i, response in enumerate(responses):
             text = response if isinstance(response, str) else response.get("text", "")
             if not text.strip():
-                # Silence turn — no audio needed; /patient-ws will just pause
-                self.test_said.append({"turn": i, "text": "", "timestamp": time.time()})
+                # Silence turn — no audio needed; timestamp will remain None
+                # (no inject happens so there's no meaningful inject time to record)
+                self.test_said.append({"turn": i, "text": "", "timestamp": None})
                 continue
 
             mulaw_bytes = await self._generate_mulaw_for_turn(text, i)
@@ -405,11 +427,15 @@ class CallRunner:
                     self.scenario["id"], i,
                 )
 
-            # Record what the test intends to say
+            # Record what the test intends to say.
+            # Timestamp is intentionally None here — it will be updated to the
+            # actual inject time in _run_transcript_injection() so that
+            # max_gap_seconds reflects real conversation pacing, not pre-gen
+            # timing (which happens before the call even starts).
             self.test_said.append({
                 "turn": i,
                 "text": text,
-                "timestamp": time.time(),
+                "timestamp": None,
             })
 
     async def _generate_mulaw_for_turn(self, text: str, turn_index: int) -> bytes | None:
@@ -632,77 +658,92 @@ class CallRunner:
 
         try:
             async with httpx.AsyncClient(timeout=30) as http:
-                # Retry a few times — session may not be saved immediately
+                # Poll all 6 attempts and use the most complete session
+                # (longest conversation_history). A partial session from an
+                # early attempt would miss turns from longer calls.
+                best_data: dict | None = None
                 for attempt in range(6):
                     resp = await http.get(url)
                     data = resp.json()
 
                     if data.get("ok"):
                         history = data.get("conversation_history", [])
-                        turns_data = data.get("turns", [])
-
-                        # Read flow-engine progress fields
-                        self._flow_step        = data.get("flow_step")
-                        self._flow_started     = data.get("flow_started")
-                        self._booking_confirmed = data.get("booking_confirmed")
-                        self._selected_slot    = data.get("selected_slot")
-                        self._full_name        = data.get("full_name")
-                        self._intent           = data.get("intent")
-                        self._reason           = data.get("reason")
-
+                        prev_len = len((best_data or {}).get("conversation_history", []))
+                        if best_data is None or len(history) > prev_len:
+                            best_data = data
                         logger.info(
-                            "[%s] Session retrieved: %d history entries, %d turns "
-                            "flow_step=%s booking_confirmed=%s",
-                            self.scenario["id"], len(history), len(turns_data),
-                            self._flow_step, self._booking_confirmed,
+                            "[%s] Session attempt %d/6: %d history entries (best so far: %d)",
+                            self.scenario["id"], attempt + 1, len(history),
+                            len(best_data.get("conversation_history", [])),
                         )
-
-                        # Extract Susie's turns from conversation_history
-                        turn_index = 0
-                        for entry in history:
-                            if entry.get("role") == "assistant":
-                                text = entry.get("content", "").strip()
-                                if text:
-                                    self.susie_said.append({
-                                        "turn": turn_index,
-                                        "text": text,
-                                        "confidence": 1.0,
-                                        "timestamp": self.call_start_time or time.time(),
-                                    })
-                                    turn_index += 1
-
-                        # If no history, try turns field
-                        if not self.susie_said and turns_data:
-                            for entry in turns_data:
-                                if entry.get("role") == "assistant":
-                                    text = entry.get("text", "").strip()
-                                    if text:
-                                        self.susie_said.append({
-                                            "turn": turn_index,
-                                            "text": text,
-                                            "confidence": 1.0,
-                                            "timestamp": self.call_start_time or time.time(),
-                                        })
-                                        turn_index += 1
-
-                        self.current_turn = turn_index
+                    else:
+                        error = data.get("error", "unknown")
                         logger.info(
-                            "[%s] Extracted %d Susie turns from session",
-                            self.scenario["id"], len(self.susie_said),
+                            "[%s] Session not ready yet (attempt %d/6): %s",
+                            self.scenario["id"], attempt + 1, error,
                         )
-                        return
-
-                    error = data.get("error", "unknown")
-                    logger.info(
-                        "[%s] Session not ready yet (attempt %d/6): %s",
-                        self.scenario["id"], attempt + 1, error,
-                    )
                     if attempt < 5:
                         await asyncio.sleep(5)
 
-                logger.warning(
-                    "[%s] Session not found after 6 attempts",
-                    self.scenario["id"],
+                if best_data is None:
+                    logger.warning(
+                        "[%s] Session not found after 6 attempts",
+                        self.scenario["id"],
+                    )
+                    return
+
+                data = best_data
+                history = data.get("conversation_history", [])
+                turns_data = data.get("turns", [])
+
+                # Read flow-engine progress fields
+                self._flow_step        = data.get("flow_step")
+                self._flow_started     = data.get("flow_started")
+                self._booking_confirmed = data.get("booking_confirmed")
+                self._selected_slot    = data.get("selected_slot")
+                self._full_name        = data.get("full_name")
+                self._intent           = data.get("intent")
+                self._reason           = data.get("reason")
+
+                logger.info(
+                    "[%s] Using best session: %d history entries, %d turns "
+                    "flow_step=%s booking_confirmed=%s",
+                    self.scenario["id"], len(history), len(turns_data),
+                    self._flow_step, self._booking_confirmed,
+                )
+
+                # Extract Susie's turns from conversation_history
+                turn_index = 0
+                for entry in history:
+                    if entry.get("role") == "assistant":
+                        text = entry.get("content", "").strip()
+                        if text:
+                            self.susie_said.append({
+                                "turn": turn_index,
+                                "text": text,
+                                "confidence": 1.0,
+                                "timestamp": self.call_start_time or time.time(),
+                            })
+                            turn_index += 1
+
+                # If no history, try turns field
+                if not self.susie_said and turns_data:
+                    for entry in turns_data:
+                        if entry.get("role") == "assistant":
+                            text = entry.get("text", "").strip()
+                            if text:
+                                self.susie_said.append({
+                                    "turn": turn_index,
+                                    "text": text,
+                                    "confidence": 1.0,
+                                    "timestamp": self.call_start_time or time.time(),
+                                })
+                                turn_index += 1
+
+                self.current_turn = turn_index
+                logger.info(
+                    "[%s] Extracted %d Susie turns from session",
+                    self.scenario["id"], len(self.susie_said),
                 )
 
         except Exception as exc:
@@ -740,14 +781,19 @@ class CallRunner:
             else 0.0
         )
 
-        # Compute max silence gap between consecutive turns (used by no_dead_air check)
-        all_ts = sorted(
-            [t["timestamp"] for t in self.susie_said]
-            + [t["timestamp"] for t in self.test_said]
+        # Compute max gap between consecutive patient inject times.
+        # Only test_said entries updated by _run_transcript_injection() have valid
+        # (non-None) timestamps — pre-gen entries start as None and stay None for
+        # silence turns.  susie_said timestamps are excluded because they are all
+        # set to call_start_time (pre-call) and would produce a spuriously large gap.
+        valid_ts = sorted(
+            t["timestamp"]
+            for t in self.test_said
+            if t.get("timestamp") is not None
         )
         max_gap = 0.0
-        for i in range(1, len(all_ts)):
-            gap = all_ts[i] - all_ts[i - 1]
+        for i in range(1, len(valid_ts)):
+            gap = valid_ts[i] - valid_ts[i - 1]
             if gap > max_gap:
                 max_gap = gap
 

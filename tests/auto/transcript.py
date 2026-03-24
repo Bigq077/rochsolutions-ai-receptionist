@@ -42,7 +42,7 @@ def build_transcript(result: dict) -> str:
             }
         )
 
-    all_turns.sort(key=lambda x: x["timestamp"])
+    all_turns.sort(key=lambda x: (x["timestamp"] is None, x["timestamp"] or 0.0))
 
     if not all_turns:
         lines.append("[No speech captured]")

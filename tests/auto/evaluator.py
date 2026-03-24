@@ -389,12 +389,15 @@ class Evaluator:
                 r"(?:zero|one|two|three|four|five|six|seven|eight|nine|oh)"
             )
             checks["number_confirmed_verbally"] = bool(
-                # e.g. "07700 900 123" — 5+ consecutive digit characters
+                # e.g. "07700900123" — 5+ consecutive digit characters
                 re.search(r"\d{5,}", all_susie)
                 # e.g. "zero seven seven zero zero nine" — 5+ digit words in a row
                 or re.search(
                     rf"{_DIGIT_WORD}(?:\s+{_DIGIT_WORD}){{4,}}", all_susie
                 )
+                # e.g. "0 — 7 — 7 — 0 — 0 — 9 ..." — 10+ digits separated by spaces/dashes
+                # (fast_path._fmt_phone format: digits joined by " — ")
+                or re.search(r"\d(?:[\s\u2014\-]+\d){9,}", all_susie)
             )
 
         return checks

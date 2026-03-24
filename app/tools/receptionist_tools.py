@@ -1305,8 +1305,22 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         free = filter_free_slots(candidates, busy_blocks)
         top3 = pick_first_n(free, 3)
     except Exception as e:
-        logger.error("check_availability freebusy error: %r", e)
-        return {"error": f"Calendar check failed: {e}", "slots": []}
+        # Calendar API failed — fall back to unfiltered candidate slots (same
+        # behaviour as when calendar tokens are absent).  This keeps the
+        # conversation alive so Susie can still offer times and the caller
+        # can complete their booking.  Slots may overlap existing appointments
+        # but that is far better than the conversation dying with an error.
+        logger.error(
+            "check_availability freebusy error: %r — falling back to unfiltered candidates", e
+        )
+        top3 = pick_first_n(candidates, 3)
+        if not top3:
+            return {"error": "No candidate slots found in the next 7 days.", "slots": []}
+        labels = [format_slot(s) for s in top3]
+        raw = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in top3]
+        session["last_offered_slots"] = raw
+        session["slot_labels"] = labels
+        return {"slots": labels, "raw": raw, "note": "calendar_check_failed_unfiltered"}
 
     if not top3:
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}

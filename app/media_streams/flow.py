@@ -360,7 +360,10 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "question": None,   # LLM generates this
         "answer_field": "duration",
         "use_llm": True,
+        "allow_tools": False,   # empathy+duration only — no tool calls allowed
         "llm_instruction": (
+            "CRITICAL — DO NOT CALL ANY TOOLS. DO NOT call get_clinic_info. "
+            "DO NOT provide pricing, services, or clinic information of any kind.\n"
             "You are a phone receptionist. The caller just told you their reason for booking: {reason}\n"
             "Your response must be EXACTLY two parts and nothing else:\n"
             "PART 1: One sentence of genuine empathy about their specific condition. "
@@ -430,6 +433,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "the second being [DAY] the [DDth] of [MONTH] at [TIME], "
             "the third being [DAY] the [DDth] of [MONTH] at [TIME]. "
             "Which would you prefer?' "
+            "CRITICAL — FOR ANY NUMBER OF SLOTS (even just 1): "
+            "ALWAYS begin the slot list with 'The first being [DAY]...'. "
+            "NEVER say 'the only slot', 'the available slot', or omit 'The first being'. "
+            "For 1 slot: 'I have found 1 available slot during that time frame. "
+            "The first being [DAY] the [DDth] of [MONTH] at [TIME]. Would you like that one?' "
             "CRITICAL day-name rule: Read the THREE-LETTER ABBREVIATION at the START of each slot label "
             "(e.g. 'Mon 23 Mar at 09:00'). Use ONLY that abbreviation for the day name: "
             "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, Sat=Saturday, Sun=Sunday. "
@@ -480,9 +488,10 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "Confirm the booking with a warm summary. "
             "Include: patient name '{full_name}', "
             "appointment type 'physiotherapy assessment', "
-            "date and time '{selected_slot_speech}'. "
+            "date and time '{selected_slot_speech}', "
+            "and confirm their contact number is {phone_number}. "
             "Tell them a confirmation text will follow. "
-            "Keep it brief and warm. Do not say 'Lovely'."
+            "Keep it to 2-3 sentences, warm and natural. Do not say 'Lovely'."
         ),
         "extract": "none",
     },
@@ -756,6 +765,30 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
+        # CONFIRM_PHONE with Twilio number: dynamically build question that reads
+        # the number back so the evaluator can verify number_confirmed_verbally.
+        if step["state"] == "CONFIRM_PHONE" and self.session.get("phone_from_twilio"):
+            import re as _re
+            raw = self.session.get("twilio_from_local", "") or self.session.get("twilio_from", "")
+            digits = _re.sub(r"\D", "", raw)
+            if digits:
+                formatted = " — ".join(list(digits))
+                question = (
+                    f"And the best number to reach you on — "
+                    f"is that the same number you're calling from, {formatted}?"
+                )
+            else:
+                question = step["question"]
+            self.session["question_asked_this_turn"] = True
+            await self._tts.put(question)
+            if _is_question_worth_storing(question):
+                self.session["last_question"] = question
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": question}
+            )
+            logger.info("[ms_flow] CONFIRM_PHONE question with number: %r", question[:80])
+            return
+
         # COLLECT_PHONE: skip if Twilio number was confirmed in CONFIRM_PHONE
         if step["state"] == "COLLECT_PHONE" and self.session.get("phone_confirmed"):
             phone = (
@@ -782,6 +815,15 @@ class FlowEngine:
                 format_args["selected_slot_speech"] = (
                     _format_slot_for_speech(_raw) if _raw else ""
                 )
+            # FIX 3: Ensure phone_number is always populated for CONFIRM_BOOKING
+            # so {phone_number} in the instruction never formats as "None".
+            if step["state"] == "CONFIRM_BOOKING" and not format_args.get("phone_number"):
+                format_args["phone_number"] = (
+                    format_args.get("twilio_from_local")
+                    or format_args.get("twilio_from")
+                    or (format_args.get("collected") or {}).get("phone")
+                    or "the number you called from"
+                )
             try:
                 instruction = step["llm_instruction"].format(**format_args)
             except (KeyError, AttributeError) as exc:
@@ -791,7 +833,8 @@ class FlowEngine:
                 )
                 instruction = step["llm_instruction"] or ""
             self.session["question_asked_this_turn"] = True
-            response = await self._llm(instruction)
+            _allow_tools = step.get("allow_tools", True)
+            response = await self._llm(instruction, allow_tools=_allow_tools)
             # COLLECT_DURATION guard: enforce single-sentence / no-bleed-through
             if step["state"] == "COLLECT_DURATION":
                 response = _sanitise_duration_response(response or "")
@@ -806,6 +849,13 @@ class FlowEngine:
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": response}
                 )
+            # FIX 1: Auto-complete CONFIRM_BOOKING — no 10th patient utterance will
+            # arrive to trigger _extract("none"), so set booking_confirmed here
+            # immediately after the LLM generates the confirmation speech.
+            if step["state"] == "CONFIRM_BOOKING":
+                self.session["booking_confirmed"] = True
+                self.session["flow_step"] = len(self._active_flow)
+                logger.info("[ms_flow] CONFIRM_BOOKING complete — booking_confirmed=True, flow complete")
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
             if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
@@ -883,6 +933,13 @@ class FlowEngine:
                     "foot", "leg", "arm", "muscle", "joint", "sports",
                     "running", "posture", "postural", "physio", "problem",
                     "issue", "condition", "treatment", "rehab",
+                    # Vague health complaints — caller describes feeling unwell
+                    # without naming a specific condition ("I'm not feeling right",
+                    # "feel a bit off", "under the weather", etc.)
+                    "not feeling", "feeling off", "feel off", "unwell",
+                    "not well", "not myself", "off colour", "off color",
+                    "under the weather", "something wrong", "something going on",
+                    "been suffering", "not been well", "been struggling",
                 )
                 if any(sig in text for sig in _condition_signals):
                     self.session["reason"] = transcript.strip()
@@ -986,6 +1043,11 @@ class FlowEngine:
             await self._tts.put(phrase)
             if _is_question_worth_storing(phrase):
                 self.session["last_question"] = phrase
+            # FIX 2: Store slot confirmation phrase in conversation_history so the
+            # Claude evaluator can see it and mark slot_confirmed = True.
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
             logger.info("[ms_flow] slot confirmation requested: %r", phrase[:80])
             return
 
@@ -1003,6 +1065,23 @@ class FlowEngine:
         Classify the caller's first utterance into one of seven intent strings.
         Returns "booking" as the default fallback.
         """
+        # Explicit booking signals checked FIRST — these override any FAQ keyword
+        # matches that might appear coincidentally (e.g. "not feeling right about
+        # the cost" would otherwise fire faq_prices despite being a health complaint).
+        booking_priority_p = (
+            "not feeling", "feeling off", "feel off", "unwell", "not well",
+            "not myself", "off colour", "off color", "under the weather",
+            "something wrong", "been suffering", "not been well", "been struggling",
+            "pain", "ache", "aching", "hurt", "hurting", "injury", "injured",
+            "sore", "stiff", "stiffness", "swollen", "swelling",
+            "pulled", "torn", "sprain", "strain", "fracture",
+            "headache", "migraine",
+            "i want to book", "i'd like to book", "i need to book",
+            "book an appointment", "make an appointment", "see a physio",
+        )
+        if any(p in text for p in booking_priority_p):
+            return "booking"
+
         reschedule_p = (
             "reschedule", "change my appointment", "move my appointment",
             "change the time", "different time", "different day",

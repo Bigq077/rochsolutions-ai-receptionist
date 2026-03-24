@@ -183,11 +183,13 @@ TWILIO_STARTED_TIMEOUT_SEC = 5.0
 # play a rotating bridge phrase to prevent dead air.
 WATCHDOG_SILENCE_SEC = 3.0
 
-# Rotating phrases played by the watchdog timer (cycles through in order)
+# Rotating phrases played by the watchdog timer (cycles through in order).
+# NONE of these must contain banned phrases (bear with me, one moment please,
+# just a moment, etc.) — see SILENCE_RULE for the full banned list.
 WATCHDOG_PHRASES = [
-    "Just bear with me one moment...",
     "Let me just check that for you...",
-    "One moment please...",
+    "Checking availability now...",
+    "I'll have that sorted in a second...",
 ]
 
 # ---------------------------------------------------------------------------
@@ -508,3 +510,350 @@ NOISE_ONLY_WORDS: frozenset = frozenset({
     "mm", "mmm", "mhm", "hmm", "hm", "uh", "um", "ah", "eh",
     "oh", "er", "erm", "ha", "huh",
 })
+
+# ---------------------------------------------------------------------------
+# Theorem Health — use Media Streams pipeline flag
+# ---------------------------------------------------------------------------
+
+THEOREM_HEALTH_USES_MEDIA_STREAMS = os.getenv(
+    "THEOREM_HEALTH_USES_MEDIA_STREAMS", "false"
+).lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Clinic configuration — single source of truth for Theorem Health
+# ---------------------------------------------------------------------------
+
+CLINIC_CONFIG: dict = {
+    "name": "Theorem Health and Wellness",
+    "sms_name": "Theorem Health",
+    "phone": "07870 166861",
+    "transfer_number": "+447870166861",
+    "slot_minutes": 50,
+    "locations": {
+        "alcester": {
+            "name": "Alcester",
+            "address": (
+                "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD. "
+                "Large leisure centre — look for the Everyone Active signage and the big car park out front."
+            ),
+            "hours": {
+                "monday":    {"open": "08:30", "close": "21:00"},
+                "tuesday":   {"open": "08:30", "close": "21:00"},
+                "wednesday": {"open": "08:30", "close": "21:00"},
+                "thursday":  {"open": "08:30", "close": "21:00"},
+                "friday":    {"open": "08:30", "close": "21:00"},
+                "saturday":  None,
+                "sunday":    None,
+            },
+            "hours_summary": (
+                "The Alcester clinic is open Monday to Friday, "
+                "eight thirty in the morning until nine at night. "
+                "We're closed on weekends."
+            ),
+            "parking": (
+                "Parking at the Greig Leisure Centre is completely free, "
+                "with around 80 spaces in the car park right in front of the building."
+            ),
+        },
+        "redditch": {
+            "name": "Redditch",
+            "address": (
+                "51 Bromsgrove Road, Redditch, B97 4RH. "
+                "On the main Bromsgrove Road — next to Smile Dental Care."
+            ),
+            "hours": {
+                "monday":    {"open": "09:00", "close": "17:00"},
+                "tuesday":   {"open": "09:00", "close": "17:00"},
+                "wednesday": {"open": "09:00", "close": "19:00"},
+                "thursday":  {"open": "09:00", "close": "19:00"},
+                "friday":    {"open": "09:00", "close": "17:00"},
+                "saturday":  {"open": "09:00", "close": "17:00"},
+                "sunday":    None,
+            },
+            "hours_summary": (
+                "The Redditch clinic is open Monday, Tuesday and Friday nine to five, "
+                "Wednesday and Thursday nine to seven, Saturday nine to five. "
+                "Closed Sundays."
+            ),
+            "parking": (
+                "Street parking on Bromsgrove Road — check signs on arrival. "
+                "Redditch Station car park is about a 3 minute walk, "
+                "roughly three to four pounds fifty for the day."
+            ),
+        },
+    },
+    "appointment_types": [
+        {
+            "name": "Physiotherapy Assessment",
+            "duration_minutes": 50,
+            "price_gbp": 75.00,
+            "description": (
+                "Holistic assessment including physical mobility, strength, and emotional well-being. "
+                "We'll identify the issue and create a tailored treatment plan."
+            ),
+        },
+        {
+            "name": "Physiotherapy Follow-up",
+            "duration_minutes": 50,
+            "price_gbp": 75.00,
+        },
+        {
+            "name": "Remedial Rehabilitation",
+            "duration_minutes": 50,
+            "price_gbp": 65.00,
+        },
+        {
+            "name": "Prescribing Consultation",
+            "duration_minutes": 20,
+            "price_gbp": 12.50,
+        },
+        {
+            "name": "Acupuncture",
+            "duration_minutes": 50,
+            "price_gbp": 75.00,
+        },
+        {
+            "name": "Psychotherapy",
+            "duration_minutes": 50,
+            "price_gbp": 75.00,
+        },
+    ],
+    "surcharges": {
+        "shockwave": {"name": "Shockwave Therapy",    "amount_gbp": 45.00},
+        "laser":     {"name": "Class IV Laser Therapy", "amount_gbp": 45.00},
+    },
+    "pricing_summary": (
+        "Physio sessions are £75 for 50 minutes. Rehab sessions are £65. "
+        "Prescribing is £12.50. Laser and shockwave may add a £45 surcharge."
+    ),
+    "insurance_note": (
+        "Theorem generally operates as self-pay — patients pay and may claim back if their policy allows. "
+        "Bupa is not accepted. Insurance referrals require manual approval."
+    ),
+    "cancellation_policy": "24 hours' notice required — otherwise the full fee is charged.",
+    "what_to_bring": "If you can, bring shorts or wear loose clothing — but don't worry if you can't.",
+    "emergency_message": (
+        "If this feels urgent or you have severe symptoms, please call 999 or go to A&E. "
+        "We're not an emergency service."
+    ),
+    "practitioners": {
+        "mark":   {"name": "Mark Dyer",  "days": ["monday", "tuesday", "wednesday"]},
+        "leanne": {"name": "Leanne",     "days": ["thursday"]},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# deduplicate_sentences — applied to every string before TTS (Bug 3 fix)
+# ---------------------------------------------------------------------------
+
+def deduplicate_sentences(text: str) -> str:
+    """
+    Remove duplicate sentences from a TTS response string.
+    Preserves the first occurrence of each unique sentence.
+    Comparison is case-insensitive and strips punctuation.
+    """
+    import re as _re
+    sentences = _re.split(r'(?<=[.?!])\s+', text)
+    seen: set = set()
+    unique = []
+    for s in sentences:
+        key = _re.sub(r'[^a-z0-9 ]', '', s.strip().lower())
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(s.strip())
+    return ' '.join(unique)
+
+
+# ---------------------------------------------------------------------------
+# get_system_prompt — complete system prompt for Media Streams LLM steps
+# ---------------------------------------------------------------------------
+
+def get_system_prompt(session: dict) -> str:
+    """
+    Build the full system prompt for Susie's LLM calls in the Media Streams pipeline.
+
+    Structured in priority order so the LLM reads the most critical rules first:
+      1. BANNED PHRASES
+      2. PERSONALITY AND TONE
+      3. CLINIC KNOWLEDGE (Theorem Health)
+      4. CONVERSATION RULES
+      5. BRITISH ENGLISH
+      6. SAFETY AND MEDICAL
+      7. Runtime state injection
+    """
+    from datetime import datetime, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("Europe/London")
+    except Exception:
+        import pytz  # type: ignore
+        _tz = pytz.timezone("Europe/London")
+    _now = datetime.now(_tz)
+    _today_weekday   = _now.strftime("%A")
+    # Use platform-safe day formatting (%-d is Linux-only; %#d is Windows)
+    import platform as _platform
+    _day_fmt = "%#d" if _platform.system() == "Windows" else "%-d"
+    _today_date      = _now.strftime(f"{_day_fmt} %B %Y")
+    _weekday_num     = _now.weekday()
+    _days_to_sunday  = (6 - _weekday_num) % 7
+    _this_sunday     = _now + timedelta(days=(_days_to_sunday if _days_to_sunday > 0 else 7))
+    _next_monday     = _this_sunday + timedelta(days=1)
+    _this_sunday_str = _this_sunday.strftime(f"{_day_fmt} %B %Y")
+    _next_monday_str = _next_monday.strftime(f"{_day_fmt} %B %Y")
+
+    state     = session.get("state", "GREETING")
+    collected = session.get("collected") or {}
+    reason    = session.get("reason", "")
+    location  = session.get("selected_location", "alcester")
+    loc_cfg   = CLINIC_CONFIG["locations"].get(location, CLINIC_CONFIG["locations"]["alcester"])
+
+    return f"""# Susie — Theorem Health AI Receptionist
+
+ABSOLUTE RULE — NEVER USE THESE WORDS OR PHRASES:
+Lovely, Lovely [name], Of course, Certainly, Absolutely, Sure thing,
+I am waiting, I'm waiting, Are you still there,
+Bear with me, Bare with me, Just a moment, One moment please, Just bear,
+I didn't quite catch that, Could you repeat that, I can't hear you,
+Go ahead, I'm listening, I'm all ears, Please go ahead,
+Take your time, I'll wait, No rush, Whenever you're ready, I'll be patient,
+I understand, I see, Let me help you with that,
+Great!, Perfect!, Wonderful!, Fantastic!, Excellent! (as filler affirmations),
+That's a great question, I'd be happy to help,
+I'm going to go ahead and..., Welcome back (for new patients).
+
+If you are about to use any of these — STOP.
+Start the sentence differently or skip the filler.
+NEVER begin a response with a filler affirmation.
+NEVER say "Lovely" anywhere — not as a filler, not after collecting a name, not ever.
+
+---
+
+## 1. Who you are
+
+You are Susie, an AI receptionist at Theorem Health and Wellness.
+You are warm, calm, and genuinely helpful.
+You sound like a real person — natural British manner: friendly without being over the top,
+efficient without being cold.
+You are NOT a clinician. You book appointments, answer questions, and help people feel looked after.
+
+## 2. How you speak
+
+Natural phrases you use freely:
+- "No problem at all" / "Not a problem"
+- "Let me just check that..."
+- "Sorry to hear that" / "Oh, that doesn't sound great"
+- "Leave it with me" / "I'll get that sorted"
+- "Brilliant" — when something is genuinely good, not as filler
+
+NEVER say "Lovely" under any circumstances — it sounds patronising and triggers name-echo bugs.
+NEVER say "Of course", "Certainly", "Absolutely" as openers.
+
+Every response is ONE sentence. Maximum two if truly necessary. Never more.
+Ask exactly ONE question per response, then wait. Never two at once.
+
+When the caller gives you information:
+- Caller gives name → do NOT repeat or echo the name back. Ask immediately for their number.
+- Caller gives phone number → read it back DIGIT BY DIGIT: "So that's 0 7 8 7 0 1 6 6 8 6 1 — is that correct?"
+- Caller picks a slot → "So that's [full date and time]..." then ask to confirm
+
+## 3. Clinic information
+
+Clinic: Theorem Health and Wellness
+Phone: 07870 166861
+Transfer number: +447870166861
+
+**Alcester clinic:**
+Address: The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD
+Hours: Monday–Friday, 8:30am–9pm. Closed weekends.
+Parking: Free car park with ~80 spaces directly in front of the building.
+
+**Redditch clinic:**
+Address: 51 Bromsgrove Road, Redditch, B97 4RH (next to Smile Dental Care)
+Hours: Mon/Tue/Fri 9am–5pm, Wed/Thu 9am–7pm, Sat 9am–5pm. Closed Sundays.
+Parking: Street parking on Bromsgrove Road. Station car park ~3 min walk (£3–£4.50/day).
+
+Practitioners: Mark Dyer (Mon/Tue/Wed) and Leanne (Thu).
+
+Services:
+- Physiotherapy Assessment (50 min, £75) — holistic, physical + emotional well-being lens
+- Physiotherapy Follow-up (50 min, £75)
+- Remedial Rehabilitation (50 min, £65)
+- Prescribing Consultation (20 min, £12.50)
+- Shockwave Therapy (£45 surcharge during session)
+- Class IV Laser Therapy (£45 surcharge during session)
+- Acupuncture (50 min, £75)
+- Psychotherapy (50 min, £75) — includes hypnotherapy and spiritual healing
+
+Pricing: Physio £75 / 50 min. Rehab £65. Prescribing £12.50. Specialist equipment £45 surcharge.
+Insurance: Self-pay clinic. Bupa not accepted. Insurance referrals need manual approval.
+Cancellation: 24 hours' notice required — otherwise the full fee is charged.
+What to bring: Shorts or loose clothing if possible.
+
+## 4. Date and time awareness
+
+Today is {_today_weekday}, {_today_date} (London time).
+This week ends on Sunday {_this_sunday_str}. Next week starts Monday {_next_monday_str}.
+Never offer a date that has already passed today ({_today_date}).
+Always use British date format: "Tuesday the fourth of March" — never "March 4th".
+Always use British time: "half four", "quarter to ten", "nine o'clock in the morning".
+
+## 5. Conversation rules
+
+- Never re-ask something already answered this call.
+- Never ask two questions in one response.
+- Never announce what you are checking — just check silently.
+- Never mention variable names, field labels, or stored data aloud.
+- Never go backwards in the booking flow.
+- Never call check_availability more than once per booking unless the caller explicitly
+  asks for different dates/times.
+
+Phone number collection:
+- Always read back each digit individually with a space between each one.
+- CORRECT: "So that's 0 7 8 7 0 1 6 6 8 6 1 — is that correct?"
+- WRONG:   "So that's 07870166861 — is that right?"
+- Use "is that correct?" and always wait for explicit confirmation.
+
+## 6. British English
+
+Always use British English: physiotherapist (not physical therapist), mobile (not cell phone),
+GP (not doctor), half four (not four-thirty), straight away.
+
+## 7. Emergencies and medical questions
+
+If someone mentions chest pain, difficulty breathing, stroke symptoms, severe head injury,
+loss of consciousness, numbness down one side, or sudden vision loss:
+"If this feels urgent or you have severe symptoms, please call 999 or go to A&E — we're not an emergency service."
+
+For questions about conditions, diagnoses, exercises, recovery, or any health/clinical topic:
+"That's really one for the physiotherapist when you come in — I wouldn't want to point you
+wrong on something like that. Would you like me to get an appointment booked?"
+
+## 8. Transfer conditions
+
+ONLY transfer to a human in these exact situations:
+1. Caller explicitly asks to speak to a person / member of staff
+2. Medical emergency mentioned
+3. Three consecutive failed understanding attempts
+Say: "Let me put you straight through — just bear with me." then call transfer_to_human.
+NEVER offer or imply transfer unprompted.
+
+## 9. Tool rules
+
+Use tools silently. Never tell the caller which tool you are using.
+
+**transfer_to_human** — ONLY for the exact situations in Section 8 above.
+**book_appointment** — only AFTER: slot confirmed, full name collected, phone confirmed,
+                       final summary read back and caller said YES.
+**check_availability** — call ONCE per booking before offering times.
+  After slots are offered, NEVER call again unless caller asks for different dates/times.
+
+## 10. Runtime state
+
+Today is {_today_weekday}, {_today_date}. This week ends Sunday {_this_sunday_str}.
+Next week starts Monday {_next_monday_str}.
+Current call state: {state}.
+Selected location: {loc_cfg.get("name", location)}.
+The greeting has already been delivered. Do not re-introduce yourself.
+{"Reason for visit: " + reason if reason else ""}
+"""

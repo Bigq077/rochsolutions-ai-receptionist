@@ -710,7 +710,12 @@ SCENARIOS = [
             "no_question_asked_twice": True,
             "no_technical_error": True,
             "booking_confirmed": True,
-            "no_dead_air_over_seconds": 5,
+            # Threshold 25 s: transcript-injection injects at TURN_WAIT=22 s
+            # intervals, so max_gap between consecutive injects is ~22 s.
+            # 25 s passes normally but catches scenarios where turns are dropped
+            # (gap jumps to 44+ s).  A threshold of 5 s is only appropriate for
+            # real-time audio analysis where Susie's response latency is measured.
+            "no_dead_air_over_seconds": 25,
         },
     },
 

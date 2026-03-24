@@ -276,8 +276,13 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
         llm_busy    = handler._llm_busy
         q_before    = handler.transcript_queue.qsize()
 
-        # Simulate "caller started speaking" so SilenceHandler cancels its timer
-        handler._silence_handler.on_speech_started()
+        # Simulate a completed utterance so SilenceHandler fully resets:
+        # on_transcript_received() cancels the timer AND resets reask_count,
+        # currently_reasking, and last_audio_received_at — a strict superset
+        # of on_speech_started() which only cancels the timer.  This prevents
+        # a re-ask that fired on a previous turn from leaving reask_count=1,
+        # which would make the next silence window 10 s instead of 28 s.
+        handler._silence_handler.on_transcript_received()
         # Inject the transcript directly into the LLM pipeline
         handler.transcript_queue.put_nowait(text)
 

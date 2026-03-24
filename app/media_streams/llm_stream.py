@@ -134,10 +134,14 @@ def _pick_model(session: Dict[str, Any]) -> str:
     Return SONNET for active booking steps, HAIKU for everything else.
 
     SONNET triggers:
+      - First patient turn (GREETING state) — needs full reasoning for vague openers
       - Slots have been offered (last_offered_slots is non-empty)
       - Booking is being confirmed (acuity_booking_id pending)
       - Name or phone collection is in progress
     """
+    from .session import get_call_state, CallState
+    if get_call_state(session) == CallState.GREETING:
+        return SONNET  # First patient utterance: vague health complaints need SONNET
     collected = session.get(F_COLLECTED) or {}
     if session.get("last_offered_slots"):
         return SONNET
@@ -409,6 +413,7 @@ class LLMStream:
         audio_out_queue: Optional[asyncio.Queue] = None,
         websocket: Any = None,
         on_transfer: Optional[Callable] = None,
+        allow_tools: bool = True,
     ) -> str:
         """
         Simple single-instruction LLM call for the FlowEngine.
@@ -447,7 +452,7 @@ class LLMStream:
         )
 
         messages = [{"role": "user", "content": instruction}]
-        tools    = _build_claude_tools()
+        tools    = _build_claude_tools() if allow_tools else []
 
         full_reply = ""
         try:
@@ -935,21 +940,15 @@ class LLMStream:
 # ---------------------------------------------------------------------------
 
 def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
-    """
-    Advance call state after a fast-path resolution.
-
-    FULL_NAME skips phone collection when phone is already known from Twilio.
-    """
+    """Advance call state after a fast-path resolution."""
     from .config import FastPathTurnType
 
-    # ── FULL_NAME: skip phone collection if Twilio number is already known ────
+    # ── FULL_NAME: always advance to CONFIRM_PHONE so the LLM knows to handle
+    # the caller's next utterance as phone confirmation.  The phone readback
+    # question is now always asked (even when caller-ID is known) so
+    # number_confirmed_verbally can fire correctly.
     if turn_type == FastPathTurnType.FULL_NAME:
-        collected = session.get(F_COLLECTED) or {}
-        if session.get(F_PHONE_COLLECTED_FROM_TWILIO) and collected.get("phone"):
-            # Phone already known — jump straight to availability
-            advance_state(session, CallState.COLLECT_AVAILABILITY)
-        else:
-            advance_state(session, CallState.COLLECT_PHONE)
+        advance_state(session, CallState.CONFIRM_PHONE)
         return
 
     # ── Static transitions ────────────────────────────────────────────────────

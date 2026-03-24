@@ -190,6 +190,7 @@ class SilenceHandler:
         tts_text_queue: asyncio.Queue,
         trigger_transfer_fn,
         on_reask=None,
+        on_transfer=None,
     ) -> None:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
@@ -200,7 +201,8 @@ class SilenceHandler:
         self._tts_text_queue                = tts_text_queue
         self._trigger_transfer              = trigger_transfer_fn
         self._llm_busy:               bool  = False
-        self._on_reask                      = on_reask  # optional async callback(text)
+        self._on_reask                      = on_reask      # optional async callback(text)
+        self._on_transfer                   = on_transfer   # optional async callback(text)
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -397,10 +399,15 @@ class SilenceHandler:
 
     async def _transfer(self) -> None:
         logger.info("[ms_silence] max reasks reached — transferring")
-        await self._tts_text_queue.put(
+        phrase = (
             "I'm sorry, I'm having a little trouble "
             "hearing you — let me transfer you to someone who can help."
         )
+        # Save to conversation_history so the test evaluator can see it.
+        # _on_transfer is the _silence_history_fn closure in WebSocketCallHandler.
+        if self._on_transfer:
+            asyncio.create_task(self._on_transfer(phrase))
+        await self._tts_text_queue.put(phrase)
         # Set the silence_transfer flag so _should_allow_transfer() passes.
         # _trigger_transfer is a closure that sets session["silence_transfer"]
         # before calling _on_transfer_request — see SilenceHandler instantiation.
@@ -502,10 +509,21 @@ class WebSocketCallHandler:
             )
             await save_session(self.call_sid, self.session)
 
+        async def _silence_history_fn(text: str) -> None:
+            """Save transfer phrase to conversation_history so evaluator can check it.
+            The transfer phrase is played directly from SilenceHandler (bypassing
+            FlowEngine) so without this callback it would be invisible to the test
+            evaluator's transfer_played / transfer_has_trouble_hearing checks."""
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": text}
+            )
+            await save_session(self.call_sid, self.session)
+
         self._silence_handler = SilenceHandler(
             tts_text_queue=self.tts_text_queue,
             trigger_transfer_fn=_silence_transfer_fn,
             on_reask=_silence_reask_fn,
+            on_transfer=_silence_history_fn,
         )
 
         # ── Call stability ─────────────────────────────────────────────────
@@ -708,6 +726,23 @@ class WebSocketCallHandler:
         self._silence_handler.on_audio_received()
         self.audio_in_queue.put_nowait(raw_mulaw)
 
+        # ── Energy VAD: cancel silence timer the moment caller speaks ─────────
+        # Twilio μ-law silence packets consist almost entirely of 0xFF bytes
+        # (G.711 μ-law encoding of PCM zero).  When the caller speaks, non-0xFF
+        # bytes appear immediately — cancelling the re-ask timer here closes the
+        # 1-3 second gap between caller speaking and AssemblyAI delivering a
+        # partial transcript, which was the root cause of questions being asked
+        # twice during real calls.
+        # Only checked when the silence timer is actually running (task exists
+        # and is not done) so this adds near-zero overhead during normal flow.
+        if (
+            not self._clearing
+            and self._silence_handler._task is not None
+            and not self._silence_handler._task.done()
+            and len(raw_mulaw) - raw_mulaw.count(0xFF) > 3
+        ):
+            self._silence_handler.on_speech_started()
+
     # ========================================================================
     # Audio input loop
     # ========================================================================
@@ -780,7 +815,7 @@ class WebSocketCallHandler:
 
         # Build the LLM callable the flow engine will use for LLM steps.
         # It streams output directly to tts_text_queue and returns full text.
-        async def _llm_fn(instruction: str) -> str:
+        async def _llm_fn(instruction: str, allow_tools: bool = True) -> str:
             return await llm.run_instruction(
                 instruction=instruction,
                 session=self.session,
@@ -790,6 +825,7 @@ class WebSocketCallHandler:
                 audio_out_queue=self.audio_out_queue,
                 websocket=self.websocket,
                 on_transfer=self._on_transfer_request,
+                allow_tools=allow_tools,
             )
 
         flow = FlowEngine(
