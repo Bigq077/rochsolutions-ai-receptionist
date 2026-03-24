@@ -50,6 +50,7 @@ from .config import (
     TWILIO_STARTED_TIMEOUT_SEC,
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
+    BOOKING_OPEN,
 )
 from .session import (
     get_or_create_session,
@@ -92,11 +93,9 @@ _TTS_DONE_SENTINEL = object()
 # Hardcoded greeting (fast startup, no LLM round-trip)
 # ---------------------------------------------------------------------------
 
-# Single-site deployment: no clinic selection question in the greeting.
-_THEOREM_GREETING = (
-    "Hi there, this is Susie, Theorem Health's AI receptionist. "
-    "How can I help you today?"
-)
+# Single-site deployment: greeting is the booking-open question directly.
+# Defined at module level so _inject_greeting() uses it before imports are available.
+_THEOREM_GREETING = BOOKING_OPEN
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +121,6 @@ _NEVER_STORE_PHRASES = [
     "this is susie",
     "roch solutions",
     "theorem health",
-    "of course you can book",
 ]
 
 _KNOWN_QUESTION_PHRASES = [
@@ -175,14 +173,12 @@ class SilenceHandler:
     silence packets (which arrive every ~20ms regardless of speech).
 
     Silence windows:
-        1st (12 s) → "Sorry, I didn't quite catch that — <question>"
-        2nd (10 s) → "Sorry about that — <question>"
-        3rd ( 4 s) → transfer phrase + trigger_transfer()
+        1st (4 s) → "Sorry, I didn't quite catch that — <question>"
+        2nd (4 s) → "Sorry about that — <question>"
+        3rd (4 s) → transfer phrase + trigger_transfer()
 
-    Window 1 is intentionally generous (12 s) because some callers — and
-    the automated test runner — need several seconds to generate a TTS
-    response before any audio arrives.  The since_audio < 3.5 guard means
-    the window fires only when genuinely no speech has been detected.
+    The since_audio < 3.5 guard means the window fires only when genuinely
+    no speech has been detected for the full window duration.
     """
 
     def __init__(
@@ -301,9 +297,9 @@ class SilenceHandler:
         """
         Flat sequential re-ask coroutine.
 
-        Window 1: 28s sleep → since_audio guard → re-ask #1 → 5s TTS wait
-        Window 2: 10s sleep → since_audio guard → re-ask #2 → 5s TTS wait
-        Window 3:  4s sleep → since_audio guard → transfer
+        Window 1: 4s sleep → since_audio guard → re-ask #1 → 5s TTS wait
+        Window 2: 4s sleep → since_audio guard → re-ask #2 → 5s TTS wait
+        Window 3: 4s sleep → since_audio guard → transfer
 
         Never recurses with create_task.  CancelledError exits cleanly at
         any sleep — caller spoke (on_speech_started) or Susie spoke
@@ -311,9 +307,9 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 28 s silence ─────────────────────────────────────────
+        # ── Window 1: 4 s silence ──────────────────────────────────────────
         try:
-            await asyncio.sleep(28.0)
+            await asyncio.sleep(4.0)
             # Yield once more so any task.cancel() that arrived while we were
             # sleeping (but after sleep() returned normally) is delivered here
             # before we check the guards — fixes the race where _llm_busy is
@@ -350,9 +346,9 @@ class SilenceHandler:
             return
         self.currently_reasking = False
 
-        # ── Window 2: 10 s silence ─────────────────────────────────────────
+        # ── Window 2: 4 s silence ──────────────────────────────────────────
         try:
-            await asyncio.sleep(10.0)
+            await asyncio.sleep(4.0)
             await asyncio.sleep(0)  # deliver any pending cancel before guard checks
         except asyncio.CancelledError:
             return
@@ -1176,11 +1172,11 @@ class WebSocketCallHandler:
         history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
         history.append({"role": "assistant", "content": greeting})
         self.session["last_bot_prompt"]    = greeting
+        self.session["last_question"]      = greeting   # arm silence re-ask immediately
         self.session["greeting_delivered"] = True
 
         # State stays at GREETING after the initial greeting plays.
-        # Gate3 handles the GREETING → COLLECT_REASON transition by playing
-        # BOOKING_OPEN on the caller's first utterance.
+        # The first caller utterance triggers DETECT_INTENT → booking flow.
         # (No state advance here — keep GREETING until caller speaks.)
 
         await save_session(self.call_sid, self.session)

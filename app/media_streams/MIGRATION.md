@@ -3,7 +3,7 @@
 Migration from old webhook system (`app/routes/realtime.py`) to Media Streams
 sentence-streaming pipeline (`app/media_streams/`).
 
-All items verified complete as of 2026-03-23.
+All items verified complete as of 2026-03-24.
 
 ---
 
@@ -87,8 +87,8 @@ All items verified complete as of 2026-03-23.
 ## Silence Handling (`SilenceHandler` in `connection.py`)
 
 - [x] Timer starts after TTS finishes playing (via `_delayed_tts_finished` → `on_tts_finished`)
-- [x] Window 1 (20s): "Sorry, I didn't quite catch that — [original question]"
-- [x] Window 2 (10s): "Sorry about that — [original question]"
+- [x] Window 1 (4s): "Sorry, I didn't quite catch that — [original question]"
+- [x] Window 2 (4s): "Sorry about that — [original question]"
 - [x] Window 3 (4s): Transfer phrase + trigger transfer
 - [x] Re-ask uses original `last_question` only — never stores re-ask phrase as new `last_question`
 - [x] `_NEVER_STORE_PHRASES` prevents error/re-ask phrases from overwriting `last_question`
@@ -119,7 +119,7 @@ All items verified complete as of 2026-03-23.
 - [x] `/ms/incoming` route registered — returns TwiML `<Connect><Stream url="wss://..."/>`
 - [x] `/ms/stream` WebSocket route registered
 - [x] Old `/twilio/voice` route preserved as fallback (not removed)
-- [x] `MEDIA_STREAMS_ENABLED=true` env var enables the pipeline in `main.py`
+- [x] `media_streams_router` always registered in `main.py` (kill switch operates at route level, not registration level)
 - [x] `THEOREM_HEALTH_USES_MEDIA_STREAMS` env var defined in `config.py`
 - [x] Kill switch: `MEDIA_STREAMS_ENABLED=false` redirects to `/twilio/voice` with zero dead air
 

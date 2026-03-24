@@ -953,7 +953,7 @@ class FlowEngine:
                 return
             elif answer == "done":
                 await self._tts.put(
-                    "Great — thanks for calling Theorem Health. Have a lovely day!"
+                    "Thanks for calling Theorem Health. Have a great day!"
                 )
                 self.session["flow_step"] = len(self._active_flow)
                 return

@@ -277,10 +277,14 @@ class Evaluator:
                 flow_step is not None and flow_step >= 7
             )
 
-            checks["flow_completed"] = (
-                result.get("end_reason") in ("complete", "completed")
-                and (turns_ok or flow_progress_ok)
+            # "timeout" is acceptable when booking was genuinely confirmed
+            # (the /status webhook from Twilio sometimes doesn't arrive before
+            #  the 480 s guard fires — the session still shows the real outcome).
+            end_reason = result.get("end_reason", "")
+            end_ok = end_reason in ("complete", "completed") or (
+                end_reason == "timeout" and flow_progress_ok
             )
+            checks["flow_completed"] = end_ok and (turns_ok or flow_progress_ok)
 
         # ── no technical error phrases ────────────────────────────────
         if expected.get("no_technical_error"):

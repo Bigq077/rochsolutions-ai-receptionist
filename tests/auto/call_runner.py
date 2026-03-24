@@ -76,6 +76,7 @@ class CallRunner:
         self.scenario = scenario
         self._shared_server = shared_server
         self.call_sid = None
+        self.inbound_sid: str | None = None  # Susie's inbound call SID — set by injection loop
         self.call_placed_at = None   # UTC datetime when outbound call was created
         self.current_turn = 0
         self.call_complete = asyncio.Event()
@@ -184,8 +185,9 @@ class CallRunner:
         logger.info("[%s] Waiting for session to be saved...", self.scenario["id"])
         await asyncio.sleep(15)
 
-        # Find the inbound call SID (Susie's side) — the session is stored under this SID
-        inbound_sid = await self._find_inbound_call_sid(client)
+        # Use the inbound SID captured during injection (set by _run_transcript_injection).
+        # Fall back to a fresh lookup only if injection never ran (e.g. call failed before greeting).
+        inbound_sid = self.inbound_sid or await self._find_inbound_call_sid(client)
         logger.info("[%s] Inbound call SID: %s", self.scenario["id"], inbound_sid or "not found")
 
         # Retrieve what Susie said from her Redis session
@@ -212,8 +214,11 @@ class CallRunner:
         """
         import datetime as _dt
         try:
-            # Only include calls with the requested status (if any)
-            list_kwargs: dict = {"to": SUSIE_NUMBER, "limit": 5}
+            # Filter by from_=TWILIO_TEST_NUMBER so we only match calls placed
+            # by OUR test number, not other concurrent calls to Susie's line.
+            list_kwargs: dict = {"to": SUSIE_NUMBER, "limit": 10}
+            if TWILIO_TEST_NUMBER:
+                list_kwargs["from_"] = TWILIO_TEST_NUMBER
             if status:
                 list_kwargs["status"] = status
             calls = client.calls.list(**list_kwargs)
@@ -341,6 +346,10 @@ class CallRunner:
                 "[%s] Transcript injection aborted — could not find inbound SID after 15 tries",
                 self.scenario["id"],
             )
+        else:
+            # Save for session fetch after call ends — prevents picking up a
+            # different call's session if multiple inbound calls exist.
+            self.inbound_sid = inbound_sid
             return
 
         # ── 2. Wait for Susie's greeting ──────────────────────────────────

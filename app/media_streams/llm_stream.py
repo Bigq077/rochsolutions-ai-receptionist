@@ -424,32 +424,8 @@ class LLMStream:
 
         Returns the full response text (also stored in session["last_bot_prompt"]).
         """
-        date_prefix = _build_date_prefix()
-        location    = session.get("selected_location", "alcester")
-        system_prompt = (
-            # v2026-03-19-1 — bumped to bust Anthropic prompt cache
-            "ABSOLUTE RULE — NO EXCEPTIONS:\n"
-            "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
-            "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
-            "Obviously, Clearly, Right so, Of Course, Sure, Lovely.\n"
-            "Start every response with substance. "
-            "WRONG: 'Absolutely, I can help.' RIGHT: 'I can help.'\n\n"
-            f"You are Susie, a warm and professional AI receptionist at Theorem Health. "
-            f"Respond naturally and conversationally. Keep responses brief — one or two "
-            f"sentences at most. Never ask more than one question per response. "
-            f"The clinic location for this booking is {location}. "
-            f"Always use location='{location}' in any tool calls. "
-            f"Never ask the caller which location they prefer. "
-            f"{SILENCE_RULE}\n\n"
-            "SLOT DAY-NAME RULE — ABSOLUTE, NO EXCEPTIONS:\n"
-            "When presenting appointment slots, ALWAYS read the three-letter abbreviation "
-            "at the START of the slot label to determine the day name. "
-            "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, "
-            "Sat=Saturday, Sun=Sunday. "
-            "NEVER calculate or guess the day of week from the date number. "
-            "The abbreviation in the label is always correct — trust it completely.\n\n"
-            f"{date_prefix}"
-        )
+        from .config import get_system_prompt as _get_system_prompt
+        system_prompt = _get_system_prompt(session)
 
         messages = [{"role": "user", "content": instruction}]
         tools    = _build_claude_tools() if allow_tools else []

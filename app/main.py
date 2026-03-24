@@ -209,12 +209,12 @@ app.include_router(avatar_router)
 app.include_router(admin_router)   # temporary admin router
 app.include_router(realtime_router)  # OpenAI Realtime WebSocket bridge
 
-# Media Streams parallel pipeline — feature-gated
+# Media Streams pipeline — always registered so Twilio routing works regardless of flag
+app.include_router(media_streams_router)
 if MEDIA_STREAMS_ENABLED:
-    app.include_router(media_streams_router)
     logger.info("✅ Media Streams system: ENABLED (/ms/incoming, /ms/stream)")
 else:
-    logger.info("ℹ️  Media Streams system: DISABLED (set MEDIA_STREAMS_ENABLED=true to enable)")
+    logger.info("ℹ️  Media Streams system: routes registered but MEDIA_STREAMS_ENABLED=false (kill switch active)")
 
 logger.info("✅ All routes registered successfully")
 
