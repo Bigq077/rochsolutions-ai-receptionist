@@ -22,12 +22,13 @@ SCENARIOS = [
         "phase": "Phase 1 — Connection",
         "name": "Basic pickup and greeting",
         "responses": [],
-        # No responses — just check Susie answers and delivers correct greeting
+        # No responses — just check Susie answers and delivers correct greeting.
+        # Greeting is BOOKING_OPEN: "Of course you can book an appointment —
+        # what brings you in today?" — no clinic selection, no location question.
         "expected": {
             "answered_within_seconds": 5,
             "greeting_contains": [
-                "susie",
-                "how can i help",
+                "what brings you in",
             ],
             "greeting_not_contains": [
                 "alcester", "redditch", "say one", "say two",
@@ -41,7 +42,7 @@ SCENARIOS = [
         "name": "Greeting wording exact",
         "responses": [],
         "expected": {
-            "first_susie_turn_contains": "how can i help",
+            "first_susie_turn_contains": "what brings you in",
             "first_susie_turn_not_contains": [
                 "alcester", "redditch",
                 "say one", "say two",

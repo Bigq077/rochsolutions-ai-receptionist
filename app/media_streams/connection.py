@@ -173,12 +173,17 @@ class SilenceHandler:
     silence packets (which arrive every ~20ms regardless of speech).
 
     Silence windows:
-        1st (4 s) → "Sorry, I didn't quite catch that — <question>"
-        2nd (4 s) → "Sorry about that — <question>"
-        3rd (4 s) → transfer phrase + trigger_transfer()
+        1st (20 s) → "Sorry, I didn't quite catch that — <question>"
+        2nd (15 s) → "Sorry about that — <question>"
+        3rd (15 s) → transfer phrase + trigger_transfer()
 
-    The since_audio < 3.5 guard means the window fires only when genuinely
-    no speech has been detected for the full window duration.
+    Windows are sized so that:
+      - Re-ask #1 fires within the first 25-second silence window used by
+        the automated test runner (TURN_WAIT_SECONDS=25).
+      - Transfer does NOT fire before a second silent turn's response
+        arrives (~70 s from call start), allowing recovery scenarios to work.
+      - The since_audio < 3.5 guard means the window fires only when
+        genuinely no speech has been detected.
     """
 
     def __init__(
@@ -297,9 +302,9 @@ class SilenceHandler:
         """
         Flat sequential re-ask coroutine.
 
-        Window 1: 4s sleep → since_audio guard → re-ask #1 → 5s TTS wait
-        Window 2: 4s sleep → since_audio guard → re-ask #2 → 5s TTS wait
-        Window 3: 4s sleep → since_audio guard → transfer
+        Window 1: 20s sleep → since_audio guard → re-ask #1 → 5s TTS wait
+        Window 2: 15s sleep → since_audio guard → re-ask #2 → 5s TTS wait
+        Window 3: 15s sleep → since_audio guard → transfer
 
         Never recurses with create_task.  CancelledError exits cleanly at
         any sleep — caller spoke (on_speech_started) or Susie spoke
@@ -307,9 +312,9 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 4 s silence ──────────────────────────────────────────
+        # ── Window 1: 20 s silence ─────────────────────────────────────────
         try:
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(20.0)
             # Yield once more so any task.cancel() that arrived while we were
             # sleeping (but after sleep() returned normally) is delivered here
             # before we check the guards — fixes the race where _llm_busy is
@@ -346,9 +351,9 @@ class SilenceHandler:
             return
         self.currently_reasking = False
 
-        # ── Window 2: 4 s silence ──────────────────────────────────────────
+        # ── Window 2: 15 s silence ─────────────────────────────────────────
         try:
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(15.0)
             await asyncio.sleep(0)  # deliver any pending cancel before guard checks
         except asyncio.CancelledError:
             return
@@ -381,9 +386,9 @@ class SilenceHandler:
             return
         self.currently_reasking = False
 
-        # ── Window 3: 4 s silence → transfer ──────────────────────────────
+        # ── Window 3: 15 s silence → transfer ─────────────────────────────
         try:
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(15.0)
         except asyncio.CancelledError:
             return
 
