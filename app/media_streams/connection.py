@@ -1094,6 +1094,14 @@ class WebSocketCallHandler:
         try:
             if delay > 0:
                 await asyncio.sleep(delay)
+            # Don't arm the silence timer once the booking flow is complete.
+            # Without this guard, CONFIRM_BOOKING's LLM response (which often
+            # ends with "?") re-arms the timer and causes a spurious CONFIRM_PHONE
+            # re-ask after booking is confirmed, failing no_question_asked_twice /
+            # no_state_corruption checks (seen in tests 2.7 and 6.4).
+            if hasattr(self, "_flow") and self._flow.is_complete():
+                logger.debug("[ms_silence] flow complete — skipping tts_finished")
+                return
             self._silence_handler.on_tts_finished(text)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay", delay)
         except asyncio.CancelledError:

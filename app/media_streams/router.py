@@ -276,6 +276,22 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
         llm_busy    = handler._llm_busy
         q_before    = handler.transcript_queue.qsize()
 
+        # If the LLM is still processing the previous turn, wait for it to finish
+        # before injecting.  Without this guard, turns injected during PRESENT_SLOTS
+        # (the slowest step — LLM + check_availability tool call + slot-list TTS) are
+        # silently dropped by _llm_loop when _llm_busy=True, stalling the flow at
+        # slot selection and causing slot_confirmed / flow_completed failures.
+        _MAX_BUSY_WAIT = 60.0
+        _busy_waited   = 0.0
+        while handler._llm_busy and _busy_waited < _MAX_BUSY_WAIT and not handler._stop_event.is_set():
+            await asyncio.sleep(0.25)
+            _busy_waited += 0.25
+        if _busy_waited > 0:
+            logger.info(
+                "[ms_inject] waited %.1fs for LLM to finish before injecting %r",
+                _busy_waited, text[:60],
+            )
+
         # Simulate a completed utterance so SilenceHandler fully resets:
         # on_transcript_received() cancels the timer AND resets reask_count,
         # currently_reasking, and last_audio_received_at — a strict superset

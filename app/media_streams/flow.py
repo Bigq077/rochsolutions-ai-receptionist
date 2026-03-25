@@ -1038,6 +1038,27 @@ class FlowEngine:
             await self._handle_slot_confirmation(text, transcript)
             return
 
+        # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
+        _ABANDON_SIGNALS = (
+            "never mind", "nevermind", "forget it", "forget this",
+            "actually no", "don't bother", "dont bother",
+            "not anymore", "changed my mind", "not interested",
+            "not now", "no thanks", "cancel that", "cancel this",
+            "want to stop", "want to cancel", "actually cancel",
+        )
+        if step["state"] != "DETECT_INTENT" and any(sig in text for sig in _ABANDON_SIGNALS):
+            phrase = (
+                "No problem at all! If you change your mind, don't hesitate to call us back. "
+                "Have a great day!"
+            )
+            await self._tts.put(phrase)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
+            self.session["flow_step"] = len(self._active_flow)
+            logger.info("[ms_flow] abandonment detected — graceful close")
+            return
+
         # ── DETECT_INTENT: route to correct flow on first utterance ───────────
         if step["state"] == "DETECT_INTENT":
             intent = self._detect_intent(text)

@@ -178,6 +178,7 @@ SCENARIOS = [
             "Six months",
             "Yes",
             "Yeah I have been before",
+            "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
             "Wednesday afternoon",
             "Second one",
             "Yes",
@@ -727,6 +728,7 @@ SCENARIOS = [
             "Three months",
             "Yes please",
             "Yeah I've been before",
+            "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
             "Any afternoon next week",
             "The second one",
             "Yes",
@@ -796,6 +798,7 @@ SCENARIOS = [
             "On and off for a year",
             "Yes that sounds fine",
             "Yes I have been before",
+            "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
             "Friday afternoon please",
             "The first one",
             "Yes that's correct",
