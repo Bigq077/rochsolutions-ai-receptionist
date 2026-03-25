@@ -32,6 +32,38 @@ _TOKENS_KEY = "google_tokens"
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _ordinal(n: int) -> str:
+    """Return English ordinal string: 1→'1st', 2→'2nd', 26→'26th', etc."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{['th', 'st', 'nd', 'rd', 'th'][min(n % 10, 4)]}"
+
+
+def _build_days_data(slot_tuples: list) -> list:
+    """
+    Group (start_dt, end_dt) tuples into per-day summaries for the day-first
+    availability presentation flow.  Returns up to 8 unique days.
+    """
+    from collections import defaultdict as _dd
+    days_map: "_dd[Any, list]" = _dd(list)
+    for start, end in slot_tuples:
+        days_map[start.date()].append((start, end))
+
+    days_data = []
+    for day in sorted(days_map.keys())[:8]:          # cap at 8 days
+        day_slots = days_map[day]
+        dt = day_slots[0][0]
+        day_name  = dt.strftime("%A")                # "Thursday"
+        day_label = f"{day_name} {_ordinal(dt.day)} {dt.strftime('%B')}"  # "Thursday 26th March"
+        days_data.append({
+            "date":       day.isoformat(),
+            "day_label":  day_label,
+            "slot_times": [s[0].strftime("%H:%M") for s in day_slots],
+            "slots":      [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in day_slots],
+        })
+    return days_data
+
+
 async def _get_tokens() -> Optional[Dict[str, Any]]:
     """Fetch Google Calendar OAuth tokens from Redis."""
     from app.storage.redis_store import redis_get_json
@@ -155,9 +187,9 @@ TOOL_CHECK_AVAILABILITY = {
     "name": "check_availability",
     "description": (
         "Check available appointment slots at a clinic location. "
-        "Call this BEFORE asking the patient to pick a time. "
-        "Returns up to 3 formatted slot strings. Always call this first, "
-        "then present the slots to the patient."
+        "Call this BEFORE offering times. Returns `available_days` — a list of days, "
+        "each with day_label, slot_times, and slots. Present available DAYS first "
+        "(up to 4), then times for the chosen day (up to 4)."
     ),
     "input_schema": {
         "type": "object",
@@ -887,17 +919,20 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 after_date_cutoff, len(slots), pre_filter_count,
             )
 
-        top3 = slots[:3]
-        labels = [s.start_time.strftime("%a %d %b at %H:%M") for s in top3]
-        raw = [{"start": s.start_time.isoformat(), "end": s.end_time.isoformat()} for s in top3]
+        # Build day-grouped structure for the day-first presentation flow
+        slot_tuples = [(s.start_time, s.end_time) for s in slots]
+        days_data   = _build_days_data(slot_tuples)
 
-        # Cache for use by book_appointment so it doesn't re-fetch
-        session["last_offered_slots"] = raw
-        session["slot_labels"] = labels
+        # Store ALL raw slots so book_appointment can resolve any chosen time
+        all_raw    = [{"start": s.start_time.isoformat(), "end": s.end_time.isoformat()} for s in slots]
+        all_labels = [s.start_time.strftime("%a %d %b at %H:%M") for s in slots]
+
+        session["last_offered_slots"]          = all_raw
+        session["slot_labels"]                 = all_labels
         session["_acuity_appointment_type_id"] = appointment_type_id
-        session["_acuity_practitioner_id"] = practitioner_id
+        session["_acuity_practitioner_id"]     = practitioner_id
 
-        return {"slots": labels, "raw": raw}
+        return {"available_days": days_data, "total_days": len(days_data)}
 
     except Exception as e:
         logger.error("_check_availability_acuity unexpected error: %r", e, exc_info=True)
@@ -1288,22 +1323,21 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     tokens = await _get_tokens()
     if not tokens:
-        top3 = pick_first_n(candidates, 3)
-        if not top3:
+        if not candidates:
             return {"error": "No slots found in the next 7 days.", "slots": []}
-        labels = [format_slot(s) for s in top3]
-        raw = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in top3]
-        session["last_offered_slots"] = raw
-        session["slot_labels"] = labels
-        return {"slots": labels, "raw": raw, "note": "calendar_not_connected"}
+        days_data  = _build_days_data(candidates)
+        all_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in candidates]
+        all_labels = [format_slot(s) for s in candidates]
+        session["last_offered_slots"] = all_raw
+        session["slot_labels"]        = all_labels
+        return {"available_days": days_data, "total_days": len(days_data), "note": "calendar_not_connected"}
 
     calendar_id = _resolve_calendar_id(clinic, location)
 
     try:
         busy_raw = await asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id)
         busy_blocks = parse_busy(busy_raw or [])
-        free = filter_free_slots(candidates, busy_blocks)
-        top3 = pick_first_n(free, 3)
+        free_slots = filter_free_slots(candidates, busy_blocks)
     except Exception as e:
         # Calendar API failed — fall back to unfiltered candidate slots (same
         # behaviour as when calendar tokens are absent).  This keeps the
@@ -1313,23 +1347,25 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         logger.error(
             "check_availability freebusy error: %r — falling back to unfiltered candidates", e
         )
-        top3 = pick_first_n(candidates, 3)
-        if not top3:
+        free_slots = candidates
+        if not free_slots:
             return {"error": "No candidate slots found in the next 7 days.", "slots": []}
-        labels = [format_slot(s) for s in top3]
-        raw = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in top3]
-        session["last_offered_slots"] = raw
-        session["slot_labels"] = labels
-        return {"slots": labels, "raw": raw, "note": "calendar_check_failed_unfiltered"}
+        days_data  = _build_days_data(free_slots)
+        all_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in free_slots]
+        all_labels = [format_slot(s) for s in free_slots]
+        session["last_offered_slots"] = all_raw
+        session["slot_labels"]        = all_labels
+        return {"available_days": days_data, "total_days": len(days_data), "note": "calendar_check_failed_unfiltered"}
 
-    if not top3:
+    if not free_slots:
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
 
-    labels = [format_slot(s) for s in top3]
-    raw = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in top3]
-    session["last_offered_slots"] = raw
-    session["slot_labels"] = labels
-    return {"slots": labels, "raw": raw}
+    days_data  = _build_days_data(free_slots)
+    all_raw    = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in free_slots]
+    all_labels = [format_slot(s) for s in free_slots]
+    session["last_offered_slots"] = all_raw
+    session["slot_labels"]        = all_labels
+    return {"available_days": days_data, "total_days": len(days_data)}
 
 
 # ---------------------------------------------------------------------------
