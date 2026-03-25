@@ -364,13 +364,13 @@ class CallRunner:
         for i, response in enumerate(responses):
             text = response if isinstance(response, str) else response.get("text", "")
             if text.strip():
-                await self._inject_transcript(inbound_sid, text, i)
-                # Record the actual time each transcript was injected.
-                # This gives accurate timestamps for the no_dead_air check —
-                # pre-generation timestamps (set earlier) are meaningless
-                # since they were recorded before the call even started.
+                # Record timestamp BEFORE the inject POST so that slow server
+                # response times (e.g. Render processing a tool call) don't
+                # inflate the gap and trip the no_dead_air check.  The gap then
+                # measures ~TURN_WAIT_SECONDS between consecutive utterances.
                 if i < len(self.test_said):
                     self.test_said[i]["timestamp"] = time.time()
+                await self._inject_transcript(inbound_sid, text, i)
             # Wait for Susie to process and respond before next injection
             logger.info(
                 "[%s] Waiting %ds for Susie's response to turn %d",
