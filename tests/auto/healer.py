@@ -94,7 +94,7 @@ class Healer:
         turns      = result.get("turns", 0)
         end_reason = result.get("end_reason", "unknown")
 
-        if self._is_infrastructure_failure(turns, end_reason):
+        if self._is_infrastructure_failure(result):
             self._infra_fail_streak += 1
             print(
                 f"  Healer: Infrastructure failure "
@@ -115,16 +115,45 @@ class Healer:
     # ── helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_infrastructure_failure(turns: int, end_reason: str) -> bool:
-        return (
-            turns == 0
-            or end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception")
-        )
+    def _is_infrastructure_failure(result: dict) -> bool:
+        turns      = result.get("turns", 0)
+        end_reason = result.get("end_reason", "unknown")
+
+        # Classic infrastructure failures — no conversation at all
+        if turns == 0:
+            return True
+        if end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception"):
+            return True
+
+        # Early call drop: Twilio reported "completed" but the flow barely started.
+        # This happens when the Render WebSocket drops mid-call or Twilio routes
+        # the call away before all patient audio is injected.
+        # Signature: scenario expects flow_completed, but booking never confirmed
+        # and flow_step is still in the first 2 steps (greeting + first question).
+        scenario          = result.get("scenario", {})
+        expected          = scenario.get("expected", {})
+        n_responses       = len(scenario.get("responses", []))
+        flow_step         = result.get("flow_step")
+        booking_confirmed = result.get("booking_confirmed")
+
+        if (
+            expected.get("flow_completed")           # scenario expects a full run
+            and not booking_confirmed                 # booking never completed
+            and flow_step is not None
+            and flow_step <= 2                        # flow barely started
+            and n_responses >= 5                      # scenario has many turns (not a short edge case)
+            and end_reason == "completed"             # Twilio said "completed" (not a known infra error)
+        ):
+            return True
+
+        return False
 
     @staticmethod
     def _classify(turns: int, end_reason: str, fail_checks: list[str]) -> str:
         if turns == 0 or end_reason in ("timeout", "timeout_no_speech", "ngrok_died"):
             return "Infrastructure failure — no conversation happened (server cold or ngrok dead)"
+        if "flow_completed" in fail_checks and end_reason == "completed" and turns <= 6:
+            return "Early call drop — Twilio/Render dropped the call before flow finished (will retry)"
         if "flow_completed" in fail_checks and end_reason == "completed":
             return "Call ended prematurely — Susie hung up before scenario finished"
         if any("greeting" in c for c in fail_checks):

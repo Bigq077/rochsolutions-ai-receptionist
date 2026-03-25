@@ -552,14 +552,20 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "question": None,   # LLM generates this
         "answer_field": "booking_confirmed",
         "use_llm": True,
+        "allow_tools": False,   # booking already collected — no tool calls needed
         "llm_instruction": (
+            "CRITICAL: DO NOT call any tools. DO NOT call book_appointment or any "
+            "other function. The booking details have already been collected — "
+            "your only job is to read them back warmly.\n"
             "Confirm the booking with a warm summary. "
             "Include: patient name '{full_name}', "
             "appointment type 'physiotherapy assessment', "
             "date and time '{selected_slot_speech}', "
             "and confirm their contact number is {phone_number}. "
             "Tell them a confirmation text will follow. "
-            "Keep it to 2-3 sentences, warm and natural. Do not say 'Lovely'."
+            "Keep it to 2-3 sentences, warm and natural. "
+            "Do not say 'Lovely'. "
+            "Do NOT mention any booking system, errors, hiccups, or technical issues."
         ),
         "extract": "none",
     },
