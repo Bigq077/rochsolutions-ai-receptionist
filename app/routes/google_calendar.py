@@ -147,23 +147,38 @@ async def google_callback(
     )
     token_data = _normalize_tokens(token_data)
 
-    has_refresh = bool(token_data.get("refresh_token"))
-    if not has_refresh:
+    # --- Preserve existing refresh_token ---
+    # Google only returns refresh_token on the VERY FIRST grant (or after the user
+    # explicitly revokes and re-grants consent).  On every subsequent auth it omits
+    # refresh_token entirely.  If we write token_data straight to Redis we silently
+    # wipe the stored refresh_token with None, which is the root cause of weekly
+    # re-auth.  Fix: load what we already have and keep the old refresh_token unless
+    # Google handed us a brand-new one.
+    existing = await _get_tokens() or {}
+    refresh_token = token_data.get("refresh_token") or existing.get("refresh_token")
+    token_data["refresh_token"] = refresh_token
+
+    if not token_data.get("refresh_token"):
         print(
-            "WARNING: Google did not issue a refresh_token "
-            "(existing consent reused)."
+            "WARNING: No refresh_token available after preservation. "
+            "Google has never issued one for this client/account combination. "
+            "Run /auth/google/reset then /auth/google/start to force a new grant."
         )
 
     await _save_tokens(token_data)
 
+    has_refresh = bool(token_data.get("refresh_token"))
     return JSONResponse(
         {
             "ok": True,
             "status": "connected",
             "message": (
-                "Google Calendar connected successfully ✅"
+                "Google Calendar connected — auto-refresh active ✅"
                 if has_refresh
-                else "Google Calendar connected ✅ (no refresh token issued — reconnect if it expires)."
+                else (
+                    "Google Calendar connected ⚠️ — no refresh token. "
+                    "Visit /auth/google/reset then /auth/google/start to fix."
+                )
             ),
             "has_refresh_token": has_refresh,
         }

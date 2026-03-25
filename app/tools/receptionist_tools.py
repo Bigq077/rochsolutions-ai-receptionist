@@ -73,6 +73,22 @@ async def _get_tokens() -> Optional[Dict[str, Any]]:
         return None
 
 
+async def _save_gcal_tokens(tokens: Dict[str, Any]) -> None:
+    """
+    Persist refreshed GCal tokens back to Redis.
+    _refresh_if_needed() updates the token dict in-place but never writes to
+    Redis itself; calling this after each calendar API call ensures the new
+    access token and expiry are saved so the next request skips a needless
+    refresh round-trip.  Failures are non-fatal — worst case is an extra
+    refresh on the next call.
+    """
+    from app.storage.redis_store import redis_set_json
+    try:
+        await redis_set_json(_TOKENS_KEY, tokens, ttl_seconds=60 * 60 * 24 * 365)
+    except Exception as e:
+        logger.warning("_save_gcal_tokens: failed to persist updated tokens: %r", e)
+
+
 def _resolve_calendar_id(clinic: Dict[str, Any], location: str) -> str:
     """
     Return the Google Calendar ID to use for a given clinic + location.
@@ -1336,6 +1352,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     try:
         busy_raw = await asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id)
+        await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside freebusy
         busy_blocks = parse_busy(busy_raw or [])
         free_slots = filter_free_slots(candidates, busy_blocks)
     except Exception as e:
@@ -1461,6 +1478,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         event = await asyncio.to_thread(
             create_event, tokens, start_dt, end_dt, summary, description, calendar_id
         )
+        await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside create_event
         event_id = event.get("id", "")
     except Exception as e:
         logger.error("book_appointment create_event error: %r", e)
