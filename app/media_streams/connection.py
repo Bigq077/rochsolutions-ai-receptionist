@@ -256,6 +256,11 @@ class SilenceHandler:
             return
         if self._llm_busy:
             return
+        if self.reask_count >= 2:
+            # Both re-asks have already fired; _run() is now in Window 3.
+            # Do NOT restart the timer here — that cancels Window 3 and
+            # prevents the silence-transfer from ever triggering.
+            return
         t = text.strip()
         is_question = (
             t.endswith("?") or

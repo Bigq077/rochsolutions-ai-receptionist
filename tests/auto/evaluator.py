@@ -124,9 +124,15 @@ graceful_end (bool | null)
 
 banned_phrases_absent (bool)
   true if NONE of these appear anywhere in Susie's turns:
-  "absolutely", "certainly", "of course!", "sure thing",
+  "absolutely", "certainly", "sure thing",
   "bear with me", "i am waiting", "are you still there",
   "welcome back" (when speaking to a new patient).
+
+  For "of course": ONLY flag it as banned when used as a standalone exclamatory
+  affirmation — e.g. "Of course!" or "Of course, happy to help!" — where it
+  functions as an empty filler agreement. Do NOT flag "of course" when it appears
+  mid-sentence as a normal English connective, e.g. "Of course you can book an
+  appointment" or "Of course we can arrange that" — those are NOT banned.
 
 overall_quality ("excellent" | "good" | "poor")
   Your holistic rating of the interaction.

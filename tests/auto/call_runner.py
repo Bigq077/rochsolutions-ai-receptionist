@@ -346,11 +346,11 @@ class CallRunner:
                 "[%s] Transcript injection aborted — could not find inbound SID after 15 tries",
                 self.scenario["id"],
             )
-        else:
-            # Save for session fetch after call ends — prevents picking up a
-            # different call's session if multiple inbound calls exist.
-            self.inbound_sid = inbound_sid
             return
+
+        # Save for session fetch after call ends — prevents picking up a
+        # different call's session if multiple inbound calls exist.
+        self.inbound_sid = inbound_sid
 
         # ── 2. Wait for Susie's greeting ──────────────────────────────────
         logger.info(
@@ -396,25 +396,40 @@ class CallRunner:
             "[%s] Injecting turn %d → %s: %.60s",
             self.scenario["id"], turn_index, inbound_sid[:8], text,
         )
-        try:
-            async with httpx.AsyncClient(timeout=15) as http:
-                resp = await http.post(url, json={"text": text})
-                data = resp.json()
-                if data.get("ok"):
-                    diag = data.get("diag", {})
-                    logger.info(
-                        "[%s] Injected turn %d OK  diag=%s",
-                        self.scenario["id"], turn_index, diag,
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=15) as http:
+                    resp = await http.post(url, json={"text": text})
+                    data = resp.json()
+                    if data.get("ok"):
+                        diag = data.get("diag", {})
+                        logger.info(
+                            "[%s] Injected turn %d OK  diag=%s",
+                            self.scenario["id"], turn_index, diag,
+                        )
+                    else:
+                        logger.warning(
+                            "[%s] Inject turn %d failed: %s",
+                            self.scenario["id"], turn_index, data.get("error"),
+                        )
+                break  # success — no retry needed
+            except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
+                if attempt == 0:
+                    logger.warning(
+                        "[%s] Inject turn %d connection error (attempt 1): %r — retrying in 10s",
+                        self.scenario["id"], turn_index, exc,
                     )
+                    await asyncio.sleep(10)
                 else:
                     logger.warning(
-                        "[%s] Inject turn %d failed: %s",
-                        self.scenario["id"], turn_index, data.get("error"),
+                        "[%s] Inject turn %d error after retry: %r",
+                        self.scenario["id"], turn_index, exc,
                     )
-        except Exception as exc:
-            logger.warning(
-                "[%s] Inject turn %d error: %r", self.scenario["id"], turn_index, exc
-            )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Inject turn %d error: %r", self.scenario["id"], turn_index, exc
+                )
+                break  # non-connection errors — don't retry
 
     # ── Audio generation ─────────────────────────────────────────────────────
 
