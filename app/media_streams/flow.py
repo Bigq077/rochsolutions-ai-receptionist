@@ -407,8 +407,76 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "new_or_returning",
         "llm_instruction": None,
     },
+    # ── Returning-patient branch (steps 4-9) ──────────────────────────────
+    # All six steps are skipped for new patients or patients not on a
+    # treatment plan.  Skip logic lives in ask_current_question().
     {
         "step": 4,
+        "state": "RETURNING_RECENCY",
+        "question": "Was that recently, or has it been a little while?",
+        "answer_field": "returning_recency",
+        "use_llm": False,
+        "extract": "recency",
+        "llm_instruction": None,
+    },
+    {
+        "step": 5,
+        "state": "RETURNING_TREATMENT_PLAN",
+        "question": "And are you currently on a treatment plan with us?",
+        "answer_field": "on_treatment_plan",
+        "use_llm": False,
+        "extract": "yes_no_explicit",
+        "llm_instruction": None,
+    },
+    {
+        "step": 6,
+        "state": "COLLECT_NAME_RETURNING",
+        "question": "Could I take your name please?",
+        "answer_field": "full_name",
+        "use_llm": False,
+        "extract": "name",
+        "llm_instruction": None,
+    },
+    {
+        "step": 7,
+        "state": "CONFIRM_PHONE_RETURNING",
+        "question": "And the best number to contact you on?",
+        "answer_field": "phone_confirmed",
+        "use_llm": False,
+        "extract": "phone_confirm",
+        "llm_instruction": None,
+    },
+    {
+        "step": 8,
+        "state": "COLLECT_PHONE_RETURNING",
+        "question": "And the best number to contact you on?",
+        "answer_field": "phone_number",
+        "use_llm": False,
+        "extract": "phone",
+        "llm_instruction": None,
+    },
+    {
+        "step": 9,
+        "state": "LOOKUP_TREATMENT_PLAN",
+        "question": None,
+        "answer_field": "treatment_plan_looked_up",
+        "use_llm": True,
+        "llm_instruction": (
+            "Call get_patient_history with patient_name='{full_name}', "
+            "phone='{phone_number}'. "
+            "After the tool responds: "
+            "if a treatment was found (found=true), say warmly in one natural sentence — "
+            "e.g. 'I can see you\\'ve been coming in for your [most_recent_type] — "
+            "let\\'s get your next session booked in.' "
+            "If nothing is found or there is an error, say: "
+            "'No problem — let\\'s get you booked in.' "
+            "One warm sentence only. Do not ask about availability or time preferences here."
+        ),
+        "extract": "none",
+    },
+    # ── Main booking steps (steps 10-15) ──────────────────────────────────
+    {
+        "step": 10,
         "state": "COLLECT_AVAILABILITY",
         "question": "What days or times work best for you?",
         "answer_field": "availability",
@@ -417,7 +485,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 5,
+        "step": 11,
         "state": "PRESENT_SLOTS",
         "question": None,   # preamble lives inside the LLM instruction so TTS is continuous
         "answer_field": "selected_slot",
@@ -449,7 +517,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "slot_selection",
     },
     {
-        "step": 6,
+        "step": 12,
         "state": "COLLECT_NAME",
         "question": "Could I take your full name please?",
         "answer_field": "full_name",
@@ -458,7 +526,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 7,
+        "step": 13,
         "state": "CONFIRM_PHONE",
         "question": (
             "Just to confirm — shall I use the number "
@@ -470,7 +538,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 8,
+        "step": 14,
         "state": "COLLECT_PHONE",
         "question": "And the best number to reach you on?",
         "answer_field": "phone_number",
@@ -479,7 +547,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 9,
+        "step": 15,
         "state": "CONFIRM_BOOKING",
         "question": None,   # LLM generates this
         "answer_field": "booking_confirmed",
@@ -758,6 +826,68 @@ class FlowEngine:
                 step["state"], self.session["selected_location"],
             )
 
+        # ── Returning-patient branch skip logic ───────────────────────────────
+        # RETURNING_RECENCY: skip entirely for new patients
+        if step["state"] == "RETURNING_RECENCY" and self.session.get("new_or_returning") == "new":
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] new patient — skipping RETURNING_RECENCY")
+            await self.ask_current_question()
+            return
+
+        # RETURNING_TREATMENT_PLAN: skip if new OR not a recent returning patient
+        if step["state"] == "RETURNING_TREATMENT_PLAN" and (
+            self.session.get("new_or_returning") == "new"
+            or self.session.get("returning_recency") != "recent"
+        ):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] skipping RETURNING_TREATMENT_PLAN — not recent returning")
+            await self.ask_current_question()
+            return
+
+        # Treatment-plan sub-flow (name/phone/lookup): skip unless on_treatment_plan=True
+        _tp_states = {
+            "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING",
+            "COLLECT_PHONE_RETURNING", "LOOKUP_TREATMENT_PLAN",
+        }
+        if step["state"] in _tp_states and not self.session.get("on_treatment_plan"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] skipping %s — not on treatment plan", step["state"])
+            await self.ask_current_question()
+            return
+
+        # CONFIRM_PHONE_RETURNING: skip if no Twilio number → go to COLLECT_PHONE_RETURNING
+        if step["state"] == "CONFIRM_PHONE_RETURNING" and not self.session.get("phone_from_twilio"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE_RETURNING")
+            await self.ask_current_question()
+            return
+
+        # COLLECT_PHONE_RETURNING: skip if phone already confirmed from Twilio
+        if step["state"] == "COLLECT_PHONE_RETURNING" and self.session.get("phone_confirmed"):
+            phone = (
+                self.session.get("phone_number")
+                or self.session.get("collected", {}).get("phone")
+                or self.session.get("twilio_from", "")
+            )
+            self.session[step["answer_field"]] = phone
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] phone confirmed — skipping COLLECT_PHONE_RETURNING")
+            await self.ask_current_question()
+            return
+
+        # COLLECT_NAME / CONFIRM_PHONE: skip if name+phone collected in treatment plan sub-flow
+        if step["state"] == "COLLECT_NAME" and self.session.get("on_treatment_plan"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] name already collected — skipping COLLECT_NAME")
+            await self.ask_current_question()
+            return
+
+        if step["state"] == "CONFIRM_PHONE" and self.session.get("on_treatment_plan"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] phone already collected — skipping CONFIRM_PHONE")
+            await self.ask_current_question()
+            return
+
         # CONFIRM_PHONE: skip if no Twilio number — go straight to COLLECT_PHONE
         if step["state"] == "CONFIRM_PHONE" and not self.session.get("phone_from_twilio"):
             self.session["flow_step"] = step["step"] + 1
@@ -825,13 +955,19 @@ class FlowEngine:
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": response}
                 )
-            # FIX 1: Auto-complete CONFIRM_BOOKING — no 10th patient utterance will
-            # arrive to trigger _extract("none"), so set booking_confirmed here
-            # immediately after the LLM generates the confirmation speech.
+            # FIX 1: Auto-complete CONFIRM_BOOKING — no patient utterance will
+            # arrive to trigger _extract("none"), so set booking_confirmed here.
             if step["state"] == "CONFIRM_BOOKING":
                 self.session["booking_confirmed"] = True
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] CONFIRM_BOOKING complete — booking_confirmed=True, flow complete")
+            # LOOKUP_TREATMENT_PLAN: advance immediately after LLM announces the
+            # treatment type — no patient response needed; next step asks availability.
+            if step["state"] == "LOOKUP_TREATMENT_PLAN":
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] LOOKUP_TREATMENT_PLAN complete — advancing to COLLECT_AVAILABILITY")
+                await self.ask_current_question()
+                return
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
             if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
@@ -847,7 +983,7 @@ class FlowEngine:
             self.session["question_asked_this_turn"] = True
             # CONFIRM_PHONE with Twilio caller-ID: read back the digits so
             # number_confirmed_verbally passes in the evaluator.
-            if step["state"] == "CONFIRM_PHONE" and self.session.get("phone_from_twilio"):
+            if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
                 import re as _re
                 raw = self.session.get("twilio_from_local", "") or self.session.get("twilio_from", "")
                 digits = _re.sub(r"\D", "", raw)
@@ -982,21 +1118,19 @@ class FlowEngine:
             # Keep last_question unchanged so SilenceHandler can re-ask again
             return
 
-        # CONFIRM_PHONE: declined path — clear Twilio number, collect manually
-        if step["state"] == "CONFIRM_PHONE" and answer is False:
+        # CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: declined — collect manually
+        if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and answer is False:
             self.session["phone_confirmed"]  = False
             self.session["phone_from_twilio"] = False
             self.session["phone_number"]     = None
             collected = self.session.setdefault("collected", {})
             collected.pop("phone", None)
-            self.session["flow_step"] = step["step"] + 1  # → COLLECT_PHONE
-            phrase = (
-                "No problem — what number would you like to use for the booking?"
-            )
+            self.session["flow_step"] = step["step"] + 1
+            phrase = "No problem — what number would you like to use for the booking?"
             await self._tts.put(phrase)
             if _is_question_worth_storing(phrase):
                 self.session["last_question"] = phrase
-            logger.info("[ms_flow] CONFIRM_PHONE declined — will collect manually")
+            logger.info("[ms_flow] %s declined — will collect manually", step["state"])
             return
 
         # Store the answer
@@ -1326,6 +1460,59 @@ class FlowEngine:
             if _fuzzy_match(text, returning_fuzzy, threshold=75):
                 logger.info("[ms_extract] fuzzy returning: '%s'", text)
                 return "returning"
+            return None
+
+        # ----- recency: "recently" vs "long time ago" -------------------
+        if method == "recency":
+            long_ago = (
+                "long time", "years ago", "year ago", "ages",
+                "quite a while", "good while", "been a while",
+                "long while", "donkey's", "forever",
+                "not for a while", "long way back", "long time ago",
+            )
+            recent = (
+                "recently", "not long", "just a few", "couple months",
+                "few months", "couple of weeks", "few weeks", "this year",
+                "last month", "last few weeks", "few weeks ago",
+                "month ago", "weeks ago", "still going", "ongoing",
+                "currently", "active", "come regularly", "been coming",
+            )
+            # Check long_ago first — "long time" takes priority over shorter matches
+            for sig in long_ago:
+                if sig in text:
+                    logger.info("[ms_extract] recency=long_ago matched=%r", sig)
+                    return "long_ago"
+            for sig in recent:
+                if sig in text:
+                    logger.info("[ms_extract] recency=recent matched=%r", sig)
+                    return "recent"
+            if _fuzzy_match(text, ["long time ago", "a while ago", "been a while"], threshold=75):
+                return "long_ago"
+            if _fuzzy_match(text, ["recently", "not long ago", "a few months ago"], threshold=75):
+                return "recent"
+            return None
+
+        # ----- yes_no_explicit: yes→True, no→False, unclear→None -----------
+        if method == "yes_no_explicit":
+            yes_p = (
+                "yes", "yeah", "ya", "yep", "yup", "ok", "okay",
+                "sure", "fine", "alright", "sounds good", "go ahead",
+                "please", "that works", "correct", "definitely",
+                "of course", "absolutely", "aye", "aye go on",
+                "right then", "fair enough", "sound", "sorted",
+                "i am", "i'm on", "i have",
+            )
+            no_p = (
+                "no", "nope", "not really", "i'm not", "im not", "nah",
+                "not on", "not currently", "don't think", "i haven't",
+                "i havent", "never", "no i", "no i'm not",
+            )
+            for p in yes_p:
+                if p in text:
+                    return True
+            for p in no_p:
+                if p in text:
+                    return False
             return None
 
         # ----- availability: day / time references ----------------------

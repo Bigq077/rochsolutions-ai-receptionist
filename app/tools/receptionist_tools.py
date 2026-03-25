@@ -462,6 +462,32 @@ TOOL_LOG_CALL_OUTCOME = {
     },
 }
 
+TOOL_GET_PATIENT_HISTORY = {
+    "name": "get_patient_history",
+    "description": (
+        "Look up a returning patient's recent appointment history to identify "
+        "their current treatment type. Use this when a patient says they are on "
+        "a treatment plan so you can announce what they have been coming in for."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "patient_name": {
+                "type": "string",
+                "description": "Full name of the patient as given on the call.",
+            },
+            "phone": {
+                "type": "string",
+                "description": (
+                    "Patient's phone number (optional). Helps disambiguate if "
+                    "multiple patients share the same name."
+                ),
+            },
+        },
+        "required": ["patient_name"],
+    },
+}
+
 # Master list passed to the Anthropic API
 TOOL_SCHEMAS = [
     TOOL_CHECK_AVAILABILITY,
@@ -473,6 +499,7 @@ TOOL_SCHEMAS = [
     TOOL_TRANSFER_TO_HUMAN,
     TOOL_SEND_FOLLOWUP_SMS,
     TOOL_LOG_CALL_OUTCOME,
+    TOOL_GET_PATIENT_HISTORY,
 ]
 
 
@@ -2002,6 +2029,68 @@ async def _exec_log_call_outcome(args: Dict[str, Any], session: Dict[str, Any]) 
 # Tool executor registry
 # ---------------------------------------------------------------------------
 
+async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """Look up a patient's recent appointment history in Acuity to identify their treatment."""
+    if session.get("clinic_id") != "theorem":
+        return {"found": False, "message": "Patient history lookup only available for Theorem clinic"}
+
+    adapter = _get_acuity_adapter()
+    if not adapter:
+        return {"found": False, "message": "Scheduling system not configured"}
+
+    patient_name = (args.get("patient_name") or "").strip()
+    if not patient_name:
+        return {"found": False, "message": "Patient name required"}
+
+    today = datetime.now(LONDON_TZ).date()
+    min_date = today - timedelta(days=120)   # look back 4 months
+    max_date = today + timedelta(days=30)    # include upcoming sessions on the plan
+
+    try:
+        appointments = await adapter.list_appointments(min_date=min_date, max_date=max_date)
+    except Exception as exc:
+        logger.warning("get_patient_history: list_appointments failed: %r", exc)
+        return {"found": False, "message": "Could not retrieve appointment history"}
+
+    # Match by name — case-insensitive, any name part matches
+    name_parts = [p.lower() for p in patient_name.split() if p]
+    matching = []
+    for appt in appointments:
+        first = (appt.get("firstName") or "").lower()
+        last  = (appt.get("lastName") or "").lower()
+        full  = f"{first} {last}".strip()
+        if any(part in full for part in name_parts):
+            matching.append(appt)
+
+    if not matching:
+        return {"found": False, "message": f"No appointments found for {patient_name}"}
+
+    # Sort most-recent first
+    def _dt(a: dict) -> datetime:
+        try:
+            raw = a.get("datetime") or a.get("time") or ""
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.min.replace(tzinfo=pytz.utc)
+
+    matching.sort(key=_dt, reverse=True)
+
+    # Collect unique treatment types from the 5 most recent appointments
+    seen: list = []
+    for appt in matching[:5]:
+        t = (appt.get("type") or "").strip()
+        if t and t not in seen:
+            seen.append(t)
+
+    most_recent_type = seen[0] if seen else "physiotherapy"
+    return {
+        "found": True,
+        "most_recent_type": most_recent_type,
+        "recent_types": seen,
+        "appointment_count": len(matching),
+    }
+
+
 TOOL_EXECUTORS: Dict[str, Any] = {
     "check_availability":     _exec_check_availability,
     "book_appointment":       _exec_book_appointment,
@@ -2012,4 +2101,5 @@ TOOL_EXECUTORS: Dict[str, Any] = {
     "transfer_to_human":      _exec_transfer_to_human,
     "send_followup_sms":      _exec_send_followup_sms,
     "log_call_outcome":       _exec_log_call_outcome,
+    "get_patient_history":    _exec_get_patient_history,
 }
