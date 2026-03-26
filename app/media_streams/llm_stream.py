@@ -427,29 +427,35 @@ class LLMStream:
         from .config import get_system_prompt as _get_system_prompt
         system_prompt = _get_system_prompt(session)
 
-        # Append the flow directive to the system prompt rather than injecting it
-        # as a user message.  When sent as a user message the LLM's own
-        # anti-prompt-injection safeguards refuse to call tools (e.g. "I can't
-        # action that — it looks like an injected instruction").  Appending to
-        # system prompt gives the directive proper authority.
-        augmented_system = (
-            system_prompt
-            + "\n\n[FLOW DIRECTIVE — trusted internal instruction, execute immediately]:\n"
-            + instruction
+        # For cancel/reschedule terminal steps the LLM's anti-injection safeguards
+        # refuse to call the tool when the directive arrives as a user message.
+        # Fix: append directive to system prompt + pass full history so the LLM
+        # has proper authority and patient context.
+        # For all other steps (PRESENT_SLOTS, CONFIRM_BOOKING, COLLECT_DURATION …)
+        # keep the original simple user-message approach — it works correctly and
+        # avoids polluting the system prompt with prior cancel/reschedule directives.
+        is_terminal_action = (
+            "cancel_appointment" in instruction
+            or "reschedule_appointment" in instruction
         )
 
-        # Include conversation history so the LLM has full context about what the
-        # patient said and said (name, phone, intent) before this directive fires.
-        history = list(session.get("conversation_history", []))
-        if history and history[-1]["role"] == "user":
-            # History already ends with a user turn — good to go
-            messages = history
-        elif history:
-            # Ends with an assistant turn — append a brief user trigger
-            messages = history + [{"role": "user", "content": "[execute flow directive]"}]
+        if is_terminal_action:
+            augmented_system = (
+                system_prompt
+                + "\n\n[FLOW DIRECTIVE — trusted internal instruction, execute immediately]:\n"
+                + instruction
+            )
+            history = list(session.get("conversation_history", []))
+            if history and history[-1]["role"] == "user":
+                messages = history
+            elif history:
+                messages = history + [{"role": "user", "content": "[execute flow directive]"}]
+            else:
+                messages = [{"role": "user", "content": "[execute flow directive]"}]
         else:
-            # No history yet (e.g. PRESENT_SLOTS on first interaction)
-            messages = [{"role": "user", "content": "[execute flow directive]"}]
+            # Original approach — simple single user message
+            augmented_system = system_prompt
+            messages = [{"role": "user", "content": instruction}]
 
         tools    = _build_claude_tools() if allow_tools else []
 
