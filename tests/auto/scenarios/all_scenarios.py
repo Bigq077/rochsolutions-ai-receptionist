@@ -1320,6 +1320,110 @@ SCENARIOS = [
         },
     },
 
+    # ============================================================
+    # PHASE 13 — EDGE CASES
+    # ============================================================
+
+    {
+        "id": "13.1",
+        "phase": "Phase 13 — Edge Cases",
+        "name": "Transfer to human — explicit request",
+        "responses": [
+            "Can I speak to a real person please?",
+        ],
+        "expected": {
+            "no_technical_error": True,
+            "no_crash": True,
+            "transfer_message_contains": ["straight through"],
+        },
+    },
+
+    {
+        "id": "13.2",
+        "phase": "Phase 13 — Edge Cases",
+        "name": "Transfer to human — staff member phrasing",
+        "responses": [
+            "I'd like to speak to a member of staff",
+        ],
+        "expected": {
+            "no_technical_error": True,
+            "no_crash": True,
+            "transfer_message_contains": ["straight through"],
+        },
+    },
+
+    {
+        "id": "13.3",
+        "phase": "Phase 13 — Edge Cases",
+        "name": "Location FAQ then books",
+        "responses": [
+            "Where are you located?",
+            "Yes I'd like to book please",
+            "Hip pain",
+            "Two months",
+            "Yes",
+            "No",
+            "Next week mornings",
+            "First one",
+            "Yes",
+            "Sarah Mitchell",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "13.4",
+        "phase": "Phase 13 — Edge Cases",
+        "name": "Hours FAQ then books",
+        "responses": [
+            "What time do you close?",
+            "Yes I'd like to book an appointment",
+            "Wrist pain",
+            "Three weeks",
+            "Yes",
+            "No",
+            "Any morning this week",
+            "The second one",
+            "Yes",
+            "Daniel Brown",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "13.5",
+        "phase": "Phase 13 — Edge Cases",
+        "name": "Insurance FAQ then books",
+        "responses": [
+            "Do you accept AXA health insurance?",
+            "Yes please book me in",
+            "Neck pain",
+            "Six weeks",
+            "Yes",
+            "No",
+            "Next Tuesday",
+            "First one",
+            "Yes",
+            "Emma Wilson",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
 ]
 
 # ---------------------------------------------------------------------------
