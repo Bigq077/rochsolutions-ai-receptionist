@@ -980,7 +980,7 @@ class FlowEngine:
                 offered = self.session.get("last_offered_slots") or []
                 if offered:
                     self.session["slots_offered"] = list(offered)
-                    self.session["slots_count"]   = len(offered)
+                    self.session["slots_count"]   = min(len(offered), 3)
                     logger.info(
                         "[ms_flow] slots_offered saved: %d slots",
                         len(offered),
@@ -1589,7 +1589,7 @@ class FlowEngine:
                 "last un", "t'last", "final un",
             )
             if any(p in text for p in last_p):
-                available = len(labels) or len(offered) or slots_count
+                available = min(len(labels), 3) if labels else (min(len(offered), 3) if offered else slots_count)
                 idx = min(slots_count, available) - 1
                 logger.info("[ms_flow] slot_selection last/final → idx=%d", idx)
                 return _pick(idx)
@@ -1612,16 +1612,24 @@ class FlowEngine:
                     "first un", "t'first"),
                 1: ("second", "two", "2", "option two", "number two",
                     "second one", "the second", "second slot", "option 2",
-                    "middle",
+                    "middle", "middle one", "that middle one",
                     # Northern English / informal
                     "middle un", "t'second"),
                 2: ("third", "three", "3", "option three", "number three",
                     "third one", "the third", "third slot", "option 3"),
             }
+            # Pass 1: compound (multi-word) patterns — most specific, checked first
+            # to prevent "one" matching "second one" or "that middle one"
             for idx, patterns in slot_map.items():
                 if idx < slots_count:
-                    if any(p in text for p in patterns):
-                        logger.info("[ms_flow] slot_selection idx=%d", idx)
+                    if any(len(p.split()) > 1 and p in text for p in patterns):
+                        logger.info("[ms_flow] slot_selection compound idx=%d", idx)
+                        return _pick(idx)
+            # Pass 2: single-word patterns — fallback
+            for idx, patterns in slot_map.items():
+                if idx < slots_count:
+                    if any(len(p.split()) == 1 and p in text for p in patterns):
+                        logger.info("[ms_flow] slot_selection single-word idx=%d", idx)
                         return _pick(idx)
 
             # Fuzzy fallback for slot_selection
