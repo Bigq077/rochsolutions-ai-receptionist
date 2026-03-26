@@ -22,12 +22,12 @@ SCENARIOS = [
         "phase": "Phase 1 — Connection",
         "name": "Basic pickup and greeting",
         "responses": [],
-        # No responses — just check Susie answers and delivers correct greeting.
-        # Greeting is BOOKING_OPEN: "Of course you can book an appointment —
-        # what brings you in today?" — no clinic selection, no location question.
+        # Greeting: "Hi there, this is Susie, Theorem Health's AI receptionist.
+        # Of course you can book an appointment — what brings you in today?"
         "expected": {
             "answered_within_seconds": 5,
             "greeting_contains": [
+                "susie",
                 "what brings you in",
             ],
             "greeting_not_contains": [
@@ -42,7 +42,7 @@ SCENARIOS = [
         "name": "Greeting wording exact",
         "responses": [],
         "expected": {
-            "first_susie_turn_contains": "what brings you in",
+            "first_susie_turn_contains": "theorem health",
             "first_susie_turn_not_contains": [
                 "alcester", "redditch",
                 "say one", "say two",
@@ -810,6 +810,513 @@ SCENARIOS = [
             "no_question_asked_twice": True,
             "no_technical_error": True,
             "booking_confirmed": True,
+        },
+    },
+
+    # ============================================================
+    # PHASE 9 — RESCHEDULE
+    # ============================================================
+
+    {
+        "id": "9.1",
+        "phase": "Phase 9 — Reschedule",
+        "name": "Reschedule — use caller number",
+        "responses": [
+            "I need to reschedule my appointment",
+            "John Smith",
+            "Yes use this number",
+            "Any morning next week",
+            "The first one",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "asked_for_name": True,
+            "asked_for_availability": True,
+            "reschedule_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "9.2",
+        "phase": "Phase 9 — Reschedule",
+        "name": "Reschedule — provide different number",
+        "responses": [
+            "I need to change my appointment",
+            "Jane Doe",
+            "No use a different number",
+            "07700900456",
+            "Wednesday mornings",
+            "Second one",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "reschedule_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "9.3",
+        "phase": "Phase 9 — Reschedule",
+        "name": "Reschedule — move my appointment phrasing",
+        "responses": [
+            "I need to move my appointment to a different day",
+            "Tom Brown",
+            "Yes this number is fine",
+            "Thursday afternoon",
+            "First one",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "reschedule_confirmed": True,
+            "asked_for_name": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "9.4",
+        "phase": "Phase 9 — Reschedule",
+        "name": "Reschedule — rebook phrasing",
+        "responses": [
+            "I'd like to rebook my appointment please",
+            "Emma Wilson",
+            "Yes use this number",
+            "Any Friday morning",
+            "Second one",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "reschedule_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "9.5",
+        "phase": "Phase 9 — Reschedule",
+        "name": "Reschedule — change the time phrasing",
+        "responses": [
+            "Can I change the time of my appointment?",
+            "Chris Evans",
+            "Yes use this number",
+            "Any morning next week",
+            "The first one",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "reschedule_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    # ============================================================
+    # PHASE 10 — CANCEL
+    # ============================================================
+
+    {
+        "id": "10.1",
+        "phase": "Phase 10 — Cancel",
+        "name": "Cancel appointment — formal",
+        "responses": [
+            "I want to cancel my appointment",
+            "John Smith",
+            "Yes use this number",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "cancel_confirmed": True,
+            "asked_for_name": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "10.2",
+        "phase": "Phase 10 — Cancel",
+        "name": "Cancel appointment — won't be able to make it",
+        "responses": [
+            "I won't be able to make my appointment",
+            "Sarah Jones",
+            "Yeah this number's fine",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "cancel_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "10.3",
+        "phase": "Phase 10 — Cancel",
+        "name": "Cancel appointment — not coming in phrasing",
+        "responses": [
+            "I'm not coming in for my appointment",
+            "Michael Davis",
+            "Yes use this number",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "cancel_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "10.4",
+        "phase": "Phase 10 — Cancel",
+        "name": "Cancel appointment — provide different number",
+        "responses": [
+            "I need to cancel my appointment",
+            "Alice Green",
+            "No use a different number",
+            "07700900789",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "cancel_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "10.5",
+        "phase": "Phase 10 — Cancel",
+        "name": "Cancel appointment — need to cancel phrasing",
+        "responses": [
+            "I need to cancel",
+            "Robert Hall",
+            "Yes this number",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "cancel_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    # ============================================================
+    # PHASE 11 — FAQ (PRICES, INSURANCE, HOURS, LOCATION, SERVICES)
+    # ============================================================
+
+    {
+        "id": "11.1",
+        "phase": "Phase 11 — FAQ",
+        "name": "Prices — how much does it cost",
+        "responses": [
+            "How much does a physiotherapy assessment cost?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.2",
+        "phase": "Phase 11 — FAQ",
+        "name": "Prices — fee enquiry",
+        "responses": [
+            "What are your fees?",
+            "No thanks",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.3",
+        "phase": "Phase 11 — FAQ",
+        "name": "Prices — then books",
+        "responses": [
+            "How much does it cost?",
+            "Yes I'd like to book please",
+            "Back pain",
+            "Two weeks",
+            "Yes",
+            "No",
+            "Next week mornings",
+            "First one",
+            "Yes",
+            "Jane Smith",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.4",
+        "phase": "Phase 11 — FAQ",
+        "name": "Insurance — BUPA",
+        "responses": [
+            "Do you accept BUPA insurance?",
+            "No thanks",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.5",
+        "phase": "Phase 11 — FAQ",
+        "name": "Insurance — AXA",
+        "responses": [
+            "Do you take AXA health insurance?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.6",
+        "phase": "Phase 11 — FAQ",
+        "name": "Insurance — Vitality",
+        "responses": [
+            "Do you accept Vitality insurance?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.7",
+        "phase": "Phase 11 — FAQ",
+        "name": "Insurance — then books",
+        "responses": [
+            "Do you take AXA health insurance?",
+            "Yes I would like to book",
+            "Back pain",
+            "Two weeks",
+            "Yes",
+            "No",
+            "Next week mornings",
+            "First one",
+            "Yes",
+            "John Smith",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.8",
+        "phase": "Phase 11 — FAQ",
+        "name": "Opening hours question",
+        "responses": [
+            "What are your opening hours?",
+            "No thanks",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.9",
+        "phase": "Phase 11 — FAQ",
+        "name": "Opening hours — when do you close",
+        "responses": [
+            "What time do you close?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.10",
+        "phase": "Phase 11 — FAQ",
+        "name": "Location — where are you",
+        "responses": [
+            "Where are you located?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.11",
+        "phase": "Phase 11 — FAQ",
+        "name": "Location — address and parking",
+        "responses": [
+            "What's your address and is there parking?",
+            "No thanks",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.12",
+        "phase": "Phase 11 — FAQ",
+        "name": "Services — what treatments do you offer",
+        "responses": [
+            "What treatments do you offer?",
+            "No thanks",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.13",
+        "phase": "Phase 11 — FAQ",
+        "name": "Services — what conditions do you treat",
+        "responses": [
+            "What conditions can you help with?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "11.14",
+        "phase": "Phase 11 — FAQ",
+        "name": "Services — then books",
+        "responses": [
+            "What services do you offer?",
+            "Yes I'd like to book",
+            "Shoulder pain",
+            "Three weeks",
+            "Yes",
+            "No",
+            "Next week mornings",
+            "First one",
+            "Yes",
+            "Tom Jones",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    # ============================================================
+    # PHASE 12 — FULL NON-BOOKING END TO END
+    # ============================================================
+
+    {
+        "id": "12.1",
+        "phase": "Phase 12 — Full Non-Booking End to End",
+        "name": "Full clean reschedule",
+        "responses": [
+            "I need to reschedule my physiotherapy appointment",
+            "David Johnson",
+            "Yes use this number",
+            "Any morning next week",
+            "The first one",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "asked_for_name": True,
+            "asked_for_availability": True,
+            "reschedule_confirmed": True,
+            "no_question_asked_twice": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "12.2",
+        "phase": "Phase 12 — Full Non-Booking End to End",
+        "name": "Full clean cancel",
+        "responses": [
+            "I need to cancel my physiotherapy appointment",
+            "Helen Carter",
+            "Yes use this number",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "asked_for_name": True,
+            "cancel_confirmed": True,
+            "no_question_asked_twice": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "12.3",
+        "phase": "Phase 12 — Full Non-Booking End to End",
+        "name": "Full clean FAQ prices",
+        "responses": [
+            "What's the price for an initial assessment?",
+            "No thank you",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "offered_booking": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "12.4",
+        "phase": "Phase 12 — Full Non-Booking End to End",
+        "name": "Full clean FAQ hours",
+        "responses": [
+            "What are your opening hours?",
+            "Yes actually I would like to book",
+            "Knee pain",
+            "A month",
+            "Yes",
+            "No",
+            "Next week",
+            "First one",
+            "Yes",
+            "Peter White",
+            "Yes",
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
         },
     },
 

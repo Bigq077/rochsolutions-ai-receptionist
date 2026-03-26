@@ -36,6 +36,8 @@ _CLAUDE_GATE_MAP: dict[str, str] = {
     "duration_question_asked":  "duration_question_asked",
     "slot_confirmed":           "slot_confirmed",
     "booking_confirmed":        "booking_confirmed",
+    "reschedule_confirmed":     "reschedule_confirmed",
+    "cancel_confirmed":         "cancel_confirmed",
     "no_state_corruption":      "no_state_corruption",
     "graceful_end":             "graceful_end",
     # banned_phrases_absent is handled by the rule-based "not_said" check in 7.4;
@@ -62,6 +64,8 @@ no markdown fences, no explanation outside the JSON.
   "duration_question_asked": true,
   "slot_confirmed": true,
   "booking_confirmed": true,
+  "reschedule_confirmed": null,
+  "cancel_confirmed": null,
   "no_state_corruption": true,
   "graceful_end": null,
   "banned_phrases_absent": true,
@@ -112,6 +116,16 @@ slot_confirmed (bool | null)
 booking_confirmed (bool)
   Did Susie confirm the completed booking with the patient's name and
   appointment details before ending the call?
+
+reschedule_confirmed (bool | null)
+  null if this was not a reschedule call.
+  true if Susie confirmed the appointment has been successfully rescheduled,
+  giving the new date and time and mentioning a confirmation text.
+
+cancel_confirmed (bool | null)
+  null if this was not a cancellation call.
+  true if Susie confirmed the appointment has been successfully cancelled
+  and mentioned a confirmation text.
 
 no_state_corruption (bool)
   Did the flow continue correctly and in the right order after any silence,
@@ -278,9 +292,18 @@ class Evaluator:
 
             # Path B: FlowEngine session fields (populated when run_instruction() is used)
             flow_step = result.get("flow_step")
-            booking_confirmed = result.get("booking_confirmed")
-            flow_progress_ok = bool(booking_confirmed) or (
-                flow_step is not None and flow_step >= 7
+            booking_confirmed     = result.get("booking_confirmed")
+            reschedule_confirmed  = result.get("reschedule_confirmed")
+            cancel_confirmed      = result.get("cancel_confirmed")
+            intent = (result.get("intent") or "")
+            flow_progress_ok = (
+                bool(booking_confirmed)
+                or bool(reschedule_confirmed)
+                or bool(cancel_confirmed)
+                # FAQ flows only have 2 steps — step 1+ means the answer was delivered
+                or (intent.startswith("faq") and flow_step is not None and flow_step >= 1)
+                # Booking flow near completion
+                or (flow_step is not None and flow_step >= 7)
             )
 
             # "timeout" is acceptable when booking was genuinely confirmed
@@ -388,6 +411,26 @@ class Evaluator:
         if "confirmation_contains" in expected:
             phrase = expected["confirmation_contains"].lower()
             checks["confirmation_contains"] = phrase in all_susie
+
+        # ── asked_for_name ────────────────────────────────────────────
+        if expected.get("asked_for_name"):
+            checks["asked_for_name"] = any(
+                "full name" in t or "your name" in t for t in susie_texts
+            )
+
+        # ── asked_for_availability ────────────────────────────────────
+        if expected.get("asked_for_availability"):
+            checks["asked_for_availability"] = any(
+                "days or times" in t or "days and times" in t for t in susie_texts
+            )
+
+        # ── offered_booking (after FAQ) ───────────────────────────────
+        if expected.get("offered_booking"):
+            checks["offered_booking"] = any(
+                "book an appointment" in t or "would you like to book" in t
+                or "like to book" in t
+                for t in susie_texts
+            )
 
         # ── number_confirmed_verbally ─────────────────────────────────
         # Susie should read the phone number back to the caller before

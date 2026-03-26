@@ -97,6 +97,8 @@ class CallRunner:
         self._flow_step: int | None = None
         self._flow_started: bool | None = None
         self._booking_confirmed: bool | None = None
+        self._reschedule_confirmed: bool | None = None
+        self._cancel_confirmed: bool | None = None
         self._selected_slot: str | None = None
         self._full_name: str | None = None
         self._intent: str | None = None
@@ -740,13 +742,15 @@ class CallRunner:
                 turns_data = data.get("turns", [])
 
                 # Read flow-engine progress fields
-                self._flow_step        = data.get("flow_step")
-                self._flow_started     = data.get("flow_started")
-                self._booking_confirmed = data.get("booking_confirmed")
-                self._selected_slot    = data.get("selected_slot")
-                self._full_name        = data.get("full_name")
-                self._intent           = data.get("intent")
-                self._reason           = data.get("reason")
+                self._flow_step             = data.get("flow_step")
+                self._flow_started          = data.get("flow_started")
+                self._booking_confirmed     = data.get("booking_confirmed")
+                self._reschedule_confirmed  = data.get("reschedule_confirmed")
+                self._cancel_confirmed      = data.get("cancel_confirmed")
+                self._selected_slot         = data.get("selected_slot")
+                self._full_name             = data.get("full_name")
+                self._intent                = data.get("intent")
+                self._reason                = data.get("reason")
 
                 logger.info(
                     "[%s] Using best session: %d history entries, %d turns "
@@ -855,11 +859,13 @@ class CallRunner:
             "timestamp":     datetime.utcnow().isoformat(),
             "max_gap_seconds": round(max_gap, 2),
             # Flow-engine progress fields from admin session endpoint
-            "flow_step":         self._flow_step,
-            "flow_started":      self._flow_started,
-            "booking_confirmed": self._booking_confirmed,
-            "selected_slot":     self._selected_slot,
-            "full_name":         self._full_name,
-            "intent":            self._intent,
-            "reason":            self._reason,
+            "flow_step":              self._flow_step,
+            "flow_started":           self._flow_started,
+            "booking_confirmed":      self._booking_confirmed,
+            "reschedule_confirmed":   self._reschedule_confirmed,
+            "cancel_confirmed":       self._cancel_confirmed,
+            "selected_slot":          self._selected_slot,
+            "full_name":              self._full_name,
+            "intent":                 self._intent,
+            "reason":                 self._reason,
         }

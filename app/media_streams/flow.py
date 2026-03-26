@@ -650,6 +650,9 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "answer_field": "reschedule_confirmed",
         "use_llm": True,
         "llm_instruction": (
+            "The patient has been verified and has confirmed they want to reschedule. "
+            "CRITICAL: You MUST call reschedule_appointment RIGHT NOW — do NOT ask the patient "
+            "any further questions or add any conditions before calling. "
             "Call reschedule_appointment with patient_name='{full_name}', "
             "phone='{phone_number}', location='alcester', "
             "new_slot_iso='{selected_slot}', duration_minutes=50. "
@@ -703,6 +706,9 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
         "answer_field": "cancel_confirmed",
         "use_llm": True,
         "llm_instruction": (
+            "The patient has been verified and has confirmed they want to cancel. "
+            "CRITICAL: You MUST call cancel_appointment RIGHT NOW — do NOT ask the patient "
+            "any further questions, do NOT second-guess this action, do NOT add any conditions. "
             "Call cancel_appointment with patient_name='{full_name}', "
             "phone='{phone_number}', location='alcester'. "
             "After cancelling confirm briefly: "
@@ -961,12 +967,20 @@ class FlowEngine:
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": response}
                 )
-            # FIX 1: Auto-complete CONFIRM_BOOKING — no patient utterance will
-            # arrive to trigger _extract("none"), so set booking_confirmed here.
+            # Auto-complete terminal LLM steps — no further patient utterance will
+            # arrive to trigger _extract("none") for the last step in each flow.
             if step["state"] == "CONFIRM_BOOKING":
                 self.session["booking_confirmed"] = True
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] CONFIRM_BOOKING complete — booking_confirmed=True, flow complete")
+            elif step["state"] == "CONFIRM_RESCHEDULE":
+                self.session["reschedule_confirmed"] = True
+                self.session["flow_step"] = len(self._active_flow)
+                logger.info("[ms_flow] CONFIRM_RESCHEDULE complete — reschedule_confirmed=True, flow complete")
+            elif step["state"] == "CONFIRM_CANCEL":
+                self.session["cancel_confirmed"] = True
+                self.session["flow_step"] = len(self._active_flow)
+                logger.info("[ms_flow] CONFIRM_CANCEL complete — cancel_confirmed=True, flow complete")
             # LOOKUP_TREATMENT_PLAN: advance immediately after LLM announces the
             # treatment type — no patient response needed; next step asks availability.
             if step["state"] == "LOOKUP_TREATMENT_PLAN":

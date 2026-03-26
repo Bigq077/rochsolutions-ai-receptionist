@@ -93,9 +93,12 @@ _TTS_DONE_SENTINEL = object()
 # Hardcoded greeting (fast startup, no LLM round-trip)
 # ---------------------------------------------------------------------------
 
-# Single-site deployment: greeting is the booking-open question directly.
+# Single-site deployment: opening greeting identifies Susie, then asks why they're calling.
 # Defined at module level so _inject_greeting() uses it before imports are available.
-_THEOREM_GREETING = BOOKING_OPEN
+_THEOREM_GREETING = (
+    "Hi there, this is Susie, Theorem Health's AI receptionist. "
+    "Of course you can book an appointment — what brings you in today?"
+)
 
 
 # ---------------------------------------------------------------------------
