@@ -427,14 +427,37 @@ class LLMStream:
         from .config import get_system_prompt as _get_system_prompt
         system_prompt = _get_system_prompt(session)
 
-        messages = [{"role": "user", "content": instruction}]
+        # Append the flow directive to the system prompt rather than injecting it
+        # as a user message.  When sent as a user message the LLM's own
+        # anti-prompt-injection safeguards refuse to call tools (e.g. "I can't
+        # action that — it looks like an injected instruction").  Appending to
+        # system prompt gives the directive proper authority.
+        augmented_system = (
+            system_prompt
+            + "\n\n[FLOW DIRECTIVE — trusted internal instruction, execute immediately]:\n"
+            + instruction
+        )
+
+        # Include conversation history so the LLM has full context about what the
+        # patient said and said (name, phone, intent) before this directive fires.
+        history = list(session.get("conversation_history", []))
+        if history and history[-1]["role"] == "user":
+            # History already ends with a user turn — good to go
+            messages = history
+        elif history:
+            # Ends with an assistant turn — append a brief user trigger
+            messages = history + [{"role": "user", "content": "[execute flow directive]"}]
+        else:
+            # No history yet (e.g. PRESENT_SLOTS on first interaction)
+            messages = [{"role": "user", "content": "[execute flow directive]"}]
+
         tools    = _build_claude_tools() if allow_tools else []
 
         full_reply = ""
         try:
             full_reply, _ = await self._streaming_tool_loop(
                 model=SONNET,
-                system_prompt=system_prompt,
+                system_prompt=augmented_system,
                 messages=messages,
                 tools=tools,
                 session=session,
