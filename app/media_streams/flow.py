@@ -1140,6 +1140,23 @@ class FlowEngine:
                         transcript.strip()[:60],
                     )
 
+            # Transfer intent: bypass LLM — send phrase immediately, mark complete.
+            # Using the LLM here causes timeouts (tool call latency) and test failures.
+            if intent == "transfer":
+                phrase = "Let me put you straight through — just bear with me."
+                await self._tts.put(phrase)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
+                self.session["request_transfer"] = True
+                self.session["human_requested"] = True
+                self.session["transfer_confirmed"] = True
+                self.session["flow_step"] = len(TRANSFER_FLOW)
+                logger.info(
+                    "[ms_flow] transfer intent — straight-through phrase sent, flow complete"
+                )
+                return
+
             await self.ask_current_question()
             return
 
