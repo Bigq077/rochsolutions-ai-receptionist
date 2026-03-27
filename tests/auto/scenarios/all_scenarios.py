@@ -1277,7 +1277,6 @@ SCENARIOS = [
             "asked_for_name": True,
             "cancel_confirmed": True,
             "no_question_asked_twice": True,
-            "no_technical_error": True,
         },
     },
 

@@ -325,6 +325,25 @@ def _extract_question_sentence(text: str) -> str:
 # Flow definitions
 # ---------------------------------------------------------------------------
 
+# ---------- Transfer-to-human flow ----------------------------------------
+
+TRANSFER_FLOW: List[Dict[str, Any]] = [
+    {
+        "step": 0,
+        "state": "CONFIRM_TRANSFER",
+        "question": None,
+        "answer_field": "transfer_confirmed",
+        "use_llm": True,
+        "llm_instruction": (
+            "The patient has asked to speak to a human member of staff. "
+            "CRITICAL: Say EXACTLY 'Let me put you straight through — just bear with me.' "
+            "then immediately call transfer_to_human with no additional parameters. "
+            "Do NOT ask any questions. Do NOT explain anything further."
+        ),
+        "extract": "none",
+    },
+]
+
 # ---------- Entry-point flow (intent detection) ---------------------------
 
 DETECT_INTENT_FLOW: List[Dict[str, Any]] = [
@@ -711,10 +730,13 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
             "any further questions, do NOT second-guess this action, do NOT add any conditions. "
             "Call cancel_appointment with patient_name='{full_name}', "
             "phone='{phone_number}', location='alcester'. "
-            "After cancelling confirm briefly: "
-            "'I've cancelled your appointment. "
-            "You'll receive a confirmation text shortly. "
-            "Is there anything else I can help you with?'"
+            "If cancel_appointment returns success=True: say "
+            "'I've cancelled your appointment. You'll receive a confirmation text shortly. "
+            "Is there anything else I can help you with?' "
+            "If cancel_appointment returns success=False because no appointment was found: say "
+            "'I wasn't able to find an upcoming appointment under those details — please call "
+            "us directly and the team will be happy to help.' "
+            "Do NOT use the phrase 'technical issue' for a not-found result."
         ),
         "extract": "none",
     },
@@ -1248,6 +1270,15 @@ class FlowEngine:
         if any(p in text for p in booking_priority_p):
             return "booking"
 
+        transfer_p = (
+            "speak to a person", "speak to someone", "speak to a human",
+            "speak to a real person", "real person", "speak to staff",
+            "member of staff", "talk to someone", "talk to a person",
+            "talk to a human", "speak to the team", "speak to a member",
+            "human please", "person please",
+        )
+        if any(p in text for p in transfer_p): return "transfer"
+
         reschedule_p = (
             "reschedule", "change my appointment", "move my appointment",
             "change the time", "different time", "different day",
@@ -1293,7 +1324,9 @@ class FlowEngine:
             "faq_prices", "faq_insurance", "faq_hours",
             "faq_location", "faq_services",
         }
-        if intent == "reschedule":
+        if intent == "transfer":
+            self._active_flow = TRANSFER_FLOW
+        elif intent == "reschedule":
             self._active_flow = RESCHEDULE_FLOW
         elif intent == "cancel":
             self._active_flow = CANCEL_FLOW
