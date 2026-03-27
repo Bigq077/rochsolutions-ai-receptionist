@@ -1,5 +1,9 @@
 from dotenv import load_dotenv
-load_dotenv()
+from pathlib import Path as _Path
+# Load test-specific .env first (tests/auto/.env), then fall back to project root .env
+# override=True ensures values from .env always win over existing shell env vars
+load_dotenv(dotenv_path=_Path(__file__).parent / ".env", override=True)
+load_dotenv(override=False)  # project root fallback (don't override test .env)
 
 import os
 from pathlib import Path
