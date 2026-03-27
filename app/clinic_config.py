@@ -18,7 +18,8 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Format: "+447XXXXXXXXX": "clinic_id"
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
-    "+447367002651": "theorem",       # Theorem Health and Wellness
+    "+447367002651": "theorem",       # Theorem Health and Wellness (legacy pipeline)
+    "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
     "+447366530580": "demo",          # RochSolutions demo line
 
     # ---------------------------------------------------------------
