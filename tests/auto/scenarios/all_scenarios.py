@@ -834,6 +834,7 @@ SCENARIOS = [
             "Yes use this number",
             "Any morning next week",
             "The first one",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -855,6 +856,7 @@ SCENARIOS = [
             "07700900456",
             "Wednesday mornings",
             "Second one",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -873,6 +875,7 @@ SCENARIOS = [
             "Yes this number is fine",
             "Thursday afternoon",
             "First one",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -892,6 +895,7 @@ SCENARIOS = [
             "Yes use this number",
             "Any Friday morning",
             "Second one",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -910,6 +914,7 @@ SCENARIOS = [
             "Yes use this number",
             "Any morning next week",
             "The first one",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -1259,6 +1264,7 @@ SCENARIOS = [
             "Yes use this number",
             "Any morning next week",
             "The first one",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
