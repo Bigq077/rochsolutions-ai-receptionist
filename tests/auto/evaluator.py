@@ -397,12 +397,15 @@ class Evaluator:
 
         # ── flow_continues / flow_continues_after_silence ─────────────
         # True if at least 2 turns happened and the call didn't die on silence.
+        # A natural "timeout" end_reason is allowed when the conversation had
+        # many turns (booking/reschedule completed, no more responses left).
         if expected.get("flow_continues") or expected.get("flow_continues_after_silence"):
+            turns = result.get("turns", 0)
+            end = result.get("end_reason", "")
             checks["flow_continues"] = (
-                result.get("turns", 0) > 1
-                and result.get("end_reason") not in (
-                    "timeout_no_speech", "timeout", "ngrok_died", "exception"
-                )
+                turns > 1
+                and end not in ("timeout_no_speech", "ngrok_died", "exception")
+                and not (end == "timeout" and turns <= 2)
             )
 
         # ── confirmation_contains ─────────────────────────────────────
