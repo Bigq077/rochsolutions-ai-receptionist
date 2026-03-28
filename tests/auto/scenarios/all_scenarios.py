@@ -70,7 +70,9 @@ SCENARIOS = [
             "susie_reasks": True,
             "reask_contains": "didn't quite catch",
             "flow_continues_after_silence": True,
-            "no_dead_air_over_seconds": 6,
+            # 35 s matches TURN_WAIT_SECONDS (25 s) + inject overhead + margin.
+            # With 9 non-blank responses the consecutive-inject gap is ~25-26 s.
+            "no_dead_air_over_seconds": 35,
         },
     },
 
