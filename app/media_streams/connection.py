@@ -283,7 +283,17 @@ class SilenceHandler:
         )
         if is_question:
             if _is_question_worth_storing(t):
-                self.last_question = t
+                # Extract only the final question sentence so re-asks don't replay
+                # a full multi-sentence FAQ response (e.g. "The clinic is open Mon–Fri
+                # 8:30am–9pm. Would you like to book?" → re-ask = "Would you like to
+                # book?" not the whole opening-hours paragraph).
+                import re as _re
+                _parts = _re.split(r'(?<=[.!?])\s+|\n+', t)
+                _q = next(
+                    (p.strip() for p in reversed(_parts) if p.strip().endswith('?')),
+                    t,
+                )
+                self.last_question = _q
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
 
