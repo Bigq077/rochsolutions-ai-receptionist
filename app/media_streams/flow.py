@@ -1275,6 +1275,9 @@ class FlowEngine:
             await self._tts.put(phrase)
             if _is_question_worth_storing(phrase):
                 self.session["last_question"] = phrase
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
             logger.info("[ms_flow] %s declined — will collect manually", step["state"])
             return
 
