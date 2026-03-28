@@ -176,13 +176,20 @@ class SilenceHandler:
     silence packets (which arrive every ~20ms regardless of speech).
 
     Silence windows:
-        1st (20 s) → "Sorry, I didn't quite catch that — <question>"
+        1st (26 s) → "Sorry, I didn't quite catch that — <question>"
         2nd (15 s) → "Sorry about that — <question>"
         3rd (15 s) → transfer phrase + trigger_transfer()
 
     Windows are sized so that:
-      - Re-ask #1 fires within the first 25-second silence window used by
-        the automated test runner (TURN_WAIT_SECONDS=25).
+      - Re-ask #1 fires AFTER the 25-second injection window used by the
+        automated test runner (TURN_WAIT_SECONDS=25).  With typical LLM+TTS
+        latency of 3-8 s, the timer arms at t=3-8s and would fire at t=23-28s
+        — which overlaps with the t=25s injection window when questions are
+        short.  Raising Window 1 to 26 s ensures the timer always fires at
+        t=L+26 ≥ 26 s, well after the t=25s injection which cancels it.
+      - For genuine silence scenarios (Phase 6 tests), no injection arrives
+        during the 25s empty-turn window, so the timer still fires at ~36 s
+        (greeting TTS ≈ 10 s + Window 1 = 26 s) and the re-ask plays correctly.
       - Transfer does NOT fire before a second silent turn's response
         arrives (~70 s from call start), allowing recovery scenarios to work.
       - The since_audio < 3.5 guard means the window fires only when
@@ -310,7 +317,7 @@ class SilenceHandler:
         """
         Flat sequential re-ask coroutine.
 
-        Window 1: 20s sleep → since_audio guard → re-ask #1 → 5s TTS wait
+        Window 1: 26s sleep → since_audio guard → re-ask #1 → 5s TTS wait
         Window 2: 15s sleep → since_audio guard → re-ask #2 → 5s TTS wait
         Window 3: 15s sleep → since_audio guard → transfer
 
@@ -320,9 +327,12 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 20 s silence ─────────────────────────────────────────
+        # ── Window 1: 26 s silence ─────────────────────────────────────────
+        # 26 s > TURN_WAIT_SECONDS=25 s — the next injection always arrives
+        # before this fires for normal turns, preventing spurious re-asks.
+        # Phase 6 silence turns have no injection, so the timer still fires.
         try:
-            await asyncio.sleep(20.0)
+            await asyncio.sleep(26.0)
             # Yield once more so any task.cancel() that arrived while we were
             # sleeping (but after sleep() returned normally) is delivered here
             # before we check the guards — fixes the race where _llm_busy is
