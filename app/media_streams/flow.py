@@ -942,6 +942,71 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
+        # ── CONFIRM_RESCHEDULE: ask a static confirmation question, no LLM.
+        # The LLM will run (and call reschedule_appointment) only AFTER the
+        # patient says "Yes" — handled in handle_transcript() below.
+        if step["state"] == "CONFIRM_RESCHEDULE":
+            slot_speech = (
+                self.session.get("selected_slot_speech")
+                or self.session.get("selected_slot", "the selected time")
+            )
+            q = (
+                f"So that's {slot_speech} — "
+                "shall I go ahead and move your appointment to that slot?"
+            )
+            await self._tts.put(q)
+            if _is_question_worth_storing(q):
+                self.session["last_question"] = q
+            self.session["question_asked_this_turn"] = True
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": q}
+            )
+            logger.info("[ms_flow] CONFIRM_RESCHEDULE — asked static confirmation question")
+            return
+
+        # ── CONFIRM_CANCEL: directly execute via Acuity API (no LLM / no extra
+        # patient turn needed).  Cancel intent + name + phone is sufficient.
+        if step["state"] == "CONFIRM_CANCEL":
+            from app.tools.receptionist_tools import _exec_cancel_appointment
+            phone_val = (
+                self.session.get("phone_number")
+                or self.session.get("twilio_from_local")
+                or self.session.get("twilio_from", "")
+            )
+            cancel_args = {
+                "patient_name": self.session.get("full_name", ""),
+                "phone":        phone_val,
+                "location":     "alcester",
+            }
+            logger.info("[ms_flow] CONFIRM_CANCEL — calling _exec_cancel_appointment directly")
+            cancel_result = await _exec_cancel_appointment(cancel_args, self.session)
+            if cancel_result.get("success"):
+                response = (
+                    "I've cancelled your appointment. "
+                    "You'll receive a confirmation text shortly. "
+                    "Is there anything else I can help with?"
+                )
+                self.session["cancel_confirmed"] = True
+            else:
+                response = (
+                    "Let me get that sorted for you now."
+                    "I wasn't able to find an upcoming appointment under those details — "
+                    "please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u20096"
+                    "\u20096\u20098\u20096\u20091 and the team will be happy to help. "
+                    "Is there anything else I can help you with?"
+                )
+                self.session["cancel_confirmed"] = False
+            await self._tts.put(response)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": response}
+            )
+            self.session["flow_step"] = len(self._active_flow)
+            logger.info(
+                "[ms_flow] CONFIRM_CANCEL complete — cancel_confirmed=%s",
+                self.session["cancel_confirmed"],
+            )
+            return
+
         if step["use_llm"]:
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
             if step["question"]:
@@ -995,14 +1060,6 @@ class FlowEngine:
                 self.session["booking_confirmed"] = True
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] CONFIRM_BOOKING complete — booking_confirmed=True, flow complete")
-            elif step["state"] == "CONFIRM_RESCHEDULE":
-                self.session["reschedule_confirmed"] = True
-                self.session["flow_step"] = len(self._active_flow)
-                logger.info("[ms_flow] CONFIRM_RESCHEDULE complete — reschedule_confirmed=True, flow complete")
-            elif step["state"] == "CONFIRM_CANCEL":
-                self.session["cancel_confirmed"] = True
-                self.session["flow_step"] = len(self._active_flow)
-                logger.info("[ms_flow] CONFIRM_CANCEL complete — cancel_confirmed=True, flow complete")
             # ANSWER_FAQ: advance immediately to FAQ_BOOKING_OFFER after the LLM
             # delivers the answer — the LLM already asked "would you like to book?",
             # so the NEXT patient utterance must be processed at FAQ_BOOKING_OFFER,
@@ -1239,6 +1296,49 @@ class FlowEngine:
             step["step"], step["answer_field"], str(answer)[:60],
         )
 
+        # ── CONFIRM_RESCHEDULE: patient just confirmed "yes" → execute reschedule ──
+        if step["state"] == "CONFIRM_RESCHEDULE" and answer:
+            from app.tools.receptionist_tools import _exec_reschedule_appointment
+            phone_val = (
+                self.session.get("phone_number")
+                or self.session.get("twilio_from_local")
+                or self.session.get("twilio_from", "")
+            )
+            reschedule_args = {
+                "patient_name":    self.session.get("full_name", ""),
+                "phone":           phone_val,
+                "location":        "alcester",
+                "new_slot_iso":    self.session.get("selected_slot", ""),
+                "duration_minutes": 50,
+            }
+            logger.info("[ms_flow] CONFIRM_RESCHEDULE — calling _exec_reschedule_appointment")
+            reschedule_result = await _exec_reschedule_appointment(reschedule_args, self.session)
+            if reschedule_result.get("success"):
+                slot_speech = self.session.get("selected_slot_speech", "the new time")
+                response = (
+                    f"I've rescheduled your appointment to {slot_speech}. "
+                    "You'll receive a confirmation text shortly. "
+                    "Is there anything else I can help you with?"
+                )
+                self.session["reschedule_confirmed"] = True
+            else:
+                response = (
+                    "I'm sorry, but I wasn't able to complete the reschedule. "
+                    "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u20096"
+                    "\u20096\u20098\u20096\u20091 and the team will be happy to help."
+                )
+                self.session["reschedule_confirmed"] = False
+            await self._tts.put(response)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": response}
+            )
+            self.session["flow_step"] = len(self._active_flow)
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE complete — reschedule_confirmed=%s",
+                self.session["reschedule_confirmed"],
+            )
+            return
+
         # ── SLOT CONFIRMATION: intercept before advancing ──────────────────
         # For RESCHEDULE_FLOW: skip slot confirmation entirely — the test
         # scenarios only have 5 patient turns (no 6th "Yes to confirm").
@@ -1247,6 +1347,7 @@ class FlowEngine:
         if step["state"] == "PRESENT_NEW_SLOTS" and self._active_flow is RESCHEDULE_FLOW:
             slot_text = str(answer)
             self.session["selected_slot_speech"] = _format_slot_for_speech(slot_text)
+            self.session["selected_slot"] = slot_text   # needed by _exec_reschedule_appointment
             self.session["flow_step"] = step["step"] + 1
             logger.info(
                 "[ms_flow] RESCHEDULE_FLOW: skip slot confirmation — advancing to CONFIRM_RESCHEDULE"
