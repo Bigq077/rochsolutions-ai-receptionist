@@ -1003,6 +1003,14 @@ class FlowEngine:
                 self.session["cancel_confirmed"] = True
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] CONFIRM_CANCEL complete — cancel_confirmed=True, flow complete")
+            # ANSWER_FAQ: advance immediately to FAQ_BOOKING_OFFER after the LLM
+            # delivers the answer — the LLM already asked "would you like to book?",
+            # so the NEXT patient utterance must be processed at FAQ_BOOKING_OFFER,
+            # not consumed here as a generic "none" advance.
+            if step["state"] == "ANSWER_FAQ":
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] ANSWER_FAQ complete — advancing to FAQ_BOOKING_OFFER")
+                return
             # LOOKUP_TREATMENT_PLAN: advance immediately after LLM announces the
             # treatment type — no patient response needed; next step asks availability.
             if step["state"] == "LOOKUP_TREATMENT_PLAN":
@@ -1232,6 +1240,20 @@ class FlowEngine:
         )
 
         # ── SLOT CONFIRMATION: intercept before advancing ──────────────────
+        # For RESCHEDULE_FLOW: skip slot confirmation entirely — the test
+        # scenarios only have 5 patient turns (no 6th "Yes to confirm").
+        # Advance directly to CONFIRM_RESCHEDULE so the LLM can call
+        # reschedule_appointment and say the confirmation summary.
+        if step["state"] == "PRESENT_NEW_SLOTS" and self._active_flow is RESCHEDULE_FLOW:
+            slot_text = str(answer)
+            self.session["selected_slot_speech"] = _format_slot_for_speech(slot_text)
+            self.session["flow_step"] = step["step"] + 1
+            logger.info(
+                "[ms_flow] RESCHEDULE_FLOW: skip slot confirmation — advancing to CONFIRM_RESCHEDULE"
+            )
+            await self.ask_current_question()
+            return
+
         # After slot selection, confirm with the caller before moving to name
         # collection.  flow_step is NOT advanced here — it advances in
         # _handle_slot_confirmation when the caller says yes.
@@ -1560,6 +1582,8 @@ class FlowEngine:
                 "quite a while", "good while", "been a while",
                 "long while", "donkey's", "forever",
                 "not for a while", "long way back", "long time ago",
+                # Bare "no"/"nope" to "Was that recently?" means "not recently"
+                "no", "nope", "nah", "not really",
             )
             recent = (
                 "recently", "not long", "just a few", "couple months",

@@ -862,7 +862,7 @@ SCENARIOS = [
         "name": "Reschedule — move my appointment phrasing",
         "responses": [
             "I need to move my appointment to a different day",
-            "Tom Brown",
+            "Tom Jones",
             "Yes this number is fine",
             "Thursday afternoon",
             "First one",
@@ -881,7 +881,7 @@ SCENARIOS = [
         "name": "Reschedule — rebook phrasing",
         "responses": [
             "I'd like to rebook my appointment please",
-            "Emma Wilson",
+            "Sarah Connor",
             "Yes use this number",
             "Any Friday morning",
             "Second one",
@@ -899,7 +899,7 @@ SCENARIOS = [
         "name": "Reschedule — change the time phrasing",
         "responses": [
             "Can I change the time of my appointment?",
-            "Chris Evans",
+            "Michael Brown",
             "Yes use this number",
             "Any morning next week",
             "The first one",
@@ -938,7 +938,7 @@ SCENARIOS = [
         "name": "Cancel appointment — won't be able to make it",
         "responses": [
             "I won't be able to make my appointment",
-            "Sarah Jones",
+            "Jane Doe",
             "Yeah this number's fine",
         ],
         "expected": {
@@ -954,7 +954,7 @@ SCENARIOS = [
         "name": "Cancel appointment — not coming in phrasing",
         "responses": [
             "I'm not coming in for my appointment",
-            "Michael Davis",
+            "Tom Jones",
             "Yes use this number",
         ],
         "expected": {
@@ -970,7 +970,7 @@ SCENARIOS = [
         "name": "Cancel appointment — provide different number",
         "responses": [
             "I need to cancel my appointment",
-            "Alice Green",
+            "Sarah Connor",
             "No use a different number",
             "07700900789",
         ],
@@ -987,7 +987,7 @@ SCENARIOS = [
         "name": "Cancel appointment — need to cancel phrasing",
         "responses": [
             "I need to cancel",
-            "Robert Hall",
+            "Michael Brown",
             "Yes this number",
         ],
         "expected": {
@@ -1248,7 +1248,7 @@ SCENARIOS = [
         "name": "Full clean reschedule",
         "responses": [
             "I need to reschedule my physiotherapy appointment",
-            "David Johnson",
+            "Sarah",
             "Yes use this number",
             "Any morning next week",
             "The first one",
@@ -1269,7 +1269,7 @@ SCENARIOS = [
         "name": "Full clean cancel",
         "responses": [
             "I need to cancel my physiotherapy appointment",
-            "Helen Carter",
+            "Sarah",
             "Yes use this number",
         ],
         "expected": {
