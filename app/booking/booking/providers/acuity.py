@@ -49,6 +49,14 @@ class AcuityAdapter:
             base_url=self.BASE_URL,
             auth=(user_id, api_key),
             timeout=30.0,
+            # Keep TCP connections alive so the first Acuity call after an
+            # idle period doesn't pay the full TCP+TLS handshake cost.
+            # limits: max 5 keepalive connections, each held for 90 s.
+            limits=httpx.Limits(
+                max_keepalive_connections=5,
+                keepalive_expiry=90,
+            ),
+            headers={"Connection": "keep-alive"},
         )
     
     async def close(self):

@@ -249,12 +249,19 @@ async def _prewarm_singletons() -> None:
     except Exception as e:
         logger.warning("⚠️  Tool schema pre-load skipped: %r", e)
 
-    # 3. Acuity adapter singleton
+    # 3. Acuity adapter singleton — instantiate AND make one real API call
+    # so the TCP+TLS connection to Acuity is live before the first caller arrives.
+    # We call GET /appointment-types (lightweight, read-only, always succeeds).
     try:
         from app.tools.receptionist_tools import _get_acuity_adapter
         adapter = _get_acuity_adapter()
         if adapter:
-            logger.info("✅ Acuity adapter singleton pre-warmed")
+            try:
+                await adapter.client.get("/appointment-types", timeout=10.0)
+                logger.info("✅ Acuity TCP connection pre-warmed (live)")
+            except Exception:
+                # Non-fatal: adapter is initialised; first real call may be 300ms slower
+                logger.info("✅ Acuity adapter singleton pre-warmed (TCP not yet live)")
         else:
             logger.info("ℹ️  Acuity adapter not pre-warmed (credentials not set)")
     except Exception as e:
