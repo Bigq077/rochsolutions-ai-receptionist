@@ -109,11 +109,11 @@ async def main():
     if types:
         first_type = types[0]
         try:
-            today = date.today()
+            tomorrow = date.today() + timedelta(days=1)
             slots = await adapter.get_available_slots(
                 appointment_type_id=first_type.id,
-                start_date=today,
-                end_date=today + timedelta(days=14),
+                start_date=tomorrow,
+                end_date=tomorrow + timedelta(days=14),
             )
             if not slots:
                 print(f"  ⚠️  No slots for {first_type.name!r} in next 14 days.")
@@ -128,8 +128,13 @@ async def main():
             print(f"  ❌  Availability check failed: {e}")
 
     # ------------------------------------------------------------------ #
-    # 4. Availability per calendar
+    # 4. Availability per location — use correct appointment type per location
     # ------------------------------------------------------------------ #
+    # Map each location to its Acuity appointment type ID
+    LOCATION_TYPE_MAP = {
+        "ALCESTER": "15823699",   # Theorem Clinics Alcester.
+        "REDDITCH": "33801703",   # Theorem Clinics Redditch
+    }
     for cal_label, cal_id in [
         ("ALCESTER", ALCESTER_CAL),
         ("REDDITCH", REDDITCH_CAL),
@@ -137,22 +142,24 @@ async def main():
         if not cal_id:
             print(f"\n  ⚠️  {cal_label} calendar ID not set — skipping per-calendar check.")
             continue
-        _sep(f"AVAILABILITY — {cal_label} calendar (ID={cal_id})")
-        if types:
+        _sep(f"AVAILABILITY — {cal_label} (next 14 days, no calendar filter)")
+        type_id = LOCATION_TYPE_MAP.get(cal_label, types[0].id if types else None)
+        if type_id:
             try:
-                today = date.today()
+                tomorrow = date.today() + timedelta(days=1)
                 slots = await adapter.get_available_slots(
-                    appointment_type_id=types[0].id,
-                    start_date=today,
-                    end_date=today + timedelta(days=14),
-                    practitioner_id=f"acuity_cal_{cal_id}",
+                    appointment_type_id=type_id,
+                    start_date=tomorrow,
+                    end_date=tomorrow + timedelta(days=14),
                 )
                 if not slots:
                     print(f"  ⚠️  No slots for {cal_label} in next 14 days.")
                 else:
-                    print(f"  Found {len(slots)} slots.")
-                    for s in slots[:3]:
+                    print(f"  ✅  Found {len(slots)} slots.")
+                    for s in slots[:5]:
                         print(f"    {s.start_time.strftime('%a %d %b %H:%M')}")
+                    if len(slots) > 5:
+                        print(f"    ... and {len(slots)-5} more")
             except Exception as e:
                 print(f"  ❌  {e}")
 

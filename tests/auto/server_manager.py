@@ -147,6 +147,37 @@ class SharedServer:
 
     # ── internal ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    async def _purge_stale_ngrok_tunnels() -> None:
+        """
+        Delete any tunnels the previous ngrok process left alive via the local
+        agent API (ports 4040 and 4041).  This releases the static domain in the
+        ngrok cloud immediately rather than waiting ~30 s for the dead-agent
+        timeout.
+        """
+        import httpx
+        for port in (4040, 4041):
+            try:
+                async with httpx.AsyncClient(timeout=3) as cl:
+                    resp = await cl.get(f"http://localhost:{port}/api/tunnels")
+                    if resp.status_code != 200:
+                        continue
+                    for tunnel in resp.json().get("tunnels", []):
+                        name = tunnel.get("name", "")
+                        try:
+                            await cl.delete(
+                                f"http://localhost:{port}/api/tunnels/{name}"
+                            )
+                            logger.info(
+                                "[server] purged stale ngrok tunnel %r via port %d",
+                                name, port,
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        await asyncio.sleep(2)
+
     async def _connect_ngrok(self) -> None:
         """Connect (or reconnect) the ngrok tunnel."""
         # Kill any leftover ngrok process from a previous run before starting.
@@ -156,9 +187,9 @@ class SharedServer:
             ngrok.kill()
         except Exception:
             pass
-        await asyncio.sleep(2)
+        await self._purge_stale_ngrok_tunnels()
 
-        for attempt in range(8):  # up to ~3 minutes total
+        for attempt in range(15):  # up to ~7 minutes total
             try:
                 self._ngrok_tunnel = ngrok.connect(self._ngrok_port, "http")
                 self.webhook_url = self._ngrok_tunnel.public_url.replace(
@@ -177,13 +208,16 @@ class SharedServer:
                     ngrok.kill()
                 except Exception:
                     pass
-                # ERR_NGROK_334 means the static domain is still registered in the
-                # ngrok cloud from a previous crashed run.  The cloud takes ~30s to
-                # detect the dead agent and release the domain — wait accordingly.
-                wait = 30 if "ERR_NGROK_334" in str(exc) else 5
+                if "ERR_NGROK_334" in str(exc):
+                    # Static domain still registered in ngrok cloud — purge via
+                    # local API then wait for cloud propagation.
+                    await self._purge_stale_ngrok_tunnels()
+                    wait = 30
+                else:
+                    wait = 5
                 logger.info("[server] waiting %ds before retry %d…", wait, attempt + 2)
                 await asyncio.sleep(wait)
-        raise RuntimeError("ngrok failed to connect after 8 attempts")
+        raise RuntimeError("ngrok failed to connect after 15 attempts")
 
     def _build_app(self) -> FastAPI:
         """Build the FastAPI app whose handlers delegate to self.current_runner."""
