@@ -55,9 +55,16 @@ SCENARIOS = [
         "phase": "Phase 1 — Connection",
         "name": "Silence handling — re-ask fires",
         "responses": [
-            "",          # silence on first question
-            "",          # silence on re-ask
-            "back pain", # answer on third attempt
+            "",             # silence on first question → re-ask fires
+            "back pain",    # patient responds after re-ask
+            "Two weeks",
+            "Yes",
+            "No",
+            "Next week mornings",
+            "First one",
+            "Yes",
+            "John Smith",
+            "Yes",
         ],
         "expected": {
             "susie_reasks": True,
