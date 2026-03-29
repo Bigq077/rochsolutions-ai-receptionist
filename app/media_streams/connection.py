@@ -272,6 +272,8 @@ class SilenceHandler:
             # prevents the silence-transfer from ever triggering.
             return
         t = text.strip()
+        if t.startswith("Sorry,") or t.startswith("Sorry about"):
+            return  # Never restart timer for re-ask phrases
         is_question = (
             t.endswith("?") or
             any(p in t.lower() for p in [
@@ -337,12 +339,13 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 26 s silence ─────────────────────────────────────────
-        # 26 s > TURN_WAIT_SECONDS=25 s — the next injection always arrives
-        # before this fires for normal turns, preventing spurious re-asks.
-        # Phase 6 silence turns have no injection, so the timer still fires.
+        # ── Window 1: 30 s silence ─────────────────────────────────────────
+        # 30 s > TURN_WAIT_SECONDS=25 s by 5 s — reliable margin so next
+        # injection always arrives before this fires for normal turns,
+        # preventing spurious re-asks. Phase 6 silence turns use 35 s empty
+        # response waits, so the timer still fires for those turns.
         try:
-            await asyncio.sleep(26.0)
+            await asyncio.sleep(30.0)
             # Yield once more so any task.cancel() that arrived while we were
             # sleeping (but after sleep() returned normally) is delivered here
             # before we check the guards — fixes the race where _llm_busy is

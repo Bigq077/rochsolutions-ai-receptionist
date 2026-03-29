@@ -496,9 +496,12 @@ class CallRunner:
 
         # ── 3. Inject patient responses one by one ────────────────────────
         responses = self.scenario.get("responses", [])
+        consecutive_silence = 0
         for i, response in enumerate(responses):
             text = response if isinstance(response, str) else response.get("text", "")
             if text.strip():
+                consecutive_silence = 0
+                wait = TURN_WAIT_SECONDS
                 # Record timestamp BEFORE the inject POST so that slow server
                 # response times (e.g. Render processing a tool call) don't
                 # inflate the gap and trip the no_dead_air check.  The gap then
@@ -506,12 +509,20 @@ class CallRunner:
                 if i < len(self.test_said):
                     self.test_said[i]["timestamp"] = time.time()
                 await self._inject_transcript(inbound_sid, text, i)
+            else:
+                # Empty response = deliberate silence. Use longer waits so the
+                # silence timer reliably fires before the next injection.
+                # Window 1 fires at 30 s → first silence waits 35 s (5 s margin).
+                # Window 2 fires ~15 s after Window 1 → subsequent silences wait
+                # 12 s to land inside Window 2 without reaching Window 3 (~30 s).
+                consecutive_silence += 1
+                wait = 35 if consecutive_silence == 1 else 12
             # Wait for Susie to process and respond before next injection
             logger.info(
                 "[%s] Waiting %ds for Susie's response to turn %d",
-                self.scenario["id"], TURN_WAIT_SECONDS, i,
+                self.scenario["id"], wait, i,
             )
-            await asyncio.sleep(TURN_WAIT_SECONDS)
+            await asyncio.sleep(wait)
 
         # ── 4. Hang up the call ───────────────────────────────────────────
         logger.info("[%s] All transcripts injected — hanging up", self.scenario["id"])

@@ -1817,12 +1817,19 @@ class FlowEngine:
                 slot_labels contains strings like 'Mon 23 Mar at 09:00'
                 which book_appointment can resolve AND the confirmation phrase
                 can repeat verbatim.  Falls back to raw slot dict (book_appointment
-                handles that too), then to a plain number."""
+                handles that too), then to a plain number.
+                idx is clamped to the valid range so out-of-bounds selections
+                (e.g. 'second one' when only 1 slot available) return the last
+                slot rather than None — prevents LLM hallucination."""
+                n = len(labels) if labels else (len(offered) if offered else slots_count)
+                idx = min(idx, max(n - 1, 0))  # clamp to valid range
                 if labels and idx < len(labels):
                     return labels[idx]
                 if offered and idx < len(offered):
                     return offered[idx]
-                return str(idx + 1)
+                if slots_count:
+                    return str(idx + 1)
+                return None
 
             # "last / final" catch-all → highest slot
             last_p = (
@@ -1863,12 +1870,13 @@ class FlowEngine:
                     "third one", "the third", "third slot", "option 3"),
             }
             # Pass 1: compound (multi-word) patterns — most specific, checked first
-            # to prevent "one" matching "second one" or "that middle one"
+            # to prevent "one" matching "second one" or "that middle one".
+            # No slots_count guard here — _pick() clamps out-of-range idx so
+            # e.g. "second one" with 1 slot returns that single slot instead of None.
             for idx, patterns in slot_map.items():
-                if idx < slots_count:
-                    if any(len(p.split()) > 1 and p in text for p in patterns):
-                        logger.info("[ms_flow] slot_selection compound idx=%d", idx)
-                        return _pick(idx)
+                if any(len(p.split()) > 1 and p in text for p in patterns):
+                    logger.info("[ms_flow] slot_selection compound idx=%d", idx)
+                    return _pick(idx)
             # Pass 2: single-word patterns — fallback
             for idx, patterns in slot_map.items():
                 if idx < slots_count:
