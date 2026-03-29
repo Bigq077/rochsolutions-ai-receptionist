@@ -230,7 +230,7 @@ class CallRunner:
         logger.info("[%s] Direct WS mode — connecting to %s (sid=%s)", self.scenario["id"], ws_url, fake_call_sid[:12])
 
         try:
-            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=60) as ws:
+            async with websockets.connect(ws_url, ping_interval=None) as ws:
 
                 # Twilio always sends "connected" first, then "start"
                 await ws.send(json.dumps({
@@ -284,22 +284,37 @@ class CallRunner:
                         self._end_call("handler_not_ready")
                         return self._build_result()
 
-                    # Brief pause so the greeting is placed on the TTS queue
-                    await asyncio.sleep(3)
+                    # Wait for Susie's greeting to play before the first injection.
+                    # 15 s > greeting TTS done time (~5 s) so _restart_timer() fires
+                    # before the first injection arrives — on_transcript_received()
+                    # can then cancel the timer cleanly for non-silence scenarios
+                    # (2.7, 7.4, 8.4) and the silence timer is properly armed for
+                    # silence scenarios (1.3, 6.x) before the empty-turn waits begin.
+                    await asyncio.sleep(15)
 
                     # 3. Inject patient responses one by one (reuses existing helper)
                     responses = self.scenario.get("responses", [])
+                    consecutive_silence = 0
                     for i, response in enumerate(responses):
                         text = response if isinstance(response, str) else response.get("text", "")
                         if text.strip():
+                            consecutive_silence = 0
+                            wait = TURN_WAIT_SECONDS
                             if i < len(self.test_said):
                                 self.test_said[i]["timestamp"] = time.time()
                             await self._inject_transcript(fake_call_sid, text, i)
+                        else:
+                            # Empty response = deliberate silence.
+                            # Window 1 fires at ~35 s → first silence waits 45 s (10 s margin).
+                            # Window 2 fires ~57 s total → subsequent silences wait 15 s so
+                            # injection lands at ~75 s (after W2, before W3 at ~79 s).
+                            consecutive_silence += 1
+                            wait = 45 if consecutive_silence == 1 else 15
                         logger.info(
                             "[%s] Waiting %ds for Susie's response to turn %d",
-                            self.scenario["id"], TURN_WAIT_SECONDS, i,
+                            self.scenario["id"], wait, i,
                         )
-                        await asyncio.sleep(TURN_WAIT_SECONDS)
+                        await asyncio.sleep(wait)
 
                     # 4. Send stop to end the session cleanly
                     logger.info("[%s] All turns injected — sending stop event", self.scenario["id"])
