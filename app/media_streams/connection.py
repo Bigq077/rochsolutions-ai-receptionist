@@ -93,11 +93,11 @@ _TTS_DONE_SENTINEL = object()
 # Hardcoded greeting (fast startup, no LLM round-trip)
 # ---------------------------------------------------------------------------
 
-# Single-site deployment: opening greeting identifies Susie, then asks why they're calling.
+# Single-site deployment: opening greeting identifies Susie, then offers help.
 # Defined at module level so _inject_greeting() uses it before imports are available.
 _THEOREM_GREETING = (
-    "Hi there, this is Susie, Theorem Health's AI receptionist. "
-    "Of course you can book an appointment — what brings you in today?"
+    "Hi there, this is Susie, Theorem Health's AI receptionist, "
+    "how can I help you?"
 )
 
 

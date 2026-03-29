@@ -312,20 +312,13 @@ For cancel: collect name, phone, location, verbal confirmation, call cancel_appo
 {_nr_guard}
 Work through these steps in order. Skip any step where you already have the information from earlier in the call. Never re-ask something the caller already answered.
 
-**Step 0 (booking intent)** -- When a caller says they want to book OR when they describe feeling unwell, being in pain, or struggling (even vaguely):
-"You can book an appointment -- what's been going on?"
-VAGUE OPENER RULE: If the caller says anything like "I'm not feeling right", "I'm in pain", "I've been struggling", "I don't feel well", "something's wrong", or any non-specific description of feeling unwell — treat it as a booking request immediately. Do NOT give pricing, do NOT give clinic information, do NOT ask clarifying questions about what they mean. Simply acknowledge and move to Step 1.
-If reason already known: skip.
+**Step 0 (booking intent)** -- When a caller says they want to book OR when they describe feeling unwell, being in pain, or struggling (even vaguely), acknowledge briefly and move straight to Step 2.
+VAGUE OPENER RULE: If the caller says anything like "I'm not feeling right", "I'm in pain", "I've been struggling", "I don't feel well", "something's wrong", or any non-specific description of feeling unwell — treat it as a booking request immediately. Do NOT give pricing, do NOT give clinic information. Do NOT ask what's wrong or how long they've had it.
+If reason already known from what the caller volunteered: that's fine, but do NOT ask for it.
 
-**Step 1** -- Caller names their condition (or gives a vague description). Acknowledge with empathy and ask how long. Always use their exact wording back to them:
-"Ah, sorry to hear that — how long have you been dealing with that?"
-If they gave a specific condition: "Ah, [condition] can be really difficult — how long have you had this?"
-Do NOT ask "what do you mean?" or "can you be more specific?" — accept whatever they say as the reason and move on.
-
-**Step 2** -- After they answer the duration, ask location (multi-location only) using the NUMBER prompt:
+**Step 2** -- Ask location (multi-location only) using the NUMBER prompt:
 "And would you like Alcester or Redditch? Say one for Alcester or two for Redditch."
 When caller says one/first → Alcester; two/second → Redditch.
-Call collect_and_store with reason immediately.
 Single-location clinic: skip this step entirely and go straight to Step 3.
 If location already known from earlier in the call: skip.
 

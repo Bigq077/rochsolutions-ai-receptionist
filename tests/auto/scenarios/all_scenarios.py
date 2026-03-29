@@ -22,13 +22,13 @@ SCENARIOS = [
         "phase": "Phase 1 — Connection",
         "name": "Basic pickup and greeting",
         "responses": [],
-        # Greeting: "Hi there, this is Susie, Theorem Health's AI receptionist.
-        # Of course you can book an appointment — what brings you in today?"
+        # Greeting: "Hi there, this is Susie, Theorem Health's AI receptionist,
+        # how can I help you?"
         "expected": {
             "answered_within_seconds": 5,
             "greeting_contains": [
                 "susie",
-                "what brings you in",
+                "how can i help",
             ],
             "greeting_not_contains": [
                 "alcester", "redditch", "say one", "say two",
@@ -57,7 +57,6 @@ SCENARIOS = [
         "responses": [
             "",             # silence on first question → re-ask fires
             "back pain",    # patient responds after re-ask
-            "Two weeks",
             "Yes",
             "No",
             "Next week mornings",
@@ -86,7 +85,6 @@ SCENARIOS = [
         "name": "Full clean run — clear answers",
         "responses": [
             "I have back pain",
-            "About two weeks",
             "Yes that sounds good",
             "No I haven't been before",
             "Next week any morning would be fine",
@@ -99,8 +97,6 @@ SCENARIOS = [
             "flow_completed": True,
             "no_question_asked_twice": True,
             "correct_order": [
-                "what brings you in",
-                "how long have you had",
                 "physiotherapy assessment",
                 "been with us before",
                 "days or times",
@@ -118,7 +114,6 @@ SCENARIOS = [
         "name": "New patient recognition — formal",
         "responses": [
             "Shoulder pain",
-            "Three weeks",
             "Yes",
             "No I have not been before",
             "Any afternoon next week",
@@ -140,7 +135,6 @@ SCENARIOS = [
         "name": "New patient recognition — informal nah",
         "responses": [
             "Knee pain",
-            "A few months",
             "Yeah go on then",
             "Nah never been",
             "Mornings next week",
@@ -162,7 +156,6 @@ SCENARIOS = [
         "name": "New patient — yeah i havent",
         "responses": [
             "Hip pain",
-            "Two weeks",
             "Yes",
             "Yeah I haven't been",
             "Next week Tuesday",
@@ -184,7 +177,6 @@ SCENARIOS = [
         "name": "Returning patient recognition",
         "responses": [
             "Lower back pain",
-            "Six months",
             "Yes",
             "Yeah I have been before",
             "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
@@ -206,7 +198,6 @@ SCENARIOS = [
         "name": "Informal answers throughout",
         "responses": [
             "My knee's been giving me grief",
-            "A good few months",
             "Yeah go on then",
             "Nah",
             "Anytime next week really",
@@ -227,7 +218,6 @@ SCENARIOS = [
         "name": "Shortest possible answers",
         "responses": [
             "Shoulder",
-            "Weeks",
             "Yeah",
             "No",
             "Mornings",
@@ -252,7 +242,6 @@ SCENARIOS = [
         "name": "Common condition — back pain",
         "responses": [
             "I've got lower back pain",
-            "About two weeks",
             "Yes",
             "No",
             "Next week",
@@ -262,9 +251,7 @@ SCENARIOS = [
             "Yes",
         ],
         "expected": {
-            "empathy_response_present": True,
-            "empathy_contains_condition": True,
-            "duration_question_asked": True,
+            "flow_completed": True,
             "no_technical_error": True,
         },
     },
@@ -275,7 +262,6 @@ SCENARIOS = [
         "name": "Unusual condition — headaches",
         "responses": [
             "I've been having really bad headaches",
-            "A few weeks",
             "Yes",
             "No",
             "Next week",
@@ -285,8 +271,7 @@ SCENARIOS = [
             "Yes",
         ],
         "expected": {
-            "empathy_response_present": True,
-            "duration_question_asked": True,
+            "flow_completed": True,
             "no_technical_error": True,
         },
     },
@@ -297,7 +282,6 @@ SCENARIOS = [
         "name": "Vague reason",
         "responses": [
             "I'm just not feeling right",
-            "A while",
             "Yes",
             "No",
             "Any morning",
@@ -307,9 +291,8 @@ SCENARIOS = [
             "Yes",
         ],
         "expected": {
-            "duration_question_asked": True,
-            "no_technical_error": True,
             "flow_completed": True,
+            "no_technical_error": True,
         },
     },
 
@@ -323,7 +306,6 @@ SCENARIOS = [
         "name": "Select first slot",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week mornings",
@@ -345,7 +327,6 @@ SCENARIOS = [
         "name": "Select second slot",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -366,7 +347,6 @@ SCENARIOS = [
         "name": "Select last slot",
         "responses": [
             "Knee pain",
-            "Weeks",
             "Yes",
             "No",
             "Next week",
@@ -387,7 +367,6 @@ SCENARIOS = [
         "name": "Select by number — three",
         "responses": [
             "Hip pain",
-            "A month",
             "Yes",
             "No",
             "Any day next week",
@@ -408,7 +387,6 @@ SCENARIOS = [
         "name": "Select middle one",
         "responses": [
             "Shoulder injury",
-            "Three weeks",
             "Yes",
             "No",
             "Morning next week",
@@ -433,7 +411,6 @@ SCENARIOS = [
         "name": "Accept Twilio number",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -454,7 +431,6 @@ SCENARIOS = [
         "name": "Reject Twilio number give new",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -476,7 +452,6 @@ SCENARIOS = [
         "name": "Number read back correctly",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -502,7 +477,6 @@ SCENARIOS = [
         "responses": [
             "",
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -527,7 +501,6 @@ SCENARIOS = [
             "",
             "",
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -568,7 +541,6 @@ SCENARIOS = [
         "responses": [
             "",
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -594,7 +566,6 @@ SCENARIOS = [
         "name": "Caller corrects reason",
         "responses": [
             "Back pain actually no it's my shoulder",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -615,7 +586,6 @@ SCENARIOS = [
         "name": "Caller asks question mid flow",
         "responses": [
             "Back pain",
-            "Two weeks",
             "How much does an assessment cost?",
             "Yes",
             "No",
@@ -637,7 +607,6 @@ SCENARIOS = [
         "name": "Caller wants to cancel mid booking",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Actually never mind",
         ],
         "expected": {
@@ -653,7 +622,6 @@ SCENARIOS = [
         "name": "Banned phrases never appear",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -683,7 +651,6 @@ SCENARIOS = [
         "name": "Background noise throughout",
         "responses": [
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week",
@@ -707,7 +674,6 @@ SCENARIOS = [
         "name": "Clean run 1 — new patient back pain",
         "responses": [
             "I have back pain",
-            "About two weeks",
             "Yes that sounds good",
             "No I haven't been before",
             "Next week any morning",
@@ -734,7 +700,6 @@ SCENARIOS = [
         "name": "Clean run 2 — returning knee pain",
         "responses": [
             "Knee injury from running",
-            "Three months",
             "Yes please",
             "Yeah I've been before",
             "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
@@ -758,7 +723,6 @@ SCENARIOS = [
         "name": "Clean run 3 — new informal",
         "responses": [
             "My shoulder's been killing me",
-            "Few weeks",
             "Yeah",
             "Nah",
             "Next week mornings",
@@ -781,7 +745,6 @@ SCENARIOS = [
         "name": "Clean run 4 — new patient hip",
         "responses": [
             "Hip pain when walking",
-            "About a month",
             "Yes",
             "No never",
             "Wednesday morning",
@@ -804,7 +767,6 @@ SCENARIOS = [
         "name": "Clean run 5 — returning formal",
         "responses": [
             "I have a recurring ankle problem",
-            "On and off for a year",
             "Yes that sounds fine",
             "Yes I have been before",
             "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
@@ -1053,7 +1015,6 @@ SCENARIOS = [
             "How much does it cost?",
             "Yes I'd like to book please",
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week mornings",
@@ -1122,7 +1083,6 @@ SCENARIOS = [
             "Do you take AXA health insurance?",
             "Yes I would like to book",
             "Back pain",
-            "Two weeks",
             "Yes",
             "No",
             "Next week mornings",
@@ -1236,7 +1196,6 @@ SCENARIOS = [
             "What services do you offer?",
             "Yes I'd like to book",
             "Shoulder pain",
-            "Three weeks",
             "Yes",
             "No",
             "Next week mornings",
@@ -1318,7 +1277,6 @@ SCENARIOS = [
             "What are your opening hours?",
             "Yes actually I would like to book",
             "Knee pain",
-            "A month",
             "Yes",
             "No",
             "Next week",
@@ -1398,7 +1356,6 @@ SCENARIOS = [
             "What time do you close?",
             "Yes I'd like to book an appointment",
             "Wrist pain",
-            "Three weeks",
             "Yes",
             "No",
             "Any morning this week",
