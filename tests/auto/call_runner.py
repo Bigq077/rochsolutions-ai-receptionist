@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+import secrets
 import subprocess
 import tempfile
 import time
@@ -40,6 +41,7 @@ from .config import (
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
     TWILIO_TEST_NUMBER,
+    USE_DIRECT_WS,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,9 @@ class CallRunner:
         """Make the call, run the scenario, return full result dict."""
         self.call_start_time = time.time()
         self.call_complete.clear()
+
+        if USE_DIRECT_WS:
+            return await self._run_direct_ws()
 
         # Check ngrok tunnel is still alive before starting
         tunnel_ok = await self._shared_server.ensure_tunnel_alive()
@@ -195,6 +200,134 @@ class CallRunner:
         # Retrieve what Susie said from her Redis session
         await self._fetch_session_from_server(inbound_sid)
 
+        return self._build_result()
+
+    # ── Direct WebSocket mode (no Twilio cost) ───────────────────────────
+
+    async def _run_direct_ws(self) -> dict:
+        """
+        Cost-free alternative to run(): connects directly to Susie's WebSocket
+        on the Render server with a fake callSid, bypassing Twilio entirely.
+
+        Tests the full LLM/tool/session pipeline.
+        Does NOT test /ms/incoming TwiML webhook or PSTN routing.
+        Use --real-calls for pre-client end-to-end verification.
+        """
+        import websockets
+
+        # 1. Generate fake IDs in the same format Twilio uses
+        fake_call_sid   = "CA" + secrets.token_hex(16)
+        fake_stream_sid = "MZ" + secrets.token_hex(16)
+        self.call_sid    = fake_call_sid
+        self.inbound_sid = fake_call_sid  # no separate inbound leg
+
+        ws_url = (
+            RENDER_SERVER_URL
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+            + "/ms/stream"
+        )
+        logger.info("[%s] Direct WS mode — connecting to %s (sid=%s)", self.scenario["id"], ws_url, fake_call_sid[:12])
+
+        try:
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=60) as ws:
+
+                # Twilio always sends "connected" first, then "start"
+                await ws.send(json.dumps({
+                    "event":    "connected",
+                    "protocol": "Call",
+                    "version":  "1.0.0",
+                }))
+                await ws.send(json.dumps({
+                    "event":     "start",
+                    "streamSid": fake_stream_sid,
+                    "start": {
+                        "callSid":    fake_call_sid,
+                        "streamSid":  fake_stream_sid,
+                        "accountSid": "AC000000000000000000000000direct_ws",
+                        "from":       TWILIO_TEST_NUMBER or "+15005550006",
+                        "to":         SUSIE_NUMBER,
+                        "customParameters": {
+                            "twilio_from": TWILIO_TEST_NUMBER or "+15005550006",
+                            "twilio_to":   SUSIE_NUMBER,
+                        },
+                    },
+                }))
+                logger.info("[%s] Sent connected + start events", self.scenario["id"])
+
+                # Drain incoming TTS audio so the server's send buffer never stalls
+                async def _drain():
+                    try:
+                        async for _ in ws:
+                            pass
+                    except Exception:
+                        pass
+
+                drain_task = asyncio.create_task(_drain(), name=f"drain_{self.scenario['id']}")
+
+                try:
+                    # 2. Poll until the handler is registered in _active_handlers.
+                    #    Empty-body POST returns 400 (not 404) once the handler is ready.
+                    inject_url = f"{RENDER_SERVER_URL}/ms/test/inject-transcript/{fake_call_sid}"
+                    for attempt in range(30):  # 30 × 1 s = 30 s budget
+                        async with httpx.AsyncClient(timeout=5) as http:
+                            try:
+                                resp = await http.post(inject_url, json={})
+                                if resp.status_code != 404:
+                                    logger.info("[%s] Handler ready (attempt %d)", self.scenario["id"], attempt + 1)
+                                    break
+                            except Exception:
+                                pass
+                        await asyncio.sleep(1)
+                    else:
+                        logger.error("[%s] Handler never became ready — aborting", self.scenario["id"])
+                        self._end_call("handler_not_ready")
+                        return self._build_result()
+
+                    # Brief pause so the greeting is placed on the TTS queue
+                    await asyncio.sleep(3)
+
+                    # 3. Inject patient responses one by one (reuses existing helper)
+                    responses = self.scenario.get("responses", [])
+                    for i, response in enumerate(responses):
+                        text = response if isinstance(response, str) else response.get("text", "")
+                        if text.strip():
+                            if i < len(self.test_said):
+                                self.test_said[i]["timestamp"] = time.time()
+                            await self._inject_transcript(fake_call_sid, text, i)
+                        logger.info(
+                            "[%s] Waiting %ds for Susie's response to turn %d",
+                            self.scenario["id"], TURN_WAIT_SECONDS, i,
+                        )
+                        await asyncio.sleep(TURN_WAIT_SECONDS)
+
+                    # 4. Send stop to end the session cleanly
+                    logger.info("[%s] All turns injected — sending stop event", self.scenario["id"])
+                    await ws.send(json.dumps({
+                        "event":     "stop",
+                        "streamSid": fake_stream_sid,
+                        "stop":      {"callSid": fake_call_sid},
+                    }))
+                    self._end_call("completed")
+
+                finally:
+                    drain_task.cancel()
+                    try:
+                        await drain_task
+                    except asyncio.CancelledError:
+                        pass
+
+        except Exception as exc:
+            logger.error("[%s] Direct WS error: %r", self.scenario["id"], exc)
+            self._end_call("ws_error")
+
+        self.call_end_time = time.time()
+
+        # Wait for session to be fully saved to Redis
+        logger.info("[%s] Waiting for session to be saved...", self.scenario["id"])
+        await asyncio.sleep(15)
+
+        await self._fetch_session_from_server(fake_call_sid)
         return self._build_result()
 
     async def _find_inbound_call_sid(

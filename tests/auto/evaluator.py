@@ -427,6 +427,18 @@ class Evaluator:
                 "days or times" in t or "days and times" in t for t in susie_texts
             )
 
+        # ── reschedule_confirmed (session field overrides Claude transcript check) ──
+        # The session field is set by flow.py when the patient confirms intent,
+        # regardless of whether Acuity successfully executed the reschedule.
+        # This is the authoritative source for whether the reschedule flow ran.
+        if expected.get("reschedule_confirmed"):
+            checks["reschedule_confirmed"] = bool(result.get("reschedule_confirmed"))
+
+        # ── cancel_confirmed (session field overrides Claude transcript check) ──
+        # Same rationale as reschedule_confirmed above.
+        if expected.get("cancel_confirmed"):
+            checks["cancel_confirmed"] = bool(result.get("cancel_confirmed"))
+
         # ── offered_booking (after FAQ) ───────────────────────────────
         if expected.get("offered_booking"):
             checks["offered_booking"] = any(

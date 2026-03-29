@@ -44,6 +44,7 @@ from tests.auto.config import (
     TWILIO_AUTH_TOKEN,
     TWILIO_TEST_NUMBER,
     ELEVENLABS_API_KEY,
+    USE_DIRECT_WS,
 )
 from tests.auto.call_runner import CallRunner
 from tests.auto.evaluator import Evaluator
@@ -190,15 +191,18 @@ async def _preflight_check() -> bool:
 
     # ── 1. Twilio credentials ─────────────────────────────────────
     print("\n[1/6] Twilio credentials...")
-    try:
-        from twilio.rest import Client as TwilioClient
-        client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        # Listing calls is a lightweight read-only operation
-        _ = client.calls.list(limit=1)
-        print(f"  {TICK} Twilio: credentials valid (SID={TWILIO_ACCOUNT_SID[:8]}...)")
-    except Exception as exc:
-        print(f"  {CROSS} Twilio: {exc}")
-        all_ok = False
+    if USE_DIRECT_WS:
+        print(f"  [SKIP] Twilio: not needed in direct WS mode (use --real-calls to test)")
+    else:
+        try:
+            from twilio.rest import Client as TwilioClient
+            client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            # Listing calls is a lightweight read-only operation
+            _ = client.calls.list(limit=1)
+            print(f"  {TICK} Twilio: credentials valid (SID={TWILIO_ACCOUNT_SID[:8]}...)")
+        except Exception as exc:
+            print(f"  {CROSS} Twilio: {exc}")
+            all_ok = False
 
     # ── 2. ElevenLabs API key ─────────────────────────────────────
     print("\n[2/6] ElevenLabs API key...")
@@ -274,14 +278,17 @@ async def _preflight_check() -> bool:
 
     # ── 5. ngrok tunnel ───────────────────────────────────────────
     print("\n[5/6] ngrok tunnel (SharedServer)...")
-    try:
-        server = SharedServer()
-        await server.start()
-        print(f"  {TICK} ngrok: tunnel alive at {server.webhook_url}")
-        await server.stop()
-    except Exception as exc:
-        print(f"  {CROSS} ngrok: {exc}")
-        all_ok = False
+    if USE_DIRECT_WS:
+        print(f"  [SKIP] ngrok: not needed in direct WS mode (use --real-calls to test)")
+    else:
+        try:
+            server = SharedServer()
+            await server.start()
+            print(f"  {TICK} ngrok: tunnel alive at {server.webhook_url}")
+            await server.stop()
+        except Exception as exc:
+            print(f"  {CROSS} ngrok: {exc}")
+            all_ok = False
 
     # ── 6. Scenario integrity ─────────────────────────────────────
     print(f"\n[6/6] Scenario integrity ({len(SCENARIOS)} scenarios)...")
@@ -460,7 +467,19 @@ async def main():
         help="Validate all API keys and infrastructure without making real calls",
         action="store_true",
     )
+    parser.add_argument(
+        "--real-calls",
+        help="Use real Twilio calls instead of direct WebSocket (tests the full phone path). "
+             "Run with --quick --real-calls before handing a number to a client.",
+        action="store_true",
+        dest="real_calls",
+    )
     args = parser.parse_args()
+
+    if args.real_calls:
+        # Override the module-level flag so CallRunner uses the real Twilio flow
+        import tests.auto.call_runner as _cr
+        _cr.USE_DIRECT_WS = False
 
     if args.preflight:
         ok = await _preflight_check()
@@ -497,18 +516,20 @@ async def main():
         return
 
     # Validate required environment variables before making any calls
-    missing = []
-    if not TWILIO_ACCOUNT_SID:
-        missing.append("TWILIO_ACCOUNT_SID")
-    if not TWILIO_AUTH_TOKEN:
-        missing.append("TWILIO_AUTH_TOKEN")
-    if not TWILIO_TEST_NUMBER:
-        missing.append("TWILIO_TEST_NUMBER")
-    if not ELEVENLABS_API_KEY:
-        missing.append("ELEVENLABS_API_KEY")
-    if missing:
-        print(f"ERROR — missing required environment variables: {', '.join(missing)}")
-        sys.exit(1)
+    # Twilio credentials are only needed for real-call mode
+    if args.real_calls:
+        missing = []
+        if not TWILIO_ACCOUNT_SID:
+            missing.append("TWILIO_ACCOUNT_SID")
+        if not TWILIO_AUTH_TOKEN:
+            missing.append("TWILIO_AUTH_TOKEN")
+        if not TWILIO_TEST_NUMBER:
+            missing.append("TWILIO_TEST_NUMBER")
+        if not ELEVENLABS_API_KEY:
+            missing.append("ELEVENLABS_API_KEY")
+        if missing:
+            print(f"ERROR — missing required environment variables: {', '.join(missing)}")
+            sys.exit(1)
 
     print(f"\n{'=' * 60}")
     print(f"SUSIE AUTOMATED TEST SUITE")
@@ -520,12 +541,15 @@ async def main():
     await _warmup_server()
 
     # Start ONE shared ngrok + uvicorn server for the entire run.
-    # This prevents the ngrok cascade failures that occurred when a new tunnel
-    # was created per scenario (one failure → all subsequent fail).
-    shared_server = SharedServer()
-    print("\nStarting shared webhook server...")
-    await shared_server.start()
-    print(f"Webhook ready: {shared_server.webhook_url}")
+    # Not needed in direct WS mode — skipped to avoid ngrok cost/complexity.
+    if args.real_calls:
+        shared_server = SharedServer()
+        print("\nStarting shared webhook server...")
+        await shared_server.start()
+        print(f"Webhook ready: {shared_server.webhook_url}")
+    else:
+        shared_server = None
+        print("\nDirect WS mode — no Twilio calls, no ngrok needed")
 
     evaluator = Evaluator()
     healer    = Healer()
@@ -605,9 +629,9 @@ async def main():
             await asyncio.sleep(3)
 
     finally:
-        # Always shut down the shared server cleanly
-        print("\nShutting down shared webhook server...")
-        await shared_server.stop()
+        if shared_server is not None:
+            print("\nShutting down shared webhook server...")
+            await shared_server.stop()
 
     # Build and print report
     report = build_report(all_results)

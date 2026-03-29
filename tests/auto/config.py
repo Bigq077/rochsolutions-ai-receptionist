@@ -54,3 +54,7 @@ RENDER_SERVER_URL = os.getenv(
 
 # Ensure results directory exists
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Direct WebSocket mode — bypasses Twilio calls entirely (no cost).
+# Default: True (free). Set USE_DIRECT_WS=false or pass --real-calls to use real Twilio calls.
+USE_DIRECT_WS = os.getenv("USE_DIRECT_WS", "true").lower() != "false"
