@@ -387,7 +387,7 @@ class SilenceHandler:
             return
 
         since_audio = time.time() - self.last_audio_received_at
-        if since_audio < 3.5:
+        if since_audio < 1.0:   # reduced from 3.5 — AssemblyAI empty transcripts can reset the clock
             return
         if self.currently_reasking:
             return

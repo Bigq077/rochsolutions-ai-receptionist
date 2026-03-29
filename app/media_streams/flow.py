@@ -979,6 +979,8 @@ class FlowEngine:
                 "location":     "alcester",
             }
             logger.info("[ms_flow] CONFIRM_CANCEL — calling _exec_cancel_appointment directly")
+            # Patient intent confirmed by reaching this step — record regardless of Acuity result
+            self.session["cancel_confirmed"] = True
             cancel_result = await _exec_cancel_appointment(cancel_args, self.session)
             if cancel_result.get("success"):
                 response = (
@@ -986,7 +988,6 @@ class FlowEngine:
                     "You'll receive a confirmation text shortly. "
                     "Is there anything else I can help with?"
                 )
-                self.session["cancel_confirmed"] = True
             else:
                 response = (
                     "Let me get that sorted for you now."
@@ -995,7 +996,7 @@ class FlowEngine:
                     "\u20096\u20098\u20096\u20091 and the team will be happy to help. "
                     "Is there anything else I can help you with?"
                 )
-                self.session["cancel_confirmed"] = False
+                self.session["acuity_error"] = cancel_result.get("error")
             await self._tts.put(response)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": response}
@@ -1127,6 +1128,56 @@ class FlowEngine:
         """
         step = self.current_step()
         if step is None:
+            # ── Safety-net: CONFIRM_RESCHEDULE may have flow_step prematurely set ──
+            # If the reschedule flow completed its steps but reschedule_confirmed was
+            # never set (e.g. due to a race), and the caller is saying "Yes" to the
+            # confirmation question, execute the reschedule now.
+            if (
+                self._active_flow is RESCHEDULE_FLOW
+                and self.session.get("reschedule_confirmed") is None
+                and self.session.get("selected_slot")
+            ):
+                text = transcript.strip().lower()
+                yes_patterns = ("yes", "yeah", "yep", "go ahead", "sure", "ok", "okay", "please", "correct")
+                if any(p in text for p in yes_patterns):
+                    logger.info("[ms_flow] CONFIRM_RESCHEDULE safety-net — executing reschedule for %r", transcript[:40])
+                    from app.tools.receptionist_tools import _exec_reschedule_appointment
+                    phone_val = (
+                        self.session.get("phone_number")
+                        or self.session.get("twilio_from_local")
+                        or self.session.get("twilio_from", "")
+                    )
+                    reschedule_args = {
+                        "patient_name":    self.session.get("full_name", ""),
+                        "phone":           phone_val,
+                        "location":        "alcester",
+                        "new_slot_iso":    self.session.get("selected_slot", ""),
+                        "duration_minutes": 50,
+                    }
+                    # Patient confirmed intent — record regardless of Acuity execution result
+                    self.session["reschedule_confirmed"] = True
+                    reschedule_result = await _exec_reschedule_appointment(reschedule_args, self.session)
+                    if reschedule_result.get("success"):
+                        slot_speech = self.session.get("selected_slot_speech", "the new time")
+                        response = (
+                            f"I've rescheduled your appointment to {slot_speech}. "
+                            "You'll receive a confirmation text shortly. "
+                            "Is there anything else I can help you with?"
+                        )
+                    else:
+                        response = (
+                            "I'm sorry, but I wasn't able to complete the reschedule. "
+                            "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u2009"
+                            "6\u20096\u20098\u20096\u20091 and the team will be happy to help."
+                        )
+                        self.session["acuity_error"] = reschedule_result.get("error")
+                    await self._tts.put(response)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": response}
+                    )
+                    logger.info("[ms_flow] CONFIRM_RESCHEDULE safety-net complete — reschedule_confirmed=%s",
+                                self.session["reschedule_confirmed"])
+                    return
             logger.info("[ms_flow] flow complete — ignoring transcript: %r", transcript[:60])
             return
 
@@ -1315,6 +1366,8 @@ class FlowEngine:
                 "duration_minutes": 50,
             }
             logger.info("[ms_flow] CONFIRM_RESCHEDULE — calling _exec_reschedule_appointment")
+            # Patient confirmed intent — record regardless of Acuity execution result
+            self.session["reschedule_confirmed"] = True
             reschedule_result = await _exec_reschedule_appointment(reschedule_args, self.session)
             if reschedule_result.get("success"):
                 slot_speech = self.session.get("selected_slot_speech", "the new time")
@@ -1323,14 +1376,13 @@ class FlowEngine:
                     "You'll receive a confirmation text shortly. "
                     "Is there anything else I can help you with?"
                 )
-                self.session["reschedule_confirmed"] = True
             else:
                 response = (
                     "I'm sorry, but I wasn't able to complete the reschedule. "
                     "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u20096"
                     "\u20096\u20098\u20096\u20091 and the team will be happy to help."
                 )
-                self.session["reschedule_confirmed"] = False
+                self.session["acuity_error"] = reschedule_result.get("error")
             await self._tts.put(response)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": response}
