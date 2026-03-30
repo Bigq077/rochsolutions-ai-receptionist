@@ -680,6 +680,32 @@ FAQ_FLOW: List[Dict[str, Any]] = [
     },
 ]
 
+# ---------- General query flow (anything outside known intents) ---------------
+
+GENERAL_QUERY_FLOW: List[Dict[str, Any]] = [
+    {
+        "step": 0,
+        "state": "ANSWER_GENERAL",
+        "question": None,   # LLM generates the answer
+        "answer_field": "general_answered",
+        "use_llm": True,
+        "allow_tools": False,   # answer from knowledge only — no booking tools
+        "llm_instruction": (
+            "The caller asked: '{general_query_text}'.\n"
+            "Answer it helpfully and honestly using whatever you know. "
+            "Do NOT call check_availability, book_appointment, or any booking tool. "
+            "If it is a travel or directions question (e.g. how long to drive from a place): "
+            "say you don't have live journey times but give the clinic address and suggest "
+            "they use Google Maps or a sat nav for an accurate estimate. "
+            "If it is something you genuinely cannot answer, say so honestly — "
+            "do not guess or make things up. "
+            "One or two sentences only. "
+            "End with: 'Is there anything else I can help you with?'"
+        ),
+        "extract": "faq_booking",   # reuse: yes→booking, no→done
+    },
+]
+
 # Intent → FAQ topic mapping
 _INTENT_TO_FAQ_TOPIC = {
     "faq_prices":    "prices",
@@ -1127,6 +1153,10 @@ class FlowEngine:
         if step["state"] == "DETECT_INTENT":
             intent = self._detect_intent(text)
             self.session["intent"] = intent
+            # For general queries, store the original transcript so the LLM
+            # instruction can reference exactly what the caller asked.
+            if intent == "general_query":
+                self.session["general_query_text"] = transcript.strip()
             self._switch_flow(intent)
 
             # If caller mentioned a medical condition in their first utterance,
@@ -1402,6 +1432,8 @@ class FlowEngine:
         )
         location_p = (
             "where are you", "address", "parking", "directions", "how do i get",
+            "how long", "how far", "drive to", "travel to", "get to",
+            "journey to", "far is", "distance", "near", "nearest",
         )
         services_p = (
             "services", "treatments", "what do you offer", "what do you do",
@@ -1414,7 +1446,7 @@ class FlowEngine:
         if any(p in text for p in hours_p):      return "faq_hours"
         if any(p in text for p in location_p):   return "faq_location"
         if any(p in text for p in services_p):   return "faq_services"
-        return "booking"
+        return "general_query"  # unknown question — LLM handles it freely
 
     def _switch_flow(self, intent: str) -> None:
         """
@@ -1434,6 +1466,8 @@ class FlowEngine:
         elif intent in _faq_intents:
             self._active_flow = FAQ_FLOW
             self.session["faq_topic"] = _INTENT_TO_FAQ_TOPIC.get(intent, "services")
+        elif intent == "general_query":
+            self._active_flow = GENERAL_QUERY_FLOW
         else:
             self._active_flow = BOOKING_FLOW
         self.session["flow_step"] = 0
