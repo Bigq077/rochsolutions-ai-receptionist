@@ -156,9 +156,29 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
             return LONDON_TZ.localize(dt)
         return dt.astimezone(LONDON_TZ)
 
-    # 1. Direct ISO parse
+    # 1. Direct ISO parse — but only accept if it matches one of the offered slots.
+    # Claude sometimes hallucinates a slot ISO that was never presented; the guard
+    # below forces it back to the offered list so the wrong slot can never be booked.
     s = str(slot_iso or "").strip()
-    if s:
+    offered_check = session.get("last_offered_slots") or []
+    if s and offered_check:
+        try:
+            dt_candidate = _to_london(datetime.fromisoformat(s))
+            # Accept only if it matches an offered slot (within 60 s tolerance)
+            for offered_slot in offered_check:
+                try:
+                    offered_dt = _to_london(datetime.fromisoformat(offered_slot["start"]))
+                    if abs((dt_candidate - offered_dt).total_seconds()) < 60:
+                        logger.info("_resolve_slot_iso: direct ISO match verified against offered slot %s", offered_slot["start"])
+                        return dt_candidate
+                except Exception:
+                    pass
+            # Did not match any offered slot — fall through to index/label matching
+            logger.warning("_resolve_slot_iso: ISO %r not in offered slots %s — falling back to index/label matching", s, [o['start'] for o in offered_check])
+        except (ValueError, TypeError):
+            pass
+    elif s and not offered_check:
+        # No offered slots in session (e.g. direct calendar booking) — accept as-is
         try:
             dt = datetime.fromisoformat(s)
             return _to_london(dt)
