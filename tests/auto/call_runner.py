@@ -284,13 +284,14 @@ class CallRunner:
                         self._end_call("handler_not_ready")
                         return self._build_result()
 
-                    # Wait for Susie's greeting to play before the first injection.
-                    # 15 s > greeting TTS done time (~5 s) so _restart_timer() fires
-                    # before the first injection arrives — on_transcript_received()
-                    # can then cancel the timer cleanly for non-silence scenarios
-                    # (2.7, 7.4, 8.4) and the silence timer is properly armed for
-                    # silence scenarios (1.3, 6.x) before the empty-turn waits begin.
-                    await asyncio.sleep(15)
+                    # Wait for Susie's greeting TTS to finish before first injection.
+                    # Greeting TTS takes ~3-5 s; silence timer fires ~5 s after that
+                    # (~8-10 s total). We inject at 7 s — after the greeting finishes
+                    # but before the silence handler fires for the first time.
+                    # Silence scenarios (1.3, 6.x) use empty "" responses which
+                    # trigger the 45 s empty-turn wait, so they handle silence timing
+                    # independently of this initial wait.
+                    await asyncio.sleep(7)
 
                     # 3. Inject patient responses one by one (reuses existing helper)
                     responses = self.scenario.get("responses", [])
