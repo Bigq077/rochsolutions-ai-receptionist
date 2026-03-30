@@ -352,7 +352,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 7,
         "state": "CONFIRM_PHONE_RETURNING",
-        "question": "And the best number to contact you on?",
+        "question": "And is the number you're calling from right now the same number you originally booked with?",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
