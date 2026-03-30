@@ -386,47 +386,55 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
         "extract": "none",
     },
-    # ── Main booking steps (steps 10-15) ──────────────────────────────────
+    # ── Main booking steps ────────────────────────────────────────────────
     {
         "step": 10,
-        "state": "COLLECT_AVAILABILITY",
-        "question": "What days or times work best for you?",
-        "answer_field": "availability",
-        "use_llm": False,
-        "extract": "availability",
-        "llm_instruction": None,
+        "state": "PRESENT_DAYS",
+        "question": None,   # LLM generates the spoken bridge + day list
+        "answer_field": "chosen_day",
+        "use_llm": True,
+        "allow_tools": True,
+        "extract": "any",
+        "llm_instruction": (
+            "Say 'Just checking what we've got coming up for you...' then immediately call "
+            "check_availability with location='{selected_location}', duration_minutes=50. "
+            "After the tool returns, present ONLY the first 3 available days from available_days "
+            "— do NOT list any times yet. Use these exact formats:\n"
+            "3 days: 'We've got a few days coming up — [day1], [day2], and [day3] — "
+            "which of those works best for you?'\n"
+            "2 days: 'We've got availability on [day1] and [day2] — which of those suits you better?'\n"
+            "1 day:  'The next day we have is [day1] — would that work for you?'\n"
+            "Use the full spoken day name from day_label (e.g. 'Thursday the twenty-sixth of March'). "
+            "Never list times here. Never say 'I have found X slots'."
+        ),
     },
     {
         "step": 11,
-        "state": "PRESENT_SLOTS",
-        "question": None,   # preamble lives inside the LLM instruction so TTS is continuous
+        "state": "PRESENT_TIMES",
+        "question": None,   # LLM responds to the caller's day choice
         "answer_field": "selected_slot",
         "use_llm": True,
-        "llm_instruction": (
-            "IMPORTANT: Output this exact phrase FIRST, before calling any tool: "
-            "'Let me just have a look at what we've got available for you...' "
-            "Then call check_availability with location='alcester', "
-            "duration_minutes=50, preference='{availability}'. "
-            "After the tool returns, present up to 3 slots in this exact format: "
-            "'I have found [N] available slots during that time frame. "
-            "The first being [DAY] the [DDth] of [MONTH] at [TIME], "
-            "the second being [DAY] the [DDth] of [MONTH] at [TIME], "
-            "the third being [DAY] the [DDth] of [MONTH] at [TIME]. "
-            "Which would you prefer?' "
-            "CRITICAL — FOR ANY NUMBER OF SLOTS (even just 1): "
-            "ALWAYS begin the slot list with 'The first being [DAY]...'. "
-            "NEVER say 'the only slot', 'the available slot', or omit 'The first being'. "
-            "For 1 slot: 'I have found 1 available slot during that time frame. "
-            "The first being [DAY] the [DDth] of [MONTH] at [TIME]. Would you like that one?' "
-            "CRITICAL day-name rule: Read the THREE-LETTER ABBREVIATION at the START of each slot label "
-            "(e.g. 'Mon 23 Mar at 09:00'). Use ONLY that abbreviation for the day name: "
-            "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, Sat=Saturday, Sun=Sunday. "
-            "NEVER compute the day of week yourself from the date number. "
-            "Use ordinal suffixes: 1st, 2nd, 3rd, 4th, 5th...20th, 21st, 22nd, 23rd, 24th...31st. "
-            "Time format: 9am, 10am, 2pm, 3:30pm (no leading zeros, am/pm lowercase). "
-            "Never deviate from this format."
-        ),
+        "allow_tools": False,
         "extract": "slot_selection",
+        "llm_instruction": (
+            "The caller just responded to the day options with: '{chosen_day}'.\n"
+            "Using the available_days data already in your context (do NOT call check_availability again):\n"
+            "1. If the caller named a specific day — find that day in available_days and present "
+            "up to 4 times for it:\n"
+            "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which works for you?'\n"
+            "   2 times: 'On [day] I've got [t1] or [t2] — which suits you?'\n"
+            "   1 time:  'On [day] I have [t1] available — does that work?'\n"
+            "   Always use the full spoken time: 'nine o'clock in the morning', "
+            "'half past two in the afternoon', 'four o'clock in the afternoon'. "
+            "Never say AM/PM or digits like '09:00'.\n"
+            "2. If the caller said none of those times work — refer back to the other days you "
+            "initially offered: 'Not to worry — what about [other offered day 1][, or [other offered day 2]]?'\n"
+            "3. If the caller rejected all initially offered days — present the next 3 days from "
+            "available_days (entries 4–6) using the same day-first format. Continue cycling "
+            "in batches of 3 until a day is chosen or the list is exhausted.\n"
+            "4. If there are no more days: 'I'm afraid those are the only days we have coming "
+            "up — would you like me to ask the team to ring you back?'"
+        ),
     },
     {
         "step": 12,
@@ -521,39 +529,48 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 3,
-        "state": "COLLECT_AVAILABILITY_RESCHEDULE",
-        "question": "What days or times work best for the new appointment?",
-        "answer_field": "availability",
-        "use_llm": False,
-        "extract": "availability",
-        "llm_instruction": None,
+        "state": "PRESENT_DAYS_RESCHEDULE",
+        "question": None,
+        "answer_field": "chosen_day",
+        "use_llm": True,
+        "allow_tools": True,
+        "extract": "any",
+        "llm_instruction": (
+            "Say 'Just checking what we've got coming up for you...' then call "
+            "check_availability with location='alcester', duration_minutes=50. "
+            "After the tool returns, present ONLY the first 3 available days from available_days "
+            "— do NOT list any times yet. Use these exact formats:\n"
+            "3 days: 'We've got a few days coming up — [day1], [day2], and [day3] — "
+            "which of those works best for you?'\n"
+            "2 days: 'We've got availability on [day1] and [day2] — which of those suits you better?'\n"
+            "1 day:  'The next day we have is [day1] — would that work for you?'\n"
+            "Use the full spoken day name from day_label. Never list times here."
+        ),
     },
     {
         "step": 4,
-        "state": "PRESENT_NEW_SLOTS",
-        "question": None,   # preamble lives inside LLM instruction — no silence gap
+        "state": "PRESENT_TIMES_RESCHEDULE",
+        "question": None,
         "answer_field": "selected_slot",
         "use_llm": True,
-        "llm_instruction": (
-            "IMPORTANT: Output this exact phrase FIRST, before calling any tool: "
-            "'Let me just have a look at what we've got available for you...' "
-            "Then call check_availability with location='alcester', "
-            "duration_minutes=50, preference='{availability}'. "
-            "After the tool returns, present up to 3 slots in this exact format: "
-            "'I have found [N] available slots during that time frame. "
-            "The first being [DAY] the [DDth] of [MONTH] at [TIME], "
-            "the second being [DAY] the [DDth] of [MONTH] at [TIME], "
-            "the third being [DAY] the [DDth] of [MONTH] at [TIME]. "
-            "Which would you prefer?' "
-            "CRITICAL day-name rule: Read the THREE-LETTER ABBREVIATION at the START of each slot label "
-            "(e.g. 'Mon 23 Mar at 09:00'). Use ONLY that abbreviation for the day name: "
-            "Mon=Monday, Tue=Tuesday, Wed=Wednesday, Thu=Thursday, Fri=Friday, Sat=Saturday, Sun=Sunday. "
-            "NEVER compute the day of week yourself from the date number. "
-            "Use ordinal suffixes: 1st, 2nd, 3rd, 4th, 5th...20th, 21st, 22nd, 23rd, 24th...31st. "
-            "Time format: 9am, 10am, 2pm, 3:30pm (no leading zeros, am/pm lowercase). "
-            "Never deviate from this format."
-        ),
+        "allow_tools": False,
         "extract": "slot_selection",
+        "llm_instruction": (
+            "The caller just responded to the day options with: '{chosen_day}'.\n"
+            "Using the available_days data already in your context (do NOT call check_availability again):\n"
+            "1. If the caller named a specific day — find that day in available_days and present "
+            "up to 4 times for it:\n"
+            "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which works for you?'\n"
+            "   1 time:  'On [day] I have [t1] available — does that work?'\n"
+            "   Use full spoken times: 'nine o'clock in the morning', 'half past two in the afternoon'. "
+            "Never say AM/PM.\n"
+            "2. If none of those times work — refer to the other initially offered days: "
+            "'Not to worry — what about [other offered day 1][, or [other offered day 2]]?'\n"
+            "3. If all initial days rejected — present next 3 days from available_days (entries 4–6). "
+            "Continue cycling in batches of 3 until a day is chosen or list is exhausted.\n"
+            "4. If no more days: 'I'm afraid those are the only days we have — would you like me "
+            "to ask the team to ring you back?'"
+        ),
     },
     {
         "step": 5,
@@ -744,9 +761,9 @@ class FlowEngine:
                         step["step"], step["state"])
             return
 
-        # For PRESENT_SLOTS / PRESENT_NEW_SLOTS: ensure location is set so
+        # For PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE: ensure location is set so
         # check_availability never asks the caller mid-booking.
-        if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
+        if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
             self.session.setdefault("selected_location", "alcester")
             logger.info(
                 "[ms_flow] %s: selected_location=%r",
@@ -963,12 +980,12 @@ class FlowEngine:
             # treatment type — no patient response needed; next step asks availability.
             if step["state"] == "LOOKUP_TREATMENT_PLAN":
                 self.session["flow_step"] = step["step"] + 1
-                logger.info("[ms_flow] LOOKUP_TREATMENT_PLAN complete — advancing to COLLECT_AVAILABILITY")
+                logger.info("[ms_flow] LOOKUP_TREATMENT_PLAN complete — advancing to PRESENT_DAYS")
                 await self.ask_current_question()
                 return
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
-            if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
+            if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
                 offered = self.session.get("last_offered_slots") or []
                 if offered:
                     self.session["slots_offered"] = list(offered)
@@ -1289,7 +1306,7 @@ class FlowEngine:
         # scenarios only have 5 patient turns (no 6th "Yes to confirm").
         # Advance directly to CONFIRM_RESCHEDULE so the LLM can call
         # reschedule_appointment and say the confirmation summary.
-        if step["state"] == "PRESENT_NEW_SLOTS" and self._active_flow is RESCHEDULE_FLOW:
+        if step["state"] == "PRESENT_TIMES_RESCHEDULE" and self._active_flow is RESCHEDULE_FLOW:
             slot_text = str(answer)
             self.session["selected_slot_speech"] = _format_slot_for_speech(slot_text)
             self.session["selected_slot"] = slot_text   # needed by _exec_reschedule_appointment
@@ -1303,7 +1320,7 @@ class FlowEngine:
         # After slot selection, confirm with the caller before moving to name
         # collection.  flow_step is NOT advanced here — it advances in
         # _handle_slot_confirmation when the caller says yes.
-        if step["state"] in ("PRESENT_SLOTS", "PRESENT_NEW_SLOTS"):
+        if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
             self.session["slot_pending_confirmation"] = True
             slot_text = str(answer)
             slot_speech = _format_slot_for_speech(slot_text)
@@ -1434,7 +1451,7 @@ class FlowEngine:
         """
         Handle the yes/no response after Susie has confirmed a slot selection.
 
-        yes → clear flag, advance flow_step past PRESENT_SLOTS, ask next question
+        yes → clear flag, advance flow_step past PRESENT_TIMES, ask next question
         no  → clear flag, clear selected_slot, re-ask which slot they prefer
               (does NOT re-run LLM/check_availability — slots are still offered)
         no match → re-ask the confirmation phrase
@@ -1467,7 +1484,7 @@ class FlowEngine:
                 logger.info("[ms_flow] slot confirmation: NO matched=%r", p)
                 self.session["slot_pending_confirmation"] = False
                 self.session["selected_slot"] = None
-                # Stay at PRESENT_SLOTS — caller picks again from already-offered slots.
+                # Stay at PRESENT_TIMES — caller picks again from already-offered slots.
                 # Do NOT re-run ask_current_question (that would re-call the LLM).
                 phrase = "No problem — which slot would you prefer?"
                 await self._tts.put(phrase)
