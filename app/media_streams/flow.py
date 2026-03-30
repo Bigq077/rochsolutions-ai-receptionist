@@ -407,15 +407,25 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 2,
         "state": "CONFIRM_ASSESSMENT",
-        "question": (
-            "OK, that's noted. To get the best possible "
-            "diagnosis initially I would recommend a "
-            "physiotherapy assessment — does that sound OK?"
-        ),
+        "question": None,
         "answer_field": "assessment_confirmed",
-        "use_llm": False,
+        "use_llm": True,
+        "allow_tools": False,
+        "llm_instruction": (
+            "CRITICAL — DO NOT CALL ANY TOOLS. DO NOT call get_clinic_info.\n"
+            "The caller wants to book an appointment. Their reason is: {reason}\n"
+            "Your response MUST have exactly TWO parts:\n"
+            "PART 1: One short sentence of genuine empathy about their specific condition.\n"
+            "PART 2: Recommend a physiotherapy assessment and ask if that sounds OK.\n"
+            "EXAMPLE: 'Sorry to hear that — back pain can be really debilitating. "
+            "To get the best possible diagnosis I'd recommend a physiotherapy assessment "
+            "— does that sound OK?'\n"
+            "MAXIMUM: 2 sentences, 35 words total.\n"
+            "DO NOT ask how long they have had the condition.\n"
+            "DO NOT ask if they have been with us before.\n"
+            "DO NOT mention location, pricing, or any other topic."
+        ),
         "extract": "yes_no",
-        "llm_instruction": None,
     },
     {
         "step": 3,
@@ -859,6 +869,15 @@ class FlowEngine:
                 "[ms_flow] %s: selected_location=%r",
                 step["state"], self.session["selected_location"],
             )
+
+        # COLLECT_DURATION: always skipped — simplified flow (client requirement: no duration
+        # question). Empathy is delivered together with the physiotherapy recommendation in
+        # CONFIRM_ASSESSMENT (step 2) via the LLM instruction above.
+        if step["state"] == "COLLECT_DURATION":
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] simplified flow — skipping COLLECT_DURATION")
+            await self.ask_current_question()
+            return
 
         # ── Returning-patient branch skip logic ───────────────────────────────
         # RETURNING_RECENCY: skip entirely for new patients
