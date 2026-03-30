@@ -925,6 +925,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
     location = _normalize_location(args.get("location") or session.get("selected_location", ""))
     service = (args.get("service") or "physiotherapy assessment").strip()
+    preference = (args.get("preference") or "").strip()
 
     # Explicit day_window from the LLM bypasses progressive search
     explicit_window = args.get("day_window")
