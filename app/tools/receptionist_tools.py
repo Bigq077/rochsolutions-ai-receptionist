@@ -64,24 +64,57 @@ def _build_days_data(slot_tuples: list) -> list:
     return days_data
 
 
-def _select_presented_tuples(slot_tuples: list) -> list:
+def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
     """
     Pick up to 3 (start_dt, end_dt) tuples to present to the caller.
     Prefer one slot per day for variety.  Fall back to first 3 chronological
     slots when fewer than 3 days are available (e.g. all slots on same day).
     Ensures slot_labels[0/1/2] match exactly the 1st/2nd/3rd slot presented.
 
-    Past slots are filtered out first so they never enter last_offered_slots —
-    prevents the bug where Acuity returns a near-past slot that gets stored as
-    slot[0] while Susie verbally presents a future slot as "the first one",
-    causing the ordinal resolver to confirm the wrong appointment.
+    Past slots are filtered out first.  If a preference string is given
+    (e.g. 'Wednesday morning'), slots are further filtered to match the
+    stated day-of-week and/or time-of-day so that slot_labels contains ONLY
+    what the LLM will verbally present — preventing ordinal mismatch when
+    the LLM filters by preference but slot_labels has unfiltered Acuity results.
+    Falls back to all future slots if no preference-matching slots found.
     """
     now = datetime.now(LONDON_TZ)
     future_only = [(s, e) for s, e in slot_tuples if s > now]
 
+    # Apply preference filtering so stored slot_labels match LLM verbal output
+    pref = preference.lower()
+    filtered = future_only
+
+    day_map = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+    pref_days = [wd for name, wd in day_map.items() if name in pref]
+    if pref_days:
+        day_filtered = [(s, e) for s, e in filtered if s.weekday() in pref_days]
+        if day_filtered:
+            filtered = day_filtered
+
+    if "morning" in pref:
+        time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
+        if time_filtered:
+            filtered = time_filtered
+    elif "afternoon" in pref:
+        time_filtered = [(s, e) for s, e in filtered if 12 <= s.hour < 17]
+        if time_filtered:
+            filtered = time_filtered
+    elif "evening" in pref:
+        time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
+        if time_filtered:
+            filtered = time_filtered
+
+    # Fall back to all future slots if preference produced no matches
+    if not filtered:
+        filtered = future_only
+
     day_seen: set = set()
     day_firsts: list = []
-    for start, end in sorted(future_only, key=lambda t: t[0]):
+    for start, end in sorted(filtered, key=lambda t: t[0]):
         day = start.date()
         if day not in day_seen:
             day_seen.add(day)
@@ -89,7 +122,7 @@ def _select_presented_tuples(slot_tuples: list) -> list:
     if len(day_firsts) >= 3:
         return day_firsts[:3]
     # Fewer than 3 days — take first 3 slots chronologically
-    return sorted(future_only, key=lambda t: t[0])[:3]
+    return sorted(filtered, key=lambda t: t[0])[:3]
 
 
 async def _get_tokens() -> Optional[Dict[str, Any]]:
@@ -1030,7 +1063,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # Present exactly 3 slots (one per day where possible) so that
         # slot_labels[0/1/2] map 1:1 to the 1st/2nd/3rd slot spoken by Susie.
         slot_tuples = [(s.start_time, s.end_time) for s in slots]
-        presented   = _select_presented_tuples(slot_tuples)
+        presented   = _select_presented_tuples(slot_tuples, preference=preference)
         days_data   = _build_days_data(presented)
 
         pres_raw    = [{"start": s.isoformat(), "end": e.isoformat()} for s, e in presented]
