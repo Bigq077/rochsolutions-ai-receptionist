@@ -748,7 +748,7 @@ SCENARIOS = [
             "Yes",
             "No never",
             "Wednesday morning",
-            "Second one",
+            "The first one",
             "Yes",
             "Emma Davis",
             "Yes",
