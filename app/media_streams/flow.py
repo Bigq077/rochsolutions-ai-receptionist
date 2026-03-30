@@ -665,8 +665,7 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "Call get_clinic_info with topic='{faq_topic}'. "
             "Answer the caller's question naturally and concisely — "
             "one or two sentences. "
-            "After answering ask: 'Is there anything else I can help "
-            "you with, or would you like to book an appointment?'"
+            "After answering ask: 'Is there anything else I can help you with?'"
         ),
         "extract": "none",
     },
