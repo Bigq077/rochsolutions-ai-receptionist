@@ -510,8 +510,8 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "step": 1,
         "state": "CONFIRM_PHONE",
         "question": (
-            "Just to confirm — shall I use the number "
-            "you're calling from for the reschedule?"
+            "And is the number you're calling from right now "
+            "the same number you originally booked with?"
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -611,8 +611,8 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
         "step": 1,
         "state": "CONFIRM_PHONE",
         "question": (
-            "Just to confirm — shall I use the number "
-            "you're calling from for the cancellation?"
+            "And is the number you're calling from right now "
+            "the same number you originally booked with?"
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
