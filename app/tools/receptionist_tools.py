@@ -169,11 +169,14 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
     labels  = session.get("slot_labels") or []
     s_lower = s.lower()
 
-    # 2. Numeric / ordinal index ("1", "first", "slot 2", etc.)
+    # 2. Numeric / ordinal index ("1", "first", "the first one", etc.)
     idx_map = {
         "1": 0, "first": 0,  "slot 1": 0, "option 1": 0, "slot1": 0,
+        "the first": 0, "the first one": 0, "that first one": 0, "first one": 0,
         "2": 1, "second": 1, "slot 2": 1, "option 2": 1, "slot2": 1,
+        "the second": 1, "the second one": 1, "that second one": 1, "second one": 1,
         "3": 2, "third": 2,  "slot 3": 2, "option 3": 2, "slot3": 2,
+        "the third": 2, "the third one": 2, "that third one": 2, "third one": 2,
     }
     if s_lower in idx_map:
         idx = idx_map[s_lower]
@@ -181,6 +184,19 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
             try:
                 dt = _to_london(datetime.fromisoformat(offered[idx]["start"]))
                 logger.info("_resolve_slot_iso: index match %r → slot[%d] %s", slot_iso, idx, offered[idx]["start"])
+                return dt
+            except Exception:
+                pass
+
+    # 2a. Word-level ordinal fallback — catches "I'll take the first one please" etc.
+    import re as _re
+    _ordinal_words = {"first": 0, "second": 1, "third": 2}
+    _tokens = set(_re.findall(r"\b\w+\b", s_lower))
+    for word, idx in _ordinal_words.items():
+        if word in _tokens and idx < len(offered):
+            try:
+                dt = _to_london(datetime.fromisoformat(offered[idx]["start"]))
+                logger.info("_resolve_slot_iso: ordinal-word match %r → slot[%d] %s", slot_iso, idx, offered[idx]["start"])
                 return dt
             except Exception:
                 pass
