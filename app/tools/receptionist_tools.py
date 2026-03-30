@@ -70,10 +70,18 @@ def _select_presented_tuples(slot_tuples: list) -> list:
     Prefer one slot per day for variety.  Fall back to first 3 chronological
     slots when fewer than 3 days are available (e.g. all slots on same day).
     Ensures slot_labels[0/1/2] match exactly the 1st/2nd/3rd slot presented.
+
+    Past slots are filtered out first so they never enter last_offered_slots —
+    prevents the bug where Acuity returns a near-past slot that gets stored as
+    slot[0] while Susie verbally presents a future slot as "the first one",
+    causing the ordinal resolver to confirm the wrong appointment.
     """
+    now = datetime.now(LONDON_TZ)
+    future_only = [(s, e) for s, e in slot_tuples if s > now]
+
     day_seen: set = set()
     day_firsts: list = []
-    for start, end in sorted(slot_tuples, key=lambda t: t[0]):
+    for start, end in sorted(future_only, key=lambda t: t[0]):
         day = start.date()
         if day not in day_seen:
             day_seen.add(day)
@@ -81,7 +89,7 @@ def _select_presented_tuples(slot_tuples: list) -> list:
     if len(day_firsts) >= 3:
         return day_firsts[:3]
     # Fewer than 3 days — take first 3 slots chronologically
-    return sorted(slot_tuples, key=lambda t: t[0])[:3]
+    return sorted(future_only, key=lambda t: t[0])[:3]
 
 
 async def _get_tokens() -> Optional[Dict[str, Any]]:
