@@ -1503,6 +1503,13 @@ class FlowEngine:
             "hours", "opening hours", "open", "close",
             "when are you", "what time are you",
         )
+        # Journey-time questions need live data — route to general LLM (has travel-time guidance)
+        # Check BEFORE location_p so "how long from X to Y" doesn't misfire as faq_location.
+        journey_p = (
+            "how long does it take", "how long to get", "how long to drive",
+            "how long from", "how far from", "journey time", "travel time",
+            "how many minutes", "how many miles", "how long to reach",
+        )
         location_p = (
             "where are you", "address", "parking", "directions", "how do i get",
             "how long", "how far", "drive to", "travel to", "get to",
@@ -1517,6 +1524,7 @@ class FlowEngine:
         if any(p in text for p in insurance_p):  return "faq_insurance"
         if any(p in text for p in price_p):      return "faq_prices"
         if any(p in text for p in hours_p):      return "faq_hours"
+        if any(p in text for p in journey_p):    return "general_query"  # travel time → LLM, not address lookup
         if any(p in text for p in location_p):   return "faq_location"
         if any(p in text for p in services_p):   return "faq_services"
         return "general_query"  # unknown question — LLM handles it freely
