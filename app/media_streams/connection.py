@@ -921,6 +921,18 @@ class WebSocketCallHandler:
                 logger.info("[ms_conn] transcript received: %r", utterance[:120])
 
                 try:
+                    # Record utterance for tone detection (first two turns lock the tone)
+                    try:
+                        from app.tone_detector import ToneDetector as _ToneDetector
+                        _td = self.session.get("tone_detector")
+                        if not isinstance(_td, _ToneDetector):
+                            _td = _ToneDetector.from_dict(self.session.get("_tone_state") or {})
+                            self.session["tone_detector"] = _td
+                        _td.record_utterance(utterance)
+                        self.session["_tone_state"] = _td.to_dict()
+                    except Exception as _td_err:
+                        logger.warning("[ms_conn] ToneDetector record failed: %r", _td_err)
+
                     if not self.session.get("flow_started"):
                         # First caller utterance — detect intent then kick off the flow.
                         self.session["flow_started"] = True

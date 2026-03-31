@@ -708,7 +708,7 @@ def get_system_prompt(session: dict) -> str:
     location  = session.get("selected_location", "alcester")
     loc_cfg   = CLINIC_CONFIG["locations"].get(location, CLINIC_CONFIG["locations"]["alcester"])
 
-    return f"""# Susie — Theorem Health AI Receptionist
+    _base = f"""# Susie — Theorem Health AI Receptionist
 
 ABSOLUTE RULE — NEVER USE THESE WORDS OR PHRASES:
 Lovely, Lovely [name], Of course, Certainly, Absolutely, Sure thing,
@@ -857,3 +857,6 @@ Selected location: {loc_cfg.get("name", location)}.
 The greeting has already been delivered. Do not re-introduce yourself.
 {"Reason for visit: " + reason if reason else ""}
 """
+    from app.tone_detector import get_tone_instruction_from_session
+    _tone_instruction = get_tone_instruction_from_session(session)
+    return _base.strip() + f"\n\n{_tone_instruction}"

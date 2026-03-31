@@ -127,6 +127,8 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "miss_count":     0,
     "error_count":    0,
     "last_bot_prompt": "",
+    # Tone detection — serialisable state; live ToneDetector rebuilt each turn
+    "_tone_state":    {"word_counts": [], "tone": "standard", "locked": False},
     "last_question":  "",
 
     # Call identity

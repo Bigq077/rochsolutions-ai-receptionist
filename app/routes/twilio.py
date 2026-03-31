@@ -243,6 +243,8 @@ def _init_session(session: dict, call_sid: str) -> dict:
     # Sidebar loop-prevention: tracks how many sidebar questions have been
     # answered per state so we cap at 1 per state.
     session.setdefault("sidebar_count_per_state", {})
+    # Tone detection state — serialisable; live ToneDetector rebuilt each turn
+    session.setdefault("_tone_state", {"word_counts": [], "tone": "standard", "locked": False})
     return session
 
 
@@ -781,6 +783,18 @@ async def turn(request: Request):
 
     session["miss_count"] = 0
     session["consecutive_silence_count"] = 0
+
+    # Record utterance for tone detection (first two turns lock the tone)
+    try:
+        from app.tone_detector import ToneDetector
+        _td = session.get("tone_detector")
+        if not isinstance(_td, ToneDetector):
+            _td = ToneDetector.from_dict(session.get("_tone_state") or {})
+            session["tone_detector"] = _td
+        _td.record_utterance(user_said)
+        session["_tone_state"] = _td.to_dict()
+    except Exception as _td_err:
+        logger.warning("ToneDetector record failed (non-fatal): %r", _td_err)
 
     # --------------------------------------------------
     # Transfer shortcut — bypass LLM entirely for explicit human requests.

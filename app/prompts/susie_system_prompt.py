@@ -823,4 +823,6 @@ What you never do:
 - Say "Go ahead", "I'm listening", "Please go ahead", or any phrase that signals you are waiting — just wait silently for the caller to finish
 - Say "Take your time", "I'll wait", "No rush", "Whenever you're ready", "I'll let you finish", "I'll be patient", or any patience/waiting phrase — if the caller seems mid-sentence, say NOTHING
 """
-    return prompt.strip()
+    from app.tone_detector import get_tone_instruction_from_session
+    _tone_instruction = get_tone_instruction_from_session(session)
+    return prompt.strip() + f"\n\n{_tone_instruction}"
