@@ -179,7 +179,9 @@ def _build_location_confirmation(location_id: str, clinic: dict) -> str:
 # --------------------------------------------------
 
 def xml(resp: VoiceResponse) -> PlainTextResponse:
-    return PlainTextResponse(str(resp), media_type="application/xml")
+    twiml_str = str(resp)
+    logger.info("[twilio] TwiML out: %s", twiml_str[:600])
+    return PlainTextResponse(twiml_str, media_type="application/xml")
 
 
 def _abs_url(request: Request, path: str) -> str:
@@ -285,6 +287,7 @@ async def _say(
         (_tts_dir / _filename).write_bytes(audio_bytes)
         _base = str(request.base_url).rstrip("/")
         audio_url = f"{_base}/avatar/audio/{_filename}"
+        logger.info("[twilio] _say audio_url=%s len_bytes=%d", audio_url, len(audio_bytes))
         if gather_action:
             g = Gather(
                 input="speech dtmf",
@@ -301,7 +304,7 @@ async def _say(
         else:
             vr.play(audio_url)
     except Exception as e:
-        print("TTS_ELEVEN ERROR:", repr(e))
+        logger.error("[twilio] TTS_ELEVEN ERROR: %r", e)
         if gather_action:
             vr.append(gather_speech(gather_action, text))
         else:
@@ -521,10 +524,23 @@ async def voice(request: Request):
     if request.method in ("HEAD", "GET"):
         return Response(status_code=200)
 
+    # FORCE_TEST_SAY=1 — bypass all logic, return a hardcoded <Say> for audio path testing.
+    if os.getenv("FORCE_TEST_SAY") == "1":
+        logger.info("[twilio] FORCE_TEST_SAY active — returning hardcoded Say")
+        _vr = VoiceResponse()
+        _vr.say("Hello, this is a test.", language="en-GB")
+        return xml(_vr)
+
     form        = await request.form()
     call_sid    = (form.get("CallSid") or "").strip()
     to_number   = (form.get("To")      or "").strip() or None
     from_number = (form.get("From")    or "").strip()  # caller ID — captured once, used in both paths
+
+    _is_twilio_client = from_number.startswith("client:")
+    logger.info(
+        "[twilio] /voice call_sid=%s from=%s to=%s client=%s",
+        call_sid, from_number, to_number, _is_twilio_client,
+    )
 
     try:
         session = await get_session(call_sid) or {}
@@ -893,7 +909,7 @@ async def turn(request: Request):
                 )
                 reply_text = _cleaned
     except Exception as e:
-        print("TRIAGE ERROR:", repr(e))
+        logger.error("[twilio] TRIAGE ERROR call_sid=%s: %r", call_sid, e, exc_info=True)
 
         error_count = int(session.get("error_count", 0)) + 1
         session["error_count"] = error_count
@@ -931,6 +947,7 @@ async def turn(request: Request):
         logger.error("Empty reply_text — using fallback (call_sid=%s)", call_sid)
         reply_text = "Something went wrong on my end — could you repeat that?"
 
+    logger.info("[twilio] /turn reply_text=%r call_sid=%s", reply_text[:200], call_sid)
     await save_session(call_sid, session)
     vr.append(gather_speech(turn_url, reply_text))
     return xml(vr)
