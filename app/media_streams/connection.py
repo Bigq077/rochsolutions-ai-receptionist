@@ -90,15 +90,8 @@ _TTS_DONE_SENTINEL = object()
 
 
 # ---------------------------------------------------------------------------
-# Hardcoded greeting (fast startup, no LLM round-trip)
+# Greeting (built at call start from clinic_config.json)
 # ---------------------------------------------------------------------------
-
-# Single-site deployment: opening greeting identifies Susie, then offers help.
-# Defined at module level so _inject_greeting() uses it before imports are available.
-_THEOREM_GREETING = (
-    "Hi there, this is Susie, Theorem Health's AI receptionist, "
-    "how can I help you?"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -1246,10 +1239,9 @@ class WebSocketCallHandler:
             logger.info("[ms_conn] greeting already delivered — skipping")
             return
 
-        # Always use the hardcoded constant — fastest path, zero imports required.
-        # The greeting is deterministic and never needs an LLM or clinic-config call.
-        greeting = _THEOREM_GREETING
-        logger.info("[ms_conn] greeting (hardcoded fast-path): %r", greeting[:80])
+        from app.greeting_builder import build_greeting
+        greeting = build_greeting()
+        logger.info("[ms_conn] greeting: %r", greeting[:80])
 
         self.session.setdefault("turns", []).append({"role": "assistant", "text": greeting})
         history = self.session.setdefault("conversation_history", [])

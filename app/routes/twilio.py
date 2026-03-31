@@ -150,15 +150,14 @@ def _build_greeting(clinic: dict) -> str:
     """
     Build the opening greeting from clinic config.
     - Custom 'greeting' field: used as-is (e.g. demo line).
-    - All clinics: simple greeting asking how we can help.
-      Location is detected contextually during the conversation.
+    - All clinics: context-appropriate greeting from greeting_builder.
     """
     # Custom greeting overrides everything (set in clinic config)
     if clinic.get("greeting"):
         return clinic["greeting"]
 
-    name = clinic.get("display_name", "the clinic")
-    return f"Hi there! This is {AI_NAME}, {name}'s AI receptionist. How can I help you today?"
+    from app.greeting_builder import build_greeting
+    return build_greeting()
 
 
 def _build_location_confirmation(location_id: str, clinic: dict) -> str:

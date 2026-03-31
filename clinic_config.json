@@ -1,0 +1,13 @@
+{
+  "_notes": "MARK_REVIEW: Fill in all fields before go-live",
+  "clinic_name": "Theorem Health",
+  "timezone": "Europe/London",
+  "opening_hours": {
+    "monday":    {"open": "08:00", "close": "18:00"},
+    "tuesday":   {"open": "08:00", "close": "18:00"},
+    "wednesday": {"open": "08:00", "close": "18:00"},
+    "thursday":  {"open": "08:00", "close": "18:00"},
+    "friday":    {"open": "08:00", "close": "17:00"}
+  },
+  "closed_days": ["saturday", "sunday"]
+}
