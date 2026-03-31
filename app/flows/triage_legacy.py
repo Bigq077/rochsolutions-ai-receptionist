@@ -3507,11 +3507,21 @@ async def triage_turn(
                         logger.error(f"⚠️ Failed to send booking SMS: {sms_err}")
                         # Never fail the booking just because SMS failed
 
-                    session = _reset_to_triage(session)
-                    return _say(
-                        f"Confirmed — you're booked for {label}. We look forward to seeing you.",
-                        session,
+                    _confirmation = (
+                        f"Confirmed — you're booked for {label}. We look forward to seeing you."
                     )
+                    try:
+                        from app.proactive_info import get_proactive_info, append_if_fits
+                        from app.knowledge_base import CLINIC_KB
+                        _extra = get_proactive_info(
+                            {"is_first_visit": collected.get("patient_type") == "NEW"},
+                            CLINIC_KB,
+                        )
+                        _confirmation = append_if_fits(_confirmation, _extra)
+                    except Exception as _pi_err:
+                        logger.error("Proactive info block failed (non-fatal): %r", _pi_err)
+                    session = _reset_to_triage(session)
+                    return _say(_confirmation, session)
 
                 # create_event returned but no ID — treat as a failure
                 raise RuntimeError("create_event returned no event ID")
