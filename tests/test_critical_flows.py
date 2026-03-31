@@ -55,7 +55,7 @@ class TestLocationDetection:
         assert self._detect("olster") == "alcester"
 
     def test_alcester_dtmf_1(self):
-        assert self._detect("1", self.CLINIC) == "alcester"
+        assert self._detect("1") == "alcester"
 
     def test_alcester_dtmf_one(self):
         assert self._detect("one") == "alcester"
@@ -285,9 +285,11 @@ class TestPassiveLocationDetection:
         session["clinic_id"] = "theorem"
         await mock_redis_session_store.save_session(self.CALL_SID, session)
 
+        async def _echo_triage(user_said, sess):
+            return "How can I help?", sess
+
         with (
-            patch("app.flows.triage_legacy.triage_turn", new_callable=AsyncMock,
-                  return_value=("How can I help?", session)),
+            patch("app.flows.triage_legacy.triage_turn", side_effect=_echo_triage),
             patch("app.config.PHASE3_ENABLED", False),
         ):
             resp = await async_client.post(
