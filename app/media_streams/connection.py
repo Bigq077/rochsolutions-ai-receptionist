@@ -724,6 +724,10 @@ class WebSocketCallHandler:
                 initial["twilio_from_local"] = "0" + twilio_from[3:]
         if twilio_to:
             initial["twilio_to"] = twilio_to
+            # Resolve clinic_id from the dialled number so tools/SMS/config use the right clinic.
+            from app.clinic_config import clinic_id_from_twilio_to
+            initial["clinic_id"] = clinic_id_from_twilio_to(twilio_to)
+            logger.info("[ms_conn] clinic_id resolved: %s (to=%s)", initial["clinic_id"], twilio_to)
 
         self.session = await get_or_create_session(self.call_sid, initial=initial)
         self.session["stream_sid"]   = self.stream_sid
@@ -920,7 +924,6 @@ class WebSocketCallHandler:
                         _td = self.session.get("tone_detector")
                         if not isinstance(_td, _ToneDetector):
                             _td = _ToneDetector.from_dict(self.session.get("_tone_state") or {})
-                            self.session["tone_detector"] = _td
                         _td.record_utterance(utterance)
                         self.session["_tone_state"] = _td.to_dict()
                     except Exception as _td_err:

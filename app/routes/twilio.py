@@ -789,9 +789,10 @@ async def turn(request: Request):
         _td = session.get("tone_detector")
         if not isinstance(_td, ToneDetector):
             _td = ToneDetector.from_dict(session.get("_tone_state") or {})
-            session["tone_detector"] = _td
         _td.record_utterance(user_said)
         session["_tone_state"] = _td.to_dict()
+        # Never store the live ToneDetector object — it is not JSON-serialisable.
+        # get_tone_instruction_from_session() rebuilds it from _tone_state each turn.
     except Exception as _td_err:
         logger.warning("ToneDetector record failed (non-fatal): %r", _td_err)
 

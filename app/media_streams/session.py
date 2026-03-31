@@ -484,44 +484,44 @@ async def _save(call_sid: str, session: Dict[str, Any]) -> None:
     if not isinstance(session.get("collected"), dict):
         session["collected"] = {}
 
+    # Strip any live Python objects that can't be JSON-serialised (e.g. ToneDetector).
+    # Always work on a clean copy so the in-memory session is unchanged.
+    clean = {
+        k: v for k, v in session.items()
+        if not callable(getattr(v, "to_dict", None)) or isinstance(v, (str, int, float, bool, list, dict, type(None)))
+    }
+    # Explicit fast-path: drop known non-serialisable keys rather than scanning.
+    clean.pop("tone_detector", None)   # live ToneDetector — _tone_state is the serialisable mirror
+
     try:
-        payload = json.dumps(session)
+        payload = json.dumps(clean)
         await redis.set(
             _session_key(call_sid),
             payload,
             ex=SESSION_TTL_SECONDS,
         )
     except TypeError as exc:
-        # JSON serialisation failure — log the offending keys and save a clean copy
-        logger.error(
-            "[ms_session] JSON serialisation failed call_sid=%s: %r — saving stripped copy",
+        # Fallback: strip anything still non-serialisable key-by-key
+        logger.warning(
+            "[ms_session] JSON serialisation fallback call_sid=%s: %r",
             call_sid, exc,
         )
-        _safe_save_stripped(redis, call_sid, session)
+        safe = {}
+        for k, v in clean.items():
+            try:
+                json.dumps(v)
+                safe[k] = v
+            except TypeError:
+                safe[k] = repr(v)
+        try:
+            await redis.set(
+                _session_key(call_sid),
+                json.dumps(safe),
+                ex=SESSION_TTL_SECONDS,
+            )
+        except Exception as inner_exc:
+            logger.error("[ms_session] Redis save failed call_sid=%s: %r", call_sid, inner_exc)
     except Exception as exc:
         logger.warning("[ms_session] Redis save failed call_sid=%s: %r", call_sid, exc)
 
 
-def _safe_save_stripped(redis, call_sid: str, session: Dict[str, Any]) -> None:
-    """
-    Synchronous fallback: strip non-serialisable values and save.
-    Only called when json.dumps raises TypeError.
-    """
-    stripped = {}
-    for k, v in session.items():
-        try:
-            json.dumps(v)
-            stripped[k] = v
-        except TypeError:
-            stripped[k] = str(v)  # coerce to string as last resort
-    try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        if not loop.is_closed():
-            loop.create_task(redis.set(
-                _session_key(call_sid),
-                json.dumps(stripped),
-                ex=SESSION_TTL_SECONDS,
-            ))
-    except Exception:
-        pass  # If even this fails, accept the loss
