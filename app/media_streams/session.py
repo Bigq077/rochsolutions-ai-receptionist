@@ -48,6 +48,7 @@ class CallState(str, Enum):
     CONFIRM_PHONE        = "CONFIRM_PHONE"
     COLLECT_PHONE        = "COLLECT_PHONE"
     CONFIRM_BOOKING      = "CONFIRM_BOOKING"
+    STATE_READBACK       = "STATE_READBACK"
     TRANSFER             = "TRANSFER"
     COMPLETE             = "COMPLETE"
     # Multi-intent states
@@ -74,6 +75,7 @@ _STATE_ORDER = [
     CallState.COLLECT_NAME,
     CallState.CONFIRM_PHONE,
     CallState.COLLECT_PHONE,
+    CallState.STATE_READBACK,
     CallState.CONFIRM_BOOKING,
     CallState.COMPLETE,
 ]
@@ -244,6 +246,16 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     # Per-turn guards (reset each turn by FlowEngine.handle_transcript)
     "question_asked_this_turn": False,  # prevents ask_current_question firing twice per turn
     "turn_in_progress":         False,  # mirrors _llm_busy for session-level visibility
+
+    # ── Mistake recovery ──────────────────────────────────────────────────
+    # slot_retry_counts: maps phrase-key → int; incremented on each failed extraction.
+    # One counter per slot (ask_name, ask_phone, …); reset never needed — locked after 3.
+    "slot_retry_counts":        {},
+    # Readback confirmation state (flag-based, mirrors slot_pending_confirmation pattern)
+    "readback_pending":         False,  # True while waiting for caller to confirm readback
+    "readback_correction_turn": False,  # True on the second turn after a slot correction
+    "readback_delivered":       False,  # True once readback has been spoken (guards re-fire)
+    "graceful_exit":            False,  # True when retry >= 3 triggers a graceful exit
 }
 
 

@@ -253,3 +253,22 @@ SILENCE_THRESHOLDS: dict = {
     "ask_phone": 6.0,
     "default":   4.0,
 }
+
+# ---------------------------------------------------------------------------
+# Retry phrases — used when extraction fails on a slot question.
+# Keyed by retry ordinal (first_retry / second_retry) then by state category.
+# ---------------------------------------------------------------------------
+
+RETRY_PHRASES: dict = {
+    "first_retry": {
+        "ask_name":   "Sorry, I didn't quite catch the name — could you say it again?",
+        "ask_phone":  "Sorry about that — could you repeat the number for me?",
+        "ask_day":    "My fault — which days work best for you?",
+        "ask_reason": "Sorry, I didn't catch that — what's been bringing you in?",
+        "ask_time":   "Sorry about that — morning or afternoon?",
+        "default":    "Sorry about that — could you say that again?",
+    },
+    "second_retry": {
+        "default": "I want to make sure I get this right — could you say that one more time, slowly?",
+    },
+}

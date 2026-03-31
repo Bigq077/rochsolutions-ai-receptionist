@@ -31,6 +31,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+from app.phrases import RETRY_PHRASES
+
 try:
     from rapidfuzz import fuzz as _fuzz
     _RAPIDFUZZ_AVAILABLE = True
@@ -139,6 +141,9 @@ _NEVER_STORE_PHRASES = [
     "one moment",
     "let me check",
     "just bear",
+    "my fault",
+    "i want to make sure i get this right",
+    "let me just read that back",
     # Greeting / preamble — not actionable questions
     "hi there",
     "hello",
@@ -500,6 +505,28 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
 # Backward-compat alias
 FLOW = BOOKING_FLOW
 
+# Array index of CONFIRM_BOOKING in BOOKING_FLOW.
+# Used by _handle_readback_confirmation to advance the flow after readback is confirmed.
+_CONFIRM_BOOKING_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_BOOKING"
+)
+
+
+def _phrase_key_for_step(step: Dict[str, Any]) -> str:
+    """
+    Map a flow step's answer_field to a RETRY_PHRASES["first_retry"] key.
+    Falls back to "default" for unmapped fields.
+    """
+    _map = {
+        "full_name":      "ask_name",
+        "phone_number":   "ask_phone",
+        "phone_confirmed": "ask_phone",
+        "chosen_day":     "ask_day",
+        "reason":         "ask_reason",
+        "selected_slot":  "ask_time",
+    }
+    return _map.get(step.get("answer_field", ""), "default")
+
 # ---------- Reschedule flow -----------------------------------------------
 
 RESCHEDULE_FLOW: List[Dict[str, Any]] = [
@@ -780,7 +807,11 @@ class FlowEngine:
         """
         step = self.current_step()
         if step is None:
-            logger.info("[ms_flow] ask_current_question: flow already complete")
+            # BOOKING_FLOW is complete: trigger readback before CONFIRM_BOOKING (once only)
+            if self._active_flow is BOOKING_FLOW and not self.session.get("readback_delivered"):
+                await self._start_readback()
+            else:
+                logger.info("[ms_flow] ask_current_question: flow already complete")
             return
 
         # Guard: one question per turn — prevent duplicate asks if somehow called twice
@@ -1147,6 +1178,11 @@ class FlowEngine:
             await self._handle_slot_confirmation(text, transcript)
             return
 
+        # ── READBACK CONFIRMATION: waiting for caller to confirm full booking ─
+        if self.session.get("readback_pending"):
+            await self._handle_readback_confirmation(text, transcript)
+            return
+
         # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
         _ABANDON_SIGNALS = (
             "never mind", "nevermind", "forget it", "forget this",
@@ -1254,17 +1290,35 @@ class FlowEngine:
         answer = self._extract(step["extract"], text, transcript)
 
         if answer is None:
-            # No valid answer extracted — gentle re-ask
+            # No valid answer extracted — acknowledged re-ask with retry counting
+            phrase_key = _phrase_key_for_step(step)
+            retry_counts = self.session.setdefault("slot_retry_counts", {})
+            retry_counts[phrase_key] = retry_counts.get(phrase_key, 0) + 1
+            count = retry_counts[phrase_key]
             logger.info(
-                "[ms_flow] no answer for step %d (%s) from %r — re-asking",
-                step["step"], step["answer_field"], transcript[:60],
+                "[ms_flow] no answer for step %d (%s) from %r — retry #%d",
+                step["step"], step["answer_field"], transcript[:60], count,
             )
-            last_q = self.session.get("last_question", "")
-            phrase = (
-                f"Sorry, I didn't quite catch that — {last_q}"
-                if last_q
-                else "Sorry, I didn't quite catch that."
-            )
+            if count >= 3:
+                phrase = (
+                    "I'm having a little trouble catching that — "
+                    "let me get someone to call you back and confirm."
+                )
+                await self._tts.put(phrase)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
+                self.session["graceful_exit"] = True
+                self.session["request_transfer"] = True
+                self.session["flow_step"] = len(self._active_flow)
+                logger.info("[ms_flow] retry >= 3 on %r — graceful exit triggered", phrase_key)
+                return
+            if count == 2:
+                phrase = RETRY_PHRASES["second_retry"]["default"]
+            else:
+                phrase = RETRY_PHRASES["first_retry"].get(
+                    phrase_key, RETRY_PHRASES["first_retry"]["default"]
+                )
             await self._tts.put(phrase)
             # Keep last_question unchanged so SilenceHandler can re-ask again
             return
@@ -1544,14 +1598,172 @@ class FlowEngine:
                     self.session["last_question"] = phrase
                 return
 
-        # No match — re-ask the confirmation phrase
-        last_q = self.session.get("last_question", "")
+        # No match — acknowledged re-ask with retry counting
+        retry_counts = self.session.setdefault("slot_retry_counts", {})
+        retry_counts["slot_confirmation"] = retry_counts.get("slot_confirmation", 0) + 1
+        count = retry_counts["slot_confirmation"]
+        logger.info("[ms_flow] slot confirmation no-match — retry #%d", count)
+        if count >= 3:
+            phrase = (
+                "I'm having a little trouble catching that — "
+                "let me get someone to call you back and confirm."
+            )
+            await self._tts.put(phrase)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
+            self.session["graceful_exit"] = True
+            self.session["request_transfer"] = True
+            self.session["flow_step"] = len(self._active_flow)
+            logger.info("[ms_flow] slot confirmation retry >= 3 — graceful exit triggered")
+            return
+        if count == 2:
+            phrase = RETRY_PHRASES["second_retry"]["default"]
+        else:
+            last_q = self.session.get("last_question", "")
+            phrase = (
+                f"{RETRY_PHRASES['first_retry']['default']} — {last_q}"
+                if last_q
+                else RETRY_PHRASES["first_retry"]["default"]
+            )
+        await self._tts.put(phrase)
+
+    # ── STATE_READBACK ────────────────────────────────────────────────────
+
+    async def _start_readback(self) -> None:
+        """
+        Speak a full booking readback and wait for caller confirmation.
+
+        Called by ask_current_question() when BOOKING_FLOW completes (flow_step
+        is out of bounds) and the readback has not yet been delivered.  Sets
+        readback_pending=True so the next caller turn routes to
+        _handle_readback_confirmation().
+        """
+        name   = self.session.get("full_name") or "you"
+        slot   = (
+            self.session.get("selected_slot_speech")
+            or self.session.get("selected_slot")
+            or "the selected time"
+        )
+        reason = self.session.get("reason") or "your appointment"
+
+        # Truncate reason if the combined string would exceed 400 chars
+        candidate = (
+            f"Let me just read that back — {name}, booked in for {slot} "
+            f"for {reason}. Does that all sound right?"
+        )
+        if len(candidate) > 400:
+            words  = reason.split()[:5]
+            reason = " ".join(words) + "..."
+
         phrase = (
-            f"Sorry, I didn't quite catch that — {last_q}"
-            if last_q
-            else "Sorry, I didn't quite catch that."
+            f"Let me just read that back — {name}, booked in for {slot} "
+            f"for {reason}. Does that all sound right?"
         )
         await self._tts.put(phrase)
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": phrase}
+        )
+        self.session["last_question"]      = "Does that all sound right?"
+        self.session["readback_pending"]   = True
+        self.session["readback_delivered"] = True
+        self.session["state"]              = "STATE_READBACK"
+        logger.info("[ms_flow] readback started: %r", phrase[:100])
+
+    async def _classify_readback_response(self, transcript: str) -> dict:
+        """
+        Call Claude (max_tokens=80, temperature=0) to classify the caller's
+        response to the booking readback.
+
+        Returns {"confirmed": bool, "corrected_slot": str|None, "new_value": str|None}.
+        Raises on network or parse errors — caller must wrap in try/except.
+        """
+        import json as _json
+        import anthropic as _anthropic
+
+        client = _anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            temperature=0,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"The caller said: '{transcript}'\n"
+                    "Classify as JSON only — no extra text:\n"
+                    "{\"confirmed\": bool, \"corrected_slot\": string_or_null, "
+                    "\"new_value\": string_or_null}\n"
+                    "confirmed=true if the caller is agreeing to the readback.\n"
+                    "corrected_slot is the session field being corrected: "
+                    "full_name, phone_number, reason, or selected_slot.\n"
+                    "new_value is the corrected value they stated.\n"
+                    "Respond ONLY with valid JSON."
+                ),
+            }],
+        )
+        return _json.loads(response.content[0].text.strip())
+
+    async def _handle_readback_confirmation(self, text: str, transcript: str) -> None:
+        """
+        Handle the caller's response to the STATE_READBACK phrase.
+
+        Turn 1 (readback_correction_turn=False):
+          - Classify with Claude.
+          - Confirmed → advance to CONFIRM_BOOKING.
+          - Corrected → update slot, speak correction phrase, set readback_correction_turn=True.
+          - Classification error → treat as confirmed (log, proceed).
+
+        Turn 2 (readback_correction_turn=True):
+          - Accept any response as confirmed, advance to CONFIRM_BOOKING.
+        """
+        # Second turn after a correction: accept anything as confirmed
+        if self.session.get("readback_correction_turn"):
+            self.session["readback_pending"]         = False
+            self.session["readback_correction_turn"] = False
+            self.session["flow_step"]                = _CONFIRM_BOOKING_INDEX
+            logger.info("[ms_flow] readback second-turn — treating as confirmed")
+            await self.ask_current_question()
+            return
+
+        # First turn: classify with Claude
+        try:
+            result = await self._classify_readback_response(transcript)
+        except Exception as exc:
+            logger.error(
+                "[ms_flow] readback classification failed: %r — treating as confirmed", exc
+            )
+            result = {"confirmed": True, "corrected_slot": None, "new_value": None}
+
+        confirmed      = bool(result.get("confirmed"))
+        corrected_slot = result.get("corrected_slot")
+        new_value      = result.get("new_value")
+
+        if confirmed or not corrected_slot or not new_value:
+            self.session["readback_pending"] = False
+            self.session["flow_step"]        = _CONFIRM_BOOKING_INDEX
+            logger.info("[ms_flow] readback confirmed — advancing to CONFIRM_BOOKING")
+            await self.ask_current_question()
+        else:
+            # Update the corrected slot and mirror into collected{}
+            self.session[corrected_slot] = new_value
+            if corrected_slot == "full_name":
+                col = self.session.setdefault("collected", {})
+                col["full_name"] = new_value
+                col["name"]      = new_value
+            elif corrected_slot == "phone_number":
+                self.session.setdefault("collected", {})["phone"] = new_value
+
+            phrase = (
+                f"Got it — {new_value}. "
+                "Everything else stays the same — shall I go ahead and book that in?"
+            )
+            await self._tts.put(phrase)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
+            self.session["last_question"]            = "Shall I go ahead and book that in?"
+            self.session["readback_correction_turn"] = True
+            logger.info("[ms_flow] readback correction: %s=%r", corrected_slot, new_value)
 
     # ── extraction ────────────────────────────────────────────────────────
 
