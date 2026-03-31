@@ -416,7 +416,7 @@ async def _exec_escalate_to_claude(args: Dict[str, Any], session: Dict[str, Any]
         return {"reply": reply_text}
     except Exception as exc:
         logger.error("[realtime] escalate_to_claude error: %r", exc)
-        return {"reply": "I'm sorry, I had a little trouble with that. Could you give me a moment?"}
+        return {"reply": "Bear with me — just a moment and I'll get that sorted."}
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +438,7 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
-        '<Say language="en-GB">Of course, let me put you straight through to the team now. Please hold.</Say>'
+        '<Say language="en-GB">Of course — let me put you straight through to the team.</Say>'
         f"<Dial timeout=\"20\">{transfer_phone}</Dial>"
         "</Response>"
     )
@@ -615,7 +615,7 @@ async def _llm_turn(
                 tts_task = asyncio.create_task(
                     _tts_to_twilio(
                         reply_text, websocket, stream_sid,
-                        fallback_text="I'm sorry, could you give me just a moment?",
+                        fallback_text="Bear with me — just a moment.",
                     )
                 )
             break
@@ -798,7 +798,7 @@ async def _llm_turn_gpt(
                 tts_task = asyncio.create_task(
                     _tts_to_twilio(
                         reply_text, websocket, stream_sid,
-                        fallback_text="I'm sorry, could you give me just a moment?",
+                        fallback_text="Bear with me — just a moment.",
                     )
                 )
             break

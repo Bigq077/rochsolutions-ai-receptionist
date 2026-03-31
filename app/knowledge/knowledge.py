@@ -1038,7 +1038,8 @@ CONDITIONS = {
         "treatments": ["psychotherapy"],
         "primary": "psychotherapy",
         "recommendation": (
-            "I'm sorry you've experienced trauma. Our psychotherapy service provides a safe space "
+            "That sounds really difficult, and you don't have to face it alone. "
+            "Our psychotherapy service provides a safe space "
             "to work through traumatic experiences at your own pace."
         ),
     },

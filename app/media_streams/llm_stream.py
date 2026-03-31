@@ -849,7 +849,7 @@ class LLMStream:
             return {"reply": reply_text}
         except Exception as exc:
             logger.error("[ms_llm] escalate error: %r", exc)
-            return {"reply": "I'm sorry, I had a little trouble with that. Could you give me a moment?"}
+            return {"reply": "Bear with me — just a moment and I'll get that sorted."}
 
     # -----------------------------------------------------------------------
     # GPT-4.1-mini fallback

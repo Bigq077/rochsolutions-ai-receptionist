@@ -42,6 +42,7 @@ from app.tools.slots import (
 
 # Service-explanation FAQ (pure function — takes text + topic)
 from app.flows.faq import faq_answer as faq_answer_service
+from app.phrases import P
 
 # Google Sheet handoff (optional — won't crash if not configured)
 try:
@@ -64,7 +65,7 @@ OPENING_GREETING = (
     f"are you calling in regards to the Alcester clinic or the Redditch one?"
 )
 
-HOW_CAN_I_HELP = "How can I help you today?"
+HOW_CAN_I_HELP = P["how_can_i_help_today"]
 
 # Improvement 3: Gentle services prompt — never list-dump
 SERVICES_PROMPT = (
@@ -689,7 +690,7 @@ CONDITION_KNOWLEDGE: Dict[str, Dict] = {
         "primary": "psychotherapy",
         "options": [],
         "text": (
-            "I'm sorry you've been through that. "
+            "That sounds really difficult, and you don't have to face it alone. "
             "Our psychotherapy service provides a safe space to work through traumatic experiences "
             "at your own pace, using trauma-informed approaches."
         ),
@@ -1046,7 +1047,7 @@ INSURANCE_CHECK_WARNING = (
 )
 
 INSURANCE_BUPA_RESPONSE = (
-    "I'm sorry about that. Unfortunately we're not able to accept Bupa directly. "
+    "Unfortunately we're not able to accept Bupa directly. "
     "You're still very welcome to book as a private patient and pay the session fee. "
     "It's £75 for 50 minutes. "
     "Would you still like to go ahead, or would you like some time to think about it?"
@@ -1712,7 +1713,7 @@ def faq_answer(intent: str, clinic: Dict[str, Any], session: Optional[Dict[str, 
         return (
             f"{_insurance_explain(clinic_name)} "
             f"{INSURANCE_BUPA_WARNING} "
-            "Could I ask which insurer you're with?"
+            + P["ask_insurer"]
         )
 
     if intent == "FAQ_SERVICES":
@@ -1758,7 +1759,7 @@ def resume_prompt_for_state(state: str) -> str:
     if state == BOOK_PICK_SLOT:
         return "Please say 1, 2, or 3 for your preferred slot."
     if state == BOOK_NAME:
-        return "What's your full name for the booking?"
+        return P["resume_book_name"]
     if state == BOOK_PHONE:
         return "And what's the best mobile number for us to reach you on?"
     if state == BOOK_CONFIRM:
@@ -2212,11 +2213,7 @@ async def _handle_fallback(
         # Reset counter so a future revisit to this state starts fresh
         session[fb_key] = 0
         session["request_transfer"] = True
-        return _say(
-            "I'm sorry — I'm having a little trouble following. "
-            "Let me put you straight through to the team. Please hold.",
-            session,
-        )
+        return _say(P["fallback_transfer"], session)
 
     context = {
         "clinic_name": clinic.get("sms_name") or clinic.get("display_name", "the clinic"),
@@ -2245,7 +2242,7 @@ async def triage_turn(
         return _interrupt_reply(user_said, session)
 
     if not user_said:
-        return _say("Sorry — I didn't catch that. Could you repeat?", session)
+        return _say(P["mishear_generic"], session)
 
     clinic   = get_clinic(session)
     tz       = get_tz(clinic)
@@ -2481,19 +2478,12 @@ async def triage_turn(
             if target == "RESCHEDULE":
                 session["resch_intent"] = "reschedule"
                 session["state"] = RESCH_NAME
-                return _say(
-                    "No problem — let's get that sorted. "
-                    "What's your full name so I can find your booking?",
-                    session, tone="ack",
-                )
+                return _say(P["ask_name_reschedule"], session, tone="ack")
 
             if target == "CANCEL":
                 session["resch_intent"] = "cancel"
                 session["state"] = RESCH_NAME
-                return _say(
-                    "Of course — what's your full name so I can find the appointment?",
-                    session, tone="ack",
-                )
+                return _say(P["ask_name_cancel"], session, tone="ack")
 
             if target == "BOOK":
                 # Switch from reschedule flow back to new booking.
@@ -2617,12 +2607,12 @@ async def triage_turn(
         if pending == "RESCHEDULE":
             session["resch_intent"] = "reschedule"
             session["state"] = RESCH_NAME
-            return _say("Sure — what's your full name so I can find your booking?", session)
+            return _say(P["ask_name_reschedule"], session)
 
         if pending == "CANCEL":
             session["resch_intent"] = "cancel"
             session["state"] = RESCH_NAME
-            return _say("No problem — what's your full name so I can find your appointment?", session)
+            return _say(P["ask_name_cancel"], session)
 
         if pending == "FAQ_INSURANCE":
             insurance_text = clinic.get("insurance_note", "Please ask the clinic about insurance.")
@@ -2906,10 +2896,7 @@ async def triage_turn(
             # Caller explicitly wants a person — transfer immediately
             _attempt_send_to_sheet(collected, user_said, session, "TRANSFER_REQUEST")
             session["request_transfer"] = True
-            return _say(
-                "Of course — let me put you through to the team right now. Please hold.",
-                session,
-            )
+            return _say(P["transfer_now"], session)
 
         if intent.startswith("FAQ_"):
             return _say(faq_answer(intent, clinic, session), session)
@@ -2945,10 +2932,7 @@ async def triage_turn(
         # Tier 3: live transfer
         _attempt_send_to_sheet(collected, user_said, session, "TRANSFER_ESCALATION")
         session["request_transfer"] = True
-        return _say(
-            "Not a problem — let me put you through to the team right now. Please hold.",
-            session,
-        )
+        return _say(P["transfer_escalation"], session)
 
     # ------------------------------------------------------------------
     # INSURANCE_PROVIDER (legacy state — redirect to new flow)
@@ -2965,15 +2949,15 @@ async def triage_turn(
         # Guard: don't store an intent phrase as a name
         if detect_intent(user_said) in ("RESCHEDULE", "BOOK", "CANCEL"):
             intent_str = session.get("resch_intent", "reschedule")
-            q = "find your booking" if intent_str == "reschedule" else "find your appointment"
-            return _say(f"Sure — what's your full name so I can {q}?", session)
+            action = "find your booking" if intent_str == "reschedule" else "find your appointment"
+            return _say(P["ask_name_resch_intent"].format(action=action), session)
         collected["name"] = user_said.strip()
         session["state"]  = RESCH_PHONE
         return _say("Thanks. And what phone number was the booking made with?", session)
 
     if state == RESCH_PHONE:
         if not is_valid_phone(user_said):
-            return _say("Sorry — I didn't catch a valid number. Could you say it again?", session)
+            return _say(P["mishear_number"], session)
         collected["phone"] = normalize_phone(user_said)
 
         # Try to find the event in the calendar
@@ -3334,13 +3318,13 @@ async def triage_turn(
             session["manual_booking"] = True
             session["manual_reason"]  = "calendar_unavailable"
             session["state"]          = BOOK_NAME
-            return _say(f"{err} What's your full name so I can log a booking request?", session)
+            return _say(f"{err} {P['ask_name_manual']}", session)
 
         if not labels or len(labels) < 3:
             session["manual_booking"] = True
             session["manual_reason"]  = "no_slots_returned"
             session["state"]          = BOOK_NAME
-            return _say("I can't see clear availability right now. What's your full name so I can log a request?", session)
+            return _say(P["slot_no_availability"], session)
 
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
         session[SLOT_LABELS_KEY]        = labels
@@ -3382,18 +3366,11 @@ async def triage_turn(
                 if _sn_intent == "CANCEL":
                     session["resch_intent"] = "cancel"
                     session["state"]        = RESCH_NAME
-                    return _say(
-                        "No problem — what's your full name so I can find the appointment?",
-                        session, tone="ack",
-                    )
+                    return _say(P["ask_name_cancel"], session, tone="ack")
                 # RESCHEDULE (or is_reschedule_intent matched)
                 session["resch_intent"] = "reschedule"
                 session["state"]        = RESCH_NAME
-                return _say(
-                    "No problem — let's get that sorted. "
-                    "What's your full name so I can find your booking?",
-                    session, tone="ack",
-                )
+                return _say(P["ask_name_reschedule"], session, tone="ack")
             # ── End safety net ────────────────────────────────────────────────
             return await _handle_fallback(session, state, clinic)
 
@@ -3421,7 +3398,7 @@ async def triage_turn(
         if collected.get("name") and collected.get("name_source") == "pre-filled":
             return await _skip_name_ask(session, collected)
         session["state"] = BOOK_NAME
-        return _say("Perfect. What's your full name for the booking?", session)
+        return _say(P["ask_name"], session)
 
     if state == BOOK_NAME:
         collected["name"]        = user_said.strip()
@@ -3433,7 +3410,7 @@ async def triage_turn(
 
     if state == BOOK_PHONE:
         if not is_valid_phone(user_said):
-            return _say("Sorry — I didn't catch a valid phone number. Please say it again.", session)
+            return _say(P["mishear_number"], session)
         collected["phone"]        = normalize_phone(user_said)
         collected["phone_source"] = "spoken"
         session["state"]   = BOOK_CONFIRM
@@ -3552,12 +3529,7 @@ async def triage_turn(
                     # Keep collected so name/phone we already have isn't lost
                     collected.pop("name", None)
                     collected.pop("phone", None)
-                    return _say(
-                        "I'm sorry about that — the calendar isn't cooperating. "
-                        "Could you give me your full name and phone number "
-                        "and I'll write it down for the clinic to call you back?",
-                        session,
-                    )
+                    return _say(P["error_calendar"], session)
 
                 # First failure → stay at BOOK_CONFIRM and retry
                 session["state"] = BOOK_CONFIRM
@@ -3572,11 +3544,7 @@ async def triage_turn(
         session["manual_booking"] = True
         session["manual_reason"]  = "no_calendar_tokens"
         session["state"]          = BOOK_NAME
-        return _say(
-            "I don't have calendar access right now. "
-            "Could you give me your full name and I'll log a booking request for the clinic?",
-            session,
-        )
+        return _say(P["no_calendar_access"], session)
 
     # ── MANUAL CAPTURE ───────────────────────────────────────────────────────
     # Fallback state entered after repeated errors or unexpected call drops.
@@ -3789,12 +3757,12 @@ async def _skip_time_pref_ask(
         session["manual_booking"] = True
         session["manual_reason"]  = "calendar_unavailable"
         session["state"]          = BOOK_NAME
-        next_q = f"{err} What's your full name so I can log a booking request?"
+        next_q = f"{err} {P['ask_name_manual']}"
     elif not labels or len(labels) < 3:
         session["manual_booking"] = True
         session["manual_reason"]  = "no_slots_returned"
         session["state"]          = BOOK_NAME
-        next_q = "I can't see clear availability right now. What's your full name so I can log a request?"
+        next_q = P["slot_no_availability"]
     else:
         session[LAST_OFFERED_SLOTS_KEY] = raw_slots
         session[SLOT_LABELS_KEY]        = labels

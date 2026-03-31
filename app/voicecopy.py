@@ -45,12 +45,11 @@ def ask_phone_phrase() -> str:
     )
 
 def ask_name_phrase() -> str:
-    return "Can I take your full name, please?"
+    return "Who am I booking in today?"
 
 def repair_no_match() -> str:
     return (
-        "Sorry — I didn't catch that clearly. "
-        "Please say one, two, or three. Or press 1, 2, or 3."
+        "Sorry about that — please say one, two, or three. Or press 1, 2, or 3."
     )
 
 def manual_fallback_phrase() -> str:

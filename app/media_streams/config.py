@@ -224,7 +224,7 @@ Q_RECOMMEND = (
 Q_NEW_OR_RETURNING = "Have you been with us before?"
 Q_AVAILABILITY     = "What days or times work best for you?"
 Q_CHECKING         = "Let me check what we have available for you."
-Q_NAME             = "Could I take your full name please?"
+Q_NAME             = "Who am I booking in today?"
 Q_PHONE            = "And the best number to reach you on?"
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ LLM_STATE_INSTRUCTIONS: dict = {
         "1. Be exactly ONE sentence of genuine empathy about their specific condition — not generic.\n"
         "2. End with EXACTLY: '— how long have you had that?'\n"
         "3. Contain NOTHING else. No other questions. No filler.\n"
-        "Correct example: 'I'm sorry to hear that, back pain can be really debilitating "
+        "Correct example: 'Back pain can be really debilitating "
         "— how long have you had that?'\n"
         "Do not deviate from this format under any circumstances."
     ),
@@ -283,8 +283,8 @@ CLAUDE_ERROR_PHRASE = (
 
 # Played when the entire pipeline has failed beyond recovery
 PIPELINE_FAILURE_PHRASE = (
-    "I'm sorry, I'm having some technical difficulties. "
-    "Please call back and I'll be ready to help you."
+    "My apologies — I'm having a brief technical moment. "
+    "Please call back and I'll be ready to help."
 )
 
 SAFE_FALLBACK_PHRASE = (
@@ -448,8 +448,8 @@ AVAILABILITY_FLOW_RULE = (
 
 NAME_COLLECTION_RULE = (
     "NAME COLLECTION RULE:\n"
-    "Ask for the caller's full name in a single question: "
-    "'Could I take your full name please?'\n"
+    "Ask for the caller's name in a single question: "
+    "'Who am I booking in today?'\n"
     "Store the entire response as full_name. "
     "NEVER ask for first name and surname separately. "
     "NEVER ask a follow-up question about the surname after receiving a name. "

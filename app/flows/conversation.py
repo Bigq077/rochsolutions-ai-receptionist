@@ -44,8 +44,7 @@ async def _increment_fallback_counter() -> None:
 
 
 _SAFE_FALLBACK = (
-    "I'm sorry, something went wrong on my end. "
-    "Could you give me just a moment and try again?"
+    "Something went wrong on my end — bear with me a moment and try again."
 )
 
 MAX_TOOL_ITERATIONS = 6

@@ -251,8 +251,7 @@ def safe_error_response(request: Request) -> PlainTextResponse:
     vr.append(
         gather_speech(
             turn_url,
-            "I'm sorry, something went wrong on my end. "
-            "Please bear with me — let me try that again.",
+            "Something went wrong on my end — bear with me and I'll get that sorted.",
         )
     )
     return xml(vr)
@@ -777,8 +776,8 @@ async def turn(request: Request):
         _clinic_obj2 = get_clinic(session.get("clinic_id"))
         _xfer_phone  = _clinic_obj2.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
         _xfer_silence_msg = (
-            "I'm sorry, I'm having trouble hearing you. "
-            "Let me transfer you to the team now. Please hold."
+            "I'm having a little trouble hearing you — "
+            "let me transfer you to someone who can help."
         )
         _ch = session.get("conversation_history", [])
         _ch.append({"role": "assistant", "content": _xfer_silence_msg})
@@ -812,7 +811,7 @@ async def turn(request: Request):
     if any(phrase in user_said.lower() for phrase in _transfer_phrases):
         _clinic_xfer  = get_clinic(session.get("clinic_id"))
         _xfer_phone   = _clinic_xfer.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
-        _xfer_msg     = "Of course — let me put you straight through to the team now. Please hold."
+        _xfer_msg     = "Of course — let me put you straight through to the team."
         session        = _append_turn(session, "caller", user_said)
         session        = _append_turn(session, "assistant", _xfer_msg)
         await save_session(call_sid, session)
@@ -869,10 +868,7 @@ async def turn(request: Request):
                     logger.warning(
                         "handle_turn wall-clock timeout (call_sid=%s)", call_sid
                     )
-                    reply_text = (
-                        "I'm sorry, just bear with me one moment — "
-                        "I'll get that sorted for you."
-                    )
+                    reply_text = "Bear with me one moment — I'll get that sorted for you."
         else:
             reply_text, session = await triage_turn(user_said, session)
         session.pop("error_count", None)   # reset on success
@@ -930,7 +926,7 @@ async def turn(request: Request):
     # Guard: never send an empty string to gather_speech — it creates a silent Gather
     if not reply_text or not reply_text.strip():
         logger.error("Empty reply_text — using fallback (call_sid=%s)", call_sid)
-        reply_text = "I'm sorry, something went wrong on my end. Could you repeat that?"
+        reply_text = "Something went wrong on my end — could you repeat that?"
 
     await save_session(call_sid, session)
     vr.append(gather_speech(turn_url, reply_text))
@@ -998,8 +994,7 @@ async def transfer_status(request: Request):
     turn_url = _abs_url(request, "/twilio/turn")
 
     re_engage = (
-        "I'm sorry, the team doesn't seem to be available right now. "
-        "But I'm here and I can probably help — "
+        "Looks like the team isn't available at the moment, but I'm here — "
         "did you want to book an appointment, or is there something else I can help with?"
     )
 

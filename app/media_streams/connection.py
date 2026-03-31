@@ -433,8 +433,8 @@ class SilenceHandler:
     async def _transfer(self) -> None:
         logger.info("[ms_silence] max reasks reached — transferring")
         phrase = (
-            "I'm sorry, I'm having a little trouble "
-            "hearing you — let me transfer you to someone who can help."
+            "I'm having a little trouble hearing you — "
+            "let me transfer you to someone who can help."
         )
         # Save to conversation_history so the test evaluator can see it.
         # _on_transfer is the _silence_history_fn closure in WebSocketCallHandler.

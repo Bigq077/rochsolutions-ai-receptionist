@@ -343,7 +343,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 6,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "Could I take your name please?",
+        "question": "And your name — just so I can find your records?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -445,7 +445,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 12,
         "state": "COLLECT_NAME",
-        "question": "Could I take your full name please?",
+        "question": "Who am I booking in today?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -506,7 +506,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_RESCHEDULE",
-        "question": "Of course — could I take your full name please?",
+        "question": "What's your name so I can find your booking?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -612,7 +612,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_CANCEL",
-        "question": "Of course — could I take your full name please?",
+        "question": "What's your name so I can find the appointment?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -1117,7 +1117,7 @@ class FlowEngine:
                         )
                     else:
                         response = (
-                            "I'm sorry, but I wasn't able to complete the reschedule. "
+                            "My apologies — I wasn't able to complete that reschedule. "
                             "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u2009"
                             "6\u20096\u20098\u20096\u20091 and the team will be happy to help."
                         )
@@ -1333,7 +1333,7 @@ class FlowEngine:
                 )
             else:
                 response = (
-                    "I'm sorry, but I wasn't able to complete the reschedule. "
+                    "My apologies — I wasn't able to complete that reschedule. "
                     "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u20096"
                     "\u20096\u20098\u20096\u20091 and the team will be happy to help."
                 )
