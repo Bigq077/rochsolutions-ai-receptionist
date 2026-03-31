@@ -528,16 +528,54 @@ class LLMStream:
 
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
-                if status in (429, 500, 529) and OPENAI_API_KEY:
-                    logger.warning("[ms_llm] Claude %s -- switching to GPT fallback", status)
-                    reply = await self._gpt_fallback(
-                        system_prompt=system_prompt,
-                        messages=messages,
-                        session=session,
-                        tts_text_queue=tts_text_queue,
-                    )
-                    full_reply += reply
-                    return full_reply, False
+                exc_str = str(exc).lower()
+                _is_overloaded = (
+                    status in (429, 500, 529)
+                    or "overloaded" in exc_str
+                    or "overloaded_error" in exc_str
+                )
+                if _is_overloaded:
+                    # Retry up to 2 times with backoff before falling through to GPT
+                    _retry_ok = False
+                    for _attempt in range(1, 3):
+                        _wait = _attempt * 1.5
+                        logger.warning(
+                            "[ms_llm] Claude overloaded (attempt %d) — retrying in %.1fs",
+                            _attempt, _wait,
+                        )
+                        await asyncio.sleep(_wait)
+                        try:
+                            chunk_text, tool_uses, did_transfer = await self._one_streaming_call(
+                                client=client,
+                                model=model,
+                                system_prompt=system_prompt,
+                                messages=messages,
+                                tools=tools,
+                                session=session,
+                                tts_text_queue=tts_text_queue,
+                                filler_sent=True,
+                                interim_played=True,
+                            )
+                            filler_sent = True
+                            _retry_ok = True
+                            break
+                        except Exception as _retry_exc:
+                            logger.warning("[ms_llm] retry %d failed: %r", _attempt, _retry_exc)
+                    if not _retry_ok:
+                        if OPENAI_API_KEY:
+                            logger.warning("[ms_llm] Claude still overloaded — GPT fallback")
+                            reply = await self._gpt_fallback(
+                                system_prompt=system_prompt,
+                                messages=messages,
+                                session=session,
+                                tts_text_queue=tts_text_queue,
+                            )
+                            full_reply += reply
+                            return full_reply, False
+                        else:
+                            logger.error("[ms_llm] Claude overloaded, no GPT key — fallback phrase")
+                            await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
+                            return SAFE_FALLBACK_PHRASE, False
                 else:
                     logger.error("[ms_llm] Claude API error: %r", exc)
                     await tts_text_queue.put(SAFE_FALLBACK_PHRASE)

@@ -186,6 +186,9 @@ async def ms_incoming(request: Request) -> Response:
             "<Connect>"
             f'<Stream url="{ws_url}"/>'
             "</Connect>"
+            # <Hangup/> prevents Twilio re-requesting this URL when the
+            # WebSocket closes, which would otherwise create a reconnect loop.
+            "<Hangup/>"
             "</Response>"
         )
         return Response(content=twiml, media_type="application/xml")
