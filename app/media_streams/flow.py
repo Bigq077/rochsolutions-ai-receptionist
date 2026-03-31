@@ -1503,16 +1503,17 @@ class FlowEngine:
             "hours", "opening hours", "open", "close",
             "when are you", "what time are you",
         )
-        # Journey-time questions need live data — route to general LLM (has travel-time guidance)
-        # Check BEFORE location_p so "how long from X to Y" doesn't misfire as faq_location.
+        # Journey-time / distance questions — the LLM handles these via system-prompt
+        # guidance (give address + suggest Google Maps).  Checked BEFORE location_p so
+        # "how long from Coventry" / "how long it would take me" never misfires as faq_location.
+        # "how long" and "how far" are intentionally removed from location_p below.
         journey_p = (
-            "how long does it take", "how long to get", "how long to drive",
-            "how long from", "how far from", "journey time", "travel time",
-            "how many minutes", "how many miles", "how long to reach",
+            "how long", "how far", "journey time", "travel time",
+            "how many minutes", "how many miles",
         )
         location_p = (
             "where are you", "address", "parking", "directions", "how do i get",
-            "how long", "how far", "drive to", "travel to", "get to",
+            "drive to", "travel to", "get to",
             "journey to", "far is", "distance", "near", "nearest",
         )
         services_p = (

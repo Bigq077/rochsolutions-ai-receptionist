@@ -164,27 +164,42 @@ async def ms_incoming(request: Request) -> Response:
         # Cache caller number from Twilio POST body so the WebSocket handler
         # can pick it up from Redis on the "start" event (Twilio does not
         # reliably include From in the WebSocket start payload).
+        call_sid      = ""
+        caller_number = ""
+        to_number     = ""
         try:
             form = await request.form()
             call_sid      = form.get("CallSid", "")
             caller_number = form.get("From", "") or form.get("from", "")
+            to_number     = form.get("To",   "") or form.get("to",   "")
             if call_sid and caller_number:
                 from .session import _get_redis
                 _redis = _get_redis()
                 if _redis:
                     await _redis.setex(f"ms_caller:{call_sid}", 60, caller_number)
                     logger.info(
-                        "[ms_router] cached caller number call_sid=%s from=%s",
-                        call_sid, caller_number,
+                        "[ms_router] cached caller number call_sid=%s from=%s to=%s",
+                        call_sid, caller_number, to_number,
                     )
         except Exception as _exc:
             logger.warning("[ms_router] caller number cache failed: %r", _exc)
+
+        # Pass To/From as Stream <Parameter> elements so connection.py can
+        # resolve clinic_id from the dialled number on the "start" event.
+        # Without this, twilio_to is always empty and clinic_id defaults to "demo".
+        _params_xml = ""
+        if to_number:
+            _params_xml += f'<Parameter name="twilio_to" value="{to_number}"/>'
+        if caller_number:
+            _params_xml += f'<Parameter name="twilio_from" value="{caller_number}"/>'
 
         twiml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
             "<Connect>"
-            f'<Stream url="{ws_url}"/>'
+            f'<Stream url="{ws_url}">'
+            f"{_params_xml}"
+            "</Stream>"
             "</Connect>"
             # <Hangup/> prevents Twilio re-requesting this URL when the
             # WebSocket closes, which would otherwise create a reconnect loop.
