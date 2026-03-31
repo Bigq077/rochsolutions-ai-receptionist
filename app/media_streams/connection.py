@@ -206,6 +206,8 @@ class SilenceHandler:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
         self.last_question:           str   = ""
+        self.current_state:           str   = "default"
+        self._consecutive_silence_count: int = 0
         self.currently_reasking:      bool  = False
         self._last_question_set_at:   float = time.time()
         self._task: Optional[asyncio.Task]  = None
@@ -228,6 +230,11 @@ class SilenceHandler:
         self.last_audio_received_at = time.time()
         self._cancel_timer()
         logger.debug("[ms_silence] speech started — timer cancelled")
+
+    def set_state(self, state: str) -> None:
+        """Update current_state so re-ask phrases are context-aware."""
+        if state:
+            self.current_state = state
 
     def on_question_asked(self, question: str) -> None:
         """Update last_question so re-asks have the right text."""
@@ -302,9 +309,10 @@ class SilenceHandler:
     def on_transcript_received(self) -> None:
         """Call whenever a FinalTranscript arrives from STT."""
         self._cancel_timer()
-        self.reask_count            = 0
-        self.currently_reasking     = False
-        self.last_audio_received_at = time.time()
+        self.reask_count                 = 0
+        self._consecutive_silence_count  = 0
+        self.currently_reasking          = False
+        self.last_audio_received_at      = time.time()
         logger.info("[ms_silence] transcript — timer cancelled")
 
     def cancel(self) -> None:
@@ -337,14 +345,16 @@ class SilenceHandler:
         any sleep — caller spoke (on_speech_started) or Susie spoke
         (on_tts_started / on_transcript_received).
         """
+        from app.silence_handler import get_silence_response, get_silence_threshold, log_silence_event
         q = self.last_question.strip()
 
-        # ── Window 1: configurable silence before first re-ask ─────────────
-        # Default 10s for production (natural feel for real callers).
-        # Set SILENCE_WINDOW_1_SEC=30 in test environments to avoid conflict
-        # with the automated test runner (TURN_WAIT_SECONDS=25s).
+        # ── Window 1: per-state silence threshold ──────────────────────────
+        # Falls back to SILENCE_THRESHOLDS["default"] for unmapped states.
+        # SILENCE_WINDOW_1_SEC env var overrides all per-state values (used by
+        # the automated test runner to avoid collision with TURN_WAIT_SECONDS).
         import os as _os
-        _w1 = float(_os.getenv("SILENCE_WINDOW_1_SEC", "10"))
+        _env_override = _os.getenv("SILENCE_WINDOW_1_SEC")
+        _w1 = float(_env_override) if _env_override else get_silence_threshold(self.current_state)
         try:
             await asyncio.sleep(_w1)
             # Yield once more so any task.cancel() that arrived while we were
@@ -366,7 +376,14 @@ class SilenceHandler:
         self.currently_reasking = True
         self.reask_count += 1
         secs_since_q = time.time() - self._last_question_set_at
-        phrase1 = f"Sorry, I didn't quite catch that — {q}"
+        phrase1 = get_silence_response(
+            self.current_state, self._consecutive_silence_count
+        )
+        if self._consecutive_silence_count >= 1:
+            self._consecutive_silence_count = 0
+        else:
+            self._consecutive_silence_count += 1
+        log_silence_event(self.current_state, _w1, phrase1, self.reask_count - 1)
         logger.info(
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
@@ -401,7 +418,14 @@ class SilenceHandler:
         self.currently_reasking = True
         self.reask_count += 1
         secs_since_q = time.time() - self._last_question_set_at
-        phrase2 = f"Sorry about that — {q}"
+        phrase2 = get_silence_response(
+            self.current_state, self._consecutive_silence_count
+        )
+        if self._consecutive_silence_count >= 1:
+            self._consecutive_silence_count = 0
+        else:
+            self._consecutive_silence_count += 1
+        log_silence_event(self.current_state, 15.0, phrase2, self.reask_count - 1)
         logger.info(
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
@@ -920,6 +944,9 @@ class WebSocketCallHandler:
                     _last_q = self.session.get("last_question", "")
                     if _last_q:
                         logger.info("[ms_conn] last_question stored: %r", _last_q[:120])
+                        self._silence_handler.set_state(
+                            self.session.get("state", "default")
+                        )
                         self._silence_handler.on_question_asked(_last_q)
                     logger.info(
                         "[ms_conn] state after turn: %s  flow_step=%s",

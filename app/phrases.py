@@ -230,3 +230,26 @@ P: dict = {
         "Please give us a call directly and the team will be happy to sort it."
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Silence responses — keyed by a short state category, not the raw state name.
+# The silence_handler module maps raw state names → these keys.
+# ---------------------------------------------------------------------------
+
+SILENCE_RESPONSES: dict = {
+    "ask_phone":         "No rush — take your time finding that number.",
+    "ask_name":          "Take your time.",
+    "ask_day":           "Have a think — no hurry at all.",
+    "ask_time":          "No rush on that.",
+    "ask_reason":        "Take your time telling me.",
+    "greeting":          "Hello? I'm Susie at {clinic_name} — were you looking to book an appointment?",
+    "confirm_read_back": "Just let me know if any of those details need changing.",
+    "default":           "Sorry about that — could you say that again?",
+}
+
+# Per-state silence window in seconds (Window 1 — first re-ask threshold).
+# Keyed by the same short category used in SILENCE_RESPONSES.
+SILENCE_THRESHOLDS: dict = {
+    "ask_phone": 6.0,
+    "default":   4.0,
+}

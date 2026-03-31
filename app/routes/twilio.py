@@ -236,8 +236,10 @@ def _init_session(session: dict, call_sid: str) -> dict:
     session.setdefault("selected_location", None)
     # Insurance state
     session.setdefault("insurance_info", {})
-    # Miss counter
+    # Miss counter (3-tier silence escalation)
     session.setdefault("miss_count", 0)
+    # Consecutive silence counter — resets when user speaks or after callback phrase
+    session.setdefault("consecutive_silence_count", 0)
     # Sidebar loop-prevention: tracks how many sidebar questions have been
     # answered per state so we cap at 1 per state.
     session.setdefault("sidebar_count_per_state", {})
@@ -729,69 +731,56 @@ async def turn(request: Request):
                 logger.info("Location passively detected for %s: %s", call_sid, _detected_loc)
 
     # --------------------------------------------------
-    # Handle empty input  (3-tier escalation with last-question recovery)
+    # Handle empty input  (3-tier escalation with context-aware responses)
     # --------------------------------------------------
     if not user_said:
+        from app.silence_handler import get_silence_response, get_silence_threshold, log_silence_event
+
         miss = int(session.get("miss_count", 0)) + 1
         session["miss_count"] = miss
 
-        _clinic_obj = get_clinic(session.get("clinic_id"))
-        # Use the last question Susie asked (set by conversation.py on every turn).
-        # Prefer last_question (explicit tracker); fall back to last_bot_prompt.
-        _last_q = (
-            session.get("last_question") or session.get("last_bot_prompt") or ""
-        ).strip()
+        _current_state  = session.get("state", "TRIAGE")
+        _consecutive    = int(session.get("consecutive_silence_count", 0))
+        _clinic_name    = os.getenv("CLINIC_NAME", "the clinic")
+        _silence_thresh = get_silence_threshold(_current_state)
 
-        # Tier 1 — first silence: re-ask last question with catch-phrase
-        if miss == 1:
-            if _last_q and PHASE3_ENABLED:
-                recovery = f"I didn't quite catch that — {_last_q}"
-            else:
-                recovery = _build_reintro(_clinic_obj)
-            # Store in conversation_history so the test evaluator can find it
+        # Tier 3 — third silence: live transfer (unchanged)
+        if miss >= 3:
+            _clinic_obj2 = get_clinic(session.get("clinic_id"))
+            _xfer_phone  = _clinic_obj2.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
+            _xfer_silence_msg = (
+                "I'm having a little trouble hearing you — "
+                "let me transfer you to someone who can help."
+            )
+            log_silence_event(_current_state, 0.0, _xfer_silence_msg, _consecutive)
             _ch = session.get("conversation_history", [])
-            _ch.append({"role": "assistant", "content": recovery})
+            _ch.append({"role": "assistant", "content": _xfer_silence_msg})
             session["conversation_history"] = _ch
             await save_session(call_sid, session)
-            vr.append(gather_speech(turn_url, recovery))
+            _append_transfer(vr, _xfer_silence_msg, request, _xfer_phone)
             return xml(vr)
 
-        # Tier 2 — second silence: "sorry about that" + repeat question
-        if miss == 2:
-            if _last_q and PHASE3_ENABLED:
-                recovery = (
-                    "Sorry about that — I'm having a little trouble hearing you. "
-                    + _last_q
-                )
-            else:
-                recovery = _build_menu()
-            _ch = session.get("conversation_history", [])
-            _ch.append({"role": "assistant", "content": recovery})
-            session["conversation_history"] = _ch
-            await save_session(call_sid, session)
-            vr.append(gather_speech(turn_url, recovery))
-            return xml(vr)
+        # Tiers 1 & 2 — context-aware silence response
+        recovery = get_silence_response(_current_state, _consecutive, _clinic_name)
 
-        # Tier 3 — third silence: live transfer (caller cannot be heard at all)
-        _clinic_obj2 = get_clinic(session.get("clinic_id"))
-        _xfer_phone  = _clinic_obj2.get("transfer_phone") or TRANSFER_NUMBER_FALLBACK
-        _xfer_silence_msg = (
-            "I'm having a little trouble hearing you — "
-            "let me transfer you to someone who can help."
-        )
+        # Manage consecutive_silence_count
+        if _consecutive >= 1:
+            # Second consecutive silence: callback suffix already in recovery — reset
+            session["consecutive_silence_count"] = 0
+        else:
+            session["consecutive_silence_count"] = _consecutive + 1
+
+        log_silence_event(_current_state, 0.0, recovery, _consecutive)
+
         _ch = session.get("conversation_history", [])
-        _ch.append({"role": "assistant", "content": _xfer_silence_msg})
+        _ch.append({"role": "assistant", "content": recovery})
         session["conversation_history"] = _ch
         await save_session(call_sid, session)
-        _append_transfer(
-            vr,
-            _xfer_silence_msg,
-            request,
-            _xfer_phone,
-        )
+        vr.append(gather_speech(turn_url, recovery, timeout=int(_silence_thresh)))
         return xml(vr)
 
     session["miss_count"] = 0
+    session["consecutive_silence_count"] = 0
 
     # --------------------------------------------------
     # Transfer shortcut — bypass LLM entirely for explicit human requests.
