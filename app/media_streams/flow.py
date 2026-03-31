@@ -28,6 +28,7 @@ Usage from connection.py (unchanged):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
@@ -1198,6 +1199,36 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── CALLER CLASSIFICATION (first substantive utterance only) ──────────
+        # Runs before any state-machine logic so professional callers are routed
+        # before the booking flow is ever entered.
+        if self.session.get("classification_pending"):
+            words = transcript.strip().split()
+            if len(words) > 1:
+                from app.caller_classifier import classify_caller
+                result = await asyncio.to_thread(classify_caller, transcript)
+                self.session["caller_type"] = result["type"]
+                self.session["_classification_confidence"] = result["confidence"]
+                self.session["classification_pending"] = False
+                logger.info(
+                    "[ms_flow] caller classified: type=%s confidence=%s intent=%r",
+                    result["type"], result["confidence"], result.get("intent", "")[:60],
+                )
+            elif step["state"] != "DETECT_INTENT":
+                # Past first utterance with a short response — force patient
+                self.session["caller_type"] = "patient"
+                self.session["classification_pending"] = False
+                logger.info("[ms_flow] caller forced to patient (short utterance past DETECT_INTENT)")
+
+        # ── PROFESSIONAL FLOW INTERCEPT ────────────────────────────────────────
+        if self.session.get("professional_flow_active"):
+            from app.caller_classifier import run_professional_flow
+            await run_professional_flow(self.session, self._tts.put, transcript)
+            if self.session.get("professional_flow_complete"):
+                # Exhaust the flow so current_step() returns None on next call
+                self.session["flow_step"] = len(self._active_flow)
+            return
+
         # ── SLOT CONFIRMATION: waiting for yes/no after slot selection ────────
         if self.session.get("slot_pending_confirmation"):
             await self._handle_slot_confirmation(text, transcript)
@@ -1231,6 +1262,17 @@ class FlowEngine:
 
         # ── DETECT_INTENT: route to correct flow on first utterance ───────────
         if step["state"] == "DETECT_INTENT":
+            # Professional caller with high confidence — bypass booking flow entirely
+            if (
+                self.session.get("caller_type") == "professional"
+                and self.session.get("_classification_confidence") == "high"
+            ):
+                self.session["professional_flow_active"] = True
+                self.session["prof_flow_step"] = 0
+                await self._tts.put("Of course — could I take your name please?")
+                logger.info("[ms_flow] professional caller — entering professional flow")
+                return
+
             intent = self._detect_intent(text)
             self.session["intent"] = intent
             # For general queries, store the original transcript so the LLM

@@ -256,6 +256,22 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "readback_correction_turn": False,  # True on the second turn after a slot correction
     "readback_delivered":       False,  # True once readback has been spoken (guards re-fire)
     "graceful_exit":            False,  # True when retry >= 3 triggers a graceful exit
+
+    # ── Caller classification ─────────────────────────────────────────────
+    # Determined on the first substantive utterance (> 1 word).
+    # Forces "patient" if still pending when the first booking slot is answered.
+    "caller_type":            None,   # "patient"|"professional"|"unknown"
+    "classification_pending": True,   # True until first substantive utterance classified
+    "_classification_confidence": None,  # "high"|"low" — from classify_caller()
+
+    # ── Professional caller flow ─────────────────────────────────────────
+    # Separate 3-slot flow; keys prefixed prof_ to avoid booking-flow collision.
+    "professional_flow_active":   False,
+    "professional_flow_complete": False,
+    "prof_flow_step":  0,       # 0=collect_name 1=collect_callback 2=collect_message
+    "prof_name":       None,    # professional's name
+    "prof_callback":   None,    # callback phone number
+    "prof_message":    None,    # message to pass on
 }
 
 
