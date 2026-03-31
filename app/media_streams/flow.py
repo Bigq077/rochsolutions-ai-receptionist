@@ -740,7 +740,18 @@ GENERAL_QUERY_FLOW: List[Dict[str, Any]] = [
             "One or two sentences only. "
             "End with: 'Is there anything else I can help you with?'"
         ),
-        "extract": "faq_booking",   # reuse: yes→booking, no→done
+        "extract": "none",
+    },
+    {
+        # Wait for caller's reply to "Is there anything else I can help you with?"
+        # yes / book → switch to BOOKING_FLOW; no / done → end call gracefully.
+        "step": 1,
+        "state": "GENERAL_BOOKING_OFFER",
+        "question": None,
+        "answer_field": "general_booking_response",
+        "use_llm": False,
+        "extract": "faq_booking",   # yes→booking, no→done
+        "llm_instruction": None,
     },
 ]
 

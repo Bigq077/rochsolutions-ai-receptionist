@@ -94,7 +94,7 @@ ASSEMBLYAI_WS_URL_V2 = (
 # ---------------------------------------------------------------------------
 
 # Primary LLM (tool calling, booking, complex turns)
-SONNET = "claude-sonnet-4-6"
+SONNET = "claude-3-5-sonnet-20241022"
 
 # Fast LLM (simple turns after fast/info tools: collect_and_store, get_clinic_info)
 HAIKU = "claude-haiku-4-5-20251001"
