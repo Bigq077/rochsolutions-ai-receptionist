@@ -238,6 +238,9 @@ def _init_session(session: dict, call_sid: str) -> dict:
     session.setdefault("insurance_info", {})
     # Miss counter
     session.setdefault("miss_count", 0)
+    # Sidebar loop-prevention: tracks how many sidebar questions have been
+    # answered per state so we cap at 1 per state.
+    session.setdefault("sidebar_count_per_state", {})
     return session
 
 
