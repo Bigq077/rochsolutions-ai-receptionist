@@ -316,7 +316,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "yes_no",
     },
     {
-        "step": 3,
+        "step": 2,
         "state": "NEW_OR_RETURNING",
         "question": "Have you been with us before?",
         "answer_field": "new_or_returning",
@@ -328,7 +328,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     # All six steps are skipped for new patients or patients not on a
     # treatment plan.  Skip logic lives in ask_current_question().
     {
-        "step": 4,
+        "step": 3,
         "state": "RETURNING_RECENCY",
         "question": "Was that recently, or has it been a little while?",
         "answer_field": "returning_recency",
@@ -337,7 +337,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 5,
+        "step": 4,
         "state": "RETURNING_TREATMENT_PLAN",
         "question": "And are you currently on a treatment plan with us?",
         "answer_field": "on_treatment_plan",
@@ -346,7 +346,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 6,
+        "step": 5,
         "state": "COLLECT_NAME_RETURNING",
         "question": "And your name — just so I can find your records?",
         "answer_field": "full_name",
@@ -355,7 +355,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 7,
+        "step": 6,
         "state": "CONFIRM_PHONE_RETURNING",
         "question": "And is the number you're calling from right now the same number you originally booked with?",
         "answer_field": "phone_confirmed",
@@ -364,7 +364,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 8,
+        "step": 7,
         "state": "COLLECT_PHONE_RETURNING",
         "question": "And the best number to contact you on?",
         "answer_field": "phone_number",
@@ -373,7 +373,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 9,
+        "step": 8,
         "state": "LOOKUP_TREATMENT_PLAN",
         "question": None,
         "answer_field": "treatment_plan_looked_up",
@@ -393,7 +393,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     },
     # ── Main booking steps ────────────────────────────────────────────────
     {
-        "step": 10,
+        "step": 9,
         "state": "PRESENT_DAYS",
         "question": None,   # LLM generates the spoken bridge + day list
         "answer_field": "chosen_day",
@@ -420,7 +420,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 11,
+        "step": 10,
         "state": "PRESENT_TIMES",
         "question": None,   # LLM responds to the caller's day choice
         "answer_field": "selected_slot",
@@ -448,7 +448,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 12,
+        "step": 11,
         "state": "COLLECT_NAME",
         "question": "Who am I booking in today?",
         "answer_field": "full_name",
@@ -457,7 +457,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 13,
+        "step": 12,
         "state": "CONFIRM_PHONE",
         "question": (
             "Just to confirm — shall I use the number "
@@ -469,7 +469,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 14,
+        "step": 13,
         "state": "COLLECT_PHONE",
         "question": "And the best number to reach you on?",
         "answer_field": "phone_number",
@@ -478,7 +478,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 15,
+        "step": 14,
         "state": "CONFIRM_BOOKING",
         "question": None,   # LLM generates this
         "answer_field": "booking_confirmed",
