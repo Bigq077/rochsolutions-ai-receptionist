@@ -46,9 +46,15 @@ async def send_booking_confirmation(
     insurer: Optional[str] = None,
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    session: Optional[dict] = None,
 ) -> bool:
     """
     Send immediate booking confirmation SMS.
+
+    When `session` is supplied the body is built by ``build_sms(session)``
+    (app/sms_templates.py) which uses env-var clinic details and the slot
+    label already stored in the session.  Legacy callers that omit `session`
+    continue to use the old template helpers below.
 
     Args:
         patient_phone: Patient's mobile number
@@ -62,58 +68,65 @@ async def send_booking_confirmation(
         insurer: Insurance company name
         clinic_name: Clinic branding name for SMS sign-off
         clinic_phone: Clinic contact number for SMS sign-off
+        session: Full session dict — when provided, build_sms() is used
 
     Returns:
         True if sent successfully, False otherwise
     """
     try:
-        location_short = get_location_short_name(location)
-        ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
-
-        # Choose appropriate template
-        if has_insurance and insurer:
-            message = format_insurance_booking_confirmation(
-                patient_name=patient_name,
-                appointment_time=appointment_time,
-                location=location_short,
-                insurer=insurer,
-                **ck,
-            )
-        elif is_new_patient:
-            message = format_first_visit_welcome(
-                patient_name=patient_name,
-                appointment_time=appointment_time,
-                location=location_short,
-                **ck,
-            )
+        if session is not None:
+            from app.sms_templates import build_sms
+            message = build_sms(session)
         else:
-            message = format_booking_confirmation(
-                patient_name=patient_name,
-                appointment_time=appointment_time,
-                location=location_short,
-                service=service,
-                practitioner=practitioner,
-                **ck,
-            )
-        
+            location_short = get_location_short_name(location)
+            ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
+
+            # Choose appropriate template
+            if has_insurance and insurer:
+                message = format_insurance_booking_confirmation(
+                    patient_name=patient_name,
+                    appointment_time=appointment_time,
+                    location=location_short,
+                    insurer=insurer,
+                    **ck,
+                )
+            elif is_new_patient:
+                message = format_first_visit_welcome(
+                    patient_name=patient_name,
+                    appointment_time=appointment_time,
+                    location=location_short,
+                    **ck,
+                )
+            else:
+                message = format_booking_confirmation(
+                    patient_name=patient_name,
+                    appointment_time=appointment_time,
+                    location=location_short,
+                    service=service,
+                    practitioner=practitioner,
+                    **ck,
+                )
+
         await send_sms(to=patient_phone, message=message)
-        
+
         logger.info(
-            f"Booking confirmation sent to {patient_phone} for {appointment_time}",
+            "Booking confirmation SMS sent to ***%s",
+            patient_phone[-4:] if patient_phone else "????",
             extra={
                 "patient_name": patient_name,
-                "appointment_time": appointment_time.isoformat(),
-                "location": location_short,
+                "appointment_time": appointment_time.isoformat() if appointment_time else None,
+                "location": location,
             }
         )
-        
+
         return True
-    
+
     except Exception as e:
         logger.error(
-            f"Failed to send booking confirmation: {e}",
+            "Failed to send booking confirmation to ***%s: %r",
+            patient_phone[-4:] if patient_phone else "????",
+            e,
             exc_info=True,
-            extra={"patient_phone": patient_phone}
         )
         return False
 

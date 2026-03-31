@@ -1279,6 +1279,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                     insurer=insurer or None,
                     clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
                     clinic_phone=clinic.get("phone"),
+                    session=session,
                 )
             except Exception as e:
                 logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
@@ -1718,6 +1719,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             insurer=insurer or None,
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
             clinic_phone=clinic.get("phone"),
+            session=session,
         )
         # Tell the smart SMS router at call end that a confirmation was already sent
         session["confirmation_sms_sent"] = True
