@@ -93,7 +93,7 @@ _RATE_LIMIT_WINDOW_SEC = int(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))
 @app.middleware("http")
 async def twilio_rate_limit(request: Request, call_next):
     """Per-IP rate limit on /twilio/* POST endpoints using Redis."""
-    if request.method == "POST" and request.url.path.startswith("/twilio/"):
+    if request.method == "POST" and (request.url.path.startswith("/twilio/") or request.url.path.startswith("/ms/")):
         client_ip = request.client.host if request.client else "unknown"
         try:
             from app.storage.redis_store import redis_client

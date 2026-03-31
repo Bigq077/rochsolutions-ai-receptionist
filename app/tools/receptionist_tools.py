@@ -277,6 +277,45 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
         except Exception:
             pass
 
+    # 2c. Informal British time expressions — "the morning one", "half nine",
+    # "the twelve o'clock", "the early one", "the late one", etc. (Bug #6)
+    _morning_kw = {"morning", "morning one", "the morning one", "early", "early one", "the early one", "earlier"}
+    _afternoon_kw = {"afternoon", "afternoon one", "the afternoon one", "late", "late one", "the late one", "later", "the later one"}
+    if offered:
+        if s_lower in _morning_kw:
+            # Pick the earliest offered slot
+            try:
+                dt = _to_london(datetime.fromisoformat(offered[0]["start"]))
+                logger.info("_resolve_slot_iso: morning/early match %r → slot[0] %s", slot_iso, offered[0]["start"])
+                return dt
+            except Exception:
+                pass
+        if s_lower in _afternoon_kw:
+            # Pick the latest offered slot
+            try:
+                idx = len(offered) - 1
+                dt = _to_london(datetime.fromisoformat(offered[idx]["start"]))
+                logger.info("_resolve_slot_iso: afternoon/late match %r → slot[%d] %s", slot_iso, idx, offered[idx]["start"])
+                return dt
+            except Exception:
+                pass
+        # "half nine" → 9:30, "nine o'clock" → 9:00, "twelve" → 12:00
+        _time_map = {
+            "half eight": (8, 30), "half nine": (9, 30), "half ten": (10, 30),
+            "half eleven": (11, 30), "half twelve": (12, 30), "half one": (13, 30),
+            "half two": (14, 30), "half three": (15, 30), "half four": (16, 30),
+        }
+        for phrase, (h, m) in _time_map.items():
+            if phrase in s_lower:
+                for i, slot in enumerate(offered):
+                    try:
+                        sdt = _to_london(datetime.fromisoformat(slot["start"]))
+                        if sdt.hour == h and sdt.minute == m:
+                            logger.info("_resolve_slot_iso: British time match %r → slot[%d]", phrase, i)
+                            return sdt
+                    except Exception:
+                        pass
+
     # 3. Fuzzy match against human-readable labels
     for i, label in enumerate(labels):
         if i < len(offered):
@@ -475,6 +514,7 @@ TOOL_COLLECT_AND_STORE = {
                 "enum": [
                     "name", "full_name", "phone", "location", "reason", "insurer",
                     "policy_number", "time_preference", "patient_type", "service",
+                    "referral_source", "email",
                 ],
                 "description": (
                     "Which field to store. Use 'full_name' when collecting the caller's name "
@@ -585,6 +625,41 @@ TOOL_GET_PATIENT_HISTORY = {
     },
 }
 
+TOOL_ADD_TO_WAITLIST = {
+    "name": "add_to_waitlist",
+    "description": (
+        "Add a caller to the clinic waitlist when no appointment slots are available. "
+        "Stores their name, phone, preferred location, and any notes about preferred "
+        "days/times. The clinic team will contact them when a slot opens up."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "patient_name": {
+                "type": "string",
+                "description": "Full name of the patient.",
+            },
+            "phone": {
+                "type": "string",
+                "description": "Patient's phone number.",
+            },
+            "location": {
+                "type": "string",
+                "description": "Preferred clinic location (e.g. 'alcester' or 'redditch').",
+            },
+            "service": {
+                "type": "string",
+                "description": "Requested service (e.g. 'physiotherapy assessment').",
+            },
+            "notes": {
+                "type": "string",
+                "description": "Any preferences — preferred days, times, urgency notes.",
+            },
+        },
+        "required": ["patient_name", "phone"],
+    },
+}
+
 # Master list passed to the Anthropic API
 TOOL_SCHEMAS = [
     TOOL_CHECK_AVAILABILITY,
@@ -597,6 +672,7 @@ TOOL_SCHEMAS = [
     TOOL_SEND_FOLLOWUP_SMS,
     TOOL_LOG_CALL_OUTCOME,
     TOOL_GET_PATIENT_HISTORY,
+    TOOL_ADD_TO_WAITLIST,
 ]
 
 
@@ -2126,6 +2202,14 @@ async def _exec_log_call_outcome(args: Dict[str, Any], session: Dict[str, Any]) 
     session["call_outcome_logged"] = outcome
     session["call_outcome_notes"] = notes
     session["intent"] = outcome.upper()
+    session["call_ended"] = True  # Signal to pipeline that call should wind down
+
+    # Fire-and-forget: log to Google Sheets if configured
+    try:
+        from app.tools.handoff import fire_and_forget_append_summary_row
+        fire_and_forget_append_summary_row(session)
+    except Exception:
+        pass
 
     return {"logged": True, "outcome": outcome}
 
@@ -2157,15 +2241,29 @@ async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any
         logger.warning("get_patient_history: list_appointments failed: %r", exc)
         return {"found": False, "message": "Could not retrieve appointment history"}
 
-    # Match by name — case-insensitive, any name part matches
-    name_parts = [p.lower() for p in patient_name.split() if p]
+    # Match by name — fuzzy matching with rapidfuzz (handles typos, accents)
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        fuzz = None
+
+    name_lower = patient_name.strip().lower()
     matching = []
     for appt in appointments:
         first = (appt.get("firstName") or "").lower()
         last  = (appt.get("lastName") or "").lower()
         full  = f"{first} {last}".strip()
-        if any(part in full for part in name_parts):
-            matching.append(appt)
+        if not full:
+            continue
+        if fuzz:
+            score = fuzz.token_sort_ratio(name_lower, full)
+            if score >= 75:
+                matching.append(appt)
+        else:
+            # Fallback: substring match (original behaviour)
+            name_parts = [p.lower() for p in patient_name.split() if p]
+            if any(part in full for part in name_parts):
+                matching.append(appt)
 
     if not matching:
         return {"found": False, "message": f"No appointments found for {patient_name}"}
@@ -2196,6 +2294,54 @@ async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any
     }
 
 
+async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
+    """Add a caller to the clinic waitlist in Redis."""
+    patient_name = (args.get("patient_name") or "").strip()
+    phone = (args.get("phone") or "").strip()
+    location = (args.get("location") or "").strip()
+    service = (args.get("service") or "").strip()
+    notes = (args.get("notes") or "").strip()
+
+    if not patient_name or not phone:
+        return {"error": "Name and phone are required for the waitlist."}
+
+    try:
+        from app.storage.redis_store import redis_client
+        if redis_client:
+            import json as _json
+            waitlist_entry = {
+                "patient_name": patient_name,
+                "phone": phone,
+                "location": location,
+                "service": service,
+                "notes": notes,
+                "added_at": _iso_now(),
+                "call_sid": session.get("call_sid", ""),
+            }
+            key = f"waitlist:{phone}:{patient_name.lower().replace(' ', '_')}"
+            await redis_client.setex(key, 60 * 60 * 24 * 30, _json.dumps(waitlist_entry))  # 30 days
+            logger.info("Waitlist entry added for ***%s", phone[-4:] if phone else "????")
+            return {"success": True, "message": f"{patient_name} has been added to the waitlist."}
+        else:
+            # No Redis — store in session for later pickup
+            session.setdefault("waitlist_request", {
+                "patient_name": patient_name,
+                "phone": phone,
+                "location": location,
+                "service": service,
+                "notes": notes,
+            })
+            return {"success": True, "message": f"{patient_name} has been added to the waitlist."}
+    except Exception as exc:
+        logger.error("Waitlist add failed: %r", exc)
+        return {"error": "I wasn't able to add you to the waitlist — the team will follow up."}
+
+
+def _iso_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 TOOL_EXECUTORS: Dict[str, Any] = {
     "check_availability":     _exec_check_availability,
     "book_appointment":       _exec_book_appointment,
@@ -2207,4 +2353,5 @@ TOOL_EXECUTORS: Dict[str, Any] = {
     "send_followup_sms":      _exec_send_followup_sms,
     "log_call_outcome":       _exec_log_call_outcome,
     "get_patient_history":    _exec_get_patient_history,
+    "add_to_waitlist":        _exec_add_to_waitlist,
 }

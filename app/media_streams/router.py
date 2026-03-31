@@ -47,7 +47,7 @@ import asyncio
 import json as _json
 import time as _time
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
 from .config import (
@@ -63,6 +63,44 @@ from .connection import WebSocketCallHandler, _active_handlers
 from .stt_stream import _mask_key, _close_info
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Security: Twilio request signature validation (shared with /twilio/ routes)
+# ---------------------------------------------------------------------------
+
+async def _verify_twilio_signature_ms(request: Request) -> None:
+    """Validate Twilio webhook signature on /ms/incoming POST requests."""
+    from app.config import TWILIO_AUTH_TOKEN
+    if not TWILIO_AUTH_TOKEN or request.method != "POST":
+        return
+
+    from twilio.request_validator import RequestValidator
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    base = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not base:
+        base = os.getenv("BASE_URL", "").rstrip("/")
+    if base:
+        canonical_url = f"{base}{request.url.path}"
+        if request.url.query:
+            canonical_url += f"?{request.url.query}"
+    else:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        canonical_url = f"{proto}://{host}{request.url.path}"
+        if request.url.query:
+            canonical_url += f"?{request.url.query}"
+
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+
+    validator = RequestValidator(TWILIO_AUTH_TOKEN)
+    if not validator.validate(canonical_url, params, signature):
+        logger.warning("Twilio signature INVALID on /ms/incoming: url=%s", canonical_url)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Forbidden")
+
 
 router = APIRouter()
 
@@ -95,7 +133,7 @@ def _build_ws_url(request: Request) -> str:
 # Route 1: TwiML response for incoming calls
 # ---------------------------------------------------------------------------
 
-@router.post("/ms/incoming")
+@router.post("/ms/incoming", dependencies=[Depends(_verify_twilio_signature_ms)])
 async def ms_incoming(request: Request) -> Response:
     """
     Twilio calls this when a call arrives on the test number.

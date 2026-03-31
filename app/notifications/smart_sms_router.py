@@ -249,7 +249,7 @@ async def send_smart_followup_sms(
 
     try:
         await send_sms(to=patient_phone, message=message)
-        logger.info(f"✅ Smart SMS sent [{outcome}] → {patient_phone}")
+        logger.info("✅ Smart SMS sent [%s] → ***%s", outcome, patient_phone[-4:] if patient_phone else "????")
         return True
     except Exception as e:
         logger.error(f"❌ Failed to send SMS: {e}", exc_info=True)

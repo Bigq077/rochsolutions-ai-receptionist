@@ -359,7 +359,7 @@ def _try_full_name(
     session["collected"]["full_name"] = name_stored
     session["collected"]["name"] = name_stored
 
-    logger.info("fast_path: slot=full_name value=%r input=%r", name_stored, _raw)
+    logger.info("fast_path: slot=full_name value=%s*** input_len=%d", name_stored[0] if name_stored else "?", len(_raw))
 
     # Build reply
     caller_number = session.get("twilio_from_local", "")
@@ -403,7 +403,7 @@ def _try_phone_first_five(
         return None
 
     session["phone_part_one"] = digits
-    logger.info("fast_path: slot=phone_first_five value=%r input=%r", digits, _raw)
+    logger.info("fast_path: slot=phone_first_five len=%d", len(digits))
 
     reply = "Thank you — and the last six digits?"
     session["last_bot_prompt"] = reply

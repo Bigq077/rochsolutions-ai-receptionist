@@ -7,13 +7,17 @@ Theorem Health & Wellness takes a holistic, integrated approach to physical and 
 Just as a mathematical theorem combines principles for a proven solution, Theorem Health & Wellness integrates health and wellness interventions into a holistic path toward your complete well-being.
 
 ## Locations
-- Alcester: The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD
+- Alcester: The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD
 - Redditch: 51 Bromsgrove Road, Redditch, B97 4RH
+
+## Opening hours
+- Alcester: Monday to Friday 8:30am to 9pm. Closed weekends.
+- Redditch: Monday, Tuesday and Friday 9am to 5pm. Wednesday and Thursday 9am to 7pm. Saturday 9am to 5pm. Closed Sundays.
+- Both clinics closed on all UK bank holidays.
 
 ## Booking
 - Booking system: Acuity Scheduling
 - Booking window: up to 6 months in advance
-- Weekend: currently closed
 - Bank holidays: closed on all UK bank holidays
 - Some clients request a specific practitioner:
   - Mark: Monday / Tuesday / Wednesday
@@ -23,10 +27,13 @@ Just as a mathematical theorem combines principles for a proven solution, Theore
 - All appointments are 50 minutes.
 
 ## Pricing & policies
-- Physio sessions: £75
-- Rehab session: £65
-- Prescribing: £12.50
-- Laser/shockwave specialist equipment surcharge: £45 when used
+- Physiotherapy assessment: £75 (50 minutes)
+- Physiotherapy follow-up: £75 (50 minutes)
+- Remedial rehabilitation: £65 (50 minutes)
+- Prescribing consultation: £12.50
+- Acupuncture: £75 (50 minutes)
+- Psychotherapy: £75 (50 minutes)
+- Laser therapy / shockwave therapy specialist equipment surcharge: £45 when used during a session
 - Cancellation policy: 24 hours notice required, otherwise full fee applies
 - Clients are sent a text message with fees.
 

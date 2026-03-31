@@ -158,14 +158,36 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Core booking rules (from Mark)
         "slot_minutes": 50,
         "days_ahead": 180,  # up to 6 months in advance
+        # Per-location working hours (used by booking system for slot filtering)
         "working_hours": {
             "mon": _hours_tuple(8.5, 21),
             "tue": _hours_tuple(8.5, 21),
             "wed": _hours_tuple(8.5, 21),
             "thu": _hours_tuple(8.5, 21),
             "fri": _hours_tuple(8.5, 21),
-            "sat": None,
+            "sat": None,   # Alcester closed; Redditch open (see location_working_hours)
             "sun": None,
+        },
+        # Redditch has Saturday hours and different weekday hours
+        "location_working_hours": {
+            "alcester": {
+                "mon": _hours_tuple(8.5, 21),
+                "tue": _hours_tuple(8.5, 21),
+                "wed": _hours_tuple(8.5, 21),
+                "thu": _hours_tuple(8.5, 21),
+                "fri": _hours_tuple(8.5, 21),
+                "sat": None,
+                "sun": None,
+            },
+            "redditch": {
+                "mon": _hours_tuple(9, 17),
+                "tue": _hours_tuple(9, 17),
+                "wed": _hours_tuple(9, 19),
+                "thu": _hours_tuple(9, 19),
+                "fri": _hours_tuple(9, 17),
+                "sat": _hours_tuple(9, 17),
+                "sun": None,
+            },
         },
 
         # Locations
@@ -243,19 +265,21 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             },
         ],
         "addresses": [
-            "Theorem Health and Wellness, The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD",
+            "Theorem Health and Wellness, The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
             "Theorem Health and Wellness, 51 Bromsgrove Road, Redditch, B97 4RH",
         ],
         "address": (
             "Theorem Health and Wellness has two locations: "
-            "The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD; "
+            "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD; "
             "and 51 Bromsgrove Road, Redditch, B97 4RH."
         ),
 
         # Hours summary
         "hours_summary": (
-            "We're open Monday to Friday from 8:30am to 9pm. "
-            "Currently no weekend appointments. Closed on all UK bank holidays."
+            "Our Alcester clinic is open Monday to Friday, eight thirty in the morning until nine at night, closed on weekends. "
+            "Our Redditch clinic is open Monday to Saturday — Monday, Tuesday and Friday nine to five, "
+            "Wednesday and Thursday nine to seven, and Saturday nine to five. Closed on Sundays. "
+            "Both clinics are closed on all UK bank holidays."
         ),
         "holiday_closures": ["All UK bank holidays"],
 
@@ -290,8 +314,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
         # Pricing & policies (from Mark)
         "pricing_summary": (
-            "Physio sessions are £75 (50 minutes). Rehab sessions are £65. Prescribing is £12.50. "
-            "Laser and shockwave may add a £45 surcharge when specialist equipment is used."
+            "Physio sessions — both assessments and follow-ups — are £75 for 50 minutes. "
+            "Rehabilitation sessions are £65 for 50 minutes. Prescribing consultations are £12.50. "
+            "Acupuncture is £75 for 50 minutes. Psychotherapy is £75 for 50 minutes. "
+            "Laser therapy and shockwave therapy may add a £45 surcharge when specialist equipment is used during a session."
         ),
         # Structured pricing used by the intake/recommendation booking flow
         "service_prices": {

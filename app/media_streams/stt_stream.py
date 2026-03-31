@@ -69,24 +69,39 @@ AsyncCallback = Callable[..., Coroutine[Any, Any, None]]
 # ---------------------------------------------------------------------------
 
 _WORD_BOOST_TERMS: list[str] = [
-    # Northern English / informal affirmatives
+    # Northern English / informal affirmatives (Bug #8)
     "aye", "yeah", "yep", "nah", "nowt",
     "owt", "summat", "reight", "sorted",
     "champion", "mint", "sound",
+    "me back", "me knee", "me shoulder",
+    "gi'o'er", "nesh", "gradely", "mardy",
+    "ta", "cheers", "right",
     # Body parts and physio conditions
     "knee", "hip", "shoulder", "ankle",
     "spine", "elbow", "wrist", "neck",
     "back", "hamstring", "calf", "achilles",
     "rotator", "cuff", "sciatic", "sciatica",
+    "plantar", "fasciitis", "tendon", "tendonitis",
+    "frozen shoulder", "tennis elbow", "golfer's elbow",
+    "ligament", "meniscus", "cartilage",
     # Physio / clinical terms
     "physiotherapy", "physio", "assessment",
     "physiotherapist", "musculoskeletal",
+    "rehabilitation", "osteopath", "acupuncture",
+    "shockwave", "psychotherapy", "laser",
+    "prescribing", "Pilates",
     # Clinic / proper nouns
     "Theorem", "Alcester", "Redditch",
+    "Kinwarton", "Bromsgrove", "Greig",
+    "Mark", "Leanne", "Dyer",
+    # Location / nearby places
+    "Stratford", "Birmingham", "Evesham",
+    "Warwick", "Bromsgrove", "Worcester",
     # British phrases
     "fortnight", "whilst", "fortnightly",
     "go on then", "right then", "fair enough",
-    "no bother", "no worries",
+    "no bother", "no worries", "half past",
+    "quarter past", "quarter to",
 ]
 
 

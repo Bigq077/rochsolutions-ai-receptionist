@@ -339,13 +339,14 @@ class SilenceHandler:
         """
         q = self.last_question.strip()
 
-        # ── Window 1: 30 s silence ─────────────────────────────────────────
-        # 30 s > TURN_WAIT_SECONDS=25 s by 5 s — reliable margin so next
-        # injection always arrives before this fires for normal turns,
-        # preventing spurious re-asks. Phase 6 silence turns use 35 s empty
-        # response waits, so the timer still fires for those turns.
+        # ── Window 1: configurable silence before first re-ask ─────────────
+        # Default 10s for production (natural feel for real callers).
+        # Set SILENCE_WINDOW_1_SEC=30 in test environments to avoid conflict
+        # with the automated test runner (TURN_WAIT_SECONDS=25s).
+        import os as _os
+        _w1 = float(_os.getenv("SILENCE_WINDOW_1_SEC", "10"))
         try:
-            await asyncio.sleep(30.0)
+            await asyncio.sleep(_w1)
             # Yield once more so any task.cancel() that arrived while we were
             # sleeping (but after sleep() returned normally) is delivered here
             # before we check the guards — fixes the race where _llm_busy is

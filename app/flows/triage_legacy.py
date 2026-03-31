@@ -3509,7 +3509,7 @@ async def triage_turn(
                             clinic_name=_sms_clinic.get("sms_name") or _sms_clinic.get("display_name"),
                             clinic_phone=_sms_clinic.get("phone"),
                         )
-                        logger.info(f"✅ Booking confirmation SMS sent to {collected['phone']}")
+                        logger.info("✅ Booking confirmation SMS sent to ***%s", collected.get('phone', '')[-4:])
                         session["confirmation_sms_sent"] = True
                     except Exception as sms_err:
                         logger.error(f"⚠️ Failed to send booking SMS: {sms_err}")

@@ -157,11 +157,27 @@ async def _run_tool(
             logger.error("Tool %s raised: %r", tool_name, exc, exc_info=True)
             result = {"error": str(exc)}
 
+    # Redact PII before logging tool calls
+    def _redact(d):
+        if not isinstance(d, dict):
+            return d
+        redacted = {}
+        for k, v in d.items():
+            if k in ("phone", "patient_phone", "mobile", "caller_number"):
+                redacted[k] = f"***{str(v)[-4:]}" if v else v
+            elif k in ("full_name", "patient_name", "name", "first_name", "last_name"):
+                redacted[k] = f"{str(v)[0]}***" if v else v
+            elif k in ("email",):
+                redacted[k] = "***@***"
+            else:
+                redacted[k] = v
+        return redacted
+
     logger.info(
         "TOOL %s | input=%s | result=%s",
         tool_name,
-        json.dumps(tool_input, default=str),
-        json.dumps(result, default=str),
+        json.dumps(_redact(tool_input), default=str),
+        json.dumps(_redact(result) if isinstance(result, dict) else result, default=str),
     )
     return block.id, result
 

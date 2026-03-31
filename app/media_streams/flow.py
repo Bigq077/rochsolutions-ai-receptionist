@@ -807,6 +807,14 @@ class FlowEngine:
             )
 
         # ── Returning-patient branch skip logic ───────────────────────────────
+        # NEW_OR_RETURNING: skip if patient_type is already known (Bug #1 fix)
+        if step["state"] == "NEW_OR_RETURNING" and self.session.get("new_or_returning"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] patient_type already known (%s) — skipping NEW_OR_RETURNING",
+                        self.session.get("new_or_returning"))
+            await self.ask_current_question()
+            return
+
         # RETURNING_RECENCY: skip entirely for new patients
         if step["state"] == "RETURNING_RECENCY" and self.session.get("new_or_returning") == "new":
             self.session["flow_step"] = step["step"] + 1

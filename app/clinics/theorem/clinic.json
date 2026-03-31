@@ -16,8 +16,8 @@
   "locations": [
     {
       "location_id": "alcester",
-      "name": "The Greig Sports Center",
-      "address_full": "Theorem Health and Wellness, The Greig Sports Center, Kinwarton Road, Alcester, B49 6AD"
+      "name": "The Greig Leisure Centre",
+      "address_full": "Theorem Health and Wellness, The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD"
     },
     {
       "location_id": "redditch",
@@ -26,8 +26,20 @@
     }
   ],
   "opening_hours": {
-    "monday_to_friday": 8:30 am to 9 pm,
-    "weekend": "Closed (currently no weekends).",
+    "alcester": {
+      "monday_to_friday": "8:30 am to 9 pm",
+      "saturday": "Closed",
+      "sunday": "Closed"
+    },
+    "redditch": {
+      "monday": "9 am to 5 pm",
+      "tuesday": "9 am to 5 pm",
+      "wednesday": "9 am to 7 pm",
+      "thursday": "9 am to 7 pm",
+      "friday": "9 am to 5 pm",
+      "saturday": "9 am to 5 pm",
+      "sunday": "Closed"
+    },
     "exceptions": [
       "Closed on all UK bank holidays."
     ]
