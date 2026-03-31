@@ -1065,7 +1065,9 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # slot_labels[0/1/2] map 1:1 to the 1st/2nd/3rd slot spoken by Susie.
         slot_tuples = [(s.start_time, s.end_time) for s in slots]
         presented   = _select_presented_tuples(slot_tuples, preference=preference)
-        days_data   = _build_days_data(presented)
+        # Build days_data from ALL slots so each day shows all its available times,
+        # not just the one slot selected for variety by _select_presented_tuples.
+        days_data   = _build_days_data(slot_tuples)
 
         pres_raw    = [{"start": s.isoformat(), "end": e.isoformat()} for s, e in presented]
         pres_labels = [s.strftime("%a %d %b at %H:%M") for s, e in presented]
