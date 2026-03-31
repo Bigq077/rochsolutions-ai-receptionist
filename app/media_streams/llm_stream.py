@@ -634,11 +634,22 @@ class LLMStream:
         chunker    = ResponseChunker()
         full_text  = ""
         tool_uses: List[dict] = []
-        first_chunk_deadline = (
-            time.monotonic() + LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0
-        )
+        timeout_sec          = LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0
         got_first_chunk      = False
         _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
+
+        # Background task: fire filler phrase after timeout if no text yet.
+        # Cannot rely on stream events alone — if Claude takes >5s to send
+        # the first event, the in-loop deadline check never fires.
+        _filler_task: "asyncio.Task | None" = None
+        if not filler_sent and (time.monotonic() - self._last_filler_at) >= LLM_FILLER_COOLDOWN_SEC:
+            async def _delayed_filler() -> None:
+                await asyncio.sleep(timeout_sec)
+                if not got_first_chunk:
+                    logger.info("[ms_llm] filler phrase triggered (background task)")
+                    await tts_text_queue.put(FILLER_PHRASE)
+                    self._last_filler_at = time.monotonic()
+            _filler_task = asyncio.create_task(_delayed_filler(), name="ms_llm_filler")
 
         async with client.messages.stream(
             model=model,
@@ -667,6 +678,9 @@ class LLMStream:
 
                             if not got_first_chunk:
                                 got_first_chunk = True
+                                # Cancel background filler task — response arrived in time
+                                if _filler_task and not _filler_task.done():
+                                    _filler_task.cancel()
 
                             chunk = chunker.add_token(token)
                             if chunk:
@@ -691,16 +705,6 @@ class LLMStream:
                         stop_reason = getattr(event.delta, "stop_reason", None)
                         if stop_reason and stop_reason != "end_turn":
                             pass  # tool_use handled below after stream ends
-
-                # ── Filler guard: check deadline while streaming ───────────
-                if not got_first_chunk and not filler_sent:
-                    now = time.monotonic()
-                    if now >= first_chunk_deadline:
-                        if now - self._last_filler_at >= LLM_FILLER_COOLDOWN_SEC:
-                            logger.info("[ms_llm] filler phrase triggered")
-                            await tts_text_queue.put(FILLER_PHRASE)
-                            self._last_filler_at = now
-                            filler_sent = True
 
             # ── Flush remaining buffer ─────────────────────────────────────
             final_chunk = chunker.flush()
@@ -741,6 +745,10 @@ class LLMStream:
             elif stop_reason == "end_turn" and not full_text.strip():
                 # Empty response -- caller receives nothing; handled by nudge in loop
                 pass
+
+        # Ensure background filler task is cleaned up
+        if _filler_task and not _filler_task.done():
+            _filler_task.cancel()
 
         return full_text, tool_uses, False
 
