@@ -751,6 +751,10 @@ class WebSocketCallHandler:
 
         await save_session(self.call_sid, self.session)
 
+        # Instantiate per-call logger (stored on instance, not in session — not JSON-serialisable)
+        from app.call_logger import CallLogger
+        self._call_logger = CallLogger(self.call_sid, self.session)
+
         self._started_event.set()
 
         # Inject greeting asynchronously (no LLM round-trip)
@@ -1347,6 +1351,24 @@ class WebSocketCallHandler:
         self.session["stt_active"]            = False
         self.session["tts_active"]            = False
         self.session["llm_generation_active"] = False
+
+        # Flush structured per-call log
+        call_logger = getattr(self, "_call_logger", None)
+        if call_logger is not None:
+            try:
+                success = bool(self.session.get("booking_confirmed") or self.session.get("confirmation_sms_sent"))
+                if self.session.get("graceful_exit"):
+                    reason = "graceful_exit"
+                elif self.session.get("booking_confirmed"):
+                    reason = "booked"
+                elif self.session.get("transfer_attempted"):
+                    reason = "transferred"
+                else:
+                    reason = "caller_hung_up"
+                call_logger.complete(success=success, reason=reason)
+                await call_logger.flush()
+            except Exception as _cl_exc:
+                logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 
         try:
             await save_session(self.call_sid, self.session)

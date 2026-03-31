@@ -14,6 +14,7 @@ tests/auto/*.mp3
 
 # General logs
 *.log
+logs/
 
 # OS
 .DS_Store
