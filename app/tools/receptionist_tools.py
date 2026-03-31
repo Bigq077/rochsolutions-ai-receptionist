@@ -1150,6 +1150,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
         session["last_offered_slots"]          = pres_raw
         session["slot_labels"]                 = pres_labels
+        session["available_days"]              = days_data
         session["_acuity_appointment_type_id"] = appointment_type_id
         session["_acuity_practitioner_id"]     = practitioner_id
 
@@ -1553,6 +1554,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
         session["slot_labels"]        = pres_labels
+        session["available_days"]     = days_data
         return {"available_days": days_data, "total_days": len(days_data), "note": "calendar_not_connected"}
 
     calendar_id = _resolve_calendar_id(clinic, location)
@@ -1580,6 +1582,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
         session["slot_labels"]        = pres_labels
+        session["available_days"]     = days_data
         return {"available_days": days_data, "total_days": len(days_data), "note": "calendar_check_failed_unfiltered"}
 
     if not free_slots:
@@ -1591,6 +1594,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     pres_labels = [format_slot(s) for s in presented]
     session["last_offered_slots"] = pres_raw
     session["slot_labels"]        = pres_labels
+    session["available_days"]     = days_data
     return {"available_days": days_data, "total_days": len(days_data)}
 
 

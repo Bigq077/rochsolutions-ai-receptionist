@@ -429,19 +429,22 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "slot_selection",
         "llm_instruction": (
             "The caller just responded to the day options with: '{chosen_day}'.\n"
-            "Using the available_days data already in your context (do NOT call check_availability again):\n"
-            "1. If the caller named a specific day — find that day in available_days and present "
+            "Here is the full availability data (do NOT call check_availability again):\n"
+            "{available_days_json}\n\n"
+            "Each entry has: day_label (spoken day name), slot_times (list of HH:MM strings), "
+            "and slots (list of start/end ISO datetimes).\n"
+            "1. If the caller named a specific day — find that day in the data above and present "
             "up to 4 times for it:\n"
             "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which works for you?'\n"
             "   2 times: 'On [day] I've got [t1] or [t2] — which suits you?'\n"
             "   1 time:  'On [day] I have [t1] available — does that work?'\n"
-            "   Always use the full spoken time: 'nine o'clock in the morning', "
-            "'half past two in the afternoon', 'four o'clock in the afternoon'. "
-            "Never say AM/PM or digits like '09:00'.\n"
+            "   Always convert slot_times to natural spoken form: '09:00' → 'nine o'clock in the morning', "
+            "'14:30' → 'half past two in the afternoon', '16:00' → 'four o'clock in the afternoon'. "
+            "Never say AM/PM or raw digits like '09:00'.\n"
             "2. If the caller said none of those times work — refer back to the other days you "
             "initially offered: 'Not to worry — what about [other offered day 1][, or [other offered day 2]]?'\n"
             "3. If the caller rejected all initially offered days — present the next 3 days from "
-            "available_days (entries 4–6) using the same day-first format. Continue cycling "
+            "the data above (entries 4–6) using the same day-first format. Continue cycling "
             "in batches of 3 until a day is chosen or the list is exhausted.\n"
             "4. If there are no more days: 'I'm afraid those are the only days we have coming "
             "up — would you like me to ask the team to ring you back?'"
@@ -595,16 +598,19 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "extract": "slot_selection",
         "llm_instruction": (
             "The caller just responded to the day options with: '{chosen_day}'.\n"
-            "Using the available_days data already in your context (do NOT call check_availability again):\n"
-            "1. If the caller named a specific day — find that day in available_days and present "
+            "Here is the full availability data (do NOT call check_availability again):\n"
+            "{available_days_json}\n\n"
+            "Each entry has: day_label (spoken day name), slot_times (list of HH:MM strings), "
+            "and slots (list of start/end ISO datetimes).\n"
+            "1. If the caller named a specific day — find that day in the data above and present "
             "up to 4 times for it:\n"
             "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which works for you?'\n"
             "   1 time:  'On [day] I have [t1] available — does that work?'\n"
-            "   Use full spoken times: 'nine o'clock in the morning', 'half past two in the afternoon'. "
-            "Never say AM/PM.\n"
+            "   Convert slot_times to natural spoken form: '09:00' → 'nine o'clock in the morning', "
+            "'14:30' → 'half past two in the afternoon'. Never say AM/PM.\n"
             "2. If none of those times work — refer to the other initially offered days: "
             "'Not to worry — what about [other offered day 1][, or [other offered day 2]]?'\n"
-            "3. If all initial days rejected — present next 3 days from available_days (entries 4–6). "
+            "3. If all initial days rejected — present next 3 days from the data above (entries 4–6). "
             "Continue cycling in batches of 3 until a day is chosen or list is exhausted.\n"
             "4. If no more days: 'I'm afraid those are the only days we have — would you like me "
             "to ask the team to ring you back?'"
@@ -1025,6 +1031,14 @@ class FlowEngine:
                     or format_args.get("twilio_from")
                     or (format_args.get("collected") or {}).get("phone")
                     or "the number you called from"
+                )
+            # Inject available_days_json for PRESENT_TIMES steps so the LLM
+            # has the slot data directly in the instruction rather than relying
+            # on conversation history (tool results are not persisted there).
+            if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+                import json as _json
+                format_args["available_days_json"] = _json.dumps(
+                    self.session.get("available_days") or []
                 )
             try:
                 instruction = step["llm_instruction"].format(**format_args)
