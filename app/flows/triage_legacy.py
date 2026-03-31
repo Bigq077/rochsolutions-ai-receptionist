@@ -2509,7 +2509,7 @@ async def triage_turn(
                         f"Of course — are you looking to book at our {loc_names} clinic?",
                         session,
                     )
-                return _start_booking_flow(session, collected)
+                return await _start_booking_flow(session, collected)
 
     # ------------------------------------------------------------------
     # FAQ DETOUR HANDLER
@@ -2612,7 +2612,7 @@ async def triage_turn(
         pending = session.pop("pending_intent", None)
 
         if pending == "BOOK":
-            return _start_booking_flow(session, collected)
+            return await _start_booking_flow(session, collected)
 
         if pending == "RESCHEDULE":
             session["resch_intent"] = "reschedule"
@@ -2756,7 +2756,7 @@ async def triage_turn(
                     session,
                 )
             # Single-location / demo clinic — skip location step
-            return _start_booking_flow(session, collected)
+            return await _start_booking_flow(session, collected)
 
         # Reschedule keyword intercept
         if is_reschedule_intent(user_said):
@@ -3179,9 +3179,11 @@ async def triage_turn(
 
         pt = parse_patient_type(user_said)
         if pt:
-            session["pt_type_tries"]      = 0
-            collected["patient_type"]     = pt
-            session["state"]              = BOOK_REASON
+            session["pt_type_tries"]  = 0
+            collected["patient_type"] = pt
+            session["state"]          = BOOK_REASON
+            if collected.get("reason") and collected.get("reason_source") == "pre-filled":
+                return await _skip_reason_ask(session, collected)
             return _say("Great. What's the appointment for?", session, tone="ack")
 
         tries = int(session.get("pt_type_tries", 0)) + 1
@@ -3191,6 +3193,8 @@ async def triage_turn(
             collected["patient_type"] = "NEW"
             session["pt_type_tries"]  = 0
             session["state"]          = BOOK_REASON
+            if collected.get("reason") and collected.get("reason_source") == "pre-filled":
+                return await _skip_reason_ask(session, collected)
             return _say("No problem — I'll put you down as a new patient. What's the appointment for?", session, tone="ack")
         return await _handle_fallback(session, state, clinic)
 
@@ -3204,7 +3208,8 @@ async def triage_turn(
             return _say(f"{answer} {resume_prompt_for_state(BOOK_REASON)}", session)
 
         # Save reason and ask a clinical intake follow-up question
-        collected["reason"] = (user_said or "").strip()
+        collected["reason"]        = (user_said or "").strip()
+        collected["reason_source"] = "spoken"
         intake_q = _intake_question_for_condition(collected["reason"])
 
         if intake_q is None:
@@ -3300,6 +3305,8 @@ async def triage_turn(
 
         # Patient confirms (yes / ok / yeah / go ahead / sounds good)
         if is_yes(lower) or any(kw in lower for kw in ["ok", "yeah", "sure", "go ahead", "sounds good", "perfect", "book"]):
+            if collected.get("time_pref") and collected.get("time_pref_source") == "pre-filled":
+                return await _skip_time_pref_ask(session, collected)
             session["state"] = BOOK_TIME_PREF
             return _say("Great. What day or time would suit you?", session)
 
@@ -3307,7 +3314,8 @@ async def triage_turn(
         return await _handle_fallback(session, state, clinic)
 
     if state == BOOK_TIME_PREF:
-        collected["time_pref"] = user_said.strip()
+        collected["time_pref"]        = user_said.strip()
+        collected["time_pref_source"] = "spoken"
         dw = parse_specific_day_window(collected["time_pref"], tz)
         dw_parsed = None
         if dw:
@@ -3410,18 +3418,24 @@ async def triage_turn(
                 session,
             )
 
+        if collected.get("name") and collected.get("name_source") == "pre-filled":
+            return await _skip_name_ask(session, collected)
         session["state"] = BOOK_NAME
         return _say("Perfect. What's your full name for the booking?", session)
 
     if state == BOOK_NAME:
-        collected["name"] = user_said.strip()
+        collected["name"]        = user_said.strip()
+        collected["name_source"] = "spoken"
+        if collected.get("phone") and collected.get("phone_source") == "pre-filled":
+            return await _skip_phone_ask(session, collected)
         session["state"]  = BOOK_PHONE
         return _say("Thanks. What's the best mobile number for us to reach you on?", session)
 
     if state == BOOK_PHONE:
         if not is_valid_phone(user_said):
             return _say("Sorry — I didn't catch a valid phone number. Please say it again.", session)
-        collected["phone"] = normalize_phone(user_said)
+        collected["phone"]        = normalize_phone(user_said)
+        collected["phone_source"] = "spoken"
         session["state"]   = BOOK_CONFIRM
         return _say("Great. Say yes to confirm the booking, or no to cancel.", session)
 
@@ -3691,13 +3705,165 @@ async def _send_insurance_staff_notification(session: Dict[str, Any]) -> None:
         print("INSURANCE STAFF NOTIFICATION ERROR:", repr(e))
 
 
-def _start_booking_flow(session: Dict[str, Any], collected: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+# ===========================================================================
+# PRE-FILL SKIP HELPERS
+# Called when a slot is already pre-filled (source="pre-filled") and the
+# state machine would normally ask for it.  Each helper:
+#   1. Generates a warm acknowledgement (max_tokens=40, temp=0.3)
+#   2. Advances to the correct next state
+#   3. Enforces the 400-char combined cap (truncate ack, never the question)
+# ===========================================================================
+
+def _combine_ack_and_question(ack: str, next_q: str) -> str:
+    """Join ack + next_q, truncating ack only if combined exceeds 400 chars."""
+    combined = f"{ack} {next_q}".strip() if ack else next_q
+    if len(combined) > 400:
+        max_ack = 400 - len(next_q) - 1
+        ack = ack[:max_ack].rstrip() if max_ack > 10 else ""
+        combined = f"{ack} {next_q}".strip() if ack else next_q
+    return combined
+
+
+async def _skip_reason_ask(
+    session: Dict[str, Any], collected: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Skip 'What's the appointment for?' when reason is pre-filled.
+    Processes the pre-filled reason exactly as BOOK_REASON would, then asks
+    the clinical intake question (or jumps to BOOK_RECOMMEND).
+    """
+    from app.slot_extractor import generate_prefill_ack
+    reason = collected["reason"]
+    ack = await generate_prefill_ack("reason_for_visit", reason)
+
+    intake_q = _intake_question_for_condition(reason)
+    if intake_q is None:
+        clinic_obj   = get_clinic(session)
+        svc          = clinic_obj.get("service_prices", {}).get("initial_assessment", {})
+        price        = svc.get("price", "")
+        price_clause = f", which is {price}" if price else ""
+        collected["service"] = "initial_assessment"
+        session["state"]     = BOOK_RECOMMEND
+        next_q = (
+            f"That's not something I can pinpoint exactly from here, "
+            f"but a physiotherapy assessment is the right starting point{price_clause}. "
+            f"The physiotherapist will take a proper look, work out what's going on, "
+            f"and put a plan together from there. "
+            f"Shall I get you booked in for that?"
+        )
+    else:
+        session["state"] = BOOK_INTAKE
+        next_q = intake_q
+
+    return _say(_combine_ack_and_question(ack, next_q), session, tone="none")
+
+
+async def _skip_time_pref_ask(
+    session: Dict[str, Any], collected: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Skip 'What day or time would suit you?' when time_pref is pre-filled.
+    Calls suggest_top_slots immediately with the pre-filled value and presents
+    available slots (mirrors BOOK_TIME_PREF handler logic).
+    """
+    from app.slot_extractor import generate_prefill_ack
+    time_pref = collected["time_pref"]
+    ack = await generate_prefill_ack("preferred_time", time_pref)
+
+    tz = get_tz(get_clinic(session))
+    dw = parse_specific_day_window(time_pref, tz)
+    dw_parsed = None
+    if dw:
+        collected["day_window_start"] = dw[0].isoformat()
+        collected["day_window_end"]   = dw[1].isoformat()
+        dw_parsed = dw
+
+    raw_slots, labels, err = await suggest_top_slots(
+        session,
+        duration_min=int(get_clinic(session).get("slot_minutes", DEFAULT_DURATION_MIN)),
+        pref_text=time_pref,
+        day_window=dw_parsed,
+    )
+
+    if err:
+        session["manual_booking"] = True
+        session["manual_reason"]  = "calendar_unavailable"
+        session["state"]          = BOOK_NAME
+        next_q = f"{err} What's your full name so I can log a booking request?"
+    elif not labels or len(labels) < 3:
+        session["manual_booking"] = True
+        session["manual_reason"]  = "no_slots_returned"
+        session["state"]          = BOOK_NAME
+        next_q = "I can't see clear availability right now. What's your full name so I can log a request?"
+    else:
+        session[LAST_OFFERED_SLOTS_KEY] = raw_slots
+        session[SLOT_LABELS_KEY]        = labels
+        session["state"]                = BOOK_PICK_SLOT
+        _intro = (
+            f"I've had a look at the calendar and I currently have three options on {time_pref}. "
+            if time_pref else
+            "I've had a look at the calendar and I currently have three options available. "
+        )
+        next_q = (
+            f"{_intro}"
+            f"The first is {labels[0]}. "
+            f"The second is {labels[1]}. "
+            f"The third is {labels[2]}. "
+            "Please say 1 for the first option, 2 for the second, or 3 for the third."
+        )
+
+    return _say(_combine_ack_and_question(ack, next_q), session, tone="none")
+
+
+async def _skip_name_ask(
+    session: Dict[str, Any], collected: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """Skip 'What's your full name?' when name is pre-filled."""
+    from app.slot_extractor import generate_prefill_ack
+    ack    = await generate_prefill_ack("patient_name", collected["name"])
+    next_q = "What's the best mobile number for us to reach you on?"
+    session["state"] = BOOK_PHONE
+    return _say(_combine_ack_and_question(ack, next_q), session, tone="none")
+
+
+async def _skip_phone_ask(
+    session: Dict[str, Any], collected: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Skip 'What's your mobile number?' when phone is pre-filled.
+    Validates the pre-filled phone first; if invalid, falls back to asking.
+    """
+    from app.slot_extractor import generate_prefill_ack
+    phone = collected.get("phone", "")
+    if not is_valid_phone(phone):
+        # Pre-filled value is unusable — clear it and ask normally
+        collected.pop("phone",        None)
+        collected.pop("phone_source", None)
+        session["state"] = BOOK_PHONE
+        return _say("What's the best mobile number for us to reach you on?", session, tone="none")
+
+    collected["phone"] = normalize_phone(phone)
+    ack    = await generate_prefill_ack("phone_number", phone)
+    next_q = "Say yes to confirm the booking, or no to cancel."
+    session["state"] = BOOK_CONFIRM
+    return _say(_combine_ack_and_question(ack, next_q), session, tone="none")
+
+
+# ---------------------------------------------------------------------------
+
+async def _start_booking_flow(
+    session: Dict[str, Any], collected: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
     """
     Route to the correct first booking state.
-    If patient_type is already known, skip straight to BOOK_REASON.
+    If patient_type is already known, skip straight to BOOK_REASON
+    (or skip BOOK_REASON entirely when reason is already pre-filled).
     Otherwise ask the patient-type question (once only).
     """
     if collected.get("patient_type"):
+        if collected.get("reason") and collected.get("reason_source") == "pre-filled":
+            session["state"] = BOOK_REASON
+            return await _skip_reason_ask(session, collected)
         session["state"] = BOOK_REASON
         return _say("What's the appointment for?", session, tone="ack")
     session["state"] = BOOK_PATIENT_TYPE
