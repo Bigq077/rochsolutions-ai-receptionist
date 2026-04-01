@@ -523,6 +523,78 @@ _CONFIRM_BOOKING_INDEX: int = next(
 )
 
 
+def _classify_confirm_assessment(text: str) -> str:
+    """
+    Deterministically classify an utterance at CONFIRM_ASSESSMENT.
+
+    Priority order (highest first):
+        1. yes           — explicit affirmative, advance immediately
+        2. no            — explicit rejection, graceful close
+        3. additive_detail — caller is adding more clinical context
+        4. clarification — caller is asking us to repeat / explain
+        5. unknown       — fall through to normal interrupt handling
+
+    Returns one of: "yes" | "no" | "additive_detail" | "clarification" | "unknown"
+    """
+    # 1 ── Explicit yes ──────────────────────────────────────────────────────
+    _YES = (
+        "yes", "yeah", "ya", "yep", "yup",
+        "ok", "okay", "sure", "fine", "alright",
+        "sounds good", "that sounds good", "that sounds fine", "sounds fine",
+        "that sounds okay", "yeah that sounds", "sounds okay",
+        "go for it", "go ahead", "sure why not", "why not",
+        "absolutely", "definitely", "of course", "please",
+        "that works", "right okay", "right then", "alright then",
+        "champion", "sound", "sorted", "mint", "aye", "go on then",
+        "no bother", "that'll do", "perfect",
+    )
+    if any(p in text for p in _YES):
+        return "yes"
+
+    # 2 ── Explicit no ───────────────────────────────────────────────────────
+    _NO = (
+        "no ", "nope", "nah", "not really", "don't think so", "dont think so",
+        "not sure about that", "rather not", "prefer not", "not for me",
+        "something else", "different option",
+    )
+    if any(p in text for p in _NO):
+        return "no"
+
+    # 3 ── Additive clinical detail (more context about the same condition) ──
+    # Caller is not answering yes/no; they are elaborating on their reason.
+    # Do NOT route this as a general_query — it would generate an unrelated
+    # LLM answer and leave flow_step stuck at CONFIRM_ASSESSMENT.
+    _ADDITIVE = (
+        "it happened", "it started", "it's been", "its been",
+        "been going on", "been like this", "been sore", "been hurting",
+        "just went", "went to get", "get checked", "went to check",
+        "after a", "because of", "due to", "following",
+        "a few weeks", "a few days", "a few months",
+        "a while now", "for a while", "for weeks", "for months",
+        "since i", "since the", "after the",
+        "cycling", "running", "football", "sport", "gym",
+        "accident", "fall", "twisted", "pulled", "strained",
+        "getting worse", "not getting better", "still sore",
+        "bit more", "more detail", "also",
+    )
+    if any(p in text for p in _ADDITIVE):
+        return "additive_detail"
+
+    # 4 ── Clarification / repeat request ────────────────────────────────────
+    _CLARIFICATION = (
+        "did you not catch", "didn't catch", "catch that",
+        "what do you mean", "what did you say", "what was that",
+        "sorry?", "pardon", "come again", "say that again",
+        "can you repeat", "repeat that", "say again",
+        "are you there", "still there", "hello",
+        "hi there",
+    )
+    if any(p in text for p in _CLARIFICATION):
+        return "clarification"
+
+    return "unknown"
+
+
 def _phrase_key_for_step(step: Dict[str, Any]) -> str:
     """
     Map a flow step's answer_field to a RETRY_PHRASES["first_retry"] key.
@@ -1561,6 +1633,62 @@ class FlowEngine:
             await self._handle_phone_readback_confirmation(text, transcript, step)
             return
 
+        # ── CONFIRM_ASSESSMENT: tight yes/no gate (runs BEFORE interrupt check) ──
+        # Must run first because _detect_intent() returns "general_query" for
+        # plain affirmatives like "yeah that sounds fine" — which would incorrectly
+        # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
+        if step["state"] == "CONFIRM_ASSESSMENT":
+            _ca_cls = _classify_confirm_assessment(text)
+            logger.info(
+                "[ms_flow] CONFIRM_ASSESSMENT classify: transcript=%r → %s  flow_step=%d",
+                transcript[:80], _ca_cls, step["step"],
+            )
+
+            if _ca_cls == "yes":
+                # Deterministic advance — no LLM needed
+                self.session["assessment_confirmed"] = True
+                self.session["flow_step"]            = step["step"] + 1
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: yes → step advanced to %d", step["step"] + 1)
+                await self.ask_current_question()
+                return
+
+            if _ca_cls == "no":
+                phrase = "No problem at all — is there anything else I can help with today?"
+                await self._tts.put(phrase)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
+                self.session["flow_step"] = len(self._active_flow)
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: no → graceful close")
+                return
+
+            if _ca_cls == "additive_detail":
+                # Append extra context to reason — do NOT generate a second assessment.
+                # Re-ask the pending question so the caller can confirm the original recommendation.
+                existing = self.session.get("reason", "")
+                self.session["reason"] = f"{existing} {transcript.strip()}".strip()
+                lq = self.session.get("last_question", "Does that sound OK?")
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: additive detail → reason updated, re-asking")
+                await self._tts.put(lq)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": lq}
+                )
+                return
+
+            if _ca_cls == "clarification":
+                # Caller wants a repeat — re-speak the last question without re-running LLM
+                lq = self.session.get("last_question", "Does that sound OK?")
+                phrase = f"Sorry about that — {lq}"
+                await self._tts.put(phrase)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: clarification → re-asking")
+                return
+
+            # _ca_cls == "unknown": fall through to mid-flow interrupt for FAQ matching
+            logger.info("[ms_flow] CONFIRM_ASSESSMENT: unknown classification → passing to interrupt check")
+
         # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
@@ -1579,9 +1707,16 @@ class FlowEngine:
             # said something ambiguous while trying to give the answer.  FAQ
             # questions (prices, hours, etc.) are still allowed to interrupt.
             _DATA_COLLECTION_STATES = {
+                # Phone / name input — no general-query interrupts
                 "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
                 "COLLECT_NAME", "COLLECT_NAME_RETURNING",
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                # CONFIRM_ASSESSMENT is a tight yes/no gate — all real cases are
+                # handled by the priority block above; any "unknown" utterance
+                # that reaches here must be treated as ambiguous input, not a
+                # general chat question.  Only genuine FAQs (prices, hours, etc.)
+                # should still interrupt.
+                "CONFIRM_ASSESSMENT",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
@@ -2381,15 +2516,19 @@ class FlowEngine:
                 "sure", "fine", "alright", "sounds good", "go ahead",
                 "please", "that works", "correct", "definitely",
                 "of course", "absolutely",
+                # "that sounds …" variants — callers confirm with these at CONFIRM_ASSESSMENT
+                "that sounds good", "that sounds fine", "that sounds okay",
+                "that sounds right", "sounds fine", "sounds okay",
+                "yeah that sounds", "yeah that's fine", "yeah that's okay",
                 # Northern English / informal affirmatives
                 "aye", "aye go on", "go on then",
                 "right then", "fair enough",
                 "sound", "sorted", "champion",
                 "mint that", "yeah go on",
                 "right okay", "alright then",
-                "that'll do", "that sounds right",
+                "that'll do",
                 "reight", "reight then",
-                "no bother", "yeah that's fine",
+                "no bother",
                 "that's sound", "perfect that",
             )
             if any(p in text for p in yes):

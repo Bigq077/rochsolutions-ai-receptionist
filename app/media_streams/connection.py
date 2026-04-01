@@ -613,6 +613,14 @@ class WebSocketCallHandler:
         self._barge_in_ts:       float = 0.0   # monotonic time when barge-in first fired
         self._barge_in_duration: float = 0.0   # elapsed seconds (set by _on_final_transcript_clear)
 
+        # Prompt generation counter — monotonically increasing.
+        # Incremented whenever a confirmed barge-in clears the active TTS.
+        # Each _delayed_tts_finished task captures the generation at creation
+        # time and is silently ignored if the generation has advanced, preventing
+        # stale "does that sound OK?" callbacks from overwriting last_question
+        # and re-arming the silence timer after the flow has moved on.
+        self._tts_gen: int = 0
+
         # ── Latency / timing ──────────────────────────────────────────────
         self._last_audio_at:          float = 0.0   # monotonic time of last audio sent to Twilio
         self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
@@ -1269,7 +1277,7 @@ class WebSocketCallHandler:
                             play_secs, text[:60],
                         )
                         asyncio.create_task(
-                            self._delayed_tts_finished(play_secs, text),
+                            self._delayed_tts_finished(play_secs, text, self._tts_gen),
                             name="ms_silence_tts_delay",
                         )
                     elif text:
@@ -1309,16 +1317,29 @@ class WebSocketCallHandler:
         except Exception as exc:
             logger.error("[ms_conn] _send_loop fatal: %r", exc)
 
-    async def _delayed_tts_finished(self, delay: float, text: str) -> None:
+    async def _delayed_tts_finished(self, delay: float, text: str, gen: int = 0) -> None:
         """
         Fire on_tts_finished after `delay` seconds so the silence timer starts
         only once the caller has actually heard the last word, not when the
         audio was merely enqueued into Twilio's buffer.
         delay = mulaw_bytes_sent / 8000 Hz
+
+        gen — the _tts_gen value captured at creation time.  If a barge-in has
+        occurred since this task was created, _tts_gen will have advanced and
+        this callback is stale: firing it would overwrite last_question with an
+        old prompt (e.g. "does that sound OK?") after the flow has already moved
+        on, and re-arm the silence timer for the wrong question.
         """
         try:
             if delay > 0:
                 await asyncio.sleep(delay)
+            # Stale-generation guard: barge-in increments _tts_gen.
+            if gen != self._tts_gen:
+                logger.debug(
+                    "[ms_silence] tts_finished ignored — stale gen %d vs current %d: %r",
+                    gen, self._tts_gen, text[:60],
+                )
+                return
             # Don't arm the silence timer once the booking flow is complete.
             # Without this guard, CONFIRM_BOOKING's LLM response (which often
             # ends with "?") re-arms the timer and causes a spurious CONFIRM_PHONE
@@ -1328,7 +1349,7 @@ class WebSocketCallHandler:
                 logger.debug("[ms_silence] flow complete — skipping tts_finished")
                 return
             self._silence_handler.on_tts_finished(text)
-            logger.debug("[ms_silence] tts_finished fired after %.1fs delay", delay)
+            logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
             pass
 
@@ -1375,9 +1396,12 @@ class WebSocketCallHandler:
             self._barge_in_pending = True
             # Snapshot the text currently being spoken for potential TTS resume
             self.session["interrupted_tts_text"] = self._current_tts_text
+            # Advance the prompt generation so any in-flight _delayed_tts_finished
+            # tasks for the interrupted TTS are treated as stale and ignored.
+            self._tts_gen += 1
             logger.info(
-                "[ms_conn] barge-in start: interrupted_text=%r",
-                self._current_tts_text[:60],
+                "[ms_conn] barge-in start: interrupted_text=%r tts_gen=%d",
+                self._current_tts_text[:60], self._tts_gen,
             )
 
         self._tts_task.cancel()
