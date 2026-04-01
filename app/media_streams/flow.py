@@ -429,6 +429,9 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "allow_tools": False,
         "extract": "slot_selection",
         "llm_instruction": (
+            "⚠️ SPOKEN OUTPUT ONLY — every word you write is read aloud to the caller by TTS. "
+            "Start DIRECTLY with Susie's words (e.g. 'On Friday...'). "
+            "No reasoning, no preamble, no internal notes.\n\n"
             "The caller just responded to the day options with: '{chosen_day}'.\n"
             "Here is the full availability data (do NOT call check_availability again):\n"
             "{available_days_json}\n\n"

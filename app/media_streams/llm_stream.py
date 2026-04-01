@@ -319,6 +319,12 @@ class LLMStream:
         # SILENCE_RULE is first (most critical), then content rules, then main prompt.
         system_prompt = (
             # Hard banned-phrase rule — must appear first so it overrides everything
+            "ABSOLUTE RULE — TEXT-TO-SPEECH OUTPUT:\n"
+            "Every single word you generate is read aloud directly to the caller by "
+            "text-to-speech. There is NO private space. Output ONLY what Susie says "
+            "aloud. NEVER include reasoning, internal notes, preamble, meta-commentary, "
+            "or 'since this is their first visit...' type sentences before your response. "
+            "Start directly with Susie's spoken words — nothing else.\n\n"
             "ABSOLUTE RULE — NO EXCEPTIONS:\n"
             "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
             "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
