@@ -1657,9 +1657,38 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
 # Executor: check_availability
 # ---------------------------------------------------------------------------
 
+def _resolve_clinic_id(session: Dict[str, Any]) -> str:
+    """
+    Return the clinic_id for this session, re-deriving it if missing.
+
+    Defensive helper — clinic_id should always be set by connection.py but
+    in case the resolution chain failed (Twilio customParameters unreliable,
+    Redis miss, env var not set), attempt to recover from session["twilio_to"]
+    before falling back to "demo".
+    """
+    cid = session.get("clinic_id")
+    if cid:
+        return cid
+    twilio_to = session.get("twilio_to", "")
+    if twilio_to:
+        from app.clinic_config import clinic_id_from_twilio_to
+        cid = clinic_id_from_twilio_to(twilio_to)
+        session["clinic_id"] = cid
+        logger.warning(
+            "_resolve_clinic_id: re-derived clinic_id=%s from twilio_to=%s",
+            cid, twilio_to,
+        )
+        return cid
+    logger.error(
+        "_resolve_clinic_id: clinic_id missing and twilio_to empty — "
+        "defaulting to 'demo'. Tools will use Google Calendar.",
+    )
+    return "demo"
+
+
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if session.get("clinic_id") == "theorem":
+    if _resolve_clinic_id(session) == "theorem":
         return await _check_availability_acuity(args, session)
 
     from app.tools.slots import (
@@ -1773,7 +1802,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
 async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if session.get("clinic_id") == "theorem":
+    if _resolve_clinic_id(session) == "theorem":
         return await _book_appointment_acuity(args, session)
 
     from app.tools.calendar_google import create_event
@@ -1926,7 +1955,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 
 async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if session.get("clinic_id") == "theorem":
+    if _resolve_clinic_id(session) == "theorem":
         return await _cancel_appointment_acuity(args, session)
 
     from app.tools.calendar_google import list_upcoming_events, delete_event
@@ -1999,7 +2028,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
 
 async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if session.get("clinic_id") == "theorem":
+    if _resolve_clinic_id(session) == "theorem":
         return await _reschedule_appointment_acuity(args, session)
 
     from app.tools.calendar_google import list_upcoming_events, patch_event_time

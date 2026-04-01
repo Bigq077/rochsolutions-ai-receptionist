@@ -823,6 +823,28 @@ class WebSocketCallHandler:
             initial["clinic_id"] = clinic_id_from_twilio_to(twilio_to)
             logger.info("[ms_conn] clinic_id resolved: %s (to=%s)", initial["clinic_id"], twilio_to)
 
+        # ── Layer 2 fallback: env var override ───────────────────────────
+        # If clinic_id is still not resolved (twilio_to was empty through all
+        # three resolution paths: customParameters, Redis, start_data), use the
+        # MEDIA_STREAMS_CLINIC_ID env var as an absolute last resort.
+        # Set MEDIA_STREAMS_CLINIC_ID=theorem on Render for this service.
+        if not initial.get("clinic_id"):
+            import os as _os
+            _env_cid = _os.getenv("MEDIA_STREAMS_CLINIC_ID", "").strip()
+            if _env_cid:
+                initial["clinic_id"] = _env_cid
+                logger.warning(
+                    "[ms_conn] clinic_id NOT resolved from twilio_to — "
+                    "using env MEDIA_STREAMS_CLINIC_ID=%s (twilio_to=%r)",
+                    _env_cid, twilio_to,
+                )
+            else:
+                logger.error(
+                    "[ms_conn] clinic_id unresolved AND MEDIA_STREAMS_CLINIC_ID not set — "
+                    "calls will route to demo/Google Calendar. "
+                    "Set MEDIA_STREAMS_CLINIC_ID on Render.",
+                )
+
         self.session = await get_or_create_session(self.call_sid, initial=initial)
         self.session["stream_sid"]   = self.stream_sid
         self.session["ws_connected"] = True

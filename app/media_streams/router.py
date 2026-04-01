@@ -180,9 +180,15 @@ async def ms_incoming(request: Request) -> Response:
                 _redis = _get_redis()
                 if _redis:
                     if caller_number:
-                        await _redis.setex(f"ms_caller:{call_sid}", 60, caller_number)
+                        await _redis.setex(f"ms_caller:{call_sid}", 300, caller_number)
                     if to_number:
-                        await _redis.setex(f"ms_to:{call_sid}", 60, to_number)
+                        await _redis.setex(f"ms_to:{call_sid}", 300, to_number)
+                    else:
+                        logger.warning(
+                            "[ms_router] to_number EMPTY — ms_to not cached call_sid=%s "
+                            "(Twilio form keys: %s)",
+                            call_sid, list(form.keys()),
+                        )
                     logger.info(
                         "[ms_router] cached call_sid=%s from=%s to=%s",
                         call_sid, caller_number, to_number,
