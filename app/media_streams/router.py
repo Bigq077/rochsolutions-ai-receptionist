@@ -133,7 +133,8 @@ def _build_ws_url(request: Request) -> str:
 # Route 1: TwiML response for incoming calls
 # ---------------------------------------------------------------------------
 
-@router.post("/ms/incoming", dependencies=[Depends(_verify_twilio_signature_ms)])
+@router.post("/ms/incoming",  dependencies=[Depends(_verify_twilio_signature_ms)])
+@router.post("/ms/incomings", dependencies=[Depends(_verify_twilio_signature_ms)])
 async def ms_incoming(request: Request) -> Response:
     """
     Twilio calls this when a call arrives on the test number.
