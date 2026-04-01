@@ -619,8 +619,9 @@ class LLMStream:
             # (already queued during streaming -- nothing extra needed here)
 
             # ── Execute tools ─────────────────────────────────────────────
+            # Pass tts_text_queue so filler phrases play during API latency.
             tool_result_blocks = await self._execute_tools(
-                tool_uses, session, call_sid,
+                tool_uses, session, call_sid, tts_text_queue=tts_text_queue,
             )
             messages.append({"role": "user", "content": tool_result_blocks})
 
@@ -799,11 +800,27 @@ class LLMStream:
         tool_uses: List[dict],
         session: Dict[str, Any],
         call_sid: Optional[str],
+        tts_text_queue: Optional[asyncio.Queue] = None,
     ) -> List[dict]:
         """
         Execute all tool calls and return the tool_result blocks for Anthropic.
+
+        tts_text_queue is optional; when provided, filler phrases are played
+        concurrently with check_availability and book_appointment calls so the
+        caller doesn't hear dead air during API latency.
         """
         from app.tools.receptionist_tools import TOOL_EXECUTORS
+        from app.filler_phrases import (
+            with_filler,
+            THINKING_FILLERS_PRIMARY,
+            BOOKING_WRITE_FILLERS,
+        )
+
+        # Tools that get filler phrases → list to draw from
+        _FILLER_TOOLS = {
+            "check_availability": THINKING_FILLERS_PRIMARY,
+            "book_appointment":   BOOKING_WRITE_FILLERS,
+        }
 
         result_blocks: List[dict] = []
 
@@ -844,7 +861,21 @@ class LLMStream:
                         if tool_name == "check_availability":
                             session.pop("block_check_availability", None)
                             session["_availability_response_received"] = True
-                        result = await executor(args, session)
+
+                        # Filler phrases: play concurrently for slow API tools
+                        _filler_list = _FILLER_TOOLS.get(tool_name)
+                        if _filler_list and tts_text_queue is not None:
+                            async def _tts_fn(text: str, _q=tts_text_queue) -> None:
+                                await _q.put(text)
+                            result = await with_filler(
+                                api_coro=executor(args, session),
+                                filler_list=_filler_list,
+                                session=session,
+                                tts_fn=_tts_fn,
+                            )
+                        else:
+                            result = await executor(args, session)
+
                         # Fix 2: mark slots as presented the moment check_availability
                         # returns slots so the LLM knows not to re-present them.
                         if tool_name == "check_availability" and session.get("last_offered_slots"):

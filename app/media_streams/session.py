@@ -277,6 +277,12 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "prof_callback":   None,    # callback phone number
     "prof_message":    None,    # message to pass on
 
+    # ── Filler phrases ────────────────────────────────────────────────────
+    # Tracks which filler phrases have been used this call so they are not
+    # repeated. Stored as a list (JSON-serialisable; treated as a set by
+    # pick_filler in filler_phrases.py via the `not in` operator).
+    "used_fillers": [],  # list[str] — phrases already spoken this call
+
     # ── Caller pause detection ────────────────────────────────────────────
     # Set True when caller says "hang on", "one sec", etc.
     # Silence handler enters 45-second extended-wait mode while True.
