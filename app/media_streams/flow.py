@@ -304,13 +304,15 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "The caller wants to book an appointment. Their reason is: {reason}\n"
             "Your response MUST have exactly TWO parts:\n"
             "PART 1: One short sentence of genuine empathy about their specific condition.\n"
-            "PART 2: Recommend a physiotherapy assessment and ask if that sounds OK.\n"
+            "PART 2: Use EXACTLY this structure: '— I would probably recommend a physiotherapy "
+            "assessment as the best starting point. Does that sound OK?'\n"
             "EXAMPLE: 'Sorry to hear that — back pain can be really debilitating. "
-            "To get the best possible diagnosis I'd recommend a physiotherapy assessment "
+            "I would probably recommend a physiotherapy assessment as the best starting point "
             "— does that sound OK?'\n"
             "MAXIMUM: 2 sentences, 35 words total.\n"
             "ABSOLUTELY DO NOT ask 'how long have you had that?' or any duration question. "
-            "Your response must be empathy + assessment recommendation + 'does that sound OK?' — nothing else.\n"
+            "Your response must be empathy + 'I would probably recommend a physiotherapy assessment' "
+            "+ 'does that sound OK?' — nothing else.\n"
             "DO NOT ask if they have been with us before.\n"
             "DO NOT mention location, pricing, or any other topic."
         ),
@@ -319,7 +321,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 2,
         "state": "NEW_OR_RETURNING",
-        "question": "Have you been with us before?",
+        "question": "Have you been with us before, or is this your first time?",
         "answer_field": "new_or_returning",
         "use_llm": False,
         "extract": "new_or_returning",
@@ -340,7 +342,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 4,
         "state": "RETURNING_TREATMENT_PLAN",
-        "question": "And are you currently on a treatment plan with us?",
+        "question": "And are you still coming in regularly for that, or is this more of a new episode?",
         "answer_field": "on_treatment_plan",
         "use_llm": False,
         "extract": "yes_no_explicit",
@@ -349,7 +351,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "And your name — just so I can find your records?",
+        "question": "What name should I look you up under?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -358,7 +360,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 6,
         "state": "CONFIRM_PHONE_RETURNING",
-        "question": "And is the number you're calling from right now the same number you originally booked with?",
+        "question": "And is this the same number we'd normally have for you?",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -402,20 +404,22 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "allow_tools": True,
         "extract": "any",
         "llm_instruction": (
-            "Say 'Just checking what we've got coming up for you...' then immediately call "
-            "check_availability with location='{selected_location}', duration_minutes=50. "
+            "Sound like a warm, efficient UK clinic receptionist — not a booking system.\n"
+            "Say 'Just bear with me one moment...' then immediately call "
+            "check_availability with location='{selected_location}', duration_minutes=50.\n"
             "After the tool returns, read available_days and present ONLY the first 3 days "
-            "— do NOT list any times yet. Use the day_label field from each entry (e.g. "
-            "'Thursday the third of April') — NEVER output placeholder text like [day1] or [day2].\n"
-            "3 days: 'We\\'ve got a few days coming up — [available_days[0].day_label], "
-            "[available_days[1].day_label], and [available_days[2].day_label] — "
-            "which of those works best for you?' (replace with actual day_label values)\n"
-            "2 days: 'We\\'ve got availability on [available_days[0].day_label] and "
-            "[available_days[1].day_label] — which suits you better?' (replace with actual values)\n"
-            "1 day: 'The next day we have is [available_days[0].day_label] — would that work?' "
-            "(replace with actual value)\n"
-            "If available_days is empty or the tool returns an error: say 'Let me check with the "
-            "team on availability — could I take your name and number and we\\'ll call you back?'\n"
+            "— do NOT list any times yet. Use the day_label field from each entry "
+            "— NEVER output placeholder text like [day1] or [day2].\n"
+            "3 days: 'I can do [day1], [day2], or [day3] — which of those works for you?' "
+            "(substitute real day_label values)\n"
+            "2 days: 'I've got [day1] or [day2] — which suits you better?' "
+            "(substitute real values). If availability is thin you may add: "
+            "'It's a little busy over the next few days, but...'\n"
+            "1 day: 'The next opening I have is [day1] — would that work for you?' "
+            "(substitute real value)\n"
+            "If available_days is empty or the tool returns an error: say 'I\\'m not seeing "
+            "clear availability at the moment — let me take your name and number and get the "
+            "team to call you back.'\n"
             "Never list times here. Never say 'I have found X slots'. "
             "Never repeat placeholder names like [day1] — always substitute the real date."
         ),
@@ -431,27 +435,27 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": (
             "⚠️ SPOKEN OUTPUT ONLY — every word you write is read aloud to the caller by TTS. "
             "Start DIRECTLY with Susie's words (e.g. 'On Friday...'). "
-            "No reasoning, no preamble, no internal notes.\n\n"
+            "No reasoning, no preamble, no internal notes. "
+            "Sound like a warm, efficient UK clinic receptionist.\n\n"
             "The caller just responded to the day options with: '{chosen_day}'.\n"
             "Here is the full availability data (do NOT call check_availability again):\n"
             "{available_days_json}\n\n"
             "Each entry has: day_label (spoken day name), slot_times (list of HH:MM strings), "
             "and slots (list of start/end ISO datetimes).\n"
-            "1. If the caller named a specific day — find that day in the data above and present "
-            "up to 4 times for it:\n"
-            "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which works for you?'\n"
-            "   2 times: 'On [day] I've got [t1] or [t2] — which suits you?'\n"
-            "   1 time:  'On [day] I have [t1] available — does that work?'\n"
-            "   Always convert slot_times to natural spoken form: '09:00' → 'nine o'clock in the morning', "
-            "'14:30' → 'half past two in the afternoon', '16:00' → 'four o'clock in the afternoon'. "
-            "Never say AM/PM or raw digits like '09:00'.\n"
-            "2. If the caller said none of those times work — refer back to the other days you "
-            "initially offered: 'Not to worry — what about [other offered day 1][, or [other offered day 2]]?'\n"
-            "3. If the caller rejected all initially offered days — present the next 3 days from "
-            "the data above (entries 4–6) using the same day-first format. Continue cycling "
-            "in batches of 3 until a day is chosen or the list is exhausted.\n"
-            "4. If there are no more days: 'I'm afraid those are the only days we have coming "
-            "up — would you like me to ask the team to ring you back?'"
+            "1. If the caller named a specific day — find that day in the data and present "
+            "up to 4 times for it in natural spoken form:\n"
+            "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which of those works?'\n"
+            "   2–3 times: 'On [day] I've got [t1] or [t2] — which suits you?'\n"
+            "   1 time:  'The earliest I have on [day] is [t1] — does that work?'\n"
+            "   Convert slot_times to natural spoken form: "
+            "'09:00' → 'nine o'clock', '14:30' → 'half past two', '16:00' → 'four o'clock'. "
+            "Add 'in the morning' / 'in the afternoon' where helpful. Never say AM/PM or raw digits.\n"
+            "2. If none of those times work — refer to the other days you initially offered: "
+            "'Not to worry — what about [other day 1][, or [other day 2]]?'\n"
+            "3. If all initial days rejected — present next 3 days from the data (entries 4–6). "
+            "Continue cycling in batches of 3 until a day is chosen or list is exhausted.\n"
+            "4. If no more days: 'I\\'m afraid those are the only days we have at the moment "
+            "— would you like me to ask the team to give you a ring?'"
         ),
     },
     {
@@ -493,17 +497,17 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "allow_tools": False,   # booking already collected — no tool calls needed
         "llm_instruction": (
             "CRITICAL: DO NOT call any tools. DO NOT call book_appointment or any "
-            "other function. The booking details have already been collected — "
-            "your only job is to read them back warmly.\n"
-            "Confirm the booking with a warm summary. "
-            "Include: patient name '{full_name}', "
-            "appointment type 'physiotherapy assessment', "
-            "date and time '{selected_slot_speech}', "
-            "and confirm their contact number is {phone_number}. "
-            "Tell them a confirmation text will follow. "
-            "Keep it to 2-3 sentences, warm and natural. "
-            "Do not say 'Lovely'. "
-            "Do NOT mention any booking system, errors, hiccups, or technical issues."
+            "other function. The booking details have already been collected.\n"
+            "Confirm the booking in TWO short spoken beats — natural, warm, receptionist-like:\n"
+            "Beat 1: Confirm what's been booked. "
+            "Example: 'Lovely — I've got you in for a physiotherapy assessment on {selected_slot_speech}.'\n"
+            "Beat 2: Confirm the contact number and close. "
+            "Example: 'I'll send the confirmation to {phone_number}. Does everything sound right?'\n"
+            "You may use the patient name {full_name} naturally in beat 1 if it flows well "
+            "(e.g. 'I've got you in, Sarah') — but do not repeat it twice.\n"
+            "Do not say 'Lovely' more than once. Do not say 'Great' and 'Lovely' together.\n"
+            "Do NOT mention any booking system, errors, hiccups, or technical issues.\n"
+            "Maximum 3 sentences total — keep it brief and human."
         ),
         "extract": "none",
     },
@@ -534,13 +538,125 @@ def _phrase_key_for_step(step: Dict[str, Any]) -> str:
     }
     return _map.get(step.get("answer_field", ""), "default")
 
+
+# ---------------------------------------------------------------------------
+# Conversational bridge helpers
+# ---------------------------------------------------------------------------
+
+import random as _random
+
+# Short acknowledgement phrases spoken *before* the next hardcoded question.
+# Keyed by the state that was JUST completed.
+_BRIDGE_POOL: Dict[str, list] = {
+    "CONFIRM_ASSESSMENT":         ["Great.", "Perfect.", "Lovely."],
+    "RETURNING_RECENCY":          ["Got it.", "Right.", "Got that."],
+    "RETURNING_TREATMENT_PLAN":   ["Perfect.", "Great."],
+    "CONFIRM_PHONE_RETURNING":    ["Perfect.", "Brilliant."],
+    "COLLECT_PHONE_RETURNING":    ["Got that.", "Perfect."],
+    "CONFIRM_PHONE":              ["Perfect.", "Brilliant."],
+    "COLLECT_PHONE":              ["Got that.", "Perfect."],
+}
+
+
+def _get_bridge(
+    state: str,
+    answer: Any,
+    session: Dict[str, Any],
+    next_use_llm: bool = False,
+) -> Optional[str]:
+    """
+    Return a short acknowledgement phrase to speak before the next question, or None.
+    Never emitted before LLM steps (the LLM writes its own opener).
+    """
+    if next_use_llm:
+        return None
+
+    tone = session.get("caller_tone", "warm")  # "brief" or "warm"
+
+    # Name states — acknowledge with first name for a personal touch
+    if state in (
+        "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+        "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+    ):
+        first = str(answer).split()[0].capitalize() if answer else ""
+        if first:
+            return f"Thanks, {first}." if tone == "brief" else f"Thanks, {first} — bear with me one moment."
+        return "Thanks."
+
+    # NEW_OR_RETURNING — vary warmth based on answer
+    if state == "NEW_OR_RETURNING":
+        if answer == "new":
+            return "No problem — let's get you sorted." if tone != "brief" else "No problem."
+        else:
+            return "Of course — good to have you back." if tone != "brief" else "Of course."
+
+    pool = _BRIDGE_POOL.get(state)
+    if not pool:
+        return None
+
+    phrase = _random.choice(pool)
+    # Brief callers get a clipped version
+    if tone == "brief" and len(phrase) > 8:
+        phrase = phrase.split(".")[0] + "."
+    return phrase
+
+
+# ---------------------------------------------------------------------------
+# Opportunistic multi-field harvesting
+# ---------------------------------------------------------------------------
+
+def _harvest_extra_fields(
+    text: str,
+    transcript: str,
+    state: str,
+    session: Dict[str, Any],
+) -> None:
+    """
+    If the caller volunteered more information than the current step asked,
+    pre-store it so redundant follow-up questions are skipped automatically.
+    All assignments are additive — the normal extraction flow catches any mismatch.
+    """
+    import re as _re
+
+    # At COLLECT_REASON: pre-store new/returning status if the caller mentioned it
+    if state == "COLLECT_REASON" and not session.get("new_or_returning"):
+        _NEW = (
+            "first time", "never been", "new patient", "haven't been",
+            "not been before", "brand new", "first visit",
+        )
+        _RET = (
+            "been before", "been with you", "been with us", "came before",
+            "returning", "existing patient", "last time i came", "i was with you",
+        )
+        t = text.lower()
+        if any(s in t for s in _NEW):
+            session["new_or_returning"] = "new"
+            logger.info("[ms_flow] harvest: new_or_returning=new from COLLECT_REASON")
+        elif any(s in t for s in _RET):
+            session["new_or_returning"] = "returning"
+            logger.info("[ms_flow] harvest: new_or_returning=returning from COLLECT_REASON")
+
+    # At NEW_OR_RETURNING: pre-store name if the caller volunteered it
+    if state == "NEW_OR_RETURNING" and not session.get("full_name"):
+        m = _re.search(
+            r"(?:my name is|name['\u2019]?s|i['\u2019]?m|it['\u2019]?s)"
+            r"\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            transcript,
+            _re.IGNORECASE,
+        )
+        if m:
+            name = m.group(1).strip().title()
+            if 2 <= len(name.split()) <= 4:   # sanity: only 2–4 word names
+                session["full_name"] = name
+                logger.info("[ms_flow] harvest: full_name=%r from NEW_OR_RETURNING", name)
+
 # ---------- Reschedule flow -----------------------------------------------
 
 RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_RESCHEDULE",
-        "question": "What's your name so I can find your booking?",
+        "question": "What name is the booking under?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -549,10 +665,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 1,
         "state": "CONFIRM_PHONE",
-        "question": (
-            "And is the number you're calling from right now "
-            "the same number you originally booked with?"
-        ),
+        "question": "And is this the same number you'd have used for the booking?",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -576,19 +689,20 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "allow_tools": True,
         "extract": "any",
         "llm_instruction": (
-            "Say 'Just checking what we've got coming up for you...' then call "
-            "check_availability with location='alcester', duration_minutes=50. "
+            "Sound like a warm, efficient UK clinic receptionist — not a booking system.\n"
+            "Say 'Just bear with me one moment...' then call "
+            "check_availability with location='alcester', duration_minutes=50.\n"
             "After the tool returns, read available_days and present ONLY the first 3 days "
             "— do NOT list any times yet. Use the day_label field from each entry "
             "— NEVER output placeholder text like [day1] or [day2].\n"
-            "3 days: say the day_label of the first 3 entries: "
-            "'We\\'ve got a few days coming up — [first day_label], [second day_label], and "
-            "[third day_label] — which of those works best for you?' (use real values)\n"
-            "2 days: 'We\\'ve got availability on [first day_label] and [second day_label] "
-            "— which suits you better?' (use real values)\n"
-            "1 day: 'The next day we have is [first day_label] — would that work?' (use real value)\n"
-            "If available_days is empty or tool returns an error: say 'Let me check with the "
-            "team — could I take your name and number and we\\'ll call you back?'\n"
+            "3 days: 'I can do [day1], [day2], or [day3] — which of those works for you?' "
+            "(substitute real day_label values)\n"
+            "2 days: 'I've got [day1] or [day2] — which suits you better?' "
+            "(substitute real values). If availability is thin you may add: "
+            "'It's a little busy over the next few days, but...'\n"
+            "1 day: 'The next opening I have is [day1] — would that work for you?' (use real value)\n"
+            "If available_days is empty or tool returns an error: say 'I\\'m not seeing "
+            "clear availability at the moment — let me take your details and have the team call you back.'\n"
             "Never list times here. Never repeat placeholder names — always use the real date."
         ),
     },
@@ -601,23 +715,27 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "allow_tools": False,
         "extract": "slot_selection",
         "llm_instruction": (
+            "⚠️ SPOKEN OUTPUT ONLY — every word is read aloud by TTS. "
+            "Sound like a warm, efficient UK clinic receptionist.\n\n"
             "The caller just responded to the day options with: '{chosen_day}'.\n"
             "Here is the full availability data (do NOT call check_availability again):\n"
             "{available_days_json}\n\n"
             "Each entry has: day_label (spoken day name), slot_times (list of HH:MM strings), "
             "and slots (list of start/end ISO datetimes).\n"
-            "1. If the caller named a specific day — find that day in the data above and present "
-            "up to 4 times for it:\n"
-            "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which works for you?'\n"
-            "   1 time:  'On [day] I have [t1] available — does that work?'\n"
-            "   Convert slot_times to natural spoken form: '09:00' → 'nine o'clock in the morning', "
-            "'14:30' → 'half past two in the afternoon'. Never say AM/PM.\n"
-            "2. If none of those times work — refer to the other initially offered days: "
-            "'Not to worry — what about [other offered day 1][, or [other offered day 2]]?'\n"
-            "3. If all initial days rejected — present next 3 days from the data above (entries 4–6). "
+            "1. If the caller named a specific day — find that day in the data and present "
+            "up to 4 times in natural spoken form:\n"
+            "   4 times: 'On [day] I've got [t1], [t2], [t3], or [t4] — which of those works?'\n"
+            "   2–3 times: 'On [day] I've got [t1] or [t2] — which suits you?'\n"
+            "   1 time:  'The earliest I have on [day] is [t1] — does that work?'\n"
+            "   Convert slot_times to natural spoken form: "
+            "'09:00' → 'nine o'clock', '14:30' → 'half past two'. "
+            "Add 'in the morning' / 'in the afternoon' where helpful. Never say AM/PM.\n"
+            "2. If none of those times work — refer to other initially offered days: "
+            "'Not to worry — what about [other day 1][, or [other day 2]]?'\n"
+            "3. If all initial days rejected — present next 3 days from data (entries 4–6). "
             "Continue cycling in batches of 3 until a day is chosen or list is exhausted.\n"
-            "4. If no more days: 'I'm afraid those are the only days we have — would you like me "
-            "to ask the team to ring you back?'"
+            "4. If no more days: 'I\\'m afraid those are the only days we have at the moment "
+            "— would you like me to ask the team to give you a ring?'"
         ),
     },
     {
@@ -649,7 +767,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_CANCEL",
-        "question": "What's your name so I can find the appointment?",
+        "question": "What name is the appointment under?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -658,10 +776,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 1,
         "state": "CONFIRM_PHONE",
-        "question": (
-            "And is the number you're calling from right now "
-            "the same number you originally booked with?"
-        ),
+        "question": "And is this the same number you'd have used when you booked?",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -670,7 +785,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 2,
         "state": "COLLECT_PHONE",
-        "question": "And the best number we have on file for you?",
+        "question": "And the best number to reach you on?",
         "answer_field": "phone_number",
         "use_llm": False,
         "extract": "phone",
@@ -970,8 +1085,8 @@ class FlowEngine:
                 or self.session.get("selected_slot", "the selected time")
             )
             q = (
-                f"So that's {slot_speech} — "
-                "shall I go ahead and move your appointment to that slot?"
+                f"I've got {slot_speech} available — "
+                "shall I go ahead and move you to that?"
             )
             await self._tts.put(q)
             if _is_question_worth_storing(q):
@@ -1003,17 +1118,16 @@ class FlowEngine:
             cancel_result = await _exec_cancel_appointment(cancel_args, self.session)
             if cancel_result.get("success"):
                 response = (
-                    "I've cancelled your appointment. "
-                    "You'll receive a confirmation text shortly. "
+                    "That's all sorted — your appointment's been cancelled. "
+                    "You'll get a confirmation text shortly. "
                     "Is there anything else I can help with?"
                 )
             else:
                 response = (
-                    "Let me get that sorted for you now."
                     "I wasn't able to find an upcoming appointment under those details — "
-                    "please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u20096"
-                    "\u20096\u20098\u20096\u20091 and the team will be happy to help. "
-                    "Is there anything else I can help you with?"
+                    "it's worth giving us a call directly on 0\u20097\u20098\u20097\u20090"
+                    "\u20091\u20096\u20096\u20098\u20096\u20091 and the team will be happy "
+                    "to sort it. Is there anything else I can help with?"
                 )
                 self.session["acuity_error"] = cancel_result.get("error")
             await self._tts.put(response)
@@ -1184,15 +1298,14 @@ class FlowEngine:
                     if reschedule_result.get("success"):
                         slot_speech = self.session.get("selected_slot_speech", "the new time")
                         response = (
-                            f"I've rescheduled your appointment to {slot_speech}. "
-                            "You'll receive a confirmation text shortly. "
-                            "Is there anything else I can help you with?"
+                            f"Done — I've moved you to {slot_speech}. "
+                            "You'll get the confirmation text shortly. "
+                            "Is there anything else I can help with?"
                         )
                     else:
                         response = (
-                            "My apologies — I wasn't able to complete that reschedule. "
-                            "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u2009"
-                            "6\u20096\u20098\u20096\u20091 and the team will be happy to help."
+                            "I'm sorry — I wasn't able to complete that reschedule. "
+                            "Please give us a call directly and the team will get it sorted for you."
                         )
                         self.session["acuity_error"] = reschedule_result.get("error")
                     await self._tts.put(response)
@@ -1235,6 +1348,12 @@ class FlowEngine:
                 self.session["caller_type"] = "patient"
                 self.session["classification_pending"] = False
                 logger.info("[ms_flow] caller forced to patient (short utterance past DETECT_INTENT)")
+
+        # Lightweight tone flag — set once per call, used only for bridge phrasing.
+        # "brief" = curt/direct caller (≤4 words); "warm" = chatty/detailed.
+        if not self.session.get("caller_tone"):
+            word_count = len(transcript.strip().split())
+            self.session["caller_tone"] = "brief" if word_count <= 4 else "warm"
 
         # ── PROFESSIONAL FLOW INTERCEPT ────────────────────────────────────────
         if self.session.get("professional_flow_active"):
@@ -1408,6 +1527,32 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
+        # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
+        # Answer it warmly and end the turn — do NOT re-ask the current step.
+        # The next caller utterance re-enters handle_transcript at the same flow_step.
+        _interruptable_states = {
+            "CONFIRM_ASSESSMENT", "NEW_OR_RETURNING",
+            "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
+            "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING",
+            "COLLECT_NAME", "CONFIRM_PHONE", "COLLECT_PHONE",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+            "PRESENT_DAYS", "PRESENT_TIMES",
+            "PRESENT_DAYS_RESCHEDULE", "PRESENT_TIMES_RESCHEDULE",
+        }
+        if step["state"] in _interruptable_states:
+            _mid_intents = {
+                "faq_prices", "faq_insurance", "faq_hours",
+                "faq_location", "faq_services", "general_query",
+            }
+            _mid_intent = self._detect_intent(text)
+            if _mid_intent in _mid_intents:
+                logger.info(
+                    "[ms_flow] mid-flow interrupt at %s — intent=%s transcript=%r",
+                    step["state"], _mid_intent, transcript[:60],
+                )
+                await self._handle_mid_flow_interrupt(_mid_intent, transcript)
+                return  # do NOT call ask_current_question — let caller respond naturally
+
         # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
         if step["state"] == "FAQ_BOOKING_OFFER":
             answer = self._extract("faq_booking", text, transcript)
@@ -1540,7 +1685,7 @@ class FlowEngine:
             collected = self.session.setdefault("collected", {})
             collected.pop("phone", None)
             self.session["flow_step"] = step["step"] + 1
-            phrase = "No problem — what number would you like to use for the booking?"
+            phrase = "No problem — what number would you like us to use?"
             await self._tts.put(phrase)
             if _is_question_worth_storing(phrase):
                 self.session["last_question"] = phrase
@@ -1573,6 +1718,9 @@ class FlowEngine:
             step["step"], step["answer_field"], str(answer)[:60],
         )
 
+        # Opportunistic multi-field harvest — pre-store extra info volunteered by the caller
+        _harvest_extra_fields(text, transcript, step["state"], self.session)
+
         # ── CONFIRM_RESCHEDULE: patient just confirmed "yes" → execute reschedule ──
         if step["state"] == "CONFIRM_RESCHEDULE" and answer:
             from app.tools.receptionist_tools import _exec_reschedule_appointment
@@ -1595,15 +1743,14 @@ class FlowEngine:
             if reschedule_result.get("success"):
                 slot_speech = self.session.get("selected_slot_speech", "the new time")
                 response = (
-                    f"I've rescheduled your appointment to {slot_speech}. "
-                    "You'll receive a confirmation text shortly. "
-                    "Is there anything else I can help you with?"
+                    f"Done — I've moved you to {slot_speech}. "
+                    "You'll get the confirmation text shortly. "
+                    "Is there anything else I can help with?"
                 )
             else:
                 response = (
-                    "My apologies — I wasn't able to complete that reschedule. "
-                    "Please call us directly on 0\u20097\u20098\u20097\u20090\u20091\u20096"
-                    "\u20096\u20098\u20096\u20091 and the team will be happy to help."
+                    "I'm sorry — I wasn't able to complete that reschedule. "
+                    "Please give us a call directly and the team will get it sorted for you."
                 )
                 self.session["acuity_error"] = reschedule_result.get("error")
             await self._tts.put(response)
@@ -1660,6 +1807,17 @@ class FlowEngine:
         # Advance to next step
         self.session["flow_step"] = step["step"] + 1
         logger.info("[ms_flow] → step %d", step["step"] + 1)
+
+        # Emit a short conversational bridge before the next question.
+        # Skip if the next step uses LLM — it writes its own opener.
+        _next_step = self.current_step()
+        _next_llm  = _next_step["use_llm"] if _next_step else False
+        _bridge    = _get_bridge(step["state"], answer, self.session, _next_llm)
+        if _bridge:
+            await self._tts.put(_bridge)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _bridge}
+            )
 
         # Ask the next question
         await self.ask_current_question()
@@ -1773,6 +1931,40 @@ class FlowEngine:
             "[ms_flow] intent=%s → flow[0]=%s",
             intent, self._active_flow[0]["state"],
         )
+
+    # ── mid-flow interrupt ────────────────────────────────────────────────
+
+    async def _handle_mid_flow_interrupt(self, intent: str, transcript: str) -> None:
+        """
+        Caller asked an off-topic question mid-booking flow.
+        Answer it warmly in 1–2 sentences then end the turn.
+        Does NOT change flow_step or _active_flow.
+        Does NOT re-ask the current booking question.
+        """
+        _FAQ_TOPICS = {
+            "faq_prices":    "prices",
+            "faq_insurance": "insurance",
+            "faq_hours":     "hours",
+            "faq_location":  "address",
+            "faq_services":  "services",
+        }
+        if intent in _FAQ_TOPICS:
+            topic = _FAQ_TOPICS[intent]
+            instruction = (
+                f"Call get_clinic_info with topic='{topic}'. "
+                "Answer the question warmly and concisely in 1–2 sentences. "
+                "Do NOT re-ask the booking question — just answer and stop."
+            )
+        else:
+            # General question — LLM answers from knowledge
+            instruction = (
+                f"The caller asked mid-booking: '{transcript.strip()}'\n"
+                "Answer it helpfully in 1–2 sentences. "
+                "Do NOT call check_availability, book_appointment, or any booking tool. "
+                "Do NOT re-ask the booking question. Just answer warmly and stop."
+            )
+        logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
+        await self._llm(instruction, allow_tools=(intent in _FAQ_TOPICS))
 
     # ── slot confirmation ─────────────────────────────────────────────────
 

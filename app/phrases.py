@@ -261,14 +261,14 @@ SILENCE_THRESHOLDS: dict = {
 
 RETRY_PHRASES: dict = {
     "first_retry": {
-        "ask_name":   "Sorry, I didn't quite catch the name — could you say it again?",
-        "ask_phone":  "Sorry about that — could you repeat the number for me?",
-        "ask_day":    "My fault — which days work best for you?",
-        "ask_reason": "Sorry, I didn't catch that — what's been bringing you in?",
-        "ask_time":   "Sorry about that — morning or afternoon?",
-        "default":    "Sorry about that — could you say that again?",
+        "ask_name":   "Sorry, I didn't quite catch that — could you say your name again?",
+        "ask_phone":  "Sorry — could you say that number again for me?",
+        "ask_day":    "No problem — which of those days suits you?",
+        "ask_reason": "Sorry, I missed that — what's been bringing you in?",
+        "ask_time":   "Sorry about that — morning or afternoon, roughly?",
+        "default":    "Sorry, I didn't quite catch that — could you say it again?",
     },
     "second_retry": {
-        "default": "I want to make sure I get this right — could you say that one more time, slowly?",
+        "default": "Bear with me — could you say that one more time, slowly?",
     },
 }
