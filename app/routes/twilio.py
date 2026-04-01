@@ -578,8 +578,8 @@ async def voice(request: Request):
         vr = VoiceResponse()
         connect = Connect()
         stream = Stream(url=stream_url)
-        stream.parameter(name="to", value=to_number or "")
-        stream.parameter(name="from", value=from_number)
+        stream.parameter(name="twilio_to",   value=to_number or "")
+        stream.parameter(name="twilio_from", value=from_number)
         connect.append(stream)
         vr.append(connect)
 
