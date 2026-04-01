@@ -31,6 +31,16 @@ TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN", "")
 MEDIA_STREAMS_ENABLED = os.getenv("MEDIA_STREAMS_ENABLED", "false").lower() == "true"
 
 # ---------------------------------------------------------------------------
+# Barge-in threshold
+# ---------------------------------------------------------------------------
+
+# Minimum speech duration (milliseconds) for barge-in to be treated as genuine.
+# Speech detected below this duration is treated as noise (cough, lip-smack, etc.)
+# and TTS is resumed from the beginning of the interrupted sentence.
+# Increase this value if false triggers are common in production.
+BARGE_IN_THRESHOLD_MS: int = int(os.getenv("BARGE_IN_THRESHOLD_MS", "300"))
+
+# ---------------------------------------------------------------------------
 # Deployment domain
 # ---------------------------------------------------------------------------
 

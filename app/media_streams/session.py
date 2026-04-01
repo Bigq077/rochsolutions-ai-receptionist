@@ -257,6 +257,10 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "readback_delivered":       False,  # True once readback has been spoken (guards re-fire)
     "graceful_exit":            False,  # True when retry >= 3 triggers a graceful exit
 
+    # ── Barge-in tracking ─────────────────────────────────────────────────
+    "interrupted_tts_text": "",    # text being spoken when barge-in fired (for resume)
+    "barge_in_count":       0,     # number of confirmed barge-ins this call
+
     # ── Caller classification ─────────────────────────────────────────────
     # Determined on the first substantive utterance (> 1 word).
     # Forces "patient" if still pending when the first booking slot is answered.

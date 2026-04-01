@@ -39,6 +39,7 @@ import asyncio
 import base64
 import json
 import logging
+import random
 import time
 import traceback
 from datetime import datetime, timezone
@@ -51,7 +52,21 @@ from .config import (
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
     BOOKING_OPEN,
+    BARGE_IN_THRESHOLD_MS,
 )
+
+# ---------------------------------------------------------------------------
+# Barge-in constants
+# ---------------------------------------------------------------------------
+
+_BARGE_IN_THRESHOLD_S: float = BARGE_IN_THRESHOLD_MS / 1000.0
+
+# Phrases spoken after a confirmed barge-in (selected at random).
+_BARGE_IN_ACKS: List[str] = [
+    "Sorry — go ahead.",
+    "Yes, go on.",
+    "Sorry about that — you were saying?",
+]
 from .session import (
     get_or_create_session,
     save_session,
@@ -530,6 +545,12 @@ class WebSocketCallHandler:
         self._clearing   = False   # True while Twilio buffer is draining after barge-in
         self._llm_busy   = False   # True while Claude is generating
 
+        # Barge-in timing/state — used for false-trigger gate and ack injection
+        self._current_tts_text:  str   = ""    # text being synthesised right now
+        self._barge_in_pending:  bool  = False  # True between partial and final transcript
+        self._barge_in_ts:       float = 0.0   # monotonic time when barge-in first fired
+        self._barge_in_duration: float = 0.0   # elapsed seconds (set by _on_final_transcript_clear)
+
         # ── Latency / timing ──────────────────────────────────────────────
         self._last_audio_at:          float = 0.0   # monotonic time of last audio sent to Twilio
         self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
@@ -913,6 +934,13 @@ class WebSocketCallHandler:
                     )
                     continue
 
+                # ── Barge-in resolution ───────────────────────────────────────
+                # Must run before setting _llm_busy so:
+                #   - false triggers resume TTS without entering the flow
+                #   - confirmed barge-ins queue an ack and wait for next utterance
+                if await self._resolve_barge_in():
+                    continue
+
                 self._llm_busy          = True
                 self._silence_handler.on_llm_started()
                 self._last_audio_at     = time.monotonic()
@@ -1034,6 +1062,10 @@ class WebSocketCallHandler:
                 # Tell the silence handler Susie is about to speak —
                 # timer must be cancelled while audio is playing.
                 self._silence_handler.on_tts_started()
+
+                # Track what's being spoken so _on_partial_transcript can
+                # store it in session["interrupted_tts_text"] for TTS resume.
+                self._current_tts_text = chunk_text
 
                 self._tts_task = asyncio.create_task(
                     tts.synthesise_chunk(
@@ -1193,6 +1225,17 @@ class WebSocketCallHandler:
 
         logger.info("[ms_conn] barge-in: partial=%r", text[:60])
 
+        # Record barge-in start time (only once per barge-in event)
+        if not self._barge_in_pending:
+            self._barge_in_ts = time.monotonic()
+            self._barge_in_pending = True
+            # Snapshot the text currently being spoken for potential TTS resume
+            self.session["interrupted_tts_text"] = self._current_tts_text
+            logger.info(
+                "[ms_conn] barge-in start: interrupted_text=%r",
+                self._current_tts_text[:60],
+            )
+
         # Cancel silence timer — caller is speaking, re-ask must not fire mid-sentence.
         # on_transcript_received() handles the full reset when the utterance ends.
         self._silence_handler.on_speech_started()
@@ -1217,6 +1260,50 @@ class WebSocketCallHandler:
             except Exception:
                 pass
 
+    async def _resolve_barge_in(self) -> bool:
+        """
+        Check and resolve a pending barge-in event.
+
+        Called from _llm_loop before processing each utterance.
+
+        Returns True if the utterance should be SKIPPED (barge-in handled):
+          - False trigger (speech < BARGE_IN_THRESHOLD_MS): TTS resumed from
+            session["interrupted_tts_text"], utterance discarded.
+          - Confirmed barge-in: random acknowledgement queued, utterance
+            discarded so the NEXT utterance (after the ack) drives the flow.
+
+        Returns False if no barge-in was pending — normal processing continues.
+        """
+        if not self._barge_in_pending:
+            return False
+
+        self._barge_in_pending = False
+        dur = self._barge_in_duration
+
+        if dur < _BARGE_IN_THRESHOLD_S:
+            # ── False trigger: speech too short to be intentional ─────────
+            interrupted = self.session.get("interrupted_tts_text", "")
+            if interrupted:
+                await self.tts_text_queue.put(interrupted)
+            logger.info(
+                "[ms_conn] barge-in false trigger (%.0fms < %dms threshold) — resuming TTS",
+                dur * 1000, BARGE_IN_THRESHOLD_MS,
+            )
+            return True  # skip utterance
+
+        # ── Confirmed barge-in: play acknowledgement ──────────────────────
+        ack = random.choice(_BARGE_IN_ACKS)
+        await self.tts_text_queue.put(ack)
+        self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
+        _state = self.session.get("state", "unknown")
+        logger.info(
+            "[ms_conn] barge-in #%d confirmed (%.0fms) ack=%r state=%s",
+            self.session["barge_in_count"], dur * 1000, ack, _state,
+        )
+        # slot question is NOT re-asked here — the NEXT utterance goes through
+        # flow.handle_transcript() normally; re-ask only fires if that fails.
+        return True  # skip current utterance
+
         self._clearing = True
 
     async def _on_final_transcript_clear(self) -> None:
@@ -1224,7 +1311,12 @@ class WebSocketCallHandler:
         Called by STTStream on each FinalTranscript to reset _clearing.
         Ensures audio is no longer dropped once the caller finishes speaking.
         Also resets the SilenceHandler so the re-ask timer is cancelled.
+
+        If a barge-in is pending, compute how long speech lasted so _llm_loop
+        can decide: < threshold → false trigger (resume TTS), ≥ threshold → confirmed.
         """
+        if self._barge_in_pending and self._barge_in_ts > 0:
+            self._barge_in_duration = time.monotonic() - self._barge_in_ts
         self._clearing = False
         self._silence_handler.on_transcript_received()
 
