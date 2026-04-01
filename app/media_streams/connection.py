@@ -608,10 +608,15 @@ class WebSocketCallHandler:
         self._llm_busy   = False   # True while Claude is generating
 
         # Barge-in timing/state — used for false-trigger gate and ack injection
-        self._current_tts_text:  str   = ""    # text being synthesised right now
-        self._barge_in_pending:  bool  = False  # True between partial and final transcript
-        self._barge_in_ts:       float = 0.0   # monotonic time when barge-in first fired
-        self._barge_in_duration: float = 0.0   # elapsed seconds (set by _on_final_transcript_clear)
+        self._current_tts_text:    str   = ""    # text being synthesised right now
+        self._barge_in_pending:    bool  = False  # True between partial and final transcript
+        self._barge_in_ts:         float = 0.0   # monotonic time when barge-in first fired
+        self._barge_in_duration:   float = 0.0   # elapsed seconds (set by _on_final_transcript_clear)
+        # Recovery flag: True after we've already played a barge-in ack and are
+        # waiting for the caller's actual utterance.  Prevents ack-loop when the
+        # caller's continued speech triggers a second barge-in before the first
+        # utterance is processed.
+        self._in_barge_in_recovery: bool = False
 
         # Prompt generation counter — monotonically increasing.
         # Incremented whenever a confirmed barge-in clears the active TTS.
@@ -1044,6 +1049,8 @@ class WebSocketCallHandler:
                 if await self._resolve_barge_in():
                     continue
 
+                # A real utterance is being processed — barge-in recovery complete.
+                self._in_barge_in_recovery = False
                 self._llm_busy          = True
                 self._silence_handler.on_llm_started()
                 self._last_audio_at     = time.monotonic()
@@ -1454,9 +1461,21 @@ class WebSocketCallHandler:
             )
             return True  # skip utterance
 
-        # ── Confirmed barge-in: play acknowledgement ──────────────────────
+        # ── Confirmed barge-in ────────────────────────────────────────────
+        # If we're already in recovery (ack was played, waiting for the real
+        # utterance), skip the second ack and process this utterance directly.
+        if self._in_barge_in_recovery:
+            _state = self.session.get("state", "unknown")
+            logger.info(
+                "[ms_conn] barge-in during recovery — skipping ack, processing utterance directly (state=%s)",
+                _state,
+            )
+            self._in_barge_in_recovery = False
+            return False  # process utterance normally
+
         ack = random.choice(_BARGE_IN_ACKS)
         await self.tts_text_queue.put(ack)
+        self._in_barge_in_recovery = True
         self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
         _state = self.session.get("state", "unknown")
         logger.info(
@@ -1465,7 +1484,7 @@ class WebSocketCallHandler:
         )
         # slot question is NOT re-asked here — the NEXT utterance goes through
         # flow.handle_transcript() normally; re-ask only fires if that fails.
-        return True  # skip current utterance
+        return True  # skip current utterance (ack plays, next turn processes)
 
         self._clearing = True
 

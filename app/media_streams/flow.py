@@ -417,7 +417,12 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "'It's a little busy over the next few days, but...'\n"
             "1 day: 'The next opening I have is [day1] — would that work for you?' "
             "(substitute real value)\n"
-            "If available_days is empty or the tool returns an error: say 'I\\'m not seeing "
+            "If the tool returns error='lead_time_limited': say 'We\\'re a little limited today — "
+            "let me check what I have coming up shortly' then re-call check_availability with "
+            "the same parameters. If still limited, say 'It looks like today is quite full — "
+            "the next slot might be tomorrow or later this week. Let me take your details and "
+            "the team will call you to confirm.'\n"
+            "If the tool returns error='no_availability' or any other error: say 'I\\'m not seeing "
             "clear availability at the moment — let me take your name and number and get the "
             "team to call you back.'\n"
             "Never list times here. Never say 'I have found X slots'. "
@@ -530,11 +535,12 @@ def _classify_confirm_assessment(text: str) -> str:
     Priority order (highest first):
         1. yes           — explicit affirmative, advance immediately
         2. no            — explicit rejection, graceful close
-        3. additive_detail — caller is adding more clinical context
+        3. frustration   — caller is objecting to being asked again
         4. clarification — caller is asking us to repeat / explain
-        5. unknown       — fall through to normal interrupt handling
+        5. additive_detail — caller is adding more clinical context
+        6. unknown       — fall through to normal interrupt handling
 
-    Returns one of: "yes" | "no" | "additive_detail" | "clarification" | "unknown"
+    Returns one of: "yes" | "no" | "frustration" | "additive_detail" | "clarification" | "unknown"
     """
     # 1 ── Explicit yes ──────────────────────────────────────────────────────
     _YES = (
@@ -549,7 +555,16 @@ def _classify_confirm_assessment(text: str) -> str:
         "no bother", "that'll do", "perfect",
     )
     if any(p in text for p in _YES):
-        return "yes"
+        # Guard: don't classify as yes if the sentence expresses frustration/objection
+        _FRUSTRATION_GUARD = (
+            "not going to repeat", "not gonna repeat",
+            "already said", "said it already", "said that already",
+            "told you", "just told you",
+            "third time", "how many times", "keep asking",
+            "not repeating", "won't repeat",
+        )
+        if not any(f in text for f in _FRUSTRATION_GUARD):
+            return "yes"
 
     # 2 ── Explicit no ───────────────────────────────────────────────────────
     _NO = (
@@ -560,25 +575,21 @@ def _classify_confirm_assessment(text: str) -> str:
     if any(p in text for p in _NO):
         return "no"
 
-    # 3 ── Additive clinical detail (more context about the same condition) ──
-    # Caller is not answering yes/no; they are elaborating on their reason.
-    # Do NOT route this as a general_query — it would generate an unrelated
-    # LLM answer and leave flow_step stuck at CONFIRM_ASSESSMENT.
-    _ADDITIVE = (
-        "it happened", "it started", "it's been", "its been",
-        "been going on", "been like this", "been sore", "been hurting",
-        "just went", "went to get", "get checked", "went to check",
-        "after a", "because of", "due to", "following",
-        "a few weeks", "a few days", "a few months",
-        "a while now", "for a while", "for weeks", "for months",
-        "since i", "since the", "after the",
-        "cycling", "running", "football", "sport", "gym",
-        "accident", "fall", "twisted", "pulled", "strained",
-        "getting worse", "not getting better", "still sore",
-        "bit more", "more detail", "also",
+    # 3 ── Frustration / objection ────────────────────────────────────────────
+    # Caller is expressing frustration at being asked to repeat themselves.
+    # Must be checked BEFORE additive_detail to avoid routing objections as context.
+    _FRUSTRATION = (
+        "not going to repeat", "not gonna repeat",
+        "already said", "said it already", "said that already",
+        "told you", "just told you",
+        "third time", "how many times", "keep asking",
+        "not repeating", "won't repeat",
+        "i'm not going to", "im not going to",
+        "why do you keep", "stop asking",
+        "said this before", "i said this",
     )
-    if any(p in text for p in _ADDITIVE):
-        return "additive_detail"
+    if any(p in text for p in _FRUSTRATION):
+        return "frustration"
 
     # 4 ── Clarification / repeat request ────────────────────────────────────
     _CLARIFICATION = (
@@ -591,6 +602,45 @@ def _classify_confirm_assessment(text: str) -> str:
     )
     if any(p in text for p in _CLARIFICATION):
         return "clarification"
+
+    # 5 ── Additive clinical detail (more context about the same condition) ──
+    # Caller is not answering yes/no; they are elaborating on their reason.
+    # Do NOT route this as a general_query — it would generate an unrelated
+    # LLM answer and leave flow_step stuck at CONFIRM_ASSESSMENT.
+    _ADDITIVE = (
+        # Temporal / onset descriptors
+        "it happened", "it started", "it's been", "its been",
+        "been going on", "been like this", "been sore", "been hurting",
+        "just went", "went to get", "get checked", "went to check",
+        "after a", "because of", "due to", "following",
+        "a few weeks", "a few days", "a few months",
+        "a while now", "for a while", "for weeks", "for months",
+        "since i", "since the", "after the",
+        # Activities / mechanisms
+        "cycling", "running", "football", "sport", "gym",
+        "accident", "car crash", "crash", "fall", "twisted", "pulled", "strained",
+        # Clinical severity
+        "getting worse", "not getting better", "still sore",
+        "pretty bad", "quite bad", "really bad", "really hurting",
+        "hurt", "hurting", "in pain", "painful",
+        # Body parts
+        "neck", "back", "shoulder", "knee", "ankle", "hip",
+        "wrist", "elbow", "head", "spine", "leg", "arm",
+        # Conversational continuations
+        "bit more", "more detail", "also",
+        "just saying", "was saying", "i was just",
+        "i had a", "i've had", "ive had",
+        "thought he wanted", "thought you wanted",
+        "wanted to know", "wanted to mention",
+    )
+    if any(p in text for p in _ADDITIVE):
+        return "additive_detail"
+
+    # Word-count fallback: long unparsed sentence almost certainly clinical detail
+    # Short noise/garble stays as unknown
+    words = text.split()
+    if len(words) >= 8:
+        return "additive_detail"
 
     return "unknown"
 
@@ -801,7 +851,9 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "(substitute real values). If availability is thin you may add: "
             "'It's a little busy over the next few days, but...'\n"
             "1 day: 'The next opening I have is [day1] — would that work for you?' (use real value)\n"
-            "If available_days is empty or tool returns an error: say 'I\\'m not seeing "
+            "If the tool returns error='lead_time_limited': say 'Today looks quite full — "
+            "let me take your details and the team will call you to sort out a new time.'\n"
+            "If the tool returns error='no_availability' or any other error: say 'I\\'m not seeing "
             "clear availability at the moment — let me take your details and have the team call you back.'\n"
             "Never list times here. Never repeat placeholder names — always use the real date."
         ),
@@ -1675,6 +1727,17 @@ class FlowEngine:
                 )
                 return
 
+            if _ca_cls == "frustration":
+                # Caller is objecting to repeating themselves — apologise and re-ask
+                lq = self.session.get("last_question", "Does that sound OK?")
+                phrase = f"I'm really sorry about that — {lq}"
+                await self._tts.put(phrase)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: frustration → apologetic re-ask")
+                return
+
             if _ca_cls == "clarification":
                 # Caller wants a repeat — re-speak the last question without re-running LLM
                 lq = self.session.get("last_question", "Does that sound OK?")
@@ -2531,7 +2594,22 @@ class FlowEngine:
                 "no bother",
                 "that's sound", "perfect that",
             )
+            # Frustration/objection guard: don't classify as yes if the caller is
+            # expressing frustration or refusing to repeat themselves.
+            _frustration_patterns = (
+                "not going to repeat", "not gonna repeat",
+                "already said", "said it already", "said that already",
+                "told you", "just told you",
+                "third time", "how many times", "keep asking",
+                "not repeating", "won't repeat",
+                "i'm not going to", "im not going to",
+                "why do you keep", "stop asking",
+                "said this before", "i said this",
+            )
             if any(p in text for p in yes):
+                if any(f in text for f in _frustration_patterns):
+                    logger.info("[ms_extract] yes_no: affirmative blocked by frustration guard: '%s'", text)
+                    return None
                 return True
             # Fuzzy fallback for yes_no
             yes_fuzzy = [
@@ -2539,8 +2617,9 @@ class FlowEngine:
                 "go ahead", "that works",
             ]
             if _fuzzy_match(text, yes_fuzzy, threshold=75):
-                logger.info("[ms_extract] fuzzy yes: '%s'", text)
-                return True
+                if not any(f in text for f in _frustration_patterns):
+                    logger.info("[ms_extract] fuzzy yes: '%s'", text)
+                    return True
             return None
 
         # ----- new_or_returning ------------------------------------------
@@ -2548,11 +2627,15 @@ class FlowEngine:
             # CRITICAL: new_patterns checked FIRST.
             # "i have not" contains "i have" — if returning were checked first
             # it would incorrectly match as returning.  Order must never change.
+            #
+            # Bare "no" and "never" are INTENTIONALLY absent — they substring-match
+            # "know", "nothing", "not", "however", etc. in free-form sentences.
+            # Bare "yeah"/"yes"/"i have" are absent from returning for the same reason.
             new_patterns = [
                 "i have not", "i haven't", "i havent",
                 "have not been", "haven't been", "havent been",
                 "not been", "never been", "never visited",
-                "never", "first time", "first visit",
+                "first time", "first visit",
                 "new patient", "i'm new", "im new",
                 "no i", "nah", "nope",
                 "no never", "not visited", "don't think",
@@ -2565,7 +2648,6 @@ class FlowEngine:
                 "don't think so", "not that i know",
                 "new to you", "new here",
                 "no i 'ave not", "no i havent",
-                "no", "never",
             ]
             returning_patterns = [
                 "i have been", "i've been", "ive been",
@@ -2573,8 +2655,6 @@ class FlowEngine:
                 "been before", "been there", "been with you",
                 "been a patient", "been here", "come before",
                 "visited before", "existing", "returning",
-                "yeah", "yes", "yep", "yup", "ya",
-                "i have", "have been",
                 # Northern English / informal variants
                 "aye", "aye i have", "aye been",
                 "yeah been", "yep been",
@@ -2583,6 +2663,14 @@ class FlowEngine:
                 "i 'ave", "i ave been",
                 "visited", "existing patient", "registered",
             ]
+            # Word-count guard: for utterances > 8 words, only accept multi-word
+            # specific patterns to avoid free-form sentence substring pollution.
+            word_count = len(text.split())
+            if word_count > 8:
+                # Only multi-word patterns (>= 2 words) are safe for long sentences
+                new_patterns    = [p for p in new_patterns    if len(p.split()) >= 2]
+                returning_patterns = [p for p in returning_patterns if len(p.split()) >= 2]
+
             matched = False
             for p in new_patterns:
                 if p in text:

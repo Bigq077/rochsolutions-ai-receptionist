@@ -1243,6 +1243,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # 1. Minimum lead-time filter: drop slots starting within 2 hours of now.
         #    Prevents offering a 8:30 slot when the caller rings at 8:21 and
         #    the conversation itself takes several minutes.
+        raw_slot_count = len(slots)  # count BEFORE lead-time filter
         if slots:
             now_london = datetime.now(LONDON_TZ)
             min_start  = now_london + timedelta(hours=2)
@@ -1281,6 +1282,24 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 )
 
         if not slots:
+            # Distinguish between "lead-time filtered everything" vs "genuinely no slots"
+            # so the LLM can use the appropriate message.
+            if raw_slot_count > 0:
+                # Slots existed but were all too soon (within 2h lead time).
+                logger.warning(
+                    "_check_availability_acuity: %d raw slot(s) for %s all within 2h lead-time window — "
+                    "availability is limited today.",
+                    raw_slot_count, location,
+                )
+                return {
+                    "error": "lead_time_limited",
+                    "error_detail": (
+                        f"There are {raw_slot_count} slot(s) available at {location.title()} today "
+                        "but all start within 2 hours — too soon to book. "
+                        "Suggest the next available day or take contact details."
+                    ),
+                    "slots": [],
+                }
             # Real Acuity availability returned nothing — report honestly.
             # Do NOT fall back to fake/manual slot generation.
             logger.warning(
@@ -1289,7 +1308,8 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 location, used_window,
             )
             return {
-                "error": (
+                "error": "no_availability",
+                "error_detail": (
                     f"No appointments available at {location.title()} in the next "
                     f"{used_window} days. The clinic may be fully booked — "
                     "please try the other location, or let the caller know the team will be in touch."
