@@ -27,6 +27,17 @@ LONDON_TZ = pytz.timezone("Europe/London")
 # Google tokens are stored globally in Redis under this key (same as legacy)
 _TOKENS_KEY = "google_tokens"
 
+# ---------------------------------------------------------------------------
+# Acuity default appointment type
+# ---------------------------------------------------------------------------
+# The Acuity appointment type ID used for all Theorem bookings.
+# Format: "acuity_<raw_id>" (the adapter strips the prefix before calling the API).
+# Override by setting DEFAULT_APPOINTMENT_TYPE_ID in the environment.
+import os as _os
+DEFAULT_ACUITY_APPOINTMENT_TYPE_ID: str = (
+    f"acuity_{_os.getenv('DEFAULT_APPOINTMENT_TYPE_ID', '15823699')}"
+)
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -1017,10 +1028,14 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         return {"error": "Booking system not configured. Please call the clinic directly.", "slots": []}
 
     try:
-        type_cache = await _fetch_acuity_type_cache(adapter)
-        appointment_type_id = _match_service_to_acuity_id(service, type_cache, location=location)
-        if not appointment_type_id:
-            return {"error": "Could not match service to an Acuity appointment type.", "slots": []}
+        # Always use the environment-configured appointment type ID.
+        # /availability/times MUST always receive appointmentTypeID — calling
+        # without it returns an empty list regardless of actual availability.
+        appointment_type_id = DEFAULT_ACUITY_APPOINTMENT_TYPE_ID
+        logger.info(
+            "_check_availability_acuity: using appointment_type_id=%s (from env)",
+            appointment_type_id,
+        )
 
         loc_cfg = THEOREM_LOCATIONS.get(location, {})
         raw_cal_id = (loc_cfg.get("acuity_calendar_id") or "").strip()
@@ -1100,43 +1115,21 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 )
 
         if not slots:
-            # ── Fallback: Acuity working hours not configured in admin panel ──
-            # Generate slots ourselves from known working hours (Mon–Fri 08:30–21:00)
-            # and subtract existing bookings fetched directly from Acuity.
-            # NOTE: this fallback only subtracts booked slots for the matched
-            # practitioner/calendar — slots booked under other practitioners on
-            # the same day will NOT be excluded. For accurate availability,
-            # configure working hours in the Acuity admin panel so the real
-            # /availability/times API is used instead.
+            # Real Acuity availability returned nothing — report honestly.
+            # Do NOT fall back to fake/manual slot generation.
             logger.warning(
                 "_check_availability_acuity: 0 slots from Acuity for %s in %d days — "
-                "attempting manual slot generation (Acuity working hours may not be configured).",
+                "no availability to offer.",
                 location, used_window,
             )
-            from datetime import date as _date
-            fallback_end = search_start + timedelta(days=60)
-            slots = await _generate_manual_slots(
-                adapter=adapter,
-                appointment_type_id=appointment_type_id,
-                practitioner_id=practitioner_id,
-                start_date=search_start,
-                end_date=fallback_end,
-                slot_minutes=50,
-            )
-            if slots:
-                logger.info(
-                    "_check_availability_acuity: manual fallback produced %d slots for %s",
-                    len(slots), location,
-                )
-            else:
-                return {
-                    "error": (
-                        f"No appointments available at {location.title()} in the next "
-                        f"60 days. The clinic may be fully booked — "
-                        "please try the other location, or let the caller know the team will be in touch."
-                    ),
-                    "slots": [],
-                }
+            return {
+                "error": (
+                    f"No appointments available at {location.title()} in the next "
+                    f"{used_window} days. The clinic may be fully booked — "
+                    "please try the other location, or let the caller know the team will be in touch."
+                ),
+                "slots": [],
+            }
 
         # Post-fetch date filter: safety net in case the Acuity API ignores start_date
         if after_date_cutoff:
@@ -1218,13 +1211,15 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                 ),
             }
 
-        # Appointment type — prefer cached from check_availability
-        appointment_type_id = session.get("_acuity_appointment_type_id")
-        if not appointment_type_id:
-            type_cache = await _fetch_acuity_type_cache(adapter)
-            appointment_type_id = _match_service_to_acuity_id(service, type_cache, location=location)
-        if not appointment_type_id:
-            return {"success": False, "error": "Could not map service to Acuity appointment type."}
+        # Appointment type — prefer cached from check_availability, else use env default.
+        # appointmentTypeID MUST always be passed to Acuity for booking to succeed.
+        appointment_type_id = (
+            session.get("_acuity_appointment_type_id") or DEFAULT_ACUITY_APPOINTMENT_TYPE_ID
+        )
+        logger.info(
+            "_book_appointment_acuity: using appointment_type_id=%s",
+            appointment_type_id,
+        )
 
         # Practitioner / calendar ID — prefer cached from check_availability
         practitioner_id = session.get("_acuity_practitioner_id")
