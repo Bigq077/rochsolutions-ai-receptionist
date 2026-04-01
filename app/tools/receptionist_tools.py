@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as _date_type
 from typing import Any, Dict, Optional
 
 import pytz
@@ -696,48 +696,85 @@ TOOL_SCHEMAS = [
 _acuity_type_id_cache: Dict[str, str] = {}
 
 # Module-level cache: UK (England/Wales) bank holiday dates fetched from GOV.UK API.
-# None = not yet fetched; empty set = fetch attempted but failed.
+# None = not yet fetched; populated set = successfully fetched.
 _uk_bank_holidays_cache: Optional[set] = None
 
+# Hardcoded England/Wales bank holidays 2025-2027.
+# Used as the baseline — always applied even if the GOV.UK API is unreachable.
+# GOV.UK API results are merged on top of this set when available.
+_UK_BANK_HOLIDAYS_FALLBACK: frozenset = frozenset({
+    # 2025
+    _date_type(2025,  1,  1),  # New Year's Day
+    _date_type(2025,  4, 18),  # Good Friday
+    _date_type(2025,  4, 21),  # Easter Monday
+    _date_type(2025,  5,  5),  # Early May bank holiday
+    _date_type(2025,  5, 26),  # Spring bank holiday
+    _date_type(2025,  8, 25),  # Summer bank holiday
+    _date_type(2025, 12, 25),  # Christmas Day
+    _date_type(2025, 12, 26),  # Boxing Day
+    # 2026
+    _date_type(2026,  1,  1),  # New Year's Day
+    _date_type(2026,  4,  3),  # Good Friday
+    _date_type(2026,  4,  6),  # Easter Monday
+    _date_type(2026,  5,  4),  # Early May bank holiday
+    _date_type(2026,  5, 25),  # Spring bank holiday
+    _date_type(2026,  8, 31),  # Summer bank holiday
+    _date_type(2026, 12, 25),  # Christmas Day
+    _date_type(2026, 12, 28),  # Boxing Day (substitute)
+    # 2027
+    _date_type(2027,  1,  1),  # New Year's Day
+    _date_type(2027,  3, 26),  # Good Friday
+    _date_type(2027,  3, 29),  # Easter Monday
+    _date_type(2027,  5,  3),  # Early May bank holiday
+    _date_type(2027,  5, 31),  # Spring bank holiday
+    _date_type(2027,  8, 30),  # Summer bank holiday
+    _date_type(2027, 12, 27),  # Christmas Day (substitute)
+    _date_type(2027, 12, 28),  # Boxing Day (substitute)
+})
 
-async def _fetch_uk_bank_holidays() -> set:
+
+async def _fetch_uk_bank_holidays() -> frozenset:
     """
-    Return a set of England/Wales bank holiday dates (datetime.date objects).
-    Fetches from https://www.gov.uk/bank-holidays.json on first call, then
-    caches in memory for the lifetime of the worker process.
+    Return a frozenset of England/Wales bank holiday dates (datetime.date objects).
+
+    Always returns at least _UK_BANK_HOLIDAYS_FALLBACK (2025-2027 hardcoded).
+    On first call, merges with live data from the GOV.UK API and caches the
+    combined result for the lifetime of the worker process.
     """
     global _uk_bank_holidays_cache
     if _uk_bank_holidays_cache is not None:
         return _uk_bank_holidays_cache
 
-    from datetime import date as _date
     import httpx
 
+    api_holidays: set = set()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get("https://www.gov.uk/bank-holidays.json")
             resp.raise_for_status()
             data = resp.json()
 
-        holidays: set = set()
         for event in data.get("england-and-wales", {}).get("events", []):
             try:
-                holidays.add(_date.fromisoformat(event["date"]))
+                api_holidays.add(_date_type.fromisoformat(event["date"]))
             except Exception:
                 pass
 
-        _uk_bank_holidays_cache = holidays
-        logger.info("_fetch_uk_bank_holidays: cached %d England/Wales bank holidays", len(holidays))
-        return holidays
-
+        logger.info(
+            "_fetch_uk_bank_holidays: GOV.UK API returned %d holidays; "
+            "merged with %d hardcoded fallback dates",
+            len(api_holidays), len(_UK_BANK_HOLIDAYS_FALLBACK),
+        )
     except Exception as exc:
         logger.warning(
-            "_fetch_uk_bank_holidays: could not fetch from GOV.UK API (%r) — "
-            "bank holiday filtering disabled for this request",
-            exc,
+            "_fetch_uk_bank_holidays: GOV.UK API failed (%r) — "
+            "using hardcoded fallback (%d dates) only",
+            exc, len(_UK_BANK_HOLIDAYS_FALLBACK),
         )
-        # Return empty set but do NOT persist to cache so next call retries
-        return set()
+
+    combined = frozenset(api_holidays | _UK_BANK_HOLIDAYS_FALLBACK)
+    _uk_bank_holidays_cache = combined
+    return combined
 
 
 def _filter_slots_by_working_hours(slots: list, location: str, location_working_hours: dict) -> list:
@@ -1200,7 +1237,22 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 )
 
         # ── Post-fetch filters ─────────────────────────────────────────────
-        # 1. Working-hours filter: remove slots outside configured clinic hours
+        # 1. Minimum lead-time filter: drop slots starting within 2 hours of now.
+        #    Prevents offering a 8:30 slot when the caller rings at 8:21 and
+        #    the conversation itself takes several minutes.
+        if slots:
+            now_london = datetime.now(LONDON_TZ)
+            min_start  = now_london + timedelta(hours=2)
+            before_lt  = len(slots)
+            slots = [s for s in slots if s.start_time >= min_start]
+            removed_lt = before_lt - len(slots)
+            if removed_lt:
+                logger.info(
+                    "_check_availability_acuity: removed %d slot(s) within 2h lead-time window",
+                    removed_lt,
+                )
+
+        # 2. Working-hours filter: remove slots outside configured clinic hours
         #    (guards against Acuity returning slots before open / after close).
         from app.clinic_config import get_clinic
         clinic_cfg = get_clinic(session.get("clinic_id", "theorem")) or {}
@@ -1208,17 +1260,21 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         if slots and loc_wh:
             slots = _filter_slots_by_working_hours(slots, location, loc_wh)
 
-        # 2. Bank-holiday filter: remove slots on England/Wales bank holidays
-        #    (Acuity won't block these unless the admin has done so manually).
+        # 3. Bank-holiday filter: remove slots on England/Wales bank holidays.
+        #    Always applied — _fetch_uk_bank_holidays() always returns at least
+        #    the hardcoded 2025-2027 fallback set even if the GOV.UK API is down.
+        #    NOTE: do NOT guard with "if bank_holidays:" — bool(empty set) is False
+        #    and would silently skip the filter. Always run the comprehension.
         bank_holidays = await _fetch_uk_bank_holidays()
-        if slots and bank_holidays:
+        if slots:
             before_bh = len(slots)
             slots = [s for s in slots if s.start_time.date() not in bank_holidays]
             removed_bh = before_bh - len(slots)
             if removed_bh:
                 logger.info(
-                    "_check_availability_acuity: removed %d slot(s) on UK bank holidays",
-                    removed_bh,
+                    "_check_availability_acuity: removed %d slot(s) on UK bank holidays "
+                    "(bank_holidays set size=%d)",
+                    removed_bh, len(bank_holidays),
                 )
 
         if not slots:

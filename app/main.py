@@ -257,8 +257,11 @@ async def _prewarm_singletons() -> None:
         adapter = _get_acuity_adapter()
         if adapter:
             try:
-                await adapter.client.get("/appointment-types", timeout=10.0)
+                resp = await adapter.client.get("/appointment-types", timeout=10.0)
+                types_data = resp.json() if resp.status_code == 200 else []
+                type_summary = {str(t.get("id")): t.get("name") for t in types_data}
                 logger.info("✅ Acuity TCP connection pre-warmed (live)")
+                logger.info("🗓️  Acuity appointment types available: %s", type_summary)
             except Exception:
                 # Non-fatal: adapter is initialised; first real call may be 300ms slower
                 logger.info("✅ Acuity adapter singleton pre-warmed (TCP not yet live)")
