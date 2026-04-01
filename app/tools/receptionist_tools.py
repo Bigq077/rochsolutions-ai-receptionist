@@ -922,9 +922,9 @@ async def _generate_manual_slots(
     """
     from app.booking.booking.models import Slot as _Slot
 
-    # Theorem: Mon–Thu (0–3), 08:30 start, last slot starts at 20:10 so it ends at 21:00
+    # Theorem Alcester: Mon–Fri (0–4), 08:30 start, last slot starts at 20:10 so it ends at 21:00
     WORK_START_H, WORK_START_M = 8, 30
-    WORKING_WEEKDAYS = {0, 1, 2, 3}  # Mon=0 … Thu=3
+    WORKING_WEEKDAYS = {0, 1, 2, 3, 4}  # Mon=0 … Fri=4
 
     # ── fetch existing appointments to exclude conflicts ──────────────────
     booked_times: set = set()
@@ -963,6 +963,12 @@ async def _generate_manual_slots(
                 naive_start = datetime(current.year, current.month, current.day, h, m)
                 slot_start = LONDON_TZ.localize(naive_start)
                 slot_end = slot_start + timedelta(minutes=slot_minutes)
+
+                # Skip slots that are already in the past
+                now = datetime.now(LONDON_TZ)
+                if slot_start <= now:
+                    t_min += slot_minutes
+                    continue
 
                 if (current, h, m) not in booked_times:
                     slots.append(
@@ -1095,8 +1101,13 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
         if not slots:
             # ── Fallback: Acuity working hours not configured in admin panel ──
-            # Generate slots ourselves from known working hours (Mon–Thu 08:30–21:00)
+            # Generate slots ourselves from known working hours (Mon–Fri 08:30–21:00)
             # and subtract existing bookings fetched directly from Acuity.
+            # NOTE: this fallback only subtracts booked slots for the matched
+            # practitioner/calendar — slots booked under other practitioners on
+            # the same day will NOT be excluded. For accurate availability,
+            # configure working hours in the Acuity admin panel so the real
+            # /availability/times API is used instead.
             logger.warning(
                 "_check_availability_acuity: 0 slots from Acuity for %s in %d days — "
                 "attempting manual slot generation (Acuity working hours may not be configured).",

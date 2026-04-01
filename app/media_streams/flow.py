@@ -2207,6 +2207,22 @@ class FlowEngine:
             labels      = self.session.get("slot_labels") or []
             slots_count = self.session.get("slots_count", len(offered) or 3)
 
+            # Negation guard — if the caller is rejecting a slot, don't extract it.
+            # e.g. "i can't do the first slot", "not the first one", "don't want the second"
+            _NEGATION_PATTERNS = (
+                "can't do", "cannot do", "can't make", "cannot make",
+                "don't want", "dont want", "not the first", "not the second",
+                "not the third", "not that one", "not do the first",
+                "can't really do", "can't do the first", "can't do the second",
+                "not available for", "won't work", "wont work",
+                "doesn't work", "doesnt work", "no good", "no good for me",
+                "any other", "different slot", "other slot", "other slots",
+                "other option", "anything else",
+            )
+            if any(p in text for p in _NEGATION_PATTERNS):
+                logger.info("[ms_flow] slot_selection negation guard — treating as no match: %r", text[:60])
+                return None
+
             def _pick(idx: int) -> Optional[Any]:
                 """Return the human-readable slot label at 0-based index.
                 slot_labels contains strings like 'Mon 23 Mar at 09:00'
