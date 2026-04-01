@@ -277,6 +277,13 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "prof_callback":   None,    # callback phone number
     "prof_message":    None,    # message to pass on
 
+    # ── Vague availability handling ───────────────────────────────────────
+    # Set True when a vague availability response (e.g. "whenever") is detected
+    # at PRESENT_DAYS and 2 concrete options have been presented to the caller.
+    # Cleared when the caller selects an option or the flow advances.
+    "vague_option_pending":     False,   # True while awaiting option selection
+    "presented_vague_options":  [],      # list of option dicts from build_vague_options
+
     # ── Filler phrases ────────────────────────────────────────────────────
     # Tracks which filler phrases have been used this call so they are not
     # repeated. Stored as a list (JSON-serialisable; treated as a set by

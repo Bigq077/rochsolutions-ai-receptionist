@@ -1252,6 +1252,49 @@ class FlowEngine:
             await self._handle_readback_confirmation(text, transcript)
             return
 
+        # ── VAGUE OPTION SELECTION: caller responding to 2 concrete options ───
+        # Set by vagueness detection at PRESENT_DAYS. Parse the selection here
+        # so the normal extraction logic is bypassed for this special state.
+        if self.session.get("vague_option_pending"):
+            from app.vagueness_detector import parse_option_selection
+            _vopts = self.session.get("presented_vague_options", [])
+            _selected = parse_option_selection(transcript, _vopts)
+            if _selected:
+                # Caller selected one of the two options — store and advance
+                self.session["chosen_day"]           = _selected["day_label"]
+                self.session["vague_option_pending"] = False
+                self.session["presented_vague_options"] = []
+                logger.info(
+                    "[ms_flow] vague option selected: %r %s",
+                    _selected["day_label"], _selected["time_hhmm"],
+                )
+                await self.ask_current_question()
+            else:
+                # Ambiguous — ask once more for clarification, then default
+                _already_asked = self.session.get("vague_clarification_asked", False)
+                if not _already_asked and len(_vopts) == 2:
+                    o1, o2 = _vopts[0], _vopts[1]
+                    phrase = (
+                        f"Was that {o1['day_label']} at {o1['time_speech']}, "
+                        f"or {o2['day_label']} at {o2['time_speech']}?"
+                    )
+                    self.session["vague_clarification_asked"] = True
+                    await self._tts.put(phrase)
+                    self.session["last_question"] = phrase
+                    logger.info("[ms_flow] vague: ambiguous selection — asking clarification")
+                else:
+                    # Default to first option after second ambiguity
+                    if _vopts:
+                        self.session["chosen_day"]           = _vopts[0]["day_label"]
+                        self.session["vague_option_pending"] = False
+                        self.session["presented_vague_options"] = []
+                        self.session.pop("vague_clarification_asked", None)
+                        logger.info(
+                            "[ms_flow] vague: defaulting to first option %r", _vopts[0]["day_label"]
+                        )
+                        await self.ask_current_question()
+            return
+
         # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
         _ABANDON_SIGNALS = (
             "never mind", "nevermind", "forget it", "forget this",
@@ -1384,6 +1427,44 @@ class FlowEngine:
 
         answer = self._extract(step["extract"], text, transcript)
 
+        # ── VAGUENESS: PRESENT_TIMES — no valid slot parsed but response is vague ─
+        # If the caller said "any time" / "whatever" when asked which time, pick the
+        # first available time for the chosen day rather than re-asking.
+        if answer is None and step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+            from app.vagueness_detector import is_vague_availability
+            if is_vague_availability(transcript):
+                _avail = self.session.get("available_days", [])
+                _chosen = self.session.get("chosen_day", "")
+                _slot_iso = None
+                _slot_speech = None
+                for _day in _avail:
+                    if _chosen.lower() in _day.get("day_label", "").lower() and _day.get("slots"):
+                        _slot_iso   = _day["slots"][0]["start"]
+                        _slot_speech = (
+                            f"{_day['day_label']} at "
+                            f"{_day['slot_times'][0] if _day.get('slot_times') else 'the first time'}"
+                        )
+                        break
+                if not _slot_iso and _avail:
+                    # Fallback: first day's first slot
+                    _day = _avail[0]
+                    if _day.get("slots"):
+                        _slot_iso   = _day["slots"][0]["start"]
+                        _slot_speech = f"{_day['day_label']} at {_day['slot_times'][0]}"
+                if _slot_iso:
+                    self.session["selected_slot"]       = _slot_iso
+                    self.session["selected_slot_speech"] = _slot_speech
+                    self.session["flow_step"]            = step["step"] + 1
+                    phrase = f"Perfect — I'll put you down for {_slot_speech}."
+                    await self._tts.put(phrase)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": phrase}
+                    )
+                    logger.info("[ms_flow] vague time → defaulted to %r", _slot_iso)
+                    await self.ask_current_question()
+                    return
+                # No slot data — fall through to normal re-ask
+
         if answer is None:
             # No valid answer extracted — acknowledged re-ask with retry counting
             phrase_key = _phrase_key_for_step(step)
@@ -1417,6 +1498,36 @@ class FlowEngine:
             await self._tts.put(phrase)
             # Keep last_question unchanged so SilenceHandler can re-ask again
             return
+
+        # ── VAGUENESS: PRESENT_DAYS — answer extracted but response is vague ─────
+        # Applies ONLY to ask_day (PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE).
+        # If the caller said "whenever" we have already-stored available_days data —
+        # present the first 2 concrete options directly without another API call.
+        if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            from app.vagueness_detector import (
+                is_vague_availability, build_vague_options, build_vague_response_phrase,
+            )
+            if is_vague_availability(transcript):
+                _avail = self.session.get("available_days", [])
+                _opts  = build_vague_options(_avail)
+                if _opts:
+                    _phrase = build_vague_response_phrase(_opts)
+                    if len(_phrase) > 400:
+                        _phrase = _phrase[:400]
+                    self.session["vague_option_pending"]    = True
+                    self.session["presented_vague_options"] = _opts
+                    self.session.pop("vague_clarification_asked", None)
+                    await self._tts.put(_phrase)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _phrase}
+                    )
+                    self.session["last_question"] = _phrase
+                    logger.info(
+                        "[ms_flow] vague availability at %s — %d options presented",
+                        step["state"], len(_opts),
+                    )
+                    return  # Don't advance — wait for option selection
+                # No slots available in cache — fall through to normal LLM handling
 
         # CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: declined — collect manually
         if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and answer is False:
