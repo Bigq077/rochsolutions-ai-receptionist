@@ -803,6 +803,19 @@ class FlowEngine:
         self._active_flow: List[Dict[str, Any]] = DETECT_INTENT_FLOW
         self._intent_detected: bool = False
 
+        # Name usage tracker — governs at-most-2 personalised name uses per call.
+        # Stored as an instance var (not in session dict) so it is never
+        # JSON-serialised directly.  Serialisable mirrors in session allow
+        # reconstruction if the FlowEngine is re-created mid-call.
+        from app.name_usage_tracker import NameUsageTracker as _NUT
+        _tracker = _NUT()
+        _saved_name = session.get("name_tracker_name")
+        _saved_uses = session.get("name_tracker_uses", _NUT.MAX_USES)
+        if _saved_name and isinstance(_saved_name, str):
+            _tracker._name           = _saved_name
+            _tracker._uses_remaining = int(_saved_uses)
+        self._name_tracker: _NUT = _tracker
+
     # ── public API ────────────────────────────────────────────────────────
 
     def current_step(self) -> Optional[Dict[str, Any]]:
@@ -1248,10 +1261,25 @@ class FlowEngine:
             "want to stop", "want to cancel", "actually cancel",
         )
         if step["state"] != "DETECT_INTENT" and any(sig in text for sig in _ABANDON_SIGNALS):
-            phrase = (
-                "No problem at all! If you change your mind, don't hesitate to call us back. "
-                "Have a great day!"
-            )
+            # Insertion point 2 — name usage tracker (final sign-off)
+            _sign_off_name = self._name_tracker.get_name_if_available()
+            self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
+            if _sign_off_name:
+                _base = (
+                    f"No problem at all, {_sign_off_name}! "
+                    "If you change your mind, don't hesitate to call us back. "
+                    "Have a great day!"
+                )
+                # Guard: 400-char ElevenLabs limit
+                phrase = _base if len(_base) <= 400 else (
+                    "No problem at all! If you change your mind, don't hesitate to call us back. "
+                    "Have a great day!"
+                )
+            else:
+                phrase = (
+                    "No problem at all! If you change your mind, don't hesitate to call us back. "
+                    "Have a great day!"
+                )
             await self._tts.put(phrase)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": phrase}
@@ -1416,6 +1444,11 @@ class FlowEngine:
             if step["answer_field"] == "full_name":
                 col["full_name"] = answer
                 col["name"]      = answer
+                # Notify name tracker — stores validated first name, resets uses
+                self._name_tracker.set_name(answer)
+                # Persist tracker state to serialisable session mirrors
+                self.session["name_tracker_name"] = self._name_tracker._name
+                self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
             elif step["answer_field"] == "phone_number":
                 col["phone"] = answer
             elif step["answer_field"] == "new_or_returning":
@@ -1715,7 +1748,11 @@ class FlowEngine:
         readback_pending=True so the next caller turn routes to
         _handle_readback_confirmation().
         """
-        name   = self.session.get("full_name") or "you"
+        # Insertion point 1 — name usage tracker (use name if still available)
+        _tracked_name = self._name_tracker.get_name_if_available()
+        # Update session mirrors after decrement
+        self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
+        name   = _tracked_name or (self.session.get("full_name") or "you")
         slot   = (
             self.session.get("selected_slot_speech")
             or self.session.get("selected_slot")

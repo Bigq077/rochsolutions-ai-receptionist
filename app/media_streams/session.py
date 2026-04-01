@@ -276,6 +276,13 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "prof_name":       None,    # professional's name
     "prof_callback":   None,    # callback phone number
     "prof_message":    None,    # message to pass on
+
+    # ── Name usage tracker (serialisable mirrors) ─────────────────────────
+    # The live NameUsageTracker is stored on FlowEngine as _name_tracker.
+    # These mirrors survive Redis round-trips so the tracker can be
+    # reconstructed if the FlowEngine is re-created mid-call.
+    "name_tracker_name":  None,  # validated first name (str or None)
+    "name_tracker_uses":  2,     # remaining uses (int, starts at MAX_USES=2)
 }
 
 
@@ -512,6 +519,7 @@ async def _save(call_sid: str, session: Dict[str, Any]) -> None:
     }
     # Explicit fast-path: drop known non-serialisable keys rather than scanning.
     clean.pop("tone_detector", None)   # live ToneDetector — _tone_state is the serialisable mirror
+    clean.pop("name_tracker", None)    # live NameUsageTracker — name_tracker_name/uses are the mirrors
 
     try:
         payload = json.dumps(clean)
