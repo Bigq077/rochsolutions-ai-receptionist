@@ -456,23 +456,14 @@ async def get_or_create_session(
     initial: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Return an existing session if it exists in Redis, otherwise create one.
+    Always create a fresh session for this call.
 
-    This is the preferred entry point in the WebSocket handler — avoids
-    the risk of overwriting a session that was seeded by /twilio/voice.
+    We never reuse a prior ms_session for the same call_sid — stale state
+    (flow_step, booking_confirmed, conversation_history, etc.) from a previous
+    call or a partial deploy would corrupt the new call's flow.  The caller
+    identity fields (twilio_from, twilio_to, clinic_id) come from `initial`
+    which connection.py populates from the Twilio stream start event.
     """
-    redis = _get_redis()
-    if redis:
-        key = _session_key(call_sid)
-        try:
-            raw = await redis.get(key)
-            if raw:
-                # Session already exists — return it (with defaults filled in)
-                return await get_session(call_sid)
-        except Exception as exc:
-            logger.warning("[ms_session] existence check failed call_sid=%s: %r", call_sid, exc)
-
-    # No existing session — create one
     return await create_session(call_sid, initial=initial)
 
 
