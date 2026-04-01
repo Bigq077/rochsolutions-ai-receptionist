@@ -1752,6 +1752,33 @@ class FlowEngine:
             # _ca_cls == "unknown": fall through to mid-flow interrupt for FAQ matching
             logger.info("[ms_flow] CONFIRM_ASSESSMENT: unknown classification → passing to interrupt check")
 
+        # ── NEW_OR_RETURNING: deterministic extraction BEFORE interrupt check ──────
+        # Direct answers like "it's my first time" or "i have never been with you before"
+        # must be resolved here — before _detect_intent() — to prevent the LLM being
+        # called with a completely valid booking answer.
+        if step["state"] == "NEW_OR_RETURNING":
+            _nor_answer = self._extract("new_or_returning", text, transcript)
+            logger.info(
+                "[ms_flow] NEW_OR_RETURNING extract: transcript=%r → %s  flow_step=%d",
+                transcript[:80], _nor_answer, step["step"],
+            )
+            if _nor_answer in ("new", "returning"):
+                self.session["new_or_returning"] = _nor_answer
+                col = self.session.setdefault("collected", {})
+                col["patient_type"] = _nor_answer
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] NEW_OR_RETURNING: %r → step advanced to %d (interrupt bypassed)",
+                    _nor_answer, step["step"] + 1,
+                )
+                await self.ask_current_question()
+                return
+            # No deterministic match — fall through, but _DATA_COLLECTION_STATES
+            # below will block general_query from firing
+            logger.info(
+                "[ms_flow] NEW_OR_RETURNING: no deterministic match → falling through (general_query blocked)"
+            )
+
         # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
@@ -1780,6 +1807,11 @@ class FlowEngine:
                 # general chat question.  Only genuine FAQs (prices, hours, etc.)
                 # should still interrupt.
                 "CONFIRM_ASSESSMENT",
+                # NEW_OR_RETURNING is a binary closed question — deterministic
+                # extraction runs in the priority block above.  Any utterance
+                # that reaches here failed extraction; treat it as a garbled
+                # answer, not an intent to chat.  General-query LLM must not fire.
+                "NEW_OR_RETURNING",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
@@ -2630,8 +2662,19 @@ class FlowEngine:
             #
             # Bare "no" and "never" are INTENTIONALLY absent — they substring-match
             # "know", "nothing", "not", "however", etc. in free-form sentences.
-            # Bare "yeah"/"yes"/"i have" are absent from returning for the same reason.
+            # Bare "yes"/"yeah" are SAFE here because this extraction is ONLY called
+            # from the NEW_OR_RETURNING priority block (which already ran) or from
+            # the fallback path which is now protected from general_query interrupts.
+            # The word-count guard below handles "yeah whatever already told you new patient".
             new_patterns = [
+                # Explicit multi-word first-time phrases (user-specified)
+                "it's my first time", "it is my first time",
+                "never been before", "never been with you before",
+                "i have never been", "i haven't been before",
+                "i have never been with you",
+                "not been with you before",
+                "never been here before",
+                # General new-patient indicators
                 "i have not", "i haven't", "i havent",
                 "have not been", "haven't been", "havent been",
                 "not been", "never been", "never visited",
@@ -2650,11 +2693,21 @@ class FlowEngine:
                 "no i 'ave not", "no i havent",
             ]
             returning_patterns = [
+                # Explicit returning phrases (user-specified)
+                "i've been before", "i have been before",
+                "i came before", "i've been with you before",
+                "i have been with you",
+                "a few times",
+                # General returning indicators
                 "i have been", "i've been", "ive been",
                 "yeah i have", "yes i have", "yep i have",
                 "been before", "been there", "been with you",
                 "been a patient", "been here", "come before",
                 "visited before", "existing", "returning",
+                # Short bare affirmatives — safe at this state because extraction runs
+                # inside the NEW_OR_RETURNING priority block before any interrupt logic.
+                # Word-count guard below protects against long sentences.
+                "yes", "yeah", "yep", "yup", "ya",
                 # Northern English / informal variants
                 "aye", "aye i have", "aye been",
                 "yeah been", "yep been",
@@ -2665,6 +2718,7 @@ class FlowEngine:
             ]
             # Word-count guard: for utterances > 8 words, only accept multi-word
             # specific patterns to avoid free-form sentence substring pollution.
+            # e.g. "yeah whatever i already told you" must not match bare "yeah".
             word_count = len(text.split())
             if word_count > 8:
                 # Only multi-word patterns (>= 2 words) are safe for long sentences
