@@ -695,6 +695,91 @@ TOOL_SCHEMAS = [
 # Populated on first call, reused for the lifetime of the worker process.
 _acuity_type_id_cache: Dict[str, str] = {}
 
+# Module-level cache: UK (England/Wales) bank holiday dates fetched from GOV.UK API.
+# None = not yet fetched; empty set = fetch attempted but failed.
+_uk_bank_holidays_cache: Optional[set] = None
+
+
+async def _fetch_uk_bank_holidays() -> set:
+    """
+    Return a set of England/Wales bank holiday dates (datetime.date objects).
+    Fetches from https://www.gov.uk/bank-holidays.json on first call, then
+    caches in memory for the lifetime of the worker process.
+    """
+    global _uk_bank_holidays_cache
+    if _uk_bank_holidays_cache is not None:
+        return _uk_bank_holidays_cache
+
+    from datetime import date as _date
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://www.gov.uk/bank-holidays.json")
+            resp.raise_for_status()
+            data = resp.json()
+
+        holidays: set = set()
+        for event in data.get("england-and-wales", {}).get("events", []):
+            try:
+                holidays.add(_date.fromisoformat(event["date"]))
+            except Exception:
+                pass
+
+        _uk_bank_holidays_cache = holidays
+        logger.info("_fetch_uk_bank_holidays: cached %d England/Wales bank holidays", len(holidays))
+        return holidays
+
+    except Exception as exc:
+        logger.warning(
+            "_fetch_uk_bank_holidays: could not fetch from GOV.UK API (%r) — "
+            "bank holiday filtering disabled for this request",
+            exc,
+        )
+        # Return empty set but do NOT persist to cache so next call retries
+        return set()
+
+
+def _filter_slots_by_working_hours(slots: list, location: str, location_working_hours: dict) -> list:
+    """
+    Remove slots that fall outside the configured working hours for the given location.
+
+    location_working_hours format (from clinic_config):
+        {"mon": (8.5, 21.0), "tue": (8.5, 21.0), ..., "sat": None, "sun": None}
+    A day mapped to None means the clinic is closed; all slots on that day are removed.
+    Hours are expressed as fractional hours (8.5 = 08:30).
+    """
+    _DAY_KEY = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
+    loc_hours = location_working_hours.get(location) or {}
+    if not loc_hours:
+        # No hours configured for this location — return slots unchanged
+        return slots
+
+    filtered = []
+    skipped = 0
+    for slot in slots:
+        day_key = _DAY_KEY.get(slot.start_time.weekday())
+        hours = loc_hours.get(day_key)
+        if hours is None:
+            # Closed on this weekday
+            skipped += 1
+            continue
+        open_frac  = hours[0]                                     # e.g. 8.5 → 08:30
+        close_frac = hours[1]                                     # e.g. 21.0 → 21:00
+        slot_start = slot.start_time.hour + slot.start_time.minute / 60.0
+        slot_end   = slot.end_time.hour   + slot.end_time.minute   / 60.0
+        if slot_start >= open_frac and slot_end <= close_frac:
+            filtered.append(slot)
+        else:
+            skipped += 1
+
+    if skipped:
+        logger.info(
+            "_filter_slots_by_working_hours: removed %d/%d slots outside %r hours",
+            skipped, len(slots), location,
+        )
+    return filtered
+
 # ---------------------------------------------------------------------------
 # Location normalisation — maps spoken/STT variants to canonical location IDs
 # ---------------------------------------------------------------------------
@@ -1112,6 +1197,28 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 logger.info(
                     "_check_availability_acuity: no slots for %s in %d days — widening search",
                     location, window,
+                )
+
+        # ── Post-fetch filters ─────────────────────────────────────────────
+        # 1. Working-hours filter: remove slots outside configured clinic hours
+        #    (guards against Acuity returning slots before open / after close).
+        from app.clinic_config import get_clinic
+        clinic_cfg = get_clinic(session.get("clinic_id", "theorem")) or {}
+        loc_wh = clinic_cfg.get("location_working_hours", {})
+        if slots and loc_wh:
+            slots = _filter_slots_by_working_hours(slots, location, loc_wh)
+
+        # 2. Bank-holiday filter: remove slots on England/Wales bank holidays
+        #    (Acuity won't block these unless the admin has done so manually).
+        bank_holidays = await _fetch_uk_bank_holidays()
+        if slots and bank_holidays:
+            before_bh = len(slots)
+            slots = [s for s in slots if s.start_time.date() not in bank_holidays]
+            removed_bh = before_bh - len(slots)
+            if removed_bh:
+                logger.info(
+                    "_check_availability_acuity: removed %d slot(s) on UK bank holidays",
+                    removed_bh,
                 )
 
         if not slots:
