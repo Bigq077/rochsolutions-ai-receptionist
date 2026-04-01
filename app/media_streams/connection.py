@@ -1305,17 +1305,34 @@ class WebSocketCallHandler:
         """
         Called by STTStream when a non-empty PartialTranscript arrives.
 
-        Implements barge-in:
+        Implements barge-in (only when TTS is actually playing):
           1. Cancel the current TTS streaming task
           2. Drain tts_text_queue (discard pending text chunks)
           3. Drain audio_out_queue (discard buffered audio)
           4. Send Twilio "clear" to drain its playback buffer
-          5. Set _clearing=True to drop incoming Twilio audio during drain
+          5. Set _clearing=True to suppress energy VAD until final transcript arrives
+
+        If TTS is NOT active (caller speaks after Susie finished), only the
+        silence timer is cancelled — no queue drain, no Twilio clear, no _clearing.
+        This prevents suppressing the energy VAD unnecessarily and avoids draining
+        flow responses that arrive between the partial and final transcript.
         """
         if not text.strip():
             return
 
         logger.info("[ms_conn] barge-in: partial=%r", text[:60])
+
+        # Always cancel the silence timer — caller is speaking.
+        # on_transcript_received() handles the full reset when the utterance ends.
+        self._silence_handler.on_speech_started()
+
+        # Only perform barge-in teardown if TTS is actually playing.
+        # When the caller speaks after Susie has already finished (e.g. right after
+        # the greeting), there is nothing to interrupt — skip drain/clear/_clearing
+        # and do NOT set _barge_in_pending so _resolve_barge_in() won't fire an
+        # ack phrase and discard the utterance.
+        if not (self._tts_task and not self._tts_task.done()):
+            return
 
         # Record barge-in start time (only once per barge-in event)
         if not self._barge_in_pending:
@@ -1328,12 +1345,7 @@ class WebSocketCallHandler:
                 self._current_tts_text[:60],
             )
 
-        # Cancel silence timer — caller is speaking, re-ask must not fire mid-sentence.
-        # on_transcript_received() handles the full reset when the utterance ends.
-        self._silence_handler.on_speech_started()
-
-        if self._tts_task and not self._tts_task.done():
-            self._tts_task.cancel()
+        self._tts_task.cancel()
 
         drained_text  = _drain_queue(self.tts_text_queue)
         drained_audio = _drain_queue(self.audio_out_queue)
