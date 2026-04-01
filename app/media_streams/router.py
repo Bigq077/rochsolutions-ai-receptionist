@@ -162,9 +162,11 @@ async def ms_incoming(request: Request) -> Response:
         ws_url = _build_ws_url(request)
         logger.info("[ms_router] incoming call — stream URL: %s", ws_url)
 
-        # Cache caller number from Twilio POST body so the WebSocket handler
-        # can pick it up from Redis on the "start" event (Twilio does not
-        # reliably include From in the WebSocket start payload).
+        # Cache From and To from the Twilio HTTP POST body into Redis so the
+        # WebSocket handler can retrieve them on the "start" event.
+        # Twilio does NOT reliably forward customParameters or caller numbers
+        # through the WebSocket start payload — Redis is the only reliable
+        # channel for passing this data from the HTTP leg to the WS leg.
         call_sid      = ""
         caller_number = ""
         to_number     = ""
@@ -173,17 +175,20 @@ async def ms_incoming(request: Request) -> Response:
             call_sid      = form.get("CallSid", "")
             caller_number = form.get("From", "") or form.get("from", "")
             to_number     = form.get("To",   "") or form.get("to",   "")
-            if call_sid and caller_number:
+            if call_sid:
                 from .session import _get_redis
                 _redis = _get_redis()
                 if _redis:
-                    await _redis.setex(f"ms_caller:{call_sid}", 60, caller_number)
+                    if caller_number:
+                        await _redis.setex(f"ms_caller:{call_sid}", 60, caller_number)
+                    if to_number:
+                        await _redis.setex(f"ms_to:{call_sid}", 60, to_number)
                     logger.info(
-                        "[ms_router] cached caller number call_sid=%s from=%s to=%s",
+                        "[ms_router] cached call_sid=%s from=%s to=%s",
                         call_sid, caller_number, to_number,
                     )
         except Exception as _exc:
-            logger.warning("[ms_router] caller number cache failed: %r", _exc)
+            logger.warning("[ms_router] Redis cache failed: %r", _exc)
 
         # Pass To/From as Stream <Parameter> elements so connection.py can
         # resolve clinic_id from the dialled number on the "start" event.

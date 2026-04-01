@@ -788,18 +788,26 @@ class WebSocketCallHandler:
             self.call_sid, self.stream_sid, twilio_from, twilio_to,
         )
 
-        # Check Redis for caller number pre-cached by /ms/incoming POST handler.
-        # Twilio includes From in the HTTP POST but not always in the WS start event.
-        if not twilio_from and self.call_sid:
+        # Check Redis for From/To numbers pre-cached by /ms/incoming POST handler.
+        # Twilio does NOT reliably forward customParameters or caller numbers into
+        # the WebSocket start event — Redis is the only reliable fallback.
+        if (not twilio_from or not twilio_to) and self.call_sid:
             try:
                 from .session import _get_redis
                 _redis = _get_redis()
                 if _redis:
-                    _cached = await _redis.get(f"ms_caller:{self.call_sid}")
-                    if _cached:
-                        twilio_from = _cached.decode() if isinstance(_cached, bytes) else _cached
-                        logger.info("[ms_conn] caller number from Redis cache: %s", twilio_from)
-                        await _redis.delete(f"ms_caller:{self.call_sid}")
+                    if not twilio_from:
+                        _cached_from = await _redis.get(f"ms_caller:{self.call_sid}")
+                        if _cached_from:
+                            twilio_from = _cached_from.decode() if isinstance(_cached_from, bytes) else _cached_from
+                            logger.info("[ms_conn] twilio_from from Redis: %s", twilio_from)
+                            await _redis.delete(f"ms_caller:{self.call_sid}")
+                    if not twilio_to:
+                        _cached_to = await _redis.get(f"ms_to:{self.call_sid}")
+                        if _cached_to:
+                            twilio_to = _cached_to.decode() if isinstance(_cached_to, bytes) else _cached_to
+                            logger.info("[ms_conn] twilio_to from Redis: %s", twilio_to)
+                            await _redis.delete(f"ms_to:{self.call_sid}")
             except Exception as _exc:
                 logger.warning("[ms_conn] Redis caller lookup failed: %r", _exc)
 
