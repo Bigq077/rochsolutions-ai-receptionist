@@ -210,9 +210,17 @@ class AudioChunkBuffer:
 # ---------------------------------------------------------------------------
 
 def _is_garbage_transcript(text: str) -> bool:
-    """Return True if transcript contains no recognisable words."""
+    """Return True if transcript contains no recognisable words.
+
+    Phone numbers, postcodes and dates are digit-heavy — allow them through
+    rather than silently discarding.  3+ consecutive digits is a reliable
+    signal that the caller said something meaningful (not just noise).
+    """
     if not text.strip():
         return True
+    # Allow digit-heavy input (phone fragments, postcodes, dates, etc.)
+    if re.search(r'\d{3,}', text):
+        return False
     words = re.findall(r"[a-zA-Z]{2,}", text.lower())
     real_words = [w for w in words if w not in NOISE_ONLY_WORDS]
     return len(real_words) == 0

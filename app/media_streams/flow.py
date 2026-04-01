@@ -539,6 +539,34 @@ def _phrase_key_for_step(step: Dict[str, Any]) -> str:
     return _map.get(step.get("answer_field", ""), "default")
 
 
+def _is_digit_heavy(text: str) -> bool:
+    """Return True if ≥70% of non-space characters are digits."""
+    stripped = text.replace(" ", "")
+    if not stripped:
+        return False
+    digit_count = sum(1 for c in stripped if c.isdigit())
+    return digit_count / len(stripped) >= 0.70
+
+
+def _format_phone_readback(digits: str) -> str:
+    """
+    Format a run of digits for slow TTS readback.
+
+    UK mobile  (11 digits): 07XXX XXX XXX  → "0 7 5 0 2 ... 1 1 2 ... 0 7"
+    UK landline (10 digits): similar grouping
+    Other lengths: space every digit with a pause between groups of 3-4.
+    """
+    # Spell each digit with a space, groups separated by " ... "
+    if len(digits) == 11:
+        groups = [digits[:5], digits[5:8], digits[8:]]
+    elif len(digits) == 10:
+        groups = [digits[:5], digits[5:8], digits[8:]]
+    else:
+        # Generic: chunks of ~4
+        groups = [digits[i:i+4] for i in range(0, len(digits), 4)]
+    return " ... ".join(" ".join(g) for g in groups)
+
+
 # ---------------------------------------------------------------------------
 # Conversational bridge helpers
 # ---------------------------------------------------------------------------
@@ -1527,6 +1555,12 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
+        # ── PHONE READBACK CONFIRMATION: awaiting yes/no on number we read back ──
+        _PHONE_COLLECT_STATES = ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")
+        if step["state"] in _PHONE_COLLECT_STATES and self.session.get("phone_readback_pending"):
+            await self._handle_phone_readback_confirmation(text, transcript, step)
+            return
+
         # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
@@ -1540,10 +1574,21 @@ class FlowEngine:
             "PRESENT_DAYS_RESCHEDULE", "PRESENT_TIMES_RESCHEDULE",
         }
         if step["state"] in _interruptable_states:
+            # Data-collection states (phone/name) are asking for specific input.
+            # Never trigger a general_query interrupt here — the caller likely just
+            # said something ambiguous while trying to give the answer.  FAQ
+            # questions (prices, hours, etc.) are still allowed to interrupt.
+            _DATA_COLLECTION_STATES = {
+                "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+                "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+            }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
-                "faq_location", "faq_services", "general_query",
+                "faq_location", "faq_services",
             }
+            if step["state"] not in _DATA_COLLECTION_STATES:
+                _mid_intents.add("general_query")
             _mid_intent = self._detect_intent(text)
             if _mid_intent in _mid_intents:
                 logger.info(
@@ -1574,6 +1619,28 @@ class FlowEngine:
                 return
 
         answer = self._extract(step["extract"], text, transcript)
+
+        # ── PHONE DIGIT ACCUMULATION: stitch together number spoken in chunks ──
+        # After Fix 1 (garbage filter), digit-only chunks now reach the flow.
+        # Each chunk individually fails the 10-digit minimum.  Accumulate them in
+        # session until we have a complete number, then proceed normally.
+        if answer is None and step["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+            _new_digits = "".join(c for c in transcript if c.isdigit())
+            if _new_digits:
+                _buffer = self.session.get("phone_digits_buffer", "") + _new_digits
+                self.session["phone_digits_buffer"] = _buffer
+                logger.info(
+                    "[ms_flow] phone digit buffer +%s → %r (%d digits)",
+                    _new_digits, _buffer, len(_buffer),
+                )
+                if len(_buffer) >= 10:
+                    # Enough digits — treat as a complete phone number
+                    answer = _buffer[:11] if len(_buffer) > 11 else _buffer
+                    self.session["phone_digits_buffer"] = ""
+                    logger.info("[ms_flow] phone digit buffer complete → %r", answer)
+                else:
+                    # Still accumulating — silently wait; silence handler re-asks if needed
+                    return
 
         # ── VAGUENESS: PRESENT_TIMES — no valid slot parsed but response is vague ─
         # If the caller said "any time" / "whatever" when asked which time, pick the
@@ -1710,6 +1777,25 @@ class FlowEngine:
                 self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
             elif step["answer_field"] == "phone_number":
                 col["phone"] = answer
+                # Phone readback: speak the number back slowly and ask for confirmation.
+                # Only for COLLECT_PHONE states — not CONFIRM_BOOKING (which has its own
+                # full readback) and not when Twilio caller-ID was already confirmed.
+                if step["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+                    _spaced = _format_phone_readback(answer)
+                    _rb_phrase = (
+                        f"Just to confirm — I have your number as {_spaced}. "
+                        "Is that right?"
+                    )
+                    await self._tts.put(_rb_phrase)
+                    self.session["last_question"] = _rb_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rb_phrase}
+                    )
+                    self.session["phone_readback_pending"] = True
+                    logger.info(
+                        "[ms_flow] phone readback: %r → %r", answer, _rb_phrase[:80]
+                    )
+                    return  # wait for confirmation; flow_step NOT advanced yet
             elif step["answer_field"] == "new_or_returning":
                 col["patient_type"] = answer
 
@@ -1937,9 +2023,9 @@ class FlowEngine:
     async def _handle_mid_flow_interrupt(self, intent: str, transcript: str) -> None:
         """
         Caller asked an off-topic question mid-booking flow.
-        Answer it warmly in 1–2 sentences then end the turn.
+        Answer it warmly in 1–2 sentences, then re-ask the pending question so
+        the caller knows where we are in the booking.
         Does NOT change flow_step or _active_flow.
-        Does NOT re-ask the current booking question.
         """
         _FAQ_TOPICS = {
             "faq_prices":    "prices",
@@ -1965,6 +2051,77 @@ class FlowEngine:
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
         await self._llm(instruction, allow_tools=(intent in _FAQ_TOPICS))
+        # After answering the aside, remind the caller what we were waiting for
+        # so they can continue the booking without confusion.
+        _lq = self.session.get("last_question", "")
+        if _lq:
+            await self._tts.put(_lq)
+            logger.info("[ms_flow] mid-flow interrupt: re-asking %r", _lq[:80])
+
+    async def _handle_phone_readback_confirmation(
+        self, text: str, transcript: str, step: Dict[str, Any]
+    ) -> None:
+        """
+        Handle the yes/no response after we read the collected phone number back.
+
+        yes / unclear after one retry → accept number, clear flag, advance flow
+        no                            → clear number + buffer, re-ask for it
+        """
+        answer = self._extract("yes_no", text, transcript)
+        logger.info(
+            "[ms_flow] phone readback confirmation: %r → %s", transcript[:60], answer
+        )
+
+        if answer is True:
+            # Confirmed — clear readback flag and advance
+            self.session["phone_readback_pending"] = False
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] phone readback confirmed — advancing")
+            _next_step = self.current_step()
+            _next_llm  = _next_step["use_llm"] if _next_step else False
+            _bridge    = _get_bridge(step["state"], True, self.session, _next_llm)
+            if _bridge:
+                await self._tts.put(_bridge)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _bridge}
+                )
+            await self.ask_current_question()
+
+        elif answer is False:
+            # Rejected — clear everything and re-ask for the number
+            self.session["phone_readback_pending"] = False
+            self.session["phone_number"]           = None
+            self.session["phone_digits_buffer"]    = ""
+            col = self.session.setdefault("collected", {})
+            col.pop("phone", None)
+            phrase = "No problem — could you give me the number again?"
+            await self._tts.put(phrase)
+            self.session["last_question"] = phrase
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
+            logger.info("[ms_flow] phone readback rejected — re-asking")
+
+        else:
+            # Unclear — use the retry counter; on second unclear, accept and move on
+            retry_key  = "phone_readback_retry"
+            retry_count = self.session.get(retry_key, 0) + 1
+            self.session[retry_key] = retry_count
+            if retry_count >= 2:
+                # Accept silently rather than block the caller indefinitely
+                self.session["phone_readback_pending"] = False
+                self.session.pop(retry_key, None)
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] phone readback: 2nd unclear — accepting and advancing")
+                await self.ask_current_question()
+            else:
+                lq = self.session.get("last_question", "")
+                phrase = f"Sorry, just to confirm — is that number right? {lq}" if lq else "Is that number correct?"
+                await self._tts.put(phrase)
+                self.session["last_question"] = phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
 
     # ── slot confirmation ─────────────────────────────────────────────────
 

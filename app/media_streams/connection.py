@@ -1125,6 +1125,11 @@ class WebSocketCallHandler:
                         "[ms_conn] flow error: %r\n%s", exc, traceback.format_exc(),
                     )
                     await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
+                    # Re-ask whatever question was pending so the caller isn't left
+                    # in silence after the technical blip.
+                    _lq = self.session.get("last_question", "")
+                    if _lq:
+                        await self.tts_text_queue.put(_lq)
                 finally:
                     self._llm_busy                        = False
                     self._silence_handler.on_llm_finished()
