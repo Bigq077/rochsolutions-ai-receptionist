@@ -277,6 +277,13 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "prof_callback":   None,    # callback phone number
     "prof_message":    None,    # message to pass on
 
+    # ── Caller pause detection ────────────────────────────────────────────
+    # Set True when caller says "hang on", "one sec", etc.
+    # Silence handler enters 45-second extended-wait mode while True.
+    # Cleared by the first substantive utterance after the pause.
+    "caller_pause_active":  False,   # True while caller is on a self-requested pause
+    "pause_silence_total":  0.0,     # accumulated seconds of silence during pause mode
+
     # ── Name usage tracker (serialisable mirrors) ─────────────────────────
     # The live NameUsageTracker is stored on FlowEngine as _name_tracker.
     # These mirrors survive Redis round-trips so the tracker can be

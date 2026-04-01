@@ -210,6 +210,7 @@ class SilenceHandler:
         trigger_transfer_fn,
         on_reask=None,
         on_transfer=None,
+        get_session=None,
     ) -> None:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
@@ -224,6 +225,10 @@ class SilenceHandler:
         self._llm_busy:               bool  = False
         self._on_reask                      = on_reask      # optional async callback(text)
         self._on_transfer                   = on_transfer   # optional async callback(text)
+        # Callable that returns the current session dict (passed as lambda: self.session
+        # from WebSocketCallHandler so it always reflects the live session after
+        # the "start" event reassigns self.session).
+        self._get_session                   = get_session   # () -> dict | None
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -349,10 +354,67 @@ class SilenceHandler:
         Window 2: 15s sleep → since_audio guard → re-ask #2 → 5s TTS wait
         Window 3: 15s sleep → since_audio guard → transfer
 
+        Pause mode (caller said "hang on" etc.):
+          While caller_pause_active: 45s extended windows, no re-ask.
+          At 45s total silence: check-in phrase.
+          At 90s total silence: termination phrase + transfer.
+
         Never recurses with create_task.  CancelledError exits cleanly at
         any sleep — caller spoke (on_speech_started) or Susie spoke
         (on_tts_started / on_transcript_received).
         """
+        # ── Pause mode branch ─────────────────────────────────────────────
+        _session = self._get_session() if self._get_session else None
+        if _session and _session.get("caller_pause_active"):
+            # Loop in 45-second increments while caller is paused.
+            # CancelledError exits when speech is detected.
+            while True:
+                try:
+                    await asyncio.sleep(45.0)
+                    await asyncio.sleep(0)  # deliver pending cancels
+                except asyncio.CancelledError:
+                    return
+
+                since_audio = time.time() - self.last_audio_received_at
+                if since_audio < 3.5:
+                    return  # speech detected — timer will be restarted by on_question_asked
+
+                # Re-fetch session (may have been reassigned) to get latest state
+                _session = self._get_session() if self._get_session else _session
+                if not _session or not _session.get("caller_pause_active"):
+                    return  # pause cleared by substantive utterance
+
+                _session["pause_silence_total"] = (
+                    _session.get("pause_silence_total", 0.0) + 45.0
+                )
+                _total = _session["pause_silence_total"]
+                logger.info(
+                    "[ms_silence] pause mode: %.0fs total silence", _total
+                )
+
+                if _total >= 90.0:
+                    # Caller has been silent too long — terminate the call gracefully
+                    phrase = (
+                        "I'll let you go — give us a ring back when you're ready "
+                        "and we'll get you sorted."
+                    )
+                    await self._tts_text_queue.put(phrase)
+                    logger.info("[ms_silence] pause 90s limit reached — terminating")
+                    await self._transfer()
+                    return
+
+                if _total >= 45.0:
+                    # First check-in — let caller know we're still here
+                    phrase = (
+                        "Just checking you're still there — "
+                        "no rush at all, take your time."
+                    )
+                    await self._tts_text_queue.put(phrase)
+                    logger.info("[ms_silence] pause 45s check-in played")
+                    # Continue loop for another 45s
+
+            return  # unreachable but guards against fall-through
+
         from app.silence_handler import get_silence_response, get_silence_threshold, log_silence_event
         q = self.last_question.strip()
 
@@ -595,6 +657,9 @@ class WebSocketCallHandler:
             trigger_transfer_fn=_silence_transfer_fn,
             on_reask=_silence_reask_fn,
             on_transfer=_silence_history_fn,
+            # Lambda captures self (not the dict) so it always returns the
+            # current session even after self.session is reassigned on "start".
+            get_session=lambda: self.session,
         )
 
         # ── Call stability ─────────────────────────────────────────────────
@@ -950,28 +1015,55 @@ class WebSocketCallHandler:
                 logger.info("[ms_conn] transcript received: %r", utterance[:120])
 
                 try:
-                    # Record utterance for tone detection (first two turns lock the tone)
-                    try:
-                        from app.tone_detector import ToneDetector as _ToneDetector
-                        _td = self.session.get("tone_detector")
-                        if not isinstance(_td, _ToneDetector):
-                            _td = _ToneDetector.from_dict(self.session.get("_tone_state") or {})
-                        _td.record_utterance(utterance)
-                        self.session["_tone_state"] = _td.to_dict()
-                    except Exception as _td_err:
-                        logger.warning("[ms_conn] ToneDetector record failed: %r", _td_err)
+                    # ── Pause detection (before state machine) ─────────────────────
+                    # If the caller said "hang on", "one sec", etc., enter pause mode.
+                    # Do NOT pass utterance to the flow — do NOT advance state.
+                    from app.pause_detector import detect_caller_pause_request as _detect_pause
+                    _words = utterance.strip().split()
+                    _is_pause = _detect_pause(utterance)
+                    _is_substantive = len(_words) > 2 and not _is_pause
 
-                    if not self.session.get("flow_started"):
-                        # First caller utterance — detect intent then kick off the flow.
-                        self.session["flow_started"] = True
-                        logger.info("[ms_conn] flow start — first utterance: %r", utterance[:80])
-                        await flow.handle_transcript(utterance)
+                    if _is_pause:
+                        self.session["caller_pause_active"] = True
+                        self.session["pause_silence_total"] = 0.0
+                        await self.tts_text_queue.put("Of course, take your time.")
+                        await save_session(self.call_sid, self.session)
+                        logger.info("[ms_conn] caller pause detected — entering pause mode")
+                        # Don't pass to state machine; silence timer will use 45s window
+                        # We still need to re-arm the silence handler after speaking
+                        self._silence_handler.on_question_asked(self.session.get("last_question", ""))
+                        # Fall through to finally: clears _llm_busy
                     else:
-                        logger.info(
-                            "[ms_conn] flow transcript: %r  step=%s",
-                            utterance[:80], self.session.get("flow_step", 0),
-                        )
-                        await flow.handle_transcript(utterance)
+                        # Clear pause mode if caller resumes with a substantive utterance
+                        if _is_substantive and self.session.get("caller_pause_active"):
+                            self.session["caller_pause_active"] = False
+                            self.session["pause_silence_total"] = 0.0
+                            logger.info("[ms_conn] caller_pause_active cleared — resuming flow")
+
+                    # Record utterance for tone detection (first two turns lock the tone)
+                    if not _is_pause:
+                        try:
+                            from app.tone_detector import ToneDetector as _ToneDetector
+                            _td = self.session.get("tone_detector")
+                            if not isinstance(_td, _ToneDetector):
+                                _td = _ToneDetector.from_dict(self.session.get("_tone_state") or {})
+                            _td.record_utterance(utterance)
+                            self.session["_tone_state"] = _td.to_dict()
+                        except Exception as _td_err:
+                            logger.warning("[ms_conn] ToneDetector record failed: %r", _td_err)
+
+                    if not _is_pause:
+                        if not self.session.get("flow_started"):
+                            # First caller utterance — detect intent then kick off the flow.
+                            self.session["flow_started"] = True
+                            logger.info("[ms_conn] flow start — first utterance: %r", utterance[:80])
+                            await flow.handle_transcript(utterance)
+                        else:
+                            logger.info(
+                                "[ms_conn] flow transcript: %r  step=%s",
+                                utterance[:80], self.session.get("flow_step", 0),
+                            )
+                            await flow.handle_transcript(utterance)
 
                     if not self._call_stable:
                         self._call_stable = True
