@@ -1192,49 +1192,52 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # Use after_date as the search start if it is later than today
         search_start = max(today, after_date_cutoff) if after_date_cutoff else today
 
-        # Progressive window: expand until slots are found.
-        # Explicit day_window bypasses this and searches that exact range only.
-        search_windows = [int(explicit_window)] if explicit_window else [14, 30, 60]
+        # Always scan a full 30-day window so near-term scarcity (bank holidays,
+        # blocked days) doesn't leave the caller with only 1–2 options.
+        # Explicit day_window from the LLM overrides this (e.g. for "next week").
+        used_window = int(explicit_window) if explicit_window else 30
+        end_date = search_start + timedelta(days=used_window)
 
-        slots = []
-        used_window = search_windows[-1]
+        try:
+            slots = await adapter.get_available_slots(
+                appointment_type_id=appointment_type_id,
+                start_date=search_start,
+                end_date=end_date,
+                practitioner_id=practitioner_id,
+            )
+        except Exception as api_err:
+            logger.error(
+                "_check_availability_acuity: Acuity API error location=%r window=%d: %r",
+                location, used_window, api_err,
+            )
+            return {
+                "error": (
+                    f"Could not fetch availability for {location.title()}: {api_err}. "
+                    "There may be a configuration issue — please call the clinic directly."
+                ),
+                "slots": [],
+            }
 
-        for window in search_windows:
-            used_window = window
-            end_date = search_start + timedelta(days=window)
-
-            try:
-                slots = await adapter.get_available_slots(
-                    appointment_type_id=appointment_type_id,
-                    start_date=search_start,
-                    end_date=end_date,
-                    practitioner_id=practitioner_id,
-                )
-            except Exception as api_err:
-                # Surface the real Acuity error (e.g. bad calendarID returns 400)
-                logger.error(
-                    "_check_availability_acuity: Acuity API error location=%r window=%d: %r",
-                    location, window, api_err,
-                )
-                return {
-                    "error": (
-                        f"Could not fetch availability for {location.title()}: {api_err}. "
-                        "There may be a configuration issue — please call the clinic directly."
-                    ),
-                    "slots": [],
-                }
-
-            if slots:
+        # Per-date logging: show how many raw slots Acuity returned per day
+        if slots:
+            from collections import defaultdict as _dd
+            _per_day: dict = _dd(int)
+            for _s in slots:
+                _per_day[_s.start_time.date()] += 1
+            for _day in sorted(_per_day):
                 logger.info(
-                    "_check_availability_acuity: found %d slot(s) for %s within %d days",
-                    len(slots), location, window,
+                    "_check_availability_acuity: %s — %d raw slot(s) from Acuity",
+                    _day, _per_day[_day],
                 )
-                break
-            else:
-                logger.info(
-                    "_check_availability_acuity: no slots for %s in %d days — widening search",
-                    location, window,
-                )
+            logger.info(
+                "_check_availability_acuity: %d total raw slot(s) for %s over %d days",
+                len(slots), location, used_window,
+            )
+        else:
+            logger.info(
+                "_check_availability_acuity: no slots for %s in %d days",
+                location, used_window,
+            )
 
         # ── Post-fetch filters ─────────────────────────────────────────────
         # 1. Minimum lead-time filter: drop slots starting within 2 hours of now.
