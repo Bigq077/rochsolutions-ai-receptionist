@@ -297,13 +297,33 @@ class CallRunner:
                     responses = self.scenario.get("responses", [])
                     consecutive_silence = 0
                     for i, response in enumerate(responses):
-                        text = response if isinstance(response, str) else response.get("text", "")
+                        # response can be a plain string OR a dict:
+                        #   {"text": "mm", "via_filter": True}
+                        # via_filter=True routes the text through _is_garbage_transcript
+                        # on the server side — so noise-only input is dropped as it
+                        # would be in production, and Susie waits for the silence timer.
+                        if isinstance(response, dict):
+                            text = response.get("text", "")
+                            via_filter = bool(response.get("via_filter", False))
+                        else:
+                            text = response
+                            via_filter = False
+
                         if text.strip():
                             consecutive_silence = 0
-                            wait = TURN_WAIT_SECONDS
                             if i < len(self.test_said):
                                 self.test_said[i]["timestamp"] = time.time()
-                            await self._inject_transcript(fake_call_sid, text, i)
+                            was_injected = await self._inject_transcript(
+                                fake_call_sid, text, i, via_filter=via_filter
+                            )
+                            if not was_injected:
+                                # Garbage was filtered — Susie didn't receive the text.
+                                # The silence handler will fire a re-ask after ~35 s.
+                                # Wait 40 s so the re-ask has time to play before we
+                                # inject the next (real) response.
+                                wait = 40
+                            else:
+                                wait = TURN_WAIT_SECONDS
                         else:
                             # Empty response = deliberate silence.
                             # Window 1 fires at ~35 s → first silence waits 45 s (10 s margin).
@@ -550,19 +570,30 @@ class CallRunner:
             logger.warning("[%s] Hang-up via REST failed: %r", self.scenario["id"], exc)
 
     async def _inject_transcript(
-        self, inbound_sid: str, text: str, turn_index: int
-    ) -> None:
-        """POST a patient utterance to Susie's inject-transcript endpoint."""
+        self, inbound_sid: str, text: str, turn_index: int, via_filter: bool = False
+    ) -> bool:
+        """POST a patient utterance to Susie's inject-transcript endpoint.
+
+        Returns True if the text was injected normally, False if the server's
+        garbage filter dropped it (via_filter=True and text was noise-only).
+        """
         url = f"{RENDER_SERVER_URL}/ms/test/inject-transcript/{inbound_sid}"
         logger.info(
-            "[%s] Injecting turn %d → %s: %.60s",
+            "[%s] Injecting turn %d → %s: %.60s%s",
             self.scenario["id"], turn_index, inbound_sid[:8], text,
+            " [via_filter]" if via_filter else "",
         )
         for attempt in range(2):
             try:
                 async with httpx.AsyncClient(timeout=15) as http:
-                    resp = await http.post(url, json={"text": text})
+                    resp = await http.post(url, json={"text": text, "via_filter": via_filter})
                     data = resp.json()
+                    if data.get("filtered"):
+                        logger.info(
+                            "[%s] Turn %d filtered as garbage (via_filter=True): %r",
+                            self.scenario["id"], turn_index, text,
+                        )
+                        return False  # was garbage-filtered — caller waits for silence re-ask
                     if data.get("ok"):
                         diag = data.get("diag", {})
                         logger.info(
@@ -592,6 +623,7 @@ class CallRunner:
                     "[%s] Inject turn %d error: %r", self.scenario["id"], turn_index, exc
                 )
                 break  # non-connection errors — don't retry
+        return True  # injected normally (or errored — caller proceeds with normal wait)
 
     # ── Audio generation ─────────────────────────────────────────────────────
 

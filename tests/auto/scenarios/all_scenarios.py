@@ -1393,6 +1393,99 @@ SCENARIOS = [
         },
     },
 
+    # ============================================================
+    # PHASE 14 — STT GARBAGE FILTER
+    # Responses with {"text": "...", "via_filter": True} are routed through
+    # _is_garbage_transcript() on the server.  Noise-only text is dropped
+    # and Susie fires a silence re-ask — just as with real STT garbage.
+    # ============================================================
+
+    {
+        "id": "14.1",
+        "phase": "Phase 14 — STT Garbage Filter",
+        "name": "Noise-only input → re-ask → real answer",
+        "responses": [
+            {"text": "mm", "via_filter": True},   # filtered → silence → re-ask
+            "I have back pain",                    # real answer after re-ask
+            "Yes",
+            "No",
+            "Next week mornings",
+            "First one",
+            "Yes",
+            "John Smith",
+            "Yes",
+        ],
+        "expected": {
+            "susie_reasks": True,
+            "reask_contains": "catch",
+            "flow_completed": True,
+            "booking_confirmed": True,
+        },
+    },
+
+    {
+        "id": "14.2",
+        "phase": "Phase 14 — STT Garbage Filter",
+        "name": "Filler sounds filtered, flow still completes",
+        "responses": [
+            {"text": "uh huh", "via_filter": True},  # filtered
+            "Shoulder pain",
+            "Yeah",
+            "No",
+            "Any morning next week",
+            "Second one",
+            "Yes",
+            "Jane Doe",
+            "Yes",
+        ],
+        "expected": {
+            "susie_reasks": True,
+            "flow_completed": True,
+        },
+    },
+
+    {
+        "id": "14.3",
+        "phase": "Phase 14 — STT Garbage Filter",
+        "name": "Phone number survives filter (digit-heavy allowed through)",
+        "responses": [
+            "Back pain",
+            "Yes",
+            "No",
+            "Next week",
+            "First",
+            "Yes",
+            "Alice Brown",
+            {"text": "07502 112233", "via_filter": True},  # digits → NOT filtered
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+        },
+    },
+
+    {
+        "id": "14.4",
+        "phase": "Phase 14 — STT Garbage Filter",
+        "name": "Multiple noise turns then real answer",
+        "responses": [
+            {"text": "hmm", "via_filter": True},   # filtered
+            {"text": "er", "via_filter": True},    # filtered again
+            "Knee pain",
+            "Yes",
+            "No",
+            "Mornings",
+            "First",
+            "Yes",
+            "Tom Wilson",
+            "Yes",
+        ],
+        "expected": {
+            "susie_reasks": True,
+            "flow_completed": True,
+        },
+    },
+
 ]
 
 # ---------------------------------------------------------------------------

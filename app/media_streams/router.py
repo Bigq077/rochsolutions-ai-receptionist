@@ -60,7 +60,7 @@ from .config import (
     LEGACY_VOICE_URL,
 )
 from .connection import WebSocketCallHandler, _active_handlers
-from .stt_stream import _mask_key, _close_info
+from .stt_stream import _mask_key, _close_info, _is_garbage_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -325,9 +325,17 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
     except Exception:
         body = {}
     text = (body.get("text") or "").strip()
+    via_filter: bool = bool(body.get("via_filter", False))
 
     if not text:
         return JSONResponse({"ok": False, "error": "empty text"}, status_code=400)
+
+    # If the caller requested STT-style filtering, run the garbage filter.
+    # This simulates what stt_stream.py does before putting text on the queue —
+    # so test scenarios can verify that noise-only input is dropped correctly.
+    if via_filter and _is_garbage_transcript(text):
+        logger.info("[ms_inject] via_filter=True — garbage dropped: %r", text)
+        return JSONResponse({"ok": True, "filtered": True, "text": text})
 
     handler = _active_handlers.get(call_sid)
     if handler is None:
