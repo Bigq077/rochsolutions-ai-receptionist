@@ -567,24 +567,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 14,
         "state": "CONFIRM_BOOKING",
-        "question": None,   # LLM generates this
+        "question": None,   # built deterministically in ask_current_question
         "answer_field": "booking_confirmed",
-        "use_llm": True,
-        "allow_tools": False,   # booking already collected — no tool calls needed
-        "llm_instruction": (
-            "CRITICAL: DO NOT call any tools. DO NOT call book_appointment or any "
-            "other function. The booking details have already been collected.\n"
-            "Confirm the booking in TWO short spoken beats — natural, warm, receptionist-like:\n"
-            "Beat 1: Confirm what's been booked. "
-            "Example: 'Lovely — I've got you in for a physiotherapy assessment on {selected_slot_speech}.'\n"
-            "Beat 2: Confirm the contact number and close. "
-            "Example: 'I'll send the confirmation to {phone_number}. Does everything sound right?'\n"
-            "You may use the patient name {full_name} naturally in beat 1 if it flows well "
-            "(e.g. 'I've got you in, Sarah') — but do not repeat it twice.\n"
-            "Do not say 'Lovely' more than once. Do not say 'Great' and 'Lovely' together.\n"
-            "Do NOT mention any booking system, errors, hiccups, or technical issues.\n"
-            "Maximum 3 sentences total — keep it brief and human."
-        ),
+        "use_llm": False,   # Fix D: short deterministic close — no LLM needed
+        "allow_tools": False,
+        "llm_instruction": None,
         "extract": "none",
     },
 ]
@@ -1527,6 +1514,20 @@ class FlowEngine:
                     )
         else:
             self.session["question_asked_this_turn"] = True
+            # Fix D: CONFIRM_BOOKING — short deterministic close (no LLM)
+            if step["state"] == "CONFIRM_BOOKING":
+                _slot_cb = (
+                    self.session.get("selected_slot_speech")
+                    or self.session.get("selected_slot")
+                    or "your appointment"
+                )
+                question_text = (
+                    f"Lovely — you're all booked in for {_slot_cb} at our Alcester clinic. "
+                    "I'll send a confirmation text to your number. "
+                    "Is there anything else I can help with?"
+                )
+                self.session["booking_confirmed"] = True
+                logger.info("[ms_flow] CONFIRM_BOOKING deterministic — booking_confirmed=True")
             # CONFIRM_PHONE with Twilio caller-ID: read back the digits so
             # number_confirmed_verbally passes in the evaluator.
             if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
@@ -1831,6 +1832,42 @@ class FlowEngine:
         _PHONE_COLLECT_STATES = ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")
         if step["state"] in _PHONE_COLLECT_STATES and self.session.get("phone_readback_pending"):
             await self._handle_phone_readback_confirmation(text, transcript, step)
+            return
+
+        # ── NAME READBACK CONFIRMATION (Fix C): awaiting yes/no on name ─────────
+        _NAME_COLLECT_STATES = (
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        )
+        if step["state"] in _NAME_COLLECT_STATES and self.session.get("name_readback_pending"):
+            _nr_yes = any(p in text for p in (
+                "yes", "yeah", "yep", "yup", "yeh", "ya", "correct",
+                "right", "that's right", "thats right", "aye", "ok", "okay",
+                "that's it", "thats it", "spot on", "that's me", "thats me",
+            ))
+            _nr_no  = any(p in text for p in (
+                "no", "nope", "nah", "wrong", "that's not", "thats not",
+                "not right", "different", "incorrect", "not me",
+            ))
+            if _nr_yes:
+                self.session["name_readback_pending"] = False
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] name readback confirmed — advancing")
+                await self.ask_current_question()
+            elif _nr_no:
+                self.session["name_readback_pending"] = False
+                self.session["full_name"] = None
+                col = self.session.setdefault("collected", {})
+                col.pop("full_name", None)
+                col.pop("name", None)
+                phrase = "Sorry about that — could you say your name again?"
+                await self._tts.put(phrase)
+                self.session["last_question"] = phrase
+                logger.info("[ms_flow] name readback rejected — re-asking")
+            else:
+                # Ambiguous — replay the question
+                lq = self.session.get("last_question", "Was that right?")
+                await self._tts.put(lq)
             return
 
         # ── GLOBAL NAME CORRECTION (BUG 4/5/6) ─────────────────────────────────
@@ -2271,6 +2308,95 @@ class FlowEngine:
                         step["state"], _ordinal_idx,
                     )
 
+            # ── DIRECT TIME MATCHING (Fix A) ──────────────────────────────────
+            # Handles "three o'clock in the afternoon suits me", "2 pm", "3 o'clock"
+            # etc. when ordinal matching failed.  Strips filler, parses the spoken
+            # hour, then matches against slot_times for the chosen day.
+            # Priority: digit > word.  Afternoon indicator shifts word hours < 12.
+            import re as _re_dt
+            _FILLER_DT = (
+                "i said ", "said ", "suits me", "for me", "that works",
+                "works for me", "works", "please", "o'clock", "oclock",
+            )
+            _txt_dt = text
+            for _f in _FILLER_DT:
+                _txt_dt = _txt_dt.replace(_f, " ")
+            _txt_dt = " ".join(_txt_dt.split())
+
+            _avail_dt  = self.session.get("available_days", [])
+            _chosen_dt = self.session.get("chosen_day", "")
+            _target_dt = _find_chosen_day_entry(_avail_dt, _chosen_dt)
+            if _target_dt and _target_dt.get("slots"):
+                _slot_times_dt = _target_dt.get("slot_times", [])
+                _matched_hour: Optional[int] = None
+
+                # 1. Digit match: "3 pm", "2pm", "14:00", "3"
+                _dm = _re_dt.search(r'\b(\d{1,2})(?::\d{2})?\s*(?:pm|am)?\b', _txt_dt)
+                if _dm:
+                    _h = int(_dm.group(1))
+                    if "pm" in _txt_dt and _h < 12:
+                        _h += 12
+                    elif "am" in _txt_dt and _h == 12:
+                        _h = 0
+                    if 7 <= _h <= 20:   # sanity: clinic hours
+                        _matched_hour = _h
+
+                # 2. Word match: "three", "two", "half past three" etc.
+                if _matched_hour is None:
+                    _HOUR_WORDS_DT = {
+                        "one": 1, "two": 2, "three": 3, "four": 4,
+                        "five": 5, "six": 6, "seven": 7, "eight": 8,
+                        "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+                    }
+                    for _word, _n in _HOUR_WORDS_DT.items():
+                        if _re_dt.search(r'\b' + _word + r'\b', _txt_dt):
+                            _h2 = _n
+                            # Shift to PM if afternoon/evening/pm in ORIGINAL text
+                            if any(p in text for p in ("afternoon", "evening", "pm")):
+                                if _h2 < 12:
+                                    _h2 += 12
+                            elif _h2 < 8:
+                                # Clinic opens ≥08:00; small hour words mean PM
+                                _h2 += 12
+                            if 7 <= _h2 <= 20:
+                                _matched_hour = _h2
+                            break
+
+                if _matched_hour is not None:
+                    _slot_idx_dt: Optional[int] = None
+                    for _si, _st in enumerate(_slot_times_dt):
+                        try:
+                            if int(_st.split(":")[0]) == _matched_hour:
+                                _slot_idx_dt = _si
+                                break
+                        except (ValueError, IndexError):
+                            pass
+                    if _slot_idx_dt is not None:
+                        _slot_iso_dt   = _target_dt["slots"][_slot_idx_dt].get("start", "")
+                        from app.vagueness_detector import _time_to_speech as _t2s_dt
+                        _spoken_dt     = _t2s_dt(_slot_times_dt[_slot_idx_dt])
+                        _day_label_dt  = _target_dt.get("day_label", "")
+                        _slot_speech_dt = f"{_day_label_dt} at {_spoken_dt}" if _day_label_dt else _spoken_dt
+                        self.session["selected_slot"]            = _slot_iso_dt
+                        self.session["selected_slot_speech"]     = _slot_speech_dt
+                        self.session["slot_pending_confirmation"] = True
+                        _conf_dt = (
+                            f"Just to confirm — you'd like the appointment on "
+                            f"{_slot_speech_dt}. Is that right?"
+                        )
+                        await self._tts.put(_conf_dt)
+                        if _is_question_worth_storing(_conf_dt):
+                            self.session["last_question"] = _conf_dt
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _conf_dt}
+                        )
+                        logger.info(
+                            "[ms_flow] %s: direct time match hour=%d → idx=%d "
+                            "slot=%r (LLM avoided)",
+                            step["state"], _matched_hour, _slot_idx_dt, _slot_iso_dt,
+                        )
+                        return
+
         # ── CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: deterministic YES/NO ──────
         # Without this gate "yes use my number" can match general_query intent
         # in _detect_intent and be routed to the LLM interrupt path.
@@ -2527,7 +2653,23 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] retry >= 3 on %r — graceful exit triggered", phrase_key)
                 return
-            if count == 2:
+            # Fix B: for PRESENT_TIMES, build a slot-specific retry prompt from
+            # the known offered slot times instead of the generic "morning or afternoon?"
+            if (count == 1
+                    and step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")):
+                _avail_b  = self.session.get("available_days", [])
+                _chosen_b = self.session.get("chosen_day", "")
+                _target_b = _find_chosen_day_entry(_avail_b, _chosen_b)
+                _times_b  = (_target_b or {}).get("slot_times", [])[:3]
+                if _times_b:
+                    from app.vagueness_detector import _time_to_speech as _t2s_b
+                    _opts_b = " or ".join(_t2s_b(t) for t in _times_b)
+                    phrase = f"Sorry — did you want {_opts_b}?"
+                else:
+                    phrase = RETRY_PHRASES["first_retry"].get(
+                        phrase_key, RETRY_PHRASES["first_retry"]["default"]
+                    )
+            elif count == 2:
                 phrase = RETRY_PHRASES["second_retry"]["default"]
             else:
                 phrase = RETRY_PHRASES["first_retry"].get(
@@ -2598,6 +2740,18 @@ class FlowEngine:
                 # Persist tracker state to serialisable session mirrors
                 self.session["name_tracker_name"] = self._name_tracker._name
                 self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
+                # Fix C: confirm the captured name before advancing — guards against
+                # STT mishear being silently accepted.
+                if step["state"] in (
+                    "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                    "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                ):
+                    _name_rb = f"Just to check — was that {answer.strip()}?"
+                    await self._tts.put(_name_rb)
+                    self.session["last_question"]       = _name_rb
+                    self.session["name_readback_pending"] = True
+                    logger.info("[ms_flow] name readback: %r → %r", answer, _name_rb[:60])
+                    return  # don't advance until caller confirms
             elif step["answer_field"] == "phone_number":
                 col["phone"] = answer
                 # Phone readback: speak the number back slowly and ask for confirmation.
@@ -3045,18 +3199,11 @@ class FlowEngine:
         )
         reason = self.session.get("reason") or "your appointment"
 
-        # Truncate reason if the combined string would exceed 400 chars
-        candidate = (
-            f"Let me just read that back — {name}, booked in for {slot} "
-            f"for {reason}. Does that all sound right?"
-        )
-        if len(candidate) > 400:
-            words  = reason.split()[:5]
-            reason = " ".join(words) + "..."
-
+        # Fix D: short readback — drop the verbose preamble and reason to reduce
+        # interruption risk.  Location is fixed for this deployment (Alcester).
         phrase = (
-            f"Let me just read that back — {name}, booked in for {slot} "
-            f"for {reason}. Does that all sound right?"
+            f"Just to confirm — {name}, you're booked in for {slot} "
+            "at our Alcester clinic. Does that sound right?"
         )
         await self._tts.put(phrase)
         self.session.setdefault("conversation_history", []).append(
