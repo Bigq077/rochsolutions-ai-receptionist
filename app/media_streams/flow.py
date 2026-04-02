@@ -628,6 +628,12 @@ def _classify_confirm_assessment(text: str) -> str:
         "actually it's my", "actually it is my",
         "no it's my", "no it is my", "no, it's my",
         "not my",
+        # Barge-in / noisy correction fragments — must sit before the NO check
+        # so "no no i didn't see my ankle" is routed here, not to graceful close.
+        "no no i", "no i didn't", "no i said",
+        "i didn't say", "i didn't see",
+        "didn't see my", "didn't say my",
+        "i never said", "i said it was my",
     )
     if any(p in text for p in _CORRECTION):
         return "correction"
@@ -657,12 +663,32 @@ def _classify_confirm_assessment(text: str) -> str:
             return "yes"
 
     # 2 ── Explicit no ───────────────────────────────────────────────────────
+    # "no " is intentionally absent from the main tuple — it is handled below
+    # with a co-occurrence guard to stop noisy barge-in speech like
+    # "no no i didn't see my ankle no no" from triggering graceful close.
     _NO = (
-        "no ", "nope", "nah", "not really", "don't think so", "dont think so",
+        "nope", "nah", "not really", "don't think so", "dont think so",
         "not sure about that", "rather not", "prefer not", "not for me",
         "something else", "different option",
     )
     if any(p in text for p in _NO):
+        return "no"
+    # "no " / bare "no": only a clean rejection when nothing else explains the turn.
+    # If the utterance also contains a body-part word or a repair phrase it is
+    # far more likely to be a correction than a booking refusal.
+    if "no " in text or text == "no":
+        _NO_GUARD = (
+            "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
+            "elbow", "leg", "arm", "foot", "heel", "spine", "head",
+            "i didn't", "didn't say", "didn't see", "didn't mean",
+            "i said", "not my",
+        )
+        if any(g in text for g in _NO_GUARD):
+            logger.info(
+                "[ms_flow] CONFIRM_ASSESSMENT: 'no' co-occurs with repair/body-part "
+                "context — reclassifying to additive_detail (graceful close suppressed)",
+            )
+            return "additive_detail"
         return "no"
 
     # 3 ── Frustration / objection ────────────────────────────────────────────

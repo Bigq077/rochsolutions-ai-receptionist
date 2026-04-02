@@ -449,6 +449,24 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     def _do_transfer():
         try:
             client = TwilioClient(account_sid, auth_token)
+            # Guard: verify the call is still in-progress before redirecting.
+            # Twilio returns HTTP 400 "Call is not in-progress. Cannot redirect."
+            # when the call has already ended, been cancelled, or is in a
+            # non-redirectable state (e.g. ringing, queued, completed).
+            try:
+                call_status = client.calls(call_sid).fetch().status
+            except Exception as _fe:
+                logger.warning(
+                    "[realtime] transfer skipped — could not fetch call status: %r "
+                    "call_sid=%s", _fe, call_sid,
+                )
+                return
+            if call_status != "in-progress":
+                logger.warning(
+                    "[realtime] transfer skipped — call not in-progress "
+                    "(status=%r call_sid=%s)", call_status, call_sid,
+                )
+                return
             client.calls(call_sid).update(twiml=twiml)
             logger.info("[realtime] transfer initiated call_sid=%s → %s", call_sid, transfer_phone)
         except Exception as exc:

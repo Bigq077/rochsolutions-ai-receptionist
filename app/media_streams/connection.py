@@ -1122,11 +1122,12 @@ class WebSocketCallHandler:
                     if _last_q:
                         logger.info("[ms_conn] last_question stored: %r", _last_q[:120])
                         if flow.is_complete():
-                            # BUG 3 FIX: flow is done — do NOT re-arm silence handler.
-                            # Prevents stale last_question being replayed after the
-                            # booking/cancel/reschedule flow has already completed.
+                            # Flow is done — do NOT re-arm silence handler.
+                            # Also zero the handler's stored question so the silence
+                            # timer cannot fire a stale re-ask after the flow completes.
+                            self._silence_handler.last_question = ""
                             logger.info(
-                                "[ms_conn] flow complete — silence handler NOT re-armed "
+                                "[ms_conn] flow complete — silence handler cleared "
                                 "(stale question suppressed: %r)", _last_q[:80]
                             )
                         else:
@@ -1539,8 +1540,13 @@ class WebSocketCallHandler:
         history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
         history.append({"role": "assistant", "content": greeting})
         self.session["last_bot_prompt"]    = greeting
-        self.session["last_question"]      = greeting   # arm silence re-ask immediately
-        self.session["greeting_delivered"] = True
+        # Clear any stale last_question that may have been loaded from Redis
+        # for this call_sid (e.g. previous call left "Just to confirm — shall I
+        # use the number..." and the session was reloaded).  The silence handler
+        # is also zeroed so no cross-call question can leak into the re-ask path.
+        self.session["last_question"]       = ""
+        self._silence_handler.last_question = ""
+        self.session["greeting_delivered"]  = True
 
         # State stays at GREETING after the initial greeting plays.
         # The first caller utterance triggers DETECT_INTENT → booking flow.
