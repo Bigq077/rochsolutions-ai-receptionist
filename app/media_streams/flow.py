@@ -241,6 +241,84 @@ def _extract_question_sentence(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# PRESENT_DAYS / PRESENT_TIMES deterministic phrase builders
+# ---------------------------------------------------------------------------
+
+def _build_day_list_phrase(available_days: list) -> str:
+    """
+    Build the spoken day-list from up to 3 entries in available_days.
+
+    Called after check_availability runs — produces a natural UK receptionist
+    sentence that the caller hears instead of an LLM-generated one.
+
+    Returns empty string when available_days is empty (error case — LLM has
+    already spoken the error message).
+    """
+    days = [d["day_label"] for d in available_days[:3] if d.get("day_label")]
+    if not days:
+        return ""
+    if len(days) == 1:
+        return f"The next opening I have is {days[0]} — would that work for you?"
+    if len(days) == 2:
+        return f"I've got {days[0]} or {days[1]} — which suits you better?"
+    return f"I can do {days[0]}, {days[1]}, or {days[2]} — which of those works for you?"
+
+
+def _build_times_phrase(day_entry: dict) -> str:
+    """
+    Build the spoken time-list for a chosen day's slots.
+
+    Up to 4 times are listed. Returns empty string when no slot_times.
+    Uses _time_to_speech from vagueness_detector (no LLM, < 1ms).
+    """
+    from app.vagueness_detector import _time_to_speech as _t2s
+    day_label  = day_entry.get("day_label", "")
+    slot_times = day_entry.get("slot_times", [])[:4]
+    if not slot_times:
+        return ""
+    spoken = [_t2s(t) for t in slot_times]
+    if len(spoken) == 1:
+        return (
+            f"The earliest I have on {day_label} is {spoken[0]} — does that work?"
+        )
+    if len(spoken) == 2:
+        return (
+            f"On {day_label} I've got {spoken[0]} or {spoken[1]} — which suits you?"
+        )
+    if len(spoken) == 3:
+        return (
+            f"On {day_label} I've got {spoken[0]}, {spoken[1]}, or {spoken[2]}"
+            f" — which of those works?"
+        )
+    return (
+        f"On {day_label} I've got {spoken[0]}, {spoken[1]}, {spoken[2]}, or {spoken[3]}"
+        f" — which of those works?"
+    )
+
+
+def _find_chosen_day_entry(available_days: list, chosen_day: str) -> Optional[dict]:
+    """
+    Return the available_days entry whose day_label best matches chosen_day.
+
+    Matching strategy (fast, keyword-only):
+      1. Any word > 3 chars from day_label found in chosen_day text → match.
+      2. Fallback: first entry in available_days (used when caller said
+         "yeah that works" / "sounds good" — no day name in transcript).
+
+    Returns None only when available_days is empty.
+    """
+    if not available_days:
+        return None
+    chosen_lower = chosen_day.lower()
+    for day in available_days:
+        label_lower = day.get("day_label", "").lower()
+        significant = [w for w in label_lower.split() if len(w) > 3]
+        if any(w in chosen_lower for w in significant):
+            return day
+    return available_days[0]
+
+
+# ---------------------------------------------------------------------------
 # Flow definitions
 # ---------------------------------------------------------------------------
 
@@ -407,26 +485,19 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "Sound like a warm, efficient UK clinic receptionist — not a booking system.\n"
             "Say 'Just bear with me one moment...' then immediately call "
             "check_availability with location='{selected_location}', duration_minutes=50.\n"
-            "After the tool returns, read available_days and present ONLY the first 3 days "
-            "— do NOT list any times yet. Use the day_label field from each entry "
-            "— NEVER output placeholder text like [day1] or [day2].\n"
-            "3 days: 'I can do [day1], [day2], or [day3] — which of those works for you?' "
-            "(substitute real day_label values)\n"
-            "2 days: 'I've got [day1] or [day2] — which suits you better?' "
-            "(substitute real values). If availability is thin you may add: "
-            "'It's a little busy over the next few days, but...'\n"
-            "1 day: 'The next opening I have is [day1] — would that work for you?' "
-            "(substitute real value)\n"
-            "If the tool returns error='lead_time_limited': say 'We\\'re a little limited today — "
+            "After the tool returns, say NOTHING further — do NOT read out any day names, "
+            "do NOT present times, do NOT say anything else. "
+            "The system will announce the available days automatically. "
+            "Stop as soon as the tool call completes.\n"
+            "EXCEPTION — only speak if the tool returned an error:\n"
+            "  error='lead_time_limited': say 'We\\'re a little limited today — "
             "let me check what I have coming up shortly' then re-call check_availability with "
             "the same parameters. If still limited, say 'It looks like today is quite full — "
             "the next slot might be tomorrow or later this week. Let me take your details and "
             "the team will call you to confirm.'\n"
-            "If the tool returns error='no_availability' or any other error: say 'I\\'m not seeing "
+            "  error='no_availability' or any other error: say 'I\\'m not seeing "
             "clear availability at the moment — let me take your name and number and get the "
-            "team to call you back.'\n"
-            "Never list times here. Never say 'I have found X slots'. "
-            "Never repeat placeholder names like [day1] — always substitute the real date."
+            "team to call you back.'"
         ),
     },
     {
@@ -842,20 +913,15 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "Sound like a warm, efficient UK clinic receptionist — not a booking system.\n"
             "Say 'Just bear with me one moment...' then call "
             "check_availability with location='alcester', duration_minutes=50.\n"
-            "After the tool returns, read available_days and present ONLY the first 3 days "
-            "— do NOT list any times yet. Use the day_label field from each entry "
-            "— NEVER output placeholder text like [day1] or [day2].\n"
-            "3 days: 'I can do [day1], [day2], or [day3] — which of those works for you?' "
-            "(substitute real day_label values)\n"
-            "2 days: 'I've got [day1] or [day2] — which suits you better?' "
-            "(substitute real values). If availability is thin you may add: "
-            "'It's a little busy over the next few days, but...'\n"
-            "1 day: 'The next opening I have is [day1] — would that work for you?' (use real value)\n"
-            "If the tool returns error='lead_time_limited': say 'Today looks quite full — "
+            "After the tool returns, say NOTHING further — do NOT read out any day names, "
+            "do NOT present times, do NOT say anything else. "
+            "The system will announce the available days automatically. "
+            "Stop as soon as the tool call completes.\n"
+            "EXCEPTION — only speak if the tool returned an error:\n"
+            "  error='lead_time_limited': say 'Today looks quite full — "
             "let me take your details and the team will call you to sort out a new time.'\n"
-            "If the tool returns error='no_availability' or any other error: say 'I\\'m not seeing "
-            "clear availability at the moment — let me take your details and have the team call you back.'\n"
-            "Never list times here. Never repeat placeholder names — always use the real date."
+            "  error='no_availability' or any other error: say 'I\\'m not seeing "
+            "clear availability at the moment — let me take your details and have the team call you back.'"
         ),
     },
     {
@@ -1377,6 +1443,28 @@ class FlowEngine:
                         "[ms_flow] slots_offered saved: %d slots",
                         len(offered),
                     )
+                # BUG 1 FIX — deterministic day-list presentation.
+                # The LLM instruction now stops after the tool call; we emit the
+                # day list here using _build_day_list_phrase() so the count is
+                # always correct regardless of LLM template choice.
+                _avail = self.session.get("available_days", [])
+                _day_phrase = _build_day_list_phrase(_avail)
+                if _day_phrase:
+                    await self._tts.put(_day_phrase)
+                    self.session["last_question"] = _day_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _day_phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] %s deterministic day phrase: %r",
+                        step["state"], _day_phrase[:100],
+                    )
+                else:
+                    # available_days empty — LLM already spoke the error message.
+                    logger.info(
+                        "[ms_flow] %s: no available_days — LLM handled error/empty case",
+                        step["state"],
+                    )
         else:
             self.session["question_asked_this_turn"] = True
             # CONFIRM_PHONE with Twilio caller-ID: read back the digits so
@@ -1831,6 +1919,116 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+        # ── PRESENT_TIMES / PRESENT_TIMES_RESCHEDULE: deterministic parsing ────
+        # BUG 2: Ordinal expressions ("the last option", "first one", "second")
+        #        must map directly to a slot — no interrupt / no LLM.
+        # BUG 3: Repeat / clarification requests ("i can't remember", "say that
+        #        again") must replay the stored slot list — no interrupt / no LLM.
+        if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+            # ── REPEAT / CLARIFICATION ──
+            _PT_REPEAT = (
+                "can't remember", "cannot remember", "can not remember",
+                "didn't catch", "didn't hear", "didn't get that",
+                "say that again", "say it again", "repeat that", "repeat it",
+                "repeat the", "again please", "say again",
+                "what were", "what was", "what are the times",
+                "what times", "the times again", "options again",
+                "what options", "remind me", "tell me again",
+            )
+            _is_pt_repeat = any(p in text for p in _PT_REPEAT)
+            if _is_pt_repeat:
+                _avail_r   = self.session.get("available_days", [])
+                _chosen_r  = self.session.get("chosen_day", "")
+                _target_r  = _find_chosen_day_entry(_avail_r, _chosen_r)
+                _rpt_phrase = _build_times_phrase(_target_r) if _target_r else ""
+                if _rpt_phrase:
+                    await self._tts.put(_rpt_phrase)
+                    self.session["last_question"] = _rpt_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rpt_phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: repeat request → replaying times phrase: %r",
+                        step["state"], _rpt_phrase[:80],
+                    )
+                    return  # keep same flow_step — wait for slot choice
+
+            # ── ORDINAL SELECTION ──
+            # Longest-string patterns checked first to avoid "first" matching
+            # inside "first one" or "the first option".
+            _PT_ORDINALS: list = [
+                # Exact/positional ordinals → slot index (negative = from end)
+                ("the first option", 0), ("first option", 0),
+                ("the second option", 1), ("second option", 1),
+                ("the third option", 2), ("third option", 2),
+                ("the fourth option", 3), ("fourth option", 3),
+                ("the last option", -1), ("last option", -1),
+                ("the final option", -1), ("final option", -1),
+                ("the first one", 0), ("first one", 0),
+                ("the second one", 1), ("second one", 1),
+                ("the third one", 2), ("third one", 2),
+                ("the fourth one", 3), ("fourth one", 3),
+                ("the last one", -1), ("last one", -1),
+                ("the final one", -1), ("final one", -1),
+                ("the first", 0), ("the second", 1),
+                ("the third", 2), ("the fourth", 3),
+                ("the last", -1), ("the final", -1),
+                ("first", 0), ("second", 1), ("third", 2), ("fourth", 3),
+                ("last", -1), ("final", -1),
+                # Relative position
+                ("the earlier one", 0), ("the earlier", 0), ("earlier one", 0), ("earlier", 0),
+                ("earliest", 0), ("the earliest", 0),
+                ("the later one", -1), ("the later", -1), ("later one", -1), ("later", -1),
+                ("latest", -1), ("the latest", -1),
+            ]
+            _ordinal_idx: Optional[int] = None
+            for _pat, _idx in _PT_ORDINALS:
+                if _pat in text:
+                    _ordinal_idx = _idx
+                    break
+            if _ordinal_idx is not None:
+                _avail_o   = self.session.get("available_days", [])
+                _chosen_o  = self.session.get("chosen_day", "")
+                _target_o  = _find_chosen_day_entry(_avail_o, _chosen_o)
+                if _target_o and _target_o.get("slots"):
+                    _slots_o      = _target_o["slots"]
+                    _times_o      = _target_o.get("slot_times", [])
+                    _n            = len(_slots_o)
+                    _resolved_idx = _ordinal_idx if _ordinal_idx >= 0 else max(0, _n + _ordinal_idx)
+                    _resolved_idx = min(_resolved_idx, _n - 1)
+                    _slot_iso_o   = _slots_o[_resolved_idx].get("start", "")
+                    _time_str_o   = _times_o[_resolved_idx] if _resolved_idx < len(_times_o) else ""
+                    # Build a short label for _format_slot_for_speech
+                    # day_label is e.g. "Thursday 2nd April"; we need "Thu 02 Apr at 09:00"
+                    # Use the raw ISO start directly for booking and natural speech for TTS.
+                    from app.vagueness_detector import _time_to_speech as _t2s_ord
+                    _spoken_time = _t2s_ord(_time_str_o) if _time_str_o else "that time"
+                    _day_label_o  = _target_o.get("day_label", "")
+                    _slot_speech_o = f"{_day_label_o} at {_spoken_time}" if _day_label_o else _spoken_time
+                    self.session["selected_slot"]        = _slot_iso_o
+                    self.session["selected_slot_speech"] = _slot_speech_o
+                    self.session["slot_pending_confirmation"] = True
+                    _conf_phrase = (
+                        f"Just to confirm — you'd like the appointment on {_slot_speech_o}. "
+                        "Is that right?"
+                    )
+                    await self._tts.put(_conf_phrase)
+                    if _is_question_worth_storing(_conf_phrase):
+                        self.session["last_question"] = _conf_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _conf_phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: ordinal %r → idx=%d slot=%r",
+                        step["state"], _ordinal_idx, _resolved_idx, _slot_iso_o,
+                    )
+                    return  # slot_pending_confirmation will be picked up on next turn
+                else:
+                    logger.info(
+                        "[ms_flow] %s: ordinal %r detected but no slot data — falling through",
+                        step["state"], _ordinal_idx,
+                    )
+
         # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
@@ -1870,6 +2068,12 @@ class FlowEngine:
                 # must not fire — the caller is trying to answer the day question.
                 "PRESENT_DAYS",
                 "PRESENT_DAYS_RESCHEDULE",
+                # PRESENT_TIMES / PRESENT_TIMES_RESCHEDULE — ordinal and repeat
+                # requests are handled by the priority block above.  Any utterance
+                # that reaches here is a time selection attempt.  general_query
+                # must not fire — the caller is trying to pick a slot.
+                "PRESENT_TIMES",
+                "PRESENT_TIMES_RESCHEDULE",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
