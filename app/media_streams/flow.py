@@ -1396,6 +1396,65 @@ class FlowEngine:
             )
             return
 
+        # ── PRESENT_DAYS: direct tool call — no LLM text in TTS path ────────────
+        # The LLM streaming path has a race: LLM preamble text reaches TTS before
+        # we can drain it.  Call check_availability directly so the ONLY spoken
+        # output is our deterministic day phrase — zero chance of LLM duplicate.
+        if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            self.session["question_asked_this_turn"] = True
+            if step["question"]:
+                await self._tts.put(step["question"])
+            from app.tools.receptionist_tools import _exec_check_availability
+            _pd_args = {
+                "location": self.session.get("selected_location", "alcester"),
+                "duration_minutes": 50,
+            }
+            try:
+                _pd_ca_result = await _exec_check_availability(_pd_args, self.session)
+            except Exception as _pd_err:
+                logger.error(
+                    "[ms_flow] %s: direct check_availability failed: %r",
+                    step["state"], _pd_err,
+                )
+                _pd_ca_result = {"error": str(_pd_err)}
+            _pd_offered = self.session.get("last_offered_slots") or []
+            if _pd_offered:
+                self.session["slots_offered"] = list(_pd_offered)
+                self.session["slots_count"]   = min(len(_pd_offered), 3)
+            _pd_avail      = self.session.get("available_days", [])
+            _pd_day_phrase = _build_day_list_phrase(_pd_avail)
+            if _pd_day_phrase:
+                await self._tts.put(_pd_day_phrase)
+                self.session["last_question"] = _pd_day_phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _pd_day_phrase}
+                )
+                logger.info(
+                    "[ms_flow] %s: direct tool → deterministic day phrase: %r",
+                    step["state"], _pd_day_phrase[:100],
+                )
+            else:
+                _pd_err_code = (_pd_ca_result or {}).get("error", "")
+                if _pd_err_code == "lead_time_limited":
+                    _pd_ep = (
+                        "We're a little limited right now — "
+                        "the team will call you to confirm a time."
+                    )
+                else:
+                    _pd_ep = (
+                        "I'm not seeing clear availability right now — "
+                        "let me take your details and the team will call you back."
+                    )
+                await self._tts.put(_pd_ep)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _pd_ep}
+                )
+                logger.info(
+                    "[ms_flow] %s: no available_days (error=%r)",
+                    step["state"], _pd_err_code,
+                )
+            return
+
         if step["use_llm"]:
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
             if step["question"]:
@@ -2055,15 +2114,72 @@ class FlowEngine:
                         transcript[:60],
                     )
                     return
-                # Valid correction — overwrite reason and regenerate assessment.
-                # Do NOT count as a retry — this is data repair, not a failed answer.
-                self.session["reason"] = transcript.strip()
-                self.session.setdefault("collected", {})["reason"] = transcript.strip()
+                # Valid correction — extract the clean reason before storing.
+                # "no you heard that wrong i said my left hand not my left ankle"
+                # → store "my left hand", not the whole messy sentence.
+                import re as _re_corr
+                _raw_corr   = transcript.strip()
+                _clean_corr: Optional[str] = None
+                # "i said X not Y" / "i said X instead of Y"
+                _cm = _re_corr.search(
+                    r'\bi said (?:it was |that it was )?(.+?)\s+(?:not|instead of)\s+',
+                    _raw_corr, _re_corr.IGNORECASE,
+                )
+                if _cm:
+                    _clean_corr = _cm.group(1).strip()
+                # "i meant (to say) X" — up to comma/not/end
+                if not _clean_corr:
+                    _cm = _re_corr.search(
+                        r'\bi meant (?:to say )?(.+?)(?:\s+not\s+|,|$)',
+                        _raw_corr, _re_corr.IGNORECASE,
+                    )
+                    if _cm:
+                        _clean_corr = _cm.group(1).strip()
+                # "it's X not Y"
+                if not _clean_corr:
+                    _cm = _re_corr.search(
+                        r"\bit'?s (.+?)\s+(?:not|instead of)\s+",
+                        _raw_corr, _re_corr.IGNORECASE,
+                    )
+                    if _cm:
+                        _clean_corr = _cm.group(1).strip()
+                # "my X" / "no my X not Y"
+                if not _clean_corr:
+                    _cm = _re_corr.search(
+                        r'\bmy ([a-z][\w\s]{1,30}?)(?:\s+not\s+|,|\.|$)',
+                        _raw_corr, _re_corr.IGNORECASE,
+                    )
+                    if _cm:
+                        _clean_corr = ("my " + _cm.group(1)).strip()
+                # Validate: extracted fragment needs clinical content
+                _has_corr_clin = (
+                    _clean_corr
+                    and any(w in _clean_corr.lower() for w in _CORRECTION_FLOOR_WORDS)
+                )
+                if _has_corr_clin:
+                    _store_reason = _clean_corr
+                elif any(w in _raw_corr.lower() for w in _CORRECTION_FLOOR_WORDS):
+                    # Extraction failed but full utterance has clinical content — use whole
+                    _store_reason = _raw_corr
+                else:
+                    # No extractable clinical content — re-ask
+                    phrase = "Sorry about that — could you describe your condition again?"
+                    await self._tts.put(phrase)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] CONFIRM_ASSESSMENT: correction with no extractable "
+                        "clinical content %r — re-asking",
+                        transcript[:60],
+                    )
+                    return
+                self.session["reason"] = _store_reason
+                self.session.setdefault("collected", {})["reason"] = _store_reason
                 logger.info(
-                    "[ms_flow] CONFIRM_ASSESSMENT: correction detected — "
-                    "reason updated to %r, regenerating assessment (LLM NOT avoided — "
-                    "intentional; CONFIRM_ASSESSMENT always uses LLM)",
-                    transcript[:60],
+                    "[ms_flow] CONFIRM_ASSESSMENT: correction — reason normalized "
+                    "from %r → %r, regenerating assessment",
+                    transcript[:60], _store_reason[:60],
                 )
                 # Re-run ask_current_question at the SAME step so the LLM
                 # regenerates an empathetic assessment for the corrected reason.
@@ -2214,6 +2330,47 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+            # ── NAMED DAY MATCH: normalize caller's choice against offered days ──
+            # Prevents raw text like "i take tuesday i take tuesday" from being
+            # stored verbatim as chosen_day via extract:"any".
+            # Only the first 3 entries in available_days are "offered" days.
+            _avail_nm = self.session.get("available_days", [])
+            _matched_nm: Optional[dict] = None
+            for _dentry_nm in _avail_nm[:3]:
+                _dlabel_nm = _dentry_nm.get("day_label", "")
+                _sig_nm    = [w.lower() for w in _dlabel_nm.split() if len(w) > 3]
+                if _sig_nm and any(w in text for w in _sig_nm):
+                    _matched_nm = _dentry_nm
+                    break
+            if _matched_nm:
+                _norm_nm = _matched_nm["day_label"]
+                self.session["chosen_day"] = _norm_nm
+                self.session.setdefault("collected", {})["chosen_day"] = _norm_nm
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] %s: named day matched %r → normalized %r",
+                    step["state"], transcript[:40], _norm_nm,
+                )
+                await self.ask_current_question()
+                return
+            else:
+                # No day match and not a YES — bounded reprompt unless vague
+                from app.vagueness_detector import is_vague_availability as _is_vague_nm
+                if not _is_vague_nm(transcript):
+                    _reprompt_nm = _build_day_list_phrase(_avail_nm)
+                    if _reprompt_nm:
+                        await self._tts.put(_reprompt_nm)
+                        self.session["last_question"] = _reprompt_nm
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _reprompt_nm}
+                        )
+                        logger.info(
+                            "[ms_flow] %s: no day match for %r — bounded reprompt",
+                            step["state"], transcript[:40],
+                        )
+                        return
+                # Vague availability — fall through to existing vague handler
+
         # ── PRESENT_TIMES / PRESENT_TIMES_RESCHEDULE: deterministic parsing ────
         # BUG 2: Ordinal expressions ("the last option", "first one", "second")
         #        must map directly to a slot — no interrupt / no LLM.
@@ -2247,6 +2404,63 @@ class FlowEngine:
                         step["state"], _rpt_phrase[:80],
                     )
                     return  # keep same flow_step — wait for slot choice
+
+            # ── SINGLE-SLOT CONFIRMATION MODE ────────────────────────────────
+            # When exactly one slot exists for the chosen day, YES-like responses
+            # confirm it directly; day-name repeats re-anchor to that slot.
+            # Both cases must be caught here before ordinal/time matching or LLM.
+            _avail_ss  = self.session.get("available_days", [])
+            _chosen_ss = self.session.get("chosen_day", "")
+            _target_ss = _find_chosen_day_entry(_avail_ss, _chosen_ss)
+            _slots_ss  = (_target_ss or {}).get("slots", [])
+            if len(_slots_ss) == 1:
+                from app.vagueness_detector import _time_to_speech as _t2s_ss
+                _time_ss   = ((_target_ss or {}).get("slot_times") or [""])[0]
+                _spoken_ss = _t2s_ss(_time_ss) if _time_ss else "that time"
+                _dlabel_ss = (_target_ss or {}).get("day_label", "")
+                _speech_ss = f"{_dlabel_ss} at {_spoken_ss}" if _dlabel_ss else _spoken_ss
+                _SS_YES = (
+                    "yes", "yeah", "yeh", "ya", "yep", "yup",
+                    "ok", "okay", "sure", "fine", "alright", "perfect",
+                    "that works", "that works for me", "sounds good",
+                    "sounds fine", "that sounds", "go ahead", "please",
+                )
+                if any(p in text for p in _SS_YES):
+                    self.session["selected_slot"]            = _slots_ss[0]["start"]
+                    self.session["selected_slot_speech"]     = _speech_ss
+                    self.session["slot_pending_confirmation"] = True
+                    _conf_ss = (
+                        f"Just to confirm — you'd like the appointment on "
+                        f"{_speech_ss}. Is that right?"
+                    )
+                    await self._tts.put(_conf_ss)
+                    if _is_question_worth_storing(_conf_ss):
+                        self.session["last_question"] = _conf_ss
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _conf_ss}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: single-slot YES → %r (LLM avoided)",
+                        step["state"], _slots_ss[0].get("start", "")[:40],
+                    )
+                    return
+                # Caller repeated the day name — re-anchor to the one available slot
+                _day_words_ss = [w.lower() for w in _dlabel_ss.split() if len(w) > 3]
+                if _day_words_ss and any(w in text for w in _day_words_ss):
+                    _reanchor_ss = (
+                        f"The only slot I have on {_dlabel_ss} is {_spoken_ss} — "
+                        "does that work for you?"
+                    )
+                    await self._tts.put(_reanchor_ss)
+                    self.session["last_question"] = _reanchor_ss
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _reanchor_ss}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: single-slot — day repeated, re-anchoring to %r",
+                        step["state"], _speech_ss,
+                    )
+                    return
 
             # ── ORDINAL SELECTION ──
             # Longest-string patterns checked first to avoid "first" matching
