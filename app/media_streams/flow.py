@@ -1771,6 +1771,17 @@ class FlowEngine:
                     "[ms_flow] NEW_OR_RETURNING: %r → step advanced to %d (interrupt bypassed)",
                     _nor_answer, step["step"] + 1,
                 )
+                # Emit the bridge ("No problem — let's get you sorted." / "Of course…")
+                # before cascading into the next step.  The next immediate step is
+                # RETURNING_RECENCY (use_llm=False), so _get_bridge will return a phrase.
+                _nor_next = self.current_step()
+                _nor_next_llm = _nor_next["use_llm"] if _nor_next else False
+                _nor_bridge = _get_bridge("NEW_OR_RETURNING", _nor_answer, self.session, _nor_next_llm)
+                if _nor_bridge:
+                    await self._tts.put(_nor_bridge)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _nor_bridge}
+                    )
                 await self.ask_current_question()
                 return
             # No deterministic match — fall through, but _DATA_COLLECTION_STATES
@@ -2328,19 +2339,11 @@ class FlowEngine:
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
         await self._llm(instruction, allow_tools=(intent in _FAQ_TOPICS))
-        # After answering a genuine FAQ aside, remind the caller of the current
-        # booking question so they know where we are.
-        #
-        # Do NOT re-ask for general_query: that intent should never reach this
-        # function at strict data-collection states (PRESENT_DAYS, NEW_OR_RETURNING,
-        # etc. are in _DATA_COLLECTION_STATES), and if it does reach here despite
-        # those guards, the LLM has already generated a forward-looking response —
-        # stacking the old question on top creates conflicting duplicate outputs.
-        if intent in _FAQ_TOPICS:
-            _lq = self.session.get("last_question", "")
-            if _lq:
-                await self._tts.put(_lq)
-                logger.info("[ms_flow] mid-flow interrupt: re-asking %r", _lq[:80])
+        # Per flow design: after answering any mid-flow aside (FAQ or general),
+        # Susie stops. She does NOT replay last_question.
+        # The caller responds naturally and normal extraction fires at the current step.
+        # If the caller is silent, the SilenceHandler re-asks after its usual timeout.
+        logger.info("[ms_flow] mid-flow interrupt: done — no re-ask (silence handler owns retry)")
 
     async def _handle_phone_readback_confirmation(
         self, text: str, transcript: str, step: Dict[str, Any]
