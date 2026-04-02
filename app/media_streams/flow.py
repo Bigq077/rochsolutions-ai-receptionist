@@ -1908,6 +1908,28 @@ class FlowEngine:
         # must be resolved here — before _detect_intent() — to prevent the LLM being
         # called with a completely valid booking answer.
         if step["state"] == "NEW_OR_RETURNING":
+            # ── CLARIFICATION / REPEAT: replay last_question directly ──────
+            # Catches "say that again", "pardon", "what did you ask" etc. before
+            # extraction so a clarification request never falls through to interrupt.
+            _NOR_CLARIFY = (
+                "say that again", "say it again", "repeat that", "come again",
+                "pardon", "what was that", "what did you say", "what did you ask",
+                "didn't catch", "didn't hear", "can you repeat", "sorry what",
+                "what was the question", "what did you just",
+            )
+            if any(p in text for p in _NOR_CLARIFY):
+                _nor_lq = self.session.get("last_question", "")
+                if _nor_lq:
+                    await self._tts.put(_nor_lq)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _nor_lq}
+                    )
+                    logger.info(
+                        "[ms_flow] NEW_OR_RETURNING: clarification request → replaying "
+                        "last_question (LLM avoided): %r", _nor_lq[:80],
+                    )
+                    return
+
             _nor_answer = self._extract("new_or_returning", text, transcript)
             logger.info(
                 "[ms_flow] NEW_OR_RETURNING extract: transcript=%r → %s  flow_step=%d",
@@ -1949,6 +1971,36 @@ class FlowEngine:
         # chosen_day is set to the raw transcript; the LLM at PRESENT_TIMES receives
         # it as context and resolves any ambiguity (e.g. which of 3 offered days).
         if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            # ── REPEAT / CLARIFICATION first ────────────────────────────────────
+            # CRITICAL: extract:"any" accepts every non-empty transcript, so without
+            # this guard a clarification request ("what were those days?") would be
+            # stored verbatim as chosen_day and corrupt the booking.  Replay the
+            # stored day list deterministically and keep state unchanged.
+            _PD_REPEAT = (
+                "what days", "which days", "say that again", "say it again",
+                "repeat that", "repeat the days", "those days again",
+                "what were the days", "what were those", "what are the days",
+                "didn't catch", "didn't hear", "again please",
+                "pardon", "remind me", "can't remember", "tell me again",
+                "what was that", "what did you say", "what did you offer",
+                "what are my options", "what are the options",
+            )
+            if any(p in text for p in _PD_REPEAT):
+                _pd_avail  = self.session.get("available_days", [])
+                _pd_replay = _build_day_list_phrase(_pd_avail)
+                if _pd_replay:
+                    await self._tts.put(_pd_replay)
+                    self.session["last_question"] = _pd_replay
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _pd_replay}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: repeat/clarification → replaying day list "
+                        "(extract:any bypass, LLM avoided): %r",
+                        step["state"], _pd_replay[:80],
+                    )
+                    return  # keep same flow_step — wait for actual day choice
+
             _PD_YES = (
                 # Single-word affirmatives
                 "yes", "yeah", "ya", "yep", "yup",
