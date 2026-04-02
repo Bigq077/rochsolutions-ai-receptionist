@@ -1779,6 +1779,40 @@ class FlowEngine:
                 "[ms_flow] NEW_OR_RETURNING: no deterministic match → falling through (general_query blocked)"
             )
 
+        # ── PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE: YES gate BEFORE interrupt ──────
+        # "yeah that works", "sounds fine", "just said yes" are direct acceptances
+        # of the offered day. They must advance the flow here — before _detect_intent()
+        # runs — to prevent general_query routing them to the LLM.
+        #
+        # chosen_day is set to the raw transcript; the LLM at PRESENT_TIMES receives
+        # it as context and resolves any ambiguity (e.g. which of 3 offered days).
+        if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            _PD_YES = (
+                "yes", "yeah", "ya", "yep", "yup",
+                "ok", "okay", "sure", "fine", "alright",
+                "that works", "works for me", "that's fine",
+                "sounds good", "sounds fine", "that sounds",
+                "go ahead", "perfect", "great",
+                "that'll do", "that will do",
+                "aye", "right then", "alright then",
+                "said yes", "just said yes",
+            )
+            _pd_yes = any(p in text for p in _PD_YES)
+            logger.info(
+                "[ms_flow] PRESENT_DAYS pre-interrupt: transcript=%r → yes=%s  flow_step=%d",
+                transcript[:80], _pd_yes, step["step"],
+            )
+            if _pd_yes:
+                self.session["chosen_day"] = transcript.strip()
+                self.session.setdefault("collected", {})["chosen_day"] = transcript.strip()
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] %s: yes → chosen_day=%r step→%d (interrupt+LLM bypassed)",
+                    step["state"], transcript.strip()[:60], step["step"] + 1,
+                )
+                await self.ask_current_question()
+                return
+
         # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
@@ -1812,6 +1846,12 @@ class FlowEngine:
                 # that reaches here failed extraction; treat it as a garbled
                 # answer, not an intent to chat.  General-query LLM must not fire.
                 "NEW_OR_RETURNING",
+                # PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE — YES answers are caught by
+                # the priority block above.  Any utterance that reaches here is a
+                # non-yes response (specific day name, vague, noise).  general_query
+                # must not fire — the caller is trying to answer the day question.
+                "PRESENT_DAYS",
+                "PRESENT_DAYS_RESCHEDULE",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
