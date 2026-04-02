@@ -674,6 +674,9 @@ def _classify_confirm_assessment(text: str) -> str:
             "elbow", "leg", "arm", "foot", "heel", "spine", "head",
             "i didn't", "didn't say", "didn't see", "didn't mean",
             "i said", "not my",
+            # correction-preceding words that must not trigger graceful close
+            "actually", "wait", "hang on", "hold on",
+            "wrong", "mistake", "meant", "no my",
         )
         if any(g in text for g in _NO_GUARD):
             logger.info(
@@ -2636,6 +2639,23 @@ class FlowEngine:
                             step["state"], _matched_hour, _slot_idx_dt, _slot_iso_dt,
                         )
                         return
+
+        # ── PRESENT_TIMES: catch-all re-ask when nothing matched ────────────────
+        # If we reach here for PRESENT_TIMES, no ordinal/time/single-slot matched.
+        # Re-ask the times list rather than letting the LLM silently pick a slot.
+        if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+            _avail_re  = self.session.get("available_days", [])
+            _chosen_re = self.session.get("chosen_day", "")
+            _target_re = _find_chosen_day_entry(_avail_re, _chosen_re)
+            _re_phrase = _build_times_phrase(_target_re) if _target_re else ""
+            if _re_phrase:
+                await self._tts.put(_re_phrase)
+                self.session["last_question"] = _re_phrase
+                logger.info(
+                    "[ms_flow] %s: no match for %r → re-asking times (LLM fallback blocked)",
+                    step["state"], text[:40],
+                )
+                return
 
         # ── CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: deterministic YES/NO ──────
         # Without this gate "yes use my number" can match general_query intent
