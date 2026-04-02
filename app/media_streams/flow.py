@@ -1631,6 +1631,15 @@ class FlowEngine:
         """
         step = self.current_step()
         if step is None:
+            # ── Readback still pending: booking NOT yet finalized ──────────────────
+            # _start_readback() advances flow_step past the last step BUT sets
+            # readback_pending=True.  Any transcript arriving while that flag is live
+            # must be routed to _handle_readback_confirmation — never silently dropped.
+            # Fixes: "no" / "cancel it" / corrections at final readback being ignored.
+            if self.session.get("readback_pending"):
+                _rbt = transcript.strip().lower()
+                await self._handle_readback_confirmation(_rbt, transcript)
+                return
             # ── Safety-net: CONFIRM_RESCHEDULE may have flow_step prematurely set ──
             # If the reschedule flow completed its steps but reschedule_confirmed was
             # never set (e.g. due to a race), and the caller is saying "Yes" to the
@@ -3255,7 +3264,9 @@ class FlowEngine:
             instruction = (
                 f"Call get_clinic_info with topic='{topic}'. "
                 "Answer the question warmly and concisely in 1–2 sentences. "
-                "Do NOT re-ask the booking question — just answer and stop."
+                "Do NOT re-ask the booking question — just answer and stop. "
+                "Do NOT add any transitional phrases, continuations, or invitations "
+                "such as 'yes go on', 'where were we', or 'sorry about that'."
             )
         else:
             # General question — LLM answers from knowledge
@@ -3263,15 +3274,64 @@ class FlowEngine:
                 f"The caller asked mid-booking: '{transcript.strip()}'\n"
                 "Answer it helpfully in 1–2 sentences. "
                 "Do NOT call check_availability, book_appointment, or any booking tool. "
-                "Do NOT re-ask the booking question. Just answer warmly and stop."
+                "Do NOT re-ask the booking question. "
+                "Do NOT add any transitional phrases or invitations such as "
+                "'yes go on', 'where were we', or 'sorry about that'. "
+                "Just answer and stop."
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
         await self._llm(instruction, allow_tools=(intent in _FAQ_TOPICS))
-        # Per flow design: after answering any mid-flow aside (FAQ or general),
-        # Susie stops. She does NOT replay last_question.
-        # The caller responds naturally and normal extraction fires at the current step.
-        # If the caller is silent, the SilenceHandler re-asks after its usual timeout.
-        logger.info("[ms_flow] mid-flow interrupt: done — no re-ask (silence handler owns retry)")
+        # After the aside, re-anchor the caller to the exact step they were in.
+        # This is step-specific so the caller is never left with an open floor.
+        _int_step = self.current_step()
+        if _int_step is not None:
+            _int_state = _int_step["state"]
+            if _int_state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+                _int_avail  = self.session.get("available_days", [])
+                _int_anchor = (
+                    _build_day_list_phrase(_int_avail)
+                    or "Which of those days works best for you?"
+                )
+            elif _int_state in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+                _int_avail  = self.session.get("available_days", [])
+                _int_chosen = self.session.get("chosen_day", "")
+                _int_target = _find_chosen_day_entry(_int_avail, _int_chosen)
+                _int_slots  = (_int_target or {}).get("slots", [])
+                if len(_int_slots) == 1:
+                    from app.vagueness_detector import _time_to_speech as _t2s_int
+                    _int_time   = ((_int_target or {}).get("slot_times") or [""])[0]
+                    _int_spoken = _t2s_int(_int_time) if _int_time else "that time"
+                    _int_dlabel = (_int_target or {}).get("day_label", "")
+                    _int_anchor = f"Sure — did you want {_int_dlabel} at {_int_spoken}?"
+                else:
+                    _int_times = (_int_target or {}).get("slot_times", [])[:4]
+                    if _int_times:
+                        from app.vagueness_detector import _time_to_speech as _t2s_int
+                        _int_opts   = " or ".join(_t2s_int(t) for t in _int_times)
+                        _int_anchor = f"Sure — which of those times works? I had {_int_opts}."
+                    else:
+                        _int_anchor = self.session.get("last_question", "")
+            elif (
+                _int_state in (
+                    "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                    "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                )
+                and self.session.get("name_readback_pending")
+            ):
+                _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
+            else:
+                _int_anchor = self.session.get("last_question", "")
+            if _int_anchor:
+                await self._tts.put(_int_anchor)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _int_anchor}
+                )
+                logger.info(
+                    "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
+                    _int_state, _int_anchor[:80],
+                )
+        else:
+            logger.info("[ms_flow] mid-flow interrupt: flow complete — no re-anchor")
 
     async def _handle_phone_readback_confirmation(
         self, text: str, transcript: str, step: Dict[str, Any]
@@ -3548,12 +3608,12 @@ class FlowEngine:
         corrected_slot = result.get("corrected_slot")
         new_value      = result.get("new_value")
 
-        if confirmed or not corrected_slot or not new_value:
+        if confirmed:
             self.session["readback_pending"] = False
             self.session["flow_step"]        = _CONFIRM_BOOKING_INDEX
             logger.info("[ms_flow] readback confirmed — advancing to CONFIRM_BOOKING")
             await self.ask_current_question()
-        else:
+        elif corrected_slot and new_value:
             # Update the corrected slot and mirror into collected{}
             self.session[corrected_slot] = new_value
             if corrected_slot == "full_name":
@@ -3574,6 +3634,20 @@ class FlowEngine:
             self.session["last_question"]            = "Shall I go ahead and book that in?"
             self.session["readback_correction_turn"] = True
             logger.info("[ms_flow] readback correction: %s=%r", corrected_slot, new_value)
+        else:
+            # confirmed=False with no parseable correction (e.g. "no cancel it",
+            # "I want to change that") — re-ask rather than silently advance.
+            # readback_pending stays True so the next transcript routes here again.
+            phrase = (
+                "Sorry — does everything sound right, "
+                "or would you like to change something?"
+            )
+            await self._tts.put(phrase)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": phrase}
+            )
+            self.session["last_question"] = phrase
+            logger.info("[ms_flow] readback: not confirmed, no correction — re-asking")
 
     # ── extraction ────────────────────────────────────────────────────────
 
