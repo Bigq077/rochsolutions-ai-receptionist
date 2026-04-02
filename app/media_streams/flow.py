@@ -1833,6 +1833,89 @@ class FlowEngine:
             await self._handle_phone_readback_confirmation(text, transcript, step)
             return
 
+        # ── GLOBAL NAME CORRECTION (BUG 4/5/6) ─────────────────────────────────
+        # Runs after full_name is stored.  Catches "I said Sarah", "not Quentin,
+        # it's Sarah", "change name to Sarah" etc. at ANY flow step — before any
+        # interrupt or state-specific block can route them to the LLM.
+        #
+        # BUG 5: _name_correction_just_applied flag prevents re-triggering on the
+        # trailing fragment that sometimes follows a correction ("Sarah" after
+        # "I said Sarah not Quentin").
+        #
+        # BUG 6: returning before the interrupt check prevents structured-field
+        # utterances ("as you just said Sarah") from routing to general_query and
+        # getting a nonsensical LLM response ("my name is Susie").
+        _stored_name = self.session.get("full_name", "")
+        if _stored_name:
+            if self.session.get("_name_correction_just_applied"):
+                # One-turn cooldown — clear flag and treat fragment as confirmation
+                self.session["_name_correction_just_applied"] = False
+                logger.info("[ms_flow] name correction cooldown — ignoring fragment %r", transcript[:40])
+                # Fall through to normal extraction so flow continues
+            else:
+                import re as _nc_re
+                _NC_PATTERNS = [
+                    # "I said Sarah" / "I said it was Sarah"
+                    r"i said (?:it was |that it was )?([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "my name is Sarah" / "name's Sarah"
+                    r"(?:my )?name(?:'s| is) ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "change (my) name to Sarah" / "change it to Sarah"
+                    r"change (?:my )?(?:name|it) to ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "it's Sarah" / "its Sarah" as standalone correction
+                    r"^(?:it'?s|its) ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)$",
+                    # "not Quentin, Sarah" / "not Quentin it's Sarah"
+                    r"not \w+(?: \w+)?,?\s+(?:it'?s\s+)?([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "instead of Quentin, Sarah"
+                    r"instead of \w+(?: \w+)?,?\s+([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                ]
+                # BUG 6: also block self-referential drift ("as you just said Sarah")
+                _SELF_REF_PATTERNS = (
+                    "as you just said", "as you said", "you just said",
+                    "you said my name", "you've got it as", "you have it as",
+                    "that's what you said", "like you said",
+                )
+                _new_name = None
+                for _pat in _NC_PATTERNS:
+                    _m = _nc_re.search(_pat, text)
+                    if _m:
+                        _candidate = _m.group(1).strip().title()
+                        # Only accept if actually different from stored name
+                        if _candidate.lower() != _stored_name.strip().lower():
+                            _new_name = _candidate
+                        break
+                if _new_name:
+                    # Apply the correction deterministically — no LLM needed
+                    self.session["full_name"] = _new_name
+                    col = self.session.setdefault("collected", {})
+                    col["full_name"] = _new_name
+                    col["name"]      = _new_name
+                    self._name_tracker.set_name(_new_name)
+                    self.session["name_tracker_name"] = self._name_tracker._name
+                    self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
+                    self.session["_name_correction_just_applied"] = True
+                    phrase = f"Got it — I've updated that to {_new_name}."
+                    await self._tts.put(phrase)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": phrase}
+                    )
+                    lq = self.session.get("last_question", "")
+                    if lq:
+                        await self._tts.put(lq)
+                    logger.info(
+                        "[ms_flow] name correction: %r → %r (LLM avoided)",
+                        _stored_name, _new_name,
+                    )
+                    return
+                elif any(p in text for p in _SELF_REF_PATTERNS):
+                    # BUG 6: caller referencing previously spoken data — treat as
+                    # confirmation, re-anchor to current question rather than routing
+                    # to LLM general_query which can produce "my name is Susie" drift.
+                    lq = self.session.get("last_question", "")
+                    if lq:
+                        await self._tts.put(lq)
+                    logger.info("[ms_flow] self-referential transcript — re-anchoring (BUG 6): %r", transcript[:60])
+                    return
+
         # ── CONFIRM_ASSESSMENT: tight yes/no gate (runs BEFORE interrupt check) ──
         # Must run first because _detect_intent() returns "general_query" for
         # plain affirmatives like "yeah that sounds fine" — which would incorrectly
@@ -1899,9 +1982,35 @@ class FlowEngine:
 
             if _ca_cls == "correction":
                 # Caller is correcting a STT mishear ("not my hand, my ankle").
-                # Update reason with the corrected transcript, then regenerate the
-                # assessment for the corrected condition.  Do NOT count as a retry —
-                # this is not a failed answer, it is a data repair.
+                # BUG 3 fix: only overwrite if the corrected value has meaningful
+                # clinical content — bare fragments like "i said my" must NOT
+                # replace the existing reason; keep it and re-ask instead.
+                _CORRECTION_FLOOR_WORDS = (
+                    "pain", "ache", "aching", "hurt", "hurting", "injury", "injured",
+                    "sore", "soreness", "stiff", "stiffness", "swollen", "swelling",
+                    "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
+                    "elbow", "leg", "arm", "foot", "heel", "spine", "head",
+                    "tendon", "ligament", "muscle", "nerve", "joint",
+                    "problem", "issue", "condition", "physio",
+                )
+                _corr_lower = transcript.strip().lower()
+                _has_clinical = any(w in _corr_lower for w in _CORRECTION_FLOOR_WORDS)
+                if not _has_clinical and len(transcript.strip().split()) < 3:
+                    # Fragment correction — keep existing reason, re-ask for clarification
+                    lq = self.session.get("last_question", "Does that sound OK?")
+                    phrase = f"Sorry — could you tell me a bit more? {lq}"
+                    await self._tts.put(phrase)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] CONFIRM_ASSESSMENT: correction fragment %r — "
+                        "no clinical content, keeping existing reason and re-asking",
+                        transcript[:60],
+                    )
+                    return
+                # Valid correction — overwrite reason and regenerate assessment.
+                # Do NOT count as a retry — this is data repair, not a failed answer.
                 self.session["reason"] = transcript.strip()
                 self.session.setdefault("collected", {})["reason"] = transcript.strip()
                 logger.info(
@@ -2236,10 +2345,13 @@ class FlowEngine:
             # said something ambiguous while trying to give the answer.  FAQ
             # questions (prices, hours, etc.) are still allowed to interrupt.
             _DATA_COLLECTION_STATES = {
-                # Phone / name input — no general-query interrupts
+                # Phone / name / reason input — no general-query interrupts
                 "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
                 "COLLECT_NAME", "COLLECT_NAME_RETURNING",
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                # COLLECT_REASON: open-ended "what brings you in?". Fragment guard
+                # (BUG 1/2) rejects partial answers; we must not also fire LLM.
+                "COLLECT_REASON",
                 # CONFIRM_ASSESSMENT is a tight yes/no gate — all real cases are
                 # handled by the priority block above; any "unknown" utterance
                 # that reaches here must be treated as ambiguous input, not a
@@ -2305,6 +2417,31 @@ class FlowEngine:
                 return
 
         answer = self._extract(step["extract"], text, transcript)
+
+        # ── COLLECT_REASON: fragment guard (BUG 1/2) ─────────────────────────
+        # extract:"any" accepts every non-empty transcript verbatim.  Guard against
+        # premature advancement on bare fragments ("my", "my left", "pain").
+        # Rule: reject answer if it has no clinical content word AND fewer than 3
+        # words.  This also handles BUG 2 (fragmented continuation): "my" → None
+        # → re-ask → caller naturally continues with the full phrase.
+        if step["state"] == "COLLECT_REASON" and answer is not None:
+            _REASON_FLOOR_WORDS = (
+                "pain", "ache", "aching", "hurt", "hurting", "injury", "injured",
+                "sore", "soreness", "stiff", "stiffness", "swollen", "swelling",
+                "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
+                "elbow", "leg", "arm", "foot", "heel", "spine", "head",
+                "tendon", "ligament", "muscle", "nerve", "joint",
+                "problem", "issue", "trouble", "condition",
+                "physiotherapy", "physio", "treatment", "rehab",
+            )
+            _reason_lower = answer.strip().lower()
+            _has_content  = any(w in _reason_lower for w in _REASON_FLOOR_WORDS)
+            if not _has_content and len(_reason_lower.split()) < 3:
+                logger.info(
+                    "[ms_flow] COLLECT_REASON: fragment %r rejected (no content / too short) — re-asking",
+                    answer[:50],
+                )
+                answer = None   # fall through to re-ask logic below
 
         # ── PHONE DIGIT ACCUMULATION: stitch together number spoken in chunks ──
         # After Fix 1 (garbage filter), digit-only chunks now reach the flow.
