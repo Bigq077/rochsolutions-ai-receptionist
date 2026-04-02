@@ -301,34 +301,44 @@ class AcuityAdapter:
         """
         # Extract provider ID from our composite ID
         acuity_type_id = appointment_type_id.replace("acuity_", "")
-        
-        params = {
-            "appointmentTypeID": acuity_type_id,
-            "date": start_date.isoformat(),
-            "endDate": end_date.isoformat(),
-            "timezone": "Europe/London",
-        }
-        
-        if practitioner_id:
-            acuity_cal_id = practitioner_id.replace("acuity_cal_", "")
-            params["calendarID"] = acuity_cal_id
-        
-        response = await self._request_with_retry(
-            "GET",
-            "/availability/times",
-            params=params,
-        )
-        data = response.json()
-        
+        acuity_cal_id = practitioner_id.replace("acuity_cal_", "") if practitioner_id else None
+
+        # Query day-by-day: Acuity's range query is unreliable for future dates.
+        # Per-day queries match what the Acuity booking UI uses internally.
+        num_days = max(1, (end_date - start_date).days)
+        raw_items = []
+        for i in range(num_days):
+            day = start_date + timedelta(days=i)
+            day_str = day.isoformat()
+            params = {
+                "appointmentTypeID": acuity_type_id,
+                "date": day_str,
+                "timezone": "Europe/London",
+            }
+            if acuity_cal_id:
+                params["calendarID"] = acuity_cal_id
+            try:
+                response = await self._request_with_retry(
+                    "GET",
+                    "/availability/times",
+                    params=params,
+                )
+                day_slots = response.json()
+            except Exception as day_err:
+                logger.warning("Acuity per-day query failed for %s: %r", day_str, day_err)
+                day_slots = []
+            print(f"{day_str}: {len(day_slots)} slots")
+            raw_items.extend(day_slots)
+
         slots = []
-        for item in data:
+        for item in raw_items:
             # Parse datetime from Acuity
             start_dt = datetime.fromisoformat(item["time"])
             start_dt = ensure_london_tz(start_dt)
-            
+
             # End time is start + 50 mins (from clinic_config)
             end_dt = start_dt + timedelta(minutes=50)
-            
+
             slots.append(
                 Slot(
                     start_time=start_dt,
@@ -338,7 +348,7 @@ class AcuityAdapter:
                     provider_slot_id=item.get("time"),
                 )
             )
-        
+
         logger.info(
             "Fetched available slots from Acuity",
             extra={
