@@ -640,7 +640,7 @@ def _classify_confirm_assessment(text: str) -> str:
 
     # 1 ── Explicit yes ──────────────────────────────────────────────────────
     _YES = (
-        "yes", "yeah", "ya", "yep", "yup",
+        "yes", "yeah", "yeh", "ya", "yep", "yup",
         "ok", "okay", "sure", "fine", "alright",
         "sounds good", "that sounds good", "that sounds fine", "sounds fine",
         "that sounds okay", "yeah that sounds", "sounds okay",
@@ -1488,20 +1488,35 @@ class FlowEngine:
                         "[ms_flow] slots_offered saved: %d slots",
                         len(offered),
                     )
-                # BUG 1 FIX — deterministic day-list presentation.
-                # The LLM instruction now stops after the tool call; we emit the
-                # day list here using _build_day_list_phrase() so the count is
-                # always correct regardless of LLM template choice.
+                # Deterministic day-list presentation (BUG 2 fix).
+                # The LLM instruction says "say NOTHING after the tool call" but
+                # occasionally the LLM still emits day text.  Drain any pending
+                # TTS queue items BEFORE queuing our authoritative phrase so the
+                # caller never hears a duplicate day announcement.
                 _avail = self.session.get("available_days", [])
                 _day_phrase = _build_day_list_phrase(_avail)
                 if _day_phrase:
+                    # Drain pending LLM output — suppresses "1 day" / wrong count.
+                    _drained = 0
+                    while not self._tts.empty():
+                        try:
+                            self._tts.get_nowait()
+                            _drained += 1
+                        except asyncio.QueueEmpty:
+                            break
+                    if _drained:
+                        logger.info(
+                            "[ms_flow] %s: drained %d pending TTS items "
+                            "(LLM duplicate suppressed)",
+                            step["state"], _drained,
+                        )
                     await self._tts.put(_day_phrase)
                     self.session["last_question"] = _day_phrase
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _day_phrase}
                     )
                     logger.info(
-                        "[ms_flow] %s deterministic day phrase: %r",
+                        "[ms_flow] %s: deterministic day phrase: %r",
                         step["state"], _day_phrase[:100],
                     )
                 else:
@@ -1984,6 +1999,9 @@ class FlowEngine:
                 "pardon", "remind me", "can't remember", "tell me again",
                 "what was that", "what did you say", "what did you offer",
                 "what are my options", "what are the options",
+                # Day-specific clarifications (BUG 3)
+                "what was the day", "what day was", "what was that day",
+                "what day", "which day", "the day again",
             )
             if any(p in text for p in _PD_REPEAT):
                 _pd_avail  = self.session.get("available_days", [])
@@ -2144,6 +2162,62 @@ class FlowEngine:
                         step["state"], _ordinal_idx,
                     )
 
+        # ── CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: deterministic YES/NO ──────
+        # Without this gate "yes use my number" can match general_query intent
+        # in _detect_intent and be routed to the LLM interrupt path.
+        # Handle YES/NO deterministically here — before the interrupt check.
+        if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+            _CP_YES = (
+                "yes", "yeah", "yep", "yup", "yeh", "ya",
+                "ok", "okay", "sure", "fine", "alright", "perfect",
+                "that works", "use my number", "use that", "use that number",
+                "that's fine", "sounds good", "go ahead", "correct", "please",
+                "that one", "yes please", "that's right", "thats right",
+            )
+            _CP_NO = (
+                "no ", "nope", "nah", "don't use", "different number",
+                "not that", "other number", "not my number", "change",
+            )
+            _cp_yes = any(p in text for p in _CP_YES)
+            _cp_no  = any(p in text for p in _CP_NO)
+            if _cp_yes and not _cp_no:
+                # Confirmed — advance step (phone extraction/readback already done)
+                self.session["phone_confirmed"]   = True
+                self.session["phone_from_twilio"] = True
+                self.session["flow_step"]         = step["step"] + 1
+                logger.info(
+                    "[ms_flow] %s: YES → phone confirmed deterministically "
+                    "(interrupt+LLM bypassed) step→%d",
+                    step["state"], step["step"] + 1,
+                )
+                await self.ask_current_question()
+                return
+            elif _cp_no and not _cp_yes:
+                # Declined — clear and collect manually (mirrors existing answer=False path)
+                self.session["phone_confirmed"]   = False
+                self.session["phone_from_twilio"] = False
+                self.session["phone_number"]      = None
+                self.session.setdefault("collected", {}).pop("phone", None)
+                self.session["flow_step"] = step["step"] + 1
+                phrase = "No problem — what number would you like us to use?"
+                await self._tts.put(phrase)
+                if _is_question_worth_storing(phrase):
+                    self.session["last_question"] = phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": phrase}
+                )
+                logger.info(
+                    "[ms_flow] %s: NO → collecting number manually "
+                    "(interrupt+LLM bypassed) step→%d",
+                    step["state"], step["step"] + 1,
+                )
+                return
+            logger.info(
+                "[ms_flow] %s: no deterministic YES/NO match — falling through "
+                "(general_query blocked by DATA_COLLECTION_STATES)",
+                step["state"],
+            )
+
         # ── MID-FLOW INTERRUPT: caller asks an off-topic question mid-booking ───
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
@@ -2189,6 +2263,11 @@ class FlowEngine:
                 # must not fire — the caller is trying to pick a slot.
                 "PRESENT_TIMES",
                 "PRESENT_TIMES_RESCHEDULE",
+                # CONFIRM_PHONE / CONFIRM_PHONE_RETURNING — YES/NO gate runs above.
+                # Any utterance that reaches here is ambiguous input, not a
+                # general chat question.  Block general_query interrupts.
+                "CONFIRM_PHONE",
+                "CONFIRM_PHONE_RETURNING",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
@@ -2741,16 +2820,16 @@ class FlowEngine:
         no match → re-ask the confirmation phrase
         """
         yes_patterns = [
-            "yes", "yeah", "ya", "yep", "yup", "correct",
+            "yes", "yeah", "yeh", "ya", "yep", "yup", "correct",
             "that's right", "thats right", "perfect",
             "sounds good", "that works", "go ahead",
             "please", "ok", "okay", "sure", "fine",
-            "that one", "confirmed",
+            "that one", "confirmed", "alright", "aye",
         ]
         no_patterns = [
-            "no", "nope", "wrong", "different",
+            "no", "nope", "nah", "wrong", "different",
             "not that", "actually no", "change",
-            "other one", "different one",
+            "other one", "different one", "not right",
         ]
 
         for p in yes_patterns:

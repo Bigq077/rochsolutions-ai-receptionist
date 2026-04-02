@@ -1098,6 +1098,9 @@ class WebSocketCallHandler:
                             logger.warning("[ms_conn] ToneDetector record failed: %r", _td_err)
 
                     if not _is_pause:
+                        # BUG 1 fix — clear stale LLM reply before each transcript so
+                        # post-turn diagnostic log always reflects the NEW bot output
+                        self.session["last_bot_prompt"] = ""
                         if not self.session.get("flow_started"):
                             # First caller utterance — detect intent then kick off the flow.
                             self.session["flow_started"] = True
