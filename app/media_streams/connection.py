@@ -1121,10 +1121,19 @@ class WebSocketCallHandler:
                     _last_q = self.session.get("last_question", "")
                     if _last_q:
                         logger.info("[ms_conn] last_question stored: %r", _last_q[:120])
-                        self._silence_handler.set_state(
-                            self.session.get("state", "default")
-                        )
-                        self._silence_handler.on_question_asked(_last_q)
+                        if flow.is_complete():
+                            # BUG 3 FIX: flow is done — do NOT re-arm silence handler.
+                            # Prevents stale last_question being replayed after the
+                            # booking/cancel/reschedule flow has already completed.
+                            logger.info(
+                                "[ms_conn] flow complete — silence handler NOT re-armed "
+                                "(stale question suppressed: %r)", _last_q[:80]
+                            )
+                        else:
+                            self._silence_handler.set_state(
+                                self.session.get("state", "default")
+                            )
+                            self._silence_handler.on_question_asked(_last_q)
                     logger.info(
                         "[ms_conn] state after turn: %s  flow_step=%s",
                         self.session.get("state", "?"),
@@ -1141,9 +1150,10 @@ class WebSocketCallHandler:
                     )
                     await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
                     # Re-ask whatever question was pending so the caller isn't left
-                    # in silence after the technical blip.
+                    # in silence after the technical blip — but only if flow is still
+                    # active; replaying a stale question after completion is wrong.
                     _lq = self.session.get("last_question", "")
-                    if _lq:
+                    if _lq and not flow.is_complete():
                         await self.tts_text_queue.put(_lq)
                 finally:
                     self._llm_busy                        = False

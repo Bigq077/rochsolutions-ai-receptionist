@@ -604,6 +604,7 @@ def _classify_confirm_assessment(text: str) -> str:
     Deterministically classify an utterance at CONFIRM_ASSESSMENT.
 
     Priority order (highest first):
+        0. correction    — caller is correcting a STT mishear
         1. yes           — explicit affirmative, advance immediately
         2. no            — explicit rejection, graceful close
         3. frustration   — caller is objecting to being asked again
@@ -611,8 +612,26 @@ def _classify_confirm_assessment(text: str) -> str:
         5. additive_detail — caller is adding more clinical context
         6. unknown       — fall through to normal interrupt handling
 
-    Returns one of: "yes" | "no" | "frustration" | "additive_detail" | "clarification" | "unknown"
+    Returns one of:
+        "correction" | "yes" | "no" | "frustration" |
+        "additive_detail" | "clarification" | "unknown"
     """
+    # 0 ── Correction intent (caller correcting a STT mishear) ──────────────
+    # Must run before NO so "no that's wrong" routes here, not to graceful close.
+    _CORRECTION = (
+        "you misheard", "misheard me", "heard that wrong",
+        "didn't hear that right", "you heard wrong",
+        "i said my", "i said it", "i said it's", "i said it was",
+        "that's wrong", "that is wrong", "that's not right",
+        "that's not what i said", "not what i said",
+        "got that wrong", "you got that wrong",
+        "actually it's my", "actually it is my",
+        "no it's my", "no it is my", "no, it's my",
+        "not my",
+    )
+    if any(p in text for p in _CORRECTION):
+        return "correction"
+
     # 1 ── Explicit yes ──────────────────────────────────────────────────────
     _YES = (
         "yes", "yeah", "ya", "yep", "yup",
@@ -1835,6 +1854,24 @@ class FlowEngine:
                     {"role": "assistant", "content": phrase}
                 )
                 logger.info("[ms_flow] CONFIRM_ASSESSMENT: clarification → re-asking")
+                return
+
+            if _ca_cls == "correction":
+                # Caller is correcting a STT mishear ("not my hand, my ankle").
+                # Update reason with the corrected transcript, then regenerate the
+                # assessment for the corrected condition.  Do NOT count as a retry —
+                # this is not a failed answer, it is a data repair.
+                self.session["reason"] = transcript.strip()
+                self.session.setdefault("collected", {})["reason"] = transcript.strip()
+                logger.info(
+                    "[ms_flow] CONFIRM_ASSESSMENT: correction detected — "
+                    "reason updated to %r, regenerating assessment (LLM NOT avoided — "
+                    "intentional; CONFIRM_ASSESSMENT always uses LLM)",
+                    transcript[:60],
+                )
+                # Re-run ask_current_question at the SAME step so the LLM
+                # regenerates an empathetic assessment for the corrected reason.
+                await self.ask_current_question()
                 return
 
             # _ca_cls == "unknown": fall through to mid-flow interrupt for FAQ matching
