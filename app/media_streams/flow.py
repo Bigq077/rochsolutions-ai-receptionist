@@ -476,28 +476,25 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 9,
         "state": "PRESENT_DAYS",
-        "question": None,   # LLM generates the spoken bridge + day list
+        # BUG 2 fix: the deterministic greeting is emitted by this question field
+        # BEFORE the LLM is called, so the LLM never needs to speak on success.
+        "question": "Just a moment while I check what's available...",
         "answer_field": "chosen_day",
         "use_llm": True,
         "allow_tools": True,
         "extract": "any",
         "llm_instruction": (
-            "Sound like a warm, efficient UK clinic receptionist — not a booking system.\n"
-            "Say 'Just bear with me one moment...' then immediately call "
-            "check_availability with location='{selected_location}', duration_minutes=50.\n"
-            "After the tool returns, say NOTHING further — do NOT read out any day names, "
-            "do NOT present times, do NOT say anything else. "
-            "The system will announce the available days automatically. "
-            "Stop as soon as the tool call completes.\n"
-            "EXCEPTION — only speak if the tool returned an error:\n"
-            "  error='lead_time_limited': say 'We\\'re a little limited today — "
-            "let me check what I have coming up shortly' then re-call check_availability with "
-            "the same parameters. If still limited, say 'It looks like today is quite full — "
-            "the next slot might be tomorrow or later this week. Let me take your details and "
-            "the team will call you to confirm.'\n"
-            "  error='no_availability' or any other error: say 'I\\'m not seeing "
-            "clear availability at the moment — let me take your name and number and get the "
-            "team to call you back.'"
+            "⚠️ TOOL CALL ONLY — DO NOT OUTPUT ANY TEXT on success.\n"
+            "Call check_availability with location='{selected_location}', duration_minutes=50.\n"
+            "After the tool responds with available days: output NOTHING. Not a word. "
+            "The system generates all spoken output automatically.\n"
+            "ONLY speak if the tool returned an error:\n"
+            "  error='lead_time_limited': re-call check_availability once with the same "
+            "parameters. If still limited, say exactly: "
+            "'We\\'re a little limited right now — the team will call you to confirm a time.'\n"
+            "  error='no_availability' or any other error: say exactly: "
+            "'I\\'m not seeing clear availability right now — let me take your details "
+            "and the team will call you back.'"
         ),
     },
     {
@@ -621,6 +618,14 @@ def _classify_confirm_assessment(text: str) -> str:
         "i didn't say", "i didn't see",
         "didn't see my", "didn't say my",
         "i never said", "i said it was my",
+        # BUG 1: explicit self-correction markers that must outrank the "no" path.
+        # "no actually I made an error", "no sorry I meant", "I was meant to say X"
+        # all contain "no " but are corrections, not booking refusals.
+        "no actually", "no sorry",
+        "i made a mistake", "i made an error",
+        "i was meant to say", "i meant to say",
+        "i meant my", "actually i meant",
+        "sorry it's my", "sorry, it's my",
     )
     if any(p in text for p in _CORRECTION):
         return "correction"
@@ -1894,16 +1899,20 @@ class FlowEngine:
                 _NC_PATTERNS = [
                     # "I said Sarah" / "I said it was Sarah"
                     r"i said (?:it was |that it was )?([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
-                    # "my name is Sarah" / "name's Sarah"
-                    r"(?:my )?name(?:'s| is) ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
-                    # "change (my) name to Sarah" / "change it to Sarah"
-                    r"change (?:my )?(?:name|it) to ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "I meant Sarah" / "I meant to say Sarah"
+                    r"i meant (?:to say )?([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "my name is/was/it's Sarah" / "name's Sarah"
+                    r"(?:my )?name(?:'s| is| was) ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "change (the/my) (booking) name to Sarah" / "change it to Sarah"
+                    r"change (?:the |my )?(?:booking )?(?:name|it) to ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
                     # "it's Sarah" / "its Sarah" as standalone correction
                     r"^(?:it'?s|its) ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)$",
                     # "not Quentin, Sarah" / "not Quentin it's Sarah"
                     r"not \w+(?: \w+)?,?\s+(?:it'?s\s+)?([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
                     # "instead of Quentin, Sarah"
                     r"instead of \w+(?: \w+)?,?\s+([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
+                    # "my name was Sarah" / "the name is Sarah"
+                    r"(?:the )?name (?:is|was|should be) ([a-z][a-z\-']{1,}\b(?: [a-z][a-z\-']{1,}\b)?)",
                 ]
                 # BUG 6: also block self-referential drift ("as you just said Sarah")
                 _SELF_REF_PATTERNS = (
@@ -2188,12 +2197,19 @@ class FlowEngine:
                 step["state"], transcript[:80], _pd_yes, step["step"],
             )
             if _pd_yes:
-                self.session["chosen_day"] = transcript.strip()
-                self.session.setdefault("collected", {})["chosen_day"] = transcript.strip()
+                # BUG 3 fix: store the real day label, not the raw affirmation.
+                # "yeah that works for me" must NOT be stored as chosen_day.
+                _avail_yes = self.session.get("available_days", [])
+                _chosen_label = (
+                    _avail_yes[0].get("day_label", transcript.strip())
+                    if _avail_yes else transcript.strip()
+                )
+                self.session["chosen_day"] = _chosen_label
+                self.session.setdefault("collected", {})["chosen_day"] = _chosen_label
                 self.session["flow_step"] = step["step"] + 1
                 logger.info(
-                    "[ms_flow] %s: yes → chosen_day=%r step→%d (interrupt+LLM bypassed)",
-                    step["state"], transcript.strip()[:60], step["step"] + 1,
+                    "[ms_flow] %s: yes → chosen_day=%r (normalized from %r) step→%d",
+                    step["state"], _chosen_label, transcript.strip()[:40], step["step"] + 1,
                 )
                 await self.ask_current_question()
                 return
@@ -2318,7 +2334,8 @@ class FlowEngine:
                 "i said ", "said ", "suits me", "for me", "that works",
                 "works for me", "works", "please", "o'clock", "oclock",
             )
-            _txt_dt = text
+            # BUG 4: normalize written "p.m."/"a.m." before PM detection
+            _txt_dt = text.replace("p.m.", "pm").replace("a.m.", "am")
             for _f in _FILLER_DT:
                 _txt_dt = _txt_dt.replace(_f, " ")
             _txt_dt = " ".join(_txt_dt.split())
@@ -2351,8 +2368,8 @@ class FlowEngine:
                     for _word, _n in _HOUR_WORDS_DT.items():
                         if _re_dt.search(r'\b' + _word + r'\b', _txt_dt):
                             _h2 = _n
-                            # Shift to PM if afternoon/evening/pm in ORIGINAL text
-                            if any(p in text for p in ("afternoon", "evening", "pm")):
+                            # Shift to PM if afternoon/evening/pm in normalized text
+                            if any(p in _txt_dt for p in ("afternoon", "evening", "pm")):
                                 if _h2 < 12:
                                     _h2 += 12
                             elif _h2 < 8:
@@ -2592,11 +2609,19 @@ class FlowEngine:
                     return
 
         # ── VAGUENESS: PRESENT_TIMES — no valid slot parsed but response is vague ─
-        # If the caller said "any time" / "whatever" when asked which time, pick the
-        # first available time for the chosen day rather than re-asking.
+        # BUG 5 fix: use a narrow explicit check instead of is_vague_availability().
+        # is_vague_availability() returns True for ANY short utterance (<3 words)
+        # that has no day/time reference — including "hello", which is NOT vague,
+        # it's noise.  Auto-defaulting a real slot from noise is not pilot-safe.
         if answer is None and step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
-            from app.vagueness_detector import is_vague_availability
-            if is_vague_availability(transcript):
+            _GENUINE_VAGUE_TIME = (
+                "any time", "anytime", "whenever", "whatever",
+                "doesn't matter", "dont matter", "don't mind", "dont mind",
+                "any slot", "flexible", "up to you", "you choose",
+                "doesn't bother", "not fussed", "either", "either one",
+                "either of them", "any of them", "no preference",
+            )
+            if any(p in transcript.lower() for p in _GENUINE_VAGUE_TIME):
                 _avail = self.session.get("available_days", [])
                 _chosen = self.session.get("chosen_day", "")
                 _slot_iso = None
@@ -3191,13 +3216,39 @@ class FlowEngine:
         _tracked_name = self._name_tracker.get_name_if_available()
         # Update session mirrors after decrement
         self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
-        name   = _tracked_name or (self.session.get("full_name") or "you")
+        name   = _tracked_name or (self.session.get("full_name") or "")
         slot   = (
             self.session.get("selected_slot_speech")
             or self.session.get("selected_slot")
             or "the selected time"
         )
-        reason = self.session.get("reason") or "your appointment"
+
+        # BUG 9: guard against obvious garbage name reaching the final confirmation.
+        # If the captured name looks like a greeting or filler, reset to COLLECT_NAME.
+        _FILLER_NAMES = frozenset({
+            "hello", "hi", "hey", "yes", "no", "okay", "ok", "sure",
+            "thanks", "thank", "please", "bye", "goodbye",
+            "yeah", "yep", "yup", "nope", "nah", "yeh",
+        })
+        if not name.strip() or name.strip().lower() in _FILLER_NAMES:
+            _cn_step = next(
+                (s["step"] for s in self._active_flow if s["state"] == "COLLECT_NAME"), None
+            )
+            if _cn_step is not None:
+                self.session["flow_step"] = _cn_step
+                self.session["full_name"] = None
+                self.session.setdefault("collected", {}).pop("full_name", None)
+                self.session.setdefault("collected", {}).pop("name", None)
+                self.session["readback_delivered"] = False  # allow retry after re-collection
+                _gb_phrase = "Just before I confirm — could you say your name for me?"
+                await self._tts.put(_gb_phrase)
+                self.session["last_question"] = _gb_phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _gb_phrase}
+                )
+                logger.info("[ms_flow] readback: garbage name %r — re-collecting", name)
+                return
+        name = name or "you"
 
         # Fix D: short readback — drop the verbose preamble and reason to reduce
         # interruption risk.  Location is fixed for this deployment (Alcester).
@@ -3706,7 +3757,19 @@ class FlowEngine:
         # ----- name: 1-5 word name ---------------------------------------
         if method == "name":
             words = raw.strip().split()
-            return raw.strip() if 1 <= len(words) <= 5 else None
+            if not (1 <= len(words) <= 5):
+                return None
+            # BUG 6: reject obvious greetings / filler as a name.
+            # Single-word hits against this set are not valid names.
+            _NOT_A_NAME = frozenset({
+                "hello", "hi", "hey", "yes", "no", "okay", "ok", "sure",
+                "thanks", "thank", "please", "bye", "goodbye", "sorry",
+                "yeah", "yep", "yup", "nope", "nah", "yeh", "right",
+            })
+            if len(words) == 1 and raw.strip().lower() in _NOT_A_NAME:
+                logger.info("[ms_extract] name: rejected filler %r as name", raw.strip())
+                return None
+            return raw.strip()
 
         # ----- phone: 10+ digit number ----------------------------------
         if method == "phone":
