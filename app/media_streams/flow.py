@@ -1788,19 +1788,26 @@ class FlowEngine:
         # it as context and resolves any ambiguity (e.g. which of 3 offered days).
         if step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
             _PD_YES = (
+                # Single-word affirmatives
                 "yes", "yeah", "ya", "yep", "yup",
                 "ok", "okay", "sure", "fine", "alright",
+                "perfect", "great", "aye",
+                # "that works" family
                 "that works", "works for me", "that's fine",
+                "that'll work", "that will work",
+                "that would work", "that should work",
+                "should work for me", "would work for me",
+                # "sounds" family
                 "sounds good", "sounds fine", "that sounds",
-                "go ahead", "perfect", "great",
-                "that'll do", "that will do",
-                "aye", "right then", "alright then",
+                # other acceptances
+                "go ahead", "that'll do", "that will do",
+                "right then", "alright then",
                 "said yes", "just said yes",
             )
             _pd_yes = any(p in text for p in _PD_YES)
             logger.info(
-                "[ms_flow] PRESENT_DAYS pre-interrupt: transcript=%r → yes=%s  flow_step=%d",
-                transcript[:80], _pd_yes, step["step"],
+                "[ms_flow] PRESENT_DAYS pre-interrupt: state=%s transcript=%r → yes=%s  flow_step=%d",
+                step["state"], transcript[:80], _pd_yes, step["step"],
             )
             if _pd_yes:
                 self.session["chosen_day"] = transcript.strip()
@@ -2321,12 +2328,19 @@ class FlowEngine:
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
         await self._llm(instruction, allow_tools=(intent in _FAQ_TOPICS))
-        # After answering the aside, remind the caller what we were waiting for
-        # so they can continue the booking without confusion.
-        _lq = self.session.get("last_question", "")
-        if _lq:
-            await self._tts.put(_lq)
-            logger.info("[ms_flow] mid-flow interrupt: re-asking %r", _lq[:80])
+        # After answering a genuine FAQ aside, remind the caller of the current
+        # booking question so they know where we are.
+        #
+        # Do NOT re-ask for general_query: that intent should never reach this
+        # function at strict data-collection states (PRESENT_DAYS, NEW_OR_RETURNING,
+        # etc. are in _DATA_COLLECTION_STATES), and if it does reach here despite
+        # those guards, the LLM has already generated a forward-looking response —
+        # stacking the old question on top creates conflicting duplicate outputs.
+        if intent in _FAQ_TOPICS:
+            _lq = self.session.get("last_question", "")
+            if _lq:
+                await self._tts.put(_lq)
+                logger.info("[ms_flow] mid-flow interrupt: re-asking %r", _lq[:80])
 
     async def _handle_phone_readback_confirmation(
         self, text: str, transcript: str, step: Dict[str, Any]
