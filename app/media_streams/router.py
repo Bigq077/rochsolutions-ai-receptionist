@@ -339,7 +339,11 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
 
     handler = _active_handlers.get(call_sid)
     if handler is None:
-        logger.warning("[ms_inject] no active handler for call_sid=%s", call_sid)
+        logger.warning(
+            "[ms_inject] 404 no active session sid=%s active_handler=False known_sids=%s",
+            call_sid,
+            list(_active_handlers.keys())[:5],  # show up to 5 known sids for diagnosis
+        )
         return JSONResponse(
             {"ok": False, "error": f"no active session for {call_sid}"},
             status_code=404,

@@ -564,16 +564,19 @@ async def main():
                     scenario, evaluator, healer, fixer, shared_server
                 )
             except asyncio.CancelledError as exc:
+                _end_reason = "direct_ws_interrupted" if USE_DIRECT_WS else "ngrok_crash"
                 logger.error(
-                    "CancelledError running scenario %s — likely ngrok crash: %r",
-                    scenario["id"], exc,
+                    "CancelledError running scenario %s — %s: %r",
+                    scenario["id"],
+                    "direct WS session interrupted" if USE_DIRECT_WS else "likely ngrok crash",
+                    exc,
                 )
                 result = {
                     "scenario_id":   scenario["id"],
                     "scenario_name": scenario["name"],
                     "phase":         scenario.get("phase", ""),
                     "turns":         0,
-                    "end_reason":    "ngrok_crash",
+                    "end_reason":    _end_reason,
                     "susie_said":    [],
                     "test_said":     [],
                     "duration_seconds": 0,
@@ -581,24 +584,26 @@ async def main():
                     "call_sid":      None,
                     "evaluation": {
                         "passed":      False,
-                        "fail_reason": "ngrok_crash",
+                        "fail_reason": _end_reason,
                         "detail":      str(exc),
                         "checks":      {},
                         "transcript":  "",
                     },
                 }
                 _save_result(result, scenario)
-                # Restart the shared server so subsequent tests get a fresh ngrok tunnel
-                logger.info("Restarting shared server after ngrok crash...")
-                try:
-                    await shared_server.stop()
-                except Exception:
-                    pass
-                try:
-                    await shared_server.start()
-                    logger.info("Shared server restarted — new webhook: %s", shared_server.webhook_url)
-                except Exception as restart_exc:
-                    logger.error("Failed to restart shared server: %r — remaining tests may fail", restart_exc)
+                # Only restart the shared (ngrok) server when not in direct WS mode.
+                # In direct WS mode shared_server is None — nothing to restart.
+                if shared_server is not None and not USE_DIRECT_WS:
+                    logger.info("Restarting shared server after ngrok crash...")
+                    try:
+                        await shared_server.stop()
+                    except Exception:
+                        pass
+                    try:
+                        await shared_server.start()
+                        logger.info("Shared server restarted — new webhook: %s", shared_server.webhook_url)
+                    except Exception as restart_exc:
+                        logger.error("Failed to restart shared server: %r — remaining tests may fail", restart_exc)
             except Exception as exc:
                 logger.error(
                     "Exception running scenario %s: %r",

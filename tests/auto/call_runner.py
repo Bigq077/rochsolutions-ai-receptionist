@@ -273,8 +273,22 @@ class CallRunner:
                         async with httpx.AsyncClient(timeout=5) as http:
                             try:
                                 resp = await http.post(inject_url, json={})
-                                if resp.status_code != 404:
-                                    logger.info("[%s] Handler ready (attempt %d)", self.scenario["id"], attempt + 1)
+                                if resp.status_code == 400:
+                                    logger.info(
+                                        "[%s] handler-ready 400 (handler registered, sid=%s) attempt=%d",
+                                        self.scenario["id"], fake_call_sid[:8], attempt + 1,
+                                    )
+                                    break
+                                elif resp.status_code == 404:
+                                    logger.debug(
+                                        "[%s] handler-ready probe 404 — not yet registered (attempt %d)",
+                                        self.scenario["id"], attempt + 1,
+                                    )
+                                else:
+                                    logger.info(
+                                        "[%s] Handler ready status=%d (attempt %d)",
+                                        self.scenario["id"], resp.status_code, attempt + 1,
+                                    )
                                     break
                             except Exception:
                                 pass
@@ -354,8 +368,16 @@ class CallRunner:
                         pass
 
         except Exception as exc:
-            logger.error("[%s] Direct WS error: %r", self.scenario["id"], exc)
-            self._end_call("ws_error")
+            exc_str = str(exc).lower()
+            if "keepalive" in exc_str or "ping" in exc_str or "pong" in exc_str:
+                logger.error(
+                    "[%s] direct_ws keepalive timeout sid=%s: %r",
+                    self.scenario["id"], self.call_sid or "?", exc,
+                )
+                self._end_call("ws_keepalive_timeout")
+            else:
+                logger.error("[%s] Direct WS error: %r", self.scenario["id"], exc)
+                self._end_call("ws_error")
 
         self.call_end_time = time.time()
 
@@ -587,6 +609,27 @@ class CallRunner:
             try:
                 async with httpx.AsyncClient(timeout=15) as http:
                     resp = await http.post(url, json={"text": text, "via_filter": via_filter})
+
+                    # 404 = no active session on server. In direct WS mode only,
+                    # retry once after a short wait — the handler may still be
+                    # initialising after the handler-ready probe fired.
+                    if resp.status_code == 404:
+                        _active = False  # handler is definitively absent at this point
+                        logger.warning(
+                            "[%s] inject 404 sid=%s active_handler=%s (attempt %d)",
+                            self.scenario["id"], inbound_sid[:8], _active, attempt + 1,
+                        )
+                        if USE_DIRECT_WS and attempt == 0:
+                            logger.info(
+                                "[%s] Retrying inject turn %d after 404 (direct WS mode) in 5s",
+                                self.scenario["id"], turn_index,
+                            )
+                            await asyncio.sleep(5)
+                            continue  # retry
+                        # Not direct WS, or second attempt — record session lost
+                        self._end_call("direct_ws_session_lost")
+                        return True  # caller proceeds; end_reason captures the issue
+
                     data = resp.json()
                     if data.get("filtered"):
                         logger.info(

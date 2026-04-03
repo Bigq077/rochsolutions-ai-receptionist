@@ -902,7 +902,10 @@ class WebSocketCallHandler:
         # can drive the conversation without going through STT.
         if self.call_sid:
             _active_handlers[self.call_sid] = self
-            logger.info("[ms_conn] registered active handler for call_sid=%s", self.call_sid)
+            logger.info(
+                "[ms_conn] WS session registered sid=%s total_active=%d",
+                self.call_sid, len(_active_handlers),
+            )
 
         # Populate collected.phone from Twilio caller-ID so Susie never asks for it.
         if twilio_from:

@@ -122,7 +122,11 @@ class Healer:
         # Classic infrastructure failures — no conversation at all
         if turns == 0:
             return True
-        if end_reason in ("timeout", "timeout_no_speech", "ngrok_died", "exception"):
+        if end_reason in (
+            "timeout", "timeout_no_speech", "ngrok_died", "exception",
+            "direct_ws_session_lost", "direct_ws_interrupted",
+            "ws_keepalive_timeout", "handler_not_ready",
+        ):
             return True
 
         # Early call drop: Twilio reported "completed" but the flow barely started.
