@@ -327,7 +327,28 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
     text = (body.get("text") or "").strip()
     via_filter: bool = bool(body.get("via_filter", False))
 
+    # ── Handler lookup FIRST (before empty-text guard) ───────────────────────
+    # IMPORTANT: this check must come before `not text` so that the handler-ready
+    # probe (which sends an empty body {}) returns 404 while the handler is not yet
+    # registered, and 400 only once the handler IS registered.  If the empty-text
+    # guard ran first it would return 400 unconditionally — making the probe always
+    # break immediately regardless of whether _active_handlers contains the sid.
+    handler = _active_handlers.get(call_sid)
+    if handler is None:
+        logger.warning(
+            "[ms_inject] INJECT lookup sid=%s found=False known_sids=%s",
+            call_sid,
+            list(_active_handlers.keys())[:5],
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"no active session for {call_sid}"},
+            status_code=404,
+        )
+
+    logger.debug("[ms_inject] INJECT lookup sid=%s found=True", call_sid)
+
     if not text:
+        # Handler exists but probe sent an empty body — this is the handler-ready signal.
         return JSONResponse({"ok": False, "error": "empty text"}, status_code=400)
 
     # If the caller requested STT-style filtering, run the garbage filter.
@@ -336,18 +357,6 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
     if via_filter and _is_garbage_transcript(text):
         logger.info("[ms_inject] via_filter=True — garbage dropped: %r", text)
         return JSONResponse({"ok": True, "filtered": True, "text": text})
-
-    handler = _active_handlers.get(call_sid)
-    if handler is None:
-        logger.warning(
-            "[ms_inject] 404 no active session sid=%s active_handler=False known_sids=%s",
-            call_sid,
-            list(_active_handlers.keys())[:5],  # show up to 5 known sids for diagnosis
-        )
-        return JSONResponse(
-            {"ok": False, "error": f"no active session for {call_sid}"},
-            status_code=404,
-        )
 
     try:
         # Diagnostic snapshot BEFORE injection

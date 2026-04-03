@@ -1674,7 +1674,12 @@ class WebSocketCallHandler:
         logger.info("[ms_conn] cleanup call_sid=%s stable=%s", self.call_sid, self._call_stable)
 
         # Deregister from the active-handler map
+        _was_registered = self.call_sid in _active_handlers
         _active_handlers.pop(self.call_sid, None)
+        logger.info(
+            "[ms_conn] REMOVE sid=%s reason=cleanup was_registered=%s remaining=%d",
+            self.call_sid, _was_registered, len(_active_handlers),
+        )
 
         # Cancel the silence handler timer so it doesn't fire after the call ends
         self._silence_handler.cancel()
