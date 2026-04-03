@@ -1254,6 +1254,55 @@ class FlowEngine:
             self.session["state"] = step["state"]
             logger.debug("[ms_flow] state → %s (step %d)", step["state"], step["step"])
 
+        # ── CONFIRM_BOOKING: hard first branch ─────────────────────────────────
+        # MUST run before the "question is None" early-return guard below.
+        # CONFIRM_BOOKING has use_llm=False and question=None; without this block
+        # the guard fires and returns immediately, so the prompt is never emitted.
+        # Do NOT set booking_confirmed here — only set it when the caller answers.
+        if step["state"] == "CONFIRM_BOOKING":
+            _slot_cb = (
+                self.session.get("selected_slot_speech")
+                or self.session.get("selected_slot")
+                or "your appointment"
+            )
+            _name_cb = (
+                self.session.get("full_name")
+                or (self.session.get("collected") or {}).get("full_name")
+                or (self.session.get("collected") or {}).get("name")
+                or self.session.get("patient_name")
+                or self.session.get("caller_name")
+            )
+            _phone_cb = (
+                self.session.get("phone_number")
+                or (self.session.get("collected") or {}).get("phone")
+                or self.session.get("twilio_from_local")
+                or self.session.get("twilio_from", "")
+            )
+            _name_part  = f"{_name_cb}, " if _name_cb else ""
+            _phone_part = (
+                f" We'll send your confirmation to {_phone_cb}."
+                if _phone_cb else ""
+            )
+            _cb_prompt = (
+                f"Just to confirm — {_name_part}I'm booking you in for "
+                f"{_slot_cb} at our Alcester clinic.{_phone_part} "
+                "Shall I go ahead and confirm that?"
+            )
+            logger.info(
+                "[ms_flow] ASK CONFIRM_BOOKING text=%r name=%r slot=%r phone=%r",
+                _cb_prompt[:80], _name_cb, str(_slot_cb)[:40],
+                str(_phone_cb)[-4:] if _phone_cb else "",
+            )
+            self.session["question_asked_this_turn"] = True
+            await self._tts.put(_cb_prompt)
+            if _is_question_worth_storing(_cb_prompt):
+                self.session["last_question"] = _cb_prompt
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _cb_prompt}
+            )
+            logger.info("[ms_flow] SPOKE CONFIRM_BOOKING")
+            return
+
         # DETECT_INTENT step has no question — wait silently for caller to speak
         if not step["use_llm"] and step["question"] is None:
             logger.info("[ms_flow] step %d (%s): no question to play — waiting for transcript",
@@ -3190,8 +3239,33 @@ class FlowEngine:
                 )
                 return
 
-        # ── Final compat guard: abort extraction if CONFIRM_BOOKING/DONE already set ──
-        if self.session.get("booking_confirmed") or self.session.get("state") in ("CONFIRM_BOOKING", "DONE"):
+        # ── CONFIRM_BOOKING: dedicated YES handler ─────────────────────────────
+        # Runs BEFORE generic extraction so the caller's response never falls
+        # through to _start_readback().  Any input at this step is treated as
+        # confirmation — booking_confirmed is set here (not in ask_current_question).
+        if step["state"] == "CONFIRM_BOOKING":
+            self.session["booking_confirmed"] = True
+            self.session["state"]             = "DONE"
+            self.session["flow_state"]        = "DONE"
+            self.session["flow_step"]         = len(self._active_flow)
+            _cb_done = (
+                "Brilliant — you're all booked in! "
+                "We'll send a confirmation text shortly. "
+                "Have a great day!"
+            )
+            await self._tts.put(_cb_done)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _cb_done}
+            )
+            logger.info(
+                "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True state=DONE"
+            )
+            return
+
+        # ── Final compat guard: abort extraction if booking already done ────────
+        # Note: CONFIRM_BOOKING is handled by the dedicated block above, so only
+        # check booking_confirmed / DONE here — not "CONFIRM_BOOKING" itself.
+        if self.session.get("booking_confirmed") or self.session.get("state") == "DONE":
             logger.info(
                 "[ms_flow] compat final guard: booking_confirmed=%s state=%s — skipping extraction",
                 self.session.get("booking_confirmed"), self.session.get("state"),
