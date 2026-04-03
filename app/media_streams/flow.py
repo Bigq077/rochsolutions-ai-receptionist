@@ -1474,6 +1474,10 @@ class FlowEngine:
             _pt_target = _find_chosen_day_entry(_pt_avail, _pt_chosen)
             _pt_slots  = (_pt_target or {}).get("slots", [])
             if len(_pt_slots) == 1:
+                # Stale guard: if slot already confirmed, don't re-ask
+                if self.session.get("slot_confirmed"):
+                    logger.info("[ms_flow] %s: ask_current_question 1-slot stale guard — slot_confirmed=True, skipping", step["state"])
+                    return
                 from app.vagueness_detector import _time_to_speech as _t2s_pt
                 _pt_time   = ((_pt_target or {}).get("slot_times") or [""])[0]
                 _pt_spoken = _t2s_pt(_pt_time) if _pt_time else "that time"
@@ -1485,7 +1489,6 @@ class FlowEngine:
                 self.session["selected_slot_speech"]     = (
                     f"{_pt_label} at {_pt_spoken}" if _pt_label else _pt_spoken
                 )
-                self.session["slot_pending_confirmation"] = True
                 self.session["question_asked_this_turn"]  = True
                 await self._tts.put(_pt_phrase)
                 if _is_question_worth_storing(_pt_phrase):
@@ -2500,6 +2503,19 @@ class FlowEngine:
         # BUG 3: Repeat / clarification requests ("i can't remember", "say that
         #        again") must replay the stored slot list — no interrupt / no LLM.
         if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+            logger.info(
+                "[ms_flow] PRESENT_TIMES entry: text=%r slot_confirmed=%s slot_pending=%s selected=%r",
+                text[:60], self.session.get("slot_confirmed"),
+                self.session.get("slot_pending_confirmation"),
+                (self.session.get("selected_slot") or "")[:30],
+            )
+            # Stale guard: slot already confirmed or pending external confirmation — skip menu
+            if self.session.get("slot_confirmed") or self.session.get("slot_pending_confirmation"):
+                logger.info(
+                    "[ms_flow] PRESENT_TIMES stale guard fired: slot_confirmed=%s slot_pending=%s — skipping",
+                    self.session.get("slot_confirmed"), self.session.get("slot_pending_confirmation"),
+                )
+                return
             # ── REPEAT / CLARIFICATION ──
             _PT_REPEAT = (
                 "can't remember", "cannot remember", "can not remember",
@@ -2549,23 +2565,24 @@ class FlowEngine:
                     "sounds fine", "that sounds", "go ahead", "please",
                 )
                 if any(p in text for p in _SS_YES):
-                    self.session["selected_slot"]            = _slots_ss[0]["start"]
-                    self.session["selected_slot_speech"]     = _speech_ss
-                    self.session["slot_pending_confirmation"] = True
-                    _conf_ss = (
-                        f"Just to confirm — you'd like the appointment on "
-                        f"{_speech_ss}. Is that right?"
+                    self.session["selected_slot"]        = _slots_ss[0]["start"]
+                    self.session["selected_slot_speech"] = _speech_ss
+                    self.session["slot_confirmed"]       = True
+                    self.session.pop("slot_pending_confirmation", None)
+                    self.session.pop("vague_option_pending", None)
+                    self.session.pop("vague_clarification_asked", None)
+                    _nxt_pt = step["step"] + 1
+                    _nxt_pt_state = (
+                        self._active_flow[_nxt_pt]["state"]
+                        if _nxt_pt < len(self._active_flow) else "DONE"
                     )
-                    await self._tts.put(_conf_ss)
-                    if _is_question_worth_storing(_conf_ss):
-                        self.session["last_question"] = _conf_ss
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _conf_ss}
-                    )
+                    self.session["flow_step"] = _nxt_pt
+                    self.session["state"]     = _nxt_pt_state
                     logger.info(
-                        "[ms_flow] %s: single-slot YES → %r (LLM avoided)",
-                        step["state"], _slots_ss[0].get("start", "")[:40],
+                        "[ms_flow] PRESENT_TIMES single-slot YES → slot=%r next_state=%s (advancing directly)",
+                        _slots_ss[0].get("start", "")[:40], _nxt_pt_state,
                     )
+                    await self.ask_current_question()
                     return
                 # Caller repeated the day name — re-anchor to the one available slot
                 _day_words_ss = [w.lower() for w in _dlabel_ss.split() if len(w) > 3]
