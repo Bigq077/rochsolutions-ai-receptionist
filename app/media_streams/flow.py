@@ -2034,6 +2034,10 @@ class FlowEngine:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         )
         if step["state"] in _NAME_COLLECT_STATES and self.session.get("name_readback_pending"):
+            logger.info(
+                "[ms_flow] name_readback state=%s input=%r phone_accept=%s",
+                step["state"], text[:60], _is_phone_accept(text),
+            )
             # ── FIRST-CHECK: phone-accept compat ────────────────────────────
             # "yes use this number" arrives when caller combines name-confirm +
             # phone-confirm in one utterance.  Catch it before yes/no name logic
@@ -2970,6 +2974,10 @@ class FlowEngine:
         #   implicit name skip + phone confirmed → jump to CONFIRM_BOOKING.
         # This handles the test-path turn budget where no explicit name turn exists.
         if current_state == "COLLECT_NAME":
+            logger.info(
+                "[ms_flow] COLLECT_NAME state=%s input=%r phone_accept=%s",
+                current_state, text[:60], _is_phone_accept(text),
+            )
             _cn_twilio = (
                 self.session.get("twilio_from_local")
                 or self.session.get("twilio_from", "")
@@ -3012,7 +3020,10 @@ class FlowEngine:
         # Without this gate "yes use my number" can match general_query intent
         # in _detect_intent and be routed to the LLM interrupt path.
         if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
-            logger.info("[ms_flow] phone_confirm input=%r state=%s", text[:60], step["state"])
+            logger.info(
+                "[ms_flow] CONFIRM_PHONE state=%s input=%r phone_accept=%s",
+                step["state"], text[:60], _is_phone_accept(text),
+            )
             _CP_YES = (
                 "yes", "yeah", "yep", "yup",
                 "yes use this number", "use this number",
@@ -3168,6 +3179,14 @@ class FlowEngine:
                     "would you like to book an appointment?"
                 )
                 return
+
+        # ── Final compat guard: abort extraction if CONFIRM_BOOKING/DONE already set ──
+        if self.session.get("booking_confirmed") or self.session.get("state") in ("CONFIRM_BOOKING", "DONE"):
+            logger.info(
+                "[ms_flow] compat final guard: booking_confirmed=%s state=%s — skipping extraction",
+                self.session.get("booking_confirmed"), self.session.get("state"),
+            )
+            return
 
         answer = self._extract(step["extract"], text, transcript)
 
@@ -3761,6 +3780,10 @@ class FlowEngine:
         yes / unclear after one retry → accept number, clear flag, advance flow
         no                            → clear number + buffer, re-ask for it
         """
+        logger.info(
+            "[ms_flow] phone_readback state=%s input=%r phone_accept=%s",
+            step["state"], text[:60], _is_phone_accept(text),
+        )
         # FIRST-CHECK: explicit phone-accept phrase overrides readback yes/no
         _prb_twilio = (
             self.session.get("twilio_from_local")
