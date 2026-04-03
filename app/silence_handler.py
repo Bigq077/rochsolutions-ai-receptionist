@@ -79,7 +79,7 @@ def get_silence_response(
             response += _CALLBACK_SUFFIX
         return response
     except Exception:
-        return SILENCE_RESPONSES.get("default", "Sorry about that — could you say that again?")
+        return SILENCE_RESPONSES.get("default", "I didn't quite catch that — could you say that again?")
 
 
 def get_silence_threshold(state: str) -> float:
