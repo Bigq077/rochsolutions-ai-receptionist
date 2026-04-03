@@ -2516,6 +2516,73 @@ class FlowEngine:
                     self.session.get("slot_confirmed"), self.session.get("slot_pending_confirmation"),
                 )
                 return
+
+            # ── FIRST-CHECK: single-slot confirm YES/NO ──────────────────────
+            # ask_current_question() already stored selected_slot when it asked
+            # "On [day] I've got [time] — does that work for you?"
+            # Catch YES/NO IMMEDIATELY, before repeat/ordinal/time logic or any
+            # fallback can fire.  Uses session["selected_slot"] as the signal —
+            # no re-lookup of available_days needed.
+            _ssc_slot   = self.session.get("selected_slot")
+            _ssc_speech = self.session.get("selected_slot_speech", "")
+            if _ssc_slot and not self.session.get("slot_confirmed"):
+                logger.info(
+                    "[ms_flow] single_slot_confirm input=%r selected_slot=%r",
+                    text[:60], str(_ssc_slot)[:30],
+                )
+                _SSC_YES = (
+                    "yes", "yeah", "yeh", "ya", "yep", "yup",
+                    "yes please", "yep please",
+                    "ok", "okay", "sure", "fine", "alright", "perfect",
+                    "that works", "works for me", "works",
+                    "sounds good", "sounds fine", "that sounds",
+                    "that's fine", "thats fine",
+                    "go ahead", "please",
+                )
+                _SSC_NO = (
+                    "no", "nope", "no thanks", "nah",
+                    "doesn't work", "does not work",
+                    "that doesn't work", "that does not work",
+                    "no good", "not good", "not for me",
+                    "something else", "different time",
+                )
+                if any(p in text for p in _SSC_YES):
+                    self.session["slot_confirmed"]       = True
+                    self.session.pop("slot_pending_confirmation", None)
+                    self.session.pop("vague_option_pending", None)
+                    self.session.pop("vague_clarification_asked", None)
+                    _nxt_ssc = step["step"] + 1
+                    _nxt_ssc_state = (
+                        self._active_flow[_nxt_ssc]["state"]
+                        if _nxt_ssc < len(self._active_flow) else "DONE"
+                    )
+                    self.session["flow_step"] = _nxt_ssc
+                    self.session["state"]     = _nxt_ssc_state
+                    logger.info(
+                        "[ms_flow] single_slot_confirm matched YES → next_state=%s",
+                        _nxt_ssc_state,
+                    )
+                    await self.ask_current_question()
+                    return
+                if any(p in text for p in _SSC_NO):
+                    logger.info("[ms_flow] single_slot_confirm matched NO → offering retry")
+                    self.session.pop("selected_slot", None)
+                    self.session.pop("selected_slot_speech", None)
+                    _avail_no  = self.session.get("available_days", [])
+                    _chosen_no = self.session.get("chosen_day", "")
+                    _target_no = _find_chosen_day_entry(_avail_no, _chosen_no)
+                    _no_phrase = (
+                        _build_times_phrase(_target_no)
+                        if _target_no else
+                        "No problem — let me know what time would work for you."
+                    )
+                    await self._tts.put(_no_phrase)
+                    self.session["last_question"] = _no_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _no_phrase}
+                    )
+                    return
+
             # ── REPEAT / CLARIFICATION ──
             _PT_REPEAT = (
                 "can't remember", "cannot remember", "can not remember",
