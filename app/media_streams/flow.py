@@ -862,6 +862,21 @@ def _get_bridge(
     return phrase
 
 
+def _is_phone_accept(text: str) -> bool:
+    """
+    Return True if normalised-lowercase text is an explicit phone-accept phrase.
+    Used as a cross-state compat check so "yes use this number" is always caught
+    before generic yes/no or fallback logic can consume the turn.
+    """
+    _PHONE_ACCEPT = (
+        "yes use this number", "use this number",
+        "same number", "use my current number",
+        "yes that's fine", "yes thats fine",
+        "yes use my number", "use my number",
+    )
+    return any(p in text for p in _PHONE_ACCEPT)
+
+
 # ---------------------------------------------------------------------------
 # Opportunistic multi-field harvesting
 # ---------------------------------------------------------------------------
@@ -2019,6 +2034,49 @@ class FlowEngine:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         )
         if step["state"] in _NAME_COLLECT_STATES and self.session.get("name_readback_pending"):
+            # ── FIRST-CHECK: phone-accept compat ────────────────────────────
+            # "yes use this number" arrives when caller combines name-confirm +
+            # phone-confirm in one utterance.  Catch it before yes/no name logic
+            # so the turn is not silently consumed as a plain name confirmation.
+            _nr_twilio = (
+                self.session.get("twilio_from_local")
+                or self.session.get("twilio_from", "")
+            )
+            if _is_phone_accept(text) and _nr_twilio:
+                logger.info(
+                    "[ms_flow] compat_phone_accept state=%s input=%r",
+                    step["state"], text[:60],
+                )
+                import re as _re_nrp
+                _nrp_digits = _re_nrp.sub(r"\D", "", _nr_twilio)
+                _nrp_phone  = _nrp_digits or _nr_twilio
+                # Finalize name — already stored by name extraction; ensure full_name set
+                if not self.session.get("full_name"):
+                    _nrp_name = (
+                        (self.session.get("collected") or {}).get("full_name")
+                        or (self.session.get("collected") or {}).get("name")
+                        or self.session.get("patient_name")
+                        or self.session.get("caller_name")
+                    )
+                    if _nrp_name:
+                        self.session["full_name"] = _nrp_name
+                        self.session.setdefault("collected", {})["full_name"] = _nrp_name
+                self.session["name_readback_pending"] = False
+                self.session["phone_confirmed"]       = True
+                self.session["phone_from_twilio"]     = True
+                self.session["phone_number"]          = _nrp_phone
+                self.session.setdefault("collected", {})["phone"] = _nrp_phone
+                self.session.pop("phone_readback_pending", None)
+                self.session.pop("phone_readback_retry", None)
+                self.session.pop("slot_pending_confirmation", None)
+                self.session.pop("vague_option_pending", None)
+                self.session.pop("vague_clarification_asked", None)
+                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                self.session["state"]     = "CONFIRM_BOOKING"
+                logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
+                await self.ask_current_question()
+                return
+
             _nr_yes = any(p in text for p in (
                 "yes", "yeah", "yep", "yup", "yeh", "ya", "correct",
                 "right", "that's right", "thats right", "aye", "ok", "okay",
@@ -2912,24 +2970,22 @@ class FlowEngine:
         #   implicit name skip + phone confirmed → jump to CONFIRM_BOOKING.
         # This handles the test-path turn budget where no explicit name turn exists.
         if current_state == "COLLECT_NAME":
-            _CN_PHONE_PHRASES = (
-                "yes use this number", "use this number", "same number",
-                "use my current number", "yes that's fine", "yes thats fine",
-                "yes use my number", "use my number",
-            )
-            _cn_phone_intent = any(p in text for p in _CN_PHONE_PHRASES)
             _cn_twilio = (
                 self.session.get("twilio_from_local")
                 or self.session.get("twilio_from", "")
             )
-            if _cn_phone_intent and _cn_twilio:
+            if _is_phone_accept(text) and _cn_twilio:
+                logger.info(
+                    "[ms_flow] compat_phone_accept state=COLLECT_NAME input=%r", text[:60],
+                )
                 import re as _re_cn
                 _cn_digits = _re_cn.sub(r"\D", "", _cn_twilio)
+                _cn_phone  = _cn_digits or _cn_twilio
                 self.session["phone_confirmed"]   = True
                 self.session["phone_from_twilio"] = True
-                self.session["phone_number"]      = _cn_digits or _cn_twilio
-                self.session.setdefault("collected", {})["phone"] = self.session["phone_number"]
-                # If no patient name yet, pull from already-collected session data only
+                self.session["phone_number"]      = _cn_phone
+                self.session.setdefault("collected", {})["phone"] = _cn_phone
+                # Finalize name from session if not already set
                 if not self.session.get("full_name"):
                     _cn_name = (
                         (self.session.get("collected") or {}).get("full_name")
@@ -2940,16 +2996,14 @@ class FlowEngine:
                     if _cn_name:
                         self.session["full_name"] = _cn_name
                         self.session.setdefault("collected", {})["full_name"] = _cn_name
-                        logger.info("[ms_flow] COLLECT_NAME compat: name inferred from session %r", _cn_name)
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"
+                self.session.pop("phone_readback_pending", None)
+                self.session.pop("phone_readback_retry", None)
                 self.session.pop("slot_pending_confirmation", None)
                 self.session.pop("vague_option_pending", None)
-                logger.info(
-                    "[ms_flow] COLLECT_NAME compat branch=PHONE_CONFIRM_SKIP "
-                    "phrase=%r → phone_confirmed=True state→CONFIRM_BOOKING",
-                    text[:60],
-                )
+                self.session.pop("vague_clarification_asked", None)
+                logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
                 await self.ask_current_question()
                 return
 
@@ -3707,6 +3761,34 @@ class FlowEngine:
         yes / unclear after one retry → accept number, clear flag, advance flow
         no                            → clear number + buffer, re-ask for it
         """
+        # FIRST-CHECK: explicit phone-accept phrase overrides readback yes/no
+        _prb_twilio = (
+            self.session.get("twilio_from_local")
+            or self.session.get("twilio_from", "")
+        )
+        if _is_phone_accept(text) and _prb_twilio:
+            logger.info(
+                "[ms_flow] compat_phone_accept state=%s input=%r",
+                step["state"], text[:60],
+            )
+            import re as _re_prb
+            _prb_digits = _re_prb.sub(r"\D", "", _prb_twilio)
+            _prb_phone  = _prb_digits or _prb_twilio
+            self.session["phone_confirmed"]       = True
+            self.session["phone_from_twilio"]     = True
+            self.session["phone_number"]          = _prb_phone
+            self.session.setdefault("collected", {})["phone"] = _prb_phone
+            self.session["phone_readback_pending"] = False
+            self.session.pop("phone_readback_retry", None)
+            self.session.pop("slot_pending_confirmation", None)
+            self.session.pop("vague_option_pending", None)
+            self.session.pop("vague_clarification_asked", None)
+            self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+            self.session["state"]     = "CONFIRM_BOOKING"
+            logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
+            await self.ask_current_question()
+            return
+
         answer = self._extract("yes_no", text, transcript)
         logger.info(
             "[ms_flow] phone readback confirmation: %r → %s", transcript[:60], answer
