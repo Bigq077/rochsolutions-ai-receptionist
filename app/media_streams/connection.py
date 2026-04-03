@@ -215,6 +215,7 @@ class SilenceHandler:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
         self.last_question:           str   = ""
+        self._replay_flow_step:       int   = -1
         self.current_state:           str   = "default"
         self._consecutive_silence_count: int = 0
         self.currently_reasking:      bool  = False
@@ -257,6 +258,8 @@ class SilenceHandler:
             self.last_question         = question.strip()
             self.reask_count           = 0
             self._last_question_set_at = time.time()
+            _session = self._get_session() if self._get_session else None
+            self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
 
     def on_tts_started(self) -> None:
         """Cancel silence timer before Susie speaks."""
@@ -326,6 +329,8 @@ class SilenceHandler:
         self._consecutive_silence_count  = 0
         self.currently_reasking          = False
         self.last_audio_received_at      = time.time()
+        self.last_question               = ""
+        self._replay_flow_step           = -1
         logger.info("[ms_silence] transcript — timer cancelled")
 
     def cancel(self) -> None:
@@ -337,6 +342,8 @@ class SilenceHandler:
     def _restart_timer(self) -> None:
         self._cancel_timer()
         self.currently_reasking = False
+        _session = self._get_session() if self._get_session else None
+        self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
         self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
         logger.debug("[ms_silence] timer started")
 
@@ -443,6 +450,15 @@ class SilenceHandler:
         if self._llm_busy:
             return
 
+        _session_now = self._get_session() if self._get_session else None
+        _current_step = (_session_now or {}).get("flow_step", -1) if _session_now else -1
+        if _current_step != self._replay_flow_step:
+            logger.info(
+                "[ms_silence] W1 stale replay suppressed stored_step=%d current_step=%d",
+                self._replay_flow_step, _current_step,
+            )
+            return
+
         self.currently_reasking = True
         self.reask_count += 1
         secs_since_q = time.time() - self._last_question_set_at
@@ -484,6 +500,15 @@ class SilenceHandler:
         if self.currently_reasking:
             return
         if self._llm_busy:
+            return
+
+        _session_now = self._get_session() if self._get_session else None
+        _current_step = (_session_now or {}).get("flow_step", -1) if _session_now else -1
+        if _current_step != self._replay_flow_step:
+            logger.info(
+                "[ms_silence] W2 stale replay suppressed stored_step=%d current_step=%d",
+                self._replay_flow_step, _current_step,
+            )
             return
 
         self.currently_reasking = True
