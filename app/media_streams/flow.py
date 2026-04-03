@@ -1229,6 +1229,11 @@ class FlowEngine:
             )
             return
 
+        # Stamp session state so LLM prompt / silence handler know the current step
+        if step["state"] != "DETECT_INTENT":
+            self.session["state"] = step["state"]
+            logger.debug("[ms_flow] state → %s (step %d)", step["state"], step["step"])
+
         # DETECT_INTENT step has no question — wait silently for caller to speak
         if not step["use_llm"] and step["question"] is None:
             logger.info("[ms_flow] step %d (%s): no question to play — waiting for transcript",
@@ -1514,6 +1519,8 @@ class FlowEngine:
             # arrive to trigger _extract("none") for the last step in each flow.
             if step["state"] == "CONFIRM_BOOKING":
                 self.session["booking_confirmed"] = True
+                self.session["state"]             = "DONE"
+                self.session["flow_state"]        = "DONE"
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] CONFIRM_BOOKING complete — booking_confirmed=True, flow complete")
             # ANSWER_FAQ: advance immediately to FAQ_BOOKING_OFFER after the LLM
@@ -1633,6 +1640,10 @@ class FlowEngine:
         If no answer is extracted, re-ask the current question.
         """
         step = self.current_step()
+        logger.debug(
+            "[ms_flow] handle_transcript: state=%s step=%s transcript=%r",
+            self.session.get("state"), step["state"] if step else "None", transcript[:60],
+        )
         if step is None:
             # ── Readback still pending: booking NOT yet finalized ──────────────────
             # _start_readback() advances flow_step past the last step BUT sets
@@ -3214,7 +3225,9 @@ class FlowEngine:
 
         # Advance to next step
         self.session["flow_step"] = step["step"] + 1
-        logger.info("[ms_flow] → step %d", step["step"] + 1)
+        _next_state = (self._active_flow[step["step"] + 1]["state"]
+                       if step["step"] + 1 < len(self._active_flow) else "DONE")
+        logger.info("[ms_flow] → step %d  state=%s → %s", step["step"] + 1, step["state"], _next_state)
 
         # Emit a short conversational bridge before the next question.
         # Skip if the next step uses LLM — it writes its own opener.
