@@ -1716,6 +1716,15 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── Phase 5: stamp session state to current step immediately so all
+        #    branches (including early exits) observe the correct state. ──────
+        current_state = step["state"]
+        self.session["state"] = current_state
+        logger.info(
+            "[ms_flow] handle_transcript entry: flow_step=%d state=%s transcript=%r",
+            self.session.get("flow_step", 0), current_state, transcript[:60],
+        )
+
         # ── CALLER CLASSIFICATION (first substantive utterance only) ──────────
         # Runs before any state-machine logic so professional callers are routed
         # before the booking flow is ever entered.
@@ -2748,10 +2757,12 @@ class FlowEngine:
                 self.session["phone_digits_buffer"] = ""
                 self.session.pop("phone_readback_retry", None)
                 self.session["flow_step"]           = step["step"] + 1
+                _nxt_yes = (self._active_flow[step["step"] + 1]["state"]
+                            if step["step"] + 1 < len(self._active_flow) else "DONE")
+                self.session["state"] = _nxt_yes
                 logger.info(
-                    "[ms_flow] %s: YES → phone confirmed deterministically "
-                    "(interrupt+LLM bypassed) step→%d",
-                    step["state"], step["step"] + 1,
+                    "[ms_flow] %s: branch=YES phone confirmed step→%d state→%s",
+                    step["state"], step["step"] + 1, _nxt_yes,
                 )
                 await self.ask_current_question()
                 return
@@ -2764,6 +2775,9 @@ class FlowEngine:
                 self.session.pop("phone_readback_retry", None)
                 self.session.setdefault("collected", {}).pop("phone", None)
                 self.session["flow_step"] = step["step"] + 1
+                _nxt_no = (self._active_flow[step["step"] + 1]["state"]
+                           if step["step"] + 1 < len(self._active_flow) else "DONE")
+                self.session["state"] = _nxt_no
                 phrase = "No problem — what number would you like us to use?"
                 await self._tts.put(phrase)
                 if _is_question_worth_storing(phrase):
@@ -2772,9 +2786,8 @@ class FlowEngine:
                     {"role": "assistant", "content": phrase}
                 )
                 logger.info(
-                    "[ms_flow] %s: NO → collecting number manually "
-                    "(interrupt+LLM bypassed) step→%d",
-                    step["state"], step["step"] + 1,
+                    "[ms_flow] %s: branch=NO collecting number step→%d state→%s",
+                    step["state"], step["step"] + 1, _nxt_no,
                 )
                 return
             logger.info(
@@ -3227,7 +3240,18 @@ class FlowEngine:
         self.session["flow_step"] = step["step"] + 1
         _next_state = (self._active_flow[step["step"] + 1]["state"]
                        if step["step"] + 1 < len(self._active_flow) else "DONE")
-        logger.info("[ms_flow] → step %d  state=%s → %s", step["step"] + 1, step["state"], _next_state)
+        self.session["state"] = _next_state
+        # Fix 6: ensure booking_confirmed + DONE are authoritative on this branch
+        if step["state"] == "CONFIRM_BOOKING":
+            self.session["booking_confirmed"] = True
+            self.session["state"] = "DONE"
+            logger.info("[ms_flow] CONFIRM_BOOKING advance → booking_confirmed=True state=DONE")
+        # Clear stale per-step flags so they cannot replay after a successful parse
+        self.session.pop("slot_pending_confirmation", None)
+        self.session.pop("vague_option_pending", None)
+        self.session.pop("vague_clarification_asked", None)
+        logger.info("[ms_flow] advance: step→%d matched_state=%s next_state=%s",
+                    step["step"] + 1, step["state"], self.session["state"])
 
         # Emit a short conversational bridge before the next question.
         # Skip if the next step uses LLM — it writes its own opener.
@@ -3502,8 +3526,8 @@ class FlowEngine:
                 logger.info("[ms_flow] phone readback: 2nd unclear — accepting and advancing")
                 await self.ask_current_question()
             else:
-                lq = self.session.get("last_question", "")
-                phrase = f"Sorry, just to confirm — is that number right? {lq}" if lq else "Is that number correct?"
+                # Do NOT prepend last_question — it belongs to a prior step.
+                phrase = "Is that number correct?"
                 await self._tts.put(phrase)
                 self.session["last_question"] = phrase
                 self.session.setdefault("conversation_history", []).append(
