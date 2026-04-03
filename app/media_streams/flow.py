@@ -2342,6 +2342,39 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+            # ── ORDINAL / POSITIONAL MATCH: "the last one", "three", "third" ──────
+            # Deterministic position-based resolution against the offered day list.
+            # Checked BEFORE named-day match so "last"/"third"/"three"/"3" never
+            # reach the reprompt branch.
+            _avail_ord = self.session.get("available_days", [])[:3]
+            _n_ord = len(_avail_ord)
+            _ord_idx: Optional[int] = None
+            if _n_ord > 0:
+                # "last" — word-boundary check avoids matching "lasts"
+                _last_phrases = ("the last one", "last one", "the last")
+                if any(p in text for p in _last_phrases) or "last" in text.split():
+                    _ord_idx = _n_ord - 1
+                elif _n_ord >= 3 and any(
+                    p in text for p in (
+                        "the third one", "third one", "the third", "third",
+                        "number three", "option three",
+                    )
+                ):
+                    _ord_idx = 2
+                elif _n_ord >= 3 and ("three" in text or "3" in text.split()):
+                    _ord_idx = 2
+            if _ord_idx is not None:
+                _norm_ord = _avail_ord[_ord_idx]["day_label"]
+                self.session["chosen_day"] = _norm_ord
+                self.session.setdefault("collected", {})["chosen_day"] = _norm_ord
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] %s: ordinal position match idx=%d → %r (raw: %r)",
+                    step["state"], _ord_idx, _norm_ord, transcript[:40],
+                )
+                await self.ask_current_question()
+                return
+
             # ── NAMED DAY MATCH: normalize caller's choice against offered days ──
             # Prevents raw text like "i take tuesday i take tuesday" from being
             # stored verbatim as chosen_day via extract:"any".
@@ -2955,6 +2988,24 @@ class FlowEngine:
             from app.vagueness_detector import (
                 is_vague_availability, build_vague_options, build_vague_response_phrase,
             )
+            # Guard: ordinal/positional words must never trigger the time-offer
+            # vague handler while the day is not yet committed. If the caller said
+            # "three" but only 2 days are offered (so the ordinal block above
+            # couldn't match), replay the day list — do NOT offer slot times.
+            _ORDINAL_GUARD_WORDS = {"first", "second", "third", "last", "three", "four"}
+            if any(w in _ORDINAL_GUARD_WORDS for w in text.split()):
+                _og_phrase = _build_day_list_phrase(self.session.get("available_days", []))
+                if _og_phrase:
+                    await self._tts.put(_og_phrase)
+                    self.session["last_question"] = _og_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _og_phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: ordinal guard — day list replayed (time-offer blocked): %r",
+                        step["state"], transcript[:40],
+                    )
+                    return
             if is_vague_availability(transcript):
                 _avail = self.session.get("available_days", [])
                 _opts  = build_vague_options(_avail)
