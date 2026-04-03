@@ -1741,8 +1741,16 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
             return
 
+        # ── HARD PHONE-STEP GUARD (Phase 5): once we are in a phone step or
+        #    awaiting phone readback, slot/day/vague-option handlers must not
+        #    fire — they belong to earlier flow steps and must no-op here.
+        _in_phone_step = step["state"] in {
+            "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+        } or bool(self.session.get("phone_readback_pending"))
+
         # ── SLOT CONFIRMATION: waiting for yes/no after slot selection ────────
-        if self.session.get("slot_pending_confirmation"):
+        if not _in_phone_step and self.session.get("slot_pending_confirmation"):
             await self._handle_slot_confirmation(text, transcript)
             return
 
@@ -1754,7 +1762,7 @@ class FlowEngine:
         # ── VAGUE OPTION SELECTION: caller responding to 2 concrete options ───
         # Set by vagueness detection at PRESENT_DAYS. Parse the selection here
         # so the normal extraction logic is bypassed for this special state.
-        if self.session.get("vague_option_pending"):
+        if not _in_phone_step and self.session.get("vague_option_pending"):
             from app.vagueness_detector import parse_option_selection
             _vopts = self.session.get("presented_vague_options", [])
             _selected = parse_option_selection(transcript, _vopts)
@@ -2695,24 +2703,26 @@ class FlowEngine:
         # in _detect_intent and be routed to the LLM interrupt path.
         # Handle YES/NO deterministically here — before the interrupt check.
         if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+            # Step-scoped accept patterns (Phase 5.3 spec)
             _CP_YES = (
-                "yes", "yeah", "yep", "yup", "yeh", "ya",
-                "ok", "okay", "sure", "fine", "alright", "perfect",
-                "that works", "use my number", "use that", "use that number",
-                "that's fine", "sounds good", "go ahead", "correct", "please",
-                "that one", "yes please", "that's right", "thats right",
+                "yes", "yes use this number", "use this number", "same number",
+                "that's fine", "thats fine", "correct", "yep", "yeah",
             )
+            # Step-scoped reject patterns (Phase 5.3 spec)
             _CP_NO = (
-                "no ", "nope", "nah", "don't use", "different number",
-                "not that", "other number", "not my number", "change",
+                "no", "no use a different number", "different number",
+                "another number", "no i'll give you another one",
+                "no i'll give you another", "use a different number",
             )
             _cp_yes = any(p in text for p in _CP_YES)
             _cp_no  = any(p in text for p in _CP_NO)
             if _cp_yes and not _cp_no:
-                # Confirmed — advance step (phone extraction/readback already done)
-                self.session["phone_confirmed"]   = True
-                self.session["phone_from_twilio"] = True
-                self.session["flow_step"]         = step["step"] + 1
+                # Confirmed — clear stale retry state and advance
+                self.session["phone_confirmed"]     = True
+                self.session["phone_from_twilio"]   = True
+                self.session["phone_digits_buffer"] = ""
+                self.session.pop("phone_readback_retry", None)
+                self.session["flow_step"]           = step["step"] + 1
                 logger.info(
                     "[ms_flow] %s: YES → phone confirmed deterministically "
                     "(interrupt+LLM bypassed) step→%d",
@@ -2721,10 +2731,12 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
             elif _cp_no and not _cp_yes:
-                # Declined — clear and collect manually (mirrors existing answer=False path)
-                self.session["phone_confirmed"]   = False
-                self.session["phone_from_twilio"] = False
-                self.session["phone_number"]      = None
+                # Rejected — clear number, advance to COLLECT_PHONE, ask for new number
+                self.session["phone_confirmed"]     = False
+                self.session["phone_from_twilio"]   = False
+                self.session["phone_number"]        = None
+                self.session["phone_digits_buffer"] = ""
+                self.session.pop("phone_readback_retry", None)
                 self.session.setdefault("collected", {}).pop("phone", None)
                 self.session["flow_step"] = step["step"] + 1
                 phrase = "No problem — what number would you like us to use?"
@@ -3419,8 +3431,10 @@ class FlowEngine:
         )
 
         if answer is True:
-            # Confirmed — clear readback flag and advance
+            # Confirmed — clear readback flag, stale retry counter, and advance
             self.session["phone_readback_pending"] = False
+            self.session["phone_digits_buffer"]    = ""
+            self.session.pop("phone_readback_retry", None)
             self.session["flow_step"] = step["step"] + 1
             logger.info("[ms_flow] phone readback confirmed — advancing")
             _next_step = self.current_step()
@@ -4095,15 +4109,13 @@ class FlowEngine:
         # ----- phone_confirm: yes/no to using the Twilio caller-ID number --
         if method == "phone_confirm":
             yes_p = (
-                "yes", "yeah", "yep", "yup", "sure", "that's fine",
-                "thats fine", "correct", "that one", "use that",
-                "yes please", "that's the one", "go ahead", "ok",
-                "okay", "fine", "sounds good", "that works",
+                "yes", "yes use this number", "use this number", "same number",
+                "that's fine", "thats fine", "correct", "yep", "yeah",
             )
             no_p = (
-                "no", "nope", "different", "another", "use another",
-                "different number", "no different", "actually no",
-                "not that one", "different one",
+                "no", "no use a different number", "different number",
+                "another number", "no i'll give you another one",
+                "no i'll give you another", "use a different number",
             )
             for p in yes_p:
                 if p in text:
