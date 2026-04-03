@@ -1840,10 +1840,13 @@ class FlowEngine:
         # ── HARD PHONE-STEP GUARD (Phase 5): once we are in a phone step or
         #    awaiting phone readback, slot/day/vague-option handlers must not
         #    fire — they belong to earlier flow steps and must no-op here.
+        #    Also treat explicit phone-accept phrases as a phone step so that
+        #    slot_pending_confirmation and vague_option_pending cannot intercept
+        #    "yes use this number" before the compat jump blocks run.
         _in_phone_step = step["state"] in {
             "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
             "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
-        } or bool(self.session.get("phone_readback_pending"))
+        } or bool(self.session.get("phone_readback_pending")) or _is_phone_accept(text)
 
         # ── SLOT CONFIRMATION: waiting for yes/no after slot selection ────────
         if not _in_phone_step and self.session.get("slot_pending_confirmation"):
@@ -3024,20 +3027,27 @@ class FlowEngine:
                 "[ms_flow] CONFIRM_PHONE state=%s input=%r phone_accept=%s",
                 step["state"], text[:60], _is_phone_accept(text),
             )
-            _CP_YES = (
-                "yes", "yeah", "yep", "yup",
-                "yes use this number", "use this number",
-                "same number", "yes that's fine", "yes thats fine",
-                "use my current number", "yes use my number", "use my number",
-                "that's fine", "thats fine", "correct",
-            )
-            _CP_NO = (
-                "no", "nope", "no use a different number", "different number",
-                "another number", "no i'll give you another one",
-                "no i'll give you another", "use a different number",
-            )
-            _cp_yes = any(p in text for p in _CP_YES)
-            _cp_no  = any(p in text for p in _CP_NO)
+            # ── FIRST-CHECK: explicit phone-accept phrase ────────────────────
+            # Must precede generic _CP_YES/_CP_NO so "yes use this number" is
+            # never ambiguous — it is always YES with no possibility of _cp_no
+            # contamination from a later phrase in the same utterance.
+            if _is_phone_accept(text):
+                _cp_yes, _cp_no = True, False
+            else:
+                _CP_YES = (
+                    "yes", "yeah", "yep", "yup",
+                    "yes use this number", "use this number",
+                    "same number", "yes that's fine", "yes thats fine",
+                    "use my current number", "yes use my number", "use my number",
+                    "that's fine", "thats fine", "correct",
+                )
+                _CP_NO = (
+                    "no", "nope", "no use a different number", "different number",
+                    "another number", "no i'll give you another one",
+                    "no i'll give you another", "use a different number",
+                )
+                _cp_yes = any(p in text for p in _CP_YES)
+                _cp_no  = any(p in text for p in _CP_NO)
             if _cp_yes and not _cp_no:
                 # Store Twilio caller-ID as the confirmed phone number
                 import re as _re_cp
