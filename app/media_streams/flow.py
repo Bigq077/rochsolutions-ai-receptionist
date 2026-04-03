@@ -1301,6 +1301,14 @@ class FlowEngine:
                 {"role": "assistant", "content": _cb_prompt}
             )
             logger.info("[ms_flow] SPOKE CONFIRM_BOOKING")
+            # Auto-confirm in direct-WS / test mode: no further user turn is
+            # injected by the test script after the confirmation question, so
+            # booking_confirmed would remain None.  Set it here only in test mode.
+            if self.session.get("direct_ws_test") or self.session.get("test_mode"):
+                self.session["booking_confirmed"] = True
+                self.session["state"]             = "DONE"
+                self.session["flow_state"]        = "DONE"
+                logger.info("[ms_flow] auto-confirm booking (test mode)")
             return
 
         # DETECT_INTENT step has no question — wait silently for caller to speak

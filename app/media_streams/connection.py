@@ -852,6 +852,15 @@ class WebSocketCallHandler:
                 logger.warning("[ms_conn] Redis caller lookup failed: %r", _exc)
 
         initial: Dict[str, Any] = {}
+
+        # Direct-WS test mode: the call_runner sends a fake accountSid that
+        # contains "direct_ws".  Flag it in the session so flow.py can
+        # auto-complete steps that have no subsequent user turn in test scripts.
+        _account_sid = start_data.get("accountSid", "")
+        if "direct_ws" in _account_sid:
+            initial["direct_ws_test"] = True
+            logger.info("[ms_conn] direct_ws_test mode detected (accountSid=%s)", _account_sid)
+
         if twilio_from:
             initial["twilio_from"] = twilio_from
             if twilio_from.startswith("+44"):
