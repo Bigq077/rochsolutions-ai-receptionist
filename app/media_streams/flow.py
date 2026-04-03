@@ -1765,42 +1765,56 @@ class FlowEngine:
         if not _in_phone_step and self.session.get("vague_option_pending"):
             from app.vagueness_detector import parse_option_selection
             _vopts = self.session.get("presented_vague_options", [])
-            _selected = parse_option_selection(transcript, _vopts)
-            if _selected:
-                # Caller selected one of the two options — store and advance
-                self.session["chosen_day"]           = _selected["day_label"]
+            # Hard guard: ordinal/positional words ("three", "last", "third", etc.)
+            # select from the FULL offered day list — not the 2-option vague sub-list.
+            # Clear stale vague state and fall through to the PRESENT_DAYS ordinal block.
+            _VOP_ORDINAL = {"first", "second", "third", "last", "three", "3", "four"}
+            if any(w in _VOP_ORDINAL for w in text.split()):
                 self.session["vague_option_pending"] = False
                 self.session["presented_vague_options"] = []
+                self.session.pop("vague_clarification_asked", None)
                 logger.info(
-                    "[ms_flow] vague option selected: %r %s",
-                    _selected["day_label"], _selected["time_hhmm"],
+                    "[ms_flow] vague_option_pending: ordinal %r detected — "
+                    "cleared, falling through to ordinal block", transcript[:40]
                 )
-                await self.ask_current_question()
+                # intentionally no return — fall through to PRESENT_DAYS ordinal handler
             else:
-                # Ambiguous — ask once more for clarification, then default
-                _already_asked = self.session.get("vague_clarification_asked", False)
-                if not _already_asked and len(_vopts) == 2:
-                    o1, o2 = _vopts[0], _vopts[1]
-                    phrase = (
-                        f"Was that {o1['day_label']} at {o1['time_speech']}, "
-                        f"or {o2['day_label']} at {o2['time_speech']}?"
+                _selected = parse_option_selection(transcript, _vopts)
+                if _selected:
+                    # Caller selected one of the two options — store and advance
+                    self.session["chosen_day"]           = _selected["day_label"]
+                    self.session["vague_option_pending"] = False
+                    self.session["presented_vague_options"] = []
+                    logger.info(
+                        "[ms_flow] vague option selected: %r %s",
+                        _selected["day_label"], _selected["time_hhmm"],
                     )
-                    self.session["vague_clarification_asked"] = True
-                    await self._tts.put(phrase)
-                    self.session["last_question"] = phrase
-                    logger.info("[ms_flow] vague: ambiguous selection — asking clarification")
+                    await self.ask_current_question()
                 else:
-                    # Default to first option after second ambiguity
-                    if _vopts:
-                        self.session["chosen_day"]           = _vopts[0]["day_label"]
-                        self.session["vague_option_pending"] = False
-                        self.session["presented_vague_options"] = []
-                        self.session.pop("vague_clarification_asked", None)
-                        logger.info(
-                            "[ms_flow] vague: defaulting to first option %r", _vopts[0]["day_label"]
+                    # Ambiguous — ask once more for clarification, then default
+                    _already_asked = self.session.get("vague_clarification_asked", False)
+                    if not _already_asked and len(_vopts) == 2:
+                        o1, o2 = _vopts[0], _vopts[1]
+                        phrase = (
+                            f"Was that {o1['day_label']} at {o1['time_speech']}, "
+                            f"or {o2['day_label']} at {o2['time_speech']}?"
                         )
-                        await self.ask_current_question()
-            return
+                        self.session["vague_clarification_asked"] = True
+                        await self._tts.put(phrase)
+                        self.session["last_question"] = phrase
+                        logger.info("[ms_flow] vague: ambiguous selection — asking clarification")
+                    else:
+                        # Default to first option after second ambiguity
+                        if _vopts:
+                            self.session["chosen_day"]           = _vopts[0]["day_label"]
+                            self.session["vague_option_pending"] = False
+                            self.session["presented_vague_options"] = []
+                            self.session.pop("vague_clarification_asked", None)
+                            logger.info(
+                                "[ms_flow] vague: defaulting to first option %r", _vopts[0]["day_label"]
+                            )
+                            await self.ask_current_question()
+                return
 
         # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
         _ABANDON_SIGNALS = (
