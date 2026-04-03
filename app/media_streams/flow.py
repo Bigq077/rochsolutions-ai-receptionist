@@ -1221,6 +1221,11 @@ class FlowEngine:
                 logger.info("[ms_flow] ask_current_question: flow already complete")
             return
 
+        logger.info(
+            "[ms_flow] ask_current_question: flow_step=%d state=%s",
+            self.session.get("flow_step", 0), step["state"],
+        )
+
         # Guard: one question per turn — prevent duplicate asks if somehow called twice
         if self.session.get("question_asked_this_turn"):
             logger.info(
@@ -2415,10 +2420,19 @@ class FlowEngine:
                 )
                 self.session["chosen_day"] = _chosen_label
                 self.session.setdefault("collected", {})["chosen_day"] = _chosen_label
-                self.session["flow_step"] = step["step"] + 1
+                _nxt_pd_yes = step["step"] + 1
+                _nxt_pd_yes_state = (
+                    self._active_flow[_nxt_pd_yes]["state"]
+                    if _nxt_pd_yes < len(self._active_flow) else "DONE"
+                )
+                self.session["flow_step"] = _nxt_pd_yes
+                self.session["state"]     = _nxt_pd_yes_state
+                self.session.pop("vague_option_pending", None)
+                self.session.pop("vague_clarification_asked", None)
+                self.session.pop("slot_pending_confirmation", None)
                 logger.info(
-                    "[ms_flow] %s: yes → chosen_day=%r (normalized from %r) step→%d",
-                    step["state"], _chosen_label, transcript.strip()[:40], step["step"] + 1,
+                    "[ms_flow] PRESENT_DAYS day_selected → next_state=%s flow_step=%d chosen_day=%r",
+                    _nxt_pd_yes_state, _nxt_pd_yes, _chosen_label,
                 )
                 await self.ask_current_question()
                 return
@@ -2431,9 +2445,14 @@ class FlowEngine:
             _n_ord = len(_avail_ord)
             _ord_idx: Optional[int] = None
             if _n_ord > 0:
-                # "last" — word-boundary check avoids matching "lasts"
-                _last_phrases = ("the last one", "last one", "the last")
-                if any(p in text for p in _last_phrases) or "last" in text.split():
+                _first_phrases  = ("the first one", "first one", "the first", "number one", "option one")
+                _second_phrases = ("the second one", "second one", "the second", "number two", "option two")
+                _last_phrases   = ("the last one", "last one", "the last")
+                if any(p in text for p in _first_phrases) or "first" in text.split():
+                    _ord_idx = 0
+                elif any(p in text for p in _second_phrases) or "second" in text.split():
+                    _ord_idx = min(1, _n_ord - 1)
+                elif any(p in text for p in _last_phrases) or "last" in text.split():
                     _ord_idx = _n_ord - 1
                 elif _n_ord >= 3 and any(
                     p in text for p in (
@@ -2448,10 +2467,19 @@ class FlowEngine:
                 _norm_ord = _avail_ord[_ord_idx]["day_label"]
                 self.session["chosen_day"] = _norm_ord
                 self.session.setdefault("collected", {})["chosen_day"] = _norm_ord
-                self.session["flow_step"] = step["step"] + 1
+                _nxt_pd_ord = step["step"] + 1
+                _nxt_pd_ord_state = (
+                    self._active_flow[_nxt_pd_ord]["state"]
+                    if _nxt_pd_ord < len(self._active_flow) else "DONE"
+                )
+                self.session["flow_step"] = _nxt_pd_ord
+                self.session["state"]     = _nxt_pd_ord_state
+                self.session.pop("vague_option_pending", None)
+                self.session.pop("vague_clarification_asked", None)
+                self.session.pop("slot_pending_confirmation", None)
                 logger.info(
-                    "[ms_flow] %s: ordinal position match idx=%d → %r (raw: %r)",
-                    step["state"], _ord_idx, _norm_ord, transcript[:40],
+                    "[ms_flow] PRESENT_DAYS day_selected → next_state=%s flow_step=%d chosen_day=%r (ordinal idx=%d raw=%r)",
+                    _nxt_pd_ord_state, _nxt_pd_ord, _norm_ord, _ord_idx, transcript[:40],
                 )
                 await self.ask_current_question()
                 return
@@ -2472,10 +2500,19 @@ class FlowEngine:
                 _norm_nm = _matched_nm["day_label"]
                 self.session["chosen_day"] = _norm_nm
                 self.session.setdefault("collected", {})["chosen_day"] = _norm_nm
-                self.session["flow_step"] = step["step"] + 1
+                _nxt_pd_nm = step["step"] + 1
+                _nxt_pd_nm_state = (
+                    self._active_flow[_nxt_pd_nm]["state"]
+                    if _nxt_pd_nm < len(self._active_flow) else "DONE"
+                )
+                self.session["flow_step"] = _nxt_pd_nm
+                self.session["state"]     = _nxt_pd_nm_state
+                self.session.pop("vague_option_pending", None)
+                self.session.pop("vague_clarification_asked", None)
+                self.session.pop("slot_pending_confirmation", None)
                 logger.info(
-                    "[ms_flow] %s: named day matched %r → normalized %r",
-                    step["state"], transcript[:40], _norm_nm,
+                    "[ms_flow] PRESENT_DAYS day_selected → next_state=%s flow_step=%d chosen_day=%r (named match raw=%r)",
+                    _nxt_pd_nm_state, _nxt_pd_nm, _norm_nm, transcript[:40],
                 )
                 await self.ask_current_question()
                 return
