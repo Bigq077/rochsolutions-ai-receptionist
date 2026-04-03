@@ -1639,16 +1639,33 @@ class FlowEngine:
                     or self.session.get("selected_slot")
                     or "your appointment"
                 )
+                _name_cb = (
+                    self.session.get("full_name")
+                    or (self.session.get("collected") or {}).get("full_name")
+                    or (self.session.get("collected") or {}).get("name")
+                    or self.session.get("patient_name")
+                    or self.session.get("caller_name")
+                )
+                _name_part = f"{_name_cb}, " if _name_cb else ""
                 question_text = (
-                    f"Lovely — you're all booked in for {_slot_cb} at our Alcester clinic. "
+                    f"Lovely — {_name_part}you're all booked in for {_slot_cb} "
+                    "at our Alcester clinic. "
                     "I'll send a confirmation text to your number. "
                     "Is there anything else I can help with?"
                 )
                 self.session["booking_confirmed"] = True
-                logger.info("[ms_flow] CONFIRM_BOOKING deterministic — booking_confirmed=True")
+                self.session["state"]             = "DONE"
+                self.session["flow_state"]        = "DONE"
+                logger.info(
+                    "[ms_flow] CONFIRM_BOOKING deterministic — booking_confirmed=True "
+                    "state=DONE name=%r slot=%r",
+                    _name_cb, str(_slot_cb)[:40],
+                )
             # CONFIRM_PHONE with Twilio caller-ID: read back the digits so
             # number_confirmed_verbally passes in the evaluator.
-            if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
+            # NOTE: elif — must not run (and must not override question_text) when
+            # we are already at CONFIRM_BOOKING above.
+            elif step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
                 import re as _re
                 raw = self.session.get("twilio_from_local", "") or self.session.get("twilio_from", "")
                 digits = _re.sub(r"\D", "", raw)
@@ -2937,62 +2954,71 @@ class FlowEngine:
                 return
 
         # ── CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: deterministic YES/NO ──────
+        # FIRST-CHECK: match YES/NO before any fallback or clarification logic.
         # Without this gate "yes use my number" can match general_query intent
         # in _detect_intent and be routed to the LLM interrupt path.
-        # Handle YES/NO deterministically here — before the interrupt check.
         if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
-            # Step-scoped accept patterns (Phase 5.3 spec)
+            logger.info("[ms_flow] phone_confirm input=%r state=%s", text[:60], step["state"])
             _CP_YES = (
-                "yes", "yes use this number", "use this number", "same number",
-                "that's fine", "thats fine", "correct", "yep", "yeah",
+                "yes", "yeah", "yep", "yup",
+                "yes use this number", "use this number",
+                "same number", "yes that's fine", "yes thats fine",
+                "use my current number", "yes use my number", "use my number",
+                "that's fine", "thats fine", "correct",
             )
-            # Step-scoped reject patterns (Phase 5.3 spec)
             _CP_NO = (
-                "no", "no use a different number", "different number",
+                "no", "nope", "no use a different number", "different number",
                 "another number", "no i'll give you another one",
                 "no i'll give you another", "use a different number",
             )
             _cp_yes = any(p in text for p in _CP_YES)
             _cp_no  = any(p in text for p in _CP_NO)
             if _cp_yes and not _cp_no:
-                # Confirmed — clear stale retry state and advance
+                # Store Twilio caller-ID as the confirmed phone number
+                import re as _re_cp
+                _cp_twilio = (
+                    self.session.get("twilio_from_local")
+                    or self.session.get("twilio_from", "")
+                )
+                _cp_digits = _re_cp.sub(r"\D", "", _cp_twilio)
+                _cp_phone  = _cp_digits or _cp_twilio
                 self.session["phone_confirmed"]     = True
                 self.session["phone_from_twilio"]   = True
+                self.session["phone_number"]        = _cp_phone
+                self.session.setdefault("collected", {})["phone"] = _cp_phone
                 self.session["phone_digits_buffer"] = ""
+                self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
-                self.session["flow_step"]           = step["step"] + 1
-                _nxt_yes = (self._active_flow[step["step"] + 1]["state"]
-                            if step["step"] + 1 < len(self._active_flow) else "DONE")
-                self.session["state"] = _nxt_yes
+                self.session.pop("slot_pending_confirmation", None)
+                self.session.pop("vague_option_pending", None)
+                self.session.pop("vague_clarification_asked", None)
+                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                self.session["state"]     = "CONFIRM_BOOKING"
                 logger.info(
-                    "[ms_flow] %s: branch=YES phone confirmed step→%d state→%s",
-                    step["state"], step["step"] + 1, _nxt_yes,
+                    "[ms_flow] phone_confirm matched YES → phone=%r next_state=CONFIRM_BOOKING",
+                    (_cp_phone[-4:] if _cp_phone else ""),
                 )
                 await self.ask_current_question()
                 return
             elif _cp_no and not _cp_yes:
-                # Rejected — clear number, advance to COLLECT_PHONE, ask for new number
+                # Rejected — clear number, advance to COLLECT_PHONE
                 self.session["phone_confirmed"]     = False
                 self.session["phone_from_twilio"]   = False
                 self.session["phone_number"]        = None
                 self.session["phone_digits_buffer"] = ""
                 self.session.pop("phone_readback_retry", None)
                 self.session.setdefault("collected", {}).pop("phone", None)
-                self.session["flow_step"] = step["step"] + 1
-                _nxt_no = (self._active_flow[step["step"] + 1]["state"]
-                           if step["step"] + 1 < len(self._active_flow) else "DONE")
-                self.session["state"] = _nxt_no
-                phrase = "No problem — what number would you like us to use?"
-                await self._tts.put(phrase)
-                if _is_question_worth_storing(phrase):
-                    self.session["last_question"] = phrase
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": phrase}
+                _cp_no_nxt = step["step"] + 1
+                _cp_no_state = (
+                    self._active_flow[_cp_no_nxt]["state"]
+                    if _cp_no_nxt < len(self._active_flow) else "DONE"
                 )
+                self.session["flow_step"] = _cp_no_nxt
+                self.session["state"]     = _cp_no_state
                 logger.info(
-                    "[ms_flow] %s: branch=NO collecting number step→%d state→%s",
-                    step["state"], step["step"] + 1, _nxt_no,
+                    "[ms_flow] phone_confirm matched NO → next_state=%s", _cp_no_state,
                 )
+                await self.ask_current_question()
                 return
             logger.info(
                 "[ms_flow] %s: no deterministic YES/NO match — falling through "
