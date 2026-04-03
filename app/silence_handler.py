@@ -74,6 +74,8 @@ def get_silence_response(
         template = SILENCE_RESPONSES.get(key) or SILENCE_RESPONSES["default"]
         response = template.format(clinic_name=clinic_name)
         if consecutive_count >= 1:
+            if key == "default":
+                return SILENCE_RESPONSES.get("default_retry", "Sorry about that — could you say that again?")
             response += _CALLBACK_SUFFIX
         return response
     except Exception:

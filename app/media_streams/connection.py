@@ -292,7 +292,7 @@ class SilenceHandler:
             # prevents the silence-transfer from ever triggering.
             return
         t = text.strip()
-        if t.startswith("Sorry,") or t.startswith("Sorry about"):
+        if t.startswith("Sorry,") or t.startswith("Sorry about") or "didn't quite catch" in t:
             return  # Never restart timer for re-ask phrases
         is_question = (
             t.endswith("?") or
@@ -458,9 +458,10 @@ class SilenceHandler:
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
         )
-        await self._tts_text_queue.put(phrase1)
+        _reask1 = phrase1 + (" " + q if q else "")
+        await self._tts_text_queue.put(_reask1)
         if self._on_reask:
-            asyncio.create_task(self._on_reask(phrase1))
+            asyncio.create_task(self._on_reask(_reask1))
 
         # Wait for TTS to finish playing
         try:
@@ -500,9 +501,10 @@ class SilenceHandler:
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
         )
-        await self._tts_text_queue.put(phrase2)
+        _reask2 = phrase2 + (" " + q if q else "")
+        await self._tts_text_queue.put(_reask2)
         if self._on_reask:
-            asyncio.create_task(self._on_reask(phrase2))
+            asyncio.create_task(self._on_reask(_reask2))
 
         # Wait for TTS to finish playing
         try:

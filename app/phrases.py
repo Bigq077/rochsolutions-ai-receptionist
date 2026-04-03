@@ -244,7 +244,8 @@ SILENCE_RESPONSES: dict = {
     "ask_reason":        "Take your time telling me.",
     "greeting":          "Hello? I'm Susie at {clinic_name} — were you looking to book an appointment?",
     "confirm_read_back": "Just let me know if any of those details need changing.",
-    "default":           "Sorry about that — could you say that again?",
+    "default":           "I didn't quite catch that — could you say that again?",
+    "default_retry":     "Sorry about that — could you say that again?",
 }
 
 # Per-state silence window in seconds (Window 1 — first re-ask threshold).
