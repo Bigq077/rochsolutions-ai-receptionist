@@ -1463,6 +1463,42 @@ class FlowEngine:
                 )
             return
 
+        # ── PRESENT_TIMES single-slot deterministic path (Phase 5) ──────────
+        # When the chosen day has exactly one slot, bypass the LLM entirely:
+        # ask "On [day] I've got [time] — does that work for you?" and set
+        # slot_pending_confirmation so the next "Yes" goes to _handle_slot_confirmation.
+        # Multi-slot days (2+) still fall through to the LLM path below.
+        if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+            _pt_avail  = self.session.get("available_days", [])
+            _pt_chosen = self.session.get("chosen_day", "")
+            _pt_target = _find_chosen_day_entry(_pt_avail, _pt_chosen)
+            _pt_slots  = (_pt_target or {}).get("slots", [])
+            if len(_pt_slots) == 1:
+                from app.vagueness_detector import _time_to_speech as _t2s_pt
+                _pt_time   = ((_pt_target or {}).get("slot_times") or [""])[0]
+                _pt_spoken = _t2s_pt(_pt_time) if _pt_time else "that time"
+                _pt_label  = (_pt_target or {}).get("day_label", "")
+                _pt_phrase = (
+                    f"On {_pt_label} I've got {_pt_spoken} — does that work for you?"
+                )
+                self.session["selected_slot"]            = _pt_slots[0]["start"]
+                self.session["selected_slot_speech"]     = (
+                    f"{_pt_label} at {_pt_spoken}" if _pt_label else _pt_spoken
+                )
+                self.session["slot_pending_confirmation"] = True
+                self.session["question_asked_this_turn"]  = True
+                await self._tts.put(_pt_phrase)
+                if _is_question_worth_storing(_pt_phrase):
+                    self.session["last_question"] = _pt_phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _pt_phrase}
+                )
+                logger.info(
+                    "[ms_flow] %s: 1-slot deterministic → %r (LLM bypassed)",
+                    step["state"], _pt_phrase[:80],
+                )
+                return
+
         if step["use_llm"]:
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
             if step["question"]:
@@ -3560,11 +3596,17 @@ class FlowEngine:
 
         for p in yes_patterns:
             if p in text:
-                logger.info("[ms_flow] slot confirmation: YES matched=%r", p)
+                logger.info("[ms_flow] slot confirmation: YES matched=%r branch=YES", p)
                 self.session["slot_pending_confirmation"] = False
+                self.session.pop("vague_option_pending", None)
+                self.session.pop("vague_clarification_asked", None)
                 step = self.current_step()
                 if step:
                     self.session["flow_step"] = step["step"] + 1
+                    _nxt_sc = (self._active_flow[step["step"] + 1]["state"]
+                               if step["step"] + 1 < len(self._active_flow) else "DONE")
+                    self.session["state"] = _nxt_sc
+                    logger.info("[ms_flow] slot confirmed → advancing state=%s", _nxt_sc)
                 await self.ask_current_question()
                 return
 
@@ -3603,12 +3645,8 @@ class FlowEngine:
         if count == 2:
             phrase = RETRY_PHRASES["second_retry"]["default"]
         else:
-            last_q = self.session.get("last_question", "")
-            phrase = (
-                f"{RETRY_PHRASES['first_retry']['default']} — {last_q}"
-                if last_q
-                else RETRY_PHRASES["first_retry"]["default"]
-            )
+            # Do NOT prepend last_question — it belongs to a prior step.
+            phrase = RETRY_PHRASES["first_retry"]["default"]
         await self._tts.put(phrase)
 
     # ── STATE_READBACK ────────────────────────────────────────────────────
