@@ -2791,6 +2791,18 @@ class FlowEngine:
                 self.session["phone_from_twilio"] = True
                 self.session["phone_number"]      = _cn_digits or _cn_twilio
                 self.session.setdefault("collected", {})["phone"] = self.session["phone_number"]
+                # If no patient name yet, pull from already-collected session data only
+                if not self.session.get("full_name"):
+                    _cn_name = (
+                        (self.session.get("collected") or {}).get("full_name")
+                        or (self.session.get("collected") or {}).get("name")
+                        or self.session.get("patient_name")
+                        or self.session.get("caller_name")
+                    )
+                    if _cn_name:
+                        self.session["full_name"] = _cn_name
+                        self.session.setdefault("collected", {})["full_name"] = _cn_name
+                        logger.info("[ms_flow] COLLECT_NAME compat: name inferred from session %r", _cn_name)
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"
                 self.session.pop("slot_pending_confirmation", None)
