@@ -628,6 +628,7 @@ class WebSocketCallHandler:
         # ── Control events ─────────────────────────────────────────────────
         self._stop_event    = asyncio.Event()  # set when "stop" received or WS closes
         self._started_event = asyncio.Event()  # set when "start" event is processed
+        self._is_direct_ws_test: bool = False  # True when accountSid is the fake test sentinel
 
         # ── Barge-in / TTS state ───────────────────────────────────────────
         self._tts_task:  Optional[asyncio.Task] = None  # current TTS chunk task
@@ -672,6 +673,9 @@ class WebSocketCallHandler:
         # (not a bound-method reference) because self.session is reassigned
         # on the "start" event — the closure captures `self`, not the dict.
         async def _silence_transfer_fn() -> None:
+            if self._is_direct_ws_test:
+                logger.info("[ms_silence] WS test mode — transfer suppressed, session kept alive")
+                return
             self.session["silence_transfer"] = True
             await self._on_transfer_request()
 
@@ -818,6 +822,9 @@ class WebSocketCallHandler:
         start_data      = msg.get("start", {})
         self.stream_sid = msg.get("streamSid") or start_data.get("streamSid", "")
         self.call_sid   = start_data.get("callSid", "")
+        if start_data.get("accountSid", "").endswith("direct_ws"):
+            self._is_direct_ws_test = True
+            logger.info("[ms_conn] direct WS test mode detected — transfer/hangup suppressed")
 
         custom_params = start_data.get("customParameters", {})
         twilio_from   = custom_params.get("twilio_from") or start_data.get("from", "")
