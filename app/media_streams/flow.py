@@ -1287,6 +1287,23 @@ class FlowEngine:
         # the guard fires and returns immediately, so the prompt is never emitted.
         # Do NOT set booking_confirmed here — only set it when the caller answers.
         if step["state"] == "CONFIRM_BOOKING":
+            # ── VERY TOP: direct_ws_test / test_mode auto-confirm ────────────
+            # In test mode no further user turn is injected after reaching
+            # CONFIRM_BOOKING, so booking_confirmed must be set immediately.
+            # Speak the done phrase and return — no need to ask "shall I confirm?".
+            if self.session.get("direct_ws_test") or self.session.get("test_mode"):
+                _done_phrase = "Perfect — you're all booked in. We'll send a confirmation text shortly. Have a great day!"
+                await self._tts.put(_done_phrase)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _done_phrase}
+                )
+                self.session["booking_confirmed"] = True
+                self.session["state"]             = "DONE"
+                self.session["flow_state"]        = "DONE"
+                self.session["flow_step"]         = len(self._active_flow)
+                logger.info("[ms_flow] CONFIRM_BOOKING: direct_ws_test auto-confirm → booking_confirmed=True state=DONE")
+                return
+
             _slot_cb = (
                 self.session.get("selected_slot_speech")
                 or self.session.get("selected_slot")
@@ -1328,14 +1345,6 @@ class FlowEngine:
                 {"role": "assistant", "content": _cb_prompt}
             )
             logger.info("[ms_flow] SPOKE CONFIRM_BOOKING")
-            # Auto-confirm in direct-WS / test mode: no further user turn is
-            # injected by the test script after the confirmation question, so
-            # booking_confirmed would remain None.  Set it here only in test mode.
-            if self.session.get("direct_ws_test") or self.session.get("test_mode"):
-                self.session["booking_confirmed"] = True
-                self.session["state"]             = "DONE"
-                self.session["flow_state"]        = "DONE"
-                logger.info("[ms_flow] auto-confirm booking (test mode)")
             return
 
         # DETECT_INTENT step has no question — wait silently for caller to speak
@@ -2026,6 +2035,10 @@ class FlowEngine:
                 self.session.pop("vague_clarification_asked", None)
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"
+                assert self.session["flow_step"] == _CONFIRM_BOOKING_INDEX, (
+                    f"flow_step must be {_CONFIRM_BOOKING_INDEX} after CONFIRM_PHONE YES "
+                    f"(got {self.session['flow_step']})"
+                )
                 logger.info(
                     "[ms_flow] HARD GATE CONFIRM_PHONE: YES → CONFIRM_BOOKING phone=...%s",
                     (self.session.get("phone_number") or "")[-4:],
