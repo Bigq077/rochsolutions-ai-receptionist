@@ -971,7 +971,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_RESCHEDULE",
-        "question": "What name is the booking under?",
+        "question": "What's your name so I can find your booking?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -998,15 +998,13 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 3,
         "state": "PRESENT_DAYS_RESCHEDULE",
-        "question": None,
+        "question": "Just a moment while I check which days and times we have available for you...",
         "answer_field": "chosen_day",
         "use_llm": True,
         "allow_tools": True,
         "extract": "any",
         "llm_instruction": (
-            "Sound like a warm, efficient UK clinic receptionist — not a booking system.\n"
-            "Say 'Just bear with me one moment...' then call "
-            "check_availability with location='alcester', duration_minutes=50.\n"
+            "Call check_availability with location='alcester', duration_minutes=50.\n"
             "After the tool returns, say NOTHING further — do NOT read out any day names, "
             "do NOT present times, do NOT say anything else. "
             "The system will announce the available days automatically. "
