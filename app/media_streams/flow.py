@@ -3526,6 +3526,11 @@ class FlowEngine:
                 # that reaches here failed extraction; treat it as a garbled
                 # answer, not an intent to chat.  General-query LLM must not fire.
                 "NEW_OR_RETURNING",
+                # RETURNING_RECENCY is a closed "recently / a while ago" question.
+                # Answers like "a while ago" score as general_query in _detect_intent
+                # (no booking/FAQ keywords), so general_query must be suppressed here
+                # or the mid-flow interrupt swallows the answer and flow stalls.
+                "RETURNING_RECENCY",
                 # PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE — YES answers are caught by
                 # the priority block above.  Any utterance that reaches here is a
                 # non-yes response (specific day name, vague, noise).  general_query
