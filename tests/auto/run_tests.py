@@ -320,6 +320,47 @@ async def _preflight_check() -> bool:
     return all_ok
 
 
+def _print_failure_summary(result: dict, scenario: dict) -> None:
+    """Print a concise per-turn trace summary when a scenario fails."""
+    traces = result.get("turn_traces", [])
+    if not traces:
+        return
+    print(f"\n  [TURN TRACE SUMMARY — {scenario['id']} {scenario['name']}]")
+    # First checkpoint failure
+    for tr in traces:
+        for err in tr.get("checkpoint_errors", []):
+            print(f"    FIRST CHECKPOINT FAIL: turn {tr['turn_index']}: {err}")
+            break
+        else:
+            continue
+        break
+    # First no-output turn
+    for tr in traces:
+        if tr.get("error_if_any") == "no_assistant_output_after_turn":
+            print(
+                f"    NO OUTPUT: turn {tr['turn_index']}"
+                f" text={tr['user_text_raw'][:40]!r}"
+                f" state_before={tr['state_before']}"
+                f" handled_by={tr['handled_by']}"
+            )
+            break
+    # Last turn summary
+    last = traces[-1]
+    print(
+        f"    LAST TURN ({last['turn_index']}): "
+        f"text={last['user_text_raw'][:40]!r}"
+    )
+    print(
+        f"      state:    {last['state_before']} → {last['state_after']}"
+    )
+    print(f"      handled_by:        {last['handled_by']}")
+    print(f"      asst_emitted:      {last['assistant_response_emitted']}")
+    if last.get("assistant_response_text"):
+        print(f"      asst_text:         {last['assistant_response_text'][:80]!r}")
+    print(f"      booking_confirmed: {last['booking_confirmed_after']}")
+    print(f"      error:             {last['error_if_any']}")
+
+
 async def run_single_call(
     scenario: dict,
     evaluator: Evaluator,
@@ -389,6 +430,9 @@ async def run_scenario_with_healing(
     if result.get("evaluation", {}).get("passed"):
         return result
 
+    if not result.get("evaluation", {}).get("passed"):
+        _print_failure_summary(result, scenario)
+
     # ── Decide whether to retry ──────────────────────────────────────────
     if not healer.should_retry(result):
         # Content failure — run fixer diagnosis then bail out
@@ -419,6 +463,9 @@ async def run_scenario_with_healing(
     diagnosis = healer.build_diagnosis(result, scenario)
     print(diagnosis)
     _save_result(result, scenario)
+
+    if not result.get("evaluation", {}).get("passed"):
+        _print_failure_summary(result, scenario)
 
     return result
 

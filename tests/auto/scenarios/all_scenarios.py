@@ -444,6 +444,13 @@ SCENARIOS = [
             "flow_completed": True,
             "booking_confirmed": True,
         },
+        "checkpoints": [
+            {"after_turn": 7, "field": "state_after",  "expected": "COLLECT_PHONE"},
+            {"after_turn": 7, "field": "handled_by",   "expected": "confirm_phone_no"},
+            {"after_turn": 8, "field": "state_after",  "expected": "CONFIRM_PHONE"},
+            {"after_turn": 8, "field": "handled_by",   "expected": "collect_phone_full_digits"},
+            {"after_turn": 8, "field": "assistant_response_emitted", "expected": True},
+        ],
     },
 
     {

@@ -1891,6 +1891,9 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── TEST TRACE ──────────────────────────────────────────────────────────
+        handled_by: str | None = None
+
         # ── Phase 5: stamp session state to current step immediately so all
         #    branches (including early exits) observe the correct state. ──────
         current_state = step["state"]
@@ -1990,6 +1993,11 @@ class FlowEngine:
                     _hg_phone, self.session["state"], self.session["flow_step"],
                 )
 
+                self.session["_last_handled_by"]         = "collect_phone_full_digits"
+                self.session["_last_extracted_phone"]    = _hg_phone
+                self.session["_last_yes_detected"]       = False
+                self.session["_last_no_detected"]        = False
+                self.session["_last_assistant_response"] = _hg_rb
                 await self._tts.put(_hg_rb)
                 return
 
@@ -2001,6 +2009,10 @@ class FlowEngine:
                     "[ms_flow] HARD GATE COLLECT_PHONE: accumulating %r → %r (%d digits)",
                     _hg_digits, _hg_buffer, len(_hg_buffer),
                 )
+                self.session["_last_handled_by"]      = "collect_phone_partial_digits"
+                self.session["_last_extracted_phone"] = _hg_buffer
+                self.session["_last_yes_detected"]    = False
+                self.session["_last_no_detected"]     = False
                 return
 
             else:
@@ -2009,6 +2021,9 @@ class FlowEngine:
                     "[ms_flow] HARD GATE COLLECT_PHONE: no digits in %r — re-asking",
                     text[:60],
                 )
+                self.session["_last_handled_by"]   = "collect_phone_no_digits"
+                self.session["_last_yes_detected"] = False
+                self.session["_last_no_detected"]  = False
                 await self.ask_current_question()
                 return
 
@@ -2058,6 +2073,9 @@ class FlowEngine:
                     "[ms_flow] HARD GATE CONFIRM_PHONE: YES → CONFIRM_BOOKING phone=...%s",
                     (self.session.get("phone_number") or self.session.get("phone") or "")[-4:],
                 )
+                self.session["_last_handled_by"]   = "confirm_phone_yes"
+                self.session["_last_yes_detected"] = True
+                self.session["_last_no_detected"]  = False
                 await self.ask_current_question()
                 return
 
@@ -2073,6 +2091,9 @@ class FlowEngine:
                 self.session["flow_step"]              = _COLLECT_PHONE_INDEX
                 self.session.setdefault("collected", {}).pop("phone", None)
                 logger.info("[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE")
+                self.session["_last_handled_by"]   = "confirm_phone_no"
+                self.session["_last_yes_detected"] = False
+                self.session["_last_no_detected"]  = True
                 await self.ask_current_question()
                 return
 
@@ -2083,6 +2104,10 @@ class FlowEngine:
                     text[:60],
                 )
                 _hg_lq = self.session.get("last_question", "Is that number correct?")
+                self.session["_last_handled_by"]         = "confirm_phone_ambiguous"
+                self.session["_last_yes_detected"]       = _hg_yes
+                self.session["_last_no_detected"]        = _hg_no
+                self.session["_last_assistant_response"] = _hg_lq
                 await self._tts.put(_hg_lq)
                 return
 
@@ -2100,11 +2125,13 @@ class FlowEngine:
         # ── SLOT CONFIRMATION: waiting for yes/no after slot selection ────────
         if not _in_phone_step and self.session.get("slot_pending_confirmation"):
             await self._handle_slot_confirmation(text, transcript)
+            self.session["_last_handled_by"] = "slot_pending_confirmation"
             return
 
         # ── READBACK CONFIRMATION: waiting for caller to confirm full booking ─
         if self.session.get("readback_pending"):
             await self._handle_readback_confirmation(text, transcript)
+            self.session["_last_handled_by"] = "readback_pending_confirmation"
             return
 
         # ── VAGUE OPTION SELECTION: caller responding to 2 concrete options ───
@@ -2162,7 +2189,8 @@ class FlowEngine:
                                 "[ms_flow] vague: defaulting to first option %r", _vopts[0]["day_label"]
                             )
                             await self.ask_current_question()
-                return
+            self.session["_last_handled_by"] = "vague_option_selection"
+            return
 
         # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
         _ABANDON_SIGNALS = (
@@ -2198,6 +2226,8 @@ class FlowEngine:
             )
             self.session["flow_step"] = len(self._active_flow)
             logger.info("[ms_flow] abandonment detected — graceful close")
+            self.session["_last_handled_by"]         = "abandonment"
+            self.session["_last_assistant_response"] = phrase
             return
 
         # ── DETECT_INTENT: route to correct flow on first utterance ───────────
@@ -2271,6 +2301,7 @@ class FlowEngine:
                 )
                 return
 
+            self.session["_last_handled_by"] = "detect_intent"
             await self.ask_current_question()
             return
 
@@ -2278,6 +2309,7 @@ class FlowEngine:
         _PHONE_COLLECT_STATES = ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")
         if step["state"] in _PHONE_COLLECT_STATES and self.session.get("phone_readback_pending"):
             await self._handle_phone_readback_confirmation(text, transcript, step)
+            self.session["_last_handled_by"] = "phone_readback_confirmation"
             return
 
         # ── NAME READBACK CONFIRMATION (Fix C): awaiting yes/no on name ─────────
@@ -2308,6 +2340,8 @@ class FlowEngine:
                 self.session.pop("phone_readback_retry", None)
                 self.session["flow_step"] = _COLLECT_PHONE_INDEX
                 self.session["state"]     = "COLLECT_PHONE"
+                self.session["_last_handled_by"]   = "name_readback_phone_reject"
+                self.session["_last_no_detected"]  = True
                 await self.ask_current_question()
                 return
 
@@ -2351,6 +2385,8 @@ class FlowEngine:
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"
                 logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
+                self.session["_last_handled_by"]   = "name_readback_phone_accept_compat"
+                self.session["_last_yes_detected"] = True
                 await self.ask_current_question()
                 return
 
@@ -2367,6 +2403,9 @@ class FlowEngine:
                 self.session["name_readback_pending"] = False
                 self.session["flow_step"] = step["step"] + 1
                 logger.info("[ms_flow] name readback confirmed — advancing")
+                self.session["_last_handled_by"]   = "name_readback_yes"
+                self.session["_last_yes_detected"] = True
+                self.session["_last_no_detected"]  = False
                 await self.ask_current_question()
             elif _nr_no:
                 self.session["name_readback_pending"] = False
@@ -2375,12 +2414,18 @@ class FlowEngine:
                 col.pop("full_name", None)
                 col.pop("name", None)
                 phrase = "Sorry about that — could you say your name again?"
+                self.session["_last_handled_by"]         = "name_readback_no"
+                self.session["_last_yes_detected"]       = False
+                self.session["_last_no_detected"]        = True
+                self.session["_last_assistant_response"] = phrase
                 await self._tts.put(phrase)
                 self.session["last_question"] = phrase
                 logger.info("[ms_flow] name readback rejected — re-asking")
             else:
                 # Ambiguous — replay the question
                 lq = self.session.get("last_question", "Was that right?")
+                self.session["_last_handled_by"]         = "name_readback_ambiguous"
+                self.session["_last_assistant_response"] = lq
                 await self._tts.put(lq)
             return
 

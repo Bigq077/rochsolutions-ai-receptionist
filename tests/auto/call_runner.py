@@ -46,6 +46,24 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+
+def _eval_checkpoints(scenario: dict, turn_index: int, trace: dict) -> list[str]:
+    """Evaluate optional per-turn checkpoints defined in the scenario.
+    Returns a list of failure description strings (empty = all passed)."""
+    errors = []
+    for cp in scenario.get("checkpoints", []):
+        if cp.get("after_turn") != turn_index:
+            continue
+        field    = cp.get("field")
+        expected = cp.get("expected")
+        actual   = trace.get(field)
+        if actual != expected:
+            errors.append(
+                f"field={field!r} expected={expected!r} actual={actual!r}"
+            )
+    return errors
+
+
 # Exported so server_manager can import it without circular issues
 MAX_TURNS_PER_CALL = 20
 
@@ -105,6 +123,9 @@ class CallRunner:
         self._full_name: str | None = None
         self._intent: str | None = None
         self._reason: str | None = None
+        # Per-turn trace — populated during _run_direct_ws() for diagnostics
+        self.turn_traces: list[dict] = []
+        self._last_inject_diag: dict | None = None
 
     async def run(self) -> dict:
         """Make the call, run the scenario, return full result dict."""
@@ -323,6 +344,7 @@ class CallRunner:
                             text = response
                             via_filter = False
 
+                        was_injected = False
                         if text.strip():
                             consecutive_silence = 0
                             if i < len(self.test_said):
@@ -350,6 +372,65 @@ class CallRunner:
                             self.scenario["id"], wait, i,
                         )
                         await asyncio.sleep(wait)
+
+                        # ── PER-TURN TRACE ──────────────────────────────────────────────────
+                        _snap_before   = (self._last_inject_diag or {}).get("session", {})
+                        _hist_before   = _snap_before.get("history_len", 0)
+                        _snap_after    = await self._fetch_session_snapshot(fake_call_sid)
+                        _hist_after_all = _snap_after.get("conversation_history", [])
+                        _hist_after_len = len(_hist_after_all)
+                        _new_entries    = _hist_after_all[_hist_before:] if _hist_before <= _hist_after_len else []
+                        _new_asst       = [e.get("content", "") for e in _new_entries if e.get("role") == "assistant"]
+                        _asst_emitted   = len(_new_asst) > 0
+                        _error          = (
+                            "no_assistant_output_after_turn"
+                            if text.strip() and was_injected and not _asst_emitted
+                            else None
+                        )
+                        _trace = {
+                            "scenario_id":               self.scenario["id"],
+                            "turn_index":                i,
+                            "user_text_raw":             text,
+                            "user_text_normalized":      text.strip().lower(),
+                            "state_before":              _snap_before.get("state"),
+                            "flow_state_before":         _snap_before.get("flow_state"),
+                            "flow_step_before":          _snap_before.get("flow_step"),
+                            "state_after":               _snap_after.get("state"),
+                            "flow_state_after":          _snap_after.get("flow_state"),
+                            "flow_step_after":           _snap_after.get("flow_step"),
+                            "handled_by":                _snap_after.get("_last_handled_by"),
+                            "extracted_phone":           _snap_after.get("_last_extracted_phone"),
+                            "extracted_name":            _snap_after.get("_last_extracted_name"),
+                            "yes_detected":              _snap_after.get("_last_yes_detected"),
+                            "no_detected":               _snap_after.get("_last_no_detected"),
+                            "ordinal_detected":          _snap_after.get("_last_ordinal_detected"),
+                            "phone_readback_pending_before": _snap_before.get("phone_readback_pending"),
+                            "phone_readback_pending_after":  _snap_after.get("phone_readback_pending"),
+                            "phone_confirmed_before":    _snap_before.get("phone_confirmed"),
+                            "phone_confirmed_after":     _snap_after.get("phone_confirmed"),
+                            "booking_confirmed_before":  _snap_before.get("booking_confirmed"),
+                            "booking_confirmed_after":   _snap_after.get("booking_confirmed"),
+                            "assistant_response_emitted": _asst_emitted,
+                            "assistant_response_text":   _new_asst[-1] if _new_asst else None,
+                            "new_history_entries":       _hist_after_len - _hist_before,
+                            "new_tts_messages":          _snap_after.get("_last_assistant_response"),
+                            "error_if_any":              _error,
+                        }
+                        _cp_errors = _eval_checkpoints(self.scenario, i, _trace)
+                        if _cp_errors:
+                            _trace["checkpoint_errors"] = _cp_errors
+                            for _cpe in _cp_errors:
+                                print(
+                                    f"  [CHECKPOINT FAIL] scenario={self.scenario['id']} "
+                                    f"turn={i} {_cpe}"
+                                )
+                        if _error:
+                            print(
+                                f"  [NO OUTPUT] scenario={self.scenario['id']} turn={i}: "
+                                f"injected {text[:40]!r} but no assistant response detected"
+                            )
+                        self.turn_traces.append(_trace)
+                        # ── END PER-TURN TRACE ──────────────────────────────────
 
                     # 4. Send stop to end the session cleanly
                     logger.info("[%s] All turns injected — sending stop event", self.scenario["id"])
@@ -643,6 +724,7 @@ class CallRunner:
                             "[%s] Injected turn %d OK  diag=%s",
                             self.scenario["id"], turn_index, diag,
                         )
+                        self._last_inject_diag = data.get("diag", {})
                     else:
                         logger.warning(
                             "[%s] Inject turn %d failed: %s",
@@ -667,6 +749,24 @@ class CallRunner:
                 )
                 break  # non-connection errors — don't retry
         return True  # injected normally (or errored — caller proceeds with normal wait)
+
+    async def _fetch_session_snapshot(self, call_sid: str) -> dict:
+        """Fetch current session fields from admin endpoint for per-turn tracing.
+        Returns the full session response dict, or {} on error."""
+        url = f"{RENDER_SERVER_URL}/admin/test/session/{call_sid}"
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("ok"):
+                        return data
+        except Exception as exc:
+            logger.debug(
+                "[%s] session snapshot fetch failed (turn trace): %r",
+                self.scenario["id"], exc,
+            )
+        return {}
 
     # ── Audio generation ─────────────────────────────────────────────────────
 
@@ -1103,4 +1203,5 @@ class CallRunner:
             "full_name":              self._full_name,
             "intent":                 self._intent,
             "reason":                 self._reason,
+            "turn_traces": self.turn_traces,
         }

@@ -56,6 +56,18 @@ async def get_test_session(call_sid: str):
                 "selected_slot":        session.get("selected_slot"),
                 "full_name":            session.get("full_name"),
                 "phone_confirmed":      session.get("phone_confirmed"),
+                "flow_state":             session.get("flow_state"),
+                "phone_readback_pending": session.get("phone_readback_pending"),
+                "phone":                  session.get("phone"),
+                "phone_number":           session.get("phone_number"),
+                # Test trace debug fields — set by flow.py handle_transcript()
+                "_last_handled_by":          session.get("_last_handled_by"),
+                "_last_extracted_phone":     session.get("_last_extracted_phone"),
+                "_last_extracted_name":      session.get("_last_extracted_name"),
+                "_last_yes_detected":        session.get("_last_yes_detected"),
+                "_last_no_detected":         session.get("_last_no_detected"),
+                "_last_ordinal_detected":    session.get("_last_ordinal_detected"),
+                "_last_assistant_response":  session.get("_last_assistant_response"),
                 "selected_location":    session.get("selected_location"),
             }
 
@@ -81,6 +93,18 @@ async def get_test_session(call_sid: str):
                 "selected_slot":        session.get("selected_slot"),
                 "full_name":            session.get("full_name"),
                 "phone_confirmed":      session.get("phone_confirmed"),
+                "flow_state":             session.get("flow_state"),
+                "phone_readback_pending": session.get("phone_readback_pending"),
+                "phone":                  session.get("phone"),
+                "phone_number":           session.get("phone_number"),
+                # Test trace debug fields — set by flow.py handle_transcript()
+                "_last_handled_by":          session.get("_last_handled_by"),
+                "_last_extracted_phone":     session.get("_last_extracted_phone"),
+                "_last_extracted_name":      session.get("_last_extracted_name"),
+                "_last_yes_detected":        session.get("_last_yes_detected"),
+                "_last_no_detected":         session.get("_last_no_detected"),
+                "_last_ordinal_detected":    session.get("_last_ordinal_detected"),
+                "_last_assistant_response":  session.get("_last_assistant_response"),
                 "selected_location":    session.get("selected_location"),
             }
 

@@ -396,13 +396,22 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
         # Snapshot key in-memory session fields to detect if flow is updating
         sess = handler.session
         sess_snap = {
-            "flow_step":    sess.get("flow_step"),
-            "flow_started": sess.get("flow_started"),
-            "reason":       sess.get("reason"),
-            "intent":       sess.get("intent"),
-            "state":        sess.get("state"),
-            "turns_len":    len(sess.get("turns", [])),
-            "history_len":  len(sess.get("conversation_history", [])),
+            "flow_step":              sess.get("flow_step"),
+            "flow_state":             sess.get("flow_state"),
+            "flow_started":           sess.get("flow_started"),
+            "reason":                 sess.get("reason"),
+            "intent":                 sess.get("intent"),
+            "state":                  sess.get("state"),
+            "turns_len":              len(sess.get("turns", [])),
+            "history_len":            len(sess.get("conversation_history", [])),
+            "phone_readback_pending": sess.get("phone_readback_pending"),
+            "phone_confirmed":        sess.get("phone_confirmed"),
+            "booking_confirmed":      sess.get("booking_confirmed"),
+            "_last_handled_by":       sess.get("_last_handled_by"),
+            "_last_extracted_phone":  sess.get("_last_extracted_phone"),
+            "_last_yes_detected":     sess.get("_last_yes_detected"),
+            "_last_no_detected":      sess.get("_last_no_detected"),
+            "_last_assistant_response": sess.get("_last_assistant_response"),
         }
 
         logger.info(
