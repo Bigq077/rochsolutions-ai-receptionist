@@ -22,13 +22,13 @@ SCENARIOS = [
         "phase": "Phase 1 — Connection",
         "name": "Basic pickup and greeting",
         "responses": [],
-        # Greeting: "Hi there, this is Susie, Theorem Health's AI receptionist,
-        # how can I help you?"
+        # Actual greeting: "Hi, you've reached Theorem Health — we're closed right
+        # now but I can still book you in. Our next available day is Monday. I'm Susie."
         "expected": {
             "answered_within_seconds": 5,
             "greeting_contains": [
                 "susie",
-                "how can i help",
+                "theorem health",
             ],
             "greeting_not_contains": [
                 "alcester", "redditch", "say one", "say two",

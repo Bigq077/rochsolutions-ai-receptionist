@@ -3559,6 +3559,12 @@ class FlowEngine:
                 # general chat question.  Block general_query interrupts.
                 "CONFIRM_PHONE",
                 "CONFIRM_PHONE_RETURNING",
+                # GENERAL_BOOKING_OFFER / FAQ_BOOKING_OFFER — these are explicit
+                # yes/no gates after answering a general/FAQ query.  Treat any
+                # utterance here as an answer to the booking offer, not a new
+                # general_query interrupt that would swallow the response.
+                "GENERAL_BOOKING_OFFER",
+                "FAQ_BOOKING_OFFER",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
@@ -4108,10 +4114,11 @@ class FlowEngine:
         # term with a pain/problem signal.
         import re as _re_di
         _BODY_RE = r"\b(back|shoulder|ankle|knee|hip|neck|wrist|elbow|leg|arm)\b"
-        _SYMP_RE = r"\b(pain|painful|ache|aching|hurt|hurting|injury|injured|problem|issue|sore|stiff|stiffness|recurring)\b"
+        _SYMP_RE = r"\b(pain|painful|ache|aching|hurt|hurting|injury|injured|problem|issue|sore|stiff|stiffness|recurring|grief|trouble|bother)\b"
         if (
             _re_di.search(_BODY_RE, text) and
-            (_re_di.search(_SYMP_RE, text) or "killing me" in text)
+            (_re_di.search(_SYMP_RE, text) or "killing me" in text
+             or "giving me grief" in text or "playing up" in text or "giving me trouble" in text)
         ):
             logger.debug(
                 "[ms_flow] detect_intent_booking_symptom_rule body+symptom: %r", text[:60]
@@ -4128,6 +4135,8 @@ class FlowEngine:
             "pain", "painful", "ache", "aching", "hurt", "hurting", "injury", "injured",
             "problem", "issue", "sore", "stiff", "stiffness", "swollen", "swelling",
             "recurring", "killing me",
+            "grief", "giving me grief", "giving me trouble", "giving me bother",
+            "playing up", "been playing up", "niggly", "niggling",
             "pulled", "torn", "sprain", "strain", "fracture",
             "headache", "migraine",
             "i want to book", "i'd like to book", "i need to book",
