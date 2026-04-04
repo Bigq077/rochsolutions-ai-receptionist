@@ -324,6 +324,13 @@ class SilenceHandler:
                 self.last_question = _q
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
+        elif self._task is None:
+            # Non-question TTS (e.g. initial greeting: "...I'm Susie.") and the
+            # silence timer is not currently running.  Arm it so W1/W2/W3 can fire
+            # if the caller stays silent — re-ask will use SILENCE_RESPONSES for
+            # the current state without appending a question (last_question may be "").
+            self._restart_timer()
+            logger.info("[ms_silence] timer armed after non-question TTS: %r", t[:50])
 
     def on_transcript_received(self) -> None:
         """Call whenever a FinalTranscript arrives from STT."""
