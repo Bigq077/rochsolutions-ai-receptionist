@@ -2140,30 +2140,77 @@ class FlowEngine:
         if not _in_phone_step and self.session.get("vague_option_pending"):
             from app.vagueness_detector import parse_option_selection
             _vopts = self.session.get("presented_vague_options", [])
-            # Hard guard: ordinal/positional words ("three", "last", "third", etc.)
-            # select from the FULL offered day list — not the 2-option vague sub-list.
-            # Clear stale vague state and fall through to the PRESENT_DAYS ordinal block.
-            _VOP_ORDINAL = {"first", "second", "third", "last", "three", "3", "four"}
-            if any(w in _VOP_ORDINAL for w in text.split()):
-                self.session["vague_option_pending"] = False
+
+            # ── HARD SUCCESS PATH: ordinal resolves directly from presented options ──
+            # Must run before parse_option_selection so "first one" never falls through
+            # to vague re-ask logic and returns without output.
+            _VOP_ORD_PAIRS = [
+                ("first one", 0), ("second one", 1), ("third one", 2),
+                ("the first", 0), ("the second", 1), ("the third", 2),
+                ("the last", -1), ("last one", -1), ("the final", -1),
+                ("first", 0), ("second", 1), ("third", 2),
+                ("one", 0), ("two", 1), ("three", 2),
+                ("last", -1), ("final", -1),
+            ]
+            _vop_ord_idx = None
+            for _vop_pat, _vop_i in _VOP_ORD_PAIRS:
+                if _vop_pat in text:
+                    _vop_ord_idx = _vop_i
+                    break
+
+            if _vop_ord_idx is not None and _vopts:
+                _vop_n = len(_vopts)
+                _vop_r = _vop_ord_idx if _vop_ord_idx >= 0 else max(0, _vop_n + _vop_ord_idx)
+                _vop_r = min(_vop_r, _vop_n - 1)
+                _vop_chosen = _vopts[_vop_r]
+                self.session["chosen_day"]              = _vop_chosen.get("day_label", "")
+                self.session["vague_option_pending"]    = False
+                self.session["presented_vague_options"] = []
+                self.session.pop("vague_clarification_asked", None)
+                _vop_next = step["step"] + 1
+                _vop_ns = (
+                    self._active_flow[_vop_next]["state"]
+                    if _vop_next < len(self._active_flow) else "DONE"
+                )
+                self.session["flow_step"]  = _vop_next
+                self.session["state"]      = _vop_ns
+                self.session["flow_state"] = _vop_ns
+                self.session["_last_handled_by"] = "slot_ordinal_selection"
+                print("[SLOT GATE] ordinal selection -> pending confirm", {
+                    "text":          text,
+                    "state":         self.session.get("state"),
+                    "flow_step":     self.session.get("flow_step"),
+                    "selected_slot": _vop_chosen.get("day_label"),
+                })
+                logger.info(
+                    "[ms_flow] SLOT GATE vague ordinal: idx=%d day=%r next_state=%s",
+                    _vop_r, self.session["chosen_day"], _vop_ns,
+                )
+                await self.ask_current_question()
+                return
+
+            if _vop_ord_idx is not None:
+                # Ordinal matched but no presented options — clear stale flags and
+                # fall through to PRESENT_DAYS ordinal handler (no return).
+                self.session["vague_option_pending"]    = False
                 self.session["presented_vague_options"] = []
                 self.session.pop("vague_clarification_asked", None)
                 logger.info(
-                    "[ms_flow] vague_option_pending: ordinal %r detected — "
-                    "cleared, falling through to ordinal block", transcript[:40]
+                    "[ms_flow] vague_option_pending: ordinal %r — no options, cleared, falling through",
+                    transcript[:40],
                 )
-                # intentionally no return — fall through to PRESENT_DAYS ordinal handler
             else:
                 _selected = parse_option_selection(transcript, _vopts)
                 if _selected:
                     # Caller selected one of the two options — store and advance
-                    self.session["chosen_day"]           = _selected["day_label"]
-                    self.session["vague_option_pending"] = False
+                    self.session["chosen_day"]              = _selected["day_label"]
+                    self.session["vague_option_pending"]    = False
                     self.session["presented_vague_options"] = []
                     logger.info(
                         "[ms_flow] vague option selected: %r %s",
                         _selected["day_label"], _selected["time_hhmm"],
                     )
+                    self.session["_last_handled_by"] = "vague_option_selection"
                     await self.ask_current_question()
                 else:
                     # Ambiguous — ask once more for clarification, then default
@@ -2181,16 +2228,16 @@ class FlowEngine:
                     else:
                         # Default to first option after second ambiguity
                         if _vopts:
-                            self.session["chosen_day"]           = _vopts[0]["day_label"]
-                            self.session["vague_option_pending"] = False
+                            self.session["chosen_day"]              = _vopts[0]["day_label"]
+                            self.session["vague_option_pending"]    = False
                             self.session["presented_vague_options"] = []
                             self.session.pop("vague_clarification_asked", None)
                             logger.info(
                                 "[ms_flow] vague: defaulting to first option %r", _vopts[0]["day_label"]
                             )
                             await self.ask_current_question()
-            self.session["_last_handled_by"] = "vague_option_selection"
-            return
+                self.session["_last_handled_by"] = "vague_option_selection"
+                return
 
         # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
         _ABANDON_SIGNALS = (
@@ -4271,11 +4318,20 @@ class FlowEngine:
                 self.session.pop("vague_clarification_asked", None)
                 step = self.current_step()
                 if step:
-                    self.session["flow_step"] = step["step"] + 1
-                    _nxt_sc = (self._active_flow[step["step"] + 1]["state"]
-                               if step["step"] + 1 < len(self._active_flow) else "DONE")
-                    self.session["state"] = _nxt_sc
+                    _nxt_sc_i = step["step"] + 1
+                    _nxt_sc = (
+                        self._active_flow[_nxt_sc_i]["state"]
+                        if _nxt_sc_i < len(self._active_flow) else "DONE"
+                    )
+                    self.session["flow_step"]  = _nxt_sc_i
+                    self.session["state"]      = _nxt_sc
+                    self.session["flow_state"] = _nxt_sc
                     logger.info("[ms_flow] slot confirmed → advancing state=%s", _nxt_sc)
+                    print("[SLOT GATE] confirm yes -> collect_name", {
+                        "state":     self.session.get("state"),
+                        "flow_step": self.session.get("flow_step"),
+                    })
+                self.session["_last_handled_by"] = "slot_pending_confirmation"
                 await self.ask_current_question()
                 return
 
