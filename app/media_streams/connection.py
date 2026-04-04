@@ -289,10 +289,13 @@ class SilenceHandler:
             return
         if self._llm_busy:
             return
-        if self.reask_count >= 2:
-            # Both re-asks have already fired; _run() is now in Window 3.
-            # Do NOT restart the timer here — that cancels Window 3 and
-            # prevents the silence-transfer from ever triggering.
+        if self.reask_count >= 1:
+            # W1 (or both re-asks) has already fired; _run() owns its timing
+            # through W2 and W3.  Do NOT restart the timer here — that would
+            # cancel the in-progress _run() coroutine (e.g. the W2 sleep) and
+            # prevent W2 / W3 from ever triggering.
+            # reask_count is reset to 0 by on_transcript_received, so this
+            # guard is lifted as soon as the caller speaks again.
             return
         t = text.strip()
         if t.startswith("Sorry,") or t.startswith("Sorry about") or "didn't quite catch" in t:
