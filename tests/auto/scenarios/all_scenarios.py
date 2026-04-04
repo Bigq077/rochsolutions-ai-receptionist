@@ -740,6 +740,7 @@ SCENARIOS = [
             "Yeah",
             "Mike Brown",
             "Yep",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -747,6 +748,11 @@ SCENARIOS = [
             "no_technical_error": True,
             "booking_confirmed": True,
         },
+        "checkpoints": [
+            {"after_turn": 7, "field": "state_after",           "expected": "CONFIRM_PHONE"},
+            {"after_turn": 8, "field": "handled_by",            "expected": "confirm_phone_yes"},
+            {"after_turn": 8, "field": "booking_confirmed_after", "expected": True},
+        ],
     },
 
     {
