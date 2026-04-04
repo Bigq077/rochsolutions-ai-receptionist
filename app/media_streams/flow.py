@@ -588,6 +588,12 @@ _COLLECT_PHONE_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "COLLECT_PHONE"
 )
 
+# Array index of CONFIRM_PHONE in BOOKING_FLOW.
+# Used as the flow_step marker while awaiting phone readback confirmation.
+_CONFIRM_PHONE_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_PHONE"
+)
+
 
 def _classify_confirm_assessment(text: str) -> str:
     """
@@ -1939,39 +1945,66 @@ class FlowEngine:
         # the CONFIRM gate immediately below.
         # ════════════════════════════════════════════════════════════════════
         if current_state == "COLLECT_PHONE" and not self.session.get("phone_readback_pending"):
-            _hg_raw_digits = "".join(c for c in transcript if c.isdigit())
-            _hg_buffer = self.session.get("phone_digits_buffer", "") + _hg_raw_digits
-            if len(_hg_buffer) >= 10:
-                _hg_phone = _hg_buffer[:11] if len(_hg_buffer) > 11 else _hg_buffer
-                self.session["phone_digits_buffer"]    = ""
-                self.session["phone_number"]           = _hg_phone
+            import re as _re_hg
+            _hg_digits = _re_hg.sub(r"\D", "", text or "")
+
+            if len(_hg_digits) >= 10:
+                # Full number received — accept immediately without buffering
+                _hg_phone = _hg_digits[:11] if len(_hg_digits) > 11 else _hg_digits
+
+                # Write all likely phone fields used elsewhere in the session
+                self.session["phone"]          = _hg_phone
+                self.session["phone_number"]   = _hg_phone
+                self.session["customer_phone"] = _hg_phone
                 self.session.setdefault("collected", {})["phone"] = _hg_phone
+
+                # Set all relevant flags
+                self.session["phone_digits_buffer"]    = ""
                 self.session["phone_readback_pending"] = True
-                _hg_spaced = _format_phone_readback(_hg_phone)
-                _hg_rb = (
-                    f"Just to confirm — I have your number as {_hg_spaced}. "
-                    "Is that right?"
-                )
-                await self._tts.put(_hg_rb)
+                self.session["phone_confirmed"]        = False
+
+                # Sync state, flow_state, and flow_step together
+                self.session["state"]      = "CONFIRM_PHONE"
+                self.session["flow_state"] = "CONFIRM_PHONE"
+                self.session["flow_step"]  = _CONFIRM_PHONE_INDEX
+
+                _hg_spaced  = _format_phone_readback(_hg_phone)
+                _hg_rb      = f"Just to check — is that {_hg_spaced}?"
                 self.session["last_question"] = _hg_rb
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _hg_rb}
                 )
-                logger.info(
-                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s",
-                    _hg_phone,
+
+                print(
+                    "[PHONE GATE] captured full phone",
+                    {
+                        "text":      text,
+                        "digits":    _hg_digits,
+                        "state":     self.session.get("state"),
+                        "flow_step": self.session.get("flow_step"),
+                        "phone":     self.session.get("phone") or self.session.get("phone_number"),
+                    },
                 )
+                logger.info(
+                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s state→%s step→%d",
+                    _hg_phone, self.session["state"], self.session["flow_step"],
+                )
+
+                await self._tts.put(_hg_rb)
                 return
-            elif _hg_raw_digits:
-                # Still accumulating — silent wait; silence handler re-asks if needed
+
+            elif _hg_digits:
+                # Partial — accumulate; silence handler re-asks if needed
+                _hg_buffer = self.session.get("phone_digits_buffer", "") + _hg_digits
                 self.session["phone_digits_buffer"] = _hg_buffer
                 logger.info(
                     "[ms_flow] HARD GATE COLLECT_PHONE: accumulating %r → %r (%d digits)",
-                    _hg_raw_digits, _hg_buffer, len(_hg_buffer),
+                    _hg_digits, _hg_buffer, len(_hg_buffer),
                 )
                 return
+
             else:
-                # No digits at all — re-ask
+                # No digits — re-ask
                 logger.info(
                     "[ms_flow] HARD GATE COLLECT_PHONE: no digits in %r — re-asking",
                     text[:60],
@@ -1981,17 +2014,13 @@ class FlowEngine:
 
         # ════════════════════════════════════════════════════════════════════
         # HARD GATE: PHONE CONFIRMATION
-        # Handles YES/NO for both:
-        #   • CONFIRM_PHONE (step 12): "shall I use the number you called from?"
-        #   • phone_readback_pending: "is that the right number you just gave?"
+        # Fires whenever session["state"] == "CONFIRM_PHONE" — covers both:
+        #   • Step-12 Twilio number confirm (CONFIRM_PHONE flow step)
+        #   • Post-COLLECT_PHONE readback (state set to CONFIRM_PHONE above)
         # Must run before slot/vague/name handlers can intercept yes/no input.
         # Every branch returns — no fallthrough.
         # ════════════════════════════════════════════════════════════════════
-        _hg_in_confirm = (
-            current_state == "CONFIRM_PHONE"
-            or (current_state == "COLLECT_PHONE" and self.session.get("phone_readback_pending"))
-        )
-        if _hg_in_confirm:
+        if self.session.get("state") == "CONFIRM_PHONE":
             _HG_YES = (
                 "yes", "yeah", "yep", "yup", "yeh", "ya",
                 "correct", "right", "that's right", "thats right",
@@ -2013,55 +2042,42 @@ class FlowEngine:
             _hg_no  = any(p in text for p in _HG_NO)
 
             if _hg_yes and not _hg_no:
-                import re as _re_hgcp
-                if current_state == "CONFIRM_PHONE":
-                    # Store the Twilio caller-ID as the confirmed number
-                    _hg_twilio = (
-                        self.session.get("twilio_from_local")
-                        or self.session.get("twilio_from", "")
-                    )
-                    _hg_tw_digits = _re_hgcp.sub(r"\D", "", _hg_twilio)
-                    _hg_tw_phone  = _hg_tw_digits or _hg_twilio
-                    self.session["phone_number"]            = _hg_tw_phone
-                    self.session.setdefault("collected", {})["phone"] = _hg_tw_phone
-                    self.session["phone_from_twilio"]       = True
-                # (COLLECT_PHONE readback: phone already stored by digit gate above)
-                self.session["phone_confirmed"]        = True
                 self.session["phone_readback_pending"] = False
-                self.session["phone_digits_buffer"]    = ""
-                self.session.pop("phone_readback_retry",      None)
-                self.session.pop("slot_pending_confirmation", None)
-                self.session.pop("vague_option_pending",      None)
-                self.session.pop("vague_clarification_asked", None)
-                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
-                self.session["state"]     = "CONFIRM_BOOKING"
-                assert self.session["flow_step"] == _CONFIRM_BOOKING_INDEX, (
-                    f"flow_step must be {_CONFIRM_BOOKING_INDEX} after CONFIRM_PHONE YES "
-                    f"(got {self.session['flow_step']})"
+                self.session["phone_confirmed"]        = True
+                self.session["state"]                  = "CONFIRM_BOOKING"
+                self.session["flow_state"]             = "CONFIRM_BOOKING"
+                self.session["flow_step"]              = _CONFIRM_BOOKING_INDEX
+                print(
+                    "[PHONE GATE] yes -> confirm_booking",
+                    {
+                        "state":     self.session.get("state"),
+                        "flow_step": self.session.get("flow_step"),
+                    },
                 )
                 logger.info(
                     "[ms_flow] HARD GATE CONFIRM_PHONE: YES → CONFIRM_BOOKING phone=...%s",
-                    (self.session.get("phone_number") or "")[-4:],
+                    (self.session.get("phone_number") or self.session.get("phone") or "")[-4:],
                 )
                 await self.ask_current_question()
                 return
 
             elif _hg_no and not _hg_yes:
-                self.session["phone_confirmed"]        = False
-                self.session["phone_from_twilio"]      = False
+                self.session["phone"]                  = None
                 self.session["phone_number"]           = None
+                self.session["customer_phone"]         = None
                 self.session["phone_digits_buffer"]    = ""
                 self.session["phone_readback_pending"] = False
+                self.session["phone_confirmed"]        = False
+                self.session["state"]                  = "COLLECT_PHONE"
+                self.session["flow_state"]             = "COLLECT_PHONE"
+                self.session["flow_step"]              = _COLLECT_PHONE_INDEX
                 self.session.setdefault("collected", {}).pop("phone", None)
-                self.session.pop("phone_readback_retry", None)
-                self.session["flow_step"] = _COLLECT_PHONE_INDEX
-                self.session["state"]     = "COLLECT_PHONE"
                 logger.info("[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE")
                 await self.ask_current_question()
                 return
 
             else:
-                # Ambiguous input — replay last question
+                # Ambiguous — replay last question
                 logger.info(
                     "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — re-asking",
                     text[:60],
