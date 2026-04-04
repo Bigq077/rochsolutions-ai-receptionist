@@ -594,6 +594,14 @@ _CONFIRM_PHONE_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_PHONE"
 )
 
+_CONFIRM_ASSESSMENT_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_ASSESSMENT"
+)
+
+_GENERAL_BOOKING_OFFER_INDEX: int = next(
+    i for i, s in enumerate(GENERAL_QUERY_FLOW) if s["state"] == "GENERAL_BOOKING_OFFER"
+)
+
 
 def _classify_confirm_assessment(text: str) -> str:
     """
@@ -1689,6 +1697,10 @@ class FlowEngine:
                 self.session["flow_step"] = step["step"] + 1
                 logger.info("[ms_flow] ANSWER_FAQ complete — advancing to FAQ_BOOKING_OFFER")
                 return
+            if step["state"] == "ANSWER_GENERAL":
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] ANSWER_GENERAL complete — advancing to GENERAL_BOOKING_OFFER")
+                return
             # LOOKUP_TREATMENT_PLAN: advance immediately after LLM announces the
             # treatment type — no patient response needed; next step asks availability.
             if step["state"] == "LOOKUP_TREATMENT_PLAN":
@@ -1814,6 +1826,74 @@ class FlowEngine:
         This is the ONLY function called on incoming transcripts.
         If no answer is extracted, re-ask the current question.
         """
+        # ════════════════════════════════════════════════════════════════════
+        # VERY TOP RESCUE GATE: ANSWER_GENERAL / GENERAL_BOOKING_OFFER
+        # Must run before current_step() because if flow_step has drifted
+        # past the end of GENERAL_QUERY_FLOW, current_step() returns None
+        # and the function silently drops the turn at the step-is-None guard.
+        # ════════════════════════════════════════════════════════════════════
+        _rescue_text  = transcript.strip().lower()
+        _rescue_state = self.session.get("state")
+        if _rescue_state in ("ANSWER_GENERAL", "GENERAL_BOOKING_OFFER"):
+            print("[GENERAL RESCUE] state=", _rescue_state, "text=", _rescue_text)
+            if _rescue_state == "ANSWER_GENERAL":
+                self.session["state"]     = "GENERAL_BOOKING_OFFER"
+                self.session["flow_step"] = _GENERAL_BOOKING_OFFER_INDEX
+                if "flow_state" in self.session:
+                    self.session["flow_state"] = "GENERAL_BOOKING_OFFER"
+            _rg_yes = (
+                "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please",
+                "go ahead", "aye", "book", "booking", "appointment",
+                "i would", "i'd like",
+            )
+            _rg_no = (
+                "no", "nah", "nope", "that's all", "thats all", "nothing else",
+                "thanks", "thank you", "bye", "goodbye", "no thank",
+            )
+            if any(p in _rescue_text for p in _rg_yes):
+                _rg_reason = (
+                    self.session.get("reason")
+                    or self.session.get("general_query_text")
+                    or self.session.get("last_user_text")
+                    or self.session.get("initial_user_text")
+                    or "Pain issue"
+                )
+                self._switch_flow("booking")
+                self.session["intent"]    = "booking"
+                self.session["reason"]    = _rg_reason
+                self.session["state"]     = "CONFIRM_ASSESSMENT"
+                self.session["flow_step"] = _CONFIRM_ASSESSMENT_INDEX
+                if "flow_state" in self.session:
+                    self.session["flow_state"] = "CONFIRM_ASSESSMENT"
+                self.session.pop("question_asked_this_turn", None)
+                self.session["_last_handled_by"] = "general_booking_offer_yes"
+                print("[GENERAL RESCUE] branch= general_booking_offer_yes state=", self.session.get("state"))
+                return await self.ask_current_question()
+            if any(p in _rescue_text for p in _rg_no):
+                _rg_phrase = "No problem. Have a great day!"
+                self.session["state"]     = "DONE"
+                self.session["flow_step"] = (
+                    len(self._active_flow)
+                    if getattr(self, "_active_flow", None) else
+                    self.session.get("flow_step", 0)
+                )
+                if "flow_state" in self.session:
+                    self.session["flow_state"] = "DONE"
+                self.session.pop("question_asked_this_turn", None)
+                self.session["_last_handled_by"]         = "general_booking_offer_no"
+                self.session["_last_assistant_response"] = _rg_phrase
+                print("[GENERAL RESCUE] branch= general_booking_offer_no state=", self.session.get("state"))
+                await self._tts.put(_rg_phrase)
+                return
+            # Ambiguous — re-ask, stay in GENERAL_BOOKING_OFFER
+            _rg_reask = "Would you like to book an appointment?"
+            self.session.pop("question_asked_this_turn", None)
+            self.session["_last_handled_by"]         = "general_booking_offer_ambiguous"
+            self.session["_last_assistant_response"] = _rg_reask
+            print("[GENERAL RESCUE] branch= general_booking_offer_ambiguous state=", self.session.get("state"))
+            await self._tts.put(_rg_reask)
+            return
+
         step = self.current_step()
         logger.debug(
             "[ms_flow] handle_transcript: state=%s step=%s transcript=%r",
@@ -3994,6 +4074,22 @@ class FlowEngine:
         Classify the caller's first utterance into one of seven intent strings.
         Returns "booking" as the default fallback.
         """
+        # ABSOLUTE TOP-PRIORITY: body-part + symptom compound detection.
+        # Catches phrases like "my shoulder's been killing me" or "recurring ankle
+        # problem" that may not have an explicit symptom keyword but combine a body
+        # term with a pain/problem signal.
+        import re as _re_di
+        _BODY_RE = r"\b(back|shoulder|ankle|knee|hip|neck|wrist|elbow|leg|arm)\b"
+        _SYMP_RE = r"\b(pain|painful|ache|aching|hurt|hurting|injury|injured|problem|issue|sore|stiff|stiffness|recurring)\b"
+        if (
+            _re_di.search(_BODY_RE, text) and
+            (_re_di.search(_SYMP_RE, text) or "killing me" in text)
+        ):
+            logger.debug(
+                "[ms_flow] detect_intent_booking_symptom_rule body+symptom: %r", text[:60]
+            )
+            return "booking"
+
         # Explicit booking signals checked FIRST — these override any FAQ keyword
         # matches that might appear coincidentally (e.g. "not feeling right about
         # the cost" would otherwise fire faq_prices despite being a health complaint).
@@ -4001,14 +4097,16 @@ class FlowEngine:
             "not feeling", "feeling off", "feel off", "unwell", "not well",
             "not myself", "off colour", "off color", "under the weather",
             "something wrong", "been suffering", "not been well", "been struggling",
-            "pain", "ache", "aching", "hurt", "hurting", "injury", "injured",
-            "sore", "stiff", "stiffness", "swollen", "swelling",
+            "pain", "painful", "ache", "aching", "hurt", "hurting", "injury", "injured",
+            "problem", "issue", "sore", "stiff", "stiffness", "swollen", "swelling",
+            "recurring", "killing me",
             "pulled", "torn", "sprain", "strain", "fracture",
             "headache", "migraine",
             "i want to book", "i'd like to book", "i need to book",
             "book an appointment", "make an appointment", "see a physio",
         )
         if any(p in text for p in booking_priority_p):
+            logger.debug("[ms_flow] detect_intent_booking_symptom_rule matched: %r", text[:60])
             return "booking"
 
         transfer_p = (
