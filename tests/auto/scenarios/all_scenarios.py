@@ -764,14 +764,15 @@ SCENARIOS = [
         "phase": "Phase 8 — Full End to End",
         "name": "Clean run 4 — new patient hip",
         "responses": [
-            "Hip pain when walking",
-            "Yes",
-            "No never",
-            "Wednesday morning",
-            "The first one",
-            "Yes",
-            "Emma Davis",
-            "Yes",
+            "Hip pain when walking",   # 0 — chief complaint
+            "Yes",                     # 1 — confirm service
+            "No never",                # 2 — new patient
+            "Wednesday morning",       # 3 — day preference
+            "The first one",           # 4 — slot selection
+            "Yes",                     # 5 — confirm slot
+            "Emma Davis",              # 6 — give name
+            "Yes",                     # 7 — confirm name readback → CONFIRM_PHONE
+            "Yes",                     # 8 — confirm phone → CONFIRM_BOOKING → done
         ],
         "expected": {
             "flow_completed": True,
@@ -779,6 +780,10 @@ SCENARIOS = [
             "no_technical_error": True,
             "booking_confirmed": True,
         },
+        "checkpoints": [
+            {"after_turn": 7, "field": "state_after",            "expected": "CONFIRM_PHONE"},
+            {"after_turn": 8, "field": "booking_confirmed_after", "expected": True},
+        ],
     },
 
     {
