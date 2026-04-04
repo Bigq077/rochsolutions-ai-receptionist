@@ -2196,7 +2196,23 @@ class FlowEngine:
                 self.session["vague_option_pending"]    = False
                 self.session["presented_vague_options"] = []
                 self.session.pop("vague_clarification_asked", None)
-                _vop_next = step["step"] + 1
+                # Each vague option already contains a specific slot (slot_iso +
+                # time_speech).  For RESCHEDULE_FLOW, pre-select it and advance
+                # directly to CONFIRM_RESCHEDULE (step+2), skipping PRESENT_TIMES.
+                # For BOOKING_FLOW, PRESENT_TIMES is followed by name/phone steps
+                # so we must NOT skip it — advance +1 as before.
+                _vop_slot_iso = _vop_chosen.get("slot_iso", "")
+                if _vop_slot_iso and self._active_flow is RESCHEDULE_FLOW:
+                    _vop_time_speech = _vop_chosen.get("time_speech", "")
+                    _vop_day_label   = _vop_chosen.get("day_label", "")
+                    self.session["selected_slot"]        = _vop_slot_iso
+                    self.session["selected_slot_speech"] = (
+                        f"{_vop_day_label} at {_vop_time_speech}"
+                        if _vop_time_speech else _vop_day_label
+                    )
+                    _vop_next = min(step["step"] + 2, len(self._active_flow) - 1)
+                else:
+                    _vop_next = step["step"] + 1
                 _vop_ns = (
                     self._active_flow[_vop_next]["state"]
                     if _vop_next < len(self._active_flow) else "DONE"
@@ -2209,11 +2225,12 @@ class FlowEngine:
                     "text":          text,
                     "state":         self.session.get("state"),
                     "flow_step":     self.session.get("flow_step"),
-                    "selected_slot": _vop_chosen.get("day_label"),
+                    "selected_slot": self.session.get("selected_slot") or _vop_chosen.get("day_label"),
                 })
                 logger.info(
-                    "[ms_flow] SLOT GATE vague ordinal: idx=%d day=%r next_state=%s",
-                    _vop_r, self.session["chosen_day"], _vop_ns,
+                    "[ms_flow] SLOT GATE vague ordinal: idx=%d day=%r slot=%r next_state=%s",
+                    _vop_r, self.session["chosen_day"],
+                    (self.session.get("selected_slot") or "")[:30], _vop_ns,
                 )
                 await self.ask_current_question()
                 return
