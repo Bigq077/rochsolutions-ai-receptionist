@@ -3765,10 +3765,59 @@ class FlowEngine:
             from app.vagueness_detector import (
                 is_vague_availability, build_vague_options, build_vague_response_phrase,
             )
+            # ── TOP-PRIORITY: ordinal resolves to a specific day immediately ────
+            # Must run before the ordinal guard below so "last one" / "first" etc.
+            # selects a day and advances instead of replaying the day list.
+            _pd_avail = self.session.get("available_days", [])
+            if _pd_avail:
+                _PD_ORD = [
+                    ("first one", 0), ("second one", 1), ("third one", 2),
+                    ("the first", 0), ("the second", 1), ("the third", 2),
+                    ("the last", -1), ("last one", -1), ("the final", -1),
+                    ("first", 0), ("second", 1), ("third", 2),
+                    ("last", -1), ("final", -1),
+                ]
+                _pd_ord_idx = None
+                for _pd_pat, _pd_i in _PD_ORD:
+                    if _pd_pat in text:
+                        _pd_ord_idx = _pd_i
+                        break
+                if _pd_ord_idx is not None:
+                    _pd_n  = len(_pd_avail)
+                    _pd_r  = _pd_ord_idx if _pd_ord_idx >= 0 else max(0, _pd_n + _pd_ord_idx)
+                    _pd_r  = min(_pd_r, _pd_n - 1)
+                    _pd_day = _pd_avail[_pd_r].get("day_label", "")
+                    self.session["chosen_day"]           = _pd_day
+                    self.session[step["answer_field"]]   = _pd_day
+                    self.session.pop("vague_option_pending",    None)
+                    self.session.pop("vague_clarification_asked", None)
+                    self.session["presented_vague_options"] = []
+                    _pd_next = step["step"] + 1
+                    _pd_ns   = (
+                        self._active_flow[_pd_next]["state"]
+                        if _pd_next < len(self._active_flow) else "DONE"
+                    )
+                    self.session["flow_step"]  = _pd_next
+                    self.session["state"]      = _pd_ns
+                    self.session["flow_state"] = _pd_ns
+                    self.session["_last_handled_by"] = "present_days_ordinal_selection"
+                    print("[PRESENT_DAYS ORDINAL]", {
+                        "text":           text,
+                        "resolved_index": _pd_r,
+                        "chosen_day":     _pd_day,
+                        "next_state":     _pd_ns,
+                        "flow_step":      self.session.get("flow_step"),
+                    })
+                    logger.info(
+                        "[ms_flow] PRESENT_DAYS ordinal: %r → idx=%d day=%r next=%s",
+                        transcript[:40], _pd_r, _pd_day, _pd_ns,
+                    )
+                    await self.ask_current_question()
+                    return
+
             # Guard: ordinal/positional words must never trigger the time-offer
-            # vague handler while the day is not yet committed. If the caller said
-            # "three" but only 2 days are offered (so the ordinal block above
-            # couldn't match), replay the day list — do NOT offer slot times.
+            # vague handler while the day is not yet committed. Only fires now
+            # when the ordinal did NOT resolve to a valid day above.
             _ORDINAL_GUARD_WORDS = {"first", "second", "third", "last", "three", "four"}
             if any(w in _ORDINAL_GUARD_WORDS for w in text.split()):
                 _og_phrase = _build_day_list_phrase(self.session.get("available_days", []))
