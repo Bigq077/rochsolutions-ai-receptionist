@@ -4393,9 +4393,13 @@ class FlowEngine:
             self.session.pop("slot_pending_confirmation", None)
             self.session.pop("vague_option_pending", None)
             self.session.pop("vague_clarification_asked", None)
-            self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
-            self.session["state"]     = "CONFIRM_BOOKING"
-            logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
+            if self._active_flow is RESCHEDULE_FLOW:
+                self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
+                self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+            else:
+                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                self.session["state"]     = "CONFIRM_BOOKING"
+            logger.info("[ms_flow] compat_phone_accept -> %s", self.session["state"])
             await self.ask_current_question()
             return
 
