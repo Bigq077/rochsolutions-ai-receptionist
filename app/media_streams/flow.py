@@ -582,6 +582,12 @@ _CONFIRM_BOOKING_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_BOOKING"
 )
 
+# Array index of COLLECT_PHONE in BOOKING_FLOW.
+# Used by phone-reject handler to jump directly to phone collection.
+_COLLECT_PHONE_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "COLLECT_PHONE"
+)
+
 
 def _classify_confirm_assessment(text: str) -> str:
     """
@@ -875,6 +881,27 @@ def _is_phone_accept(text: str) -> bool:
         "yes use my number", "use my number",
     )
     return any(p in text for p in _PHONE_ACCEPT)
+
+
+def _is_phone_reject(text: str) -> bool:
+    """
+    Return True if normalised-lowercase text expresses intent to provide a
+    different phone number — used as a cross-state first-check so this intent
+    is caught before name-parsing or generic fallback can consume the turn.
+    """
+    _PHONE_REJECT = (
+        "no use a different number",
+        "different number",
+        "use a different number",
+        "no different number",
+        "no i'll give another number",
+        "no i'll give you another number",
+        "i'll give you a different number",
+        "give you another number",
+        "another number",
+        "use another number",
+    )
+    return any(p in text for p in _PHONE_REJECT)
 
 
 # ---------------------------------------------------------------------------
@@ -2098,6 +2125,27 @@ class FlowEngine:
                 "[ms_flow] name_readback state=%s input=%r phone_accept=%s",
                 step["state"], text[:60], _is_phone_accept(text),
             )
+            # ── FIRST-CHECK: phone-reject intent ───────────────────────────
+            # "no use a different number" while awaiting name readback means the
+            # caller wants to supply a new phone number.  Catch BEFORE yes/no
+            # name logic so the turn is not consumed as a name rejection.
+            if _is_phone_reject(text):
+                logger.info(
+                    "[ms_flow] phone_reject_detected state=%s — redirecting to COLLECT_PHONE",
+                    step["state"],
+                )
+                self.session["name_readback_pending"]  = False
+                self.session["phone_confirmed"]        = False
+                self.session["phone_number"]           = None
+                self.session["phone_digits_buffer"]    = ""
+                self.session.setdefault("collected", {}).pop("phone", None)
+                self.session.pop("phone_readback_pending", None)
+                self.session.pop("phone_readback_retry", None)
+                self.session["flow_step"] = _COLLECT_PHONE_INDEX
+                self.session["state"]     = "COLLECT_PHONE"
+                await self.ask_current_question()
+                return
+
             # ── FIRST-CHECK: phone-accept compat ────────────────────────────
             # "yes use this number" arrives when caller combines name-confirm +
             # phone-confirm in one utterance.  Catch it before yes/no name logic
@@ -3038,6 +3086,25 @@ class FlowEngine:
                 "[ms_flow] COLLECT_NAME state=%s input=%r phone_accept=%s",
                 current_state, text[:60], _is_phone_accept(text),
             )
+            # ── FIRST-CHECK: phone-reject intent ───────────────────────────
+            # "no use a different number" while in COLLECT_NAME means the caller
+            # wants to supply a different phone number.  Must run before name
+            # extraction so the phrase is never parsed as an invalid name.
+            if _is_phone_reject(text):
+                logger.info(
+                    "[ms_flow] phone_reject_detected state=COLLECT_NAME — redirecting to COLLECT_PHONE",
+                )
+                self.session["phone_confirmed"]    = False
+                self.session["phone_number"]       = None
+                self.session["phone_digits_buffer"] = ""
+                self.session.setdefault("collected", {}).pop("phone", None)
+                self.session.pop("phone_readback_pending", None)
+                self.session.pop("phone_readback_retry", None)
+                self.session["flow_step"] = _COLLECT_PHONE_INDEX
+                self.session["state"]     = "COLLECT_PHONE"
+                await self.ask_current_question()
+                return
+
             _cn_twilio = (
                 self.session.get("twilio_from_local")
                 or self.session.get("twilio_from", "")
