@@ -2445,11 +2445,21 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
-            _nr_yes = any(p in text for p in (
+            # Word-boundary match for short tokens so acoustic echo of the name
+            # readback question ("was that right?") cannot fire _nr_yes via
+            # substring match ("right" inside "alright", "ya" inside a name, etc.).
+            import re as _re_nr
+            _NR_YES_FULL = {
                 "yes", "yeah", "yep", "yup", "yeh", "ya", "correct",
-                "right", "that's right", "thats right", "aye", "ok", "okay",
+                "that's right", "thats right", "aye", "ok", "okay",
                 "that's it", "thats it", "spot on", "that's me", "thats me",
-            ))
+            }
+            _nr_yes = (
+                any(_re_nr.search(r'\b' + _re_nr.escape(p) + r'\b', text) for p in _NR_YES_FULL)
+                # bare "right" only when it is the WHOLE utterance or starts the utterance,
+                # not as a suffix inside words like "alright" / "upright"
+                or bool(_re_nr.search(r'(?<!\w)right(?!\w)', text))
+            )
             _nr_no  = any(p in text for p in (
                 "no", "nope", "nah", "wrong", "that's not", "thats not",
                 "not right", "different", "incorrect", "not me",
@@ -2462,6 +2472,7 @@ class FlowEngine:
                 self.session["_last_yes_detected"] = True
                 self.session["_last_no_detected"]  = False
                 await self.ask_current_question()
+                return  # hard stop — phone question already queued, no fallthrough
             elif _nr_no:
                 self.session["name_readback_pending"] = False
                 self.session["full_name"] = None
