@@ -4125,6 +4125,17 @@ class FlowEngine:
             )
             return "booking"
 
+        # Body part as a standalone short answer (e.g. "Shoulder", "My knee").
+        # Callers often give the affected area as their entire first utterance.
+        # Only fires when the whole text is just an optional "my/the" + body part,
+        # so it doesn't swallow sentences that happen to contain a body word.
+        _BODY_ALONE_RE = r"^(my|the|my\s+left|my\s+right|left|right)?\s*\b(back|shoulder|ankle|knee|hip|neck|wrist|elbow|leg|arm)\b\s*$"
+        if _re_di.match(_BODY_ALONE_RE, text):
+            logger.debug(
+                "[ms_flow] detect_intent body-alone rule: %r", text[:60]
+            )
+            return "booking"
+
         # Explicit booking signals checked FIRST — these override any FAQ keyword
         # matches that might appear coincidentally (e.g. "not feeling right about
         # the cost" would otherwise fire faq_prices despite being a health complaint).
