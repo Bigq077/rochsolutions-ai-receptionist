@@ -3712,6 +3712,41 @@ class FlowEngine:
                     return
                 # No slot data — fall through to normal re-ask
 
+        # PRESENT_DAYS ordinal rescue: _extract returns None for "the first one" /
+        # "first" / "last" etc. because there is no literal day name in the phrase.
+        # Resolve against available_days BEFORE the answer-is-None retry gate fires.
+        if answer is None and step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            _pre_avail = self.session.get("available_days", [])
+            if _pre_avail:
+                for _pre_pat, _pre_i in [
+                    ("first one", 0), ("second one", 1), ("third one", 2),
+                    ("the first", 0), ("the second", 1), ("the third", 2),
+                    ("the last", -1), ("last one", -1), ("the final", -1),
+                    ("first", 0), ("second", 1), ("third", 2),
+                    ("last", -1), ("final", -1),
+                ]:
+                    if _pre_pat in text:
+                        _pre_n = len(_pre_avail)
+                        _pre_r = _pre_i if _pre_i >= 0 else max(0, _pre_n + _pre_i)
+                        _pre_r = min(_pre_r, _pre_n - 1)
+                        _pre_day = _pre_avail[_pre_r].get("day_label", "")
+                        self.session["chosen_day"]         = _pre_day
+                        self.session[step["answer_field"]] = _pre_day
+                        self.session.pop("vague_option_pending", None)
+                        self.session.pop("vague_clarification_asked", None)
+                        self.session["presented_vague_options"] = []
+                        _pre_next = step["step"] + 1
+                        _pre_ns = (
+                            self._active_flow[_pre_next]["state"]
+                            if _pre_next < len(self._active_flow) else "DONE"
+                        )
+                        self.session["flow_step"]  = _pre_next
+                        self.session["state"]      = _pre_ns
+                        self.session["flow_state"] = _pre_ns
+                        self.session["_last_handled_by"] = "present_days_ordinal_pre_gate"
+                        await self.ask_current_question()
+                        return
+
         if answer is None:
             # No valid answer extracted — acknowledged re-ask with retry counting
             phrase_key = _phrase_key_for_step(step)

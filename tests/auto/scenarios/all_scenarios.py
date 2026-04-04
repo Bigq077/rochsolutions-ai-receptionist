@@ -790,7 +790,11 @@ SCENARIOS = [
             "The first one",
             "Yes that's correct",
             "David Wilson",
-            "Yes please",
+            "Yes please",            # name readback confirmation
+            "Yes",                   # phone / booking confirmation
+        ],
+        "checkpoints": [
+            {"after_turn": 10, "field": "booking_confirmed_after", "expected": True},
         ],
         "expected": {
             "flow_completed": True,
