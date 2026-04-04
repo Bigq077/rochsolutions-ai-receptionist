@@ -1545,6 +1545,9 @@ class FlowEngine:
             self.session["question_asked_this_turn"] = True
             if step["question"]:
                 await self._tts.put(step["question"])
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": step["question"]}
+                )
             from app.tools.receptionist_tools import _exec_check_availability
             _pd_args = {
                 "location": self.session.get("selected_location", "alcester"),
