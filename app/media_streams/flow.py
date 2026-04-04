@@ -1921,6 +1921,142 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
             return
 
+        # ════════════════════════════════════════════════════════════════════
+        # HARD GATE: PHONE COLLECTION
+        # Must be the first logic that runs in COLLECT_PHONE state.
+        # Guarantees digit capture + readback fires regardless of any other
+        # pending flags (slot_pending, vague_option, name handlers, etc.).
+        # Does NOT fire when phone_readback_pending — that is handled by
+        # the CONFIRM gate immediately below.
+        # ════════════════════════════════════════════════════════════════════
+        if current_state == "COLLECT_PHONE" and not self.session.get("phone_readback_pending"):
+            _hg_raw_digits = "".join(c for c in transcript if c.isdigit())
+            _hg_buffer = self.session.get("phone_digits_buffer", "") + _hg_raw_digits
+            if len(_hg_buffer) >= 10:
+                _hg_phone = _hg_buffer[:11] if len(_hg_buffer) > 11 else _hg_buffer
+                self.session["phone_digits_buffer"]    = ""
+                self.session["phone_number"]           = _hg_phone
+                self.session.setdefault("collected", {})["phone"] = _hg_phone
+                self.session["phone_readback_pending"] = True
+                _hg_spaced = _format_phone_readback(_hg_phone)
+                _hg_rb = (
+                    f"Just to confirm — I have your number as {_hg_spaced}. "
+                    "Is that right?"
+                )
+                await self._tts.put(_hg_rb)
+                self.session["last_question"] = _hg_rb
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _hg_rb}
+                )
+                logger.info(
+                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s",
+                    _hg_phone,
+                )
+                return
+            elif _hg_raw_digits:
+                # Still accumulating — silent wait; silence handler re-asks if needed
+                self.session["phone_digits_buffer"] = _hg_buffer
+                logger.info(
+                    "[ms_flow] HARD GATE COLLECT_PHONE: accumulating %r → %r (%d digits)",
+                    _hg_raw_digits, _hg_buffer, len(_hg_buffer),
+                )
+                return
+            else:
+                # No digits at all — re-ask
+                logger.info(
+                    "[ms_flow] HARD GATE COLLECT_PHONE: no digits in %r — re-asking",
+                    text[:60],
+                )
+                await self.ask_current_question()
+                return
+
+        # ════════════════════════════════════════════════════════════════════
+        # HARD GATE: PHONE CONFIRMATION
+        # Handles YES/NO for both:
+        #   • CONFIRM_PHONE (step 12): "shall I use the number you called from?"
+        #   • phone_readback_pending: "is that the right number you just gave?"
+        # Must run before slot/vague/name handlers can intercept yes/no input.
+        # Every branch returns — no fallthrough.
+        # ════════════════════════════════════════════════════════════════════
+        _hg_in_confirm = (
+            current_state == "CONFIRM_PHONE"
+            or (current_state == "COLLECT_PHONE" and self.session.get("phone_readback_pending"))
+        )
+        if _hg_in_confirm:
+            _HG_YES = (
+                "yes", "yeah", "yep", "yup", "yeh", "ya",
+                "correct", "right", "that's right", "thats right",
+                "that's correct", "thats correct",
+                "that's fine", "thats fine", "that's ok", "thats ok",
+                "ok", "okay", "aye", "confirmed", "confirm",
+                "use this number", "yes use this number",
+                "use my number", "yes use my number",
+                "same number", "use my current number",
+            )
+            _HG_NO = (
+                "no", "nope", "nah",
+                "no use a different number", "different number",
+                "use a different number", "another number",
+                "no different number", "give you another number",
+                "no i'll give you another",
+            )
+            _hg_yes = any(p in text for p in _HG_YES)
+            _hg_no  = any(p in text for p in _HG_NO)
+
+            if _hg_yes and not _hg_no:
+                import re as _re_hgcp
+                if current_state == "CONFIRM_PHONE":
+                    # Store the Twilio caller-ID as the confirmed number
+                    _hg_twilio = (
+                        self.session.get("twilio_from_local")
+                        or self.session.get("twilio_from", "")
+                    )
+                    _hg_tw_digits = _re_hgcp.sub(r"\D", "", _hg_twilio)
+                    _hg_tw_phone  = _hg_tw_digits or _hg_twilio
+                    self.session["phone_number"]            = _hg_tw_phone
+                    self.session.setdefault("collected", {})["phone"] = _hg_tw_phone
+                    self.session["phone_from_twilio"]       = True
+                # (COLLECT_PHONE readback: phone already stored by digit gate above)
+                self.session["phone_confirmed"]        = True
+                self.session["phone_readback_pending"] = False
+                self.session["phone_digits_buffer"]    = ""
+                self.session.pop("phone_readback_retry",      None)
+                self.session.pop("slot_pending_confirmation", None)
+                self.session.pop("vague_option_pending",      None)
+                self.session.pop("vague_clarification_asked", None)
+                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                self.session["state"]     = "CONFIRM_BOOKING"
+                logger.info(
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: YES → CONFIRM_BOOKING phone=...%s",
+                    (self.session.get("phone_number") or "")[-4:],
+                )
+                await self.ask_current_question()
+                return
+
+            elif _hg_no and not _hg_yes:
+                self.session["phone_confirmed"]        = False
+                self.session["phone_from_twilio"]      = False
+                self.session["phone_number"]           = None
+                self.session["phone_digits_buffer"]    = ""
+                self.session["phone_readback_pending"] = False
+                self.session.setdefault("collected", {}).pop("phone", None)
+                self.session.pop("phone_readback_retry", None)
+                self.session["flow_step"] = _COLLECT_PHONE_INDEX
+                self.session["state"]     = "COLLECT_PHONE"
+                logger.info("[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE")
+                await self.ask_current_question()
+                return
+
+            else:
+                # Ambiguous input — replay last question
+                logger.info(
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — re-asking",
+                    text[:60],
+                )
+                _hg_lq = self.session.get("last_question", "Is that number correct?")
+                await self._tts.put(_hg_lq)
+                return
+
         # ── HARD PHONE-STEP GUARD (Phase 5): once we are in a phone step or
         #    awaiting phone readback, slot/day/vague-option handlers must not
         #    fire — they belong to earlier flow steps and must no-op here.
