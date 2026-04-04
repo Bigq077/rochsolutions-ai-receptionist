@@ -1990,7 +1990,16 @@ class FlowEngine:
                 # Sync state, flow_state, and flow_step together
                 self.session["state"]      = "CONFIRM_PHONE"
                 self.session["flow_state"] = "CONFIRM_PHONE"
-                self.session["flow_step"]  = _CONFIRM_PHONE_INDEX
+                # For RESCHEDULE_FLOW, CONFIRM_PHONE_INDEX (12) is out of bounds
+                # (RESCHEDULE_FLOW only has 6 steps).  Keep flow_step within bounds
+                # so current_step() doesn't return None and drop all future turns.
+                # The CONFIRM_PHONE HARD GATE fires on session["state"], not step["state"],
+                # so it still handles YES/NO correctly regardless of flow_step.
+                self.session["flow_step"]  = (
+                    _RESCHEDULE_COLLECT_PHONE_INDEX
+                    if self._active_flow is RESCHEDULE_FLOW
+                    else _CONFIRM_PHONE_INDEX
+                )
 
                 _hg_spaced  = _format_phone_readback(_hg_phone)
                 _hg_rb      = f"Just to check — is that {_hg_spaced}?"
