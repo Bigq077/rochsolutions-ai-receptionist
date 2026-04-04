@@ -439,6 +439,7 @@ SCENARIOS = [
             "John Smith",
             "No use a different number",
             "07700900123",
+            "Yes",
         ],
         "expected": {
             "flow_completed": True,
@@ -450,6 +451,8 @@ SCENARIOS = [
             {"after_turn": 8, "field": "state_after",  "expected": "CONFIRM_PHONE"},
             {"after_turn": 8, "field": "handled_by",   "expected": "collect_phone_full_digits"},
             {"after_turn": 8, "field": "assistant_response_emitted", "expected": True},
+            {"after_turn": 9, "field": "handled_by",              "expected": "confirm_phone_yes"},
+            {"after_turn": 9, "field": "booking_confirmed_after", "expected": True},
         ],
     },
 
