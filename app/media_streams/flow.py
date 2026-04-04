@@ -598,10 +598,6 @@ _CONFIRM_ASSESSMENT_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_ASSESSMENT"
 )
 
-_GENERAL_BOOKING_OFFER_INDEX: int = next(
-    i for i, s in enumerate(GENERAL_QUERY_FLOW) if s["state"] == "GENERAL_BOOKING_OFFER"
-)
-
 
 def _classify_confirm_assessment(text: str) -> str:
     """
