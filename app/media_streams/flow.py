@@ -889,6 +889,8 @@ def _is_phone_accept(text: str) -> bool:
         "same number", "use my current number",
         "yes that's fine", "yes thats fine",
         "yes use my number", "use my number",
+        # Caller confirms name AND phone in one phrase: "yes this number is fine"
+        "this number is fine", "number is fine", "that number is fine",
     )
     return any(p in text for p in _PHONE_ACCEPT)
 
@@ -2064,15 +2066,21 @@ class FlowEngine:
                 "use my number", "yes use my number",
                 "same number", "use my current number",
             )
-            _HG_NO = (
-                "no", "nope", "nah",
+            _HG_NO_PHRASES = (
+                "nope", "nah",
                 "no use a different number", "different number",
                 "use a different number", "another number",
                 "no different number", "give you another number",
                 "no i'll give you another",
             )
+            import re as _hg_re
             _hg_yes = any(p in text for p in _HG_YES)
-            _hg_no  = any(p in text for p in _HG_NO)
+            # Use word-boundary regex for bare "no" so that "afternoon", "noted",
+            # etc. never trigger a false phone-denial.
+            _hg_no  = (
+                bool(_hg_re.search(r'\bno\b', text))
+                or any(p in text for p in _HG_NO_PHRASES)
+            )
 
             if _hg_yes and not _hg_no:
                 self.session["phone_readback_pending"] = False
