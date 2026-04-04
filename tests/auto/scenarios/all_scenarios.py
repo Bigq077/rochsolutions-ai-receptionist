@@ -713,11 +713,15 @@ SCENARIOS = [
             "Yes please",
             "Yeah I've been before",
             "A while ago",           # RETURNING_RECENCY → long_ago → skip treatment plan
-            "Any afternoon next week",
-            "The second one",
-            "Yes",
-            "Sarah Johnson",
-            "Yes",
+            "Any afternoon next week",  # vague → presents 2 specific options
+            "The second one",           # ordinal → picks second available day
+            "Yes",                      # confirms time slot
+            "Sarah Johnson",            # COLLECT_NAME
+            "Yes",                      # name readback confirm → CONFIRM_PHONE
+            "Yes",                      # CONFIRM_PHONE → CONFIRM_BOOKING → booking_confirmed
+        ],
+        "checkpoints": [
+            {"after_turn": 9, "field": "booking_confirmed_after", "expected": True},
         ],
         "expected": {
             "flow_completed": True,

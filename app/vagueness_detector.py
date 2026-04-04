@@ -21,6 +21,10 @@ VAGUE_PHRASES = [
     "whenever", "doesn't matter", "any day", "any time", "whatever works",
     "up to you", "you decide", "whatever you have", "anything really",
     "not fussed", "no preference", "i'm open", "doesn't bother me",
+    # "any [time-of-day]" phrases — caller is flexible, just prefers a period
+    "any morning", "any afternoon", "any evening",
+    # "any [day-type]" phrases not already covered by "any day"
+    "any weekday", "any weekend",
 ]
 
 DAY_PATTERN = re.compile(
