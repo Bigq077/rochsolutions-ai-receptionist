@@ -1071,6 +1071,16 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     },
 ]
 
+# Array indices within RESCHEDULE_FLOW — parallel to _CONFIRM_BOOKING_INDEX /
+# _COLLECT_PHONE_INDEX for BOOKING_FLOW.  Used by phone-accept/reject handlers
+# that previously hard-coded BOOKING_FLOW indices and broke RESCHEDULE calls.
+_RESCHEDULE_COLLECT_PHONE_INDEX: int = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "COLLECT_PHONE"
+)
+_RESCHEDULE_PRESENT_DAYS_INDEX: int = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "PRESENT_DAYS_RESCHEDULE"
+)
+
 # ---------- Cancel flow ---------------------------------------------------
 
 CANCEL_FLOW: List[Dict[str, Any]] = [
@@ -2067,18 +2077,17 @@ class FlowEngine:
             if _hg_yes and not _hg_no:
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = True
-                self.session["state"]                  = "CONFIRM_BOOKING"
-                self.session["flow_state"]             = "CONFIRM_BOOKING"
-                self.session["flow_step"]              = _CONFIRM_BOOKING_INDEX
-                print(
-                    "[PHONE GATE] yes -> confirm_booking",
-                    {
-                        "state":     self.session.get("state"),
-                        "flow_step": self.session.get("flow_step"),
-                    },
-                )
+                if self._active_flow is RESCHEDULE_FLOW:
+                    self.session["flow_step"]  = _RESCHEDULE_PRESENT_DAYS_INDEX
+                    self.session["state"]      = "PRESENT_DAYS_RESCHEDULE"
+                    self.session["flow_state"] = "PRESENT_DAYS_RESCHEDULE"
+                else:
+                    self.session["state"]      = "CONFIRM_BOOKING"
+                    self.session["flow_state"] = "CONFIRM_BOOKING"
+                    self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
                 logger.info(
-                    "[ms_flow] HARD GATE CONFIRM_PHONE: YES → CONFIRM_BOOKING phone=...%s",
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: YES → %s phone=...%s",
+                    self.session.get("state"),
                     (self.session.get("phone_number") or self.session.get("phone") or "")[-4:],
                 )
                 self.session["_last_handled_by"]   = "confirm_phone_yes"
@@ -2096,7 +2105,11 @@ class FlowEngine:
                 self.session["phone_confirmed"]        = False
                 self.session["state"]                  = "COLLECT_PHONE"
                 self.session["flow_state"]             = "COLLECT_PHONE"
-                self.session["flow_step"]              = _COLLECT_PHONE_INDEX
+                self.session["flow_step"]              = (
+                    _RESCHEDULE_COLLECT_PHONE_INDEX
+                    if self._active_flow is RESCHEDULE_FLOW
+                    else _COLLECT_PHONE_INDEX
+                )
                 self.session.setdefault("collected", {}).pop("phone", None)
                 logger.info("[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE")
                 self.session["_last_handled_by"]   = "confirm_phone_no"
@@ -2393,7 +2406,11 @@ class FlowEngine:
                 self.session.setdefault("collected", {}).pop("phone", None)
                 self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
-                self.session["flow_step"] = _COLLECT_PHONE_INDEX
+                self.session["flow_step"] = (
+                    _RESCHEDULE_COLLECT_PHONE_INDEX
+                    if self._active_flow is RESCHEDULE_FLOW
+                    else _COLLECT_PHONE_INDEX
+                )
                 self.session["state"]     = "COLLECT_PHONE"
                 self.session["_last_handled_by"]   = "name_readback_phone_reject"
                 self.session["_last_no_detected"]  = True
@@ -2437,9 +2454,13 @@ class FlowEngine:
                 self.session.pop("slot_pending_confirmation", None)
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
-                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
-                self.session["state"]     = "CONFIRM_BOOKING"
-                logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
+                if self._active_flow is RESCHEDULE_FLOW:
+                    self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
+                    self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                else:
+                    self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                    self.session["state"]     = "CONFIRM_BOOKING"
+                logger.info("[ms_flow] compat_phone_accept -> %s", self.session["state"])
                 self.session["_last_handled_by"]   = "name_readback_phone_accept_compat"
                 self.session["_last_yes_detected"] = True
                 await self.ask_current_question()
@@ -3467,11 +3488,15 @@ class FlowEngine:
                 self.session.pop("slot_pending_confirmation", None)
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
-                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
-                self.session["state"]     = "CONFIRM_BOOKING"
+                if self._active_flow is RESCHEDULE_FLOW:
+                    self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
+                    self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                else:
+                    self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                    self.session["state"]     = "CONFIRM_BOOKING"
                 logger.info(
-                    "[ms_flow] phone_confirm matched YES → phone=%r next_state=CONFIRM_BOOKING",
-                    (_cp_phone[-4:] if _cp_phone else ""),
+                    "[ms_flow] phone_confirm matched YES → phone=%r next_state=%s",
+                    (_cp_phone[-4:] if _cp_phone else ""), self.session["state"],
                 )
                 await self.ask_current_question()
                 return
