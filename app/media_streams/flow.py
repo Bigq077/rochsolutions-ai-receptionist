@@ -891,6 +891,10 @@ def _is_phone_accept(text: str) -> bool:
         "yes use my number", "use my number",
         # Caller confirms name AND phone in one phrase: "yes this number is fine"
         "this number is fine", "number is fine", "that number is fine",
+        # Contraction variants: "this number's fine", "yeah this number's fine"
+        "this number's fine", "number's fine", "that number's fine",
+        # Bare confirmations: "yes this number", "yeah this number"
+        "yes this number", "yeah this number",
     )
     return any(p in text for p in _PHONE_ACCEPT)
 
