@@ -354,10 +354,13 @@ class CallRunner:
                             )
                             if not was_injected:
                                 # Garbage was filtered — Susie didn't receive the text.
-                                # The silence handler will fire a re-ask after ~35 s.
-                                # Wait 40 s so the re-ask has time to play before we
-                                # inject the next (real) response.
-                                wait = 40
+                                # W1 fires at ~36 s (greeting ~10 s + threshold 26 s).
+                                # Wait 30 s — enough for W1 re-ask to play, but short
+                                # enough that two consecutive filtered turns (2×30=67 s)
+                                # don't push past W3 which fires at ~76 s.
+                                # (40 s was too long: 2×40=87 s > W3, causing transfer
+                                # before the real answer was ever injected.)
+                                wait = 30
                             else:
                                 wait = TURN_WAIT_SECONDS
                         else:
