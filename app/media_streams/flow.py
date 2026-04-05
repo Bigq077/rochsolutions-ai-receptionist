@@ -3034,25 +3034,34 @@ class FlowEngine:
                     _matched_nm = _dentry_nm
                     break
             if _matched_nm:
-                _norm_nm = _matched_nm["day_label"]
-                self.session["chosen_day"] = _norm_nm
-                self.session.setdefault("collected", {})["chosen_day"] = _norm_nm
-                _nxt_pd_nm = step["step"] + 1
-                _nxt_pd_nm_state = (
-                    self._active_flow[_nxt_pd_nm]["state"]
-                    if _nxt_pd_nm < len(self._active_flow) else "DONE"
-                )
-                self.session["flow_step"] = _nxt_pd_nm
-                self.session["state"]     = _nxt_pd_nm_state
-                self.session.pop("vague_option_pending", None)
-                self.session.pop("vague_clarification_asked", None)
-                self.session.pop("slot_pending_confirmation", None)
+                from app.vagueness_detector import is_vague_availability as _is_vague_nd
+                if not _is_vague_nd(transcript):
+                    # Clean day selection — advance to PRESENT_TIMES
+                    _norm_nm = _matched_nm["day_label"]
+                    self.session["chosen_day"] = _norm_nm
+                    self.session.setdefault("collected", {})["chosen_day"] = _norm_nm
+                    _nxt_pd_nm = step["step"] + 1
+                    _nxt_pd_nm_state = (
+                        self._active_flow[_nxt_pd_nm]["state"]
+                        if _nxt_pd_nm < len(self._active_flow) else "DONE"
+                    )
+                    self.session["flow_step"] = _nxt_pd_nm
+                    self.session["state"]     = _nxt_pd_nm_state
+                    self.session.pop("vague_option_pending", None)
+                    self.session.pop("vague_clarification_asked", None)
+                    self.session.pop("slot_pending_confirmation", None)
+                    logger.info(
+                        "[ms_flow] PRESENT_DAYS day_selected → next_state=%s flow_step=%d chosen_day=%r (named match raw=%r)",
+                        _nxt_pd_nm_state, _nxt_pd_nm, _norm_nm, transcript[:40],
+                    )
+                    await self.ask_current_question()
+                    return
+                # Vague despite containing a day name (e.g. "Wednesday mornings") —
+                # fall through to the vague handler so build_vague_options fires.
                 logger.info(
-                    "[ms_flow] PRESENT_DAYS day_selected → next_state=%s flow_step=%d chosen_day=%r (named match raw=%r)",
-                    _nxt_pd_nm_state, _nxt_pd_nm, _norm_nm, transcript[:40],
+                    "[ms_flow] PRESENT_DAYS: named day %r in %r but input is vague — falling through",
+                    _matched_nm["day_label"], transcript[:40],
                 )
-                await self.ask_current_question()
-                return
             else:
                 # No day match and not a YES — bounded reprompt unless vague
                 from app.vagueness_detector import is_vague_availability as _is_vague_nm
