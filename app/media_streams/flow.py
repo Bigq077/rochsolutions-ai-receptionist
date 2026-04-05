@@ -1135,6 +1135,16 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     },
 ]
 
+# Array indices within CANCEL_FLOW — parallel to _CONFIRM_BOOKING_INDEX /
+# _COLLECT_PHONE_INDEX for BOOKING_FLOW.  Used by phone-accept/reject handlers
+# that would otherwise hard-code BOOKING_FLOW indices and break cancel calls.
+_CONFIRM_CANCEL_INDEX: int = next(
+    i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "CONFIRM_CANCEL"
+)
+_CANCEL_COLLECT_PHONE_INDEX: int = next(
+    i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "COLLECT_PHONE"
+)
+
 # ---------- FAQ flow (price / insurance / hours / services) ---------------
 
 FAQ_FLOW: List[Dict[str, Any]] = [
@@ -2117,6 +2127,10 @@ class FlowEngine:
                     self.session["flow_step"]  = _RESCHEDULE_PRESENT_DAYS_INDEX
                     self.session["state"]      = "PRESENT_DAYS_RESCHEDULE"
                     self.session["flow_state"] = "PRESENT_DAYS_RESCHEDULE"
+                elif self._active_flow is CANCEL_FLOW:
+                    self.session["flow_step"]  = _CONFIRM_CANCEL_INDEX
+                    self.session["state"]      = "CONFIRM_CANCEL"
+                    self.session["flow_state"] = "CONFIRM_CANCEL"
                 else:
                     self.session["state"]      = "CONFIRM_BOOKING"
                     self.session["flow_state"] = "CONFIRM_BOOKING"
@@ -2144,6 +2158,8 @@ class FlowEngine:
                 self.session["flow_step"]              = (
                     _RESCHEDULE_COLLECT_PHONE_INDEX
                     if self._active_flow is RESCHEDULE_FLOW
+                    else _CANCEL_COLLECT_PHONE_INDEX
+                    if self._active_flow is CANCEL_FLOW
                     else _COLLECT_PHONE_INDEX
                 )
                 self.session.setdefault("collected", {}).pop("phone", None)
@@ -2462,6 +2478,8 @@ class FlowEngine:
                 self.session["flow_step"] = (
                     _RESCHEDULE_COLLECT_PHONE_INDEX
                     if self._active_flow is RESCHEDULE_FLOW
+                    else _CANCEL_COLLECT_PHONE_INDEX
+                    if self._active_flow is CANCEL_FLOW
                     else _COLLECT_PHONE_INDEX
                 )
                 self.session["state"]     = "COLLECT_PHONE"
@@ -2510,6 +2528,9 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
                     self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                elif self._active_flow is CANCEL_FLOW:
+                    self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
+                    self.session["state"]     = "CONFIRM_CANCEL"
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
@@ -3473,7 +3494,13 @@ class FlowEngine:
                 self.session.setdefault("collected", {}).pop("phone", None)
                 self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
-                self.session["flow_step"] = _COLLECT_PHONE_INDEX
+                self.session["flow_step"] = (
+                    _RESCHEDULE_COLLECT_PHONE_INDEX
+                    if self._active_flow is RESCHEDULE_FLOW
+                    else _CANCEL_COLLECT_PHONE_INDEX
+                    if self._active_flow is CANCEL_FLOW
+                    else _COLLECT_PHONE_INDEX
+                )
                 self.session["state"]     = "COLLECT_PHONE"
                 await self.ask_current_question()
                 return
@@ -3504,14 +3531,18 @@ class FlowEngine:
                     if _cn_name:
                         self.session["full_name"] = _cn_name
                         self.session.setdefault("collected", {})["full_name"] = _cn_name
-                self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
-                self.session["state"]     = "CONFIRM_BOOKING"
+                if self._active_flow is CANCEL_FLOW:
+                    self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
+                    self.session["state"]     = "CONFIRM_CANCEL"
+                else:
+                    self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                    self.session["state"]     = "CONFIRM_BOOKING"
                 self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
                 self.session.pop("slot_pending_confirmation", None)
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
-                logger.info("[ms_flow] compat_phone_accept -> CONFIRM_BOOKING")
+                logger.info("[ms_flow] compat_phone_accept -> %s", self.session["state"])
                 await self.ask_current_question()
                 return
 
@@ -3567,6 +3598,9 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
                     self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                elif self._active_flow is CANCEL_FLOW:
+                    self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
+                    self.session["state"]     = "CONFIRM_CANCEL"
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
@@ -4476,6 +4510,9 @@ class FlowEngine:
             if self._active_flow is RESCHEDULE_FLOW:
                 self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
                 self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+            elif self._active_flow is CANCEL_FLOW:
+                self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
+                self.session["state"]     = "CONFIRM_CANCEL"
             else:
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"
