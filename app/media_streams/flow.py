@@ -3984,7 +3984,11 @@ class FlowEngine:
                         step["state"], transcript[:40],
                     )
                     return
-            if is_vague_availability(transcript):
+            import re as _re_vague_tq
+            _has_time_qual_vague = bool(
+                _re_vague_tq.search(r"\b(?:morning|afternoon|evening)\w*", transcript, _re_vague_tq.IGNORECASE)
+            )
+            if is_vague_availability(transcript) or _has_time_qual_vague:
                 _avail = self.session.get("available_days", [])
                 _opts  = build_vague_options(_avail)
                 if _opts:
