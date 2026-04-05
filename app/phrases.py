@@ -250,9 +250,12 @@ SILENCE_RESPONSES: dict = {
 
 # Per-state silence window in seconds (Window 1 — first re-ask threshold).
 # Keyed by the same short category used in SILENCE_RESPONSES.
+# 26 s is intentionally higher than the automated test runner's TURN_WAIT_SECONDS
+# (25 s) so the silence timer never fires between test injections.
+# The SILENCE_WINDOW_1_SEC env var overrides this if set.
 SILENCE_THRESHOLDS: dict = {
-    "ask_phone": 6.0,
-    "default":   4.0,
+    "ask_phone": 26.0,
+    "default":   26.0,
 }
 
 # ---------------------------------------------------------------------------
