@@ -1485,7 +1485,11 @@ SCENARIOS = [
             "First",
             "Yes",
             "Alice Brown",
-            {"text": "07502 112233", "via_filter": True},  # digits → NOT filtered
+            "Yes",                                          # confirm name readback
+            "No",                                           # decline Twilio number → COLLECT_PHONE
+            {"text": "07502 112233", "via_filter": True},  # digits → NOT filtered, COLLECT_PHONE
+            "Yes",                                          # confirm phone readback
+            "Yes",                                          # confirm booking
         ],
         "expected": {
             "flow_completed": True,
