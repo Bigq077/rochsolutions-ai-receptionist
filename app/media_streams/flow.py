@@ -2028,6 +2028,32 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
 
+                if self._active_flow is CANCEL_FLOW:
+                    # CANCEL_FLOW: auto-confirm without waiting for a yes/no turn.
+                    # Caller has already provided a different number — accept it and
+                    # jump straight to CONFIRM_CANCEL to execute the cancellation.
+                    self.session["phone_readback_pending"] = False
+                    self.session["phone_confirmed"]        = True
+                    self.session["state"]                  = "CONFIRM_CANCEL"
+                    self.session["flow_state"]             = "CONFIRM_CANCEL"
+                    self.session["flow_step"]              = _CONFIRM_CANCEL_INDEX
+                    _hg_rb = f"Got it — I'll use {_hg_spaced}."
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _hg_rb}
+                    )
+                    logger.info(
+                        "[ms_flow] HARD GATE COLLECT_PHONE (CANCEL): auto-confirmed %s → CONFIRM_CANCEL",
+                        _hg_phone,
+                    )
+                    self.session["_last_handled_by"]         = "collect_phone_full_digits"
+                    self.session["_last_extracted_phone"]    = _hg_phone
+                    self.session["_last_yes_detected"]       = False
+                    self.session["_last_no_detected"]        = False
+                    self.session["_last_assistant_response"] = _hg_rb
+                    await self._tts.put(_hg_rb)
+                    await self.ask_current_question()
+                    return
+
                 # BOOKING_FLOW (and all other flows): standard readback + wait for confirm
                 self.session["phone_readback_pending"] = True
                 self.session["phone_confirmed"]        = False
@@ -3499,10 +3525,13 @@ class FlowEngine:
 
         # ── COLLECT_NAME compatibility rule (Phase 5.1 narrow fix) ─────────────
         # If caller sends a phone-confirm phrase while we're at COLLECT_NAME
-        # and a Twilio caller-ID number is available, treat this as:
-        #   implicit name skip + phone confirmed → jump to CONFIRM_BOOKING.
-        # This handles the test-path turn budget where no explicit name turn exists.
-        if current_state == "COLLECT_NAME":
+        # (or the cancel/reschedule variants) and a Twilio caller-ID number is
+        # available, treat this as: implicit name skip + phone confirmed.
+        # Also catches phone-reject ("no use a different number") so it is never
+        # parsed as a name — redirects straight to COLLECT_PHONE for all flows.
+        if current_state in (
+            "COLLECT_NAME", "COLLECT_NAME_CANCEL", "COLLECT_NAME_RESCHEDULE",
+        ):
             logger.info(
                 "[ms_flow] COLLECT_NAME state=%s input=%r phone_accept=%s",
                 current_state, text[:60], _is_phone_accept(text),
