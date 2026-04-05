@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Any, Optional
 import os
+import copy as _copy
 
 
 def _hours_tuple(start_hour: float, end_hour: float):
@@ -20,7 +21,7 @@ def _hours_tuple(start_hour: float, end_hour: float):
 TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447367002651": "theorem",       # Theorem Health and Wellness (legacy pipeline)
     "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
-    "+447366530580": "demo",          # RochSolutions demo line
+    "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
 
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE
@@ -458,6 +459,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# theorem_v2: identical to theorem but with location guards active.
+# Mapped to test number +447366530580. Switch live number here once verified.
+CLINICS["theorem_v2"] = _copy.deepcopy(CLINICS["theorem"])
+
 
 # ============================================================================
 # BOOKING SUBSYSTEM CONFIGURATION
@@ -477,6 +482,8 @@ ACUITY_CONFIG = {
         },
     },
 }
+
+ACUITY_CONFIG["theorem_v2"] = ACUITY_CONFIG["theorem"]
 
 # Location definitions for Theorem
 THEOREM_LOCATIONS = {

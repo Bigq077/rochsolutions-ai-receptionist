@@ -226,13 +226,61 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         _step3_nr_text = '"A physiotherapy assessment would be a great starting point for that -- have you been to us before?"'
 
     # ------------------------------------------------------------------ #
+    # theorem_v2: location blocker + per-flow workflow overrides
+    # ------------------------------------------------------------------ #
+    _location_blocker = ""
+    _reschedule_line_fast = (
+        "For reschedule: collect name, phone, location, check availability, confirm new slot, "
+        "call reschedule_appointment, log_call_outcome."
+    )
+    _cancel_line_fast = (
+        "For cancel: collect name, phone, location, verbal confirmation, "
+        "call cancel_appointment, log_call_outcome."
+    )
+    _reschedule_line_std = (
+        "For reschedule: collect name, phone, location, call check_availability, present available "
+        "days then times, confirm new slot, call reschedule_appointment, call log_call_outcome."
+    )
+    _cancel_line_std = (
+        "For cancel: collect name, phone, location, verbal confirmation, "
+        "call cancel_appointment, call log_call_outcome."
+    )
+
+    if clinic.get("clinic_id") == "theorem_v2" and locations:
+        _location_blocker = """
+\u26a0\ufe0f LOCATION BLOCKER \u2014 NO EXCEPTIONS:
+You MUST collect location (Alcester or Redditch) via collect_and_store(field="location", value="alcester" OR "redditch") BEFORE calling check_availability, book_appointment, reschedule_appointment, or cancel_appointment.
+If the caller has not yet told you which clinic:
+  \u2192 Do NOT call any of those tools.
+  \u2192 Say: "Which clinic would you like \u2014 say one for Alcester, or two for Redditch?"
+  \u2192 Wait for their answer, call collect_and_store(field="location", ...), THEN proceed.
+Calling any of these tools without a location will always return an error.
+"""
+        _reschedule_line_fast = (
+            'For reschedule: FIRST ask "Which clinic is your appointment at \u2014 '
+            'say one for Alcester or two for Redditch?" and call collect_and_store(field="location", ...). '
+            "Then collect name and phone, call check_availability(location=...), present available days "
+            "then times, confirm new slot, call reschedule_appointment(location=...), log_call_outcome."
+        )
+        _cancel_line_fast = (
+            'For cancel: FIRST ask "Which clinic is your appointment at \u2014 '
+            'say one for Alcester or two for Redditch?" and call collect_and_store(field="location", ...). '
+            "Then collect name and phone. "
+            "Before calling cancel_appointment, tell the caller: "
+            "\"I'll cancel your next upcoming appointment at [location] \u2014 just to confirm, shall I go ahead?\" "
+            "Wait for an explicit yes. Then call cancel_appointment, log_call_outcome."
+        )
+        _reschedule_line_std = _reschedule_line_fast
+        _cancel_line_std = _cancel_line_fast
+
+    # ------------------------------------------------------------------ #
     # Booking workflow — fast-track (Theorem) vs full (demo / default)
     # ------------------------------------------------------------------ #
     fast_booking = clinic.get("fast_booking", False)
 
     if fast_booking:
         booking_workflow_section = f"""## 8. Booking workflow — Fast Track
-{_nr_guard}
+{_location_blocker}{_nr_guard}
 Work through these steps in order. Skip any step where you already have the information.
 Every response is ONE sentence. Always acknowledge what the caller just said before asking the next question.
 
@@ -307,12 +355,12 @@ CRITICAL phone rules for when a caller gives a new number:
 Call book_appointment then: "Brilliant, all booked — you'll get a text confirmation shortly. Take care, we'll see you then!"
 Call log_call_outcome.
 
-For reschedule: collect name, phone, location, check availability, confirm new slot, call reschedule_appointment, log_call_outcome.
-For cancel: collect name, phone, location, verbal confirmation, call cancel_appointment, log_call_outcome."""
+{_reschedule_line_fast}
+{_cancel_line_fast}"""
 
     else:
         booking_workflow_section = f"""## 8. Booking workflow
-{_nr_guard}
+{_location_blocker}{_nr_guard}
 Work through these steps in order. Skip any step where you already have the information from earlier in the call. Never re-ask something the caller already answered.
 
 **Step 0 (booking intent)** -- When a caller says they want to book OR when they describe feeling unwell, being in pain, or struggling (even vaguely), acknowledge briefly and move straight to Step 2.
@@ -415,9 +463,9 @@ CRITICAL phone rules for when a caller gives a new number:
 **Step 11** -- Call book_appointment. Then: "Brilliant, all booked -- you'll get a text confirmation shortly. Take care and we'll see you then."
 Call log_call_outcome.
 
-For reschedule: collect name, phone, location, call check_availability, present available days then times, confirm new slot, call reschedule_appointment, call log_call_outcome.
+{_reschedule_line_std}
 
-For cancel: collect name, phone, location, verbal confirmation, call cancel_appointment, call log_call_outcome."""
+{_cancel_line_std}"""
 
     # ------------------------------------------------------------------ #
     # Assemble the full prompt

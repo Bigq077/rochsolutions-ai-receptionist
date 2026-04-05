@@ -1139,6 +1139,19 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
     from app.clinic_config import THEOREM_LOCATIONS
 
     location = _normalize_location(args.get("location") or session.get("selected_location", ""))
+
+    if not location and session.get("clinic_id") == "theorem_v2":
+        return {
+            "error": "location_required",
+            "error_detail": (
+                "You must ask the caller which clinic they want before checking availability. "
+                "Say: 'Which clinic would you like — say one for Alcester, or two for Redditch?' "
+                "Then call collect_and_store(field='location', value='alcester' or 'redditch'), "
+                "and only after that call check_availability again."
+            ),
+            "slots": [],
+        }
+
     service = (args.get("service") or "physiotherapy assessment").strip()
     preference = (args.get("preference") or "").strip()
 
@@ -1369,6 +1382,17 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
     try:
         clinic = get_clinic(session.get("clinic_id"))
         location = _normalize_location(args.get("location") or session.get("selected_location", ""))
+
+        if not location and session.get("clinic_id") == "theorem_v2":
+            return {
+                "success": False,
+                "error": (
+                    "Location is required to complete this booking. "
+                    "Ask: 'Which clinic would you like — say one for Alcester, or two for Redditch?' "
+                    "Call collect_and_store(field='location', ...) first, then retry book_appointment."
+                ),
+            }
+
         service = (args.get("service") or "physiotherapy assessment").strip()
         patient_name = (args.get("patient_name") or "").strip()
         phone = (args.get("phone") or "").strip()
@@ -1545,11 +1569,30 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
         return {"success": False, "error": "Booking system not configured."}
 
     try:
+        _clinic_id = session.get("clinic_id", "")
+        _cancel_location = _normalize_location(
+            args.get("location") or session.get("selected_location", "")
+        )
+        if _clinic_id == "theorem_v2" and not _cancel_location:
+            return {
+                "success": False,
+                "error": (
+                    "Location is required before cancelling. "
+                    "Ask: 'Which clinic is your appointment at — say one for Alcester or two for Redditch?' "
+                    "Call collect_and_store(field='location', ...) first, then retry cancel_appointment."
+                ),
+            }
+
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
         today = datetime.now(LONDON_TZ).date()
         end = today + timedelta(days=60)
 
-        appointments = await adapter.list_appointments(min_date=today, max_date=end)
+        from app.clinic_config import THEOREM_LOCATIONS as _TL
+        _cal_id = (
+            _TL.get(_cancel_location, {}).get("acuity_calendar_id")
+            if _cancel_location else None
+        )
+        appointments = await adapter.list_appointments(min_date=today, max_date=end, calendar_id=_cal_id)
 
         found = None
         for appt in appointments:
@@ -1613,6 +1656,23 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
     Requires args to include both patient_name/phone/location (for finding old)
     and new_slot_iso/duration_minutes/service (for creating new).
     """
+    # LOCATION GUARD for theorem_v2: resolve location before cancel+rebook.
+    # Without this, cancel succeeds and book fails → appointment is lost with no new booking.
+    if session.get("clinic_id") == "theorem_v2":
+        _early_location = _normalize_location(
+            args.get("location") or session.get("selected_location", "")
+        )
+        if not _early_location:
+            return {
+                "success": False,
+                "error": (
+                    "Location is required before rescheduling. "
+                    "Ask: 'Which clinic is your appointment at — Alcester or Redditch?' "
+                    "Call collect_and_store(field='location', value='alcester' or 'redditch') first, "
+                    "then retry reschedule_appointment."
+                ),
+            }
+
     # Step 1: cancel the existing appointment.
     # Suppress the cancel SMS — we'll send a single reschedule confirmation below.
     cancel_result = await _cancel_appointment_acuity(
