@@ -421,7 +421,10 @@ class Evaluator:
         # ── asked_for_name ────────────────────────────────────────────
         if expected.get("asked_for_name"):
             checks["asked_for_name"] = any(
-                "full name" in t or "your name" in t for t in susie_texts
+                "full name" in t or "your name" in t
+                or "name is the appointment under" in t
+                or "name the appointment" in t
+                for t in susie_texts
             )
 
         # ── asked_for_availability ────────────────────────────────────
