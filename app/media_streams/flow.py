@@ -1162,7 +1162,7 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "Call get_clinic_info with topic='{faq_topic}'. "
             "Answer the caller's question naturally and concisely — "
             "one or two sentences. "
-            "After answering ask: 'Is there anything else I can help you with?'"
+            "After answering ask: 'Would you like to book an appointment?'"
         ),
         "extract": "none",
     },
@@ -2565,13 +2565,36 @@ class FlowEngine:
             ))
             if _nr_yes:
                 self.session["name_readback_pending"] = False
-                self.session["flow_step"] = step["step"] + 1
-                logger.info("[ms_flow] name readback confirmed — advancing")
                 self.session["_last_handled_by"]   = "name_readback_yes"
                 self.session["_last_yes_detected"] = True
                 self.session["_last_no_detected"]  = False
+                # If a Twilio caller-ID is available, treat the name confirmation
+                # as also accepting the calling number — skip CONFIRM_PHONE and
+                # jump straight to CONFIRM_BOOKING.  This mirrors the
+                # name_readback_phone_accept_compat path for plain "Yes" responses.
+                _nry_twilio = (
+                    self.session.get("twilio_from_local")
+                    or self.session.get("twilio_from", "")
+                )
+                if _nry_twilio and self._active_flow is BOOKING_FLOW:
+                    import re as _re_nry
+                    _nry_phone = _re_nry.sub(r"\D", "", _nry_twilio) or _nry_twilio
+                    self.session["phone_confirmed"]   = True
+                    self.session["phone_from_twilio"] = True
+                    self.session["phone_number"]      = _nry_phone
+                    self.session.setdefault("collected", {})["phone"] = _nry_phone
+                    self.session.pop("phone_readback_pending", None)
+                    self.session.pop("phone_readback_retry", None)
+                    self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
+                    self.session["state"]     = "CONFIRM_BOOKING"
+                    logger.info(
+                        "[ms_flow] name readback confirmed + Twilio phone — skipping to CONFIRM_BOOKING"
+                    )
+                else:
+                    self.session["flow_step"] = step["step"] + 1
+                    logger.info("[ms_flow] name readback confirmed — advancing to CONFIRM_PHONE")
                 await self.ask_current_question()
-                return  # hard stop — phone question already queued, no fallthrough
+                return  # hard stop — next step already queued, no fallthrough
             elif _nr_no:
                 self.session["name_readback_pending"] = False
                 self.session["full_name"] = None
