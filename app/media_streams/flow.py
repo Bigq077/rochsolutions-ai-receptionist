@@ -3073,7 +3073,13 @@ class FlowEngine:
             else:
                 # No day match and not a YES — bounded reprompt unless vague
                 from app.vagueness_detector import is_vague_availability as _is_vague_nm
-                if not _is_vague_nm(transcript):
+                import re as _re_nm_tq
+                _has_time_qual_nm = bool(
+                    _re_nm_tq.search(
+                        r"\b(?:morning|afternoon|evening)\w*", transcript, _re_nm_tq.IGNORECASE
+                    )
+                )
+                if not _is_vague_nm(transcript) and not _has_time_qual_nm:
                     _reprompt_nm = _build_day_list_phrase(_avail_nm)
                     if _reprompt_nm:
                         await self._tts.put(_reprompt_nm)
