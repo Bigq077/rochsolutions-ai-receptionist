@@ -505,6 +505,12 @@ async def main():
         dest="from_phase",
     )
     parser.add_argument(
+        "--from-scenario",
+        help="Run all scenarios from this scenario ID onwards e.g. '4.1' or '11.4'",
+        default=None,
+        dest="from_scenario",
+    )
+    parser.add_argument(
         "--quick",
         help="Run Phase 8 only (full end-to-end)",
         action="store_true",
@@ -553,6 +559,13 @@ async def main():
             s for s in SCENARIOS
             if int(s["id"].split(".")[0]) >= from_num
         ]
+    elif args.from_scenario:
+        ids = [s["id"] for s in SCENARIOS]
+        if args.from_scenario not in ids:
+            print(f"ERROR — scenario '{args.from_scenario}' not found. Available: {', '.join(ids)}")
+            sys.exit(1)
+        start_idx = ids.index(args.from_scenario)
+        scenarios_to_run = SCENARIOS[start_idx:]
     elif args.quick:
         scenarios_to_run = [
             s for s in SCENARIOS if s["id"].startswith("8.")
