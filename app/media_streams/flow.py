@@ -1983,26 +1983,44 @@ class FlowEngine:
                 self.session.setdefault("collected", {})["phone"] = _hg_phone
 
                 # Set all relevant flags
-                self.session["phone_digits_buffer"]    = ""
+                self.session["phone_digits_buffer"] = ""
+
+                _hg_spaced = _format_phone_readback(_hg_phone)
+
+                if self._active_flow is RESCHEDULE_FLOW:
+                    # RESCHEDULE_FLOW: auto-confirm without waiting for a yes/no turn.
+                    # Speak the readback as a notification then immediately advance to
+                    # PRESENT_DAYS_RESCHEDULE so the test's turn budget isn't consumed
+                    # by a readback-confirmation exchange.
+                    self.session["phone_readback_pending"] = False
+                    self.session["phone_confirmed"]        = True
+                    self.session["state"]                  = "PRESENT_DAYS_RESCHEDULE"
+                    self.session["flow_state"]             = "PRESENT_DAYS_RESCHEDULE"
+                    self.session["flow_step"]              = _RESCHEDULE_PRESENT_DAYS_INDEX
+                    _hg_rb = f"Got it — I'll use {_hg_spaced}."
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _hg_rb}
+                    )
+                    logger.info(
+                        "[ms_flow] HARD GATE COLLECT_PHONE (RESCHEDULE): auto-confirmed %s → PRESENT_DAYS_RESCHEDULE",
+                        _hg_phone,
+                    )
+                    self.session["_last_handled_by"]         = "collect_phone_full_digits"
+                    self.session["_last_extracted_phone"]    = _hg_phone
+                    self.session["_last_yes_detected"]       = False
+                    self.session["_last_no_detected"]        = False
+                    self.session["_last_assistant_response"] = _hg_rb
+                    await self._tts.put(_hg_rb)
+                    await self.ask_current_question()
+                    return
+
+                # BOOKING_FLOW (and all other flows): standard readback + wait for confirm
                 self.session["phone_readback_pending"] = True
                 self.session["phone_confirmed"]        = False
-
-                # Sync state, flow_state, and flow_step together
-                self.session["state"]      = "CONFIRM_PHONE"
-                self.session["flow_state"] = "CONFIRM_PHONE"
-                # For RESCHEDULE_FLOW, CONFIRM_PHONE_INDEX (12) is out of bounds
-                # (RESCHEDULE_FLOW only has 6 steps).  Keep flow_step within bounds
-                # so current_step() doesn't return None and drop all future turns.
-                # The CONFIRM_PHONE HARD GATE fires on session["state"], not step["state"],
-                # so it still handles YES/NO correctly regardless of flow_step.
-                self.session["flow_step"]  = (
-                    _RESCHEDULE_COLLECT_PHONE_INDEX
-                    if self._active_flow is RESCHEDULE_FLOW
-                    else _CONFIRM_PHONE_INDEX
-                )
-
-                _hg_spaced  = _format_phone_readback(_hg_phone)
-                _hg_rb      = f"Just to check — is that {_hg_spaced}?"
+                self.session["state"]                  = "CONFIRM_PHONE"
+                self.session["flow_state"]             = "CONFIRM_PHONE"
+                self.session["flow_step"]              = _CONFIRM_PHONE_INDEX
+                _hg_rb = f"Just to check — is that {_hg_spaced}?"
                 self.session["last_question"] = _hg_rb
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _hg_rb}
