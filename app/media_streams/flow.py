@@ -3035,7 +3035,15 @@ class FlowEngine:
                     break
             if _matched_nm:
                 from app.vagueness_detector import is_vague_availability as _is_vague_nd
-                if not _is_vague_nd(transcript):
+                import re as _re_nd
+                # Also treat as vague when a time-of-day qualifier sits alongside the
+                # day name (e.g. "Wednesday mornings") — is_vague_availability misses
+                # these because DAY_PATTERN match disables the short-utterance fallback
+                # and "mornings" (plural) isn't in VAGUE_PHRASES.
+                _has_time_qualifier_nd = bool(
+                    _re_nd.search(r"\b(?:morning|afternoon|evening)\w*", transcript, _re_nd.IGNORECASE)
+                )
+                if not _is_vague_nd(transcript) and not _has_time_qualifier_nd:
                     # Clean day selection — advance to PRESENT_TIMES
                     _norm_nm = _matched_nm["day_label"]
                     self.session["chosen_day"] = _norm_nm
