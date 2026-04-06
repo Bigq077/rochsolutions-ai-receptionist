@@ -412,6 +412,10 @@ async def inject_test_transcript(call_sid: str, request: Request) -> JSONRespons
             "_last_yes_detected":     sess.get("_last_yes_detected"),
             "_last_no_detected":      sess.get("_last_no_detected"),
             "_last_assistant_response": sess.get("_last_assistant_response"),
+            # Two-clinic debug fields — show whether location gate will fire
+            "twilio_to":              sess.get("twilio_to"),
+            "needs_location":         sess.get("needs_location"),
+            "selected_location":      sess.get("selected_location"),
         }
 
         logger.info(
