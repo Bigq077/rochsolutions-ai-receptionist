@@ -12,7 +12,7 @@ load_dotenv()
 run_tests.py — Single entry point for the Susie automated test suite.
 
 Usage:
-    # Run Phase 17 (default — Angry / Difficult Callers, 10 scenarios)
+    # Run all theorem_v2 scenarios (default — Phases 15–17, 28 scenarios)
     python tests/auto/run_tests.py
 
     # Run ALL 100 scenarios across all 17 phases
@@ -597,10 +597,11 @@ async def main():
             s for s in SCENARIOS if s["id"].startswith("8.")
         ]
     elif not args.all:
-        # Default: run Phase 17 (Angry / Difficult Callers) — the current focus.
-        # Pass --all to run every scenario across all 17 phases.
+        # Default: run all theorem_v2 scenarios (Phases 15–17, two-clinic line).
+        # Pass --all to run every scenario across all 17 phases (including
+        # the single-location theorem Phases 1–14).
         scenarios_to_run = [
-            s for s in SCENARIOS if s["id"].startswith("17.")
+            s for s in SCENARIOS if s.get("twilio_to") == "+447366530580"
         ]
 
     if not scenarios_to_run:
