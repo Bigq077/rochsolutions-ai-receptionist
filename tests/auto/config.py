@@ -9,9 +9,10 @@ import os
 from pathlib import Path
 
 # Susie's demo number to call
-# +447426779875 → /ms/incoming (Media Streams WebSocket pipeline)
+# +447426779875 → /ms/incoming (Media Streams WebSocket pipeline) — live Theorem number
 # +447367002651 → /twilio/voice (legacy pipeline)
-SUSIE_NUMBER = "+447426779875"
+# +447366530580 → theorem_v2 test line (two-clinic guards active)
+SUSIE_NUMBER = "+447426779875"  # theorem — Phase 1-14 (single-location, no clinic question)
 
 # Twilio credentials — read from environment
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")

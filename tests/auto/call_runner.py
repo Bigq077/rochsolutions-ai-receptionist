@@ -95,6 +95,9 @@ class CallRunner:
     def __init__(self, scenario: dict, shared_server):
         self.scenario = scenario
         self._shared_server = shared_server
+        # Per-scenario target number: Phase 15-17 scenarios carry "twilio_to" pointing
+        # at theorem_v2; all other scenarios fall back to the global SUSIE_NUMBER.
+        self._target_number: str = scenario.get("twilio_to", SUSIE_NUMBER)
         self.call_sid = None
         self.inbound_sid: str | None = None  # Susie's inbound call SID — set by injection loop
         self.call_placed_at = None   # UTC datetime when outbound call was created
@@ -157,7 +160,7 @@ class CallRunner:
         # Make outbound call via Twilio
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         call = client.calls.create(
-            to=SUSIE_NUMBER,
+            to=self._target_number,
             from_=TWILIO_TEST_NUMBER,
             url=self._webhook_url + "/twiml/start",
             status_callback=self._webhook_url + "/status",
@@ -267,10 +270,10 @@ class CallRunner:
                         "streamSid":  fake_stream_sid,
                         "accountSid": "AC000000000000000000000000direct_ws",
                         "from":       TWILIO_TEST_NUMBER or "+15005550006",
-                        "to":         SUSIE_NUMBER,
+                        "to":         self._target_number,
                         "customParameters": {
                             "twilio_from": TWILIO_TEST_NUMBER or "+15005550006",
-                            "twilio_to":   SUSIE_NUMBER,
+                            "twilio_to":   self._target_number,
                         },
                     },
                 }))
@@ -493,7 +496,7 @@ class CallRunner:
         try:
             # Filter by from_=TWILIO_TEST_NUMBER so we only match calls placed
             # by OUR test number, not other concurrent calls to Susie's line.
-            list_kwargs: dict = {"to": SUSIE_NUMBER, "limit": 10}
+            list_kwargs: dict = {"to": self._target_number, "limit": 10}
             if TWILIO_TEST_NUMBER:
                 list_kwargs["from_"] = TWILIO_TEST_NUMBER
             if status:

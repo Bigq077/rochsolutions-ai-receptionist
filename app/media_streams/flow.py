@@ -1008,7 +1008,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "allow_tools": True,
         "extract": "any",
         "llm_instruction": (
-            "Call check_availability with location='alcester', duration_minutes=50.\n"
+            "Call check_availability with location='{selected_location}', duration_minutes=50.\n"
             "After the tool returns, say NOTHING further — do NOT read out any day names, "
             "do NOT present times, do NOT say anything else. "
             "The system will announce the available days automatically. "
@@ -1063,7 +1063,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "CRITICAL: You MUST call reschedule_appointment RIGHT NOW — do NOT ask the patient "
             "any further questions or add any conditions before calling. "
             "Call reschedule_appointment with patient_name='{full_name}', "
-            "phone='{phone_number}', location='alcester', "
+            "phone='{phone_number}', location='{selected_location}', "
             "new_slot_iso='{selected_slot}', duration_minutes=50. "
             "After rescheduling confirm warmly: "
             "'I've rescheduled your appointment to [new date/time]. "
@@ -1126,7 +1126,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
             "CRITICAL: You MUST call cancel_appointment RIGHT NOW — do NOT ask the patient "
             "any further questions, do NOT second-guess this action, do NOT add any conditions. "
             "Call cancel_appointment with patient_name='{full_name}', "
-            "phone='{phone_number}', location='alcester'. "
+            "phone='{phone_number}', location='{selected_location}'. "
             "If cancel_appointment returns success=True: say "
             "'I've cancelled your appointment. You'll receive a confirmation text shortly. "
             "Is there anything else I can help you with?' "
@@ -1288,6 +1288,23 @@ class FlowEngine:
         Called ONCE when the first caller utterance arrives — this starts
         the flow by playing step 0's booking-open question.
         """
+        # ── Multi-location: ask which clinic before starting the flow ─────────
+        # Fires for theorem_v2 bookings/reschedules/cancels until caller names a clinic.
+        # No LLM call — pure TTS, same pattern as every other static question.
+        if self.session.get("needs_location"):
+            self.session["state"] = "ASK_LOCATION"
+            _loc_q = (
+                "Which clinic would you like — "
+                "say one for our Alcester clinic, or two for Redditch?"
+            )
+            await self._tts.put(_loc_q)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _loc_q}
+            )
+            self.session["question_asked_this_turn"] = True
+            logger.info("[ms_flow] ASK_LOCATION: question sent")
+            return
+
         step = self.current_step()
         if step is None:
             # BOOKING_FLOW is complete: trigger readback before CONFIRM_BOOKING (once only)
@@ -1520,7 +1537,7 @@ class FlowEngine:
             cancel_args = {
                 "patient_name": self.session.get("full_name", ""),
                 "phone":        phone_val,
-                "location":     "alcester",
+                "location":     self.session.get("selected_location", "alcester"),
             }
             logger.info("[ms_flow] CONFIRM_CANCEL — calling _exec_cancel_appointment directly")
             # Patient intent confirmed by reaching this step — record regardless of Acuity result
@@ -1886,7 +1903,7 @@ class FlowEngine:
                     reschedule_args = {
                         "patient_name":    self.session.get("full_name", ""),
                         "phone":           phone_val,
-                        "location":        "alcester",
+                        "location":        self.session.get("selected_location", "alcester"),
                         "new_slot_iso":    self.session.get("selected_slot", ""),
                         "duration_minutes": 50,
                     }
@@ -1972,6 +1989,29 @@ class FlowEngine:
             if self.session.get("professional_flow_complete"):
                 # Exhaust the flow so current_step() returns None on next call
                 self.session["flow_step"] = len(self._active_flow)
+            return
+
+        # ── Multi-location: handle location answer ────────────────────────────
+        # Fires every turn while needs_location=True (i.e. between intent detection
+        # and the caller naming their clinic).  No LLM call — rule-based extractor only.
+        if self.session.get("needs_location"):
+            self.session["state"] = "ASK_LOCATION"
+            loc = self._extract("location_selection", text, transcript)
+            if loc:
+                self.session["selected_location"] = loc
+                self.session["needs_location"] = False
+                logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
+                await self.ask_current_question()
+            else:
+                _retry = (
+                    "Sorry — which clinic did you mean? "
+                    "Say one for Alcester, or two for Redditch."
+                )
+                await self._tts.put(_retry)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _retry}
+                )
+                logger.info("[ms_flow] ASK_LOCATION: no match for %r — retrying", text[:40])
             return
 
         # ════════════════════════════════════════════════════════════════════
@@ -4192,7 +4232,7 @@ class FlowEngine:
             reschedule_args = {
                 "patient_name":    self.session.get("full_name", ""),
                 "phone":           phone_val,
-                "location":        "alcester",
+                "location":        self.session.get("selected_location", "alcester"),
                 "new_slot_iso":    self.session.get("selected_slot", ""),
                 "duration_minutes": 50,
             }
@@ -4431,7 +4471,17 @@ class FlowEngine:
         else:
             self._active_flow = BOOKING_FLOW
         self.session["flow_step"] = 0
-        self.session["selected_location"] = "alcester"   # always alcester — no question asked
+        # Multi-location clinics (theorem_v2): ask caller which clinic before starting flow.
+        # Single-location clinics: hardcode alcester as before — zero behaviour change.
+        if (
+            self.session.get("clinic_id") == "theorem_v2"
+            and intent in {"booking", "reschedule", "cancel"}
+            and not self.session.get("selected_location")
+        ):
+            self.session["needs_location"] = True
+        else:
+            self.session["needs_location"] = False
+            self.session["selected_location"] = "alcester"
         self._intent_detected = True
         logger.info(
             "[ms_flow] intent=%s → flow[0]=%s",

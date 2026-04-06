@@ -13,7 +13,13 @@ Phase 16 — Off-Track Callers
 Phase 17 — Angry / Difficult Callers
     Caller is annoyed, rude, impatient, or contradictory.  Susie must stay
     calm, complete the task where possible, and exit gracefully when not.
+
+All scenarios in this file target +447366530580 (theorem_v2 — two-clinic line).
+The call_runner reads the "twilio_to" field and routes each scenario to the
+correct number, leaving the Phase 1-14 scenarios on the original theorem line.
 """
+
+_V2 = "+447366530580"  # theorem_v2 test line — two-clinic guards active
 
 TWO_CLINIC_SCENARIOS = [
 
@@ -24,6 +30,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.1",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Greeting never mentions clinic names",
         "responses": [],
         "expected": {
@@ -37,6 +44,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.2",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Full booking — Alcester via 'one'",
         "responses": [
             "I want to book an appointment",
@@ -61,6 +69,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.3",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Full booking — Redditch via 'two'",
         "responses": [
             "I'd like to book an appointment please",
@@ -84,6 +93,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.4",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Full booking — caller says 'Alcester' by name",
         "responses": [
             "I want to book",
@@ -106,6 +116,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.5",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Full booking — caller says 'Redditch' by name",
         "responses": [
             "Can I book an appointment?",
@@ -128,6 +139,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.6",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "FAQ — opening hours — no clinic question asked",
         "responses": [
             "What are your opening hours?",
@@ -142,6 +154,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.7",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "FAQ — address — no clinic question asked",
         "responses": [
             "Where are you located?",
@@ -156,6 +169,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.8",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Reschedule — clinic asked first, before name or phone",
         "responses": [
             "I need to reschedule my appointment",
@@ -176,6 +190,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.9",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Cancel — clinic asked first, before name or phone",
         "responses": [
             "I want to cancel my appointment",
@@ -194,6 +209,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "15.10",
         "phase": "Phase 15 — Two-Clinic Location Guards",
+        "twilio_to": _V2,
         "name": "Unclear location answer — Susie re-asks then continues",
         "responses": [
             "I want to book",
@@ -222,6 +238,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.1",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Random tangent mid-booking — weather question",
         "responses": [
             "I want to book",
@@ -245,6 +262,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.2",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Asks for medical diagnosis mid-flow",
         "responses": [
             "I want to book",
@@ -268,6 +286,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.3",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Asks about completely wrong service (dental)",
         "responses": [
             "Do you do dental work?",
@@ -290,6 +309,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.4",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Asks about pricing mid-booking flow then continues",
         "responses": [
             "I want to book",
@@ -313,6 +333,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.5",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Changes mind mid-booking — abandons call",
         "responses": [
             "I want to book",
@@ -329,6 +350,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.6",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Long rambling opener then gets to booking",
         "responses": [
             "I've had this problem since last year when I was on holiday and hurt my back, seen loads of doctors and nobody has helped, my friend recommended you, so I thought I'd call",
@@ -351,6 +373,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.7",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Asks about competitor clinic then books",
         "responses": [
             "Is there another physio nearby that might be cheaper?",
@@ -373,6 +396,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "16.8",
         "phase": "Phase 16 — Off-Track Callers",
+        "twilio_to": _V2,
         "name": "Caller tries to handle two things at once",
         "responses": [
             "I want to book an appointment and I also need to cancel a different one",
@@ -400,6 +424,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.1",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Immediately annoyed at speaking to AI",
         "responses": [
             "I don't want to speak to a robot, I want a real person",
@@ -413,6 +438,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.2",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Annoyed mid-booking — 'this is taking forever'",
         "responses": [
             "I want to book",
@@ -435,6 +461,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.3",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Complains price is too expensive mid-flow",
         "responses": [
             "I want to book",
@@ -459,6 +486,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.4",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Impatient — 'stop asking questions just book me in'",
         "responses": [
             "I just want to book as quickly as possible, stop asking questions",
@@ -480,6 +508,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.5",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Frustrated — preferred days unavailable",
         "responses": [
             "I want to book",
@@ -503,6 +532,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.6",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Says 'this is useless' and hangs up",
         "responses": [
             "I want to book",
@@ -519,6 +549,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.7",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Repeatedly unclear then eventually commits",
         "responses": [
             "I want to book",
@@ -542,6 +573,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.8",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Corrects themselves aggressively mid-location answer",
         "responses": [
             "I want to book",
@@ -564,6 +596,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.9",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Threatens to go to a competitor",
         "responses": [
             "If this takes much longer I'm going to another clinic",
@@ -585,6 +618,7 @@ TWO_CLINIC_SCENARIOS = [
     {
         "id": "17.10",
         "phase": "Phase 17 — Angry / Difficult Callers",
+        "twilio_to": _V2,
         "name": "Speaks entirely informally — abbreviated answers",
         "responses": [
             "book pls",
