@@ -19,15 +19,18 @@ The call_runner reads the "twilio_to" field and routes each scenario to the
 correct number, leaving the Phase 1-14 scenarios on the original theorem line.
 
 BOOKING_FLOW response order for theorem_v2 (new patient, no returning branch):
-  1. intent          → ASK_LOCATION fires
-  2. location        → COLLECT_REASON  ("what brings you in today?")
-  3. medical reason  → CONFIRM_ASSESSMENT  (LLM empathy + "does that sound OK?")
-  4. "Yes"           → NEW_OR_RETURNING  ("have you been with us before?")
-  5. "No"            → PRESENT_DAYS  (check_availability called, days presented)
-  6. day preference  → PRESENT_TIMES  (LLM presents times for chosen day)
-  7. slot selection  → COLLECT_NAME  ("who am I booking in today?")
-  8. name            → CONFIRM_PHONE  ("shall I use this number?")
-  9. "Yes"           → CONFIRM_BOOKING  → AUTO-CONFIRMED in test mode → DONE
+  1.  intent            → ASK_LOCATION fires
+  2.  location          → COLLECT_REASON  ("what brings you in today?")
+  3.  medical reason    → CONFIRM_ASSESSMENT  (LLM empathy + "does that sound OK?")
+  4.  "Yes"             → NEW_OR_RETURNING  ("have you been with us before?")
+  5.  "No"              → PRESENT_DAYS  (check_availability, days presented)
+  6.  day preference    → PRESENT_TIMES  (LLM presents slots for chosen day)
+  7.  slot selection    → slot_pending_confirmation ("Just to confirm… is that right?")
+  8.  "Yes"             → COLLECT_NAME  ("who am I booking in today?")
+  9.  name              → CONFIRM_PHONE  ("shall I use this number?")
+  10. "Yes"             → CONFIRM_BOOKING  → AUTO-CONFIRMED in test mode → DONE
+
+Step 8 ("Yes" confirming the slot) is mandatory — confirmed by Phase 5 tests.
 """
 
 _V2 = "+447366530580"  # theorem_v2 test line — two-clinic guards active
@@ -62,11 +65,12 @@ TWO_CLINIC_SCENARIOS = [
             "One",                              # → COLLECT_REASON
             "I have lower back pain",           # → CONFIRM_ASSESSMENT
             "Yes",                              # → NEW_OR_RETURNING
-            "No",                              # → PRESENT_DAYS
-            "Next week mornings",              # → PRESENT_TIMES
-            "The first one",                   # → COLLECT_NAME
-            "Alice Walker",                    # → CONFIRM_PHONE
-            "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
+            "No",                               # → PRESENT_DAYS
+            "Next week mornings",               # → PRESENT_TIMES (presents slots)
+            "The first one",                    # → slot_pending_confirmation
+            "Yes",                              # → COLLECT_NAME
+            "Alice Walker",                     # → CONFIRM_PHONE
+            "Yes",                              # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -89,8 +93,9 @@ TWO_CLINIC_SCENARIOS = [
             "My knee has been hurting",                # → CONFIRM_ASSESSMENT
             "Yes",                                     # → NEW_OR_RETURNING
             "No",                                      # → PRESENT_DAYS
-            "Any morning next week",                   # → PRESENT_TIMES
-            "The second one",                          # → COLLECT_NAME
+            "Any morning next week",                   # → PRESENT_TIMES (presents slots)
+            "The second one",                          # → slot_pending_confirmation
+            "Yes",                                     # → COLLECT_NAME
             "Ben Harris",                              # → CONFIRM_PHONE
             "Yes",                                     # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -114,8 +119,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have shoulder pain", # → CONFIRM_ASSESSMENT
             "Yes",                  # → NEW_OR_RETURNING
             "No",                   # → PRESENT_DAYS
-            "Next week",            # → PRESENT_TIMES
-            "First one",            # → COLLECT_NAME
+            "Next week",            # → PRESENT_TIMES (presents slots)
+            "First one",            # → slot_pending_confirmation
+            "Yes",                  # → COLLECT_NAME
             "Carol Thomas",         # → CONFIRM_PHONE
             "Yes",                  # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -138,8 +144,9 @@ TWO_CLINIC_SCENARIOS = [
             "I've been having neck pain",  # → CONFIRM_ASSESSMENT
             "Yes",                         # → NEW_OR_RETURNING
             "No",                          # → PRESENT_DAYS
-            "Mornings next week",          # → PRESENT_TIMES
-            "First one",                   # → COLLECT_NAME
+            "Mornings next week",          # → PRESENT_TIMES (presents slots)
+            "First one",                   # → slot_pending_confirmation
+            "Yes",                         # → COLLECT_NAME
             "David Lee",                   # → CONFIRM_PHONE
             "Yes",                         # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -233,8 +240,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have hip pain",                             # → CONFIRM_ASSESSMENT
             "Yes",                                         # → NEW_OR_RETURNING
             "No",                                          # → PRESENT_DAYS
-            "Next week",                                   # → PRESENT_TIMES
-            "First one",                                   # → COLLECT_NAME
+            "Next week",                                   # → PRESENT_TIMES (presents slots)
+            "First one",                                   # → slot_pending_confirmation
+            "Yes",                                         # → COLLECT_NAME
             "Sam Peters",                                  # → CONFIRM_PHONE
             "Yes",                                         # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -265,8 +273,9 @@ TWO_CLINIC_SCENARIOS = [
             "What's the weather like near the clinic?",        # tangent at CONFIRM_ASSESSMENT
             "Yes",                                             # → NEW_OR_RETURNING
             "No",                                              # → PRESENT_DAYS
-            "Next week mornings",                              # → PRESENT_TIMES
-            "First one",                                       # → COLLECT_NAME
+            "Next week mornings",                              # → PRESENT_TIMES (presents slots)
+            "First one",                                       # → slot_pending_confirmation
+            "Yes",                                             # → COLLECT_NAME
             "Peter Grant",                                     # → CONFIRM_PHONE
             "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -292,8 +301,9 @@ TWO_CLINIC_SCENARIOS = [
             "Do you think it could be a slipped disc?",        # tangent at CONFIRM_ASSESSMENT
             "Yes",                                             # → NEW_OR_RETURNING
             "No",                                              # → PRESENT_DAYS
-            "Any morning",                                     # → PRESENT_TIMES
-            "First one",                                       # → COLLECT_NAME
+            "Any morning",                                     # → PRESENT_TIMES (presents slots)
+            "First one",                                       # → slot_pending_confirmation
+            "Yes",                                             # → COLLECT_NAME
             "Lisa Brown",                                      # → CONFIRM_PHONE
             "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -317,8 +327,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have wrist pain",                               # → CONFIRM_ASSESSMENT
             "Yes",                                             # → NEW_OR_RETURNING
             "No",                                              # → PRESENT_DAYS
-            "Next week",                                       # → PRESENT_TIMES
-            "First one",                                       # → COLLECT_NAME
+            "Next week",                                       # → PRESENT_TIMES (presents slots)
+            "First one",                                       # → slot_pending_confirmation
+            "Yes",                                             # → COLLECT_NAME
             "Mark Jones",                                      # → CONFIRM_PHONE
             "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -342,8 +353,9 @@ TWO_CLINIC_SCENARIOS = [
             "How much does it cost?",          # tangent at CONFIRM_ASSESSMENT
             "OK that's fine, yes",             # → NEW_OR_RETURNING
             "No",                              # → PRESENT_DAYS
-            "Next week mornings",              # → PRESENT_TIMES
-            "First one",                       # → COLLECT_NAME
+            "Next week mornings",              # → PRESENT_TIMES (presents slots)
+            "First one",                       # → slot_pending_confirmation
+            "Yes",                             # → COLLECT_NAME
             "James Collins",                   # → CONFIRM_PHONE
             "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -384,8 +396,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have back pain as I mentioned", # → CONFIRM_ASSESSMENT
             "Yes",                             # → NEW_OR_RETURNING
             "No",                              # → PRESENT_DAYS
-            "Any morning",                     # → PRESENT_TIMES
-            "First one",                       # → COLLECT_NAME
+            "Any morning",                     # → PRESENT_TIMES (presents slots)
+            "First one",                       # → slot_pending_confirmation
+            "Yes",                             # → COLLECT_NAME
             "Helen Clarke",                    # → CONFIRM_PHONE
             "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -409,8 +422,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have foot pain",                # → CONFIRM_ASSESSMENT
             "Yes",                             # → NEW_OR_RETURNING
             "No",                              # → PRESENT_DAYS
-            "Next week",                       # → PRESENT_TIMES
-            "First one",                       # → COLLECT_NAME
+            "Next week",                       # → PRESENT_TIMES (presents slots)
+            "First one",                       # → slot_pending_confirmation
+            "Yes",                             # → COLLECT_NAME
             "Tom Evans",                       # → CONFIRM_PHONE
             "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -435,8 +449,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have ankle pain",               # → CONFIRM_ASSESSMENT
             "Yes",                             # → NEW_OR_RETURNING
             "No",                              # → PRESENT_DAYS
-            "Mornings",                        # → PRESENT_TIMES
-            "First one",                       # → COLLECT_NAME
+            "Mornings",                        # → PRESENT_TIMES (presents slots)
+            "First one",                       # → slot_pending_confirmation
+            "Yes",                             # → COLLECT_NAME
             "Anna White",                      # → CONFIRM_PHONE
             "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -481,7 +496,8 @@ TWO_CLINIC_SCENARIOS = [
             "Yes",                                                      # → NEW_OR_RETURNING
             "No",                                                       # → PRESENT_DAYS
             "This is taking way too long, can you just put me in for next week?",
-            "First one",                                                # → COLLECT_NAME
+            "First one",                                                # → slot_pending_confirmation
+            "Yes",                                                      # → COLLECT_NAME
             "Gary Webb",                                                # → CONFIRM_PHONE
             "Yes",                                                      # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -508,8 +524,9 @@ TWO_CLINIC_SCENARIOS = [
             "That's really expensive, is there a discount?",  # tangent 2 at CONFIRM_ASSESSMENT
             "Fine, I'll do it — yes",                         # → NEW_OR_RETURNING
             "No",                                             # → PRESENT_DAYS
-            "Next week mornings",                             # → PRESENT_TIMES
-            "First one",                                      # → COLLECT_NAME
+            "Next week mornings",                             # → PRESENT_TIMES (presents slots)
+            "First one",                                      # → slot_pending_confirmation
+            "Yes",                                            # → COLLECT_NAME
             "Oliver Hunt",                                    # → CONFIRM_PHONE
             "Yes",                                            # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -532,8 +549,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have back pain",          # → CONFIRM_ASSESSMENT
             "Yes",                       # → NEW_OR_RETURNING
             "No",                        # → PRESENT_DAYS
-            "Whatever you've got",       # → PRESENT_TIMES
-            "First one",                 # → COLLECT_NAME
+            "Whatever you've got",       # → PRESENT_TIMES (presents slots)
+            "First one",                 # → slot_pending_confirmation
+            "Yes",                       # → COLLECT_NAME
             "Nick Stone",                # → CONFIRM_PHONE
             "Yes",                       # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -550,8 +568,8 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Frustrated — preferred days unavailable",
         # "Only Sunday at midnight" → PRESENT_DAYS extract=any → advances to PRESENT_TIMES.
-        # PRESENT_TIMES LLM sees impossible day and offers alternatives; "OK fine, first one"
-        # is extracted as slot 1 from whatever was presented.
+        # PRESENT_TIMES LLM sees impossible day and offers alternatives;
+        # "OK fine, first one" selects the first available slot.
         "responses": [
             "I want to book",                                  # → ASK_LOCATION
             "Two",                                             # → COLLECT_REASON
@@ -559,7 +577,8 @@ TWO_CLINIC_SCENARIOS = [
             "Yes",                                             # → NEW_OR_RETURNING
             "No",                                              # → PRESENT_DAYS
             "Only Sunday at midnight works for me",            # → PRESENT_TIMES (any advances)
-            "OK fine, first one",                              # → COLLECT_NAME
+            "OK fine, first one",                              # → slot_pending_confirmation
+            "Yes",                                             # → COLLECT_NAME
             "Diane Rush",                                      # → CONFIRM_PHONE
             "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -602,8 +621,9 @@ TWO_CLINIC_SCENARIOS = [
             "I've had back pain on and off, not sure really",      # → CONFIRM_ASSESSMENT
             "Yes I suppose physio could help",                     # → NEW_OR_RETURNING
             "No, first time here",                                 # → PRESENT_DAYS
-            "Some time next week I guess",                         # → PRESENT_TIMES
-            "The middle one",                                      # → COLLECT_NAME
+            "Some time next week I guess",                         # → PRESENT_TIMES (presents slots)
+            "The middle one",                                      # → slot_pending_confirmation
+            "Yes",                                                 # → COLLECT_NAME
             "Susan Day",                                           # → CONFIRM_PHONE
             "Yes",                                                 # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -626,8 +646,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have wrist pain",                       # → CONFIRM_ASSESSMENT
             "Yes",                                     # → NEW_OR_RETURNING
             "No",                                      # → PRESENT_DAYS
-            "Next week",                               # → PRESENT_TIMES
-            "First one",                               # → COLLECT_NAME
+            "Next week",                               # → PRESENT_TIMES (presents slots)
+            "First one",                               # → slot_pending_confirmation
+            "Yes",                                     # → COLLECT_NAME
             "Paul King",                               # → CONFIRM_PHONE
             "Yes",                                     # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -650,8 +671,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have back pain",      # → CONFIRM_ASSESSMENT
             "Yes",                   # → NEW_OR_RETURNING
             "No",                    # → PRESENT_DAYS
-            "Next week mornings",    # → PRESENT_TIMES
-            "First one",             # → COLLECT_NAME
+            "Next week mornings",    # → PRESENT_TIMES (presents slots)
+            "First one",             # → slot_pending_confirmation
+            "Yes",                   # → COLLECT_NAME
             "Laura Grey",            # → CONFIRM_PHONE
             "Yes",                   # → CONFIRM_BOOKING (auto-confirmed)
         ],
@@ -673,8 +695,9 @@ TWO_CLINIC_SCENARIOS = [
             "back pain",      # → CONFIRM_ASSESSMENT
             "yeah",           # → NEW_OR_RETURNING
             "nah",            # → PRESENT_DAYS  (new patient)
-            "next week am",   # → PRESENT_TIMES
-            "first",          # → COLLECT_NAME
+            "next week am",   # → PRESENT_TIMES (presents slots)
+            "first",          # → slot_pending_confirmation
+            "yeah",           # → COLLECT_NAME
             "Jay Smith",      # → CONFIRM_PHONE
             "yeah",           # → CONFIRM_BOOKING (auto-confirmed)
         ],
