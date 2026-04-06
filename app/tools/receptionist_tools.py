@@ -1140,7 +1140,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
 
     location = _normalize_location(args.get("location") or session.get("selected_location", ""))
 
-    if not location and session.get("clinic_id") == "theorem_v2":
+    if not location and session.get("twilio_to") == "+447366530580":
         return {
             "error": "location_required",
             "error_detail": (
@@ -1383,7 +1383,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         clinic = get_clinic(session.get("clinic_id"))
         location = _normalize_location(args.get("location") or session.get("selected_location", ""))
 
-        if not location and session.get("clinic_id") == "theorem_v2":
+        if not location and session.get("twilio_to") == "+447366530580":
             return {
                 "success": False,
                 "error": (
@@ -1569,11 +1569,10 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
         return {"success": False, "error": "Booking system not configured."}
 
     try:
-        _clinic_id = session.get("clinic_id", "")
         _cancel_location = _normalize_location(
             args.get("location") or session.get("selected_location", "")
         )
-        if _clinic_id == "theorem_v2" and not _cancel_location:
+        if session.get("twilio_to") == "+447366530580" and not _cancel_location:
             return {
                 "success": False,
                 "error": (
@@ -1658,7 +1657,7 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
     """
     # LOCATION GUARD for theorem_v2: resolve location before cancel+rebook.
     # Without this, cancel succeeds and book fails → appointment is lost with no new booking.
-    if session.get("clinic_id") == "theorem_v2":
+    if session.get("twilio_to") == "+447366530580":
         _early_location = _normalize_location(
             args.get("location") or session.get("selected_location", "")
         )

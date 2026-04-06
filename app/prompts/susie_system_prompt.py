@@ -246,7 +246,7 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         "call cancel_appointment, call log_call_outcome."
     )
 
-    if clinic.get("clinic_id") == "theorem_v2" and locations:
+    if session.get("twilio_to") == "+447366530580" and locations:
         _location_blocker = """
 \u26a0\ufe0f LOCATION BLOCKER \u2014 NO EXCEPTIONS:
 You MUST collect location (Alcester or Redditch) via collect_and_store(field="location", value="alcester" OR "redditch") BEFORE calling check_availability, book_appointment, reschedule_appointment, or cancel_appointment.

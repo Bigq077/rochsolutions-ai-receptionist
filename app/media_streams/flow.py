@@ -4474,7 +4474,7 @@ class FlowEngine:
         # Multi-location clinics (theorem_v2): ask caller which clinic before starting flow.
         # Single-location clinics: hardcode alcester as before — zero behaviour change.
         if (
-            self.session.get("clinic_id") == "theorem_v2"
+            self.session.get("twilio_to") == "+447366530580"
             and intent in {"booking", "reschedule", "cancel"}
             and not self.session.get("selected_location")
         ):
