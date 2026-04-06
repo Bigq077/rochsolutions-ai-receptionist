@@ -12,11 +12,8 @@ load_dotenv()
 run_tests.py — Single entry point for the Susie automated test suite.
 
 Usage:
-    # Run all theorem_v2 scenarios (default — Phases 15–17, 28 scenarios)
+    # Run ALL scenarios, Phases 1–19, all on theorem_v2 (+447366530580)
     python tests/auto/run_tests.py
-
-    # Run ALL 100 scenarios across all 17 phases
-    python tests/auto/run_tests.py --all
 
     # Run a specific phase
     python tests/auto/run_tests.py --phase 2
@@ -537,11 +534,6 @@ async def main():
         action="store_true",
     )
     parser.add_argument(
-        "--all",
-        help="Run ALL 100 scenarios across all 17 phases (default: Phase 17 only)",
-        action="store_true",
-    )
-    parser.add_argument(
         "--preflight",
         help="Validate all API keys and infrastructure without making real calls",
         action="store_true",
@@ -596,13 +588,10 @@ async def main():
         scenarios_to_run = [
             s for s in SCENARIOS if s["id"].startswith("8.")
         ]
-    elif not args.all:
-        # Default: run all theorem_v2 scenarios (Phases 15–17, two-clinic line).
-        # Pass --all to run every scenario across all 17 phases (including
-        # the single-location theorem Phases 1–14).
-        scenarios_to_run = [
-            s for s in SCENARIOS if s.get("twilio_to") == "+447366530580"
-        ]
+    # Default (no filter): run ALL scenarios (Phases 1–19).
+    # SUSIE_NUMBER is already set to theorem_v2 (+447366530580) so every
+    # scenario — including Phases 1–14 which have no twilio_to override —
+    # hits the two-clinic line.
 
     if not scenarios_to_run:
         print("No matching scenarios found.")
