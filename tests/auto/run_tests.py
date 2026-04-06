@@ -124,19 +124,28 @@ async def _warmup_server() -> None:
                     ).strip()
                 except Exception:
                     _local_commit = "unknown"
-                _commit_ok = (_deploy_commit != "unknown" and _local_commit != "unknown"
-                              and _deploy_commit == _local_commit)
-                _commit_mark = "✓" if _commit_ok else "⚠"
+                _commit_match = (_deploy_commit == _local_commit)
+                _commit_known = (_deploy_commit not in ("unknown", ""))
                 print(f"  Server awake (HTTP {resp.status_code}, {elapsed:.1f}s)")
-                print(f"  {_commit_mark} Deploy commit : {_deploy_commit}")
-                print(f"  {_commit_mark} Local  commit : {_local_commit}")
-                if not _commit_ok:
+                if _commit_match:
+                    print(f"  ✓ Deploy commit : {_deploy_commit}  (matches local)")
+                elif _commit_known:
+                    print(f"  ✗ Deploy commit : {_deploy_commit}")
+                    print(f"  ✗ Local  commit : {_local_commit}")
+                else:
+                    print(f"  ? Deploy commit : {_deploy_commit}  (build script could not read SHA)")
+                    print(f"  ? Local  commit : {_local_commit}")
+                # Only hard-block when the server returns a real hash that doesn't match.
+                # "unknown" means the build script couldn't read the SHA — warn but proceed.
+                if _commit_known and not _commit_match:
                     print(
-                        "\n  ✋ BLOCKED — deploy commit does not match local commit.\n"
+                        "\n  ✋ BLOCKED — server is running a different commit.\n"
                         "  Render is still deploying. Check the Render dashboard and\n"
                         "  re-run once the deploy shows 'Live'.\n"
                     )
                     raise SystemExit(1)
+                if not _commit_known:
+                    print("  ⚠  Cannot verify deploy — proceeding anyway.")
                 woke_at = time.monotonic()
                 break
         except Exception as exc:
