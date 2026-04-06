@@ -52,7 +52,7 @@ from tests.auto.fixer import FixerAgent
 from tests.auto.healer import Healer
 from tests.auto.report import build_report
 from tests.auto.server_manager import SharedServer
-from tests.auto.scenarios.all_scenarios import SCENARIOS
+from tests.auto.scenarios.all_scenarios import ALL_SCENARIOS as SCENARIOS
 
 logging.basicConfig(
     level=logging.INFO,
