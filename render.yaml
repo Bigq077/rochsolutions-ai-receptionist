@@ -4,7 +4,7 @@ services:
   - type: web
     name: rochsolutions-ai-receptionist
     env: python
-    buildCommand: pip install -r requirements.txt && python scripts/write_version.py
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75 --log-level info
     healthCheckPath: /health
     autoDeploy: true

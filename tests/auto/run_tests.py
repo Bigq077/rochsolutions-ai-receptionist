@@ -109,11 +109,11 @@ async def _warmup_server() -> None:
             elapsed = time.monotonic() - t0
             logger.info("Warmup ping %d: HTTP %d in %.1fs", attempt, resp.status_code, elapsed)
             if resp.status_code < 500:
-                # Print the git commit hash so we know exactly which deploy is live
-                try:
-                    _deploy_commit = resp.json().get("git_commit", "unknown")
-                except Exception:
-                    _deploy_commit = "unknown"
+                # Show the local commit so you know what code you're testing.
+                # Render's build environment strips .git and doesn't expose
+                # RENDER_GIT_COMMIT to child processes, so server-side commit
+                # detection is unreliable. Rely on the Render dashboard to
+                # confirm the deploy is live before running tests.
                 try:
                     import subprocess as _sp
                     import os as _os
@@ -124,28 +124,9 @@ async def _warmup_server() -> None:
                     ).strip()
                 except Exception:
                     _local_commit = "unknown"
-                _commit_match = (_deploy_commit == _local_commit)
-                _commit_known = (_deploy_commit not in ("unknown", ""))
                 print(f"  Server awake (HTTP {resp.status_code}, {elapsed:.1f}s)")
-                if _commit_match:
-                    print(f"  ✓ Deploy commit : {_deploy_commit}  (matches local)")
-                elif _commit_known:
-                    print(f"  ✗ Deploy commit : {_deploy_commit}")
-                    print(f"  ✗ Local  commit : {_local_commit}")
-                else:
-                    print(f"  ? Deploy commit : {_deploy_commit}  (build script could not read SHA)")
-                    print(f"  ? Local  commit : {_local_commit}")
-                # Only hard-block when the server returns a real hash that doesn't match.
-                # "unknown" means the build script couldn't read the SHA — warn but proceed.
-                if _commit_known and not _commit_match:
-                    print(
-                        "\n  ✋ BLOCKED — server is running a different commit.\n"
-                        "  Render is still deploying. Check the Render dashboard and\n"
-                        "  re-run once the deploy shows 'Live'.\n"
-                    )
-                    raise SystemExit(1)
-                if not _commit_known:
-                    print("  ⚠  Cannot verify deploy — proceeding anyway.")
+                print(f"  Testing local commit : {_local_commit}")
+                print(f"  Confirm on Render dashboard that this commit is live.")
                 woke_at = time.monotonic()
                 break
         except Exception as exc:

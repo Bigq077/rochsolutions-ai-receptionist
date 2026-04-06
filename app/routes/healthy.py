@@ -22,29 +22,9 @@ async def health_check() -> Dict[str, Any]:
     - Monitoring systems
     - Test runner (prints git_commit to confirm which deploy is live)
     """
-    # Priority 1: app/_version.py written by render.yaml buildCommand at build time
-    #   python -c "...open('app/_version.py','w').write(f'GIT_COMMIT=\"{c}\"\n')"
-    # Priority 2: run git directly (works locally where _version.py won't exist)
-    git_commit = ""
-    try:
-        from app._version import GIT_COMMIT as git_commit  # type: ignore[import]
-    except Exception:
-        pass
-    if not git_commit:
-        try:
-            import subprocess
-            git_commit = subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            ).strip()
-        except Exception:
-            git_commit = "unknown"
-
     return {
         "status": "healthy",
         "service": "theorem-health-ai-receptionist",
-        "git_commit": git_commit,
     }
 
 
