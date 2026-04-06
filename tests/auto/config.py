@@ -12,7 +12,7 @@ from pathlib import Path
 # +447426779875 → /ms/incoming (Media Streams WebSocket pipeline) — live Theorem number
 # +447367002651 → /twilio/voice (legacy pipeline)
 # +447366530580 → theorem_v2 test line (two-clinic guards active)
-SUSIE_NUMBER = "+447366530580"  # theorem_v2 — two-clinic line (all phases)
+SUSIE_NUMBER = "+447426779875"  # theorem (original single-clinic) — Phases 1–14 fallback
 
 # Twilio credentials — read from environment
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")

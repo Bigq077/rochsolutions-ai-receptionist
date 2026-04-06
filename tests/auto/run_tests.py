@@ -589,9 +589,9 @@ async def main():
             s for s in SCENARIOS if s["id"].startswith("8.")
         ]
     # Default (no filter): run ALL scenarios (Phases 1–19).
-    # SUSIE_NUMBER is already set to theorem_v2 (+447366530580) so every
-    # scenario — including Phases 1–14 which have no twilio_to override —
-    # hits the two-clinic line.
+    # Phases 1–14 have no twilio_to override → fall back to SUSIE_NUMBER
+    # (single-clinic line, +447426779875).
+    # Phases 15–19 hardcode twilio_to = _V2 (+447366530580, theorem_v2).
 
     if not scenarios_to_run:
         print("No matching scenarios found.")
