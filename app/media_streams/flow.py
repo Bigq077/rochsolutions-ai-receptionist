@@ -3988,10 +3988,11 @@ class FlowEngine:
             if _pre_avail:
                 for _pre_pat, _pre_i in [
                     ("first one", 0), ("second one", 1), ("third one", 2),
+                    ("middle one", 1), ("the middle", 1),
                     ("the first", 0), ("the second", 1), ("the third", 2),
                     ("the last", -1), ("last one", -1), ("the final", -1),
                     ("first", 0), ("second", 1), ("third", 2),
-                    ("last", -1), ("final", -1),
+                    ("middle", 1), ("last", -1), ("final", -1),
                 ]:
                     if _pre_pat in text:
                         _pre_n = len(_pre_avail)
@@ -4080,10 +4081,11 @@ class FlowEngine:
             if _pd_avail:
                 _PD_ORD = [
                     ("first one", 0), ("second one", 1), ("third one", 2),
+                    ("middle one", 1), ("the middle", 1),
                     ("the first", 0), ("the second", 1), ("the third", 2),
                     ("the last", -1), ("last one", -1), ("the final", -1),
                     ("first", 0), ("second", 1), ("third", 2),
-                    ("last", -1), ("final", -1),
+                    ("middle", 1), ("last", -1), ("final", -1),
                 ]
                 _pd_ord_idx = None
                 for _pd_pat, _pd_i in _PD_ORD:
@@ -4406,8 +4408,14 @@ class FlowEngine:
             "pulled", "torn", "sprain", "strain", "fracture",
             "headache", "migraine",
             "i want to book", "i'd like to book", "i need to book",
+            "want to book", "looking to book", "trying to book",
             "book an appointment", "make an appointment", "see a physio",
+            "book me in", "book me",
+            "another clinic", "different clinic",  # implicit booking intent (competitor threat)
         )
+        # Very short direct booking utterances: "book", "book pls", "book now", "book please"
+        if len(text.split()) <= 3 and "book" in text:
+            return "booking"
         if any(p in text for p in booking_priority_p):
             logger.debug("[ms_flow] detect_intent_booking_symptom_rule matched: %r", text[:60])
             return "booking"
@@ -5390,11 +5398,13 @@ class FlowEngine:
 
         # ----- location_selection: Alcester or Redditch ------------------
         if method == "location_selection":
-            # "one" as a standalone ordinal selector — but NOT "the one near me"
-            # type references where the caller is expressing uncertainty.
+            # "one" as a standalone ordinal selector — but NOT reference phrases
+            # where the caller is expressing uncertainty or pointing vaguely.
             _one_match = (
                 "one" in text
                 and "the one" not in text
+                and "which one" not in text
+                and "not sure" not in text
                 and "one of" not in text
             )
             if any(p in text for p in ("alcester", "alchester", "alster", "first", "1")) or _one_match:
