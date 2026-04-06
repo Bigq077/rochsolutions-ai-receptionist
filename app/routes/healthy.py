@@ -15,16 +15,33 @@ async def health_check() -> Dict[str, Any]:
     """
     Basic health check endpoint.
     Returns 200 OK if the service is running.
-    
+
     Used by:
     - Render deployment health checks
     - Load balancers
     - Monitoring systems
+    - Test runner (prints git_commit to confirm which deploy is live)
     """
+    # Render sets RENDER_GIT_COMMIT automatically on every deploy.
+    # Locally it will be absent; fall back to running git directly.
+    git_commit = os.getenv("RENDER_GIT_COMMIT", "")
+    if not git_commit:
+        try:
+            import subprocess
+            git_commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except Exception:
+            git_commit = "unknown"
+    else:
+        git_commit = git_commit[:7]  # keep short form
+
     return {
         "status": "healthy",
         "service": "theorem-health-ai-receptionist",
-        "version": "1.0.0"
+        "git_commit": git_commit,
     }
 
 

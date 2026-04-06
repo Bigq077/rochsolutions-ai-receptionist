@@ -109,7 +109,29 @@ async def _warmup_server() -> None:
             elapsed = time.monotonic() - t0
             logger.info("Warmup ping %d: HTTP %d in %.1fs", attempt, resp.status_code, elapsed)
             if resp.status_code < 500:
+                # Print the git commit hash so we know exactly which deploy is live
+                try:
+                    _deploy_commit = resp.json().get("git_commit", "unknown")
+                except Exception:
+                    _deploy_commit = "unknown"
+                try:
+                    import subprocess as _sp
+                    import os as _os
+                    _local_commit = _sp.check_output(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        stderr=_sp.DEVNULL, text=True,
+                        cwd=_os.path.dirname(_os.path.abspath(__file__)),
+                    ).strip()
+                except Exception:
+                    _local_commit = "unknown"
+                _commit_ok = (_deploy_commit != "unknown" and _local_commit != "unknown"
+                              and _deploy_commit == _local_commit)
+                _commit_mark = "✓" if _commit_ok else "⚠"
                 print(f"  Server awake (HTTP {resp.status_code}, {elapsed:.1f}s)")
+                print(f"  {_commit_mark} Deploy commit : {_deploy_commit}")
+                print(f"  {_commit_mark} Local  commit : {_local_commit}")
+                if not _commit_ok:
+                    print("  ⚠  COMMITS DIFFER — server may be running old code")
                 woke_at = time.monotonic()
                 break
         except Exception as exc:
