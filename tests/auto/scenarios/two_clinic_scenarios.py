@@ -1,5 +1,5 @@
 """
-two_clinic_scenarios.py — Phases 15, 16, 17.
+two_clinic_scenarios.py — Phases 15–19.
 
 Phase 15 — Two-Clinic Location Guards
     Verify theorem_v2 asks which clinic at the right moment (after intent,
@@ -13,6 +13,16 @@ Phase 16 — Off-Track Callers
 Phase 17 — Angry / Difficult Callers
     Caller is annoyed, rude, impatient, or contradictory.  Susie must stay
     calm, complete the task where possible, and exit gracefully when not.
+
+Phase 18 — Mid-Flow Interruptions
+    Random questions injected at late booking steps (name, phone), bot
+    challenges, repeat requests, third-party bookings, slot rejection,
+    name corrections, alternate phone numbers, silence recovery.
+
+Phase 19 — Returning Patients & Data Accuracy
+    Returning-patient branch (recent vs over-2-years), name edge cases
+    (titles, first-name-only), international phone numbers, human-agent
+    requests, and late-stage FAQ tangents.
 
 All scenarios in this file target +447366530580 (theorem_v2 — two-clinic line).
 The call_runner reads the "twilio_to" field and routes each scenario to the
@@ -704,6 +714,497 @@ TWO_CLINIC_SCENARIOS = [
         "expected": {
             "flow_completed": True,
             "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    # ============================================================
+    # PHASE 18 — MID-FLOW INTERRUPTIONS
+    # Covers random questions injected at late booking steps,
+    # "are you a bot?" challenges, slot rejection/re-selection,
+    # third-party bookings, name corrections, and alternate numbers.
+    # ============================================================
+
+    {
+        "id": "18.1",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "FAQ question injected at COLLECT_NAME — answers then re-asks name",
+        # Caller asks address at the name step. LLM should answer and re-ask "who am I booking in?"
+        "responses": [
+            "I want to book",               # → ASK_LOCATION
+            "One",                          # → COLLECT_REASON
+            "I have back pain",             # → CONFIRM_ASSESSMENT
+            "Yes",                          # → NEW_OR_RETURNING
+            "No",                           # → PRESENT_DAYS
+            "Next week mornings",           # → PRESENT_TIMES (presents slots)
+            "First one",                    # → slot_pending_confirmation
+            "Yes",                          # → COLLECT_NAME
+            "What's your address?",         # tangent at COLLECT_NAME — LLM answers, re-asks name
+            "Emma Stone",                   # → CONFIRM_PHONE
+            "Yes",                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.2",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "'Are you a real person or a bot?' challenge mid-booking",
+        # At CONFIRM_ASSESSMENT (LLM step) — Susie deflects gracefully and re-asks
+        "responses": [
+            "I want to book",                                   # → ASK_LOCATION
+            "Two",                                              # → COLLECT_REASON
+            "I have shoulder pain",                             # → CONFIRM_ASSESSMENT
+            "Wait — am I talking to a real person or a bot?",   # tangent at CONFIRM_ASSESSMENT
+            "OK fine, yes that all sounds right",               # → NEW_OR_RETURNING
+            "No",                                               # → PRESENT_DAYS
+            "Next week",                                        # → PRESENT_TIMES (presents slots)
+            "First one",                                        # → slot_pending_confirmation
+            "Yes",                                              # → COLLECT_NAME
+            "Chris Adams",                                      # → CONFIRM_PHONE
+            "Yes",                                              # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_crash": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.3",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Asks Susie to repeat herself at CONFIRM_ASSESSMENT",
+        # "Can you say that again?" at LLM step — Susie re-states the summary and re-asks
+        "responses": [
+            "I want to book",                               # → ASK_LOCATION
+            "Alcester",                                     # → COLLECT_REASON
+            "I have neck pain",                             # → CONFIRM_ASSESSMENT
+            "Sorry, I missed that — can you say it back?",  # LLM re-states and re-asks
+            "Yes that's right",                             # → NEW_OR_RETURNING
+            "No",                                           # → PRESENT_DAYS
+            "Next week",                                    # → PRESENT_TIMES (presents slots)
+            "First one",                                    # → slot_pending_confirmation
+            "Yes",                                          # → COLLECT_NAME
+            "Rachel Ford",                                  # → CONFIRM_PHONE
+            "Yes",                                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.4",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Third-party booking — calling on behalf of a family member",
+        "responses": [
+            "Hi, I'm calling to book an appointment for my mother",  # → ASK_LOCATION
+            "Alcester please",              # → COLLECT_REASON
+            "She has lower back pain",      # → CONFIRM_ASSESSMENT
+            "Yes that sounds right",        # → NEW_OR_RETURNING
+            "No, first time",               # → PRESENT_DAYS
+            "Next week mornings",           # → PRESENT_TIMES (presents slots)
+            "The first one",                # → slot_pending_confirmation
+            "Yes",                          # → COLLECT_NAME
+            "Margaret Clarke",              # → CONFIRM_PHONE
+            "Yes",                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.5",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Rejects confirmed slot then re-selects a different one",
+        # Caller says "No" at slot_pending_confirmation — Susie should re-present options
+        "responses": [
+            "I want to book",                           # → ASK_LOCATION
+            "One",                                      # → COLLECT_REASON
+            "I have knee pain",                         # → CONFIRM_ASSESSMENT
+            "Yes",                                      # → NEW_OR_RETURNING
+            "No",                                       # → PRESENT_DAYS
+            "Next week mornings",                       # → PRESENT_TIMES (presents slots)
+            "First one",                                # → slot_pending_confirmation
+            "No actually, can I have the second one?",  # rejects → re-presents slots
+            "Yes",                                      # → COLLECT_NAME
+            "Ryan Moore",                               # → CONFIRM_PHONE
+            "Yes",                                      # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.6",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Full FAQ journey then pivots to complete booking — no location asked during FAQ",
+        # Caller starts with a genuine FAQ question, gets answer, then decides to book.
+        # Location must NOT be asked during the FAQ, only after booking intent is detected.
+        "responses": [
+            "What conditions do you treat?",            # FAQ → ANSWER_GENERAL → GENERAL_BOOKING_OFFER
+            "OK great, I'd like to book",               # → GENERAL_BOOKING_OFFER yes → ASK_LOCATION
+            "Two",                                      # → COLLECT_REASON
+            "I have a shoulder problem",                # → CONFIRM_ASSESSMENT
+            "Yes",                                      # → NEW_OR_RETURNING
+            "No",                                       # → PRESENT_DAYS
+            "Mornings next week",                       # → PRESENT_TIMES (presents slots)
+            "First one",                                # → slot_pending_confirmation
+            "Yes",                                      # → COLLECT_NAME
+            "Fiona Bell",                               # → CONFIRM_PHONE
+            "Yes",                                      # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "location_not_asked": False,   # location IS asked — but only after booking intent
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.7",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Corrects name mid-dictation at COLLECT_NAME",
+        # Caller starts one name then corrects — Susie should capture the corrected name
+        "responses": [
+            "I want to book",                                       # → ASK_LOCATION
+            "Alcester",                                             # → COLLECT_REASON
+            "I have back pain",                                     # → CONFIRM_ASSESSMENT
+            "Yes",                                                  # → NEW_OR_RETURNING
+            "No",                                                   # → PRESENT_DAYS
+            "Next week",                                            # → PRESENT_TIMES (presents slots)
+            "First one",                                            # → slot_pending_confirmation
+            "Yes",                                                  # → COLLECT_NAME
+            "My name is Claire — wait, sorry, it's Karen, Karen Davies",  # correction mid-name
+            "Yes",                                                  # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.8",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Rough / sweary language throughout but completes booking",
+        # Caller uses casual profanity — Susie stays calm and completes the task
+        "responses": [
+            "Yeah I just need to bloody book already",      # → ASK_LOCATION
+            "Redditch for god's sake",                      # → COLLECT_REASON
+            "My back's killing me, that's what's wrong",    # → CONFIRM_ASSESSMENT
+            "Yes obviously",                                # → NEW_OR_RETURNING
+            "No",                                           # → PRESENT_DAYS
+            "Next week, mornings",                          # → PRESENT_TIMES (presents slots)
+            "First one",                                    # → slot_pending_confirmation
+            "Yeah fine",                                    # → COLLECT_NAME
+            "Dan Ross",                                     # → CONFIRM_PHONE
+            "Yes",                                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_crash": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.9",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Silence at COLLECT_NAME — Susie re-asks, caller then responds",
+        # Caller goes silent when asked for their name — silence handler should re-ask,
+        # then caller provides name and flow completes
+        "responses": [
+            "I want to book",       # → ASK_LOCATION
+            "One",                  # → COLLECT_REASON
+            "I have neck pain",     # → CONFIRM_ASSESSMENT
+            "Yes",                  # → NEW_OR_RETURNING
+            "No",                   # → PRESENT_DAYS
+            "Next week",            # → PRESENT_TIMES (presents slots)
+            "First one",            # → slot_pending_confirmation
+            "Yes",                  # → COLLECT_NAME
+            "",                     # silence — Susie re-asks name
+            "Tom Reed",             # → CONFIRM_PHONE
+            "Yes",                  # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "18.10",
+        "phase": "Phase 18 — Mid-Flow Interruptions",
+        "twilio_to": _V2,
+        "name": "Caller provides a different callback number at CONFIRM_PHONE",
+        # Caller says "No" to using the number on file, provides an alternate number
+        "responses": [
+            "I want to book",                                       # → ASK_LOCATION
+            "Redditch",                                             # → COLLECT_REASON
+            "I have elbow pain",                                    # → CONFIRM_ASSESSMENT
+            "Yes",                                                  # → NEW_OR_RETURNING
+            "No",                                                   # → PRESENT_DAYS
+            "Any morning next week",                                # → PRESENT_TIMES (presents slots)
+            "First one",                                            # → slot_pending_confirmation
+            "Yes",                                                  # → COLLECT_NAME
+            "Sarah Quinn",                                          # → CONFIRM_PHONE
+            "No, use a different number — it's 07911 223344",       # alternate number given
+            "Yes",                                                  # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    # ============================================================
+    # PHASE 19 — RETURNING PATIENTS & DATA ACCURACY
+    # Tests the returning-patient branch (steps 3-8 of BOOKING_FLOW),
+    # phone number edge cases, name edge cases, and human-agent requests.
+    # ============================================================
+
+    {
+        "id": "19.1",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Returning patient — recent visit (within 2 years) — full flow",
+        # "Yes, I've been before" → RETURNING_RECENCY → recent → returning branch
+        "responses": [
+            "I want to book",                       # → ASK_LOCATION
+            "Alcester",                             # → COLLECT_REASON
+            "I have lower back pain again",         # → CONFIRM_ASSESSMENT
+            "Yes that sounds right",                # → NEW_OR_RETURNING
+            "Yes, I've been before",                # → RETURNING_RECENCY
+            "About 6 months ago",                   # → returning branch (name step)
+            "David Park",                           # → returning branch (phone step)
+            "Yes, same number",                     # → PRESENT_DAYS
+            "Next week mornings",                   # → PRESENT_TIMES (presents slots)
+            "First one",                            # → slot_pending_confirmation
+            "Yes",                                  # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.2",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Returning patient — over 2 years ago — treated as new patient",
+        # Over-2-years returning patient falls through to new-patient path
+        "responses": [
+            "I want to book",                           # → ASK_LOCATION
+            "Redditch",                                 # → COLLECT_REASON
+            "I have knee pain",                         # → CONFIRM_ASSESSMENT
+            "Yes",                                      # → NEW_OR_RETURNING
+            "Yes, I've been before, but it was about 3 years ago",  # → RETURNING_RECENCY (over 2 yrs)
+            "Next week mornings",                       # → PRESENT_DAYS (treated as new)
+            "First one",                                # → PRESENT_TIMES / slot selection
+            "Yes",                                      # → COLLECT_NAME
+            "Sandra Lee",                               # → CONFIRM_PHONE
+            "Yes",                                      # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.3",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Returning patient unsure of recency — eventually clarifies",
+        "responses": [
+            "I want to book",                           # → ASK_LOCATION
+            "One",                                      # → COLLECT_REASON
+            "Hip pain, been going on a while",          # → CONFIRM_ASSESSMENT
+            "Yes",                                      # → NEW_OR_RETURNING
+            "Yes I have been before, not sure when",    # → RETURNING_RECENCY
+            "Maybe about 18 months ago, I think",       # → recent path
+            "Mike Shaw",                                # → returning branch
+            "Yes same number",                          # → PRESENT_DAYS
+            "Next week",                                # → PRESENT_TIMES (presents slots)
+            "First one",                                # → slot_pending_confirmation
+            "Yes",                                      # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.4",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Name given with professional title (Dr. / Mrs.)",
+        # Susie should accept names with titles without confusion
+        "responses": [
+            "I want to book",               # → ASK_LOCATION
+            "Alcester",                     # → COLLECT_REASON
+            "I have a bad shoulder",        # → CONFIRM_ASSESSMENT
+            "Yes",                          # → NEW_OR_RETURNING
+            "No",                           # → PRESENT_DAYS
+            "Next week",                    # → PRESENT_TIMES (presents slots)
+            "First one",                    # → slot_pending_confirmation
+            "Yes",                          # → COLLECT_NAME
+            "It's Doctor James, Dr Michael James",  # name with title
+            "Yes",                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.5",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Gives first name only — Susie prompts for full name",
+        # Caller gives only "Emily" — Susie should ask for surname, caller provides full name
+        "responses": [
+            "I want to book",       # → ASK_LOCATION
+            "Two",                  # → COLLECT_REASON
+            "I have foot pain",     # → CONFIRM_ASSESSMENT
+            "Yes",                  # → NEW_OR_RETURNING
+            "No",                   # → PRESENT_DAYS
+            "Next week",            # → PRESENT_TIMES (presents slots)
+            "First one",            # → slot_pending_confirmation
+            "Yes",                  # → COLLECT_NAME
+            "Emily",                # first name only — Susie should prompt for surname
+            "Emily Harrison",       # full name provided
+            "Yes",                  # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.6",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Phone number given with country code (+44...)",
+        # Caller provides number in international format at CONFIRM_PHONE "no" branch
+        "responses": [
+            "I want to book",                               # → ASK_LOCATION
+            "Alcester",                                     # → COLLECT_REASON
+            "I have neck pain",                             # → CONFIRM_ASSESSMENT
+            "Yes",                                          # → NEW_OR_RETURNING
+            "No",                                           # → PRESENT_DAYS
+            "Next week mornings",                           # → PRESENT_TIMES (presents slots)
+            "First one",                                    # → slot_pending_confirmation
+            "Yes",                                          # → COLLECT_NAME
+            "Robert Blake",                                 # → CONFIRM_PHONE
+            "No, use this number: plus 44 7700 123456",     # international format
+            "Yes",                                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.7",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Caller requests a human agent — told none available, proceeds",
+        # Susie should acknowledge the request, explain she's handling it, and continue
+        "responses": [
+            "Can I speak to a real receptionist please?",   # human agent request
+            "OK fine, book me in then",                     # → ASK_LOCATION
+            "One",                                          # → COLLECT_REASON
+            "I have knee pain",                             # → CONFIRM_ASSESSMENT
+            "Yes",                                          # → NEW_OR_RETURNING
+            "No",                                           # → PRESENT_DAYS
+            "Next week",                                    # → PRESENT_TIMES (presents slots)
+            "First one",                                    # → slot_pending_confirmation
+            "Yes",                                          # → COLLECT_NAME
+            "Jenny Fox",                                    # → CONFIRM_PHONE
+            "Yes",                                          # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_crash": True,
+            "no_technical_error": True,
+        },
+    },
+
+    {
+        "id": "19.8",
+        "phase": "Phase 19 — Returning Patients & Data Accuracy",
+        "twilio_to": _V2,
+        "name": "Caller asks about parking mid-booking at COLLECT_NAME",
+        # Late-stage FAQ tangent about facilities — LLM answers, re-asks for name
+        "responses": [
+            "I want to book",                       # → ASK_LOCATION
+            "Redditch",                             # → COLLECT_REASON
+            "I have wrist pain",                    # → CONFIRM_ASSESSMENT
+            "Yes",                                  # → NEW_OR_RETURNING
+            "No",                                   # → PRESENT_DAYS
+            "Next week mornings",                   # → PRESENT_TIMES (presents slots)
+            "First one",                            # → slot_pending_confirmation
+            "Yes",                                  # → COLLECT_NAME
+            "Do you have parking at the Redditch clinic?",  # late tangent
+            "James Wright",                         # → CONFIRM_PHONE
+            "Yes",                                  # → CONFIRM_BOOKING (auto-confirmed)
+        ],
+        "expected": {
+            "flow_completed": True,
+            "booking_confirmed": True,
+            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
