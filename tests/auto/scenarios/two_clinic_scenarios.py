@@ -17,6 +17,17 @@ Phase 17 — Angry / Difficult Callers
 All scenarios in this file target +447366530580 (theorem_v2 — two-clinic line).
 The call_runner reads the "twilio_to" field and routes each scenario to the
 correct number, leaving the Phase 1-14 scenarios on the original theorem line.
+
+BOOKING_FLOW response order for theorem_v2 (new patient, no returning branch):
+  1. intent          → ASK_LOCATION fires
+  2. location        → COLLECT_REASON  ("what brings you in today?")
+  3. medical reason  → CONFIRM_ASSESSMENT  (LLM empathy + "does that sound OK?")
+  4. "Yes"           → NEW_OR_RETURNING  ("have you been with us before?")
+  5. "No"            → PRESENT_DAYS  (check_availability called, days presented)
+  6. day preference  → PRESENT_TIMES  (LLM presents times for chosen day)
+  7. slot selection  → COLLECT_NAME  ("who am I booking in today?")
+  8. name            → CONFIRM_PHONE  ("shall I use this number?")
+  9. "Yes"           → CONFIRM_BOOKING  → AUTO-CONFIRMED in test mode → DONE
 """
 
 _V2 = "+447366530580"  # theorem_v2 test line — two-clinic guards active
@@ -47,14 +58,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Full booking — Alcester via 'one'",
         "responses": [
-            "I want to book an appointment",
-            "One",
-            "No I haven't been before",
-            "Next week mornings",
-            "The first one",
-            "Yes",
-            "Alice Walker",
-            "Yes",
+            "I want to book an appointment",    # → ASK_LOCATION
+            "One",                              # → COLLECT_REASON
+            "I have lower back pain",           # → CONFIRM_ASSESSMENT
+            "Yes",                              # → NEW_OR_RETURNING
+            "No",                              # → PRESENT_DAYS
+            "Next week mornings",              # → PRESENT_TIMES
+            "The first one",                   # → COLLECT_NAME
+            "Alice Walker",                    # → CONFIRM_PHONE
+            "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -72,14 +84,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Full booking — Redditch via 'two'",
         "responses": [
-            "I'd like to book an appointment please",
-            "Two",
-            "No",
-            "Any morning next week",
-            "The second one",
-            "Yes",
-            "Ben Harris",
-            "Yes",
+            "I'd like to book an appointment please",  # → ASK_LOCATION
+            "Two",                                     # → COLLECT_REASON
+            "My knee has been hurting",                # → CONFIRM_ASSESSMENT
+            "Yes",                                     # → NEW_OR_RETURNING
+            "No",                                      # → PRESENT_DAYS
+            "Any morning next week",                   # → PRESENT_TIMES
+            "The second one",                          # → COLLECT_NAME
+            "Ben Harris",                              # → CONFIRM_PHONE
+            "Yes",                                     # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -96,14 +109,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Full booking — caller says 'Alcester' by name",
         "responses": [
-            "I want to book",
-            "Alcester please",
-            "No",
-            "Next week",
-            "First one",
-            "Yes",
-            "Carol Thomas",
-            "Yes",
+            "I want to book",       # → ASK_LOCATION
+            "Alcester please",      # → COLLECT_REASON
+            "I have shoulder pain", # → CONFIRM_ASSESSMENT
+            "Yes",                  # → NEW_OR_RETURNING
+            "No",                   # → PRESENT_DAYS
+            "Next week",            # → PRESENT_TIMES
+            "First one",            # → COLLECT_NAME
+            "Carol Thomas",         # → CONFIRM_PHONE
+            "Yes",                  # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -119,14 +133,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Full booking — caller says 'Redditch' by name",
         "responses": [
-            "Can I book an appointment?",
-            "Redditch",
-            "No",
-            "Mornings next week",
-            "First one",
-            "Yes",
-            "David Lee",
-            "Yes",
+            "Can I book an appointment?",  # → ASK_LOCATION
+            "Redditch",                    # → COLLECT_REASON
+            "I've been having neck pain",  # → CONFIRM_ASSESSMENT
+            "Yes",                         # → NEW_OR_RETURNING
+            "No",                          # → PRESENT_DAYS
+            "Mornings next week",          # → PRESENT_TIMES
+            "First one",                   # → COLLECT_NAME
+            "David Lee",                   # → CONFIRM_PHONE
+            "Yes",                         # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -212,15 +227,16 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Unclear location answer — Susie re-asks then continues",
         "responses": [
-            "I want to book",
-            "The one near me, I don't know the name",
-            "One, Alcester",
-            "No",
-            "Next week",
-            "First one",
-            "Yes",
-            "Sam Peters",
-            "Yes",
+            "I want to book",                              # → ASK_LOCATION
+            "The one near me, I don't know the name",      # → ASK_LOCATION re-asks (no match)
+            "One, Alcester",                               # → COLLECT_REASON
+            "I have hip pain",                             # → CONFIRM_ASSESSMENT
+            "Yes",                                         # → NEW_OR_RETURNING
+            "No",                                          # → PRESENT_DAYS
+            "Next week",                                   # → PRESENT_TIMES
+            "First one",                                   # → COLLECT_NAME
+            "Sam Peters",                                  # → CONFIRM_PHONE
+            "Yes",                                         # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -240,16 +256,19 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 16 — Off-Track Callers",
         "twilio_to": _V2,
         "name": "Random tangent mid-booking — weather question",
+        # Tangent injected at CONFIRM_ASSESSMENT (use_llm=True handles off-topic,
+        # re-asks "does that sound OK?" — then "Yes" advances the step).
         "responses": [
-            "I want to book",
-            "One",
-            "No",
-            "What's the weather like near the clinic?",
-            "Next week mornings",
-            "First one",
-            "Yes",
-            "Peter Grant",
-            "Yes",
+            "I want to book",                                  # → ASK_LOCATION
+            "One",                                             # → COLLECT_REASON
+            "I have back pain",                                # → CONFIRM_ASSESSMENT
+            "What's the weather like near the clinic?",        # tangent at CONFIRM_ASSESSMENT
+            "Yes",                                             # → NEW_OR_RETURNING
+            "No",                                              # → PRESENT_DAYS
+            "Next week mornings",                              # → PRESENT_TIMES
+            "First one",                                       # → COLLECT_NAME
+            "Peter Grant",                                     # → CONFIRM_PHONE
+            "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -264,16 +283,19 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 16 — Off-Track Callers",
         "twilio_to": _V2,
         "name": "Asks for medical diagnosis mid-flow",
+        # Diagnosis question injected at CONFIRM_ASSESSMENT (use_llm=True handles it,
+        # re-asks "does that sound OK?" — then "Yes" advances).
         "responses": [
-            "I want to book",
-            "Two",
-            "No",
-            "Do you think it could be a slipped disc?",
-            "Any morning",
-            "First one",
-            "Yes",
-            "Lisa Brown",
-            "Yes",
+            "I want to book",                                  # → ASK_LOCATION
+            "Two",                                             # → COLLECT_REASON
+            "I have back pain",                                # → CONFIRM_ASSESSMENT
+            "Do you think it could be a slipped disc?",        # tangent at CONFIRM_ASSESSMENT
+            "Yes",                                             # → NEW_OR_RETURNING
+            "No",                                              # → PRESENT_DAYS
+            "Any morning",                                     # → PRESENT_TIMES
+            "First one",                                       # → COLLECT_NAME
+            "Lisa Brown",                                      # → CONFIRM_PHONE
+            "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -289,15 +311,16 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Asks about completely wrong service (dental)",
         "responses": [
-            "Do you do dental work?",
-            "No I mean physio, I want to book an appointment",
-            "One",
-            "No",
-            "Next week",
-            "First one",
-            "Yes",
-            "Mark Jones",
-            "Yes",
+            "Do you do dental work?",                          # FAQ / DETECT_INTENT
+            "No I mean physio, I want to book an appointment", # → ASK_LOCATION
+            "One",                                             # → COLLECT_REASON
+            "I have wrist pain",                               # → CONFIRM_ASSESSMENT
+            "Yes",                                             # → NEW_OR_RETURNING
+            "No",                                              # → PRESENT_DAYS
+            "Next week",                                       # → PRESENT_TIMES
+            "First one",                                       # → COLLECT_NAME
+            "Mark Jones",                                      # → CONFIRM_PHONE
+            "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -311,16 +334,18 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 16 — Off-Track Callers",
         "twilio_to": _V2,
         "name": "Asks about pricing mid-booking flow then continues",
+        # Pricing tangent at CONFIRM_ASSESSMENT (use_llm=True, re-asks after addressing price).
         "responses": [
-            "I want to book",
-            "One",
-            "No",
-            "How much does it cost?",
-            "OK that's fine, next week mornings",
-            "First one",
-            "Yes",
-            "James Collins",
-            "Yes",
+            "I want to book",                  # → ASK_LOCATION
+            "One",                             # → COLLECT_REASON
+            "I have knee pain",                # → CONFIRM_ASSESSMENT
+            "How much does it cost?",          # tangent at CONFIRM_ASSESSMENT
+            "OK that's fine, yes",             # → NEW_OR_RETURNING
+            "No",                              # → PRESENT_DAYS
+            "Next week mornings",              # → PRESENT_TIMES
+            "First one",                       # → COLLECT_NAME
+            "James Collins",                   # → CONFIRM_PHONE
+            "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -353,14 +378,16 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Long rambling opener then gets to booking",
         "responses": [
+            # Long rambling opener — intent=booking detected despite no clear keyword
             "I've had this problem since last year when I was on holiday and hurt my back, seen loads of doctors and nobody has helped, my friend recommended you, so I thought I'd call",
-            "Alcester",
-            "No",
-            "Any morning",
-            "First one",
-            "Yes",
-            "Helen Clarke",
-            "Yes",
+            "Alcester",                        # → COLLECT_REASON
+            "I have back pain as I mentioned", # → CONFIRM_ASSESSMENT
+            "Yes",                             # → NEW_OR_RETURNING
+            "No",                              # → PRESENT_DAYS
+            "Any morning",                     # → PRESENT_TIMES
+            "First one",                       # → COLLECT_NAME
+            "Helen Clarke",                    # → CONFIRM_PHONE
+            "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -376,15 +403,16 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Asks about competitor clinic then books",
         "responses": [
-            "Is there another physio nearby that might be cheaper?",
-            "OK fine I'll book with you",
-            "Two",
-            "No",
-            "Next week",
-            "First one",
-            "Yes",
-            "Tom Evans",
-            "Yes",
+            "Is there another physio nearby that might be cheaper?",  # FAQ
+            "OK fine I'll book with you",      # → ASK_LOCATION
+            "Two",                             # → COLLECT_REASON
+            "I have foot pain",                # → CONFIRM_ASSESSMENT
+            "Yes",                             # → NEW_OR_RETURNING
+            "No",                              # → PRESENT_DAYS
+            "Next week",                       # → PRESENT_TIMES
+            "First one",                       # → COLLECT_NAME
+            "Tom Evans",                       # → CONFIRM_PHONE
+            "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -398,16 +426,19 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 16 — Off-Track Callers",
         "twilio_to": _V2,
         "name": "Caller tries to handle two things at once",
+        # Caller mentions booking + cancel; Susie focuses on booking.
+        # "Let's do the booking first" doesn't match a location → ASK_LOCATION re-asks.
         "responses": [
             "I want to book an appointment and I also need to cancel a different one",
-            "Let's do the booking first",
-            "One",
-            "No",
-            "Mornings",
-            "First one",
-            "Yes",
-            "Anna White",
-            "Yes",
+            "Let's do the booking first",      # → ASK_LOCATION (no location match, re-asked)
+            "One",                             # → COLLECT_REASON
+            "I have ankle pain",               # → CONFIRM_ASSESSMENT
+            "Yes",                             # → NEW_OR_RETURNING
+            "No",                              # → PRESENT_DAYS
+            "Mornings",                        # → PRESENT_TIMES
+            "First one",                       # → COLLECT_NAME
+            "Anna White",                      # → CONFIRM_PHONE
+            "Yes",                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -440,15 +471,19 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 17 — Angry / Difficult Callers",
         "twilio_to": _V2,
         "name": "Annoyed mid-booking — 'this is taking forever'",
+        # Anger expressed at PRESENT_DAYS — PRESENT_DAYS uses extract=any so the
+        # impatient day-preference advances the step.  PRESENT_TIMES LLM extracts
+        # "next week" from the outburst and presents available times.
         "responses": [
-            "I want to book",
-            "One",
-            "No",
+            "I want to book",                                           # → ASK_LOCATION
+            "One",                                                      # → COLLECT_REASON
+            "I have back pain",                                         # → CONFIRM_ASSESSMENT
+            "Yes",                                                      # → NEW_OR_RETURNING
+            "No",                                                       # → PRESENT_DAYS
             "This is taking way too long, can you just put me in for next week?",
-            "First one",
-            "Yes",
-            "Gary Webb",
-            "Yes",
+            "First one",                                                # → COLLECT_NAME
+            "Gary Webb",                                                # → CONFIRM_PHONE
+            "Yes",                                                      # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -463,17 +498,20 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 17 — Angry / Difficult Callers",
         "twilio_to": _V2,
         "name": "Complains price is too expensive mid-flow",
+        # Two pricing tangents at CONFIRM_ASSESSMENT (use_llm=True, classified as
+        # "unsure" each time → LLM re-asks).  Third response contains "yes" → advances.
         "responses": [
-            "I want to book",
-            "Alcester",
-            "No",
-            "How much is it?",
-            "That's really expensive, is there a discount?",
-            "Fine, I'll do it — next week mornings",
-            "First one",
-            "Yes",
-            "Oliver Hunt",
-            "Yes",
+            "I want to book",                                 # → ASK_LOCATION
+            "Alcester",                                       # → COLLECT_REASON
+            "I have a bad back",                              # → CONFIRM_ASSESSMENT
+            "How much is it?",                                # tangent 1 at CONFIRM_ASSESSMENT
+            "That's really expensive, is there a discount?",  # tangent 2 at CONFIRM_ASSESSMENT
+            "Fine, I'll do it — yes",                         # → NEW_OR_RETURNING
+            "No",                                             # → PRESENT_DAYS
+            "Next week mornings",                             # → PRESENT_TIMES
+            "First one",                                      # → COLLECT_NAME
+            "Oliver Hunt",                                    # → CONFIRM_PHONE
+            "Yes",                                            # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -489,14 +527,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Impatient — 'stop asking questions just book me in'",
         "responses": [
-            "I just want to book as quickly as possible, stop asking questions",
-            "Alcester",
-            "No",
-            "Whatever you've got",
-            "First one",
-            "Yes",
-            "Nick Stone",
-            "Yes",
+            "I just want to book as quickly as possible, stop asking questions",  # → ASK_LOCATION
+            "Alcester",                  # → COLLECT_REASON
+            "I have back pain",          # → CONFIRM_ASSESSMENT
+            "Yes",                       # → NEW_OR_RETURNING
+            "No",                        # → PRESENT_DAYS
+            "Whatever you've got",       # → PRESENT_TIMES
+            "First one",                 # → COLLECT_NAME
+            "Nick Stone",                # → CONFIRM_PHONE
+            "Yes",                       # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -510,16 +549,19 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 17 — Angry / Difficult Callers",
         "twilio_to": _V2,
         "name": "Frustrated — preferred days unavailable",
+        # "Only Sunday at midnight" → PRESENT_DAYS extract=any → advances to PRESENT_TIMES.
+        # PRESENT_TIMES LLM sees impossible day and offers alternatives; "OK fine, first one"
+        # is extracted as slot 1 from whatever was presented.
         "responses": [
-            "I want to book",
-            "Two",
-            "No",
-            "Only Sunday at midnight works for me",
-            "OK fine, what have you got next week?",
-            "First one",
-            "Yes",
-            "Diane Rush",
-            "Yes",
+            "I want to book",                                  # → ASK_LOCATION
+            "Two",                                             # → COLLECT_REASON
+            "I have a sports injury",                          # → CONFIRM_ASSESSMENT
+            "Yes",                                             # → NEW_OR_RETURNING
+            "No",                                              # → PRESENT_DAYS
+            "Only Sunday at midnight works for me",            # → PRESENT_TIMES (any advances)
+            "OK fine, first one",                              # → COLLECT_NAME
+            "Diane Rush",                                      # → CONFIRM_PHONE
+            "Yes",                                             # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -551,16 +593,19 @@ TWO_CLINIC_SCENARIOS = [
         "phase": "Phase 17 — Angry / Difficult Callers",
         "twilio_to": _V2,
         "name": "Repeatedly unclear then eventually commits",
+        # Vague at every step: unclear location (ASK_LOCATION re-asks), vague reason
+        # (extract=any accepts it), vague yes at CONFIRM_ASSESSMENT, eventually commits.
         "responses": [
-            "I want to book",
-            "I'm not sure which one",
-            "The first one I suppose, yes Alcester",
-            "Maybe, I haven't been I don't think",
-            "Some time next week I guess",
-            "The middle one",
-            "Yes OK",
-            "Susan Day",
-            "Yes",
+            "I want to book",                                      # → ASK_LOCATION
+            "I'm not sure which one",                              # → ASK_LOCATION re-asks
+            "The first one I suppose, yes Alcester",               # → COLLECT_REASON
+            "I've had back pain on and off, not sure really",      # → CONFIRM_ASSESSMENT
+            "Yes I suppose physio could help",                     # → NEW_OR_RETURNING
+            "No, first time here",                                 # → PRESENT_DAYS
+            "Some time next week I guess",                         # → PRESENT_TIMES
+            "The middle one",                                      # → COLLECT_NAME
+            "Susan Day",                                           # → CONFIRM_PHONE
+            "Yes",                                                 # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -576,14 +621,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Corrects themselves aggressively mid-location answer",
         "responses": [
-            "I want to book",
-            "Two — no wait, one, I mean Alcester",
-            "No",
-            "Next week",
-            "First one",
-            "Yes",
-            "Paul King",
-            "Yes",
+            "I want to book",                          # → ASK_LOCATION
+            "Two — no wait, one, I mean Alcester",     # → COLLECT_REASON (Alcester extracted)
+            "I have wrist pain",                       # → CONFIRM_ASSESSMENT
+            "Yes",                                     # → NEW_OR_RETURNING
+            "No",                                      # → PRESENT_DAYS
+            "Next week",                               # → PRESENT_TIMES
+            "First one",                               # → COLLECT_NAME
+            "Paul King",                               # → CONFIRM_PHONE
+            "Yes",                                     # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -599,14 +645,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Threatens to go to a competitor",
         "responses": [
-            "If this takes much longer I'm going to another clinic",
-            "One",
-            "No",
-            "Next week mornings",
-            "First one",
-            "Yes",
-            "Laura Grey",
-            "Yes",
+            "If this takes much longer I'm going to another clinic",  # → ASK_LOCATION
+            "One",                   # → COLLECT_REASON
+            "I have back pain",      # → CONFIRM_ASSESSMENT
+            "Yes",                   # → NEW_OR_RETURNING
+            "No",                    # → PRESENT_DAYS
+            "Next week mornings",    # → PRESENT_TIMES
+            "First one",             # → COLLECT_NAME
+            "Laura Grey",            # → CONFIRM_PHONE
+            "Yes",                   # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
@@ -621,14 +668,15 @@ TWO_CLINIC_SCENARIOS = [
         "twilio_to": _V2,
         "name": "Speaks entirely informally — abbreviated answers",
         "responses": [
-            "book pls",
-            "one",
-            "nah",
-            "next week am",
-            "first",
-            "yeah",
-            "Jay Smith",
-            "yeah",
+            "book pls",       # → ASK_LOCATION
+            "one",            # → COLLECT_REASON
+            "back pain",      # → CONFIRM_ASSESSMENT
+            "yeah",           # → NEW_OR_RETURNING
+            "nah",            # → PRESENT_DAYS  (new patient)
+            "next week am",   # → PRESENT_TIMES
+            "first",          # → COLLECT_NAME
+            "Jay Smith",      # → CONFIRM_PHONE
+            "yeah",           # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
