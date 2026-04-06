@@ -4473,12 +4473,17 @@ class FlowEngine:
         self.session["flow_step"] = 0
         # Multi-location clinics (theorem_v2): ask caller which clinic before starting flow.
         # Single-location clinics: hardcode alcester as before — zero behaviour change.
+        #
+        # NOTE: do NOT condition on `not selected_location` — the greeting phase sets
+        # selected_location="alcester" as a default before any user turn, which would
+        # cause the check to always fail.  Instead, always ask for location on
+        # theorem_v2 booking/reschedule/cancel and clear the stale default.
         if (
             self.session.get("twilio_to") == "+447366530580"
             and intent in {"booking", "reschedule", "cancel"}
-            and not self.session.get("selected_location")
         ):
             self.session["needs_location"] = True
+            self.session.pop("selected_location", None)   # clear stale greeting-phase default
         else:
             self.session["needs_location"] = False
             self.session["selected_location"] = "alcester"
