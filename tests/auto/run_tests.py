@@ -12,14 +12,18 @@ load_dotenv()
 run_tests.py — Single entry point for the Susie automated test suite.
 
 Usage:
-    # Run all scenarios
+    # Run Phase 17 (default — Angry / Difficult Callers, 10 scenarios)
     python tests/auto/run_tests.py
+
+    # Run ALL 100 scenarios across all 17 phases
+    python tests/auto/run_tests.py --all
 
     # Run a specific phase
     python tests/auto/run_tests.py --phase 2
 
-    # Run a specific scenario
+    # Run a specific scenario (or multiple)
     python tests/auto/run_tests.py --scenario 2.1
+    python tests/auto/run_tests.py --scenario 17.2 17.4 17.7
 
     # Run Phase 8 (full end-to-end) only
     python tests/auto/run_tests.py --quick
@@ -533,6 +537,11 @@ async def main():
         action="store_true",
     )
     parser.add_argument(
+        "--all",
+        help="Run ALL 100 scenarios across all 17 phases (default: Phase 17 only)",
+        action="store_true",
+    )
+    parser.add_argument(
         "--preflight",
         help="Validate all API keys and infrastructure without making real calls",
         action="store_true",
@@ -586,6 +595,12 @@ async def main():
     elif args.quick:
         scenarios_to_run = [
             s for s in SCENARIOS if s["id"].startswith("8.")
+        ]
+    elif not args.all:
+        # Default: run Phase 17 (Angry / Difficult Callers) — the current focus.
+        # Pass --all to run every scenario across all 17 phases.
+        scenarios_to_run = [
+            s for s in SCENARIOS if s["id"].startswith("17.")
         ]
 
     if not scenarios_to_run:
