@@ -481,6 +481,25 @@ class Evaluator:
                 or re.search(r"\d(?:[\s\u2014\-]+\d){9,}", all_susie)
             )
 
+        # ── asked_which_clinic ────────────────────────────────────────
+        # Susie must ask the caller to choose a clinic before proceeding
+        # with any booking/reschedule/cancel action on theorem_v2.
+        # Passes if any of Susie's turns contain the location prompt.
+        if expected.get("asked_which_clinic"):
+            checks["asked_which_clinic"] = any(
+                "say one" in t or "say two" in t
+                or ("alcester" in t and "redditch" in t)
+                for t in susie_texts
+            )
+
+        # ── location_not_asked ────────────────────────────────────────
+        # For FAQ calls Susie must NOT ask the caller to pick a clinic.
+        if expected.get("location_not_asked"):
+            checks["location_not_asked"] = not any(
+                "say one" in t or "say two" in t
+                for t in susie_texts
+            )
+
         return checks
 
     # ------------------------------------------------------------------

@@ -11,6 +11,8 @@ Each scenario dict:
                 and by rule-based checks in run_tests.py
 """
 
+from tests.auto.scenarios.two_clinic_scenarios import TWO_CLINIC_SCENARIOS
+
 SCENARIOS = [
 
     # ============================================================
@@ -1525,7 +1527,7 @@ SCENARIOS = [
 # Master list — used by run_tests.py
 # ---------------------------------------------------------------------------
 
-ALL_SCENARIOS: list[dict] = SCENARIOS
+ALL_SCENARIOS: list[dict] = SCENARIOS + TWO_CLINIC_SCENARIOS
 
 
 # ---------------------------------------------------------------------------
