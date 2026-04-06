@@ -3832,6 +3832,26 @@ class FlowEngine:
                 )
                 return
 
+        # ── GENERAL_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────
+        if step["state"] == "GENERAL_BOOKING_OFFER":
+            answer = self._extract("faq_booking", text, transcript)
+            if answer == "book":
+                self._switch_flow("booking")
+                await self.ask_current_question()
+                return
+            elif answer == "done":
+                await self._tts.put(
+                    "Thanks for calling Theorem Health. Have a great day!"
+                )
+                self.session["flow_step"] = len(self._active_flow)
+                return
+            else:
+                await self._tts.put(
+                    "Sorry, I didn't quite catch that — "
+                    "would you like to book an appointment?"
+                )
+                return
+
         # ── CONFIRM_BOOKING: dedicated YES handler ─────────────────────────────
         # Runs BEFORE generic extraction so the caller's response never falls
         # through to _start_readback().  Any input at this step is treated as
@@ -5370,7 +5390,14 @@ class FlowEngine:
 
         # ----- location_selection: Alcester or Redditch ------------------
         if method == "location_selection":
-            if any(p in text for p in ("alcester", "alchester", "alster", "first", "one", "1")):
+            # "one" as a standalone ordinal selector — but NOT "the one near me"
+            # type references where the caller is expressing uncertainty.
+            _one_match = (
+                "one" in text
+                and "the one" not in text
+                and "one of" not in text
+            )
+            if any(p in text for p in ("alcester", "alchester", "alster", "first", "1")) or _one_match:
                 return "alcester"
             if any(p in text for p in ("redditch", "reditch", "second", "two", "2")):
                 return "redditch"
