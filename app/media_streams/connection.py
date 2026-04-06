@@ -300,6 +300,16 @@ class SilenceHandler:
         t = text.strip()
         if t.startswith("Sorry,") or t.startswith("Sorry about") or "didn't quite catch" in t:
             return  # Never restart timer for re-ask phrases
+        # Guard: if a transcript arrived AFTER the last question was set,
+        # on_transcript_received() already cancelled the timer for this turn.
+        # A late TTS-done callback (audio still playing when caller spoke) must
+        # not re-arm the timer — doing so would cause a spurious re-ask ~26s later.
+        if self.last_audio_received_at > self._last_question_set_at:
+            logger.debug(
+                "[ms_silence] on_tts_finished: late TTS callback "
+                "(transcript received after question set) — suppressing timer restart"
+            )
+            return
         is_question = (
             t.endswith("?") or
             any(p in t.lower() for p in [
