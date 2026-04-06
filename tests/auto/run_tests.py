@@ -131,7 +131,12 @@ async def _warmup_server() -> None:
                 print(f"  {_commit_mark} Deploy commit : {_deploy_commit}")
                 print(f"  {_commit_mark} Local  commit : {_local_commit}")
                 if not _commit_ok:
-                    print("  ⚠  COMMITS DIFFER — server may be running old code")
+                    print(
+                        "\n  ✋ BLOCKED — deploy commit does not match local commit.\n"
+                        "  Render is still deploying. Check the Render dashboard and\n"
+                        "  re-run once the deploy shows 'Live'.\n"
+                    )
+                    raise SystemExit(1)
                 woke_at = time.monotonic()
                 break
         except Exception as exc:
