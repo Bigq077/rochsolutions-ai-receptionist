@@ -22,9 +22,20 @@ async def health_check() -> Dict[str, Any]:
     - Monitoring systems
     - Test runner (prints git_commit to confirm which deploy is live)
     """
-    # Render sets RENDER_GIT_COMMIT automatically on every deploy.
-    # Locally it will be absent; fall back to running git directly.
-    git_commit = os.getenv("RENDER_GIT_COMMIT", "")
+    # Priority 1: .git_commit file written by render.yaml buildCommand
+    #   `git rev-parse --short HEAD > .git_commit`
+    # Priority 2: RENDER_GIT_COMMIT env var (set by Render on some plans)
+    # Priority 3: run git directly (works locally, not on Render runtime)
+    git_commit = ""
+    try:
+        import pathlib
+        _f = pathlib.Path(__file__).parent.parent.parent / ".git_commit"
+        if _f.exists():
+            git_commit = _f.read_text().strip()[:7]
+    except Exception:
+        pass
+    if not git_commit:
+        git_commit = os.getenv("RENDER_GIT_COMMIT", "")[:7] or ""
     if not git_commit:
         try:
             import subprocess
@@ -35,8 +46,6 @@ async def health_check() -> Dict[str, Any]:
             ).strip()
         except Exception:
             git_commit = "unknown"
-    else:
-        git_commit = git_commit[:7]  # keep short form
 
     return {
         "status": "healthy",
