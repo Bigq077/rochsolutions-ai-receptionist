@@ -170,7 +170,8 @@ def parse_option_selection(
 
     # Ordinal matching
     first_signals  = ("first", "first one", "the first", "that first")
-    second_signals = ("second", "second one", "the second", "other one", "the other")
+    second_signals = ("second", "second one", "the second", "other one", "the other",
+                      "middle", "middle one", "the middle")
     if any(sig in lower for sig in first_signals):
         return options[0]
     if any(sig in lower for sig in second_signals) and len(options) > 1:

@@ -2288,10 +2288,12 @@ class FlowEngine:
             # Must run before parse_option_selection so "first one" never falls through
             # to vague re-ask logic and returns without output.
             _VOP_ORD_PAIRS = [
+                ("the middle one", 1), ("middle one", 1), ("the middle", 1),
                 ("first one", 0), ("second one", 1), ("third one", 2),
                 ("the first", 0), ("the second", 1), ("the third", 2),
                 ("the last", -1), ("last one", -1), ("the final", -1),
                 ("first", 0), ("second", 1), ("third", 2),
+                ("middle", 1),
                 ("one", 0), ("two", 1), ("three", 2),
                 ("last", -1), ("final", -1),
             ]
@@ -3114,6 +3116,10 @@ class FlowEngine:
                     _ord_idx = 2
                 elif _n_ord >= 3 and ("three" in text or "3" in text.split()):
                     _ord_idx = 2
+                elif _n_ord >= 2 and any(
+                    p in text for p in ("middle one", "the middle one", "the middle", "middle")
+                ):
+                    _ord_idx = 1  # middle of offered days = index 1
             if _ord_idx is not None:
                 _norm_ord = _avail_ord[_ord_idx]["day_label"]
                 self.session["chosen_day"] = _norm_ord
@@ -3387,20 +3393,23 @@ class FlowEngine:
                 # Exact/positional ordinals → slot index (negative = from end)
                 ("the first option", 0), ("first option", 0),
                 ("the second option", 1), ("second option", 1),
+                ("the middle option", 1), ("middle option", 1),
                 ("the third option", 2), ("third option", 2),
                 ("the fourth option", 3), ("fourth option", 3),
                 ("the last option", -1), ("last option", -1),
                 ("the final option", -1), ("final option", -1),
                 ("the first one", 0), ("first one", 0),
                 ("the second one", 1), ("second one", 1),
+                ("the middle one", 1), ("middle one", 1),
                 ("the third one", 2), ("third one", 2),
                 ("the fourth one", 3), ("fourth one", 3),
                 ("the last one", -1), ("last one", -1),
                 ("the final one", -1), ("final one", -1),
                 ("the first", 0), ("the second", 1),
+                ("the middle", 1),
                 ("the third", 2), ("the fourth", 3),
                 ("the last", -1), ("the final", -1),
-                ("first", 0), ("second", 1), ("third", 2), ("fourth", 3),
+                ("first", 0), ("second", 1), ("middle", 1), ("third", 2), ("fourth", 3),
                 ("last", -1), ("final", -1),
                 # Relative position
                 ("the earlier one", 0), ("the earlier", 0), ("earlier one", 0), ("earlier", 0),
