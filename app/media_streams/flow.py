@@ -369,10 +369,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_REASON",
-        "question": (
-            "Of course you can book an appointment — "
-            "what brings you in today?"
-        ),
+        "question": "What brings you in today?",
         "answer_field": "reason",
         "use_llm": False,
         "extract": "any",
@@ -391,14 +388,12 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "Your response MUST have exactly TWO parts:\n"
             "PART 1: One short sentence of genuine empathy about their specific condition.\n"
             "PART 2: Use EXACTLY this structure: '— I would probably recommend a physiotherapy "
-            "assessment as the best starting point. Does that sound OK?'\n"
+            "assessment as the best starting point.'\n"
             "EXAMPLE: 'Sorry to hear that — back pain can be really debilitating. "
-            "I would probably recommend a physiotherapy assessment as the best starting point "
-            "— does that sound OK?'\n"
-            "MAXIMUM: 2 sentences, 35 words total.\n"
+            "I would probably recommend a physiotherapy assessment as the best starting point.'\n"
+            "MAXIMUM: 2 sentences, 30 words total.\n"
             "ABSOLUTELY DO NOT ask 'how long have you had that?' or any duration question. "
-            "Your response must be empathy + 'I would probably recommend a physiotherapy assessment' "
-            "+ 'does that sound OK?' — nothing else.\n"
+            "ABSOLUTELY DO NOT ask 'Does that sound OK?' or any confirmation question.\n"
             "DO NOT ask if they have been with us before.\n"
             "DO NOT mention location, pricing, or any other topic."
         ),
@@ -1312,7 +1307,7 @@ class FlowEngine:
         # No LLM call — pure TTS, same pattern as every other static question.
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
-            _loc_q = "Which clinic would you like — Alcester or Redditch?"
+            _loc_q = "Of course — are you looking to book in at our Alcester or Redditch clinic?"
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
@@ -2818,168 +2813,12 @@ class FlowEngine:
         # plain affirmatives like "yeah that sounds fine" — which would incorrectly
         # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
         if step["state"] == "CONFIRM_ASSESSMENT":
-            _ca_cls = _classify_confirm_assessment(text)
-            logger.info(
-                "[ms_flow] CONFIRM_ASSESSMENT classify: transcript=%r → %s  flow_step=%d",
-                transcript[:80], _ca_cls, step["step"],
-            )
-
-            if _ca_cls == "yes":
-                # Deterministic advance — no LLM needed
-                self.session["assessment_confirmed"] = True
-                self.session["flow_step"]            = step["step"] + 1
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: yes → step advanced to %d", step["step"] + 1)
-                await self.ask_current_question()
-                return
-
-            if _ca_cls == "no":
-                phrase = "No problem at all — is there anything else I can help with today?"
-                await self._tts.put(phrase)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": phrase}
-                )
-                self.session["flow_step"] = len(self._active_flow)
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: no → graceful close")
-                return
-
-            if _ca_cls == "additive_detail":
-                # Append extra context to reason — do NOT generate a second assessment.
-                # Re-ask the pending question so the caller can confirm the original recommendation.
-                existing = self.session.get("reason", "")
-                self.session["reason"] = f"{existing} {transcript.strip()}".strip()
-                lq = self.session.get("last_question", "Does that sound OK?")
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: additive detail → reason updated, re-asking")
-                await self._tts.put(lq)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": lq}
-                )
-                return
-
-            if _ca_cls == "frustration":
-                # Caller is objecting to repeating themselves — apologise and re-ask
-                lq = self.session.get("last_question", "Does that sound OK?")
-                phrase = f"I'm really sorry about that — {lq}"
-                await self._tts.put(phrase)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": phrase}
-                )
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: frustration → apologetic re-ask")
-                return
-
-            if _ca_cls == "clarification":
-                # Caller wants a repeat — re-speak the last question without re-running LLM
-                lq = self.session.get("last_question", "Does that sound OK?")
-                phrase = f"Sorry about that — {lq}"
-                await self._tts.put(phrase)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": phrase}
-                )
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: clarification → re-asking")
-                return
-
-            if _ca_cls == "correction":
-                # Caller is correcting a STT mishear ("not my hand, my ankle").
-                # BUG 3 fix: only overwrite if the corrected value has meaningful
-                # clinical content — bare fragments like "i said my" must NOT
-                # replace the existing reason; keep it and re-ask instead.
-                _CORRECTION_FLOOR_WORDS = (
-                    "pain", "ache", "aching", "hurt", "hurting", "injury", "injured",
-                    "sore", "soreness", "stiff", "stiffness", "swollen", "swelling",
-                    "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
-                    "elbow", "leg", "arm", "foot", "heel", "spine", "head",
-                    "tendon", "ligament", "muscle", "nerve", "joint",
-                    "problem", "issue", "condition", "physio",
-                )
-                _corr_lower = transcript.strip().lower()
-                _has_clinical = any(w in _corr_lower for w in _CORRECTION_FLOOR_WORDS)
-                if not _has_clinical and len(transcript.strip().split()) < 3:
-                    # Fragment correction — keep existing reason, re-ask for clarification
-                    lq = self.session.get("last_question", "Does that sound OK?")
-                    phrase = f"Sorry — could you tell me a bit more? {lq}"
-                    await self._tts.put(phrase)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": phrase}
-                    )
-                    logger.info(
-                        "[ms_flow] CONFIRM_ASSESSMENT: correction fragment %r — "
-                        "no clinical content, keeping existing reason and re-asking",
-                        transcript[:60],
-                    )
-                    return
-                # Valid correction — extract the clean reason before storing.
-                # "no you heard that wrong i said my left hand not my left ankle"
-                # → store "my left hand", not the whole messy sentence.
-                import re as _re_corr
-                _raw_corr   = transcript.strip()
-                _clean_corr: Optional[str] = None
-                # "i said X not Y" / "i said X instead of Y"
-                _cm = _re_corr.search(
-                    r'\bi said (?:it was |that it was )?(.+?)\s+(?:not|instead of)\s+',
-                    _raw_corr, _re_corr.IGNORECASE,
-                )
-                if _cm:
-                    _clean_corr = _cm.group(1).strip()
-                # "i meant (to say) X" — up to comma/not/end
-                if not _clean_corr:
-                    _cm = _re_corr.search(
-                        r'\bi meant (?:to say )?(.+?)(?:\s+not\s+|,|$)',
-                        _raw_corr, _re_corr.IGNORECASE,
-                    )
-                    if _cm:
-                        _clean_corr = _cm.group(1).strip()
-                # "it's X not Y"
-                if not _clean_corr:
-                    _cm = _re_corr.search(
-                        r"\bit'?s (.+?)\s+(?:not|instead of)\s+",
-                        _raw_corr, _re_corr.IGNORECASE,
-                    )
-                    if _cm:
-                        _clean_corr = _cm.group(1).strip()
-                # "my X" / "no my X not Y"
-                if not _clean_corr:
-                    _cm = _re_corr.search(
-                        r'\bmy ([a-z][\w\s]{1,30}?)(?:\s+not\s+|,|\.|$)',
-                        _raw_corr, _re_corr.IGNORECASE,
-                    )
-                    if _cm:
-                        _clean_corr = ("my " + _cm.group(1)).strip()
-                # Validate: extracted fragment needs clinical content
-                _has_corr_clin = (
-                    _clean_corr
-                    and any(w in _clean_corr.lower() for w in _CORRECTION_FLOOR_WORDS)
-                )
-                if _has_corr_clin:
-                    _store_reason = _clean_corr
-                elif any(w in _raw_corr.lower() for w in _CORRECTION_FLOOR_WORDS):
-                    # Extraction failed but full utterance has clinical content — use whole
-                    _store_reason = _raw_corr
-                else:
-                    # No extractable clinical content — re-ask
-                    phrase = "Sorry about that — could you describe your condition again?"
-                    await self._tts.put(phrase)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": phrase}
-                    )
-                    logger.info(
-                        "[ms_flow] CONFIRM_ASSESSMENT: correction with no extractable "
-                        "clinical content %r — re-asking",
-                        transcript[:60],
-                    )
-                    return
-                self.session["reason"] = _store_reason
-                self.session.setdefault("collected", {})["reason"] = _store_reason
-                logger.info(
-                    "[ms_flow] CONFIRM_ASSESSMENT: correction — reason normalized "
-                    "from %r → %r, regenerating assessment",
-                    transcript[:60], _store_reason[:60],
-                )
-                # Re-run ask_current_question at the SAME step so the LLM
-                # regenerates an empathetic assessment for the corrected reason.
-                await self.ask_current_question()
-                return
-
-            # _ca_cls == "unknown": fall through to mid-flow interrupt for FAQ matching
-            logger.info("[ms_flow] CONFIRM_ASSESSMENT: unknown classification → passing to interrupt check")
+            # No confirmation needed — auto-advance on any caller input after empathy plays
+            self.session["assessment_confirmed"] = True
+            self.session["flow_step"]            = step["step"] + 1
+            logger.info("[ms_flow] CONFIRM_ASSESSMENT: auto-advance → step %d", step["step"] + 1)
+            await self.ask_current_question()
+            return
 
         # ── NEW_OR_RETURNING: deterministic extraction BEFORE interrupt check ──────
         # Direct answers like "it's my first time" or "i have never been with you before"
@@ -3522,22 +3361,14 @@ class FlowEngine:
                     _slot_speech_o = f"{_day_label_o} at {_spoken_time}" if _day_label_o else _spoken_time
                     self.session["selected_slot"]        = _slot_iso_o
                     self.session["selected_slot_speech"] = _slot_speech_o
-                    self.session["slot_pending_confirmation"] = True
-                    _conf_phrase = (
-                        f"Just to confirm — you'd like the appointment on {_slot_speech_o}. "
-                        "Is that right?"
-                    )
-                    await self._tts.put(_conf_phrase)
-                    if _is_question_worth_storing(_conf_phrase):
-                        self.session["last_question"] = _conf_phrase
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _conf_phrase}
-                    )
+                    self.session["slot_confirmed"]       = True
+                    self.session["flow_step"]            = step["step"] + 1
                     logger.info(
-                        "[ms_flow] %s: ordinal %r → idx=%d slot=%r",
+                        "[ms_flow] %s: ordinal %r → idx=%d slot=%r (confirmed, advancing)",
                         step["state"], _ordinal_idx, _resolved_idx, _slot_iso_o,
                     )
-                    return  # slot_pending_confirmation will be picked up on next turn
+                    await self.ask_current_question()
+                    return
                 else:
                     logger.info(
                         "[ms_flow] %s: ordinal %r detected but no slot data — falling through",
@@ -3614,24 +3445,16 @@ class FlowEngine:
                         _spoken_dt     = _t2s_dt(_slot_times_dt[_slot_idx_dt])
                         _day_label_dt  = _target_dt.get("day_label", "")
                         _slot_speech_dt = f"{_day_label_dt} at {_spoken_dt}" if _day_label_dt else _spoken_dt
-                        self.session["selected_slot"]            = _slot_iso_dt
-                        self.session["selected_slot_speech"]     = _slot_speech_dt
-                        self.session["slot_pending_confirmation"] = True
-                        _conf_dt = (
-                            f"Just to confirm — you'd like the appointment on "
-                            f"{_slot_speech_dt}. Is that right?"
-                        )
-                        await self._tts.put(_conf_dt)
-                        if _is_question_worth_storing(_conf_dt):
-                            self.session["last_question"] = _conf_dt
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _conf_dt}
-                        )
+                        self.session["selected_slot"]        = _slot_iso_dt
+                        self.session["selected_slot_speech"] = _slot_speech_dt
+                        self.session["slot_confirmed"]       = True
+                        self.session["flow_step"]            = step["step"] + 1
                         logger.info(
                             "[ms_flow] %s: direct time match hour=%d → idx=%d "
-                            "slot=%r (LLM avoided)",
+                            "slot=%r (confirmed, advancing)",
                             step["state"], _matched_hour, _slot_idx_dt, _slot_iso_dt,
                         )
+                        await self.ask_current_question()
                         return
 
         # ── PRESENT_TIMES: catch-all re-ask when nothing matched ────────────────
@@ -4314,18 +4137,6 @@ class FlowEngine:
                 # Persist tracker state to serialisable session mirrors
                 self.session["name_tracker_name"] = self._name_tracker._name
                 self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
-                # Fix C: confirm the captured name before advancing — guards against
-                # STT mishear being silently accepted.
-                if step["state"] in (
-                    "COLLECT_NAME", "COLLECT_NAME_RETURNING",
-                    "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
-                ):
-                    _name_rb = f"Just to check — was that {answer.strip()}?"
-                    await self._tts.put(_name_rb)
-                    self.session["last_question"]       = _name_rb
-                    self.session["name_readback_pending"] = True
-                    logger.info("[ms_flow] name readback: %r → %r", answer, _name_rb[:60])
-                    return  # don't advance until caller confirms
             elif step["answer_field"] == "phone_number":
                 col["phone"] = answer
                 # Phone readback: speak the number back slowly and ask for confirmation.
@@ -4421,25 +4232,11 @@ class FlowEngine:
         # collection.  flow_step is NOT advanced here — it advances in
         # _handle_slot_confirmation when the caller says yes.
         if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
-            self.session["slot_pending_confirmation"] = True
             slot_text = str(answer)
             slot_speech = _format_slot_for_speech(slot_text)
-            # Keep both: raw label for book_appointment, natural form for TTS
             self.session["selected_slot_speech"] = slot_speech
-            phrase = (
-                f"Just to confirm — you'd like the appointment on {slot_speech}. "
-                f"Is that right?"
-            )
-            await self._tts.put(phrase)
-            if _is_question_worth_storing(phrase):
-                self.session["last_question"] = phrase
-            # FIX 2: Store slot confirmation phrase in conversation_history so the
-            # Claude evaluator can see it and mark slot_confirmed = True.
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": phrase}
-            )
-            logger.info("[ms_flow] slot confirmation requested: %r", phrase[:80])
-            return
+            self.session["slot_confirmed"]       = True
+            logger.info("[ms_flow] slot confirmed (no re-ask): %r", slot_speech[:80])
 
         # Advance to next step
         self.session["flow_step"] = step["step"] + 1
