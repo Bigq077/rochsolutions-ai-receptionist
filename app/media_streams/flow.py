@@ -526,6 +526,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "   Convert slot_times to natural spoken form: "
             "'09:00' → 'nine o'clock', '14:30' → 'half past two', '16:00' → 'four o'clock'. "
             "Add 'in the morning' / 'in the afternoon' where helpful. Never say AM/PM or raw digits.\n"
+            "   IMPORTANT: If the caller asked for a specific time period (e.g. 'afternoon', "
+            "'evening', 'morning') and the available slots don't include that period, "
+            "say so explicitly FIRST before presenting what IS available. "
+            "Example: 'I'm afraid we don't have any afternoon slots on that day — "
+            "I've got nine, ten, eleven, or twelve o'clock in the morning — which of those works?'\n"
             "2. If none of those times work — refer to the other days you initially offered: "
             "'Not to worry — what about [other day 1][, or [other day 2]]?'\n"
             "3. If all initial days rejected — present next 3 days from the data (entries 4–6). "
@@ -2956,7 +2961,13 @@ class FlowEngine:
                 "right then", "alright then",
                 "said yes", "just said yes",
             )
-            _pd_yes = any(p in text for p in _PD_YES)
+            # Guard: ordinal words ("last", "first", etc.) must be handled by the
+            # ordinal block below — not collapsed into a generic YES here.
+            _ORDINAL_SKIP = {"first", "second", "third", "last", "final", "middle"}
+            _pd_yes = (
+                not any(w in _ORDINAL_SKIP for w in text.split())
+                and any(p in text for p in _PD_YES)
+            )
             logger.info(
                 "[ms_flow] PRESENT_DAYS pre-interrupt: state=%s transcript=%r → yes=%s  flow_step=%d",
                 step["state"], transcript[:80], _pd_yes, step["step"],
@@ -3094,28 +3105,18 @@ class FlowEngine:
                     _matched_nm["day_label"], transcript[:40],
                 )
             else:
-                # No day match and not a YES — bounded reprompt unless vague
-                from app.vagueness_detector import is_vague_availability as _is_vague_nm
-                import re as _re_nm_tq
-                _has_time_qual_nm = bool(
-                    _re_nm_tq.search(
-                        r"\b(?:morning|afternoon|evening)\w*", transcript, _re_nm_tq.IGNORECASE
-                    )
+                # No day match and not a YES — hand to Haiku with available days
+                # context so it can handle "what's the earliest?", "anything next
+                # week?", "do you have mornings?" etc. without a verbatim re-ask.
+                _day_labels_nm = [
+                    d.get("day_label", "") for d in _avail_nm[:6] if d.get("day_label")
+                ]
+                logger.info(
+                    "[ms_flow] %s: no day match for %r → Haiku with day context",
+                    step["state"], transcript[:40],
                 )
-                if not _is_vague_nm(transcript) and not _has_time_qual_nm:
-                    _reprompt_nm = _build_day_list_phrase(_avail_nm)
-                    if _reprompt_nm:
-                        await self._tts.put(_reprompt_nm)
-                        self.session["last_question"] = _reprompt_nm
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _reprompt_nm}
-                        )
-                        logger.info(
-                            "[ms_flow] %s: no day match for %r — bounded reprompt",
-                            step["state"], transcript[:40],
-                        )
-                        return
-                # Vague availability — fall through to existing vague handler
+                await self._haiku_fallback_days(transcript, step, _day_labels_nm)
+                return
 
         # ── PRESENT_TIMES / PRESENT_TIMES_RESCHEDULE: deterministic parsing ────
         # BUG 2: Ordinal expressions ("the last option", "first one", "second")
@@ -3918,6 +3919,44 @@ class FlowEngine:
                 )
                 answer = None   # fall through to re-ask logic below
 
+        # ── NEW_OR_RETURNING: Haiku silent classifier fallback ───────────────────
+        # Fires when deterministic keyword matching missed — e.g. "I came about
+        # two years ago" or "I don't think I've ever been".  Haiku classifies
+        # silently (no TTS) so the flow advances without a spoken re-ask.
+        if answer is None and step["state"] == "NEW_OR_RETURNING":
+            answer = await self._haiku_classify(
+                transcript,
+                question=(
+                    "Is this person a new patient or a returning one? "
+                    "They said: '{transcript}'. "
+                    "Reply with ONLY one word: new / returning / unclear."
+                ),
+                mapping={"new": "new", "returning": "returning"},
+            )
+            if answer:
+                logger.info(
+                    "[ms_flow] NEW_OR_RETURNING Haiku classified %r → %r",
+                    transcript[:40], answer,
+                )
+
+        # ── RETURNING_TREATMENT_PLAN: Haiku silent classifier fallback ───────────
+        if answer is None and step["state"] == "RETURNING_TREATMENT_PLAN":
+            answer = await self._haiku_classify(
+                transcript,
+                question=(
+                    "Is this returning patient still on an active treatment plan, "
+                    "or has treatment ended / is this a new episode? "
+                    "They said: '{transcript}'. "
+                    "Reply with ONLY one word: yes / no / unclear."
+                ),
+                mapping={"yes": True, "no": False},
+            )
+            if answer is not None:
+                logger.info(
+                    "[ms_flow] RETURNING_TREATMENT_PLAN Haiku classified %r → %r",
+                    transcript[:40], answer,
+                )
+
         # ── PHONE DIGIT ACCUMULATION: stitch together number spoken in chunks ──
         # After Fix 1 (garbage filter), digit-only chunks now reach the flow.
         # Each chunk individually fails the 10-digit minimum.  Accumulate them in
@@ -4376,6 +4415,75 @@ class FlowEngine:
             {"role": "assistant", "content": _text}
         )
         logger.info("[ms_flow] _haiku_fallback: state=%s response=%r", state, _text[:80])
+
+    async def _haiku_fallback_days(
+        self, transcript: str, step: dict, day_labels: list
+    ) -> None:
+        """
+        Haiku fallback for PRESENT_DAYS when no day was matched.
+        Includes the available day list in context so it can handle
+        "what's the earliest?", "anything next week?", "do you have mornings?" etc.
+        Does NOT re-run the tool — uses whatever days are already in session.
+        """
+        import anthropic as _anthropic
+        pending_q = self.session.get("last_question", "")
+        state = step["state"] if step else "PRESENT_DAYS"
+        days_str = ", ".join(day_labels) if day_labels else "no days available"
+        system_msg = (
+            "You are Susie, a receptionist at Theorem Health physiotherapy clinic. "
+            "Keep responses to 1-2 short sentences. Do NOT invent availability."
+        )
+        user_msg = (
+            f"Available appointment days: {days_str}.\n"
+            f"Caller said: \"{transcript}\"\n"
+            f"Pending question: \"{pending_q}\"\n\n"
+            "Acknowledge what they said briefly, then ask them to choose from the available days."
+        )
+        try:
+            _client = _anthropic.AsyncAnthropic()
+            _resp = await _client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
+                system=system_msg,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            _text = (_resp.content[0].text or "").strip() if _resp.content else ""
+        except Exception as _e:
+            logger.error("[ms_flow] _haiku_fallback_days error: %r", _e)
+            _text = ""
+        if not _text:
+            _text = pending_q or "Sorry, which of those days works for you?"
+        await self._tts.put(_text)
+        self.session["last_question"] = pending_q
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _text}
+        )
+        logger.info("[ms_flow] _haiku_fallback_days: %r", _text[:80])
+
+    async def _haiku_classify(
+        self, transcript: str, question: str, mapping: dict
+    ) -> object:
+        """
+        Silent Haiku classifier — no TTS output.
+        Sends `question` (with {transcript} interpolated) to Haiku and maps
+        the single-word reply to a value via `mapping`.
+        Returns None if the reply is "unclear" or not in mapping.
+        """
+        import anthropic as _anthropic
+        prompt = question.replace("{transcript}", transcript)
+        try:
+            _client = _anthropic.AsyncAnthropic()
+            _resp = await _client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                system="Reply with a single word only.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            word = (_resp.content[0].text or "").strip().lower() if _resp.content else ""
+        except Exception as _e:
+            logger.error("[ms_flow] _haiku_classify error: %r", _e)
+            return None
+        return mapping.get(word)  # returns None for "unclear" or unknown replies
 
     # ── intent routing ────────────────────────────────────────────────────
 
