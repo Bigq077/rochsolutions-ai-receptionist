@@ -1379,20 +1379,12 @@ class FlowEngine:
                 or self.session.get("patient_name")
                 or self.session.get("caller_name")
             )
-            _phone_cb = (
-                self.session.get("phone_number")
-                or (self.session.get("collected") or {}).get("phone")
-                or self.session.get("twilio_from_local")
-                or self.session.get("twilio_from", "")
-            )
+            _loc_cb     = (self.session.get("selected_location") or "alcester").lower()
+            _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
             _name_part  = f"{_name_cb}, " if _name_cb else ""
-            _phone_part = (
-                f" We'll send your confirmation to {_phone_cb}."
-                if _phone_cb else ""
-            )
             _cb_prompt = (
                 f"Just to confirm — {_name_part}I'm booking you in for "
-                f"{_slot_cb} at our Alcester clinic.{_phone_part} "
+                f"{_slot_cb} at our {_clinic_name} clinic. "
                 "Shall I go ahead and confirm that?"
             )
             logger.info(
@@ -1879,16 +1871,7 @@ class FlowEngine:
             # NOTE: elif — must not run (and must not override question_text) when
             # we are already at CONFIRM_BOOKING above.
             elif step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
-                import re as _re
-                raw = self.session.get("twilio_from_local", "") or self.session.get("twilio_from", "")
-                digits = _re.sub(r"\D", "", raw)
-                if digits:
-                    question_text = (
-                        f"And the best number to reach you on — "
-                        f"is that the same number you're calling from, {' — '.join(list(digits))}?"
-                    )
-                else:
-                    question_text = step["question"]
+                question_text = "And the best number to reach you on — is that the number you're calling from?"
             else:
                 question_text = step["question"]
             await self._tts.put(question_text)
@@ -3525,16 +3508,18 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
-            _target_re = _find_chosen_day_entry(_avail_re, _chosen_re)
-            _re_phrase = _build_times_phrase(_target_re) if _target_re else ""
-            if _re_phrase:
-                await self._tts.put(_re_phrase)
-                self.session["last_question"] = _re_phrase
-                logger.info(
-                    "[ms_flow] %s: no match for %r → re-asking times (LLM fallback blocked)",
-                    step["state"], text[:40],
-                )
-                return
+            # No slot matched and not a day-change — pass back to LLM with full
+            # slot context so it can answer questions like "do you have afternoons?"
+            # intelligently rather than re-asking the same times verbatim.
+            logger.info(
+                "[ms_flow] %s: no slot match for %r → handing to LLM with slot context",
+                step["state"], text[:40],
+            )
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "user", "content": transcript}
+            )
+            await self.ask_current_question()
+            return
 
         # ── COLLECT_NAME compatibility rule (Phase 5.1 narrow fix) ─────────────
         # If caller sends a phone-confirm phrase while we're at COLLECT_NAME
@@ -3830,21 +3815,69 @@ class FlowEngine:
         # through to _start_readback().  Any input at this step is treated as
         # confirmation — booking_confirmed is set here (not in ask_current_question).
         if step["state"] == "CONFIRM_BOOKING":
+            # Make the actual Acuity booking now that the caller has confirmed
+            from app.tools.receptionist_tools import _exec_book_appointment as _do_book
+            _name_cb = (
+                self.session.get("full_name")
+                or (self.session.get("collected") or {}).get("full_name")
+                or (self.session.get("collected") or {}).get("name")
+                or self.session.get("patient_name")
+                or self.session.get("caller_name")
+            )
+            _loc_cb = (self.session.get("selected_location") or "alcester").lower()
+            _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
+            _book_args = {
+                "patient_name": _name_cb or "",
+                "phone": (
+                    self.session.get("phone_number")
+                    or (self.session.get("collected") or {}).get("phone")
+                    or self.session.get("twilio_from", "")
+                ),
+                "slot_iso": (
+                    self.session.get("selected_slot")
+                    or self.session.get("selected_slot_speech")
+                    or ""
+                ),
+                "location": _loc_cb,
+                "service": "physiotherapy assessment",
+                "is_new_patient": (
+                    (self.session.get("new_or_returning") or "new") != "returning"
+                ),
+            }
+            try:
+                _book_result = await _do_book(_book_args, self.session)
+                if not _book_result.get("success"):
+                    logger.error(
+                        "[ms_flow] CONFIRM_BOOKING YES: book failed: %r",
+                        _book_result.get("error"),
+                    )
+                else:
+                    logger.info("[ms_flow] CONFIRM_BOOKING YES: booking created successfully")
+            except Exception as _be:
+                logger.error("[ms_flow] CONFIRM_BOOKING YES: book exception: %r", _be)
+
+            _slot_cb = (
+                self.session.get("selected_slot_speech")
+                or self.session.get("selected_slot")
+                or "your appointment"
+            )
             self.session["booking_confirmed"] = True
             self.session["state"]             = "DONE"
             self.session["flow_state"]        = "DONE"
             self.session["flow_step"]         = len(self._active_flow)
             _cb_done = (
-                "Brilliant — you're all booked in! "
-                "We'll send a confirmation text shortly. "
-                "Have a great day!"
+                f"Brilliant — you're all booked in for {_slot_cb} "
+                f"at our {_clinic_name} clinic. "
+                "We'll send a confirmation text shortly. Have a great day!"
             )
             await self._tts.put(_cb_done)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _cb_done}
             )
             logger.info(
-                "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True state=DONE"
+                "[ms_flow] CONFIRM_BOOKING YES handler → booking called, "
+                "booking_confirmed=True state=DONE name=%r slot=%r",
+                _name_cb, str(_slot_cb)[:40],
             )
             return
 
@@ -4013,28 +4046,14 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] retry >= 3 on %r — graceful exit triggered", phrase_key)
                 return
-            # Fix B: for PRESENT_TIMES, build a slot-specific retry prompt from
-            # the known offered slot times instead of the generic "morning or afternoon?"
-            if (count == 1
-                    and step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")):
-                _avail_b  = self.session.get("available_days", [])
-                _chosen_b = self.session.get("chosen_day", "")
-                _target_b = _find_chosen_day_entry(_avail_b, _chosen_b)
-                _times_b  = (_target_b or {}).get("slot_times", [])[:3]
-                if _times_b:
-                    from app.vagueness_detector import _time_to_speech as _t2s_b
-                    _opts_b = " or ".join(_t2s_b(t) for t in _times_b)
-                    phrase = f"Sorry — did you want {_opts_b}?"
-                else:
-                    phrase = RETRY_PHRASES["first_retry"].get(
-                        phrase_key, RETRY_PHRASES["first_retry"]["default"]
-                    )
-            elif count == 2:
-                phrase = RETRY_PHRASES["second_retry"]["default"]
-            else:
-                phrase = RETRY_PHRASES["first_retry"].get(
-                    phrase_key, RETRY_PHRASES["first_retry"]["default"]
-                )
+            # count == 1: Haiku fallback — acknowledge what the caller said and
+            # redirect to the pending question.  Fires for any unmatched input on
+            # the first retry so Susie always sounds natural rather than robotic.
+            if count == 1:
+                await self._haiku_fallback(transcript, step)
+                return
+            # count == 2: hardcoded second retry
+            phrase = RETRY_PHRASES["second_retry"]["default"]
             await self._tts.put(phrase)
             # Keep last_question unchanged so SilenceHandler can re-ask again
             return
@@ -4304,6 +4323,59 @@ class FlowEngine:
 
         # Ask the next question
         await self.ask_current_question()
+
+    # ── Haiku fallback ────────────────────────────────────────────────────
+
+    async def _haiku_fallback(self, transcript: str, step: dict) -> None:
+        """
+        Fallback LLM call when no deterministic handler matched the caller's input.
+
+        Uses claude-haiku-4-5 (fast + cheap), no tools, max 80 tokens.
+        Acknowledges what the caller said, then redirects to the pending question.
+        Called on the first retry attempt so the caller never hears a robotic
+        verbatim re-ask when they asked a legitimate question.
+        """
+        import anthropic as _anthropic
+        pending_q = self.session.get("last_question", "")
+        state      = step["state"] if step else self.session.get("state", "")
+        system_msg = (
+            "You are Susie, a friendly receptionist at Theorem Health and Wellness, "
+            "a physiotherapy clinic. Keep responses to 1-2 short sentences. "
+            "Do NOT make up availability, prices, or appointment details. "
+            "If unsure about a clinical question, say you'll pass it to the team."
+        )
+        user_msg = (
+            f"Current booking step: {state}.\n"
+            f"Caller said: \"{transcript}\"\n"
+            f"Pending question you still need answered: \"{pending_q}\"\n\n"
+            "Acknowledge what they said briefly, then ask the pending question."
+        )
+        try:
+            _client = _anthropic.AsyncAnthropic()
+            _resp = await _client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
+                system=system_msg,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            _text = (_resp.content[0].text or "").strip() if _resp.content else ""
+        except Exception as _e:
+            logger.error("[ms_flow] _haiku_fallback error: %r", _e)
+            _text = ""
+
+        if not _text:
+            # Hard fallback if Haiku fails
+            _text = (
+                "Sorry, I didn't quite catch that. "
+                + (pending_q or "Could you say that again?")
+            )
+
+        await self._tts.put(_text)
+        self.session["last_question"] = pending_q  # preserve for silence handler
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _text}
+        )
+        logger.info("[ms_flow] _haiku_fallback: state=%s response=%r", state, _text[:80])
 
     # ── intent routing ────────────────────────────────────────────────────
 
