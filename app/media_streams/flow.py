@@ -2846,7 +2846,7 @@ class FlowEngine:
         # plain affirmatives like "yeah that sounds fine" — which would incorrectly
         # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
         if step["state"] == "CONFIRM_ASSESSMENT":
-            _ca_class = _classify_confirm_assessment(text, transcript)
+            _ca_class = _classify_confirm_assessment(text)
             logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
             if _ca_class in ("yes", "additive_detail"):
                 self.session["assessment_confirmed"] = True
