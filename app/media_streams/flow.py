@@ -2009,18 +2009,42 @@ class FlowEngine:
             if loc:
                 self.session["selected_location"] = loc
                 self.session["needs_location"] = False
+                self.session.pop("location_retry_count", None)
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
-                _retry = (
-                    "Sorry — which clinic did you mean? "
-                    "Just say Alcester or Redditch."
+                _retry_count = self.session.get("location_retry_count", 0) + 1
+                self.session["location_retry_count"] = _retry_count
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: no match for %r — retry_count=%d",
+                    text[:40], _retry_count,
                 )
-                await self._tts.put(_retry)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _retry}
-                )
-                logger.info("[ms_flow] ASK_LOCATION: no match for %r — retrying", text[:40])
+                if _retry_count >= 2:
+                    # Two failed attempts — transfer to a human now.
+                    _escalate = (
+                        "No problem at all — let me put you through to the team "
+                        "who can help you directly."
+                    )
+                    await self._tts.put(_escalate)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _escalate}
+                    )
+                    self.session["human_requested"] = True
+                    self.session["request_transfer"] = True
+                    self.session["transfer_confirmed"] = True
+                    self.session["flow_step"] = len(self._active_flow)
+                    self.session["needs_location"] = False
+                    logger.info("[ms_flow] ASK_LOCATION: max retries — transferring to human")
+                else:
+                    _retry = (
+                        "Sorry — I didn't quite catch that. "
+                        "Which clinic would you like — Alcester or Redditch?"
+                    )
+                    await self._tts.put(_retry)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _retry}
+                    )
+                    self.session["last_question"] = _retry
             return
 
         # ════════════════════════════════════════════════════════════════════
@@ -5420,8 +5444,23 @@ class FlowEngine:
 
         # ----- location_selection: Alcester or Redditch ------------------
         if method == "location_selection":
+            # "don't mind / either / wherever" — default to Alcester (main clinic)
+            _no_pref = any(p in text for p in (
+                "don't mind", "dont mind", "either", "doesn't matter",
+                "doesnt matter", "anywhere", "wherever", "no preference",
+                "don't have a preference", "dont have a preference",
+                "up to you", "you choose", "doesn't make a difference",
+            ))
+            if _no_pref:
+                return "alcester"
+
+            # Alcester patterns — names, ordinals, landmarks, mishearings
+            _alcester = any(p in text for p in (
+                "alcester", "alchester", "alster", "alca", "alcesta",
+                "leisure", "greig", "kinwarton",
+                "first", "1",
+            ))
             # "one" as a standalone ordinal selector — but NOT reference phrases
-            # where the caller is expressing uncertainty or pointing vaguely.
             _one_match = (
                 "one" in text
                 and "the one" not in text
@@ -5429,10 +5468,17 @@ class FlowEngine:
                 and "not sure" not in text
                 and "one of" not in text
             )
-            if any(p in text for p in ("alcester", "alchester", "alster", "first", "1")) or _one_match:
+            if _alcester or _one_match:
                 return "alcester"
-            if any(p in text for p in ("redditch", "reditch", "second", "two", "2")):
+
+            # Redditch patterns — names, ordinals, landmarks, mishearings
+            if any(p in text for p in (
+                "redditch", "reditch", "reddish", "reddit", "red itch",
+                "bromsgrove",
+                "second", "two", "2",
+            )):
                 return "redditch"
+
             return None
 
         # ----- faq_booking: wants to book after FAQ answer ---------------
