@@ -365,39 +365,45 @@ class AcuityAdapter:
         )
         return slots
     
-    async def _fetch_required_form_fields(self, appointment_type_id: str) -> list:
+    def _get_required_form_fields(self, appointment_type_id: str) -> list:
         """
-        Return a list of {"id": <int>, "value": "1"} entries for every required
-        checkbox / signature field on the intake form(s) attached to this
-        appointment type.  Results are cached per adapter instance so the extra
-        API call only happens once per deployment lifecycle.
+        Return a list of {"id": <int>, "value": "1"} for any intake form
+        checkbox fields that must be pre-checked for this appointment type.
+
+        Configured via env var  ACUITY_FORM_FIELDS_<TYPE_ID>  as a
+        comma-separated list of integer field IDs, e.g.:
+            ACUITY_FORM_FIELDS_15823699=12885419
+            ACUITY_FORM_FIELDS_33801703=          # empty = no required fields
+
+        Results are cached after first read.
         """
+        import os as _os
         raw_type_id = appointment_type_id.replace("acuity_", "")
         if raw_type_id in self._required_fields_cache:
             return self._required_fields_cache[raw_type_id]
 
-        _CHECKBOX_TYPES = {"checkbox", "checkboxlist", "signature", "yesno"}
+        env_key = f"ACUITY_FORM_FIELDS_{raw_type_id}"
+        raw_val = _os.getenv(env_key, "").strip()
         required_fields: list = []
-        try:
-            response = await self._request_with_retry(
-                "GET",
-                "/forms",
-                params={"appointmentTypeID": raw_type_id},
+        for token in raw_val.split(","):
+            token = token.strip()
+            if token:
+                try:
+                    required_fields.append({"id": int(token), "value": "1"})
+                except ValueError:
+                    logger.warning(
+                        "Acuity: invalid field ID %r in %s — skipping", token, env_key
+                    )
+
+        if required_fields:
+            logger.info(
+                "Acuity form fields for type %s: %s (from %s)",
+                raw_type_id, [f["id"] for f in required_fields], env_key,
             )
-            forms = response.json() if isinstance(response.json(), list) else []
-            for form in forms:
-                for field in form.get("fields", []):
-                    if field.get("required") and field.get("type", "").lower() in _CHECKBOX_TYPES:
-                        required_fields.append({"id": field["id"], "value": "1"})
-                        logger.info(
-                            "Acuity form field auto-check: form=%r field_id=%s name=%r",
-                            form.get("name", ""),
-                            field["id"],
-                            field.get("name", "")[:80],
-                        )
-        except Exception as exc:
-            logger.warning(
-                "Acuity _fetch_required_form_fields failed (non-fatal): %r", exc
+        else:
+            logger.info(
+                "Acuity form fields for type %s: none configured (%s not set)",
+                raw_type_id, env_key,
             )
 
         self._required_fields_cache[raw_type_id] = required_fields
@@ -434,15 +440,15 @@ class AcuityAdapter:
             acuity_cal_id = request.practitioner_id.replace("acuity_cal_", "")
             payload["calendarID"] = acuity_cal_id
 
-        # Pre-check any required checkbox / signature intake form fields so that
-        # Acuity's "field X is required" 400 error never surfaces to the caller.
-        required_fields = await self._fetch_required_form_fields(
-            request.appointment_type_id
-        )
+        # Pre-check any required intake form checkbox fields.
+        # Field IDs are configured per appointment type via env var
+        # ACUITY_FORM_FIELDS_<TYPE_ID> (comma-separated integers).
+        required_fields = self._get_required_form_fields(request.appointment_type_id)
         if required_fields:
             payload["fields"] = required_fields
             logger.info(
-                "Acuity booking: injecting %d required form field(s)", len(required_fields)
+                "Acuity booking: injecting %d required form field(s) for type %s",
+                len(required_fields), request.appointment_type_id,
             )
 
         # NO RETRY on POST to prevent double-booking
