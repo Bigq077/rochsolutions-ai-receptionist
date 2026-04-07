@@ -1304,10 +1304,7 @@ class FlowEngine:
         # No LLM call — pure TTS, same pattern as every other static question.
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
-            _loc_q = (
-                "Of course — which clinic would you like? "
-                "Alcester or Redditch?"
-            )
+            _loc_q = "Which clinic would you like — Alcester or Redditch?"
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
