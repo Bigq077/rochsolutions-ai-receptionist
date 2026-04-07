@@ -308,7 +308,15 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "payment_timing": "in advance or after the appointment",
         "deposit_required": False,
         "payment_plans": False,
-        "cancellation_charge": True,   # full fee charged if cancelled without sufficient notice
+        "cancellation_fee_gbp": 45.0,          # £45 if cancelled within 24 hours
+        "cancellation_notice_hours": 24,       # minimum notice to avoid fee
+        "reschedule_notice_hours": 24,         # rescheduling with <24h notice = treated as cancellation
+        "same_day_booking_allowed": False,     # minimum 24h notice required
+        "no_waitlist": True,
+        "no_slots_message": (
+            "It looks like we don't have any availability in the next 30 days. "
+            "We'll send you a text message as soon as a slot opens up."
+        ),
 
         # Booking preferences / constraints
         "booking_notes": [
@@ -338,7 +346,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Pricing & policies (from Mark)
         "pricing_summary": (
             "Physio sessions — both assessments and follow-ups — are £75 for 50 minutes. "
-            "Rehabilitation sessions are £65 for 50 minutes. Prescribing consultations are £12.50. "
+            "Rehabilitation sessions are £65 for 50 minutes. Prescribing consultations are £12. "
             "Acupuncture is £75 for 50 minutes. Psychotherapy is £75 for 50 minutes. "
             "Laser therapy and shockwave therapy may add a £45 surcharge when specialist equipment is used during a session."
         ),
@@ -382,7 +390,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "pricing_details": {
             "physio_session_gbp": 75.0,
             "rehab_session_gbp": 65.0,
-            "prescribing_gbp": 12.50,
+            "prescribing_gbp": 12.00,
             "specialist_equipment_surcharge_gbp": 45.0,
             "notes": [
                 "Clients are sent a text message with fees.",
@@ -390,16 +398,53 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             ],
         },
 
-        "cancellation_policy": "24 hours cancellation policy — otherwise the full fee is charged.",
+        "cancellation_policy": (
+            "We require at least 24 hours' notice to cancel or reschedule. "
+            "Cancellations or reschedules with less than 24 hours' notice incur a £45 fee. "
+            "Rescheduling within 24 hours is treated the same as a cancellation."
+        ),
         "what_to_bring": "If you can, bring shorts or wear loose clothing — but don't worry if you can't.",
+        "arrival_note": "Please aim to arrive 5 to 10 minutes before your appointment.",
 
         # Insurance (from Mark)
         "insurance_note": (
-            "Theorem generally operates as self-pay: patients pay the fees and may claim back themselves if their policy allows. "
-            "Bupa is not accepted. Insurance referrals require manual approval."
+            "We operate on a self-pay basis — patients pay directly and may claim back from their insurer if their policy allows. "
+            "We don't work directly with any insurers. Bupa is not accepted."
         ),
         "common_insurers": [],
         "not_accepted_insurers": ["Bupa"],
+        "insurance_model": "self-pay",
+
+        # Accessibility
+        "accessibility": {
+            "wheelchair_accessible": True,
+            "both_locations": True,
+        },
+
+        # Remote consultations
+        "remote_consultations": False,  # In-person only — no video or phone appointments
+
+        # Reports and letters
+        "reports_and_letters": {
+            "available": True,
+            "types": ["GP letters", "medico-legal reports", "discharge summaries", "insurance letters"],
+            "standard_fee": None,   # No standard fee — discuss with Mark
+            "note": "We'll write any report requested. No standard fee — enquire with the team.",
+        },
+
+        # Between-session support
+        "between_sessions": {
+            "contact_methods": ["phone", "email"],
+            "callback_aim_days": "1–2 business days",
+            "exercise_pain_contact": "Contact Mark directly by phone or message.",
+            "post_discharge_return": "Patients can return at any time after discharge — just call to book.",
+        },
+
+        # Complaints
+        "complaints": {
+            "handler": "Mark",
+            "instruction": "Please raise any concerns or complaints directly with Mark.",
+        },
 
         # Call handling (from Mark)
         "call_handling": {
@@ -409,8 +454,6 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "If this feels urgent or you have severe symptoms, please call 999 (or go to A&E). "
                 "We're not an emergency service."
             ),
-            # Optional: set this to Mark's phone if you want Twilio to forward calls when needed.
-            # If you leave it None, your logic can just take a message instead.
             "escalation_forward_to_phone": None,
         },
 
@@ -618,7 +661,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "id": "prescribing",
         "name": "Prescribing Consultation",
         "duration_minutes": 20,
-        "price_gbp": 12.50,
+        "price_gbp": 12.00,
         "description": "Medication prescription service with our qualified prescribers.",
         "category": "prescribing",
         "new_patients": False,
