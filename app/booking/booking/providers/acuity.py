@@ -413,12 +413,17 @@ class AcuityAdapter:
         # ── 2. Auto-detect from Acuity /forms endpoint ────────────────────────
         # A form is included if ANY of:
         #   a) its appointmentTypes explicitly contains this type ID
-        #   b) its appointmentTypes is empty (global form) AND its name does
-        #      not match a known-bad pattern (NADA training, unrelated consent)
+        #   b) its appointmentTypes is empty (global) AND its name contains one
+        #      of the known-relevant name fragments (allowlist approach — safer
+        #      than a denylist because Acuity accounts accumulate unrelated forms)
+        #
+        # Known relevant global forms for Theorem physio bookings:
+        #   "terms" → "(A) Terms & Conditions inc Fees and Invoicing"
+        #   "client details" → "Client Details Physio / TCM"
         #
         # Individual field 12885419 (NADA GB Training) is also excluded as a
         # belt-and-braces guard even if the form filter somehow passes it.
-        _EXCLUDE_FORM_NAME_FRAGMENTS = ["nada", "training"]
+        _GLOBAL_FORM_ALLOWLIST = ["terms", "client details"]
         _EXCLUDE_FIELD_IDS = {12885419}
 
         def _form_is_relevant(form: dict) -> bool:
@@ -426,17 +431,10 @@ class AcuityAdapter:
             if raw_type_id in form_types:
                 return True  # explicitly linked to this appointment type
             if form_types:
-                return False  # linked to OTHER types only — skip
-            # Global form (empty list) — exclude known-unrelated forms by name
+                return False  # linked to OTHER appointment types only — skip
+            # Global form (empty list) — only include if name is in allowlist
             name_lower = (form.get("name") or "").lower()
-            for fragment in _EXCLUDE_FORM_NAME_FRAGMENTS:
-                if fragment in name_lower:
-                    logger.info(
-                        "Acuity form %s %r skipped — name matches exclude pattern %r",
-                        form.get("id"), form.get("name"), fragment,
-                    )
-                    return False
-            return True
+            return any(fragment in name_lower for fragment in _GLOBAL_FORM_ALLOWLIST)
 
         def _value_for_field(field_type: str) -> str:
             t = (field_type or "").lower()
