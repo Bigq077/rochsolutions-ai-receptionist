@@ -305,22 +305,23 @@ def _find_chosen_day_entry(available_days: list, chosen_day: str) -> Optional[di
     """
     Return the available_days entry whose day_label best matches chosen_day.
 
-    Matching strategy (fast, keyword-only):
-      1. Day-of-week word from day_label found in chosen_day text → match.
-         (Month names are intentionally excluded — they appear in every label
-         and cause false matches, e.g. "april" matching Tuesday for "thursday … april".)
+    Matching strategy (keyword, word-boundary):
+      1. Day-of-week word from day_label found in chosen_day text (as a whole word) → match.
+         Word-boundary matching prevents "tuesday" from matching inside "thursday" etc.
+         Month names are intentionally excluded — they appear in every label.
       2. Fallback: first entry in available_days (used when caller said
          "yeah that works" / "sounds good" — no day name in transcript).
 
     Returns None only when available_days is empty.
     """
+    import re as _re_fd
     if not available_days:
         return None
     chosen_lower = chosen_day.lower()
     for day in available_days:
         label_lower = day.get("day_label", "").lower()
         significant = [w for w in label_lower.split() if w in _WEEKDAY_WORDS]
-        if significant and any(w in chosen_lower for w in significant):
+        if significant and any(_re_fd.search(r'\b' + w + r'\b', chosen_lower) for w in significant):
             return day
     return available_days[0]
 
@@ -3187,12 +3188,15 @@ class FlowEngine:
             # Only the first 3 entries in available_days are "offered" days.
             _avail_nm = self.session.get("available_days", [])
             _matched_nm: Optional[dict] = None
+            import re as _re_nm
             for _dentry_nm in _avail_nm[:3]:
                 _dlabel_nm = _dentry_nm.get("day_label", "")
                 # Match only on day-of-week words — month names (e.g. "april") appear
                 # in every offered label and cause false first-entry matches.
+                # Use word-boundary matching to prevent "tuesday" matching inside
+                # "thursday" or other substrings.
                 _sig_nm = [w.lower() for w in _dlabel_nm.split() if w.lower() in _WEEKDAY_WORDS]
-                if _sig_nm and any(w in text for w in _sig_nm):
+                if _sig_nm and any(_re_nm.search(r'\b' + w + r'\b', text) for w in _sig_nm):
                     _matched_nm = _dentry_nm
                     break
             if _matched_nm:
@@ -3203,7 +3207,7 @@ class FlowEngine:
                 # these because DAY_PATTERN match disables the short-utterance fallback
                 # and "mornings" (plural) isn't in VAGUE_PHRASES.
                 _has_time_qualifier_nd = bool(
-                    _re_nd.search(r"\b(?:morning|afternoon|evening)\w*", transcript, _re_nd.IGNORECASE)
+                    _re_nd.search(r"\b(?:morning|afternoon|evening|night|lunchtime|noon)\w*", transcript, _re_nd.IGNORECASE)
                 )
                 if not _is_vague_nd(transcript) and not _has_time_qualifier_nd:
                     # Clean day selection — advance to PRESENT_TIMES
@@ -4882,8 +4886,34 @@ class FlowEngine:
                 logger.info("[ms_flow] slot confirmation: NO matched=%r", p)
                 self.session["slot_pending_confirmation"] = False
                 self.session["selected_slot"] = None
-                # Stay at PRESENT_TIMES — caller picks again from already-offered slots.
-                # Do NOT re-run ask_current_question (that would re-call the LLM).
+                # Check if the caller is correcting to a different offered day
+                # (e.g. "no, I said Thursday not Tuesday").
+                import re as _re_sc
+                _sc_avail = self.session.get("available_days", [])
+                _sc_chosen = self.session.get("chosen_day", "")
+                _sc_cur_wd = next(
+                    (w for w in _sc_chosen.lower().split() if w in _WEEKDAY_WORDS), None
+                )
+                _sc_new_entry = None
+                for _sc_entry in _sc_avail:
+                    _sc_wd = next(
+                        (w for w in _sc_entry.get("day_label", "").lower().split()
+                         if w in _WEEKDAY_WORDS), None
+                    )
+                    if _sc_wd and _sc_wd != _sc_cur_wd and _re_sc.search(r'\b' + _sc_wd + r'\b', text):
+                        _sc_new_entry = _sc_entry
+                        break
+                if _sc_new_entry:
+                    _sc_new_label = _sc_new_entry.get("day_label", "")
+                    self.session["chosen_day"] = _sc_new_label
+                    self.session.setdefault("collected", {})["chosen_day"] = _sc_new_label
+                    logger.info(
+                        "[ms_flow] slot confirmation NO: day-change %r → %r",
+                        _sc_chosen, _sc_new_label,
+                    )
+                    await self.ask_current_question()
+                    return
+                # No day correction — stay at PRESENT_TIMES for caller to pick again.
                 phrase = "No problem — which slot would you prefer?"
                 await self._tts.put(phrase)
                 if _is_question_worth_storing(phrase):

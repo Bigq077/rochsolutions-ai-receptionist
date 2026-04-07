@@ -1769,8 +1769,8 @@ def _resolve_clinic_id(session: Dict[str, Any]) -> str:
 
 
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
-    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) == "theorem":
+    # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
+    if _resolve_clinic_id(session) in ("theorem", "theorem_v2"):
         return await _check_availability_acuity(args, session)
 
     from app.tools.slots import (
@@ -1883,8 +1883,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
-    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) == "theorem":
+    # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
+    if _resolve_clinic_id(session) in ("theorem", "theorem_v2"):
         return await _book_appointment_acuity(args, session)
 
     from app.tools.calendar_google import create_event
@@ -2036,8 +2036,8 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 # ---------------------------------------------------------------------------
 
 async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
-    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) == "theorem":
+    # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
+    if _resolve_clinic_id(session) in ("theorem", "theorem_v2"):
         return await _cancel_appointment_acuity(args, session)
 
     from app.tools.calendar_google import list_upcoming_events, delete_event
@@ -2109,8 +2109,8 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
-    # Theorem clinic uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) == "theorem":
+    # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
+    if _resolve_clinic_id(session) in ("theorem", "theorem_v2"):
         return await _reschedule_appointment_acuity(args, session)
 
     from app.tools.calendar_google import list_upcoming_events, patch_event_time
@@ -2506,7 +2506,7 @@ async def _exec_log_call_outcome(args: Dict[str, Any], session: Dict[str, Any]) 
 
 async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Look up a patient's recent appointment history in Acuity to identify their treatment."""
-    if session.get("clinic_id") != "theorem":
+    if session.get("clinic_id") not in ("theorem", "theorem_v2"):
         return {"found": False, "message": "Patient history lookup only available for Theorem clinic"}
 
     adapter = _get_acuity_adapter()
