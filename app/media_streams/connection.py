@@ -231,6 +231,7 @@ class SilenceHandler:
         # the "start" event reassigns self.session).
         self._get_session                   = get_session   # () -> dict | None
         self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
+        self._stt_miss_count: int = 0  # consecutive STT misses since last successful transcript
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -255,15 +256,32 @@ class SilenceHandler:
         logger.debug("[ms_silence] speech started — timer cancelled, recovery armed")
 
     async def _speech_recovery(self) -> None:
-        """If AssemblyAI doesn't transcribe within 5s of speech detection,
-        re-arm the silence timer so the call doesn't hang silently forever."""
+        """If STT doesn't transcribe within 5s of speech detection,
+        re-arm the silence timer so the call doesn't hang silently forever.
+        After 3 consecutive misses (~15s), Susie proactively says she can't
+        hear rather than staying silent while the timer keeps getting cancelled
+        by new audio energy detections."""
         try:
             await asyncio.sleep(5.0)
         except asyncio.CancelledError:
             return
-        # Only re-arm if we're still waiting (no transcript, no TTS running)
-        if not self._llm_busy and (self._task is None or self._task.done()):
-            logger.info("[ms_silence] recovery: STT miss detected — re-arming silence timer")
+        # Only act if we're still waiting (no transcript, no TTS running)
+        if self._llm_busy or not (self._task is None or self._task.done()):
+            return
+        self._stt_miss_count += 1
+        logger.info(
+            "[ms_silence] recovery: STT miss #%d detected — re-arming silence timer",
+            self._stt_miss_count,
+        )
+        if self._stt_miss_count >= 3:
+            # Sustained STT failure — speak up directly rather than waiting for
+            # the silence timer (which keeps getting cancelled by audio energy).
+            logger.info("[ms_silence] STT miss threshold reached — prompting caller directly")
+            self._stt_miss_count = 0
+            phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
+            await self._tts_text_queue.put(phrase)
+            self._restart_timer()
+        else:
             self._restart_timer()
 
     def set_state(self, state: str) -> None:
@@ -284,6 +302,7 @@ class SilenceHandler:
 
     def on_tts_started(self) -> None:
         """Cancel silence timer before Susie speaks."""
+        self._stt_miss_count = 0  # transcript was processed — reset miss counter
         if not self.currently_reasking:
             self._cancel_timer()
             logger.debug("[ms_silence] TTS started — timer cancelled")
