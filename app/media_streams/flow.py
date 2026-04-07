@@ -514,6 +514,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "No reasoning, no preamble, no internal notes. "
             "Sound like a warm, efficient UK clinic receptionist.\n\n"
             "The caller just responded to the day options with: '{chosen_day}'.\n"
+            "The caller's latest message: '{caller_followup}'\n"
+            "If the caller's latest message expresses a preference (e.g. 'afternoon', 'morning', "
+            "'something earlier', 'latest possible') — address that preference FIRST before "
+            "listing times. E.g. if they said 'afternoon' but only morning slots exist, say "
+            "'I'm afraid we don't have any afternoon slots on that day — I've got [morning times]'.\n"
             "Here is the full availability data (do NOT call check_availability again):\n"
             "{available_days_json}\n\n"
             "Each entry has: day_label (spoken day name), slot_times (list of HH:MM strings), "
@@ -1051,6 +1056,9 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "⚠️ SPOKEN OUTPUT ONLY — every word is read aloud by TTS. "
             "Sound like a warm, efficient UK clinic receptionist.\n\n"
             "The caller just responded to the day options with: '{chosen_day}'.\n"
+            "The caller's latest message: '{caller_followup}'\n"
+            "If the caller's latest message expresses a preference (e.g. 'afternoon', 'morning', "
+            "'something earlier') — address that preference FIRST before listing times.\n"
             "Here is the full availability data (do NOT call check_availability again):\n"
             "{available_days_json}\n\n"
             "Each entry has: day_label (spoken day name), slot_times (list of HH:MM strings), "
@@ -1708,6 +1716,8 @@ class FlowEngine:
                 format_args["available_days_json"] = _json.dumps(
                     self.session.get("available_days") or []
                 )
+                # Ensure caller_followup always resolves — avoids KeyError in format()
+                format_args.setdefault("caller_followup", "")
             try:
                 instruction = step["llm_instruction"].format(**format_args)
             except (KeyError, AttributeError) as exc:
@@ -3543,14 +3553,28 @@ class FlowEngine:
             # No slot matched and not a day-change — pass back to LLM with full
             # slot context so it can answer questions like "do you have afternoons?"
             # intelligently rather than re-asking the same times verbatim.
+
+            # Guard: skip very short STT fragments (garbage like "rd", "then", "hello")
+            # unless they contain a time-period keyword we must honour.
+            _fu_words = transcript.strip().split()
+            _fu_has_period = any(k in text for k in ("afternoon", "morning", "evening"))
+            if len(_fu_words) <= 1 and len(transcript.strip()) <= 5 and not _fu_has_period:
+                logger.info(
+                    "[ms_flow] %s: short STT fragment %r — ignoring (no slot match)",
+                    step["state"], transcript[:20],
+                )
+                return
+
+            # Store the caller's actual utterance so the LLM instruction can reference it
+            # (run_instruction only passes the formatted instruction, not conversation_history)
+            self.session["caller_followup"] = transcript
             logger.info(
-                "[ms_flow] %s: no slot match for %r → handing to LLM with slot context",
+                "[ms_flow] %s: no slot match for %r → caller_followup set, handing to LLM",
                 step["state"], text[:40],
             )
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "user", "content": transcript}
-            )
             await self.ask_current_question()
+            # Clear after use so the next fresh PRESENT_TIMES call starts clean
+            self.session.pop("caller_followup", None)
             return
 
         # ── COLLECT_NAME compatibility rule (Phase 5.1 narrow fix) ─────────────
