@@ -1810,7 +1810,7 @@ class FlowEngine:
                     )
         else:
             self.session["question_asked_this_turn"] = True
-            # Fix D: CONFIRM_BOOKING — short deterministic close (no LLM)
+            # Fix D: CONFIRM_BOOKING — deterministic close: make the booking then confirm
             if step["state"] == "CONFIRM_BOOKING":
                 _slot_cb = (
                     self.session.get("selected_slot_speech")
@@ -1825,9 +1825,44 @@ class FlowEngine:
                     or self.session.get("caller_name")
                 )
                 _name_part = f"{_name_cb}, " if _name_cb else ""
+                _loc_cb = (self.session.get("selected_location") or "alcester").lower()
+                _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
+
+                # Make the actual Acuity booking now that the caller has confirmed
+                from app.tools.receptionist_tools import _exec_book_appointment as _do_book
+                _book_args = {
+                    "patient_name": _name_cb or "",
+                    "phone": (
+                        self.session.get("phone_number")
+                        or (self.session.get("collected") or {}).get("phone")
+                        or self.session.get("twilio_from", "")
+                    ),
+                    "slot_iso": (
+                        self.session.get("selected_slot")
+                        or self.session.get("selected_slot_speech")
+                        or ""
+                    ),
+                    "location": _loc_cb,
+                    "service": "physiotherapy assessment",
+                    "is_new_patient": (
+                        (self.session.get("new_or_returning") or "new") != "returning"
+                    ),
+                }
+                try:
+                    _book_result = await _do_book(_book_args, self.session)
+                    if not _book_result.get("success"):
+                        logger.error(
+                            "[ms_flow] CONFIRM_BOOKING: book failed: %r",
+                            _book_result.get("error"),
+                        )
+                    else:
+                        logger.info("[ms_flow] CONFIRM_BOOKING: booking created successfully")
+                except Exception as _be:
+                    logger.error("[ms_flow] CONFIRM_BOOKING: book exception: %r", _be)
+
                 question_text = (
                     f"Lovely — {_name_part}you're all booked in for {_slot_cb} "
-                    "at our Alcester clinic. "
+                    f"at our {_clinic_name} clinic. "
                     "I'll send a confirmation text to your number. "
                     "Is there anything else I can help with?"
                 )
@@ -4793,10 +4828,12 @@ class FlowEngine:
         name = name or "you"
 
         # Fix D: short readback — drop the verbose preamble and reason to reduce
-        # interruption risk.  Location is fixed for this deployment (Alcester).
+        # interruption risk.
+        _rb_loc = (self.session.get("selected_location") or "alcester").lower()
+        _rb_clinic = "Redditch" if "redditch" in _rb_loc else "Alcester"
         phrase = (
             f"Just to confirm — {name}, you're booked in for {slot} "
-            "at our Alcester clinic. Does that sound right?"
+            f"at our {_rb_clinic} clinic. Does that sound right?"
         )
         await self._tts.put(phrase)
         self.session.setdefault("conversation_history", []).append(
