@@ -405,10 +405,10 @@ class AcuityAdapter:
                 {"id": 8494898, "value": "01/01/2000"},  # D.O.B
                 {"id": 8871008, "value": "Phone booking"},  # Address
             ],
-            # Alcester physio assessment — form 1611057 "Client Details Physio"
+            # Alcester physio assessment — also form 1500327 (confirmed by smoke test)
             "15823699": [
-                {"id": 8886352, "value": "01/01/2000"},  # D.O.B
-                {"id": 8886353, "value": "Phone booking"},  # Address
+                {"id": 8494898, "value": "01/01/2000"},  # D.O.B
+                {"id": 8871008, "value": "Phone booking"},  # Address
             ],
         }
 
@@ -500,10 +500,20 @@ class AcuityAdapter:
         
         provider_booking_id = str(data["id"])
         
-        # Parse response times
+        # Parse response times.
+        # data["datetime"] is ISO format (e.g. '2026-04-09T10:00:00+0100').
+        # data["endTime"] is time-only 12-hour format (e.g. '10:50am') — NOT ISO.
         start_time = datetime.fromisoformat(data["datetime"])
         start_time = ensure_london_tz(start_time)
-        end_time = datetime.fromisoformat(data["endTime"])
+        try:
+            end_time = datetime.fromisoformat(data["endTime"])
+        except (ValueError, TypeError):
+            # Parse time-only string like '10:50am', combine with start date
+            from datetime import datetime as _dt
+            t = _dt.strptime(data["endTime"].strip().upper(), "%I:%M%p")
+            end_time = start_time.replace(
+                hour=t.hour, minute=t.minute, second=0, microsecond=0
+            )
         end_time = ensure_london_tz(end_time)
         
         booking = Booking(

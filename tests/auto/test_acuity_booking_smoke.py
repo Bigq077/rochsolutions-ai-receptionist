@@ -88,12 +88,12 @@ async def _book_and_cancel(adapter, location: dict) -> None:
         "cannot run booking smoke test. Check Acuity availability."
     )
     slot = slots[0]
-    print(f"\n[{name}] Using slot: {slot.start}")
+    print(f"\n[{name}] Using slot: {slot.start_time}")
 
     # ── 2. Create booking ────────────────────────────────────────────────────
     request = BookingRequest(
         appointment_type_id=type_id,
-        slot_start=slot.start,
+        slot_start=slot.start_time,
         location_id=name.lower(),
         patient_first_name="Test",
         patient_last_name="Booking",
@@ -102,6 +102,7 @@ async def _book_and_cancel(adapter, location: dict) -> None:
         notes="TEST BOOKING — IGNORE — created by automated smoke test",
         practitioner_id=practitioner_id,
         call_sid="smoke_test_000",
+        session_id="smoke_test_000",
     )
 
     booking = await adapter.create_booking(request)
@@ -164,5 +165,5 @@ async def test_required_fields_alcester(adapter):
 
     assert 10610285 in ids, "Missing T&C checkbox (10610285)"
     assert 13388219 in ids, "Missing 'agree to terms' checkbox (13388219)"
-    assert 8886352  in ids, "Missing D.O.B field (8886352)"
-    assert 8886353  in ids, "Missing Address field (8886353)"
+    assert 8494898  in ids, "Missing D.O.B field (8494898)"
+    assert 8871008  in ids, "Missing Address field (8871008)"
