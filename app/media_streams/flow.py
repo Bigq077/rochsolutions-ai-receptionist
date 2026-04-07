@@ -432,7 +432,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "Could I take your full name — first name and surname please?",
+        "question": "What's your first name?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -547,7 +547,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 11,
         "state": "COLLECT_NAME",
-        "question": "Could I take your full name — first name and surname please?",
+        "question": "Who am I booking in today?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -999,7 +999,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_RESCHEDULE",
-        "question": "Could I take your full name — first name and surname please?",
+        "question": "What's your first name?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -1118,7 +1118,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_CANCEL",
-        "question": "Could I take your full name — first name and surname please?",
+        "question": "What's your first name?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -2725,10 +2725,10 @@ class FlowEngine:
                     self.session.setdefault("collected", {})["phone"] = _nry_phone
                     self.session.pop("phone_readback_pending", None)
                     self.session.pop("phone_readback_retry", None)
-                    self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
-                    self.session["state"]     = "CONFIRM_BOOKING"
+                    self.session["flow_step"] = _CONFIRM_PHONE_INDEX
+                    self.session["state"]     = "CONFIRM_PHONE"
                     logger.info(
-                        "[ms_flow] name readback confirmed + Twilio phone — skipping to CONFIRM_BOOKING"
+                        "[ms_flow] name readback confirmed + Twilio phone — advancing to CONFIRM_PHONE"
                     )
                 else:
                     self.session["flow_step"] = step["step"] + 1
@@ -4292,6 +4292,28 @@ class FlowEngine:
             )
             logger.info("[ms_flow] %s declined — will collect manually", step["state"])
             return
+
+        # Two-stage name collection: ask first name then last name separately.
+        # This avoids the Acuity lastName-required error and feels natural.
+        if step["answer_field"] == "full_name" and answer:
+            _name_words = str(answer).strip().split()
+            if self.session.get("first_name_temp"):
+                # Second turn — caller just gave their last name; combine.
+                answer = f"{self.session.pop('first_name_temp')} {str(answer).strip()}".strip().title()
+            elif len(_name_words) == 1:
+                # First turn — single word given; store it and ask for last name.
+                self.session["first_name_temp"] = str(answer).strip().title()
+                _ask_last = "And your last name?"
+                await self._tts.put(_ask_last)
+                self.session["last_question"] = _ask_last
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ask_last}
+                )
+                logger.info(
+                    "[ms_flow] %s: first name %r stored — asking for last name",
+                    step["state"], self.session["first_name_temp"],
+                )
+                return  # flow_step NOT advanced — wait for last name
 
         # Store the answer
         self.session[step["answer_field"]] = answer
