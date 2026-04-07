@@ -784,6 +784,103 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "You can reach us by phone on this number, or by email at info@theoremhealth.co.uk. "
                 "We aim to respond to emails within one to two business days."
             ),
+
+            # ── How do I pay? ──────────────────────────────────────────────────
+            "payment_methods": (
+                "We accept cash, debit card, credit card, and online payment via Stripe. "
+                "Payment is taken prior to or directly after your treatment. "
+                "If you're on a package, we'll raise an invoice and payment is due within 7 days."
+            ),
+
+            # ── Can I book for today? ──────────────────────────────────────────
+            "same_day_booking": (
+                "We do ask for at least 24 hours' notice for new bookings, so same-day appointments "
+                "aren't available. "
+                "The earliest I can book you in is tomorrow. "
+                "If you need to be seen urgently, I'd recommend calling the team directly at "
+                "info@theoremhealth.co.uk or checking the website for any last-minute availability."
+            ),
+
+            # ── What's the difference between physio and rehab sessions? ───────
+            "physio_vs_rehab_difference": (
+                "A physiotherapy session is with Mark or Leanne — a qualified chartered physiotherapist. "
+                "It covers assessment, diagnosis, hands-on treatment, and planning. "
+                "Those are £75 for 50 minutes. "
+                "A rehabilitation session is with one of our rehabilitation instructors — "
+                "it's more exercise and movement focused, designed to rebuild your strength and function "
+                "once the treatment plan is established. "
+                "Those are £65 for 50 minutes. "
+                "Typically you'd start with a physiotherapy assessment, and rehab sessions "
+                "come later as part of your recovery programme."
+            ),
+
+            # ── Am I a new patient or returning? ──────────────────────────────
+            "new_vs_returning": (
+                "If it's been less than two years since your last visit, you're treated as a "
+                "returning patient and can book a follow-up session. "
+                "If it's been two years or more, or if you're coming in for a completely different "
+                "problem to the one you were seen for before, we'd ask you to start with a fresh "
+                "assessment — that way your physiotherapist can get a full picture of where things "
+                "are now. "
+                "If you're not sure which applies to you, just let me know and I can check."
+            ),
+
+            # ── What if I'm running late? ──────────────────────────────────────
+            "running_late": (
+                "If you think you're going to be late, please give us a call as soon as you can. "
+                "We'll do our best to accommodate you, but depending on how late it is "
+                "we may need to shorten the session or ask you to rebook to avoid affecting "
+                "the next patient. "
+                "The team's contact number is 07870 166861."
+            ),
+
+            # ── What should I expect after my first session? ───────────────────
+            "what_to_expect_after": (
+                "It's completely normal to feel a little sore or achy for 24 to 48 hours after "
+                "your first session — especially if hands-on treatment or soft tissue work was involved. "
+                "That's a normal response and usually settles quickly. "
+                "Your physiotherapist will likely give you some exercises or advice to follow at home "
+                "between sessions. "
+                "If your pain significantly worsens, you develop new symptoms, or something doesn't "
+                "feel right, don't wait — contact the clinic and they'll advise you."
+            ),
+
+            # ── Are your physiotherapists qualified? ───────────────────────────
+            "qualifications": (
+                "Yes — both physiotherapists are fully qualified and HCPC-registered, which is the "
+                "statutory regulator for physiotherapists in the UK. "
+                "Mark Dyer holds an MSc and is a member of the Chartered Society of Physiotherapy, "
+                "the Acupuncture Association of Chartered Physiotherapists, and the Academy of "
+                "Clinical Science. "
+                "Leanne holds a BSc Honours in Physiotherapy and is also HCPC-registered and a "
+                "member of the Chartered Society of Physiotherapy. "
+                "Both are qualified prescribers."
+            ),
+
+            # ── I've been discharged — can I come back? ────────────────────────
+            "returning_after_discharge": (
+                "Absolutely — you're always welcome to come back after discharge. "
+                "Just call us to book and we'll get you back in. "
+                "If it's been two years or more, or you're coming in for a new problem, "
+                "we'd usually start with a fresh assessment."
+            ),
+
+            # ── I have a work-related injury — can you help? ───────────────────
+            "work_injury": (
+                "Yes — we treat work-related injuries in exactly the same way as any other "
+                "musculoskeletal condition. "
+                "We operate on a self-pay basis, so you'd pay directly and then claim back "
+                "through your employer or their insurer if your policy allows. "
+                "We can provide a receipt or invoice to support any claim you need to make."
+            ),
+
+            # ── Can I bring someone with me? ───────────────────────────────────
+            "can_bring_someone": (
+                "Yes — you're welcome to bring a companion, partner, or carer with you. "
+                "They can wait in the waiting area, or if you'd like them in the room with you "
+                "during the session, just mention it to your physiotherapist on the day "
+                "and they'll be happy to accommodate that where possible."
+            ),
         },
     },
 }

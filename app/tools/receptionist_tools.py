@@ -546,6 +546,16 @@ TOOL_GET_CLINIC_INFO = {
                     "insurance_claim",          # can I claim from my insurer?
                     "accessibility",            # are you wheelchair accessible?
                     "contact_after_call",       # how do I contact you?
+                    "payment_methods",          # how do I pay? card/cash/online?
+                    "same_day_booking",         # can I book for today?
+                    "physio_vs_rehab_difference", # what's the difference between physio and rehab?
+                    "new_vs_returning",         # am I a new or returning patient?
+                    "running_late",             # what if I'm running late?
+                    "what_to_expect_after",     # what should I expect after my first session?
+                    "qualifications",           # are your physios qualified?
+                    "returning_after_discharge",# can I come back after discharge?
+                    "work_injury",              # I have a work-related injury — can you help?
+                    "can_bring_someone",        # can I bring someone with me?
                 ],
                 "description": "The topic to retrieve information about.",
             },
