@@ -1401,9 +1401,8 @@ class FlowEngine:
                 "Shall I go ahead and confirm that?"
             )
             logger.info(
-                "[ms_flow] ASK CONFIRM_BOOKING text=%r name=%r slot=%r phone=%r",
+                "[ms_flow] ASK CONFIRM_BOOKING text=%r name=%r slot=%r",
                 _cb_prompt[:80], _name_cb, str(_slot_cb)[:40],
-                str(_phone_cb)[-4:] if _phone_cb else "",
             )
             self.session["question_asked_this_turn"] = True
             await self._tts.put(_cb_prompt)
