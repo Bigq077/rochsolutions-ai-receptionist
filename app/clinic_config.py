@@ -161,32 +161,32 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "days_ahead": 180,  # up to 6 months in advance
         # Per-location working hours (used by booking system for slot filtering)
         "working_hours": {
-            "mon": _hours_tuple(8.5, 21),
-            "tue": _hours_tuple(8.5, 21),
-            "wed": _hours_tuple(8.5, 21),
-            "thu": _hours_tuple(8.5, 21),
-            "fri": _hours_tuple(8.5, 21),
-            "sat": None,   # Alcester closed; Redditch open (see location_working_hours)
+            "mon": _hours_tuple(9, 19),
+            "tue": _hours_tuple(9, 19),
+            "wed": _hours_tuple(9, 19),
+            "thu": _hours_tuple(9, 19),
+            "fri": _hours_tuple(9, 19),
+            "sat": None,
             "sun": None,
         },
-        # Redditch has Saturday hours and different weekday hours
+        # Per-location working hours (Redditch only open Mon + Thu)
         "location_working_hours": {
             "alcester": {
-                "mon": _hours_tuple(8.5, 21),
-                "tue": _hours_tuple(8.5, 21),
-                "wed": _hours_tuple(8.5, 21),
-                "thu": _hours_tuple(8.5, 21),
-                "fri": _hours_tuple(8.5, 21),
+                "mon": _hours_tuple(9, 19),   # Mark
+                "tue": _hours_tuple(9, 19),   # Mark
+                "wed": _hours_tuple(9, 19),   # Mark
+                "thu": _hours_tuple(9, 19),   # Leanne
+                "fri": _hours_tuple(9, 19),   # Leanne
                 "sat": None,
                 "sun": None,
             },
             "redditch": {
-                "mon": _hours_tuple(9, 17),
-                "tue": _hours_tuple(9, 17),
-                "wed": _hours_tuple(9, 19),
-                "thu": _hours_tuple(9, 19),
-                "fri": _hours_tuple(9, 17),
-                "sat": _hours_tuple(9, 17),
+                "mon": _hours_tuple(9, 14),   # Leanne (last slot 1pm)
+                "tue": None,
+                "wed": None,
+                "thu": _hours_tuple(9, 14),   # Mark (last slot 1pm)
+                "fri": None,
+                "sat": None,
                 "sun": None,
             },
         },
@@ -211,8 +211,8 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 ),
                 "hours_summary": (
                     "The Alcester clinic is open Monday to Friday, "
-                    "eight thirty in the morning until nine at night. "
-                    "We're closed on weekends."
+                    "nine in the morning until seven in the evening. "
+                    "Last appointment is at six. We're closed on weekends."
                 ),
                 "parking": (
                     "Parking at the Greig Leisure Centre is completely free, "
@@ -243,11 +243,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                     "The postcode B97 4RH is reliable for satnavs."
                 ),
                 "hours_summary": (
-                    "The Redditch clinic is open Monday to Saturday. "
-                    "Monday, Tuesday and Friday we're open nine to five. "
-                    "Wednesday and Thursday we're open nine to seven. "
-                    "And Saturday we're open nine to five. "
-                    "We're closed on Sundays."
+                    "The Redditch clinic is open on Mondays and Thursdays only, "
+                    "nine in the morning until two in the afternoon. "
+                    "Last appointment is at one. We're closed all other days."
                 ),
                 "parking": (
                     "There's street parking on Bromsgrove Road — please check the signs on arrival for any restrictions. "
@@ -277,27 +275,51 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
         # Hours summary
         "hours_summary": (
-            "Our Alcester clinic is open Monday to Friday, eight thirty in the morning until nine at night, closed on weekends. "
-            "Our Redditch clinic is open Monday to Saturday — Monday, Tuesday and Friday nine to five, "
-            "Wednesday and Thursday nine to seven, and Saturday nine to five. Closed on Sundays. "
+            "Our Alcester clinic is open Monday to Friday, nine in the morning until seven in the evening — "
+            "last appointment at six. Closed weekends. "
+            "Our Redditch clinic is open Mondays and Thursdays only, nine to two — last appointment at one. "
             "Both clinics are closed on all UK bank holidays."
         ),
         "holiday_closures": ["All UK bank holidays"],
 
-        # Practitioner preferences
+        # Practitioner preferences (location-keyed)
         "practitioner_days": {
-            "Mark": ["mon", "tue", "wed"],
-            "Leanne": ["thu"],
+            "alcester": {
+                "Mark":   ["mon", "tue", "wed"],
+                "Leanne": ["thu", "fri"],
+            },
+            "redditch": {
+                "Mark":   ["thu"],
+                "Leanne": ["mon"],
+            },
         },
+
+        # Patient policies
+        "patient_policies": {
+            "new_patient_threshold_years": 2,        # 2+ years since last visit = treated as new
+            "different_injury_requires_new_assessment": True,
+            "records_follow_patient_across_locations": True,
+            "no_children": True,                     # Adults only — no paediatric patients
+        },
+
+        # Payment
+        "payment_methods": ["card", "contactless", "cash", "Apple Pay", "online"],
+        "payment_methods_not_accepted": ["bank transfer"],
+        "payment_timing": "in advance or after the appointment",
+        "deposit_required": False,
+        "payment_plans": False,
+        "cancellation_charge": True,   # full fee charged if cancelled without sufficient notice
 
         # Booking preferences / constraints
         "booking_notes": [
             "Preferred: book directly into Acuity where possible.",
             "Patients can write a short narrative during booking if they need to explain.",
-            "Some clients request a specific practitioner (Mark or Leanne).",
-            "Mark works Monday/Tuesday/Wednesday. Leanne works Thursday.",
+            "Callers may request a specific practitioner (Mark or Leanne) — honour that preference.",
+            "All conditions use the same appointment type in Acuity regardless of presenting complaint.",
+            "Alcester: Mark Mon/Tue/Wed, Leanne Thu/Fri. Redditch: Leanne Mon, Mark Thu.",
             "Bookings are separated by clinic location in Acuity.",
             "Insurance referrals always require manual approval.",
+            "Adults only — no paediatric patients.",
             "If the AI can't fully help, direct to website and/or take a message/offer a callback/escalate to staff.",
         ],
 
@@ -511,14 +533,30 @@ THEOREM_PRACTITIONERS = {
         "full_name": "Mark Dyer",
         "title": "MSc, BSc (Hons) HCPC, Mcsp, AACP, Macs",
         "role": "Physiotherapist & Prescriber",
-        "available_days": ["mon", "tue", "wed"],
+        "prescribes": True,
+        # Flat union for filter_slots_by_practitioner_availability
+        "available_days": ["mon", "tue", "wed", "thu"],
+        # Per-location breakdown
+        "location_days": {
+            "alcester": ["mon", "tue", "wed"],
+            "redditch": ["thu"],
+        },
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_MARK"),
     },
     "leanne": {
         "id": "leanne",
         "name": "Leanne",
-        "role": "Physiotherapist",
-        "available_days": ["thu"],
+        "full_name": "Leanne",
+        "title": "BSc (Hons) Physiotherapy, Level 3 Extended Diploma in Sports and Exercise Sciences, HCPC, CSP",
+        "role": "Chartered Physiotherapist & Prescriber",
+        "prescribes": True,
+        # Flat union for filter_slots_by_practitioner_availability
+        "available_days": ["mon", "thu", "fri"],
+        # Per-location breakdown
+        "location_days": {
+            "alcester": ["thu", "fri"],
+            "redditch": ["mon"],
+        },
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_LEANNE"),
     },
 }
@@ -698,20 +736,28 @@ def get_theorem_appointment_type(type_id: str) -> dict:
     return THEOREM_APPOINTMENT_TYPES.get(type_id)
 
 
-def is_practitioner_available_on_day(practitioner_id: str, day_abbrev: str) -> bool:
+def is_practitioner_available_on_day(
+    practitioner_id: str,
+    day_abbrev: str,
+    location_id: str = None,
+) -> bool:
     """
-    Check if practitioner works on given day.
-    
+    Check if practitioner works on given day, optionally at a specific location.
+
     Args:
         practitioner_id: "mark" or "leanne"
         day_abbrev: "mon", "tue", "wed", "thu", "fri", "sat", "sun"
-    
+        location_id: "alcester" or "redditch" (optional; if omitted uses flat union)
+
     Returns:
         True if practitioner is available
     """
     prac = THEOREM_PRACTITIONERS.get(practitioner_id)
     if not prac:
         return False
+    if location_id:
+        location_days = prac.get("location_days", {})
+        return day_abbrev in location_days.get(location_id, [])
     return day_abbrev in prac.get("available_days", [])
 
 
