@@ -1046,9 +1046,13 @@ def _match_service_to_acuity_id(
 
 
 def _split_name(full_name: str):
-    """Split 'John Smith' → ('John', 'Smith'). Single word → (word, '')."""
+    """Split 'John Smith' → ('John', 'Smith').
+    Single word → (word, word) so Acuity's required lastName field is never empty."""
     parts = full_name.strip().split(None, 1)
-    return (parts[0], parts[1]) if len(parts) == 2 else (parts[0], "")
+    if len(parts) == 2:
+        return (parts[0], parts[1])
+    first = parts[0] if parts else "Patient"
+    return (first, first)
 
 
 # ---------------------------------------------------------------------------
