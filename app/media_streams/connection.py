@@ -257,10 +257,8 @@ class SilenceHandler:
 
     async def _speech_recovery(self) -> None:
         """If STT doesn't transcribe within 5s of speech detection,
-        re-arm the silence timer so the call doesn't hang silently forever.
-        After 3 consecutive misses (~15s), Susie proactively says she can't
-        hear rather than staying silent while the timer keeps getting cancelled
-        by new audio energy detections."""
+        speak up immediately rather than staying silent while the timer keeps
+        getting cancelled by new audio energy detections."""
         try:
             await asyncio.sleep(5.0)
         except asyncio.CancelledError:
@@ -270,19 +268,14 @@ class SilenceHandler:
             return
         self._stt_miss_count += 1
         logger.info(
-            "[ms_silence] recovery: STT miss #%d detected — re-arming silence timer",
+            "[ms_silence] recovery: STT miss #%d detected — prompting caller directly",
             self._stt_miss_count,
         )
-        if self._stt_miss_count >= 2:
-            # Sustained STT failure — speak up directly rather than waiting for
-            # the silence timer (which keeps getting cancelled by audio energy).
-            logger.info("[ms_silence] STT miss threshold reached — prompting caller directly")
-            self._stt_miss_count = 0
-            phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
-            await self._tts_text_queue.put(phrase)
-            self._restart_timer()
-        else:
-            self._restart_timer()
+        # Speak up on the first miss (~5s) — prompt the caller to repeat
+        self._stt_miss_count = 0
+        phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
+        await self._tts_text_queue.put(phrase)
+        self._restart_timer()
 
     def set_state(self, state: str) -> None:
         """Update current_state so re-ask phrases are context-aware."""
