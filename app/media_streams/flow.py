@@ -4293,28 +4293,6 @@ class FlowEngine:
             logger.info("[ms_flow] %s declined — will collect manually", step["state"])
             return
 
-        # Two-stage name collection: ask first name then last name separately.
-        # This avoids the Acuity lastName-required error and feels natural.
-        if step["answer_field"] == "full_name" and answer:
-            _name_words = str(answer).strip().split()
-            if self.session.get("first_name_temp"):
-                # Second turn — caller just gave their last name; combine.
-                answer = f"{self.session.pop('first_name_temp')} {str(answer).strip()}".strip().title()
-            elif len(_name_words) == 1:
-                # First turn — single word given; store it and ask for last name.
-                self.session["first_name_temp"] = str(answer).strip().title()
-                _ask_last = "And your last name?"
-                await self._tts.put(_ask_last)
-                self.session["last_question"] = _ask_last
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _ask_last}
-                )
-                logger.info(
-                    "[ms_flow] %s: first name %r stored — asking for last name",
-                    step["state"], self.session["first_name_temp"],
-                )
-                return  # flow_step NOT advanced — wait for last name
-
         # Store the answer
         self.session[step["answer_field"]] = answer
         # Mirror into collected{} for LLM context
