@@ -303,12 +303,13 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         },
 
         # Payment
-        "payment_methods": ["card", "contactless", "cash", "Apple Pay", "online"],
-        "payment_methods_not_accepted": ["bank transfer"],
-        "payment_timing": "in advance or after the appointment",
+        "payment_methods": ["cash", "debit card", "credit card", "online via Stripe"],
+        "payment_timing": "prior to or directly after treatment",
+        "package_payment": "Packages can be invoiced; payment due within 7 days of invoice date.",
+        "late_payment_charge": True,
         "deposit_required": False,
         "payment_plans": False,
-        "cancellation_fee_gbp": 45.0,          # £45 if cancelled within 24 hours
+        "cancellation_fee_pct": 100,           # 100% of session fee if <24h notice
         "cancellation_notice_hours": 24,       # minimum notice to avoid fee
         "reschedule_notice_hours": 24,         # rescheduling with <24h notice = treated as cancellation
         "same_day_booking_allowed": False,     # minimum 24h notice required
@@ -338,7 +339,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Prescribing (qualified prescribers; e.g., analgesia when appropriate)",
             "Remedial rehabilitation with rehabilitation instructors (coordinated care)",
             "Shockwave therapy (targeted sound waves to stimulate healing; often tendon issues)",
-            "Class IV laser therapy (pain relief, reduce inflammation, speed tissue repair)",
+            "MLS Laser therapy (pain relief, reduce inflammation, speed tissue repair)",
             "Acupuncture",
             "Psychotherapy (safe space; can include hypnotherapy and spiritual healing techniques)",
         ],
@@ -346,9 +347,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Pricing & policies (from Mark)
         "pricing_summary": (
             "Physio sessions — both assessments and follow-ups — are £75 for 50 minutes. "
-            "Rehabilitation sessions are £65 for 50 minutes. Prescribing consultations are £12. "
+            "Rehabilitation sessions are £65 for 50 minutes. Prescribing consultations are £12.50. "
             "Acupuncture is £75 for 50 minutes. Psychotherapy is £75 for 50 minutes. "
-            "Laser therapy and shockwave therapy may add a £45 surcharge when specialist equipment is used during a session."
+            "A £45 surcharge is added to your session bill if shockwave or MLS Laser therapy is used."
         ),
         # Structured pricing used by the intake/recommendation booking flow
         "service_prices": {
@@ -390,18 +391,20 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "pricing_details": {
             "physio_session_gbp": 75.0,
             "rehab_session_gbp": 65.0,
-            "prescribing_gbp": 12.00,
+            "prescribing_gbp": 12.50,
             "specialist_equipment_surcharge_gbp": 45.0,
             "notes": [
-                "Clients are sent a text message with fees.",
-                "Surcharges apply when specialist equipment (laser/shockwave) is used.",
+                "£45 surcharge added to session bill if shockwave or MLS Laser therapy is used.",
+                "Invoices raised immediately after consultation.",
+                "Packages invoiced; due within 7 days.",
+                "Late/non-payment charges apply.",
             ],
         },
 
         "cancellation_policy": (
-            "We require at least 24 hours' notice to cancel or reschedule. "
-            "Cancellations or reschedules with less than 24 hours' notice incur a £45 fee. "
-            "Rescheduling within 24 hours is treated the same as a cancellation."
+            "We require at least 24 hours' notice to cancel or rearrange an appointment. "
+            "Failure to give sufficient notice will result in the full session fee being charged. "
+            "Please refer to our website for complete terms and conditions."
         ),
         "what_to_bring": "If you can, bring shorts or wear loose clothing — but don't worry if you can't.",
         "arrival_note": "Please aim to arrive 5 to 10 minutes before your appointment.",
@@ -661,7 +664,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "id": "prescribing",
         "name": "Prescribing Consultation",
         "duration_minutes": 20,
-        "price_gbp": 12.00,
+        "price_gbp": 12.50,
         "description": "Medication prescription service with our qualified prescribers.",
         "category": "prescribing",
         "new_patients": False,
@@ -706,9 +709,9 @@ THEOREM_SURCHARGES = {
     },
     "laser": {
         "id": "laser",
-        "name": "Class IV Laser Therapy",
+        "name": "MLS Laser Therapy",
         "amount_gbp": 45.00,
-        "description": "Powerful laser light to alleviate pain, reduce inflammation, and speed tissue repair.",
+        "description": "MLS Laser therapy to alleviate pain, reduce inflammation, and speed tissue repair.",
         "applied_at": "session",
     },
 }
