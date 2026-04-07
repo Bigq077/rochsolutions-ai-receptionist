@@ -1398,7 +1398,7 @@ class FlowEngine:
             _cb_prompt = (
                 f"Just to confirm — {_name_part}I'm booking you in for "
                 f"{_slot_cb} at our {_clinic_name} clinic. "
-                "Shall I go ahead and confirm that?"
+                "Shall I go ahead?"
             )
             logger.info(
                 "[ms_flow] ASK CONFIRM_BOOKING text=%r name=%r slot=%r",
@@ -1499,10 +1499,14 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # CONFIRM_PHONE: skip if no Twilio number — go straight to COLLECT_PHONE
+        # CONFIRM_PHONE: only skip when there is no Twilio caller-ID.
+        # When a Twilio number IS available, ask the question and wait for YES/NO
+        # before advancing to CONFIRM_BOOKING — gives the caller a chance to
+        # correct the number before committing.
+        # When there is no Twilio number, skip straight to COLLECT_PHONE.
         if step["state"] == "CONFIRM_PHONE" and not self.session.get("phone_from_twilio"):
+            logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE to COLLECT_PHONE")
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE")
             await self.ask_current_question()
             return
 
