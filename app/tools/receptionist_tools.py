@@ -556,6 +556,8 @@ TOOL_GET_CLINIC_INFO = {
                     "returning_after_discharge",# can I come back after discharge?
                     "work_injury",              # I have a work-related injury — can you help?
                     "can_bring_someone",        # can I bring someone with me?
+                    "location_inside_greig",    # where do I go inside the Greig Leisure Centre?
+                    "packages_discounts",       # do you offer packages or discounts?
                 ],
                 "description": "The topic to retrieve information about.",
             },

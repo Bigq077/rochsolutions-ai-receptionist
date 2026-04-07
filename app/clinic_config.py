@@ -881,6 +881,21 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "during the session, just mention it to your physiotherapist on the day "
                 "and they'll be happy to accommodate that where possible."
             ),
+
+            # ── Where do I go inside the Greig Leisure Centre? ────────────────
+            "location_inside_greig": (
+                "Just walk through the main entrance of the Greig Leisure Centre and "
+                "Theorem Health will be indicated from inside — you'll see the signage "
+                "directing you from the entrance."
+            ),
+
+            # ── Do you offer packages or discounts? ────────────────────────────
+            "packages_discounts": (
+                "We don't currently offer package deals or discounts — all sessions are "
+                "priced individually. "
+                "Physiotherapy and acupuncture sessions are £75, rehabilitation sessions "
+                "are £65, and prescribing consultations are £12.50."
+            ),
         },
     },
 }
