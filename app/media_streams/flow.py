@@ -432,7 +432,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "What name should I look you up under?",
+        "question": "Could I take your full name — first name and surname please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -547,7 +547,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 11,
         "state": "COLLECT_NAME",
-        "question": "Who am I booking in today?",
+        "question": "Could I take your full name — first name and surname please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -999,7 +999,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_RESCHEDULE",
-        "question": "What's your name so I can find your booking?",
+        "question": "Could I take your full name — first name and surname please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -1118,7 +1118,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_CANCEL",
-        "question": "What name is the appointment under?",
+        "question": "Could I take your full name — first name and surname please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -4271,23 +4271,6 @@ class FlowEngine:
             )
             logger.info("[ms_flow] %s declined — will collect manually", step["state"])
             return
-
-        # Validate full name: Acuity requires a last name.  If the caller gave
-        # only a single word (e.g. "Quentin") re-ask before storing.
-        if step["answer_field"] == "full_name" and answer and len(str(answer).split()) < 2:
-            _reask_name = (
-                f"Could I take your full name — first name and surname please?"
-            )
-            await self._tts.put(_reask_name)
-            self.session["last_question"] = _reask_name
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": _reask_name}
-            )
-            logger.info(
-                "[ms_flow] %s: single-word name %r — re-asking for full name",
-                step["state"], answer,
-            )
-            return  # flow_step NOT advanced — wait for full name
 
         # Store the answer
         self.session[step["answer_field"]] = answer
