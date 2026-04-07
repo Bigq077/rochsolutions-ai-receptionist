@@ -411,11 +411,32 @@ class AcuityAdapter:
             return required_fields
 
         # ── 2. Auto-detect from Acuity /forms endpoint ────────────────────────
-        # Include a form if it explicitly lists this appointment type, OR if it
-        # is the known T&C form (1487657) which is global to all physio bookings.
-        _ALWAYS_INCLUDE_FORM_IDS = {1487657}
-        # Field that must never be injected (NADA GB Training consent — wrong form)
+        # A form is included if ANY of:
+        #   a) its appointmentTypes explicitly contains this type ID
+        #   b) its appointmentTypes is empty (global form) AND its name does
+        #      not match a known-bad pattern (NADA training, unrelated consent)
+        #
+        # Individual field 12885419 (NADA GB Training) is also excluded as a
+        # belt-and-braces guard even if the form filter somehow passes it.
+        _EXCLUDE_FORM_NAME_FRAGMENTS = ["nada", "training"]
         _EXCLUDE_FIELD_IDS = {12885419}
+
+        def _form_is_relevant(form: dict) -> bool:
+            form_types = [str(t) for t in form.get("appointmentTypes", [])]
+            if raw_type_id in form_types:
+                return True  # explicitly linked to this appointment type
+            if form_types:
+                return False  # linked to OTHER types only — skip
+            # Global form (empty list) — exclude known-unrelated forms by name
+            name_lower = (form.get("name") or "").lower()
+            for fragment in _EXCLUDE_FORM_NAME_FRAGMENTS:
+                if fragment in name_lower:
+                    logger.info(
+                        "Acuity form %s %r skipped — name matches exclude pattern %r",
+                        form.get("id"), form.get("name"), fragment,
+                    )
+                    return False
+            return True
 
         def _value_for_field(field_type: str) -> str:
             t = (field_type or "").lower()
@@ -431,12 +452,24 @@ class AcuityAdapter:
             response = await self._request_with_retry("GET", "/forms")
             forms_data = response.json()
             forms = forms_data if isinstance(forms_data, list) else []
+            logger.info(
+                "Acuity /forms returned %d form(s) for type %s",
+                len(forms), raw_type_id,
+            )
             for form in forms:
                 form_id = form.get("id")
-                form_types = [str(t) for t in form.get("appointmentTypes", [])]
-                # Include form if it explicitly lists this type, or is always-include
-                if raw_type_id not in form_types and form_id not in _ALWAYS_INCLUDE_FORM_IDS:
+                form_name = form.get("name", "")
+                form_types = form.get("appointmentTypes", [])
+                if not _form_is_relevant(form):
+                    logger.info(
+                        "Acuity form %s %r skipped (appointmentTypes=%s)",
+                        form_id, form_name, form_types,
+                    )
                     continue
+                logger.info(
+                    "Acuity form %s %r included (appointmentTypes=%s)",
+                    form_id, form_name, form_types,
+                )
                 for field in form.get("fields", []):
                     if not field.get("required"):
                         continue
@@ -447,7 +480,7 @@ class AcuityAdapter:
                     required_fields.append({"id": fid, "value": value})
                     seen_ids.add(fid)
                     logger.info(
-                        "Acuity required field: form=%s id=%s name=%r type=%s value=%r",
+                        "Acuity required field: form=%s id=%s name=%r type=%s → value=%r",
                         form_id, fid, field.get("name"), field.get("type"), value,
                     )
         except Exception as exc:
