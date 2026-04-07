@@ -2059,21 +2059,16 @@ class FlowEngine:
                     text[:40], _retry_count,
                 )
                 if _retry_count >= 2:
-                    # Two failed attempts — transfer to a human now.
-                    _escalate = (
-                        "No problem at all — let me put you through to the team "
-                        "who can help you directly."
-                    )
-                    await self._tts.put(_escalate)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _escalate}
-                    )
-                    self.session["human_requested"] = True
-                    self.session["request_transfer"] = True
-                    self.session["transfer_confirmed"] = True
-                    self.session["flow_step"] = len(self._active_flow)
+                    # Two failed attempts — "Alcester" is hard to transcribe,
+                    # so default to Alcester rather than transferring.  The
+                    # caller can correct later if needed.
+                    self.session["selected_location"] = "alcester"
                     self.session["needs_location"] = False
-                    logger.info("[ms_flow] ASK_LOCATION: max retries — transferring to human")
+                    self.session.pop("location_retry_count", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: max retries — defaulting to Alcester"
+                    )
+                    await self.ask_current_question()
                 else:
                     _retry = (
                         "Sorry — I didn't quite catch that. "
@@ -5648,8 +5643,10 @@ class FlowEngine:
                 return "alcester"
 
             # Alcester patterns — names, ordinals, landmarks, mishearings
+            # Common Deepgram mishears: "ancestor", "ulster", "elster", "alcesta"
             _alcester = any(p in text for p in (
                 "alcester", "alchester", "alster", "alca", "alcesta",
+                "ancestor", "ulster", "elster", "alces", "olster",
                 "leisure", "greig", "kinwarton",
                 "first", "1",
             ))
