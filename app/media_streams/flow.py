@@ -171,7 +171,7 @@ _KNOWN_QUESTION_PHRASES = [
     "no problem — which",
     "slot would you",
     "which clinic",
-    "alcester, or two for redditch",
+    "alcester or redditch",
 ]
 
 
@@ -1305,13 +1305,14 @@ class FlowEngine:
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
             _loc_q = (
-                "Which clinic would you like — "
-                "say one for our Alcester clinic, or two for Redditch?"
+                "Of course — which clinic would you like? "
+                "Alcester or Redditch?"
             )
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
             )
+            self.session["last_question"] = _loc_q
             self.session["question_asked_this_turn"] = True
             logger.info("[ms_flow] ASK_LOCATION: question sent")
             return
@@ -2016,7 +2017,7 @@ class FlowEngine:
             else:
                 _retry = (
                     "Sorry — which clinic did you mean? "
-                    "Say one for Alcester, or two for Redditch."
+                    "Just say Alcester or Redditch."
                 )
                 await self._tts.put(_retry)
                 self.session.setdefault("conversation_history", []).append(
