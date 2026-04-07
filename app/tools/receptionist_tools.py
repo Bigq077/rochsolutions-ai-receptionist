@@ -230,7 +230,20 @@ def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
                         return dt_candidate
                 except Exception:
                     pass
-            # Did not match any offered slot — fall through to index/label matching
+            # Did not match last_offered_slots (first-slot-per-day only).
+            # 1b. Check ALL slots in available_days — covers times selected at
+            # PRESENT_TIMES which weren't in last_offered_slots (e.g. 12:00 when
+            # last_offered_slots only stored the first slot 09:00 for that day).
+            _avail_days = session.get("available_days") or []
+            for _day in _avail_days:
+                for _slot in (_day.get("slots") or []):
+                    try:
+                        _adx_dt = _to_london(datetime.fromisoformat(_slot["start"]))
+                        if abs((dt_candidate - _adx_dt).total_seconds()) < 60:
+                            logger.info("_resolve_slot_iso: available_days match → %s", _slot["start"])
+                            return dt_candidate
+                    except Exception:
+                        pass
             logger.warning("_resolve_slot_iso: ISO %r not in offered slots %s — falling back to index/label matching", s, [o['start'] for o in offered_check])
         except (ValueError, TypeError):
             pass

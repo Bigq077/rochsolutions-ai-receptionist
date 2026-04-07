@@ -3899,9 +3899,11 @@ class FlowEngine:
                     (self.session.get("new_or_returning") or "new") != "returning"
                 ),
             }
+            _book_success = False
             try:
                 _book_result = await _do_book(_book_args, self.session)
-                if not _book_result.get("success"):
+                _book_success = bool(_book_result.get("success"))
+                if not _book_success:
                     logger.error(
                         "[ms_flow] CONFIRM_BOOKING YES: book failed: %r",
                         _book_result.get("error"),
@@ -3910,29 +3912,45 @@ class FlowEngine:
                     logger.info("[ms_flow] CONFIRM_BOOKING YES: booking created successfully")
             except Exception as _be:
                 logger.error("[ms_flow] CONFIRM_BOOKING YES: book exception: %r", _be)
+                _book_success = False
 
             _slot_cb = (
                 self.session.get("selected_slot_speech")
                 or self.session.get("selected_slot")
                 or "your appointment"
             )
-            self.session["booking_confirmed"] = True
-            self.session["state"]             = "DONE"
-            self.session["flow_state"]        = "DONE"
-            self.session["flow_step"]         = len(self._active_flow)
-            _cb_done = (
-                f"Brilliant — you're all booked in for {_slot_cb} "
-                f"at our {_clinic_name} clinic. "
-                "We'll send a confirmation text shortly. Have a great day!"
-            )
+            self.session["state"]      = "DONE"
+            self.session["flow_state"] = "DONE"
+            self.session["flow_step"]  = len(self._active_flow)
+
+            if _book_success:
+                self.session["booking_confirmed"] = True
+                _cb_done = (
+                    f"Brilliant — you're all booked in for {_slot_cb} "
+                    f"at our {_clinic_name} clinic. "
+                    "We'll send a confirmation text shortly. Have a great day!"
+                )
+                logger.info(
+                    "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True "
+                    "state=DONE name=%r slot=%r",
+                    _name_cb, str(_slot_cb)[:40],
+                )
+            else:
+                self.session["booking_confirmed"] = False
+                _cb_done = (
+                    "I'm sorry — there was a problem securing that slot. "
+                    "I'll make sure the team knows, and someone will call you back "
+                    "to confirm your booking. Apologies for the inconvenience!"
+                )
+                logger.error(
+                    "[ms_flow] CONFIRM_BOOKING YES handler → booking FAILED, "
+                    "booking_confirmed=False state=DONE name=%r slot=%r",
+                    _name_cb, str(_slot_cb)[:40],
+                )
+
             await self._tts.put(_cb_done)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _cb_done}
-            )
-            logger.info(
-                "[ms_flow] CONFIRM_BOOKING YES handler → booking called, "
-                "booking_confirmed=True state=DONE name=%r slot=%r",
-                _name_cb, str(_slot_cb)[:40],
             )
             return
 
@@ -5594,6 +5612,10 @@ class FlowEngine:
                 "hello", "hi", "hey", "yes", "no", "okay", "ok", "sure",
                 "thanks", "thank", "please", "bye", "goodbye", "sorry",
                 "yeah", "yep", "yup", "nope", "nah", "yeh", "right",
+                # conjunctions / articles / pronouns that can appear as single-word
+                # answers (e.g. "my name is and Smith" → LLM extracts "and")
+                "and", "or", "but", "so", "a", "an", "the", "my", "it",
+                "its", "i", "me", "we", "us", "he", "she", "they", "them",
             })
             if len(words) == 1 and raw.strip().lower() in _NOT_A_NAME:
                 logger.info("[ms_extract] name: rejected filler %r as name", raw.strip())
