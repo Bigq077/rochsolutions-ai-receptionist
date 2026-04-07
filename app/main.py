@@ -198,6 +198,46 @@ async def readiness():
     }
 
 # ============================================================================
+# DIAGNOSTIC: Acuity forms dump
+# GET /debug/acuity-forms — returns every form, field ID, type, required flag,
+# and appointmentTypes list straight from Acuity.  Use this to find the correct
+# field ID for each appointment type.
+# ============================================================================
+
+from fastapi.responses import JSONResponse
+
+@app.get("/debug/acuity-forms")
+async def debug_acuity_forms():
+    """Dump all Acuity intake forms with field IDs — for diagnosing required-field errors."""
+    try:
+        from app.tools.receptionist_tools import _get_acuity_adapter
+        adapter = _get_acuity_adapter()
+        if not adapter:
+            return JSONResponse({"error": "Acuity adapter not configured"}, status_code=503)
+        response = await adapter._request_with_retry("GET", "/forms")
+        forms_raw = response.json() if isinstance(response.json(), list) else []
+        result = []
+        for form in forms_raw:
+            result.append({
+                "form_id":          form.get("id"),
+                "form_name":        form.get("name", ""),
+                "appointmentTypes": form.get("appointmentTypes", []),
+                "fields": [
+                    {
+                        "field_id":  f.get("id"),
+                        "name":      str(f.get("name", ""))[:120],
+                        "type":      f.get("type"),
+                        "required":  f.get("required", False),
+                    }
+                    for f in form.get("fields", [])
+                ],
+            })
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# ============================================================================
 # ROUTERS
 # ============================================================================
 
