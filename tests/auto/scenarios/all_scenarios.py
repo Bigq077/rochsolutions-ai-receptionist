@@ -205,7 +205,7 @@ SCENARIOS = [
             "Anytime next week really",
             "The last one",
             "Yeah that's the one",
-            "Sarah",
+            "Sarah Jones",
             "Yep",
         ],
         "expected": {
@@ -1252,7 +1252,7 @@ SCENARIOS = [
         "name": "Full clean reschedule",
         "responses": [
             "I need to reschedule my physiotherapy appointment",
-            "Sarah",
+            "Sarah Jones",
             "Yes use this number",
             "Any morning next week",
             "The first one",

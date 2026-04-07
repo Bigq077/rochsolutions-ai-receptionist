@@ -524,6 +524,267 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "company_number": "08116105",
             "owner_signature": "Mark Dyer MSc, BSc (Hons) HCPC, Mcsp, AACP, Macs.",
         },
+
+        # -----------------------------------------------------------------------
+        # FAQ — spoken answers Susie can read verbatim or paraphrase.
+        # Keyed by the topic string used in get_clinic_info tool calls.
+        # Goal: answer every common mid-flow caller question without falling back
+        # to the semantic sidebar or Claude's training knowledge.
+        # -----------------------------------------------------------------------
+        "faq": {
+
+            # ── What is a physiotherapy assessment? ────────────────────────────
+            "what_is_assessment": (
+                "The assessment is a 50-minute one-to-one session with your physiotherapist. "
+                "They'll go through your full history — what's hurting, how long it's been going on, "
+                "and how it's affecting your daily life. "
+                "Then they'll do a hands-on physical examination — looking at your posture, movement, "
+                "and strength — and they may also explore any stress or lifestyle factors that could "
+                "be contributing. "
+                "By the end of that first session, you'll have a clear diagnosis, a personalised "
+                "treatment plan, and you'll usually start hands-on treatment in that very same appointment. "
+                "The cost is £75 for the 50 minutes."
+            ),
+
+            # ── Do I need a GP referral? ────────────────────────────────────────
+            "gp_referral": (
+                "No — you don't need a GP referral at all. "
+                "You can self-refer and book directly with us by phone or online. "
+                "If you do have a referral letter or any relevant scan results, do bring them along — "
+                "they can be useful — but they're not required to book."
+            ),
+
+            # ── How many sessions will I need? ─────────────────────────────────
+            "how_many_sessions": (
+                "That's really something Mark or Leanne can give you a better idea of after your "
+                "first assessment, once they've had a proper look. "
+                "It depends entirely on the condition, how long you've had it, and how your body responds. "
+                "Some people see a big improvement in two or three sessions; others with longer-standing "
+                "issues may need more. "
+                "What I can say is that after the assessment you'll have a clear picture of what's "
+                "going on and a realistic plan."
+            ),
+
+            # ── What conditions do you treat? ──────────────────────────────────
+            "conditions_treated": (
+                "We treat a really wide range of musculoskeletal and soft-tissue conditions. "
+                "That includes back pain and sciatica, neck pain, shoulder pain — including frozen shoulder "
+                "and rotator cuff issues — hip and knee problems, sports injuries, ankle sprains, "
+                "plantar fasciitis, Achilles tendon issues, tennis elbow and golfer's elbow, "
+                "post-operative rehabilitation, and general muscle strains and joint stiffness. "
+                "We also offer acupuncture, psychotherapy, and a prescribing service. "
+                "If you're not sure whether your condition is something we can help with, "
+                "the best thing to do is book an assessment and let the physiotherapist advise you directly."
+            ),
+
+            # ── Tell me about your practitioners ───────────────────────────────
+            "practitioners": (
+                "We have two chartered physiotherapists. "
+                "Mark Dyer is the founder — he holds an MSc and is HCPC-registered. "
+                "He works at Alcester on Mondays, Tuesdays, and Wednesdays, "
+                "and at Redditch on Thursdays. "
+                "Leanne is also a chartered physiotherapist and HCPC-registered. "
+                "She works at Alcester on Thursdays and Fridays, "
+                "and at Redditch on Mondays. "
+                "Both are qualified prescribers. "
+                "If you'd like to see a specific practitioner, just let me know and I'll look for "
+                "slots with them."
+            ),
+
+            # ── Alcester vs Redditch — which should I choose? ──────────────────
+            "location_comparison": (
+                "Both clinics offer exactly the same services and the same team. "
+                "The main differences are availability and access. "
+                "Alcester is open Monday to Friday, so you have a lot more choice of days. "
+                "It's at the Greig Leisure Centre, which has free parking right outside — "
+                "around 80 spaces. "
+                "Redditch is only open Mondays and Thursdays, "
+                "but it's very convenient if you're near Redditch town centre — "
+                "the train station is about a 5 to 7 minute walk from the clinic. "
+                "If you just want the most availability, Alcester is the better bet. "
+                "If Redditch suits your location better and Monday or Thursday works for you, "
+                "that's a perfectly good option too."
+            ),
+
+            # ── What is shockwave therapy? ─────────────────────────────────────
+            "shockwave_description": (
+                "Shockwave therapy uses high-energy acoustic sound waves directed at a specific area "
+                "of the body. "
+                "It stimulates the body's natural healing response, increases blood flow, "
+                "and helps break down calcification in stubborn chronic conditions. "
+                "It's particularly effective for plantar fasciitis, Achilles tendinopathy, "
+                "tennis elbow, calcific shoulder, and other tendon problems that haven't "
+                "responded to conventional treatment. "
+                "It's not a separate booking — the physiotherapist will decide during your session "
+                "whether shockwave is appropriate for you, and it's then used as part of that appointment. "
+                "If it's used, a £45 surcharge is added to your session fee."
+            ),
+
+            # ── What is MLS Laser therapy? ─────────────────────────────────────
+            "laser_description": (
+                "MLS stands for Multiwave Locked System. "
+                "It's a medical-grade laser that uses two wavelengths of light simultaneously "
+                "to reduce pain and inflammation and speed up tissue repair. "
+                "It's completely non-invasive and painless — most patients feel a gentle warmth. "
+                "It works well for soft tissue injuries, joint pain, tendon issues, and helping "
+                "the body recover faster from acute injuries. "
+                "Like shockwave, it's decided on during the session rather than booked in advance, "
+                "and a £45 surcharge applies if it's used."
+            ),
+
+            # ── What is acupuncture? ───────────────────────────────────────────
+            "acupuncture_description": (
+                "Our physiotherapy-led acupuncture uses fine sterile needles placed at specific "
+                "points on the body to stimulate the nervous system, reduce pain, and promote healing. "
+                "It's commonly used alongside physiotherapy for musculoskeletal conditions — "
+                "particularly chronic pain, muscle tension, headaches, and conditions that haven't "
+                "fully responded to other treatments. "
+                "Sessions are 50 minutes and cost £75. "
+                "You'd normally start with a physiotherapy assessment first, "
+                "and acupuncture may then be incorporated into your treatment plan."
+            ),
+
+            # ── What is psychotherapy? ─────────────────────────────────────────
+            "psychotherapy_description": (
+                "Our psychotherapy service provides a confidential, safe space to explore "
+                "thoughts, feelings, and emotional well-being. "
+                "Techniques can include cognitive approaches, hypnotherapy, and spiritual healing "
+                "where appropriate. "
+                "At Theorem the approach is holistic — physical and emotional health are seen as "
+                "connected — so psychotherapy can be offered alongside physiotherapy, or as a "
+                "standalone service. "
+                "Sessions are 50 minutes and cost £75. "
+                "You can book directly — no referral needed."
+            ),
+
+            # ── Do you do home visits? ─────────────────────────────────────────
+            "home_visits": (
+                "Home visits aren't part of our standard service, but they may be possible in "
+                "certain circumstances. "
+                "If you'd like to enquire about that, the best thing to do is email us directly "
+                "at info@theoremhealth.co.uk and Mark will get back to you."
+            ),
+
+            # ── Can I book online? ─────────────────────────────────────────────
+            "online_booking": (
+                "Yes — you can book online at theoremhealth.co.uk, or you can book right now "
+                "over the phone with me. "
+                "Booking by phone is usually the quickest way to get your preferred slot sorted."
+            ),
+
+            # ── Do you offer online or telephone consultations? ────────────────
+            "online_consultations": (
+                "No — all our appointments are in-person only, at either our Alcester or "
+                "Redditch clinic. "
+                "We don't currently offer video or telephone consultations."
+            ),
+
+            # ── Do you see children? ───────────────────────────────────────────
+            "children_policy": (
+                "We see adults only — we don't currently offer paediatric physiotherapy. "
+                "If you're looking for physiotherapy for a child, I'd recommend contacting your "
+                "GP who can refer to an NHS paediatric service, or searching for a private "
+                "paediatric physiotherapy clinic in your area."
+            ),
+
+            # ── What happens on my first visit? ───────────────────────────────
+            "first_visit": (
+                "On the day, try to arrive 5 to 10 minutes early to settle in and complete "
+                "any paperwork. "
+                "Wear or bring comfortable, loose clothing if you can — particularly shorts or "
+                "joggers if it's a lower-body issue — though don't worry if that's not possible. "
+                "If you have any relevant scan results, X-rays, MRI reports, or referral letters, "
+                "bring those too. "
+                "Your physiotherapist will take a full history, carry out a physical examination, "
+                "and in most cases begin treatment in that first session."
+            ),
+
+            # ── Can you explain the surcharge? ────────────────────────────────
+            "surcharge_explained": (
+                "The base session fee is £75 for 50 minutes — that covers the full physiotherapy "
+                "consultation and any hands-on treatment. "
+                "The £45 surcharge only applies if your physiotherapist uses specialist equipment "
+                "during your session — specifically shockwave therapy or MLS Laser therapy. "
+                "That's decided in the session, not at booking. "
+                "So you'll always know in advance that a session is £75, and you'll be told "
+                "if any equipment surcharge applies before you're charged."
+            ),
+
+            # ── Is there a waiting list? ───────────────────────────────────────
+            "waitlist": (
+                "No — we don't have a waiting list. Appointments are booked directly as slots "
+                "become available. "
+                "If there's nothing that suits you in the near future, I'd suggest booking the "
+                "next available slot and calling back to move it forward if something opens up."
+            ),
+
+            # ── What's your website? ───────────────────────────────────────────
+            "website": (
+                "Our website is theoremhealth.co.uk — you'll find information about all our "
+                "services, the team, and you can also book appointments there."
+            ),
+
+            # ── Prescribing service ────────────────────────────────────────────
+            "prescribing_service": (
+                "Both Mark and Leanne are qualified prescribers. "
+                "If during your physiotherapy assessment or follow-up it's appropriate to prescribe "
+                "medication — for example, analgesia to support your recovery — they can do that "
+                "directly without you needing to go back to your GP. "
+                "A prescribing consultation is £12.50."
+            ),
+
+            # ── Rehabilitation sessions ────────────────────────────────────────
+            "rehabilitation": (
+                "Our rehabilitation sessions are £65 for 50 minutes and are run by our "
+                "rehabilitation instructors. "
+                "They're separate from physiotherapy sessions and focus on progressive strengthening "
+                "and movement work — helping you rebuild function and get back to full activity. "
+                "They're typically recommended after the initial assessment phase, once the "
+                "physiotherapist has established a plan."
+            ),
+
+            # ── Between-session support ────────────────────────────────────────
+            "between_sessions_support": (
+                "If you have a question or concern between sessions — for example, if an exercise "
+                "is causing pain or something has changed — you're welcome to contact us by "
+                "phone or email. "
+                "The team aims to get back to you within one to two business days. "
+                "If your pain significantly worsens or you develop new symptoms, it's always worth "
+                "getting in touch sooner rather than waiting for your next appointment."
+            ),
+
+            # ── Reports, letters, medico-legal ────────────────────────────────
+            "reports_letters": (
+                "Yes — we can provide GP letters, discharge summaries, medico-legal reports, "
+                "and insurance letters. "
+                "There's no standard fee for these — it depends on what's needed. "
+                "If you require any written report or letter, please ask at your appointment or "
+                "email info@theoremhealth.co.uk and the team will advise you."
+            ),
+
+            # ── Insurance / can I claim back? ─────────────────────────────────
+            "insurance_claim": (
+                "We operate on a self-pay basis — you pay directly and your insurer isn't "
+                "invoiced by us. "
+                "However, many patients do claim back from their private health insurer after "
+                "paying — it depends on the terms of your policy. "
+                "We can provide a receipt or invoice for you to submit to your insurer. "
+                "We don't work with Bupa directly."
+            ),
+
+            # ── Accessibility ──────────────────────────────────────────────────
+            "accessibility": (
+                "Both our Alcester and Redditch clinics are wheelchair accessible. "
+                "If you have any specific requirements or need to discuss access before your visit, "
+                "please let us know when you book."
+            ),
+
+            # ── How do I contact you after calling? ───────────────────────────
+            "contact_after_call": (
+                "You can reach us by phone on this number, or by email at info@theoremhealth.co.uk. "
+                "We aim to respond to emails within one to two business days."
+            ),
+        },
     },
 }
 

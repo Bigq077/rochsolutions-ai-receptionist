@@ -508,8 +508,8 @@ TOOL_GET_CLINIC_INFO = {
     "name": "get_clinic_info",
     "description": (
         "Get factual clinic information. Use for hours, address, transport, prices, insurance, "
-        "services, parking, cancellation policy, or what to bring. "
-        "Never guess — always call this tool for factual questions."
+        "services, parking, cancellation policy, what to bring, or any FAQ topic. "
+        "Never guess — always call this tool for factual questions about the clinic."
     ),
     "input_schema": {
         "type": "object",
@@ -517,8 +517,35 @@ TOOL_GET_CLINIC_INFO = {
             "topic": {
                 "type": "string",
                 "enum": [
+                    # Core operational topics
                     "hours", "address", "transport", "parking", "prices", "insurance",
                     "services", "cancellation_policy", "what_to_bring",
+                    # FAQ topics — spoken answers for common caller questions
+                    "what_is_assessment",       # what happens in the first session
+                    "gp_referral",              # do I need a GP referral?
+                    "how_many_sessions",        # how many sessions will I need?
+                    "conditions_treated",       # what conditions do you treat?
+                    "practitioners",            # who are your physiotherapists?
+                    "location_comparison",      # Alcester vs Redditch — which is better?
+                    "shockwave_description",    # what is shockwave therapy?
+                    "laser_description",        # what is MLS laser therapy?
+                    "acupuncture_description",  # what is acupuncture?
+                    "psychotherapy_description",# what is psychotherapy?
+                    "home_visits",              # do you do home visits?
+                    "online_booking",           # can I book online?
+                    "online_consultations",     # do you offer video/phone appointments?
+                    "children_policy",          # do you see children?
+                    "first_visit",              # what happens on my first visit?
+                    "surcharge_explained",      # can you explain the £45 surcharge?
+                    "waitlist",                 # is there a waiting list?
+                    "website",                  # what is your website?
+                    "prescribing_service",      # can you prescribe medication?
+                    "rehabilitation",           # what are rehab sessions?
+                    "between_sessions_support", # can I contact you between sessions?
+                    "reports_letters",          # can you provide GP letters / reports?
+                    "insurance_claim",          # can I claim from my insurer?
+                    "accessibility",            # are you wheelchair accessible?
+                    "contact_after_call",       # how do I contact you?
                 ],
                 "description": "The topic to retrieve information about.",
             },
@@ -2262,7 +2289,8 @@ async def _exec_get_clinic_info(args: Dict[str, Any], session: Dict[str, Any]) -
     elif topic == "what_to_bring":
         text = clinic.get("what_to_bring", "")
     else:
-        text = ""
+        # Fall through to the faq dict for any FAQ topic
+        text = clinic.get("faq", {}).get(topic, "")
 
     return {"topic": topic, "info": text or "I don't have that specific information to hand."}
 
