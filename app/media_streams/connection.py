@@ -230,6 +230,7 @@ class SilenceHandler:
         # from WebSocketCallHandler so it always reflects the live session after
         # the "start" event reassigns self.session).
         self._get_session                   = get_session   # () -> dict | None
+        self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -239,11 +240,31 @@ class SilenceHandler:
         pass
 
     def on_speech_started(self) -> None:
-        """Call when STT detects actual speech (partial transcript).
-        Updates last_audio_received_at so since_audio guard works correctly."""
+        """Call when STT detects actual speech (partial transcript or energy VAD).
+        Cancels the silence timer so Susie doesn't re-ask while caller is speaking.
+        Schedules a 5-second recovery task: if no transcript arrives, re-arms the
+        timer so the call doesn't go permanently silent on an STT miss."""
         self.last_audio_received_at = time.time()
         self._cancel_timer()
-        logger.debug("[ms_silence] speech started — timer cancelled")
+        # Cancel any previous recovery task before starting a new one
+        if self._recovery_task and not self._recovery_task.done():
+            self._recovery_task.cancel()
+        self._recovery_task = asyncio.create_task(
+            self._speech_recovery(), name="ms_silence_speech_recovery"
+        )
+        logger.debug("[ms_silence] speech started — timer cancelled, recovery armed")
+
+    async def _speech_recovery(self) -> None:
+        """If AssemblyAI doesn't transcribe within 5s of speech detection,
+        re-arm the silence timer so the call doesn't hang silently forever."""
+        try:
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            return
+        # Only re-arm if we're still waiting (no transcript, no TTS running)
+        if not self._llm_busy and (self._task is None or self._task.done()):
+            logger.info("[ms_silence] recovery: STT miss detected — re-arming silence timer")
+            self._restart_timer()
 
     def set_state(self, state: str) -> None:
         """Update current_state so re-ask phrases are context-aware."""
@@ -345,6 +366,10 @@ class SilenceHandler:
     def on_transcript_received(self) -> None:
         """Call whenever a FinalTranscript arrives from STT."""
         self._cancel_timer()
+        # Cancel recovery task — transcript arrived, no re-arm needed
+        if self._recovery_task and not self._recovery_task.done():
+            self._recovery_task.cancel()
+        self._recovery_task              = None
         self.reask_count                 = 0
         self._consecutive_silence_count  = 0
         self.currently_reasking          = False
@@ -356,6 +381,9 @@ class SilenceHandler:
     def cancel(self) -> None:
         """Cancel the timer. Call when the call ends."""
         self._cancel_timer()
+        if self._recovery_task and not self._recovery_task.done():
+            self._recovery_task.cancel()
+        self._recovery_task = None
 
     # ── internal ───────────────────────────────────────────────────────────
 
