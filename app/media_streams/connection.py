@@ -1747,6 +1747,34 @@ class WebSocketCallHandler:
         except Exception as exc:
             logger.warning("[ms_conn] mirror-save failed: %r", exc)
 
+        # Notify staff if caller asked for a human but didn't get through
+        if (
+            self.session.get("human_requested")
+            and not self.session.get("booking_confirmed")
+            and not self.session.get("transfer_attempted")
+        ):
+            try:
+                import os as _os
+                from app.notifications.sms import send_sms as _send_sms
+                _staff_phone = _os.getenv("THEOREM_NOTIFICATION_SMS")
+                _caller      = (
+                    self.session.get("twilio_from_local")
+                    or self.session.get("twilio_from")
+                    or "unknown number"
+                )
+                if _staff_phone:
+                    await _send_sms(
+                        to=_staff_phone,
+                        message=(
+                            f"Hi Mark, a caller just asked to speak to you "
+                            f"but didn't get through. Their number is {_caller}. "
+                            f"Give them a call back when you get a chance. — Susie"
+                        ),
+                    )
+                    logger.info("[ms_conn] staff notify SMS sent → %s", _staff_phone)
+            except Exception as _notify_exc:
+                logger.warning("[ms_conn] staff notify SMS failed: %r", _notify_exc)
+
     # ========================================================================
     # Internal helper
     # ========================================================================

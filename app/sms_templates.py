@@ -73,10 +73,17 @@ def build_sms(session: dict) -> str:
     first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
     note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
 
-    # Clinic-level values from env
-    clinic_name    = CLINIC_NAME
-    clinic_address = CLINIC_ADDRESS
-    clinic_phone   = CLINIC_PHONE
+    # Clinic-level values — address resolved from selected_location for
+    # two-clinic setups (theorem_v2); falls back to CLINIC_ADDRESS env var
+    # for single-clinic deployments.
+    clinic_name  = CLINIC_NAME
+    clinic_phone = CLINIC_PHONE
+    _loc = (session.get("selected_location") or "").lower()
+    _location_addresses = {
+        "alcester": "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
+        "redditch": "51 Bromsgrove Road, Redditch, B97 4RH",
+    }
+    clinic_address = _location_addresses.get(_loc) or CLINIC_ADDRESS
     maps_link      = build_maps_link(clinic_address)
 
     body = BOOKING_CONFIRMATION_SMS.format(
