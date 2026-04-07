@@ -370,127 +370,52 @@ class AcuityAdapter:
         Return [{"id": <int>, "value": <str>}] for every required intake-form
         field that must be submitted with this appointment type.
 
-        Field values:
-          - checkbox → "1"
-          - date/birthday → "01/01/2000"  (placeholder; clinic follows up)
-          - text/other → "Phone booking"  (placeholder)
+        Hardcoded per appointment type — auto-detection is unreliable because
+        Theorem Health has two near-identical global "Client Details" forms
+        (IDs 1611057 and 1500327) that the API cannot distinguish per booking
+        type.  All field IDs were confirmed from /debug/acuity-forms on
+        2026-04-07.
 
-        Forms included:
-          1. Forms whose appointmentTypes explicitly list this type ID.
-          2. Form 1487657 (T&C form) — always included for all physio bookings.
-          Field 12885419 (NADA training form) is never included.
-
-        Override: env var ACUITY_FORM_FIELDS_<TYPE_ID> (comma-separated field
-        IDs, checkbox value "1" only) takes highest priority.
+        Forms and fields:
+          Form 1487657  "(A) Terms & Conditions inc Fees and Invoicing"
+            10610285  PLEASE TICK to SIGN…  checkbox  required  → "1"
+          Form 2385334  "Terms & Conditions and Fees"
+            13388219  I have read and agree to the terms above  checkbox  → "1"
+          Form 1500327  "Client Details Physio / TCM"  (Redditch)
+            8494898   D.O.B          textbox   required  → "01/01/2000"
+            8871008   Address        address   required  → "Phone booking"
+          Form 1611057  "Client Details Physio"  (Alcester)
+            8886352   D.O.B          textbox   required  → "01/01/2000"
+            8886353   Address        address   required  → "Phone booking"
         """
-        import os as _os
         raw_type_id = appointment_type_id.replace("acuity_", "")
         if raw_type_id in self._required_fields_cache:
             return self._required_fields_cache[raw_type_id]
 
-        # ── 1. Env var override (highest priority) ────────────────────────────
-        env_key = f"ACUITY_FORM_FIELDS_{raw_type_id}"
-        raw_val = _os.getenv(env_key, "").strip()
-        if raw_val:
-            required_fields: list = []
-            for token in raw_val.split(","):
-                token = token.strip()
-                if token:
-                    try:
-                        required_fields.append({"id": int(token), "value": "1"})
-                    except ValueError:
-                        logger.warning(
-                            "Acuity: invalid field ID %r in %s — skipping",
-                            token, env_key,
-                        )
-            logger.info(
-                "Acuity form fields for type %s: %s (from env var %s)",
-                raw_type_id, [f["id"] for f in required_fields], env_key,
-            )
-            self._required_fields_cache[raw_type_id] = required_fields
-            return required_fields
+        # Checkbox fields shared by all Theorem physio appointment types
+        _SHARED = [
+            {"id": 10610285, "value": "1"},   # (A) T&C checkbox — form 1487657
+            {"id": 13388219, "value": "1"},   # "I agree to terms" — form 2385334
+        ]
 
-        # ── 2. Auto-detect from Acuity /forms endpoint ────────────────────────
-        # A form is included if ANY of:
-        #   a) its appointmentTypes explicitly contains this type ID
-        #   b) its appointmentTypes is empty (global) AND its name contains one
-        #      of the known-relevant name fragments (allowlist approach — safer
-        #      than a denylist because Acuity accounts accumulate unrelated forms)
-        #
-        # Known relevant global forms for Theorem physio bookings:
-        #   "terms" → "(A) Terms & Conditions inc Fees and Invoicing"
-        #   "client details" → "Client Details Physio / TCM"
-        #
-        # Individual field 12885419 (NADA GB Training) is also excluded as a
-        # belt-and-braces guard even if the form filter somehow passes it.
-        _GLOBAL_FORM_ALLOWLIST = ["terms", "client details"]
-        _EXCLUDE_FIELD_IDS = {12885419}
+        # Per-type fields (D.O.B + Address) keyed by raw Acuity appointment type ID
+        _PER_TYPE: dict = {
+            # Redditch physio assessment — form 1500327 "Client Details Physio / TCM"
+            "33801703": [
+                {"id": 8494898, "value": "01/01/2000"},  # D.O.B
+                {"id": 8871008, "value": "Phone booking"},  # Address
+            ],
+            # Alcester physio assessment — form 1611057 "Client Details Physio"
+            "15823699": [
+                {"id": 8886352, "value": "01/01/2000"},  # D.O.B
+                {"id": 8886353, "value": "Phone booking"},  # Address
+            ],
+        }
 
-        def _form_is_relevant(form: dict) -> bool:
-            form_types = [str(t) for t in form.get("appointmentTypes", [])]
-            if raw_type_id in form_types:
-                return True  # explicitly linked to this appointment type
-            if form_types:
-                return False  # linked to OTHER appointment types only — skip
-            # Global form (empty list) — only include if name is in allowlist
-            name_lower = (form.get("name") or "").lower()
-            return any(fragment in name_lower for fragment in _GLOBAL_FORM_ALLOWLIST)
-
-        def _value_for_field(field_type: str) -> str:
-            t = (field_type or "").lower()
-            if t == "checkbox":
-                return "1"
-            if t in ("date", "birthday"):
-                return "01/01/2000"
-            return "Phone booking"
-
-        required_fields = []
-        seen_ids: set = set()
-        try:
-            response = await self._request_with_retry("GET", "/forms")
-            forms_data = response.json()
-            forms = forms_data if isinstance(forms_data, list) else []
-            logger.info(
-                "Acuity /forms returned %d form(s) for type %s",
-                len(forms), raw_type_id,
-            )
-            for form in forms:
-                form_id = form.get("id")
-                form_name = form.get("name", "")
-                form_types = form.get("appointmentTypes", [])
-                if not _form_is_relevant(form):
-                    logger.info(
-                        "Acuity form %s %r skipped (appointmentTypes=%s)",
-                        form_id, form_name, form_types,
-                    )
-                    continue
-                logger.info(
-                    "Acuity form %s %r included (appointmentTypes=%s)",
-                    form_id, form_name, form_types,
-                )
-                for field in form.get("fields", []):
-                    if not field.get("required"):
-                        continue
-                    fid = field.get("id")
-                    if fid is None or fid in seen_ids or fid in _EXCLUDE_FIELD_IDS:
-                        continue
-                    value = _value_for_field(field.get("type", ""))
-                    required_fields.append({"id": fid, "value": value})
-                    seen_ids.add(fid)
-                    logger.info(
-                        "Acuity required field: form=%s id=%s name=%r type=%s → value=%r",
-                        form_id, fid, field.get("name"), field.get("type"), value,
-                    )
-        except Exception as exc:
-            logger.warning(
-                "Acuity: failed to fetch /forms for type %s: %r — falling back to hardcoded",
-                raw_type_id, exc,
-            )
-            # Fallback: at minimum send the T&C checkbox
-            required_fields = [{"id": 10610285, "value": "1"}]
-
+        per_type = _PER_TYPE.get(raw_type_id, [])
+        required_fields = _SHARED + per_type
         logger.info(
-            "Acuity form fields for type %s: %s",
+            "Acuity form fields for type %s: %s (hardcoded)",
             raw_type_id, [f["id"] for f in required_fields],
         )
         self._required_fields_cache[raw_type_id] = required_fields
