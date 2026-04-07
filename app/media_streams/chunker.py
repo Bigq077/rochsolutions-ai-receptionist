@@ -180,6 +180,97 @@ def _ends_with_abbreviation(text: str) -> bool:
     return word in NEVER_SPLIT_AFTER
 
 
+_DECIMAL_RE = re.compile(r"\d\.\d")  # e.g. 10.30, £7.50 — don't split on these periods
+
+
+_SPLIT_MIN_LEFT  = 40  # left fragment must be ≥ this to be a valid split point
+_SPLIT_MIN_RIGHT = 20  # trailing fragment kept separate only if ≥ this length
+
+
+def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
+    """
+    Split a TTS phrase into sub-chunks at natural spoken boundaries.
+
+    Used by _tts_loop to shorten the audio in-flight when barge-in fires.
+    Shorter sub-chunks mean Twilio's buffer holds at most ~2-3s of audio
+    instead of ~6-7s for a long deterministic phrase.
+
+    max_chars=90 ≈ 15 words ≈ ~3 seconds of ElevenLabs audio.
+    Short texts (≤ max_chars) are returned unchanged as a single-item list.
+
+    Split priority (only applied when len(text) > max_chars):
+      1. " — " (em-dash + space) — clinic phrases like "I can do X — which works?"
+         Only when left fragment ≥ _SPLIT_MIN_LEFT (avoids splitting "Just to confirm —")
+      2. "? " / "! " / ". " — sentence boundaries (abbreviation + decimal guards)
+      3. ", " — only when left fragment already ≥ max_chars // 2 chars
+
+    Trailing fragments under _SPLIT_MIN_RIGHT chars are merged into the
+    preceding sub-chunk (avoids unnatural TTS prosody on very short inputs).
+    """
+    text = text.strip()
+    if not text or len(text) <= max_chars:
+        return [text] if text else []
+
+    parts: List[str] = []
+    remaining = text
+
+    while len(remaining) > max_chars:
+        split_at: int = -1
+
+        # Priority 1: em-dash " — "
+        idx = remaining.find(" — ")
+        if idx != -1:
+            candidate_left = remaining[: idx + len(" — ")].strip()
+            if len(candidate_left) >= _SPLIT_MIN_LEFT:
+                split_at = idx + len(" — ")
+
+        # Priority 2: sentence boundaries (? ! .)
+        if split_at == -1:
+            for marker in ("? ", "! ", ". "):
+                idx = remaining.find(marker)
+                while idx != -1:
+                    # Skip decimals like 10.30 or 7.50
+                    if marker == ". " and _DECIMAL_RE.search(remaining[max(0, idx - 2): idx + 2]):
+                        idx = remaining.find(marker, idx + 1)
+                        continue
+                    candidate = remaining[: idx + 1]
+                    if not _ends_with_abbreviation(candidate) and idx >= _SPLIT_MIN_LEFT:
+                        split_at = idx + len(marker)
+                        break
+                    idx = remaining.find(marker, idx + 1)
+                if split_at != -1:
+                    break
+
+        # Priority 3: comma — only if left side is already long enough
+        if split_at == -1:
+            idx = remaining.find(", ")
+            if idx != -1 and idx >= max_chars // 2:
+                split_at = idx + len(", ")
+
+        if split_at == -1 or split_at >= len(remaining):
+            # No usable split point — emit the whole remainder as-is
+            break
+
+        parts.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+
+    if remaining:
+        parts.append(remaining)
+
+    if not parts:
+        return [text]
+
+    # Merge-forward: trailing fragments under _SPLIT_MIN_RIGHT attach to predecessor
+    merged: List[str] = [parts[0]]
+    for frag in parts[1:]:
+        if len(frag) < _SPLIT_MIN_RIGHT and merged:
+            merged[-1] = merged[-1] + " " + frag
+        else:
+            merged.append(frag)
+
+    return merged
+
+
 def chunk_text_static(
     text: str,
     min_words: int = MIN_WORDS,

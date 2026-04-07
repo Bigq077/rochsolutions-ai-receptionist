@@ -1302,37 +1302,48 @@ class WebSocketCallHandler:
                     continue
                 _last_tts_chunk = chunk_text.strip()
 
-                # Tell the silence handler Susie is about to speak —
-                # timer must be cancelled while audio is playing.
-                self._silence_handler.on_tts_started()
+                # Split long phrases into shorter sub-chunks so barge-in fires
+                # sooner — at most ~1-2s of audio in Twilio's buffer instead of
+                # up to ~6-7s for a full deterministic day/time phrase.
+                from .chunker import split_tts_text
+                sub_chunks = split_tts_text(chunk_text)
+                _any_cancelled = False
 
-                # Track what's being spoken so _on_partial_transcript can
-                # store it in session["interrupted_tts_text"] for TTS resume.
-                self._current_tts_text = chunk_text
+                for sub_text in sub_chunks:
+                    # Tell the silence handler Susie is about to speak.
+                    self._silence_handler.on_tts_started()
 
-                self._tts_task = asyncio.create_task(
-                    tts.synthesise_chunk(
-                        text=chunk_text,
-                        audio_out_queue=self.audio_out_queue,
-                        audio_out_processor=self._audio_out_proc,
+                    # Track current sub-chunk so barge-in resume is accurate.
+                    self._current_tts_text = sub_text
+
+                    self._tts_task = asyncio.create_task(
+                        tts.synthesise_chunk(
+                            text=sub_text,
+                            audio_out_queue=self.audio_out_queue,
+                            audio_out_processor=self._audio_out_proc,
+                        )
                     )
-                )
-                try:
-                    await self._tts_task
-                except asyncio.CancelledError:
-                    logger.info("[ms_conn] TTS chunk cancelled (barge-in)")
-                except Exception as exc:
-                    logger.error("[ms_conn] TTS chunk error: %r", exc)
-                else:
-                    # Synthesis completed successfully (not cancelled, no error).
-                    # All audio chunks for this utterance are now on audio_out_queue.
-                    # Place a sentinel AFTER them so send_loop can fire on_tts_finished
-                    # only once every byte has actually been sent to Twilio — that is
-                    # the correct moment to start the silence timer.
+                    try:
+                        await self._tts_task
+                    except asyncio.CancelledError:
+                        logger.info("[ms_conn] TTS sub-chunk cancelled (barge-in)")
+                        _any_cancelled = True
+                        break
+                    except Exception as exc:
+                        logger.error("[ms_conn] TTS sub-chunk error: %r", exc)
+                    finally:
+                        self._tts_task = None
+
+                    # Barge-in may have fired between sub-chunks (rare race).
+                    if self._barge_in_pending:
+                        _any_cancelled = True
+                        break
+
+                if not _any_cancelled:
+                    # All sub-chunks completed — place sentinel so send_loop can
+                    # fire on_tts_finished once every byte has been sent to Twilio.
                     self._tts_text_pending = chunk_text
                     await self.audio_out_queue.put(_TTS_DONE_SENTINEL)
-                finally:
-                    self._tts_task = None
 
         except asyncio.CancelledError:
             pass
