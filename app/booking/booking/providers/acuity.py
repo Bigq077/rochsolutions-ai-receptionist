@@ -408,20 +408,32 @@ class AcuityAdapter:
             return required_fields
 
         # ── 2. Auto-detection — fetch ALL forms and filter client-side ────────
-        # The Acuity /api/v1/forms?appointmentTypeID=X endpoint does not
-        # reliably filter server-side, so we fetch all forms and check each
-        # form's `appointmentTypes` list ourselves.
+        # The Acuity /api/v1/forms endpoint returns all forms for the account.
+        # Each form has an `appointmentTypes` list.  Two cases apply this form
+        # to our booking:
+        #   a) appointmentTypes is empty / null  → "global" form, applies to ALL types
+        #   b) appointmentTypes explicitly contains our raw_type_id
         _CHECKBOX_TYPES = {"checkbox", "checkboxlist", "signature", "yesno"}
         required_fields = []
         try:
             response = await self._request_with_retry("GET", "/forms")
             forms = response.json() if isinstance(response.json(), list) else []
+            logger.info(
+                "Acuity forms API: %d form(s) returned for type %s — %s",
+                len(forms),
+                raw_type_id,
+                [
+                    {"form_id": f.get("id"), "name": str(f.get("name", ""))[:60],
+                     "appointmentTypes": f.get("appointmentTypes", [])}
+                    for f in forms
+                ],
+            )
             for form in forms:
-                # Only consider forms attached to this appointment type
-                form_type_ids = [
-                    str(t) for t in form.get("appointmentTypes", [])
-                ]
-                if raw_type_id not in form_type_ids:
+                form_type_ids = [str(t) for t in (form.get("appointmentTypes") or [])]
+                # Empty list = global form (applies to all appointment types)
+                is_global = len(form_type_ids) == 0
+                is_for_this_type = raw_type_id in form_type_ids
+                if not (is_global or is_for_this_type):
                     continue
                 for field in form.get("fields", []):
                     if (
@@ -430,9 +442,11 @@ class AcuityAdapter:
                     ):
                         required_fields.append({"id": field["id"], "value": "1"})
                         logger.info(
-                            "Acuity auto-detect: type=%s form=%r field_id=%s name=%r",
+                            "Acuity auto-detect: type=%s form=%r (global=%s) "
+                            "field_id=%s name=%r",
                             raw_type_id,
                             form.get("name", "")[:60],
+                            is_global,
                             field["id"],
                             field.get("name", "")[:80],
                         )
