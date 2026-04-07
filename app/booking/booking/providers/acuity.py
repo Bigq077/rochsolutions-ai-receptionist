@@ -303,12 +303,12 @@ class AcuityAdapter:
         acuity_type_id = appointment_type_id.replace("acuity_", "")
         acuity_cal_id = practitioner_id.replace("acuity_cal_", "") if practitioner_id else None
 
-        # Query day-by-day: Acuity's range query is unreliable for future dates.
-        # Per-day queries match what the Acuity booking UI uses internally.
+        # Query day-by-day in parallel: Acuity's range query is unreliable for
+        # future dates, but per-day queries can be fired concurrently.
         num_days = max(1, (end_date - start_date).days)
-        raw_items = []
-        for i in range(num_days):
-            day = start_date + timedelta(days=i)
+        days = [start_date + timedelta(days=i) for i in range(num_days)]
+
+        async def _fetch_day(day: date) -> list:
             day_str = day.isoformat()
             params = {
                 "appointmentTypeID": acuity_type_id,
@@ -323,12 +323,15 @@ class AcuityAdapter:
                     "/availability/times",
                     params=params,
                 )
-                day_slots = response.json()
+                slots = response.json()
             except Exception as day_err:
                 logger.warning("Acuity per-day query failed for %s: %r", day_str, day_err)
-                day_slots = []
-            print(f"{day_str}: {len(day_slots)} slots")
-            raw_items.extend(day_slots)
+                slots = []
+            print(f"{day_str}: {len(slots)} slots")
+            return slots
+
+        results = await asyncio.gather(*(_fetch_day(d) for d in days))
+        raw_items = [slot for day_slots in results for slot in day_slots]
 
         slots = []
         for item in raw_items:

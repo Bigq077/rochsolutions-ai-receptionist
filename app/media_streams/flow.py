@@ -391,11 +391,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "assessment as the best starting point.'\n"
             "EXAMPLE: 'Sorry to hear that — back pain can be really debilitating. "
             "I would probably recommend a physiotherapy assessment as the best starting point.'\n"
-            "MAXIMUM: 2 sentences, 30 words total.\n"
+            "MAXIMUM: 2 sentences then the confirmation question.\n"
             "ABSOLUTELY DO NOT ask 'how long have you had that?' or any duration question. "
-            "ABSOLUTELY DO NOT ask 'Does that sound OK?' or any confirmation question.\n"
             "DO NOT ask if they have been with us before.\n"
-            "DO NOT mention location, pricing, or any other topic."
+            "DO NOT mention location, pricing, or any other topic.\n"
+            "End EVERY response with exactly: 'Does that sound like a good starting point?'"
         ),
         "extract": "yes_no",
     },
@@ -2836,11 +2836,42 @@ class FlowEngine:
         # plain affirmatives like "yeah that sounds fine" — which would incorrectly
         # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
         if step["state"] == "CONFIRM_ASSESSMENT":
-            # No confirmation needed — auto-advance on any caller input after empathy plays
-            self.session["assessment_confirmed"] = True
-            self.session["flow_step"]            = step["step"] + 1
-            logger.info("[ms_flow] CONFIRM_ASSESSMENT: auto-advance → step %d", step["step"] + 1)
-            await self.ask_current_question()
+            _ca_class = _classify_confirm_assessment(text, transcript)
+            logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
+            if _ca_class in ("yes", "additive_detail"):
+                self.session["assessment_confirmed"] = True
+                self.session["flow_step"]            = step["step"] + 1
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: confirmed → step %d", step["step"] + 1)
+                await self.ask_current_question()
+                return
+            if _ca_class == "no":
+                # Caller wants something different — re-ask what brings them in
+                _ca_no = "No problem — could you tell me a bit more about what's brought you in?"
+                await self._tts.put(_ca_no)
+                self.session["last_question"] = _ca_no
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ca_no}
+                )
+                self.session["flow_step"] = 0  # back to COLLECT_REASON
+                self.session["state"] = "COLLECT_REASON"
+                return
+            if _ca_class == "correction":
+                # STT mishear — re-ask COLLECT_REASON cleanly
+                _ca_corr = "Sorry about that — what is it you'd like to come in for?"
+                await self._tts.put(_ca_corr)
+                self.session["last_question"] = _ca_corr
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ca_corr}
+                )
+                self.session["flow_step"] = 0
+                self.session["state"] = "COLLECT_REASON"
+                return
+            # clarification / frustration / unknown — re-ask the confirmation question
+            _ca_retry = self.session.get("last_question", "Does that sound like a good starting point?")
+            await self._tts.put(_ca_retry)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _ca_retry}
+            )
             return
 
         # ── NEW_OR_RETURNING: deterministic extraction BEFORE interrupt check ──────
