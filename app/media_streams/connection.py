@@ -273,7 +273,7 @@ class SilenceHandler:
             "[ms_silence] recovery: STT miss #%d detected — re-arming silence timer",
             self._stt_miss_count,
         )
-        if self._stt_miss_count >= 3:
+        if self._stt_miss_count >= 2:
             # Sustained STT failure — speak up directly rather than waiting for
             # the silence timer (which keeps getting cancelled by audio energy).
             logger.info("[ms_silence] STT miss threshold reached — prompting caller directly")
