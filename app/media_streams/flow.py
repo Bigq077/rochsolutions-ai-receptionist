@@ -657,6 +657,15 @@ def _classify_confirm_assessment(text: str) -> str:
         "that works", "right okay", "right then", "alright then",
         "champion", "sound", "sorted", "mint", "aye", "go on then",
         "no bother", "that'll do", "perfect",
+        # Implicit yes — caller re-affirming a condition they already stated.
+        # "I have back pain as I mentioned" = yes + detail restatement.
+        # These phrases confirm the assessment without using a bare affirmative.
+        "as i mentioned", "as i said", "like i said", "like i mentioned",
+        "i already said", "i already mentioned", "i already told you",
+        "i just said", "i just mentioned", "i told you",
+        "that's what i said", "that's what i mentioned",
+        "that's why i'm calling", "that is why i'm calling",
+        "that's my", "that is my",
     )
     if any(p in text for p in _YES):
         # Guard: don't classify as yes if the sentence expresses frustration/objection
