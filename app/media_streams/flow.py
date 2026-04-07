@@ -657,6 +657,8 @@ def _classify_confirm_assessment(text: str) -> str:
         "that works", "right okay", "right then", "alright then",
         "champion", "sound", "sorted", "mint", "aye", "go on then",
         "no bother", "that'll do", "perfect",
+        "obviously", "yes obviously", "yeah obviously", "clearly",
+        "of course yeah", "course", "course yeah",
         # Implicit yes — caller re-affirming a condition they already stated.
         # "I have back pain as I mentioned" = yes + detail restatement.
         # These phrases confirm the assessment without using a bare affirmative.
@@ -5199,8 +5201,12 @@ class FlowEngine:
                 "recently", "not long", "just a few", "couple months",
                 "few months", "couple of weeks", "few weeks", "this year",
                 "last month", "last few weeks", "few weeks ago",
-                "month ago", "weeks ago", "still going", "ongoing",
+                "month ago", "months ago", "weeks ago", "still going", "ongoing",
                 "currently", "active", "come regularly", "been coming",
+                # Specific time ranges within ~2 years
+                "6 months", "six months", "8 months", "eight months",
+                "10 months", "ten months", "12 months", "twelve months",
+                "18 months", "eighteen months", "a year ago", "about a year",
             )
             # Check long_ago first — "long time" takes priority over shorter matches
             for sig in long_ago:

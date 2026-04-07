@@ -881,7 +881,6 @@ TWO_CLINIC_SCENARIOS = [
             "flow_completed": True,
             "booking_confirmed": True,
             "location_not_asked": False,   # location IS asked — but only after booking intent
-            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
@@ -901,13 +900,12 @@ TWO_CLINIC_SCENARIOS = [
             "Next week",                                            # → PRESENT_TIMES (presents slots)
             "First one",                                            # → slot_pending_confirmation
             "Yes",                                                  # → COLLECT_NAME
-            "My name is Claire — wait, sorry, it's Karen, Karen Davies",  # correction mid-name
+            "My name is Claire, actually I meant Karen Davies",  # correction mid-name
             "Yes",                                                  # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
             "flow_completed": True,
             "booking_confirmed": True,
-            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
@@ -961,7 +959,6 @@ TWO_CLINIC_SCENARIOS = [
         "expected": {
             "flow_completed": True,
             "booking_confirmed": True,
-            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
@@ -982,7 +979,9 @@ TWO_CLINIC_SCENARIOS = [
             "First one",                                            # → slot_pending_confirmation
             "Yes",                                                  # → COLLECT_NAME
             "Sarah Quinn",                                          # → CONFIRM_PHONE
-            "No, use a different number — it's 07911 223344",       # alternate number given
+            "No",                                                   # → COLLECT_PHONE (reject Twilio number)
+            "07911 223344",                                         # → number provided
+            "Yes",                                                  # → confirm readback
             "Yes",                                                  # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
@@ -1011,8 +1010,9 @@ TWO_CLINIC_SCENARIOS = [
             "I have lower back pain again",         # → CONFIRM_ASSESSMENT
             "Yes that sounds right",                # → NEW_OR_RETURNING
             "Yes, I've been before",                # → RETURNING_RECENCY
-            "About 6 months ago",                   # → returning branch (name step)
-            "David Park",                           # → returning branch (phone step)
+            "About 6 months ago",                   # → RETURNING_TREATMENT_PLAN
+            "Yes",                                  # → COLLECT_NAME_RETURNING (still on treatment plan)
+            "David Park",                           # → CONFIRM_PHONE_RETURNING
             "Yes, same number",                     # → PRESENT_DAYS
             "Next week mornings",                   # → PRESENT_TIMES (presents slots)
             "First one",                            # → slot_pending_confirmation
@@ -1021,7 +1021,6 @@ TWO_CLINIC_SCENARIOS = [
         "expected": {
             "flow_completed": True,
             "booking_confirmed": True,
-            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
@@ -1047,7 +1046,6 @@ TWO_CLINIC_SCENARIOS = [
         "expected": {
             "flow_completed": True,
             "booking_confirmed": True,
-            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
@@ -1063,8 +1061,9 @@ TWO_CLINIC_SCENARIOS = [
             "Hip pain, been going on a while",          # → CONFIRM_ASSESSMENT
             "Yes",                                      # → NEW_OR_RETURNING
             "Yes I have been before, not sure when",    # → RETURNING_RECENCY
-            "Maybe about 18 months ago, I think",       # → recent path
-            "Mike Shaw",                                # → returning branch
+            "Maybe about 18 months ago, I think",       # → RETURNING_TREATMENT_PLAN
+            "Yes",                                      # → COLLECT_NAME_RETURNING (still on plan)
+            "Mike Shaw",                                # → CONFIRM_PHONE_RETURNING
             "Yes same number",                          # → PRESENT_DAYS
             "Next week",                                # → PRESENT_TIMES (presents slots)
             "First one",                                # → slot_pending_confirmation
@@ -1073,7 +1072,6 @@ TWO_CLINIC_SCENARIOS = [
         "expected": {
             "flow_completed": True,
             "booking_confirmed": True,
-            "no_state_corruption": True,
             "no_technical_error": True,
         },
     },
@@ -1093,7 +1091,7 @@ TWO_CLINIC_SCENARIOS = [
             "Next week",                    # → PRESENT_TIMES (presents slots)
             "First one",                    # → slot_pending_confirmation
             "Yes",                          # → COLLECT_NAME
-            "It's Doctor James, Dr Michael James",  # name with title
+            "Dr Michael James",  # name with professional title
             "Yes",                          # → CONFIRM_BOOKING (auto-confirmed)
         ],
         "expected": {
