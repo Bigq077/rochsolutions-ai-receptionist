@@ -28,15 +28,20 @@ LONDON_TZ = pytz.timezone("Europe/London")
 _TOKENS_KEY = "google_tokens"
 
 # ---------------------------------------------------------------------------
-# Acuity default appointment type
+# Acuity appointment type IDs
 # ---------------------------------------------------------------------------
-# The Acuity appointment type ID used for all Theorem bookings.
+# Each clinic location has its own Acuity appointment type.
 # Format: "acuity_<raw_id>" (the adapter strips the prefix before calling the API).
-# Override by setting DEFAULT_APPOINTMENT_TYPE_ID in the environment.
+# Override via env vars; hardcoded values are the known production IDs.
 import os as _os
 DEFAULT_ACUITY_APPOINTMENT_TYPE_ID: str = (
     f"acuity_{_os.getenv('DEFAULT_APPOINTMENT_TYPE_ID', '15823699')}"
 )
+# Per-location appointment type IDs — Redditch uses a different type from Alcester.
+_LOCATION_APPOINTMENT_TYPE_IDS: dict = {
+    "alcester": f"acuity_{_os.getenv('ACUITY_APPOINTMENT_TYPE_ID_ALCESTER', '15823699')}",
+    "redditch": f"acuity_{_os.getenv('ACUITY_APPOINTMENT_TYPE_ID_REDDITCH', '33801703')}",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1163,13 +1168,16 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         return {"error": "Booking system not configured. Please call the clinic directly.", "slots": []}
 
     try:
-        # Always use the environment-configured appointment type ID.
+        # Use per-location appointment type ID — each clinic has its own type in Acuity.
         # /availability/times MUST always receive appointmentTypeID — calling
         # without it returns an empty list regardless of actual availability.
-        appointment_type_id = DEFAULT_ACUITY_APPOINTMENT_TYPE_ID
+        appointment_type_id = (
+            _LOCATION_APPOINTMENT_TYPE_IDS.get(location)
+            or DEFAULT_ACUITY_APPOINTMENT_TYPE_ID
+        )
         logger.info(
-            "_check_availability_acuity: using appointment_type_id=%s (from env)",
-            appointment_type_id,
+            "_check_availability_acuity: location=%s using appointment_type_id=%s",
+            location, appointment_type_id,
         )
 
         loc_cfg = THEOREM_LOCATIONS.get(location, {})
