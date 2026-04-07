@@ -321,14 +321,6 @@ def format_abandoned_booking_sms(
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
 
-    # Use extracted condition label if available, fall back to raw reason
-    subject = condition_label or reason
-    if subject:
-        return (
-            f"Hi, you called {name} earlier about {subject}. "
-            f"We'd love to help — booking takes less than 2 minutes over the phone. "
-            f"Give us a call back whenever suits you. 😊 {phone}"
-        )
     return (
         f"Hi, you called {name} earlier and we'd love to help. "
         f"Booking takes less than 2 minutes over the phone — "
