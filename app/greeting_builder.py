@@ -62,7 +62,7 @@ def build_greeting(config: dict | None = None) -> str:
             next_day = get_next_open_day(config, now)
             return (
                 f"Hi, you've reached {clinic_name} — we're closed right now but I can still "
-                f"book you in. Our next available day is {next_day}. I'm Susie."
+                f"book you in. I'm Susie, how can I help?"
             )
 
         day_hours = next((v for k, v in opening_hours.items() if k.lower() == day_name), None)
@@ -75,7 +75,7 @@ def build_greeting(config: dict | None = None) -> str:
                 next_day = get_next_open_day(config, now)
                 return (
                     f"Hi, you've reached {clinic_name} — we're closed right now but I can still "
-                    f"book you in. Our next available day is {next_day}. I'm Susie."
+                    f"book you in. I'm Susie, how can I help?"
                 )
 
             if minutes_to_close <= 30:
