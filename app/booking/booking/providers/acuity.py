@@ -365,47 +365,86 @@ class AcuityAdapter:
         )
         return slots
     
-    def _get_required_form_fields(self, appointment_type_id: str) -> list:
+    async def _get_required_form_fields(self, appointment_type_id: str) -> list:
         """
-        Return a list of {"id": <int>, "value": "1"} for any intake form
-        checkbox fields that must be pre-checked for this appointment type.
+        Return a list of {"id": <int>, "value": "1"} for every required
+        checkbox / signature intake-form field that belongs to this appointment
+        type.
 
-        Configured via env var  ACUITY_FORM_FIELDS_<TYPE_ID>  as a
-        comma-separated list of integer field IDs, e.g.:
-            ACUITY_FORM_FIELDS_15823699=12885419
-            ACUITY_FORM_FIELDS_33801703=          # empty = no required fields
+        Priority:
+          1. Env var override  ACUITY_FORM_FIELDS_<TYPE_ID>  (comma-separated
+             field IDs) — set this if auto-detection misbehaves.
+          2. Auto-detection: fetch all forms from Acuity, keep only forms whose
+             `appointmentTypes` array includes this type ID, then collect every
+             required checkbox/signature field from those forms.
 
-        Results are cached after first read.
+        Results are cached per adapter instance after first fetch.
         """
         import os as _os
         raw_type_id = appointment_type_id.replace("acuity_", "")
         if raw_type_id in self._required_fields_cache:
             return self._required_fields_cache[raw_type_id]
 
+        # ── 1. Manual override via env var ────────────────────────────────────
         env_key = f"ACUITY_FORM_FIELDS_{raw_type_id}"
         raw_val = _os.getenv(env_key, "").strip()
-        required_fields: list = []
-        for token in raw_val.split(","):
-            token = token.strip()
-            if token:
-                try:
-                    required_fields.append({"id": int(token), "value": "1"})
-                except ValueError:
-                    logger.warning(
-                        "Acuity: invalid field ID %r in %s — skipping", token, env_key
-                    )
-
-        if required_fields:
+        if raw_val:
+            required_fields: list = []
+            for token in raw_val.split(","):
+                token = token.strip()
+                if token:
+                    try:
+                        required_fields.append({"id": int(token), "value": "1"})
+                    except ValueError:
+                        logger.warning(
+                            "Acuity: invalid field ID %r in %s — skipping",
+                            token, env_key,
+                        )
             logger.info(
-                "Acuity form fields for type %s: %s (from %s)",
+                "Acuity form fields for type %s: %s (env var %s)",
                 raw_type_id, [f["id"] for f in required_fields], env_key,
             )
-        else:
-            logger.info(
-                "Acuity form fields for type %s: none configured (%s not set)",
-                raw_type_id, env_key,
+            self._required_fields_cache[raw_type_id] = required_fields
+            return required_fields
+
+        # ── 2. Auto-detection — fetch ALL forms and filter client-side ────────
+        # The Acuity /api/v1/forms?appointmentTypeID=X endpoint does not
+        # reliably filter server-side, so we fetch all forms and check each
+        # form's `appointmentTypes` list ourselves.
+        _CHECKBOX_TYPES = {"checkbox", "checkboxlist", "signature", "yesno"}
+        required_fields = []
+        try:
+            response = await self._request_with_retry("GET", "/forms")
+            forms = response.json() if isinstance(response.json(), list) else []
+            for form in forms:
+                # Only consider forms attached to this appointment type
+                form_type_ids = [
+                    str(t) for t in form.get("appointmentTypes", [])
+                ]
+                if raw_type_id not in form_type_ids:
+                    continue
+                for field in form.get("fields", []):
+                    if (
+                        field.get("required")
+                        and field.get("type", "").lower() in _CHECKBOX_TYPES
+                    ):
+                        required_fields.append({"id": field["id"], "value": "1"})
+                        logger.info(
+                            "Acuity auto-detect: type=%s form=%r field_id=%s name=%r",
+                            raw_type_id,
+                            form.get("name", "")[:60],
+                            field["id"],
+                            field.get("name", "")[:80],
+                        )
+        except Exception as exc:
+            logger.warning(
+                "Acuity _get_required_form_fields failed (non-fatal): %r", exc
             )
 
+        logger.info(
+            "Acuity form fields for type %s: %s (auto-detected)",
+            raw_type_id, [f["id"] for f in required_fields],
+        )
         self._required_fields_cache[raw_type_id] = required_fields
         return required_fields
 
@@ -443,7 +482,7 @@ class AcuityAdapter:
         # Pre-check any required intake form checkbox fields.
         # Field IDs are configured per appointment type via env var
         # ACUITY_FORM_FIELDS_<TYPE_ID> (comma-separated integers).
-        required_fields = self._get_required_form_fields(request.appointment_type_id)
+        required_fields = await self._get_required_form_fields(request.appointment_type_id)
         if required_fields:
             payload["fields"] = required_fields
             logger.info(
