@@ -17,7 +17,7 @@ from typing import Optional
 # ============================================================================
 
 _DEFAULT_CLINIC_NAME  = "Theorem Health"
-_DEFAULT_CLINIC_PHONE = "07870 166861"
+_DEFAULT_CLINIC_PHONE = "07366 530580"
 
 
 def _cn(clinic_name: Optional[str]) -> str:
