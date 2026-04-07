@@ -4156,10 +4156,37 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] retry >= 3 on %r — graceful exit triggered", phrase_key)
                 return
-            # count == 1: Haiku fallback — acknowledge what the caller said and
-            # redirect to the pending question.  Fires for any unmatched input on
-            # the first retry so Susie always sounds natural rather than robotic.
+            # count == 1: sidebar check first, then Haiku fallback.
+            # Sidebar detection (Haiku, ~200-300ms) fires ONLY on the first failed
+            # extraction so there is zero overhead on clean turns.
+            # If the caller asked a clinic question mid-flow, answer it from
+            # clinic_config and re-ask the pending question — do NOT count this
+            # as a retry.  If it's not a sidebar, fall through to _haiku_fallback.
             if count == 1:
+                from app.sidebar_handler import detect_sidebar_topic
+                _sidebar_topic = await detect_sidebar_topic(transcript, step["state"])
+                if _sidebar_topic:
+                    from app.tools.receptionist_tools import _exec_get_clinic_info
+                    _faq_result = await _exec_get_clinic_info(
+                        {"topic": _sidebar_topic}, self.session
+                    )
+                    _faq_info = _faq_result.get("info", "")
+                    _generic = "I don't have that specific information to hand."
+                    if _faq_info and _faq_info != _generic:
+                        # Reset retry — this wasn't a failed extraction
+                        retry_counts[phrase_key] = 0
+                        pending_q = self.session.get("last_question", "")
+                        await self._tts.put(_faq_info)
+                        if pending_q:
+                            await self._tts.put(pending_q)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _faq_info}
+                        )
+                        logger.info(
+                            "[ms_flow] sidebar answered: topic=%s state=%s",
+                            _sidebar_topic, step["state"],
+                        )
+                        return
                 await self._haiku_fallback(transcript, step)
                 return
             # count == 2: hardcoded second retry
