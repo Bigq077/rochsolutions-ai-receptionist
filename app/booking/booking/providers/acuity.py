@@ -58,6 +58,8 @@ class AcuityAdapter:
             ),
             headers={"Connection": "keep-alive"},
         )
+        # Cache: appointment_type_id → list of {id, value} for required fields
+        self._required_fields_cache: dict = {}
     
     async def close(self):
         """Close the HTTP client."""
@@ -363,10 +365,48 @@ class AcuityAdapter:
         )
         return slots
     
+    async def _fetch_required_form_fields(self, appointment_type_id: str) -> list:
+        """
+        Return a list of {"id": <int>, "value": "1"} entries for every required
+        checkbox / signature field on the intake form(s) attached to this
+        appointment type.  Results are cached per adapter instance so the extra
+        API call only happens once per deployment lifecycle.
+        """
+        raw_type_id = appointment_type_id.replace("acuity_", "")
+        if raw_type_id in self._required_fields_cache:
+            return self._required_fields_cache[raw_type_id]
+
+        _CHECKBOX_TYPES = {"checkbox", "checkboxlist", "signature", "yesno"}
+        required_fields: list = []
+        try:
+            response = await self._request_with_retry(
+                "GET",
+                "/forms",
+                params={"appointmentTypeID": raw_type_id},
+            )
+            forms = response.json() if isinstance(response.json(), list) else []
+            for form in forms:
+                for field in form.get("fields", []):
+                    if field.get("required") and field.get("type", "").lower() in _CHECKBOX_TYPES:
+                        required_fields.append({"id": field["id"], "value": "1"})
+                        logger.info(
+                            "Acuity form field auto-check: form=%r field_id=%s name=%r",
+                            form.get("name", ""),
+                            field["id"],
+                            field.get("name", "")[:80],
+                        )
+        except Exception as exc:
+            logger.warning(
+                "Acuity _fetch_required_form_fields failed (non-fatal): %r", exc
+            )
+
+        self._required_fields_cache[raw_type_id] = required_fields
+        return required_fields
+
     async def create_booking(self, request: BookingRequest) -> Booking:
         """
         Create appointment in Acuity.
-        
+
         This operation is NOT retried on failure to prevent double-booking.
         Idempotency is handled by BookingService layer.
         """
@@ -393,7 +433,18 @@ class AcuityAdapter:
         if request.practitioner_id:
             acuity_cal_id = request.practitioner_id.replace("acuity_cal_", "")
             payload["calendarID"] = acuity_cal_id
-        
+
+        # Pre-check any required checkbox / signature intake form fields so that
+        # Acuity's "field X is required" 400 error never surfaces to the caller.
+        required_fields = await self._fetch_required_form_fields(
+            request.appointment_type_id
+        )
+        if required_fields:
+            payload["fields"] = required_fields
+            logger.info(
+                "Acuity booking: injecting %d required form field(s)", len(required_fields)
+            )
+
         # NO RETRY on POST to prevent double-booking
         try:
             response = await self._request_with_retry(
