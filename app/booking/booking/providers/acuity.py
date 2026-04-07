@@ -367,12 +367,21 @@ class AcuityAdapter:
     
     async def _get_required_form_fields(self, appointment_type_id: str) -> list:
         """
-        Return [{"id": <int>, "value": "1"}] for every required intake-form
-        checkbox that must be submitted with this appointment type.
+        Return [{"id": <int>, "value": <str>}] for every required intake-form
+        field that must be submitted with this appointment type.
 
-        Hardcoded defaults cover both Theorem clinic locations.
-        Override per-type via env var ACUITY_FORM_FIELDS_<TYPE_ID> (comma-
-        separated field IDs) if the form ever changes in Acuity.
+        Field values:
+          - checkbox → "1"
+          - date/birthday → "01/01/2000"  (placeholder; clinic follows up)
+          - text/other → "Phone booking"  (placeholder)
+
+        Forms included:
+          1. Forms whose appointmentTypes explicitly list this type ID.
+          2. Form 1487657 (T&C form) — always included for all physio bookings.
+          Field 12885419 (NADA training form) is never included.
+
+        Override: env var ACUITY_FORM_FIELDS_<TYPE_ID> (comma-separated field
+        IDs, checkbox value "1" only) takes highest priority.
         """
         import os as _os
         raw_type_id = appointment_type_id.replace("acuity_", "")
@@ -401,20 +410,57 @@ class AcuityAdapter:
             self._required_fields_cache[raw_type_id] = required_fields
             return required_fields
 
-        # ── 2. Hardcoded defaults ─────────────────────────────────────────────
-        # Field 10610285 = "(A) Terms & Conditions" checkbox (form 1487657).
-        # This is the ONLY required checkbox for physiotherapy bookings at both
-        # Theorem locations.  Field 12885419 is from the NADA training form and
-        # must NOT be submitted for regular physio appointments.
-        _DEFAULTS: dict = {
-            "15823699": [10610285],   # Alcester physio assessment
-            "33801703": [10610285],   # Redditch physio assessment
-        }
-        default_ids = _DEFAULTS.get(raw_type_id, [])
-        required_fields = [{"id": fid, "value": "1"} for fid in default_ids]
+        # ── 2. Auto-detect from Acuity /forms endpoint ────────────────────────
+        # Include a form if it explicitly lists this appointment type, OR if it
+        # is the known T&C form (1487657) which is global to all physio bookings.
+        _ALWAYS_INCLUDE_FORM_IDS = {1487657}
+        # Field that must never be injected (NADA GB Training consent — wrong form)
+        _EXCLUDE_FIELD_IDS = {12885419}
+
+        def _value_for_field(field_type: str) -> str:
+            t = (field_type or "").lower()
+            if t == "checkbox":
+                return "1"
+            if t in ("date", "birthday"):
+                return "01/01/2000"
+            return "Phone booking"
+
+        required_fields = []
+        seen_ids: set = set()
+        try:
+            response = await self._request_with_retry("GET", "/forms")
+            forms_data = response.json()
+            forms = forms_data if isinstance(forms_data, list) else []
+            for form in forms:
+                form_id = form.get("id")
+                form_types = [str(t) for t in form.get("appointmentTypes", [])]
+                # Include form if it explicitly lists this type, or is always-include
+                if raw_type_id not in form_types and form_id not in _ALWAYS_INCLUDE_FORM_IDS:
+                    continue
+                for field in form.get("fields", []):
+                    if not field.get("required"):
+                        continue
+                    fid = field.get("id")
+                    if fid is None or fid in seen_ids or fid in _EXCLUDE_FIELD_IDS:
+                        continue
+                    value = _value_for_field(field.get("type", ""))
+                    required_fields.append({"id": fid, "value": value})
+                    seen_ids.add(fid)
+                    logger.info(
+                        "Acuity required field: form=%s id=%s name=%r type=%s value=%r",
+                        form_id, fid, field.get("name"), field.get("type"), value,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Acuity: failed to fetch /forms for type %s: %r — falling back to hardcoded",
+                raw_type_id, exc,
+            )
+            # Fallback: at minimum send the T&C checkbox
+            required_fields = [{"id": 10610285, "value": "1"}]
+
         logger.info(
-            "Acuity form fields for type %s: %s (hardcoded default)",
-            raw_type_id, default_ids,
+            "Acuity form fields for type %s: %s",
+            raw_type_id, [f["id"] for f in required_fields],
         )
         self._required_fields_cache[raw_type_id] = required_fields
         return required_fields
