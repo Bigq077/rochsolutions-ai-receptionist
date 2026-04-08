@@ -1684,10 +1684,14 @@ class FlowEngine:
                 _pt_phrase = (
                     f"On {_pt_label} I've got {_pt_spoken} — does that work for you?"
                 )
-                self.session["selected_slot"]            = _pt_slots[0]["start"]
-                self.session["selected_slot_speech"]     = (
+                self.session["selected_slot"]             = _pt_slots[0]["start"]
+                self.session["selected_slot_speech"]      = (
                     f"{_pt_label} at {_pt_spoken}" if _pt_label else _pt_spoken
                 )
+                # Set flag so handle_transcript() routes next reply to
+                # _handle_slot_confirmation instead of falling through to
+                # the PRESENT_TIMES handler or the LLM catch-all.
+                self.session["slot_pending_confirmation"] = True
                 self.session["question_asked_this_turn"]  = True
                 await self._tts.put(_pt_phrase)
                 if _is_question_worth_storing(_pt_phrase):
@@ -3211,11 +3215,14 @@ class FlowEngine:
                 "right then", "alright then",
                 "said yes", "just said yes",
             )
-            # Guard: ordinal words ("last", "first", etc.) must be handled by the
-            # ordinal block below — not collapsed into a generic YES here.
+            # Guard: ordinal words and weekday names must be handled by their
+            # dedicated blocks below — must NOT collapse into a generic YES here.
+            # "yeah monday 10th" contains "yeah" (YES) and "monday" (weekday) —
+            # weekday guard prevents it from mapping to day[0].
             _ORDINAL_SKIP = {"first", "second", "third", "last", "final", "middle"}
             _pd_yes = (
                 not any(w in _ORDINAL_SKIP for w in text.split())
+                and not any(w in _WEEKDAY_WORDS for w in text.split())
                 and any(p in text for p in _PD_YES)
             )
             logger.info(
@@ -3412,6 +3419,13 @@ class FlowEngine:
                     "sounds good", "sounds fine", "that sounds",
                     "that's fine", "thats fine",
                     "go ahead", "please",
+                    # Natural spoken confirmations often missed:
+                    "it does", "yes it does", "it would", "it will",
+                    "suits me", "that suits", "suits", "does suit",
+                    "that'd work", "that would work",
+                    "sounds great", "that's great", "thats great",
+                    "perfect for me", "that's perfect", "thats perfect",
+                    "happy with that", "happy with",
                 )
                 _SSC_NO = (
                     "no", "nope", "no thanks", "nah",
@@ -3504,6 +3518,11 @@ class FlowEngine:
                     "ok", "okay", "sure", "fine", "alright", "perfect",
                     "that works", "that works for me", "sounds good",
                     "sounds fine", "that sounds", "go ahead", "please",
+                    # Natural spoken confirmations:
+                    "it does", "yes it does", "it would", "it will",
+                    "suits me", "that suits", "suits", "does suit",
+                    "that'd work", "sounds great", "that's great",
+                    "happy with that", "happy with",
                 )
                 if any(p in text for p in _SS_YES):
                     self.session["selected_slot"]        = _slots_ss[0]["start"]
@@ -3654,13 +3673,19 @@ class FlowEngine:
                     _spoken_time = _t2s_ord(_time_str_o) if _time_str_o else "that time"
                     _day_label_o  = _target_o.get("day_label", "")
                     _slot_speech_o = f"{_day_label_o} at {_spoken_time}" if _day_label_o else _spoken_time
+                    _nxt_ord_i = step["step"] + 1
+                    _nxt_ord_state = (
+                        self._active_flow[_nxt_ord_i]["state"]
+                        if _nxt_ord_i < len(self._active_flow) else "DONE"
+                    )
                     self.session["selected_slot"]        = _slot_iso_o
                     self.session["selected_slot_speech"] = _slot_speech_o
                     self.session["slot_confirmed"]       = True
-                    self.session["flow_step"]            = step["step"] + 1
+                    self.session["flow_step"]            = _nxt_ord_i
+                    self.session["state"]                = _nxt_ord_state
                     logger.info(
-                        "[ms_flow] %s: ordinal %r → idx=%d slot=%r (confirmed, advancing)",
-                        step["state"], _ordinal_idx, _resolved_idx, _slot_iso_o,
+                        "[ms_flow] %s: ordinal %r → idx=%d slot=%r next_state=%s (confirmed, advancing)",
+                        step["state"], _ordinal_idx, _resolved_idx, _slot_iso_o, _nxt_ord_state,
                     )
                     await self.ask_current_question()
                     return
@@ -3703,6 +3728,10 @@ class FlowEngine:
                         _h += 12
                     elif "am" in _txt_dt and _h == 12:
                         _h = 0
+                    elif "am" not in _txt_dt and 1 <= _h <= 6:
+                        # Clinic context: digits 1–6 without explicit am → PM
+                        # "2 o'clock" → 14:00, "half past three" → 15 handled by word path
+                        _h += 12
                     if 7 <= _h <= 20:   # sanity: clinic hours
                         _matched_hour = _h
 
@@ -3742,14 +3771,20 @@ class FlowEngine:
                         _spoken_dt     = _t2s_dt(_slot_times_dt[_slot_idx_dt])
                         _day_label_dt  = _target_dt.get("day_label", "")
                         _slot_speech_dt = f"{_day_label_dt} at {_spoken_dt}" if _day_label_dt else _spoken_dt
+                        _nxt_dt_i = step["step"] + 1
+                        _nxt_dt_state = (
+                            self._active_flow[_nxt_dt_i]["state"]
+                            if _nxt_dt_i < len(self._active_flow) else "DONE"
+                        )
                         self.session["selected_slot"]        = _slot_iso_dt
                         self.session["selected_slot_speech"] = _slot_speech_dt
                         self.session["slot_confirmed"]       = True
-                        self.session["flow_step"]            = step["step"] + 1
+                        self.session["flow_step"]            = _nxt_dt_i
+                        self.session["state"]                = _nxt_dt_state
                         logger.info(
                             "[ms_flow] %s: direct time match hour=%d → idx=%d "
-                            "slot=%r (confirmed, advancing)",
-                            step["state"], _matched_hour, _slot_idx_dt, _slot_iso_dt,
+                            "slot=%r next_state=%s (confirmed, advancing)",
+                            step["state"], _matched_hour, _slot_idx_dt, _slot_iso_dt, _nxt_dt_state,
                         )
                         await self.ask_current_question()
                         return
@@ -5393,6 +5428,12 @@ class FlowEngine:
             "sounds good", "that works", "go ahead",
             "please", "ok", "okay", "sure", "fine",
             "that one", "confirmed", "alright", "aye",
+            # Natural spoken confirmations:
+            "it does", "yes it does", "it would", "it will",
+            "suits me", "that suits", "suits", "does suit",
+            "that'd work", "sounds great", "that's great", "thats great",
+            "happy with that", "happy with",
+            "works for me",
         ]
         no_patterns = [
             "no", "nope", "nah", "wrong", "different",
