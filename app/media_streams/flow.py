@@ -94,6 +94,8 @@ def _format_slot_for_speech(label: str) -> str:
         h          = int(hour_str)
         minute     = int(min_str)
         ord_str    = _ORDINALS.get(day_int, f"{day_int}th")
+        if h == 12 and minute == 0:
+            return f"{day_name} the {ord_str} of {month_name} at twelve noon"
         if minute == 0:
             time_str = f"{h % 12 or 12} o'clock"
         else:
@@ -3230,6 +3232,9 @@ class FlowEngine:
                 # Day-specific clarifications (BUG 3)
                 "what was the day", "what day was", "what was that day",
                 "what day", "which day", "the day again",
+                # "repeat yourself" variants observed in live calls
+                "repeat yourself", "could you repeat", "please repeat",
+                "say it again please", "say that again please",
             )
             if any(p in text for p in _PD_REPEAT):
                 _pd_avail  = self.session.get("available_days", [])
@@ -3824,6 +3829,10 @@ class FlowEngine:
                 "have you got anything", "got anything",
                 "any later", "any earlier",
                 "after ", "nothing before", "nothing after",
+                # period-specific — "any afternoon slots", "slots in the afternoon"
+                "any afternoon", "afternoon slots", "slots in the afternoon",
+                "any morning", "morning slots", "slots in the morning",
+                "afternoon then", "any afternoon slots", "any morning slots",
             )
             _is_constraint = any(p in text for p in _CONSTRAINT_GUARD)
 
@@ -3998,6 +4007,16 @@ class FlowEngine:
                 _wants_earlier = any(p in text for p in (
                     "earlier", "before", "morning",
                 ))
+                # Period-only: no explicit "later than N" — just "afternoon" / "morning"
+                _wants_afternoon_period = (
+                    "afternoon" in text
+                    and not any(p in text for p in ("later than", "earlier than"))
+                )
+                _wants_morning_period = (
+                    "morning" in text
+                    and "afternoon" not in text
+                    and not any(p in text for p in ("later than", "earlier than"))
+                )
 
                 # Parse optional hour reference: "later than 1pm", "after 3"
                 _constraint_hour: Optional[int] = None
@@ -4029,6 +4048,29 @@ class FlowEngine:
                                 if _ci < len(_all_slots_ct):
                                     _filtered_slots.append(_all_slots_ct[_ci])
                             elif _wants_earlier and _ct_h < _constraint_hour:
+                                _filtered_times.append(_ct_time)
+                                if _ci < len(_all_slots_ct):
+                                    _filtered_slots.append(_all_slots_ct[_ci])
+                        except (ValueError, IndexError):
+                            pass
+                elif _wants_afternoon_period:
+                    # "any afternoon slots" / "do you have any slots in the afternoon"
+                    # → filter all times with h >= 12 regardless of what was presented
+                    for _ci, _ct_time in enumerate(_all_times_ct):
+                        try:
+                            _ct_h = int(_ct_time.split(":")[0])
+                            if _ct_h >= 12:
+                                _filtered_times.append(_ct_time)
+                                if _ci < len(_all_slots_ct):
+                                    _filtered_slots.append(_all_slots_ct[_ci])
+                        except (ValueError, IndexError):
+                            pass
+                elif _wants_morning_period:
+                    # "any morning slots" → filter h < 12
+                    for _ci, _ct_time in enumerate(_all_times_ct):
+                        try:
+                            _ct_h = int(_ct_time.split(":")[0])
+                            if _ct_h < 12:
                                 _filtered_times.append(_ct_time)
                                 if _ci < len(_all_slots_ct):
                                     _filtered_slots.append(_all_slots_ct[_ci])

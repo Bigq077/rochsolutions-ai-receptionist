@@ -8,8 +8,12 @@ import threading
 from datetime import datetime
 from typing import Any, List, Optional
 
+import logging
+
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+
+logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -70,17 +74,19 @@ def _append_values(values: List[List[Any]], tab_name: str) -> bool:
     try:
         service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID,
-            range=f"{tab_name}!A1",
+            range=f"'{tab_name}'!A1",
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body=body,
         ).execute()
-        print(f"✅ Sheets append ok -> tab={tab_name} rows={len(values)}")
+        logger.info("Sheets append ok tab=%r rows=%d", tab_name, len(values))
         return True
     except Exception as e:
-        print("❌ Sheets append failed:", repr(e))
-        print("Sheet ID:", SHEET_ID)
-        print("Tab:", tab_name)
+        logger.warning(
+            "Sheets append failed: tab=%r sheet_id=%r error=%r — "
+            "check the tab exists and GOOGLE_SHEETS_MESSAGES_TAB matches exactly",
+            tab_name, SHEET_ID[:8] + "…" if SHEET_ID else "", e,
+        )
         return False
 
 

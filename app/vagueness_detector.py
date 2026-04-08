@@ -81,6 +81,8 @@ def _time_to_speech(hhmm: str) -> str:
             11: "eleven", 12: "twelve",
         }
         hour_str = hour_words.get(hour12, str(hour12))
+        if hour24 == 12 and minute == 0:
+            return "twelve noon"
         if minute == 0:
             return f"{hour_str} o'clock {period}"
         elif minute == 30:
