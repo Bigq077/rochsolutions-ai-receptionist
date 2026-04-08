@@ -366,6 +366,12 @@ def _find_chosen_day_entry(available_days: list, chosen_day: str) -> Optional[di
     if not available_days:
         return None
     chosen_lower = chosen_day.lower()
+    # 0. Exact match — chosen_day is always set to a day_label string, so this
+    #    handles cases like two Thursdays ("Thursday 9th April" vs "Thursday 16th April")
+    #    where weekday-word matching would always return the first Thursday.
+    for day in available_days:
+        if day.get("day_label", "").lower() == chosen_lower:
+            return day
     for day in available_days:
         label_lower = day.get("day_label", "").lower()
         significant = [w for w in label_lower.split() if w in _WEEKDAY_WORDS]
@@ -706,6 +712,15 @@ def _classify_confirm_assessment(text: str) -> str:
     )
     if any(p in text for p in _CORRECTION):
         return "correction"
+
+    # 0.5 ── Interrogative forms that contain YES-like substrings but are questions ──
+    # "what sounds okay" contains "sounds okay" (YES list) — must be caught first.
+    _QUESTION_GUARD = (
+        "what sounds", "what sounds okay", "what sounds good", "what sounds fine",
+        "what does that mean", "what does that", "which sounds",
+    )
+    if any(p in text for p in _QUESTION_GUARD):
+        return "clarification"
 
     # 1 ── Explicit yes ──────────────────────────────────────────────────────
     _YES = (
@@ -1833,6 +1848,9 @@ class FlowEngine:
             self.session["question_asked_this_turn"] = True
             _allow_tools = step.get("allow_tools", True)
             response = await self._llm(instruction, allow_tools=_allow_tools)
+            # Store full CONFIRM_ASSESSMENT phrase for clarification replay
+            if step["state"] == "CONFIRM_ASSESSMENT" and response:
+                self.session["confirm_assessment_phrase"] = response
             # Extract only the question sentence from the LLM response so the
             # SilenceHandler re-asks a clean question, not the full paragraph.
             _q = _extract_question_sentence(response or "") or (step["question"] or "")
@@ -2469,10 +2487,15 @@ class FlowEngine:
                 return
 
             elif _hg_no and not _hg_yes:
+                # Seed partial digits already spoken in the same utterance
+                # e.g. "the right number is 07502" → seed "07502" so the
+                # next COLLECT_PHONE turn completes accumulation immediately.
+                import re as _re_seed
+                _seed_digits = _re_seed.sub(r"\D", "", text or "")
                 self.session["phone"]                  = None
                 self.session["phone_number"]           = None
                 self.session["customer_phone"]         = None
-                self.session["phone_digits_buffer"]    = ""
+                self.session["phone_digits_buffer"]    = _seed_digits if _seed_digits else ""
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = False
                 self.session["state"]                  = "COLLECT_PHONE"
@@ -2485,7 +2508,10 @@ class FlowEngine:
                     else _COLLECT_PHONE_INDEX
                 )
                 self.session.setdefault("collected", {}).pop("phone", None)
-                logger.info("[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE")
+                logger.info(
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE seeded=%r",
+                    _seed_digits or "(none)",
+                )
                 self.session["_last_handled_by"]   = "confirm_phone_no"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = True
@@ -3079,8 +3105,12 @@ class FlowEngine:
                 self.session["flow_step"] = 0
                 self.session["state"] = "COLLECT_REASON"
                 return
-            # clarification / frustration / unknown — re-ask the confirmation question
-            _ca_retry = self.session.get("last_question", "Does that sound okay?")
+            # clarification / frustration / unknown — replay the FULL recommendation,
+            # not just the tail "Does that sound okay?" question.
+            _ca_retry = (
+                self.session.get("confirm_assessment_phrase")
+                or self.session.get("last_question", "Does that sound okay?")
+            )
             await self._tts.put(_ca_retry)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _ca_retry}
@@ -4271,6 +4301,38 @@ class FlowEngine:
             # ── REPAIR / CLARIFICATION: replay last_question without advancing ──────
             # Must run BEFORE name extraction so phrases like "say that again"
             # (3 words, passes word-count gate) are never stored as a name.
+            # ── SLOT-REPAIR: caller wants to go back and review availability ─────
+            # Must run BEFORE _CN_REPAIR so slot-related phrases route back to
+            # PRESENT_TIMES rather than re-asking for the name.
+            _CN_SLOT_REPAIR = (
+                "repeat the slot", "repeat the slots", "slots you offered",
+                "availability", "available times", "available slots",
+                "repeat the availability", "offered for the availability",
+                "back to the slots", "go back to the times", "back to availability",
+                "what slots", "what times", "what were the times",
+                "what were the slots", "what were the options",
+                "the slots", "the times", "offered",
+            )
+            if any(p in text for p in _CN_SLOT_REPAIR):
+                _pt_states = {"PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"}
+                _pt_repair_idx = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in _pt_states),
+                    None,
+                )
+                if _pt_repair_idx is not None:
+                    self.session.pop("slot_confirmed", None)
+                    self.session.pop("selected_slot", None)
+                    self.session.pop("selected_slot_speech", None)
+                    self.session["flow_step"] = _pt_repair_idx
+                    self.session["state"]     = self._active_flow[_pt_repair_idx]["state"]
+                    logger.info(
+                        "[ms_flow] COLLECT_NAME: slot-repair → stepping back to %s",
+                        self.session["state"],
+                    )
+                    await self.ask_current_question()
+                    return
+
             _CN_REPAIR = (
                 "what was the question", "say that again", "say it again",
                 "repeat that", "repeat the question",
@@ -4659,6 +4721,23 @@ class FlowEngine:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         }
         if step["state"] in _COLLECT_NAME_STATES_FG and answer and len(answer.split()) == 1:
+            # Reject single-word STT garbage / function words before storing as a name fragment.
+            _FRAGMENT_REJECT = frozenset({
+                "in", "on", "at", "to", "for", "of", "by", "up", "as",
+                "is", "am", "are", "was", "be", "been", "do", "did",
+                "if", "got", "get", "has", "have", "had", "out", "off",
+                "yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure", "fine",
+                "works", "work", "sorry", "what", "well", "now", "just",
+                "like", "said", "please", "right", "wrong", "the", "a", "an",
+            })
+            if answer.lower() in _FRAGMENT_REJECT:
+                _cn_pending = self.session.get("last_question", "Who am I booking in today?")
+                await self._tts.put(_cn_pending)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cn_pending}
+                )
+                logger.info("[ms_flow] COLLECT_NAME: rejecting noise fragment %r — re-asking", answer)
+                return
             _frag = self.session.get("name_fragment")
             if _frag:
                 # Second turn: caller gave surname — combine into full name
