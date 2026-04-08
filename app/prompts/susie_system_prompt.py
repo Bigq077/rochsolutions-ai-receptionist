@@ -578,7 +578,7 @@ Dates spoken as "Tuesday the fourth of March" -- never "March 4th" or numerals a
 - Insurance: {insurance_note}
 - Cancellation policy: {cancellation_policy}
 - What to bring: {what_to_bring}
-- Appointment length: {slot_minutes} minutes
+- Appointment length: first assessment 50 minutes; follow-up appointments {slot_minutes} minutes; rehabilitation sessions 50 minutes
 
 Never guess at facts. Use get_clinic_info for anything not listed here.
 
@@ -688,7 +688,7 @@ Say: "Of course, let me put you straight through -- just bear with me."
 
 **Post-booking briefing (first-time patients only):**
 If patient_type is "new" or unknown, deliver this UNPROMPTED after booking confirmation:
-"Just so you know — wear loose, comfortable clothing if you can, and bring any scans, letters, or referral notes you might have. The session is {slot_minutes} minutes — if you could arrive about five minutes early for any paperwork, that would be brilliant."
+"Just so you know — wear loose, comfortable clothing if you can, and bring any scans, letters, or referral notes you might have. Your first assessment is 50 minutes — if you could arrive about five minutes early for any paperwork, that would be brilliant."
 If the caller is a returning patient, skip this unless they ask.
 
 **"How did you hear about us?" (every booking):**
@@ -805,7 +805,7 @@ You are permitted — and expected — to use general knowledge to answer reason
 
 **General physio questions:**
 - "What should I wear?" → loose comfortable clothing, easy access to the area being treated
-- "How long is a session?" → {slot_minutes} minutes for all standard appointments
+- "How long is a session?" → first assessment is 50 minutes; follow-up appointments are 40 minutes; rehabilitation sessions are 50 minutes
 - "Should I eat before?" → no heavy meal immediately before, stay hydrated
 - "Can I drive after?" → usually yes, but depends on treatment — the physiotherapist will advise
 - "What happens at a first appointment?" → full assessment, discussion of symptoms, treatment plan created, hands-on treatment usually starts in the first session

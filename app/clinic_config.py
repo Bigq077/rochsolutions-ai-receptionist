@@ -157,7 +157,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "fast_booking": True,
 
         # Core booking rules (from Mark)
-        "slot_minutes": 50,
+        "slot_minutes": 40,          # standard follow-up; new patient assessment = 50 mins
         "days_ahead": 180,  # up to 6 months in advance
         # Per-location working hours (used by booking system for slot filtering)
         "working_hours": {
