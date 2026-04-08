@@ -56,6 +56,9 @@ Return ONLY valid JSON, no commentary:
 If unclear, use "unknown" with "low" confidence."""}]
         )
         text = response.content[0].text.strip()
+        if not text:
+            # Empty model response — treat as unknown, no error log
+            return default
         result = json.loads(text)
         for key in ["type", "confidence", "intent"]:
             if key not in result:

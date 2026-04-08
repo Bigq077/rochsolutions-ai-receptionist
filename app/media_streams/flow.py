@@ -268,32 +268,75 @@ def _build_times_phrase(day_entry: dict) -> str:
     """
     Build the spoken time-list for a chosen day's slots.
 
-    Up to 4 times are listed. Returns empty string when no slot_times.
-    Uses _time_to_speech from vagueness_detector (no LLM, < 1ms).
+    Up to 4 times are listed. Times are grouped by period (morning/afternoon)
+    so "one o'clock" always carries the correct period label — prevents the
+    LLM misidentifying 1pm as "in the morning".
+
+    Example output:
+      1 slot  → "The only slot I have on Thursday is one in the afternoon — does that work?"
+      mixed   → "On Thursday I've got nine, ten, or eleven in the morning, or one in the afternoon — which of those works?"
     """
-    from app.vagueness_detector import _time_to_speech as _t2s
     day_label  = day_entry.get("day_label", "")
     slot_times = day_entry.get("slot_times", [])[:4]
     if not slot_times:
         return ""
-    spoken = [_t2s(t) for t in slot_times]
-    if len(spoken) == 1:
-        return (
-            f"The earliest I have on {day_label} is {spoken[0]} — does that work?"
-        )
-    if len(spoken) == 2:
-        return (
-            f"On {day_label} I've got {spoken[0]} or {spoken[1]} — which suits you?"
-        )
-    if len(spoken) == 3:
-        return (
-            f"On {day_label} I've got {spoken[0]}, {spoken[1]}, or {spoken[2]}"
-            f" — which of those works?"
-        )
-    return (
-        f"On {day_label} I've got {spoken[0]}, {spoken[1]}, {spoken[2]}, or {spoken[3]}"
-        f" — which of those works?"
-    )
+
+    def _period_of(hhmm: str) -> str:
+        try:
+            h = int(hhmm.split(":")[0])
+            return "in the morning" if h < 12 else ("in the afternoon" if h < 18 else "in the evening")
+        except Exception:
+            return "in the afternoon"
+
+    def _hour_word(hhmm: str) -> str:
+        """Abbreviated hour label — no period suffix."""
+        try:
+            h24 = int(hhmm.split(":")[0])
+            m   = int(hhmm.split(":")[1]) if len(hhmm.split(":")) > 1 else 0
+            h12 = h24 if h24 <= 12 else h24 - 12
+            if h12 == 0:
+                h12 = 12
+            _hw = {
+                1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+                6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+                11: "eleven", 12: "twelve",
+            }.get(h12, str(h12))
+            if m == 0:
+                return _hw
+            if m == 30:
+                return f"half past {_hw}"
+            if m == 15:
+                return f"quarter past {_hw}"
+            return f"{_hw} {m:02d}"
+        except Exception:
+            return hhmm
+
+    def _join_words(words: list) -> str:
+        if len(words) == 1:
+            return words[0]
+        if len(words) == 2:
+            return f"{words[0]} or {words[1]}"
+        return f"{', '.join(words[:-1])}, or {words[-1]}"
+
+    # Group by period — preserves insertion order (Python 3.7+)
+    groups: dict = {}
+    for t in slot_times:
+        p = _period_of(t)
+        groups.setdefault(p, []).append(_hour_word(t))
+
+    period_parts = [f"{_join_words(hours)} {period}" for period, hours in groups.items()]
+
+    if len(slot_times) == 1:
+        return f"The only slot I have on {day_label} is {period_parts[0]} — does that work?"
+
+    if len(period_parts) == 1:
+        group_str = period_parts[0]
+    elif len(period_parts) == 2:
+        group_str = f"{period_parts[0]}, or {period_parts[1]}"
+    else:
+        group_str = ", or ".join(period_parts)
+
+    return f"On {day_label} I've got {group_str} — which of those works?"
 
 
 _WEEKDAY_WORDS = frozenset({
@@ -1671,11 +1714,15 @@ class FlowEngine:
                 )
             return
 
-        # ── PRESENT_TIMES single-slot deterministic path (Phase 5) ──────────
-        # When the chosen day has exactly one slot, bypass the LLM entirely:
-        # ask "On [day] I've got [time] — does that work for you?" and set
-        # slot_pending_confirmation so the next "Yes" goes to _handle_slot_confirmation.
-        # Multi-slot days (2+) still fall through to the LLM path below.
+        # ── PRESENT_TIMES deterministic path ─────────────────────────────────
+        # All slot counts (1 or many) are handled here — LLM is never used for
+        # time offering.  This eliminates AM/PM phrasing errors caused by the
+        # LLM listing afternoon slots as "in the morning".
+        #
+        # 1-slot: sets selected_slot + slot_pending_confirmation so the next
+        #         YES/NO routes to _handle_slot_confirmation.
+        # N-slot: uses _build_times_phrase (grouped by period) and waits for
+        #         the caller to name their slot before confirming.
         if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
             _pt_avail  = self.session.get("available_days", [])
             _pt_chosen = self.session.get("chosen_day", "")
@@ -1713,6 +1760,30 @@ class FlowEngine:
                     step["state"], _pt_phrase[:80],
                 )
                 return
+            elif len(_pt_slots) > 1:
+                # Multi-slot deterministic path — bypass LLM entirely.
+                # _build_times_phrase groups by period so 1pm is always
+                # "one in the afternoon", never "one in the morning".
+                if self.session.get("slot_confirmed"):
+                    logger.info(
+                        "[ms_flow] %s: multi-slot stale guard — slot_confirmed=True, skipping",
+                        step["state"],
+                    )
+                    return
+                _pt_ms_phrase = _build_times_phrase(_pt_target)
+                if _pt_ms_phrase:
+                    self.session["question_asked_this_turn"] = True
+                    await self._tts.put(_pt_ms_phrase)
+                    if _is_question_worth_storing(_pt_ms_phrase):
+                        self.session["last_question"] = _pt_ms_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _pt_ms_phrase}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: %d-slot deterministic → %r (LLM bypassed)",
+                        step["state"], len(_pt_slots), _pt_ms_phrase[:80],
+                    )
+                    return
 
         if step["use_llm"]:
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
@@ -2264,6 +2335,43 @@ class FlowEngine:
         # Every branch returns — no fallthrough.
         # ════════════════════════════════════════════════════════════════════
         if self.session.get("state") == "CONFIRM_PHONE":
+            # ── NAME-REPAIR: caller says the captured name was wrong ───────────
+            # Must run BEFORE the YES/NO gate so repair utterances are never
+            # trapped as ambiguous phone confirmations.
+            _NAME_REPAIR = (
+                "got my name wrong", "name is wrong", "name's wrong",
+                "wrong name", "wrong with my name",
+                "misspelled my name", "mispelled my name",
+                "spelled wrong", "spelt wrong",
+                "go back to the name", "back to the name question",
+                "name question", "help me spell", "spell my name",
+                "messed up on my name", "messed up my name",
+                "got the name wrong",
+            )
+            if any(p in text for p in _NAME_REPAIR):
+                # Locate COLLECT_NAME step in the active flow (works for all flows)
+                _collect_name_states = {
+                    "COLLECT_NAME", "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                }
+                _cn_idx = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in _collect_name_states),
+                    None,
+                )
+                if _cn_idx is not None:
+                    self.session["full_name"] = None
+                    self.session.setdefault("collected", {}).pop("full_name", None)
+                    self.session.setdefault("collected", {}).pop("name", None)
+                    self.session["phone_readback_pending"] = False
+                    self.session["flow_step"] = _cn_idx
+                    self.session["state"]     = self._active_flow[_cn_idx]["state"]
+                    logger.info(
+                        "[ms_flow] CONFIRM_PHONE: name-repair → stepping back to %s",
+                        self.session["state"],
+                    )
+                    await self.ask_current_question()
+                    return
+
             _HG_YES = (
                 "yes", "yeah", "yep", "yup", "yeh", "ya",
                 "correct", "right", "that's right", "thats right",
@@ -6221,6 +6329,20 @@ class FlowEngine:
             })
             if len(words) == 1 and _raw_name.lower() in _NOT_A_NAME:
                 logger.info("[ms_extract] name: rejected filler %r as name", _raw_name)
+                return None
+
+            # Reject multi-word "names" that contain prepositions / function words.
+            # STT fragments like "in rock" pass the word-count gate (2 words) and
+            # neither word is a greeting, but "in" is clearly not a name component.
+            _NAME_FUNCTION_WORDS = frozenset({
+                "in", "on", "at", "to", "for", "of", "by", "up", "as",
+                "is", "am", "are", "was", "be", "been", "do", "did",
+                "if", "got", "get", "has", "have", "had", "out", "off",
+            })
+            if len(words) > 1 and any(w.lower() in _NAME_FUNCTION_WORDS for w in words):
+                logger.info(
+                    "[ms_extract] name: rejected function-word fragment %r as name", _raw_name
+                )
                 return None
 
             return _raw_name
