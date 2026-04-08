@@ -49,6 +49,8 @@ def format_booking_confirmation(
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    date_str = appointment_time.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
+    date_str = date_str.replace(" 0", " ")  # Remove leading zero from day
 
     name    = _cn(clinic_name)
     phone   = _cp(clinic_phone)
@@ -56,7 +58,7 @@ def format_booking_confirmation(
 
     msg = (
         f"Hi {patient_name}, you're all booked in with {name} on "
-        f"{day_name} {day_num} {month} at {time_str} at our {loc_str} clinic."
+        f"{date_str} at {time_str} at our {loc_str} clinic."
     )
     if practitioner:
         msg += f" Your appointment is with {practitioner}."
@@ -81,6 +83,8 @@ def format_insurance_booking_confirmation(
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    date_str = appointment_time.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
+    date_str = date_str.replace(" 0", " ")  # Remove leading zero from day
 
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
@@ -88,7 +92,7 @@ def format_insurance_booking_confirmation(
 
     msg = (
         f"Hi {patient_name}, you're all booked in with {name} on "
-        f"{day_name} {day_num} {month} at {time_str} at our {loc_str} clinic."
+        f"{date_str} at {time_str} at our {loc_str} clinic."
     )
     if practitioner:
         msg += f" Your appointment is with {practitioner}."
@@ -111,6 +115,8 @@ def format_first_visit_welcome(
     day_num  = appointment_time.strftime("%d").lstrip("0")
     month    = appointment_time.strftime("%b")
     time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
+    date_str = appointment_time.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
+    date_str = date_str.replace(" 0", " ")  # Remove leading zero from day
 
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
@@ -118,7 +124,7 @@ def format_first_visit_welcome(
 
     return (
         f"Hi {patient_name}, welcome to {name}! Your first appointment is on "
-        f"{day_name} {day_num} {month} at {time_str} at our {loc_str} clinic. "
+        f"{date_str} at {time_str} at our {loc_str} clinic. "
         f"Please arrive 5 minutes early — we look forward to meeting you! "
         f"Any questions? Call us on {phone}."
     )
@@ -212,6 +218,8 @@ def format_reschedule_confirmation(
     new_day_num  = new_time.strftime("%d").lstrip("0")
     new_month    = new_time.strftime("%b")
     new_time_str = new_time.strftime("%I:%M%p").lstrip("0").lower()
+    new_date_str = new_time.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
+    new_date_str = new_date_str.replace(" 0", " ")  # Remove leading zero from day
     loc_str      = location.title() if location else ""
 
     phone = _cp(clinic_phone)
@@ -220,7 +228,7 @@ def format_reschedule_confirmation(
     loc_clause = f" at our {loc_str} clinic" if loc_str else ""
     return (
         f"Hi {patient_name}, your appointment has been moved to "
-        f"{new_day} {new_day_num} {new_month} at {new_time_str}{loc_clause}. "
+        f"{new_date_str} at {new_time_str}{loc_clause}. "
         f"If anything changes, give us a call on {phone} and we'll sort it. See you then! {name}"
     )
 

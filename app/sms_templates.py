@@ -22,7 +22,7 @@ RETURNING_VISIT_NOTE = ""
 BOOKING_CONFIRMATION_SMS = (
     "Hi {patient_name} 👋\n\n"
     "Your appointment at {clinic_name} is confirmed:\n\n"
-    "📅 {appointment_day}\n"
+    "📅 {appointment_date}\n"
     "⏰ {appointment_time}\n"
     "📍 {clinic_address}\n\n"
     "{first_visit_note}"
@@ -66,6 +66,28 @@ def build_sms(session: dict) -> str:
         appointment_day  = slot_label
         appointment_time = ""
 
+    # Format full appointment date as "April 8, 2026"
+    # Extract month and day from appointment_day (e.g., "Friday 18 July")
+    from datetime import datetime
+    appointment_date = appointment_day  # fallback to day for now
+    try:
+        # Try to parse "Day DD Month" format and add current/next year
+        parts = appointment_day.split()
+        if len(parts) >= 3:
+            day_num = parts[1]
+            month_name = parts[2]
+            current_year = datetime.now().year
+            # Parse the date to get the proper formatted string
+            date_obj = datetime.strptime(f"{day_num} {month_name} {current_year}", "%d %B %Y")
+            # If the date is in the past, assume it's next year
+            if date_obj < datetime.now():
+                date_obj = datetime.strptime(f"{day_num} {month_name} {current_year + 1}", "%d %B %Y")
+            appointment_date = date_obj.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
+            # Remove leading zero from day
+            appointment_date = appointment_date.replace(" 0", " ")
+    except (ValueError, IndexError):
+        pass  # Use appointment_day as fallback
+
     # First-visit note
     # TODO: wire up first_visit detection — no is_first_visit field exists in
     # session; using patient_type="NEW" as proxy.
@@ -89,7 +111,7 @@ def build_sms(session: dict) -> str:
     body = BOOKING_CONFIRMATION_SMS.format(
         patient_name     = patient_name,
         clinic_name      = clinic_name,
-        appointment_day  = appointment_day,
+        appointment_date = appointment_date,
         appointment_time = appointment_time,
         clinic_address   = clinic_address,
         first_visit_note = note,
