@@ -1280,10 +1280,12 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "do NOT ask any clarifying questions, do NOT ask what they want to know. "
             "If {faq_topic} is 'services': respond with exactly this preamble first: "
             "'Absolutely, I can help you with that! Here are our services:' "
-            "then list every service by name only — do NOT include prices, "
-            "durations, or surcharges in the list. "
-            "Be concise and natural. "
-            "After answering, ask: 'Is there anything else I can help you with?'"
+            "then read out the service names ONLY — nothing else. "
+            "STRICT: do NOT mention any price, cost, fee, surcharge, duration, "
+            "or appointment length. Names only. "
+            "Do NOT use any markdown formatting — no asterisks, no hyphens, no bullet symbols. "
+            "Speak naturally as if on a phone call. "
+            "After the list, ask: 'Is there anything else I can help you with?'"
         ),
         "extract": "none",
     },
@@ -5876,8 +5878,11 @@ class FlowEngine:
             topic = _FAQ_TOPICS[intent]
             _svc_preamble = (
                 "Start with: 'Absolutely, I can help you with that! Here are our services:' "
-                "then list every service by name only — do NOT include prices, "
-                "durations, or surcharges in the list. "
+                "then read out the service names ONLY — nothing else. "
+                "STRICT: do NOT mention any price, cost, fee, surcharge, duration, "
+                "or appointment length. Names only. "
+                "Do NOT use any markdown formatting — no asterisks, no hyphens, no bullet symbols. "
+                "Speak naturally as if on a phone call. "
                 if topic == "services" else ""
             )
             instruction = (
