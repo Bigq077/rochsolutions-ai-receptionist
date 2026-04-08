@@ -309,7 +309,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "late_payment_charge": True,
         "deposit_required": False,
         "payment_plans": False,
-        "cancellation_fee_pct": 100,           # 100% of session fee if <24h notice
+        "cancellation_fee_pct": 75,            # 75% of session fee if <24h notice
         "cancellation_notice_hours": 24,       # minimum notice to avoid fee
         "reschedule_notice_hours": 24,         # rescheduling with <24h notice = treated as cancellation
         "same_day_booking_allowed": False,     # minimum 24h notice required
@@ -332,16 +332,19 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "If the AI can't fully help, direct to website and/or take a message/offer a callback/escalate to staff.",
         ],
 
-        # Services (from Mark)
+        # Services (from website)
         "services": [
             "Physiotherapy assessment (holistic approach: mobility/strength + emotional well-being lens)",
             "Physiotherapy follow-up sessions (progress tracking + plan refinement; referrals/imaging support where appropriate)",
             "Prescribing (qualified prescribers; e.g., analgesia when appropriate)",
             "Remedial rehabilitation with rehabilitation instructors (coordinated care)",
             "Shockwave therapy (targeted sound waves to stimulate healing; often tendon issues)",
-            "MLS Laser therapy (pain relief, reduce inflammation, speed tissue repair)",
+            "Class IV Laser therapy (pain relief, reduce inflammation, speed tissue repair)",
             "Acupuncture",
             "Psychotherapy (safe space; can include hypnotherapy and spiritual healing techniques)",
+            "Reiki and Energy Healing (one-hour sessions)",
+            "Wellness and stress relief massage with In-light Therapy (one-hour sessions)",
+            "Auricular acupuncture for stress relief (one-hour sessions)",
         ],
 
         # Full service descriptions — used by AI to answer "what does X involve?"
@@ -392,14 +395,31 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "as hypnotherapy and spiritual healing, it aims to reduce stress, enhance mental well-being, "
                 "and foster coping strategies — empowering clients to navigate challenges and achieve balance."
             ),
+            "Reiki and Energy Healing": (
+                "Reiki and energy healing are hour-long holistic treatments that work with the body's "
+                "natural energy to promote relaxation, reduce stress, and support overall well-being."
+            ),
+            "Wellness and Stress Relief Massage": (
+                "A one-hour wellness and stress relief massage, which can include In-light Therapy — "
+                "a gentle light-based treatment used alongside massage to support relaxation and recovery."
+            ),
+            "Auricular Acupuncture": (
+                "Auricular acupuncture uses fine needles placed at specific points on the ear to help "
+                "relieve stress and promote calm. Sessions are one hour."
+            ),
         },
 
-        # Pricing & policies (from Mark)
+        # Pricing & policies (from website, updated Oct 2021)
         "pricing_summary": (
-            "Physio sessions — both assessments and follow-ups — are £75 for 50 minutes. "
-            "Rehabilitation sessions are £65 for 50 minutes. Prescribing consultations are £12.50. "
-            "Acupuncture is £75 for 50 minutes. Psychotherapy is £75 for 50 minutes. "
-            "A £45 surcharge is added to your session bill if shockwave or MLS Laser therapy is used."
+            "New patient or new condition assessment: £75 for 50 minutes. "
+            "Standard follow-up appointments: £75 for 40 minutes. "
+            "Rehabilitation sessions: £65 for 50 minutes. "
+            "Prescribing consultations: £12.50. "
+            "Standalone shockwave or Class IV Laser session: £120 for 30 minutes. "
+            "If shockwave or Class IV Laser is used within a standard session, a £45 surcharge applies. "
+            "Package of 4 x shockwave and Class IV Laser Therapy: £420. "
+            "Advanced one-hour treatments (Reiki, Energy Healing, Hypnotherapy, Wellness Massage, "
+            "Auricular Acupuncture) are also available — enquire for pricing."
         ),
         # Structured pricing used by the intake/recommendation booking flow
         "service_prices": {
@@ -439,22 +459,39 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             },
         },
         "pricing_details": {
-            "physio_session_gbp": 75.0,
+            "new_patient_assessment_gbp": 75.0,
+            "new_patient_duration_mins": 50,
+            "standard_followup_gbp": 75.0,
+            "standard_followup_duration_mins": 40,
             "rehab_session_gbp": 65.0,
+            "rehab_duration_mins": 50,
             "prescribing_gbp": 12.50,
             "specialist_equipment_surcharge_gbp": 45.0,
+            "standalone_shockwave_laser_gbp": 120.0,
+            "standalone_shockwave_laser_duration_mins": 30,
+            "package_4x_shockwave_laser_gbp": 420.0,
+            "package_validity_months": 6,
+            "package_cooling_off_days": 14,
             "notes": [
-                "£45 surcharge added to session bill if shockwave or MLS Laser therapy is used.",
+                "£45 surcharge added to session bill if shockwave or Class IV Laser is used within a standard session.",
+                "Standalone shockwave/laser: £120 for 30 minutes.",
+                "Package of 4x shockwave and Class IV Laser: £420 (non-transferable, 6-month validity).",
                 "Invoices raised immediately after consultation.",
                 "Packages invoiced; due within 7 days.",
                 "Late/non-payment charges apply.",
+                "Cancellation with <24h notice: 75% of session fee charged.",
             ],
         },
 
         "cancellation_policy": (
             "We require at least 24 hours' notice to cancel or rearrange an appointment. "
-            "Failure to give sufficient notice will result in the full session fee being charged. "
-            "Please refer to our website for complete terms and conditions."
+            "If you cancel with less than 24 hours' notice, or don't attend, "
+            "a charge of 75% of the session fee applies. "
+            "For prepaid or package appointments cancelled at short notice, "
+            "the 75% penalty is deducted from your credit balance. "
+            "Packages are non-transferable, valid for 6 months from purchase, "
+            "and have a 2-week cooling-off period. "
+            "Please refer to our website for full terms and conditions."
         ),
         "what_to_bring": "If you can, bring shorts or wear loose clothing — but don't worry if you can't.",
         "arrival_note": "Please aim to arrive 5 to 10 minutes before your appointment.",
@@ -723,10 +760,12 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Do you offer packages or block booking discounts? ─────────────
             "packages_discounts": (
-                "No — we don't offer packages or block booking discounts. "
-                "Each session is priced individually. "
-                "Physiotherapy sessions are £75, rehabilitation sessions are £65, "
-                "and prescribing consultations are £12.50."
+                "Yes — we do have one package available: four sessions of combined shockwave "
+                "and Class IV Laser Therapy for £420, which works out cheaper than booking them individually. "
+                "Packages are valid for six months from the date of purchase and are non-transferable. "
+                "There's a two-week cooling-off period if you change your mind. "
+                "Other than that, individual sessions are priced as standard — "
+                "there aren't any general block booking discounts."
             ),
 
             # ── Can I book online? ─────────────────────────────────────────────
@@ -765,13 +804,15 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Can you explain the surcharge? ────────────────────────────────
             "surcharge_explained": (
-                "The base session fee is £75 for 50 minutes — that covers the full physiotherapy "
-                "consultation and any hands-on treatment. "
-                "The £45 surcharge only applies if your physiotherapist uses specialist equipment "
-                "during your session — specifically shockwave therapy or MLS Laser therapy. "
-                "That's decided in the session, not at booking. "
-                "So you'll always know in advance that a session is £75, and you'll be told "
-                "if any equipment surcharge applies before you're charged."
+                "The base session fee is £75 — that covers the full physiotherapy consultation "
+                "and any hands-on treatment. "
+                "A £45 surcharge applies on top if your physiotherapist uses shockwave therapy "
+                "or Class IV Laser during that session — that's decided in the room, not at booking, "
+                "and you'll always be told before it's applied. "
+                "Alternatively, if you want shockwave or laser as a standalone treatment, "
+                "that's a separate 30-minute booking at £120. "
+                "There's also a package of four combined shockwave and laser sessions for £420 "
+                "if you need a course of treatment."
             ),
 
             # ── Is there a waiting list? ───────────────────────────────────────
@@ -869,7 +910,8 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "physio_vs_rehab_difference": (
                 "A physiotherapy session is with Mark or Leanne — a qualified chartered physiotherapist. "
                 "It covers assessment, diagnosis, hands-on treatment, and planning. "
-                "Those are £75 for 50 minutes. "
+                "Your first assessment is 50 minutes; follow-up sessions are 40 minutes. "
+                "Both are £75. "
                 "A rehabilitation session is with one of our rehabilitation instructors — "
                 "it's more exercise and movement focused, designed to rebuild your strength and function "
                 "once the treatment plan is established. "
@@ -955,10 +997,21 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Do you offer packages or discounts? ────────────────────────────
             "packages_discounts": (
-                "We don't currently offer package deals or discounts — all sessions are "
-                "priced individually. "
-                "Physiotherapy and acupuncture sessions are £75, rehabilitation sessions "
-                "are £65, and prescribing consultations are £12.50."
+                "Yes — we have one package: four sessions of combined shockwave and "
+                "Class IV Laser Therapy for £420. "
+                "Packages are valid for six months and are non-transferable. "
+                "Other than that, sessions are individually priced — "
+                "there aren't general block booking discounts."
+            ),
+
+            # ── Advanced treatments ────────────────────────────────────────────
+            "advanced_treatments": (
+                "We also offer a range of one-hour advanced treatments: "
+                "Reiki and Energy Healing, Wellness and Stress Relief Massage with In-light Therapy, "
+                "and Auricular Acupuncture for stress relief. "
+                "These are separate from our physiotherapy services. "
+                "For pricing and availability, get in touch by phone or email "
+                "at info@theoremhealth.co.uk."
             ),
         },
     },
