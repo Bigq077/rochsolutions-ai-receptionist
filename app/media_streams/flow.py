@@ -2361,7 +2361,24 @@ class FlowEngine:
 
             elif _hg_digits:
                 # Partial — accumulate; silence handler re-asks if needed
-                _hg_buffer = self.session.get("phone_digits_buffer", "") + _hg_digits
+                # Detect restarted dictation: explicit restart phrase OR suspiciously large new chunk
+                _RESTART_SIGNALS = (
+                    "sorry", "start again", "start over", "let me start",
+                    "no wait", "actually", "hang on", "scratch that",
+                    "never mind", "no the number", "no it's",
+                )
+                _existing_buf = self.session.get("phone_digits_buffer", "")
+                _is_restart = (
+                    any(sig in text.lower() for sig in _RESTART_SIGNALS)
+                    or (len(_hg_digits) >= 7 and bool(_existing_buf))
+                )
+                if _is_restart and _existing_buf:
+                    logger.info(
+                        "[ms_flow] HARD GATE COLLECT_PHONE: restart detected — clearing buffer %r before %r",
+                        _existing_buf, _hg_digits,
+                    )
+                    _existing_buf = ""
+                _hg_buffer = _existing_buf + _hg_digits
                 self.session["phone_digits_buffer"] = _hg_buffer
                 logger.info(
                     "[ms_flow] HARD GATE COLLECT_PHONE: accumulating %r → %r (%d digits)",
@@ -2515,7 +2532,13 @@ class FlowEngine:
                 self.session["_last_handled_by"]   = "confirm_phone_no"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = True
-                await self.ask_current_question()
+                _bridge = "Ok, what number would you like to use instead?"
+                await self._tts.put(_bridge)
+                self.session["last_question"] = _bridge
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _bridge}
+                )
+                logger.info("[ms_flow] CONFIRM_PHONE NO: bridge phrase spoken → COLLECT_PHONE")
                 return
 
             else:
@@ -3866,6 +3889,8 @@ class FlowEngine:
                 "any afternoon", "afternoon slots", "slots in the afternoon",
                 "any morning", "morning slots", "slots in the morning",
                 "afternoon then", "any afternoon slots", "any morning slots",
+                "in the afternoon", "in the morning",
+                "anything in the afternoon", "anything in the morning",
             )
             _is_constraint = any(p in text for p in _CONSTRAINT_GUARD)
 
@@ -4740,6 +4765,25 @@ class FlowEngine:
                 return
             _frag = self.session.get("name_fragment")
             if _frag:
+                # Guard: reject if transcript mixes surname with a question/clarification
+                _SURNAME_NOISE_PHRASES = (
+                    "do you need", "need help", "help spelling", "help me spell",
+                    "is that right", "is that correct", "did i say",
+                    "can you spell", "spell that", "how do you spell",
+                )
+                if any(phrase in (text or "").lower() for phrase in _SURNAME_NOISE_PHRASES):
+                    self.session.pop("name_fragment", None)
+                    _sn_re = "Sorry, I didn't quite catch that — what's your surname?"
+                    await self._tts.put(_sn_re)
+                    self.session["last_question"] = _sn_re
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _sn_re}
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_NAME: mixed-content surname rejected %r — re-asking",
+                        (text or "")[:60],
+                    )
+                    return
                 # Second turn: caller gave surname — combine into full name
                 answer = f"{_frag} {answer}".title()
                 self.session.pop("name_fragment", None)
