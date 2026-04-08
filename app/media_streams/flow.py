@@ -2429,6 +2429,9 @@ class FlowEngine:
                 "use a different number", "another number",
                 "no different number", "give you another number",
                 "no i'll give you another",
+                "wrong number", "not the right number",
+                "that's not the right number", "that's the wrong number",
+                "thats not the right number", "thats the wrong number",
             )
             import re as _hg_re
             _hg_yes = any(p in text for p in _HG_YES)
@@ -4117,6 +4120,11 @@ class FlowEngine:
                             f"On {_day_label_ct} I've also got {_spoken_ct[0]}"
                             " — does that work?"
                         )
+                        # Pin the single filtered slot so the next YES binds it via
+                        # the existing single-slot YES/NO gate (line ~3596).
+                        if _filtered_slots:
+                            self.session["selected_slot"]        = _filtered_slots[0].get("start", "")
+                            self.session["selected_slot_speech"] = f"{_day_label_ct} at {_spoken_ct[0]}"
                     elif len(_spoken_ct) == 2:
                         _ct_phrase = (
                             f"On {_day_label_ct} I've also got {_spoken_ct[0]}"
@@ -4350,6 +4358,9 @@ class FlowEngine:
                     "no", "nope", "no use a different number", "different number",
                     "another number", "no i'll give you another one",
                     "no i'll give you another", "use a different number",
+                    "wrong number", "not the right number",
+                    "that's not the right number", "that's the wrong number",
+                    "thats not the right number", "thats the wrong number",
                 )
                 _cp_yes = any(p in text for p in _CP_YES)
                 _cp_no  = any(p in text for p in _CP_NO)

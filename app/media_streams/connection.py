@@ -232,6 +232,7 @@ class SilenceHandler:
         self._get_session                   = get_session   # () -> dict | None
         self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
         self._stt_miss_count: int = 0  # consecutive STT misses since last successful transcript
+        self._cancelled: bool = False  # set by cancel() — hard synchronous guard for _run()/_transfer()
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -403,6 +404,7 @@ class SilenceHandler:
 
     def cancel(self) -> None:
         """Cancel the timer. Call when the call ends."""
+        self._cancelled = True  # synchronous flag — prevents stale re-asks/transfers racing asyncio
         self._cancel_timer()
         if self._recovery_task and not self._recovery_task.done():
             self._recovery_task.cancel()
@@ -529,6 +531,8 @@ class SilenceHandler:
                 self._replay_flow_step, _current_step,
             )
             return
+        if self._cancelled:
+            return
 
         self.currently_reasking = True
         self.reask_count += 1
@@ -581,6 +585,8 @@ class SilenceHandler:
                 self._replay_flow_step, _current_step,
             )
             return
+        if self._cancelled:
+            return
 
         self.currently_reasking = True
         self.reask_count += 1
@@ -623,6 +629,9 @@ class SilenceHandler:
         await self._transfer()
 
     async def _transfer(self) -> None:
+        if self._cancelled:
+            logger.info("[ms_silence] _transfer suppressed — handler already cancelled (stale call)")
+            return
         logger.info("[ms_silence] max reasks reached — transferring")
         phrase = (
             "I'm having a little trouble hearing you — "
