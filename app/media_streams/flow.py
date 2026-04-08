@@ -2392,11 +2392,31 @@ class FlowEngine:
                         _existing_buf, _hg_digits,
                     )
                     _existing_buf = ""
+                # Duplicate / prefix-overlap guard: if the new chunk exactly
+                # matches or starts with the existing buffer, the caller re-stated
+                # earlier digits rather than continuing — replace instead of append.
+                _log_mode = "append"
+                if _existing_buf and not _is_restart:
+                    if _hg_digits == _existing_buf:
+                        # Exact duplicate (e.g. 07502 → 07502 again) — discard repeat
+                        logger.info(
+                            "[ms_flow] HARD GATE COLLECT_PHONE: exact-duplicate %r — no change",
+                            _existing_buf,
+                        )
+                        self.session["_last_handled_by"]      = "collect_phone_partial_digits"
+                        self.session["_last_extracted_phone"] = _existing_buf
+                        self.session["_last_yes_detected"]    = False
+                        self.session["_last_no_detected"]     = False
+                        return
+                    elif len(_existing_buf) >= 3 and _hg_digits.startswith(_existing_buf):
+                        # Caller restarted and extended (e.g. 07502 → 0750211207 in one go)
+                        _log_mode = "extended-restart-replace"
+                        _existing_buf = ""
                 _hg_buffer = _existing_buf + _hg_digits
                 self.session["phone_digits_buffer"] = _hg_buffer
                 logger.info(
-                    "[ms_flow] HARD GATE COLLECT_PHONE: accumulating %r → %r (%d digits)",
-                    _hg_digits, _hg_buffer, len(_hg_buffer),
+                    "[ms_flow] HARD GATE COLLECT_PHONE: %s %r → %r (%d digits)",
+                    _log_mode, _hg_digits, _hg_buffer, len(_hg_buffer),
                 )
                 self.session["_last_handled_by"]      = "collect_phone_partial_digits"
                 self.session["_last_extracted_phone"] = _hg_buffer
@@ -3783,17 +3803,24 @@ class FlowEngine:
                 "can't remember", "cannot remember", "can not remember",
                 "didn't catch", "didn't hear", "didn't get that",
                 "say that again", "say it again", "repeat that", "repeat it",
-                "repeat the", "again please", "say again",
+                "repeat the", "repeat those", "again please", "say again",
                 "what were", "what was", "what are the times",
-                "what times", "the times again", "options again",
+                "what times", "those times", "the times again", "options again",
                 "what options", "remind me", "tell me again",
+                "sorry could you", "could you repeat",
             )
             _is_pt_repeat = any(p in text for p in _PT_REPEAT)
             if _is_pt_repeat:
-                _avail_r   = self.session.get("available_days", [])
-                _chosen_r  = self.session.get("chosen_day", "")
-                _target_r  = _find_chosen_day_entry(_avail_r, _chosen_r)
-                _rpt_phrase = _build_times_phrase(_target_r) if _target_r else ""
+                # Replay the currently active question — may be full-day list or
+                # constrained subset; session["last_question"] always holds the
+                # most recently spoken offer so we replay exactly what caller heard.
+                _rpt_phrase = self.session.get("last_question", "")
+                if not _rpt_phrase:
+                    # Fallback: rebuild from availability data
+                    _avail_r   = self.session.get("available_days", [])
+                    _chosen_r  = self.session.get("chosen_day", "")
+                    _target_r  = _find_chosen_day_entry(_avail_r, _chosen_r)
+                    _rpt_phrase = _build_times_phrase(_target_r) if _target_r else ""
                 if _rpt_phrase:
                     await self._tts.put(_rpt_phrase)
                     self.session["last_question"] = _rpt_phrase
@@ -3801,8 +3828,8 @@ class FlowEngine:
                         {"role": "assistant", "content": _rpt_phrase}
                     )
                     logger.info(
-                        "[ms_flow] %s: repeat request → replaying times phrase: %r",
-                        step["state"], _rpt_phrase[:80],
+                        "[PRESENT_TIMES] repeat request → replaying times phrase deterministically: %r",
+                        _rpt_phrase[:80],
                     )
                     return  # keep same flow_step — wait for slot choice
 
@@ -4889,6 +4916,35 @@ class FlowEngine:
             "COLLECT_NAME", "COLLECT_NAME_RETURNING",
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         }
+        # ── COLLECT_NAME: noise/clarification guard (single AND multi-word) ───
+        # Runs before the single-word fragment path so "i didn't quite touch that"
+        # (or any repair/clarification utterance) can never be committed as a name.
+        if step["state"] in _COLLECT_NAME_STATES_FG and answer:
+            _NAME_NOISE_PHRASES = (
+                "i didn't", "didn't catch", "didn't hear", "didn't quite",
+                "could you", "do you", "say that again", "say it again",
+                "touch that", "repeat that", "repeat the", "help spelling",
+                "hello", "sorry could", "what was that", "what did you",
+                "i couldn't", "couldn't hear", "can you repeat", "not sure",
+            )
+            if any(p in (text or "").lower() for p in _NAME_NOISE_PHRASES):
+                _frag_cn = self.session.get("name_fragment")
+                _noise_re = (
+                    "And what's your surname?"
+                    if _frag_cn
+                    else self.session.get("last_question", "What's your name please?")
+                )
+                await self._tts.put(_noise_re)
+                self.session["last_question"] = _noise_re
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _noise_re}
+                )
+                logger.info(
+                    "[ms_flow] COLLECT_NAME: noise utterance rejected %r (fragment=%r) — re-asking",
+                    (text or "")[:60], _frag_cn,
+                )
+                return
+
         if step["state"] in _COLLECT_NAME_STATES_FG and answer and len(answer.split()) == 1:
             # Reject single-word STT garbage / function words before storing as a name fragment.
             _FRAGMENT_REJECT = frozenset({

@@ -362,17 +362,30 @@ class SilenceHandler:
         )
         if is_question:
             if _is_question_worth_storing(t):
-                # Extract only the final question sentence so re-asks don't replay
-                # a full multi-sentence FAQ response (e.g. "The clinic is open Mon–Fri
-                # 8:30am–9pm. Would you like to book?" → re-ask = "Would you like to
-                # book?" not the whole opening-hours paragraph).
-                import re as _re
-                _parts = _re.split(r'(?<=[.!?])\s+|\n+', t)
-                _q = next(
-                    (p.strip() for p in reversed(_parts) if p.strip().endswith('?')),
-                    t,
-                )
-                self.last_question = _q
+                if not self.last_question:
+                    # last_question was cleared by on_transcript_received and
+                    # on_question_asked hasn't set it yet — let TTS completion fill it.
+                    # Extract only the final question sentence so re-asks don't replay
+                    # a full multi-sentence FAQ response (e.g. "The clinic is open Mon–Fri
+                    # 8:30am–9pm. Would you like to book?" → re-ask = "Would you like to
+                    # book?" not the whole opening-hours paragraph).
+                    import re as _re
+                    _parts = _re.split(r'(?<=[.!?])\s+|\n+', t)
+                    _q = next(
+                        (p.strip() for p in reversed(_parts) if p.strip().endswith('?')),
+                        t,
+                    )
+                    self.last_question = _q
+                    logger.debug("[ms_silence] on_tts_finished: last_question set → %r", _q[:60])
+                else:
+                    # on_question_asked already set last_question — do NOT overwrite.
+                    # A stale TTS chunk completing after a step transition must never
+                    # replace the live question (e.g. full-day phrase finishing after
+                    # constrained offer was already committed).
+                    logger.debug(
+                        "[ms_silence] on_tts_finished: last_question already live %r — not overwriting stale %r",
+                        self.last_question[:40], t[:40],
+                    )
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
         elif self._task is None:
