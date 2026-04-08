@@ -2185,6 +2185,15 @@ class FlowEngine:
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
+                # Check for general inquiry BEFORE incrementing retry counter so
+                # "Which clinic has parking?" doesn't burn a retry slot.
+                _loc_frozen_q = self.session.get(
+                    "last_question",
+                    "Which clinic would you like — Alcester or Redditch? "
+                    "Say one for Alcester or two for Redditch.",
+                )
+                if await self._maybe_answer_inquiry(transcript, "ASK_LOCATION", _loc_frozen_q):
+                    return
                 _retry_count = self.session.get("location_retry_count", 0) + 1
                 self.session["location_retry_count"] = _retry_count
                 logger.info(
@@ -2467,7 +2476,14 @@ class FlowEngine:
                 return
 
             else:
-                # No digits — re-ask
+                # No digits — check for inquiry ("Why do you need my number?" etc.)
+                # before re-asking so informational questions get a real answer.
+                _cp_frozen_q = self.session.get("last_question", "")
+                if _cp_frozen_q and await self._maybe_answer_inquiry(
+                    transcript, "COLLECT_PHONE", _cp_frozen_q
+                ):
+                    return
+                # No digits and not an inquiry — re-ask
                 logger.info(
                     "[ms_flow] HARD GATE COLLECT_PHONE: no digits in %r — re-asking",
                     text[:60],
@@ -2679,12 +2695,16 @@ class FlowEngine:
                     )
                     return
 
-                # Ambiguous — replay last question
+                # Ambiguous — check for inquiry ("Do you take insurance?" etc.)
+                # before replaying the readback question.
+                _hg_lq = self.session.get("last_question", "Is that number correct?")
+                if await self._maybe_answer_inquiry(transcript, "CONFIRM_PHONE", _hg_lq):
+                    return
+                # Not an inquiry — replay last question
                 logger.info(
                     "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — re-asking",
                     text[:60],
                 )
-                _hg_lq = self.session.get("last_question", "Is that number correct?")
                 self.session["_last_handled_by"]         = "confirm_phone_ambiguous"
                 self.session["_last_yes_detected"]       = _hg_yes
                 self.session["_last_no_detected"]        = _hg_no
@@ -5295,6 +5315,21 @@ class FlowEngine:
             # Sidebar detection (Haiku, ~200-300ms) fires only on first failed
             # extraction — zero overhead on clean turns.
             if count == 1:
+                # ── Inquiry frequency cap ────────────────────────────────────
+                _gic_pre = self.session.get("general_inquiry_count", 0)
+                if _gic_pre >= 2:
+                    retry_counts[phrase_key] = 0
+                    _steer_q   = self.session.get("last_question", "")
+                    _steer_msg = (
+                        "Let me just focus on getting your appointment sorted — "
+                        + (_steer_q if _steer_q else "could we carry on from where we were?")
+                    )
+                    await self._tts.put(_steer_msg)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _steer_msg}
+                    )
+                    self.session["general_inquiry_count"] = 0
+                    return
                 # ── REPAIR / CLARIFICATION: replay last_question, reset retry ──
                 _REPAIR = (
                     "what was the question", "say that again", "say it again",
@@ -5335,6 +5370,10 @@ class FlowEngine:
                             await self._tts.put(pending_q)
                         self.session.setdefault("conversation_history", []).append(
                             {"role": "assistant", "content": _faq_info}
+                        )
+                        self.session["last_info_answer"]      = _faq_info
+                        self.session["general_inquiry_count"] = (
+                            self.session.get("general_inquiry_count", 0) + 1
                         )
                         logger.info(
                             "[ms_flow] sidebar answered: topic=%s state=%s",
@@ -5483,6 +5522,7 @@ class FlowEngine:
 
         # Store the answer
         self.session[step["answer_field"]] = answer
+        self.session["general_inquiry_count"] = 0  # reset inquiry frequency on valid answer
         # Mirror into collected{} for LLM context
         if step["answer_field"] in ("full_name", "phone_number", "new_or_returning"):
             col = self.session.setdefault("collected", {})
@@ -5627,6 +5667,68 @@ class FlowEngine:
 
         # Ask the next question
         await self.ask_current_question()
+
+    # ── General inquiry helper ───────────────────────────────────────────
+
+    async def _maybe_answer_inquiry(
+        self,
+        transcript: str,
+        state: str,
+        frozen_q: str,
+    ) -> bool:
+        """
+        Advisory informational detour for hard-gated states (ASK_LOCATION,
+        COLLECT_PHONE, CONFIRM_PHONE) where the main extraction path never runs.
+
+        Contract:
+        - NEVER mutates flow_step, state, last_question, or any booking slot.
+        - NEVER advances or rewinds the flow.
+        - Stores answer in last_info_answer (separate from last_question).
+        - Re-anchors by speaking frozen_q immediately after the answer.
+        - Returns True if the inquiry was handled; False if not a known topic.
+        """
+        from app.sidebar_handler import detect_sidebar_topic
+        from app.tools.receptionist_tools import _exec_get_clinic_info
+
+        # Frequency cap: after 2 consecutive inquiries steer back to the flow.
+        _gic = self.session.get("general_inquiry_count", 0)
+        if _gic >= 2:
+            _steer = (
+                "Of course — happy to help with any questions. "
+                + (frozen_q if frozen_q else "Could we carry on from where we were?")
+            )
+            await self._tts.put(_steer)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _steer}
+            )
+            self.session["general_inquiry_count"] = 0
+            logger.info("[ms_flow] inquiry freq-cap hit (count=%d) — steering back", _gic)
+            return True
+
+        _topic = await detect_sidebar_topic(transcript, state)
+        if not _topic:
+            return False
+
+        _result = await _exec_get_clinic_info({"topic": _topic}, self.session)
+        _info   = _result.get("info", "")
+        _generic = "I don't have that specific information to hand."
+        _answer = (
+            _info if (_info and _info != _generic)
+            else "I'm not completely sure on that, but the team can confirm when you come in."
+        )
+        await self._tts.put(_answer)
+        if frozen_q:
+            await self._tts.put(frozen_q)
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _answer}
+        )
+        self.session["last_info_answer"]      = _answer   # never overwrites last_question
+        self.session["general_inquiry_count"] = _gic + 1
+        logger.info(
+            "[ms_flow] inquiry answered: topic=%s state=%s count=%d",
+            _topic, state, _gic + 1,
+        )
+        return True
 
     # ── Haiku fallback ────────────────────────────────────────────────────
 
