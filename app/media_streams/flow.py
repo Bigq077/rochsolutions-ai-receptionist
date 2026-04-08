@@ -1001,7 +1001,16 @@ def _harvest_extra_fields(
         )
         if m:
             name = m.group(1).strip().title()
-            if 2 <= len(name.split()) <= 4:   # sanity: only 2–4 word names
+            # Stopword filter: reject common words that are not names.
+            # "it's my first" → captures "My First" → rejected here.
+            _HARVEST_NOT_NAME = frozenset({
+                "my", "your", "the", "a", "an", "first", "last", "only",
+                "new", "old", "next", "best", "good", "this", "that",
+                "here", "there", "now", "just", "also", "well", "one",
+                "time", "visit", "patient", "today", "call",
+            })
+            _h_words = name.lower().split()
+            if 2 <= len(_h_words) <= 4 and not any(w in _HARVEST_NOT_NAME for w in _h_words):
                 session["full_name"] = name
                 logger.info("[ms_flow] harvest: full_name=%r from NEW_OR_RETURNING", name)
 
@@ -2495,12 +2504,32 @@ class FlowEngine:
         # ── ABANDONMENT: caller says "never mind" or wants to cancel ─────────
         _ABANDON_SIGNALS = (
             "never mind", "nevermind", "forget it", "forget this",
-            "actually no", "don't bother", "dont bother",
+            # "actually no" removed — it is a substring of "actually none of these"
+            # and falsely fires on date-navigation utterances like
+            # "actually none of these work, go back".
+            # Replaced with unambiguous variants:
+            "actually no thanks", "actually nope", "actually cancel",
+            "don't bother", "dont bother",
             "not anymore", "changed my mind", "not interested",
             "not now", "no thanks", "cancel that", "cancel this",
-            "want to stop", "want to cancel", "actually cancel",
+            "want to stop", "want to cancel",
         )
-        if step["state"] != "DETECT_INTENT" and any(sig in text for sig in _ABANDON_SIGNALS):
+        # Active date-navigation must never trigger abandonment.
+        # Caller is negotiating available dates, not giving up.
+        _ACTIVE_NAV_SIGNALS = (
+            "none of these", "none of them", "none of those",
+            "go back", "original dates", "initial dates",
+            "earlier dates", "previous dates", "list the",
+            "the first ones", "back to",
+        )
+        _is_active_nav = (
+            step["state"] in (
+                "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+                "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+            )
+            and any(p in text for p in _ACTIVE_NAV_SIGNALS)
+        )
+        if step["state"] != "DETECT_INTENT" and not _is_active_nav and any(sig in text for sig in _ABANDON_SIGNALS):
             # Insertion point 2 — name usage tracker (final sign-off)
             _sign_off_name = self._name_tracker.get_name_if_available()
             self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
@@ -3089,10 +3118,18 @@ class FlowEngine:
                 "further ahead", "further in advance",
                 "anything later", "anything after", "more dates", "other dates",
                 "if you have any later", "what else", "any other",
+                # Common spoken variants — "late dates", "any late" without trailing "r"
+                "late dates", "any late", "any later dates",
+                "later availability", "later days", "further dates",
+                "have any late", "got any late", "got any later",
             )
             _PD_BACK = (
                 "go back", "previous dates", "earlier dates",
                 "the ones before", "the first ones", "back to the first",
+                # "original" / "initial" phrasing from live calls
+                "original dates", "the original", "initial dates",
+                "the initial", "first set", "back to the original",
+                "list the original", "list the initial",
             )
             _pd_all = self.session.get("available_days", [])
 
@@ -5198,14 +5235,43 @@ class FlowEngine:
         #
         # NOTE: do NOT condition on `not selected_location` — the greeting phase sets
         # selected_location="alcester" as a default before any user turn, which would
-        # cause the check to always fail.  Instead, always ask for location on
-        # theorem_v2 booking/reschedule/cancel and clear the stale default.
+        # cause the check to always fail.
+        #
+        # EXCEPTION: if the conversation has already established a single specific
+        # clinic (e.g. caller asked about Redditch during FAQ and system confirmed it),
+        # preserve that context — do NOT re-ask.  We detect this by scanning recent
+        # conversation_history for messages that mention exactly ONE clinic name.
+        # Messages that mention BOTH clinics (the initial offer question) are skipped.
         if (
             self.session.get("twilio_to") == "+447366530580"
             and intent in {"booking", "reschedule", "cancel"}
         ):
-            self.session["needs_location"] = True
-            self.session.pop("selected_location", None)   # clear stale greeting-phase default
+            _hist_sf = self.session.get("conversation_history", [])
+            _ctx_loc = None
+            for _sf_entry in reversed(_hist_sf[-10:]):
+                _sf_c = (_sf_entry.get("content") or "").lower()
+                _sf_has_redd = "redditch" in _sf_c or "reditch" in _sf_c
+                _sf_has_alce = any(p in _sf_c for p in ("alcester", "greig", "kinwarton"))
+                # Skip messages that name both clinics — those are offer/question turns
+                if _sf_has_redd and _sf_has_alce:
+                    continue
+                if _sf_has_redd:
+                    _ctx_loc = "redditch"
+                    break
+                if _sf_has_alce:
+                    _ctx_loc = "alcester"
+                    break
+            if _ctx_loc:
+                # Clinic already established in conversation — carry it forward
+                self.session["needs_location"] = False
+                self.session["selected_location"] = _ctx_loc
+                logger.info(
+                    "[ms_flow] _switch_flow: location inferred from conversation context → %s",
+                    _ctx_loc,
+                )
+            else:
+                self.session["needs_location"] = True
+                self.session.pop("selected_location", None)   # clear stale greeting-phase default
         else:
             self.session["needs_location"] = False
             self.session["selected_location"] = "alcester"
@@ -5805,6 +5871,8 @@ class FlowEngine:
             new_patterns = [
                 # Explicit multi-word first-time phrases (user-specified)
                 "it's my first time", "it is my first time",
+                "it's my first", "its my first", "this is my first",
+                "my first time", "my first visit", "my first call",
                 "never been before", "never been with you before",
                 "i have never been", "i haven't been before",
                 "i have never been with you",
