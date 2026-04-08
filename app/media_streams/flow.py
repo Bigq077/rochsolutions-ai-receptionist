@@ -1275,8 +1275,13 @@ FAQ_FLOW: List[Dict[str, Any]] = [
         "use_llm": True,
         "allow_tools": False,   # All FAQ info is in the system prompt — no tool call needed
         "llm_instruction": (
-            "Answer the caller's question about {faq_topic} directly from the clinic "
-            "information in your system prompt. Be natural and concise. "
+            "The caller asked about {faq_topic}. "
+            "Answer DIRECTLY from the clinic information in your system prompt — "
+            "do NOT ask any clarifying questions, do NOT ask what they want to know. "
+            "If {faq_topic} is 'services': respond with exactly this preamble first: "
+            "'Absolutely, I can help you with that! Here are our services:' "
+            "then list every service by name. "
+            "Be concise and natural. "
             "After answering, ask: 'Is there anything else I can help you with?'"
         ),
         "extract": "none",
@@ -5762,6 +5767,9 @@ class FlowEngine:
         services_p = (
             "services", "treatments", "what do you offer", "what do you do",
             "what can you help", "what conditions",
+            "rundown", "everything you offer", "everything you do",
+            "what therapies", "what therapy", "what do you treat",
+            "list of", "tell me what you",
         )
         if any(p in text for p in reschedule_p): return "reschedule"
         if any(p in text for p in cancel_p):     return "cancel"
@@ -5865,18 +5873,25 @@ class FlowEngine:
         }
         if intent in _FAQ_TOPICS:
             topic = _FAQ_TOPICS[intent]
+            _svc_preamble = (
+                "Start with: 'Absolutely, I can help you with that! Here are our services:' "
+                "then list every service by name. "
+                if topic == "services" else ""
+            )
             instruction = (
-                f"Call get_clinic_info with topic='{topic}'. "
-                "Answer the question warmly and concisely in 1–2 sentences. "
-                "Do NOT re-ask the booking question — just answer and stop. "
-                "Do NOT add any transitional phrases, continuations, or invitations "
-                "such as 'yes go on', 'where were we', or 'sorry about that'."
+                f"The caller asked about {topic}. "
+                f"{_svc_preamble}"
+                "Answer directly from the clinic information in your system prompt — "
+                "do NOT call any tools, do NOT ask clarifying questions. "
+                "Answer warmly and concisely in 1–2 sentences (or a brief list for services). "
+                "Just answer and stop — do NOT re-ask the booking question or add transitions."
             )
         else:
             # General question — LLM answers from knowledge
             instruction = (
-                f"The caller asked mid-booking: '{transcript.strip()}'\n"
-                "Answer it helpfully in 1–2 sentences. "
+                f"The caller asked: '{transcript.strip()}'\n"
+                "Answer it helpfully in 1–2 sentences from the clinic information in your "
+                "system prompt. "
                 "Do NOT call check_availability, book_appointment, or any booking tool. "
                 "Do NOT re-ask the booking question. "
                 "Do NOT add any transitional phrases or invitations such as "
@@ -5884,7 +5899,7 @@ class FlowEngine:
                 "Just answer and stop."
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
-        await self._llm(instruction, allow_tools=(intent in _FAQ_TOPICS))
+        await self._llm(instruction, allow_tools=False)
         # After the aside, re-anchor the caller to the exact step they were in.
         # This is step-specific so the caller is never left with an open floor.
         _int_step = self.current_step()
@@ -5923,6 +5938,10 @@ class FlowEngine:
                 and self.session.get("name_readback_pending")
             ):
                 _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
+            elif _int_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
+                # After answering a follow-up question, re-anchor with a clean open offer
+                # rather than the stale last_question (which may no longer make sense)
+                _int_anchor = "Is there anything else I can help you with?"
             else:
                 _int_anchor = self.session.get("last_question", "")
             if _int_anchor:
