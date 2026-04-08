@@ -2295,7 +2295,14 @@ async def _exec_get_clinic_info(args: Dict[str, Any], session: Dict[str, Any]) -
         text = clinic.get("insurance_note", "")
     elif topic == "services":
         svcs = clinic.get("services", [])
-        text = "Services include: " + ", ".join(svcs) if svcs else ""
+        _svc_descs = clinic.get("service_descriptions", {})
+        if _svc_descs:
+            _lines = ["Services offered:"]
+            for _name, _desc in _svc_descs.items():
+                _lines.append(f"- {_name}: {_desc}")
+            text = "\n".join(_lines)
+        else:
+            text = "Services include: " + ", ".join(svcs) if svcs else ""
     elif topic == "cancellation_policy":
         text = clinic.get("cancellation_policy", "")
     elif topic == "what_to_bring":

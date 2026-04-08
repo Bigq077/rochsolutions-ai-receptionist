@@ -1273,11 +1273,11 @@ FAQ_FLOW: List[Dict[str, Any]] = [
         "question": None,   # LLM generates the full answer
         "answer_field": "faq_answered",
         "use_llm": True,
+        "allow_tools": False,   # All FAQ info is in the system prompt — no tool call needed
         "llm_instruction": (
-            "Call get_clinic_info with topic='{faq_topic}'. "
-            "Answer the caller's question naturally and concisely — "
-            "one or two sentences. "
-            "After answering ask: 'Would you like to book an appointment?'"
+            "Answer the caller's question about {faq_topic} directly from the clinic "
+            "information in your system prompt. Be natural and concise. "
+            "After answering, ask: 'Is there anything else I can help you with?'"
         ),
         "extract": "none",
     },
@@ -4769,6 +4769,19 @@ class FlowEngine:
 
         # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
         if step["state"] == "FAQ_BOOKING_OFFER":
+            # Allow follow-up informational questions instead of forcing yes/no.
+            # Detect service or general queries and answer them via mid-flow interrupt,
+            # which re-asks the booking offer afterwards.
+            _fbo_intent = self._detect_intent(text)
+            if _fbo_intent in {"faq_services", "faq_prices", "faq_hours",
+                               "faq_location", "faq_insurance", "general_query"}:
+                logger.info(
+                    "[ms_flow] FAQ_BOOKING_OFFER: follow-up %s question — answering before re-offer",
+                    _fbo_intent,
+                )
+                await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
+                return
+
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
                 self._switch_flow("booking")
@@ -6862,7 +6875,7 @@ class FlowEngine:
         if method == "faq_booking":
             yes_p = (
                 "yes", "yeah", "book", "booking", "appointment",
-                "please", "sure", "i would", "i'd like",
+                "sure", "i would", "i'd like",
             )
             no_p = (
                 "no", "nope", "that's all", "thats all", "nothing else",
