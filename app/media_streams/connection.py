@@ -1268,6 +1268,16 @@ class WebSocketCallHandler:
                             await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
                             await flow.handle_transcript(utterance)
 
+                    # ── Transfer check (deterministic flow path) ─────────────
+                    # The LLM stream handles transfers that fire via tool call.
+                    # The deterministic transfer path (intent=transfer in flow.py)
+                    # sets request_transfer=True but bypasses the LLM stream entirely,
+                    # so we must check here and fire the Twilio transfer directly.
+                    if self.session.get("request_transfer"):
+                        logger.info("[ms_conn] deterministic transfer flag detected — firing")
+                        self.session["request_transfer"] = False
+                        await self._on_transfer_request()
+
                     if not self._call_stable:
                         self._call_stable = True
                         logger.info("[ms_conn] call reached stable state")
