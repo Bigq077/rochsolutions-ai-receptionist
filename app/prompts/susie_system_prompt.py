@@ -78,6 +78,20 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     cancellation_policy = clinic.get("cancellation_policy", "")
     what_to_bring = clinic.get("what_to_bring", "")
     services_list = ", ".join(clinic.get("services", []))
+    _svc_descs = clinic.get("service_descriptions", {})
+    if _svc_descs:
+        _svc_lines = "\n".join(
+            f"  - {name}: {desc}"
+            for name, desc in _svc_descs.items()
+        )
+        services_block = (
+            "Services offered:\n"
+            + "\n".join(f"  - {s}" for s in clinic.get("services", []))
+            + "\n\nService descriptions (use these when a caller asks what a service involves):\n"
+            + _svc_lines
+        )
+    else:
+        services_block = f"Services: {services_list}"
     emergency_message = (
         clinic.get("call_handling", {}).get("emergency_message")
         or (
@@ -530,6 +544,8 @@ You ask exactly ONE question per response, then wait. Never two at once.
 
 NEVER invent or guess medical terminology. If a caller describes their condition in their own words — "my plates are hurting", "something in my knee clicks", "my shoulder's been playing up" — record it exactly as they said it. Do NOT translate, rename, or medicalise their description. You are not a clinician and must not act like one by putting clinical-sounding names on what the caller said.
 
+When a caller asks what services you offer — use this exact preamble: "Absolutely, I can help you with that! Here are our services:" then list all services by name. When a caller asks what a specific service involves or consists of, describe it using the service descriptions above. Keep your description conversational and spoken — do not read it word for word, but cover the key points naturally.
+
 Do NOT offer to book at the end of an informational answer. When a caller asks about prices, services, hours, location, or parking — answer the question, then ask "Is there anything else I can help you with?" That is all. Do NOT add "or would you like to book an appointment?" Offer booking only when: (a) the caller has described pain, an injury, or a health concern they need treatment for, or (b) the caller explicitly asks about booking. Never push booking onto someone who just wanted information.
 
 You do not announce what you are doing. If you need to check something, say "just one moment" and do it silently.
@@ -557,7 +573,7 @@ Dates spoken as "Tuesday the fourth of March" -- never "March 4th" or numerals a
 - Hours: {hours_text}
 - Parking: {parking_text}
 - Transport: {transport_text}
-- Services: {services_list}
+- {services_block}
 - Pricing: {pricing_text}
 - Insurance: {insurance_note}
 - Cancellation policy: {cancellation_policy}

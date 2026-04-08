@@ -344,6 +344,56 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Psychotherapy (safe space; can include hypnotherapy and spiritual healing techniques)",
         ],
 
+        # Full service descriptions — used by AI to answer "what does X involve?"
+        "service_descriptions": {
+            "Physiotherapy Assessment": (
+                "During our physiotherapy assessment, which typically runs around 50 minutes to an hour, "
+                "we take a holistic approach. We evaluate mobility and strength and also consider emotional "
+                "well-being through a psychotherapeutic lens. We identify the injury or issue and "
+                "collaboratively formulate a tailored treatment plan, which may include rehabilitation "
+                "exercises, manual therapy and soft tissue work. We can incorporate advanced interventions "
+                "such as shockwave therapy, acupuncture, or Class IV Laser therapy for a personalised, "
+                "comprehensive path to recovery or management."
+            ),
+            "Physiotherapy Follow-up Session": (
+                "In our physiotherapy follow-up sessions, we track progress and adjust your treatment plan "
+                "as needed. We re-evaluate mobility, strength and overall well-being, ensuring interventions "
+                "— exercises, manual therapy, or advanced techniques — are fine tuned for optimal recovery. "
+                "Each follow-up is a collaborative checkpoint with continued support and refinement to keep "
+                "you steadily on track. If we determine you need a specialist such as a surgeon or GP, we "
+                "facilitate referral and support onward care. If advanced imaging is needed, such as an MRI "
+                "or ultrasound, we help ensure a smooth path to the best possible treatment."
+            ),
+            "Prescribing": (
+                "As qualified prescribers, our physiotherapists can prescribe medications when appropriate. "
+                "If you require something like analgesia to manage pain, we can facilitate that as part of "
+                "your care. Treatment plans are designed with safety and effectiveness in mind."
+            ),
+            "Remedial Rehabilitation": (
+                "Alongside our physiotherapists, we have expert rehabilitation instructors to guide your "
+                "ongoing recovery. You may see both your physiotherapist and our rehabilitation instructor "
+                "in tandem, ensuring coordinated care and optimal results."
+            ),
+            "Shockwave Therapy": (
+                "Shockwave therapy uses targeted sound waves to stimulate healing in tissues, helping reduce "
+                "pain and promote recovery — especially for chronic conditions like tendon issues."
+            ),
+            "Class IV Laser Therapy": (
+                "Class IV Laser Therapy uses powerful laser light to alleviate pain, reduce inflammation, "
+                "and speed up tissue repair — reaching deep into your body for advanced healing."
+            ),
+            "Acupuncture": (
+                "Acupuncture is an ancient practice where fine needles are placed at specific points to help "
+                "balance and stimulate the flow of energy throughout the body. By restoring this natural flow, "
+                "it can promote healing, reduce pain, and improve overall well-being."
+            ),
+            "Psychotherapy": (
+                "Psychotherapy provides a safe space to explore thoughts and emotions. Using techniques such "
+                "as hypnotherapy and spiritual healing, it aims to reduce stress, enhance mental well-being, "
+                "and foster coping strategies — empowering clients to navigate challenges and achieve balance."
+            ),
+        },
+
         # Pricing & policies (from Mark)
         "pricing_summary": (
             "Physio sessions — both assessments and follow-ups — are £75 for 50 minutes. "
