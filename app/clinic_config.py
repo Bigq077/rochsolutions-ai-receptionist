@@ -606,13 +606,14 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── How many sessions will I need? ─────────────────────────────────
             "how_many_sessions": (
-                "That's really something Mark or Leanne can give you a better idea of after your "
-                "first assessment, once they've had a proper look. "
-                "It depends entirely on the condition, how long you've had it, and how your body responds. "
-                "Some people see a big improvement in two or three sessions; others with longer-standing "
-                "issues may need more. "
-                "What I can say is that after the assessment you'll have a clear picture of what's "
-                "going on and a realistic plan."
+                "Most patients need somewhere between four and six sessions — "
+                "that's the typical range for most musculoskeletal conditions. "
+                "Six sessions is generally the point at which we reassess the plan together "
+                "and decide what comes next. "
+                "That said, it depends on what you're dealing with, how long you've had it, "
+                "and how your body responds — some people feel a big difference in just a couple "
+                "of sessions, others with more complex or long-standing issues may need more. "
+                "After your first assessment you'll have a much clearer picture."
             ),
 
             # ── What conditions do you treat? ──────────────────────────────────
@@ -709,10 +710,23 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Do you do home visits? ─────────────────────────────────────────
             "home_visits": (
-                "Home visits aren't part of our standard service, but they may be possible in "
-                "certain circumstances. "
-                "If you'd like to enquire about that, the best thing to do is email us directly "
-                "at info@theoremhealth.co.uk and Mark will get back to you."
+                "Yes — we do offer home visits. "
+                "To arrange one, the best thing to do is get in touch directly by phone or "
+                "email at info@theoremhealth.co.uk and the team will sort out the details with you."
+            ),
+
+            # ── Can I bring someone with me? ───────────────────────────────────
+            "bring_someone": (
+                "Yes, absolutely — you're welcome to bring someone with you to your appointment. "
+                "Just let us know when you book if you'd like to mention it."
+            ),
+
+            # ── Do you offer packages or block booking discounts? ─────────────
+            "packages_discounts": (
+                "No — we don't offer packages or block booking discounts. "
+                "Each session is priced individually. "
+                "Physiotherapy sessions are £75, rehabilitation sessions are £65, "
+                "and prescribing consultations are £12.50."
             ),
 
             # ── Can I book online? ─────────────────────────────────────────────
