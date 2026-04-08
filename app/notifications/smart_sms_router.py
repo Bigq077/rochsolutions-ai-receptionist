@@ -15,6 +15,31 @@ from app.clinic_config import get_clinic
 logger = logging.getLogger(__name__)
 
 
+def _get_confirmed_phone(session: dict) -> str:
+    """
+    Return a phone number safe for downstream SMS use.
+    - phone_confirmed=True  → use collected["phone"] (explicitly confirmed)
+    - phone_confirmed=False → return "" (caller explicitly rejected — do not use)
+    - phone_confirmed=None  → use twilio_from only if phone_from_twilio=True
+    """
+    collected = session.get("collected", {}) or {}
+    confirmed = session.get("phone_confirmed")
+
+    if confirmed is True:
+        return (
+            collected.get("phone")
+            or session.get("phone_number")
+            or ""
+        )
+    if confirmed is False:
+        return ""
+    if session.get("phone_from_twilio"):
+        raw = session.get("twilio_from_local") or session.get("twilio_from") or ""
+        if raw and not raw.startswith("client:"):
+            return raw
+    return ""
+
+
 # ============================================================================
 # CONDITION EXTRACTION
 # Turns raw caller speech ("my elbow is bad", "I broke my foot")
@@ -170,13 +195,7 @@ async def send_smart_followup_sms(
 
     collected = session.get("collected", {}) or {}
 
-    # Phone — use the caller's Twilio number first (always available)
-    patient_phone = (
-        session.get("twilio_from", "") or
-        collected.get("phone", "")
-    )
-    if patient_phone and patient_phone.startswith("client:"):
-        patient_phone = ""
+    patient_phone = _get_confirmed_phone(session)
 
     # First name only
     name_raw     = collected.get("name", "") or ""

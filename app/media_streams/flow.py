@@ -2209,7 +2209,7 @@ class FlowEngine:
                 elif _retry_count >= 3:
                     _retry = (
                         "I'm having trouble catching the clinic name — "
-                        "let me get someone to call you back and help."
+                        "please give us a call back and the team will be happy to help."
                     )
                     await self._tts.put(_retry)
                     self.session.setdefault("conversation_history", []).append(
@@ -3284,6 +3284,28 @@ class FlowEngine:
                 )
                 self.session["flow_step"] = 0
                 self.session["state"] = "COLLECT_REASON"
+                return
+            # ── CONFIRM_ASSESSMENT: step-adjacent inquiry intercept ──────────
+            # Questions like "what happens in that assessment?" should get a
+            # short canned answer + re-ask, NOT a replay of the recommendation.
+            _CA_INQUIRY_PHRASES = (
+                "what happens", "what does that involve", "what is that assessment",
+                "what exactly happens", "what will happen", "what's involved",
+                "what does the assessment", "tell me more about",
+                "what do you do", "what do they do",
+            )
+            if any(_p in text for _p in _CA_INQUIRY_PHRASES):
+                _ca_info = (
+                    "It's an initial appointment where the clinician talks through what's been "
+                    "going on, assesses the issue, and recommends the best next step from there."
+                )
+                _ca_recap = "Does that sound okay?"
+                await self._tts.put(_ca_info)
+                await self._tts.put(_ca_recap)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ca_info}
+                )
+                # Do NOT update last_question — the real question remains intact
                 return
             # clarification / frustration / unknown — replay the FULL recommendation,
             # not just the tail "Does that sound okay?" question.
@@ -4994,6 +5016,23 @@ class FlowEngine:
             )
             return
 
+        # ── COLLECT_NAME: booking-context wrapper stripping ──────────────────
+        # Strip noise wrappers so "booking in john smith" → "john smith".
+        # Only in full-name collection mode (no first-name fragment yet stored).
+        _COLLECT_NAME_STATES_STRIP = {
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        }
+        if step["state"] in _COLLECT_NAME_STATES_STRIP and not self.session.get("name_fragment"):
+            _CN_WRAPPERS = ("booking in ", "booking for ", "it's for ", "for booking ",)
+            _raw_cn = transcript.strip()
+            for _cw in _CN_WRAPPERS:
+                if _raw_cn.lower().startswith(_cw):
+                    transcript = _raw_cn[len(_cw):].strip()
+                    text       = transcript.lower()
+                    logger.info("[ms_flow] COLLECT_NAME: stripped wrapper %r → %r", _cw, transcript[:40])
+                    break
+
         answer = self._extract(step["extract"], text, transcript)
 
         # ── COLLECT_NAME: single-word first-name guard ────────────────────────
@@ -5255,35 +5294,44 @@ class FlowEngine:
         if answer is None and step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
             _pre_avail = self.session.get("available_days", [])
             if _pre_avail:
-                for _pre_pat, _pre_i in [
-                    ("first one", 0), ("second one", 1), ("third one", 2),
-                    ("middle one", 1), ("the middle", 1),
-                    ("the first", 0), ("the second", 1), ("the third", 2),
-                    ("the last", -1), ("last one", -1), ("the final", -1),
-                    ("first", 0), ("second", 1), ("third", 2),
-                    ("middle", 1), ("last", -1), ("final", -1),
-                ]:
-                    if _pre_pat in text:
-                        _pre_n = len(_pre_avail)
-                        _pre_r = _pre_i if _pre_i >= 0 else max(0, _pre_n + _pre_i)
-                        _pre_r = min(_pre_r, _pre_n - 1)
-                        _pre_day = _pre_avail[_pre_r].get("day_label", "")
-                        self.session["chosen_day"]         = _pre_day
-                        self.session[step["answer_field"]] = _pre_day
-                        self.session.pop("vague_option_pending", None)
-                        self.session.pop("vague_clarification_asked", None)
-                        self.session["presented_vague_options"] = []
-                        _pre_next = step["step"] + 1
-                        _pre_ns = (
-                            self._active_flow[_pre_next]["state"]
-                            if _pre_next < len(self._active_flow) else "DONE"
-                        )
-                        self.session["flow_step"]  = _pre_next
-                        self.session["state"]      = _pre_ns
-                        self.session["flow_state"] = _pre_ns
-                        self.session["_last_handled_by"] = "present_days_ordinal_pre_gate"
-                        await self.ask_current_question()
-                        return
+                # Mixed-intent guard: if text combines an ordinal with a sidebar
+                # inquiry, skip ordinal binding — let the inquiry path handle it.
+                _ORDINAL_MIXED_SIGNALS = (
+                    "are you open", "do you open", "open on saturday", "open on sunday",
+                    "open sundays", "open saturdays", "have parking", "is there parking",
+                    "do you have", "how long", "what time", "are there any", "can you do",
+                )
+                _ordinal_has_mixed = any(_sig in text for _sig in _ORDINAL_MIXED_SIGNALS)
+                if not _ordinal_has_mixed:
+                    for _pre_pat, _pre_i in [
+                        ("first one", 0), ("second one", 1), ("third one", 2),
+                        ("middle one", 1), ("the middle", 1),
+                        ("the first", 0), ("the second", 1), ("the third", 2),
+                        ("the last", -1), ("last one", -1), ("the final", -1),
+                        ("first", 0), ("second", 1), ("third", 2),
+                        ("middle", 1), ("last", -1), ("final", -1),
+                    ]:
+                        if _pre_pat in text:
+                            _pre_n = len(_pre_avail)
+                            _pre_r = _pre_i if _pre_i >= 0 else max(0, _pre_n + _pre_i)
+                            _pre_r = min(_pre_r, _pre_n - 1)
+                            _pre_day = _pre_avail[_pre_r].get("day_label", "")
+                            self.session["chosen_day"]         = _pre_day
+                            self.session[step["answer_field"]] = _pre_day
+                            self.session.pop("vague_option_pending", None)
+                            self.session.pop("vague_clarification_asked", None)
+                            self.session["presented_vague_options"] = []
+                            _pre_next = step["step"] + 1
+                            _pre_ns = (
+                                self._active_flow[_pre_next]["state"]
+                                if _pre_next < len(self._active_flow) else "DONE"
+                            )
+                            self.session["flow_step"]  = _pre_next
+                            self.session["state"]      = _pre_ns
+                            self.session["flow_state"] = _pre_ns
+                            self.session["_last_handled_by"] = "present_days_ordinal_pre_gate"
+                            await self.ask_current_question()
+                            return
 
         if answer is None:
             # No valid answer extracted — acknowledged re-ask with retry counting
@@ -5298,7 +5346,7 @@ class FlowEngine:
             if count >= 3:
                 phrase = (
                     "I'm having a little trouble catching that — "
-                    "let me get someone to call you back and confirm."
+                    "please give us a call back and the team can help you get booked."
                 )
                 await self._tts.put(phrase)
                 self.session.setdefault("conversation_history", []).append(
@@ -5380,16 +5428,25 @@ class FlowEngine:
                             _sidebar_topic, step["state"],
                         )
                         return
-                # Surname-repair mode: stay deterministic — never call Haiku.
-                # If first-name fragment exists we are only awaiting a surname;
-                # replay the surname question without LLM involvement.
-                if step["state"] in _COLLECT_NAME_STATES_FG and self.session.get("name_fragment"):
-                    _sn_q = "And what's your surname?"
-                    if self.session.get("last_question") != _sn_q:
-                        await self._tts.put(_sn_q)
-                        self.session["last_question"] = _sn_q
+                # Bypass Haiku for ALL COLLECT_NAME states — prevents Haiku
+                # pseudo-confirmation wording ("Thanks John! Just to confirm…")
+                # that diverges from the real deterministic question.
+                # When awaiting a surname, replay the surname question;
+                # otherwise replay last_question (the real pending ask).
+                if step["state"] in _COLLECT_NAME_STATES_FG:
+                    if self.session.get("name_fragment"):
+                        _sn_q = "And what's your surname?"
+                        if self.session.get("last_question") != _sn_q:
+                            await self._tts.put(_sn_q)
+                            self.session["last_question"] = _sn_q
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _sn_q}
+                            )
+                    else:
+                        _cn_replay = self.session.get("last_question", "Who am I booking in today?")
+                        await self._tts.put(_cn_replay)
                         self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _sn_q}
+                            {"role": "assistant", "content": _cn_replay}
                         )
                     return
                 await self._haiku_fallback(transcript, step)
@@ -6360,7 +6417,7 @@ class FlowEngine:
         if count >= 3:
             phrase = (
                 "I'm having a little trouble catching that — "
-                "let me get someone to call you back and confirm."
+                "please give us a call back and the team can help you get booked."
             )
             await self._tts.put(phrase)
             self.session.setdefault("conversation_history", []).append(

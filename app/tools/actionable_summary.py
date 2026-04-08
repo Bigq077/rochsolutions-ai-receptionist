@@ -28,6 +28,34 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+def _get_confirmed_phone(session: dict) -> str:
+    """
+    Return a phone number safe for downstream SMS/summary use.
+    - phone_confirmed=True  → use collected["phone"] (explicitly confirmed)
+    - phone_confirmed=False → return "" (caller explicitly rejected — do not use)
+    - phone_confirmed=None  → use twilio_from only if phone_from_twilio=True
+                               (caller-ID available but phone step not reached)
+    """
+    collected = session.get("collected", {}) or {}
+    confirmed = session.get("phone_confirmed")
+
+    if confirmed is True:
+        return (
+            collected.get("phone")
+            or session.get("phone_number")
+            or ""
+        )
+    if confirmed is False:
+        return ""
+    # confirmed is None: flow never reached phone step (early hangup etc.)
+    # Fall back to caller-ID only when it was auto-populated from Twilio.
+    if session.get("phone_from_twilio"):
+        raw = session.get("twilio_from_local") or session.get("twilio_from") or ""
+        if raw and not raw.startswith("client:"):
+            return raw
+    return ""
+
 # ---------------------------------------------------------------------------
 # Anthropic config
 # ---------------------------------------------------------------------------
@@ -92,15 +120,7 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
 
     patient_name = collected.get("name") or patient_info.get("name") or ""
 
-    phone = (
-        raw_session.get("twilio_from")
-        or collected.get("phone")
-        or patient_info.get("phone")
-        or meta.get("from")
-        or ""
-    )
-    if phone and phone.startswith("client:"):
-        phone = ""
+    phone = _get_confirmed_phone(raw_session)
 
     service = (
         collected.get("reason")
