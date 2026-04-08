@@ -267,12 +267,19 @@ class SilenceHandler:
         if self._llm_busy or not (self._task is None or self._task.done()):
             return
         self._stt_miss_count += 1
+        # FIX F: Cap speech recovery prompts at 2 per question.  Previously
+        # the miss count was reset to 0 before every prompt, so the "Sorry —
+        # I'm having a little trouble hearing you" loop could repeat endlessly.
+        if self._stt_miss_count > 2:
+            logger.info(
+                "[ms_silence] recovery: STT miss #%d — max reached, suppressing prompt",
+                self._stt_miss_count,
+            )
+            return
         logger.info(
             "[ms_silence] recovery: STT miss #%d detected — prompting caller directly",
             self._stt_miss_count,
         )
-        # Speak up on the first miss (~5s) — prompt the caller to repeat
-        self._stt_miss_count = 0
         phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
         await self._tts_text_queue.put(phrase)
         self._restart_timer()
@@ -372,8 +379,18 @@ class SilenceHandler:
             # silence timer is not currently running.  Arm it so W1/W2/W3 can fire
             # if the caller stays silent — re-ask will use SILENCE_RESPONSES for
             # the current state without appending a question (last_question may be "").
-            self._restart_timer()
-            logger.info("[ms_silence] timer armed after non-question TTS: %r", t[:50])
+            #
+            # FIX C: Do NOT arm the timer when last_question is empty — bridge
+            # phrases ("Got that.", "Of course — good to have you back.") must
+            # never trigger silence recovery.  The timer will be armed properly
+            # when the next real question finishes playing.
+            if not self.last_question:
+                logger.debug(
+                    "[ms_silence] non-question TTS with empty last_question — NOT arming: %r", t[:50]
+                )
+            else:
+                self._restart_timer()
+                logger.info("[ms_silence] timer armed after non-question TTS: %r", t[:50])
 
     def on_transcript_received(self) -> None:
         """Call whenever a FinalTranscript arrives from STT."""
@@ -1145,7 +1162,7 @@ class WebSocketCallHandler:
                 # Must run before setting _llm_busy so:
                 #   - false triggers resume TTS without entering the flow
                 #   - confirmed barge-ins queue an ack and wait for next utterance
-                if await self._resolve_barge_in():
+                if await self._resolve_barge_in(utterance):
                     continue
 
                 # A real utterance is being processed — barge-in recovery complete.
@@ -1554,7 +1571,7 @@ class WebSocketCallHandler:
             except Exception:
                 pass
 
-    async def _resolve_barge_in(self) -> bool:
+    async def _resolve_barge_in(self, utterance: str = "") -> bool:
         """
         Check and resolve a pending barge-in event.
 
@@ -1563,10 +1580,13 @@ class WebSocketCallHandler:
         Returns True if the utterance should be SKIPPED (barge-in handled):
           - False trigger (speech < BARGE_IN_THRESHOLD_MS): TTS resumed from
             session["interrupted_tts_text"], utterance discarded.
-          - Confirmed barge-in: random acknowledgement queued, utterance
-            discarded so the NEXT utterance (after the ack) drives the flow.
+          - Confirmed barge-in with empty/noise utterance: ack queued, utterance
+            discarded so the NEXT utterance drives the flow.
 
         Returns False if no barge-in was pending — normal processing continues.
+        Also returns False when a confirmed barge-in carries a substantive
+        transcript (≥2 words) — the caller's answer is processed immediately
+        instead of being dropped and re-asked.
         """
         if not self._barge_in_pending:
             return False
@@ -1597,6 +1617,21 @@ class WebSocketCallHandler:
             self._in_barge_in_recovery = False
             return False  # process utterance normally
 
+        # ── FIX A: if the transcript is substantive, process it immediately
+        # instead of dropping it and playing an ack.  The caller already gave
+        # their answer — making them repeat it is the #1 observed failure.
+        _barge_words = utterance.strip().split() if utterance else []
+        if len(_barge_words) >= 2:
+            self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
+            logger.info(
+                "[ms_conn] barge-in #%d confirmed (%.0fms) — substantive utterance (%d words), "
+                "processing directly instead of ack+drop (state=%s)",
+                self.session["barge_in_count"], dur * 1000,
+                len(_barge_words), self.session.get("state", "unknown"),
+            )
+            self._in_barge_in_recovery = False
+            return False  # process utterance normally — do NOT drop it
+
         ack = random.choice(_BARGE_IN_ACKS)
         await self.tts_text_queue.put(ack)
         self._in_barge_in_recovery = True
@@ -1609,8 +1644,6 @@ class WebSocketCallHandler:
         # slot question is NOT re-asked here — the NEXT utterance goes through
         # flow.handle_transcript() normally; re-ask only fires if that fails.
         return True  # skip current utterance (ack plays, next turn processes)
-
-        self._clearing = True
 
     async def _on_final_transcript_clear(self) -> None:
         """

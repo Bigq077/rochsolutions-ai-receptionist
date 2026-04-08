@@ -1996,7 +1996,9 @@ class FlowEngine:
 
         # ── Phase 5: stamp session state to current step immediately so all
         #    branches (including early exits) observe the correct state. ──────
-        current_state = step["state"]
+        # FIX E: When location gate is active, the real state is ASK_LOCATION
+        # regardless of flow_step — stamp that BEFORE the log entry.
+        current_state = "ASK_LOCATION" if self.session.get("needs_location") else step["state"]
         self.session["state"] = current_state
         logger.info(
             "[ms_flow] handle_transcript entry: flow_step=%d state=%s transcript=%r",
@@ -2942,6 +2944,70 @@ class FlowEngine:
                 "[ms_flow] NEW_OR_RETURNING: no deterministic match → falling through (general_query blocked)"
             )
 
+        # ── RETURNING_TREATMENT_PLAN: deterministic extraction BEFORE interrupt ─────
+        # FIX B: Direct answers like "I'm still coming in regularly" or "it's a new
+        # episode" must be caught here — before _detect_intent() — to prevent
+        # general_query misrouting them to the LLM.
+        if step["state"] == "RETURNING_TREATMENT_PLAN":
+            _RTP_YES = (
+                "still coming in", "coming in regularly", "regularly",
+                "still on", "still under", "still having", "still getting",
+                "ongoing", "current treatment", "active treatment",
+                "yes i am", "yes i'm", "yeah i am", "yeah i'm",
+                "i am yeah", "i am yes",
+            )
+            _RTP_NO = (
+                "new episode", "new issue", "new problem", "new thing",
+                "flared up", "flare up", "came back", "come back",
+                "happened again", "different thing", "something else",
+                "not really", "not any more", "not anymore", "stopped",
+                "finished", "ended", "no i'm not", "no i haven't",
+            )
+            _rtp_yes = any(p in text for p in _RTP_YES)
+            _rtp_no = any(p in text for p in _RTP_NO)
+            if _rtp_yes and not _rtp_no:
+                self.session["on_treatment_plan"] = True
+                self.session.setdefault("collected", {})["on_treatment_plan"] = True
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] RETURNING_TREATMENT_PLAN: deterministic YES %r → step %d (interrupt bypassed)",
+                    transcript[:60], step["step"] + 1,
+                )
+                _rtp_next = self.current_step()
+                _rtp_next_llm = _rtp_next["use_llm"] if _rtp_next else False
+                _rtp_bridge = _get_bridge("RETURNING_TREATMENT_PLAN", True, self.session, _rtp_next_llm)
+                if _rtp_bridge:
+                    await self._tts.put(_rtp_bridge)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rtp_bridge}
+                    )
+                await self.ask_current_question()
+                return
+            if _rtp_no and not _rtp_yes:
+                self.session["on_treatment_plan"] = False
+                self.session.setdefault("collected", {})["on_treatment_plan"] = False
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] RETURNING_TREATMENT_PLAN: deterministic NO %r → step %d (interrupt bypassed)",
+                    transcript[:60], step["step"] + 1,
+                )
+                _rtp_next = self.current_step()
+                _rtp_next_llm = _rtp_next["use_llm"] if _rtp_next else False
+                _rtp_bridge = _get_bridge("RETURNING_TREATMENT_PLAN", False, self.session, _rtp_next_llm)
+                if _rtp_bridge:
+                    await self._tts.put(_rtp_bridge)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rtp_bridge}
+                    )
+                await self.ask_current_question()
+                return
+            # No deterministic match — fall through; _DATA_COLLECTION_STATES
+            # blocks general_query, and Haiku fallback handles ambiguous answers.
+            logger.info(
+                "[ms_flow] RETURNING_TREATMENT_PLAN: no deterministic match for %r — falling through",
+                transcript[:60],
+            )
+
         # ── PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE: YES gate BEFORE interrupt ──────
         # "yeah that works", "sounds fine", "just said yes" are direct acceptances
         # of the offered day. They must advance the flow here — before _detect_intent()
@@ -3393,11 +3459,34 @@ class FlowEngine:
                 ("the later one", -1), ("the later", -1), ("later one", -1), ("later", -1),
                 ("latest", -1), ("the latest", -1),
             ]
+            # FIX D: Guard — constraint phrases ("anything later than 1pm",
+            # "do you have something earlier?", "have you got later") are
+            # questions/objections, NOT slot selections.  Must not match
+            # "later"/"earlier" as ordinal picks.
+            _CONSTRAINT_GUARD = (
+                "later than", "earlier than", "before ",
+                "anything later", "anything earlier",
+                "something later", "something earlier",
+                "have you got later", "have you got earlier",
+                "do you have later", "do you have earlier",
+                "is there anything", "are there any",
+                "have you got anything", "got anything",
+                "any later", "any earlier",
+                "after ", "nothing before", "nothing after",
+            )
+            _is_constraint = any(p in text for p in _CONSTRAINT_GUARD)
+
             _ordinal_idx: Optional[int] = None
-            for _pat, _idx in _PT_ORDINALS:
-                if _pat in text:
-                    _ordinal_idx = _idx
-                    break
+            if not _is_constraint:
+                for _pat, _idx in _PT_ORDINALS:
+                    if _pat in text:
+                        _ordinal_idx = _idx
+                        break
+            else:
+                logger.info(
+                    "[ms_flow] %s: constraint phrase detected in %r — ordinal matching skipped",
+                    step["state"], text[:60],
+                )
             if _ordinal_idx is not None:
                 _avail_o   = self.session.get("available_days", [])
                 _chosen_o  = self.session.get("chosen_day", "")
@@ -3438,6 +3527,8 @@ class FlowEngine:
             # etc. when ordinal matching failed.  Strips filler, parses the spoken
             # hour, then matches against slot_times for the chosen day.
             # Priority: digit > word.  Afternoon indicator shifts word hours < 12.
+            # FIX D: Skip direct time matching when the caller is expressing a
+            # constraint — "anything later than 1pm" should NOT confirm the 1pm slot.
             import re as _re_dt
             _FILLER_DT = (
                 "i said ", "said ", "suits me", "for me", "that works",
@@ -3452,7 +3543,7 @@ class FlowEngine:
             _avail_dt  = self.session.get("available_days", [])
             _chosen_dt = self.session.get("chosen_day", "")
             _target_dt = _find_chosen_day_entry(_avail_dt, _chosen_dt)
-            if _target_dt and _target_dt.get("slots"):
+            if _target_dt and _target_dt.get("slots") and not _is_constraint:
                 _slot_times_dt = _target_dt.get("slot_times", [])
                 _matched_hour: Optional[int] = None
 
@@ -3785,6 +3876,11 @@ class FlowEngine:
                 # (no booking/FAQ keywords), so general_query must be suppressed here
                 # or the mid-flow interrupt swallows the answer and flow stalls.
                 "RETURNING_RECENCY",
+                # FIX B: RETURNING_TREATMENT_PLAN is a closed yes/current-status
+                # question.  Direct answers like "I'm still coming in regularly"
+                # score as general_query in _detect_intent, which triggers an LLM
+                # side response and re-asks the same question.  Must be blocked.
+                "RETURNING_TREATMENT_PLAN",
                 # PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE — YES answers are caught by
                 # the priority block above.  Any utterance that reaches here is a
                 # non-yes response (specific day name, vague, noise).  general_query
@@ -5465,11 +5561,18 @@ class FlowEngine:
                 "of course", "absolutely", "aye", "aye go on",
                 "right then", "fair enough", "sound", "sorted",
                 "i am", "i'm on", "i have",
+                # FIX B: common positive answers to "are you still coming in regularly?"
+                "still coming", "coming in regularly", "regularly",
+                "still on", "still under", "still having", "still getting",
+                "ongoing",
             )
             no_p = (
                 "no", "nope", "not really", "i'm not", "im not", "nah",
                 "not on", "not currently", "don't think", "i haven't",
                 "i havent", "never", "no i", "no i'm not",
+                # FIX B: common negative answers
+                "new episode", "flared up", "came back", "stopped",
+                "finished", "ended",
             )
             for p in yes_p:
                 if p in text:
