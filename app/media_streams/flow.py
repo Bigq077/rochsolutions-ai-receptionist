@@ -3608,9 +3608,156 @@ class FlowEngine:
 
         # ── PRESENT_TIMES: catch-all re-ask when nothing matched ────────────────
         # If we reach here for PRESENT_TIMES, no ordinal/time/single-slot matched.
-        # Before re-asking the same times, check if the caller is requesting a
-        # different day from the offered list (e.g. "i said i wanted thursday").
         if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+
+            # ── FIX D: DETERMINISTIC CONSTRAINT HANDLER ──────────────────────
+            # "anything later than 1pm?", "do you have something earlier?",
+            # "any afternoon slots?" — must be answered deterministically from
+            # the selected day's slot data.  NEVER fall through to LLM.
+            # Slot resolution is hard-scoped to the selected day only.
+            if _is_constraint:
+                import re as _re_ct
+                _avail_ct  = self.session.get("available_days", [])
+                _chosen_ct = self.session.get("chosen_day", "")
+                _target_ct = _find_chosen_day_entry(_avail_ct, _chosen_ct)
+                _day_label_ct = (_target_ct or {}).get("day_label", "that day")
+                _all_times_ct = (_target_ct or {}).get("slot_times", [])
+                _all_slots_ct = (_target_ct or {}).get("slots", [])
+                _presented_ct = _all_times_ct[:4]  # what was spoken to caller
+
+                _wants_later  = any(p in text for p in (
+                    "later", "after", "afternoon", "evening", "pm",
+                ))
+                _wants_earlier = any(p in text for p in (
+                    "earlier", "before", "morning",
+                ))
+
+                # Parse optional hour reference: "later than 1pm", "after 3"
+                _constraint_hour: Optional[int] = None
+                _cm_ct = _re_ct.search(
+                    r'(?:than|after|before|past)\s+(\d{1,2})\s*(?:pm|am|o\'?clock)?',
+                    text,
+                )
+                if _cm_ct:
+                    _ch = int(_cm_ct.group(1))
+                    if "pm" in text and _ch < 12:
+                        _ch += 12
+                    elif "am" in text and _ch == 12:
+                        _ch = 0
+                    elif _ch < 8:
+                        _ch += 12  # small numbers = PM for clinic hours
+                    if 7 <= _ch <= 20:
+                        _constraint_hour = _ch
+
+                _filtered_times: list = []
+                _filtered_slots: list = []
+
+                if _constraint_hour is not None:
+                    # Explicit reference: "later than 1pm" → hour > constraint
+                    for _ci, _ct_time in enumerate(_all_times_ct):
+                        try:
+                            _ct_h = int(_ct_time.split(":")[0])
+                            if _wants_later and _ct_h > _constraint_hour:
+                                _filtered_times.append(_ct_time)
+                                if _ci < len(_all_slots_ct):
+                                    _filtered_slots.append(_all_slots_ct[_ci])
+                            elif _wants_earlier and _ct_h < _constraint_hour:
+                                _filtered_times.append(_ct_time)
+                                if _ci < len(_all_slots_ct):
+                                    _filtered_slots.append(_all_slots_ct[_ci])
+                        except (ValueError, IndexError):
+                            pass
+                elif _presented_ct:
+                    # No explicit hour — "anything later" / "something earlier"
+                    # relative to the times we already presented.
+                    _presented_hours = []
+                    for _pt in _presented_ct:
+                        try:
+                            _presented_hours.append(int(_pt.split(":")[0]))
+                        except (ValueError, IndexError):
+                            pass
+                    if _wants_later and _presented_hours:
+                        _latest_shown = max(_presented_hours)
+                        for _ci, _ct_time in enumerate(_all_times_ct):
+                            try:
+                                _ct_h = int(_ct_time.split(":")[0])
+                                if _ct_h > _latest_shown:
+                                    _filtered_times.append(_ct_time)
+                                    if _ci < len(_all_slots_ct):
+                                        _filtered_slots.append(_all_slots_ct[_ci])
+                            except (ValueError, IndexError):
+                                pass
+                    elif _wants_earlier and _presented_hours:
+                        _earliest_shown = min(_presented_hours)
+                        for _ci, _ct_time in enumerate(_all_times_ct):
+                            try:
+                                _ct_h = int(_ct_time.split(":")[0])
+                                if _ct_h < _earliest_shown:
+                                    _filtered_times.append(_ct_time)
+                                    if _ci < len(_all_slots_ct):
+                                        _filtered_slots.append(_all_slots_ct[_ci])
+                            except (ValueError, IndexError):
+                                pass
+
+                from app.vagueness_detector import _time_to_speech as _t2s_ct
+                if _filtered_times:
+                    # Present the matching times — still scoped to the selected day
+                    _spoken_ct = [_t2s_ct(t) for t in _filtered_times[:4]]
+                    if len(_spoken_ct) == 1:
+                        _ct_phrase = (
+                            f"On {_day_label_ct} I've also got {_spoken_ct[0]}"
+                            " — does that work?"
+                        )
+                    elif len(_spoken_ct) == 2:
+                        _ct_phrase = (
+                            f"On {_day_label_ct} I've also got {_spoken_ct[0]}"
+                            f" or {_spoken_ct[1]} — which suits you?"
+                        )
+                    else:
+                        _ct_phrase = (
+                            f"On {_day_label_ct} I've also got "
+                            f"{', '.join(_spoken_ct[:-1])}, or {_spoken_ct[-1]}"
+                            " — which of those works?"
+                        )
+                else:
+                    # No matching times on the selected day — offer another day
+                    _other_days_ct = [
+                        d for d in _avail_ct
+                        if d.get("day_label", "") != _day_label_ct
+                    ]
+                    # Re-present what IS available on the selected day
+                    _existing_spoken = [_t2s_ct(t) for t in _presented_ct]
+                    _existing_str = (
+                        (" or ".join(_existing_spoken))
+                        if len(_existing_spoken) <= 2
+                        else (", ".join(_existing_spoken[:-1]) + f", or {_existing_spoken[-1]}")
+                    ) if _existing_spoken else "those times"
+                    if _other_days_ct:
+                        _other_label_ct = _other_days_ct[0].get("day_label", "another day")
+                        _ct_phrase = (
+                            f"I'm afraid {_existing_str} are the only times I have on "
+                            f"{_day_label_ct}. Would you like to try {_other_label_ct} instead?"
+                        )
+                    else:
+                        _ct_phrase = (
+                            f"I'm afraid {_existing_str} are the only times I have on "
+                            f"{_day_label_ct}. Would you like me to ask the team to call "
+                            "you back with more options?"
+                        )
+
+                await self._tts.put(_ct_phrase)
+                self.session["last_question"] = _ct_phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ct_phrase}
+                )
+                logger.info(
+                    "[ms_flow] %s: constraint %r handled deterministically → %r",
+                    step["state"], text[:60], _ct_phrase[:80],
+                )
+                return  # hard stop — constraint answered, no LLM fallback
+
+            # ── Day-change check ─────────────────────────────────────────────
+            # Before re-asking times, check if the caller wants a different day.
             _avail_re   = self.session.get("available_days", [])
             _chosen_re  = self.session.get("chosen_day", "")
             _cur_wd_re  = next(

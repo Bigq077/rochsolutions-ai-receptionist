@@ -375,22 +375,16 @@ class SilenceHandler:
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
         elif self._task is None:
-            # Non-question TTS (e.g. initial greeting: "...I'm Susie.") and the
-            # silence timer is not currently running.  Arm it so W1/W2/W3 can fire
-            # if the caller stays silent — re-ask will use SILENCE_RESPONSES for
-            # the current state without appending a question (last_question may be "").
-            #
-            # FIX C: Do NOT arm the timer when last_question is empty — bridge
-            # phrases ("Got that.", "Of course — good to have you back.") must
-            # never trigger silence recovery.  The timer will be armed properly
-            # when the next real question finishes playing.
-            if not self.last_question:
-                logger.debug(
-                    "[ms_silence] non-question TTS with empty last_question — NOT arming: %r", t[:50]
-                )
-            else:
-                self._restart_timer()
-                logger.info("[ms_silence] timer armed after non-question TTS: %r", t[:50])
+            # FIX C: Non-question TTS must NEVER arm or restart the silence
+            # timer.  Only the `if is_question:` branch above can arm it.
+            # This is a hard guarantee — bridge phrases ("Got that.",
+            # "Of course — good to have you back.", "No problem — let's get
+            # you sorted."), barge-in acks ("Sorry — go ahead."), and any
+            # other non-question speech cannot own silence timing.  The timer
+            # is armed exclusively when a real question finishes playing.
+            logger.debug(
+                "[ms_silence] non-question TTS — NOT arming timer: %r", t[:50]
+            )
 
     def on_transcript_received(self) -> None:
         """Call whenever a FinalTranscript arrives from STT."""
@@ -1617,17 +1611,29 @@ class WebSocketCallHandler:
             self._in_barge_in_recovery = False
             return False  # process utterance normally
 
-        # ── FIX A: if the transcript is substantive, process it immediately
-        # instead of dropping it and playing an ack.  The caller already gave
-        # their answer — making them repeat it is the #1 observed failure.
-        _barge_words = utterance.strip().split() if utterance else []
-        if len(_barge_words) >= 2:
+        # ── FIX A: if the transcript carries a real answer, process it
+        # immediately instead of dropping it and playing an ack.  The caller
+        # already gave their answer — making them repeat it is the #1 observed
+        # failure.  Only empty strings and pure filler noise ("uh", "um") get
+        # the ack-and-wait treatment.  Single-word valid answers like "yes",
+        # "new", "redditch", "recently" must be processed directly.
+        _BARGE_NOISE = frozenset({
+            "uh", "um", "hmm", "ah", "er", "oh", "erm", "ehm", "hm",
+            "mm", "mhm", "ugh", "huh",
+        })
+        _barge_text = utterance.strip().lower() if utterance else ""
+        _barge_words = _barge_text.split()
+        _is_barge_noise = (
+            not _barge_words
+            or (len(_barge_words) == 1 and _barge_words[0] in _BARGE_NOISE)
+        )
+        if not _is_barge_noise:
             self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
             logger.info(
-                "[ms_conn] barge-in #%d confirmed (%.0fms) — substantive utterance (%d words), "
+                "[ms_conn] barge-in #%d confirmed (%.0fms) — real transcript %r, "
                 "processing directly instead of ack+drop (state=%s)",
                 self.session["barge_in_count"], dur * 1000,
-                len(_barge_words), self.session.get("state", "unknown"),
+                utterance[:60], self.session.get("state", "unknown"),
             )
             self._in_barge_in_recovery = False
             return False  # process utterance normally — do NOT drop it
