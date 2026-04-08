@@ -534,6 +534,17 @@ class SilenceHandler:
         if self._cancelled:
             return
 
+        # Sync last_question from live session to prevent stale TTS content
+        # from being replayed when on_tts_finished updated it after the step transition.
+        _live_q_w1 = (_session_now or {}).get("last_question", "")
+        if _live_q_w1 and _live_q_w1.strip() != self.last_question:
+            logger.info(
+                "[ms_silence] W1: syncing last_question from %r to live %r",
+                self.last_question[:40], _live_q_w1[:40],
+            )
+            self.last_question = _live_q_w1.strip()
+            q = self.last_question
+
         self.currently_reasking = True
         self.reask_count += 1
         secs_since_q = time.time() - self._last_question_set_at
@@ -587,6 +598,16 @@ class SilenceHandler:
             return
         if self._cancelled:
             return
+
+        # Sync last_question from live session (same guard as W1)
+        _live_q_w2 = (_session_now or {}).get("last_question", "")
+        if _live_q_w2 and _live_q_w2.strip() != self.last_question:
+            logger.info(
+                "[ms_silence] W2: syncing last_question from %r to live %r",
+                self.last_question[:40], _live_q_w2[:40],
+            )
+            self.last_question = _live_q_w2.strip()
+            q = self.last_question
 
         self.currently_reasking = True
         self.reask_count += 1

@@ -718,6 +718,10 @@ def _classify_confirm_assessment(text: str) -> str:
     _QUESTION_GUARD = (
         "what sounds", "what sounds okay", "what sounds good", "what sounds fine",
         "what does that mean", "what does that", "which sounds",
+        # Repeat / replay requests — must outrank _YES ("please" is in _YES)
+        "repeat that", "could you repeat", "say that again",
+        "what was that", "what did you say", "sorry what",
+        "can you repeat", "say it again",
     )
     if any(p in text for p in _QUESTION_GUARD):
         return "clarification"
@@ -2254,7 +2258,27 @@ class FlowEngine:
                     return
 
             import re as _re_hg
-            _hg_digits = _re_hg.sub(r"\D", "", text or "")
+            # Slice to post-restart substring — discard digits before the final
+            # restart marker so "07502 sorry actually start again 07502" captures
+            # only "07502" (the fresh dictation), not "0750207502".
+            _RESTART_SLICERS = (
+                "start again", "start over", "let me start",
+                "actually", "sorry", "hang on", "scratch that",
+                "never mind", "no wait",
+            )
+            _text_lower_rs = (text or "").lower()
+            _last_restart_end = -1
+            for _rs in _RESTART_SLICERS:
+                _rpos = _text_lower_rs.rfind(_rs)
+                if _rpos >= 0 and (_rpos + len(_rs)) > _last_restart_end:
+                    _last_restart_end = _rpos + len(_rs)
+            _text_for_digits = (text or "")[_last_restart_end:] if _last_restart_end > 0 else (text or "")
+            if _last_restart_end > 0:
+                logger.info(
+                    "[ms_flow] HARD GATE COLLECT_PHONE: restart-sliced → %r (was %r)",
+                    _text_for_digits[:60], (text or "")[:60],
+                )
+            _hg_digits = _re_hg.sub(r"\D", "", _text_for_digits)
 
             if len(_hg_digits) >= 10:
                 # Full number received — accept immediately without buffering
@@ -2336,16 +2360,6 @@ class FlowEngine:
                     {"role": "assistant", "content": _hg_rb}
                 )
 
-                print(
-                    "[PHONE GATE] captured full phone",
-                    {
-                        "text":      text,
-                        "digits":    _hg_digits,
-                        "state":     self.session.get("state"),
-                        "flow_step": self.session.get("flow_step"),
-                        "phone":     self.session.get("phone") or self.session.get("phone_number"),
-                    },
-                )
                 logger.info(
                     "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s state→%s step→%d",
                     _hg_phone, self.session["state"], self.session["flow_step"],
@@ -2542,6 +2556,54 @@ class FlowEngine:
                 return
 
             else:
+                # ── Digit-led correction rescue ──────────────────────────────
+                # Caller is re-dictating or correcting the number (e.g. "you
+                # misheard that the number is 07502" or just "11207") — route
+                # back to COLLECT_PHONE rather than re-asking yes/no endlessly.
+                import re as _re_f
+                _cp_digits_str = _re_f.sub(r"\D", "", text or "")
+                _PHONE_CORRECTION_PHRASES = (
+                    "you misheard", "misheard", "the number is",
+                    "my number is", "it should be", "it's actually",
+                    "try again", "start again",
+                )
+                _is_phone_correction = (
+                    len(_cp_digits_str) >= 5
+                    or (
+                        len(_cp_digits_str) >= 3
+                        and any(p in text for p in _PHONE_CORRECTION_PHRASES)
+                    )
+                ) and not _hg_yes
+
+                if _is_phone_correction:
+                    self.session["phone"]                  = None
+                    self.session["phone_number"]           = None
+                    self.session["customer_phone"]         = None
+                    self.session["phone_digits_buffer"]    = _cp_digits_str if _cp_digits_str else ""
+                    self.session["phone_readback_pending"] = False
+                    self.session["phone_confirmed"]        = False
+                    self.session["state"]                  = "COLLECT_PHONE"
+                    self.session["flow_state"]             = "COLLECT_PHONE"
+                    self.session["flow_step"]              = (
+                        _RESCHEDULE_COLLECT_PHONE_INDEX
+                        if self._active_flow is RESCHEDULE_FLOW
+                        else _CANCEL_COLLECT_PHONE_INDEX
+                        if self._active_flow is CANCEL_FLOW
+                        else _COLLECT_PHONE_INDEX
+                    )
+                    self.session.setdefault("collected", {}).pop("phone", None)
+                    _repair = "No problem — let me take that number again."
+                    await self._tts.put(_repair)
+                    self.session["last_question"] = _repair
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _repair}
+                    )
+                    logger.info(
+                        "[ms_flow] CONFIRM_PHONE: digit-correction rescue → COLLECT_PHONE seeded=%r",
+                        _cp_digits_str or "(none)",
+                    )
+                    return
+
                 # Ambiguous — replay last question
                 logger.info(
                     "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — re-asking",
@@ -3812,6 +3874,9 @@ class FlowEngine:
                     self.session.pop("selected_slot", None)
                     self.session.pop("selected_slot_speech", None)
                     self.session.pop("slot_pending_confirmation", None)
+                    # Fresh full-day offer incoming — clear any stale constrained subset
+                    self.session.pop("offered_constrained_times", None)
+                    self.session.pop("offered_constrained_slots", None)
                     logger.info(
                         "[ms_flow] %s: day-change from %r → %r",
                         step["state"], _dlabel_ss, _dc_new_label,
@@ -3893,6 +3958,73 @@ class FlowEngine:
                 "anything in the afternoon", "anything in the morning",
             )
             _is_constraint = any(p in text for p in _CONSTRAINT_GUARD)
+
+            # ── Constrained-subset binding ───────────────────────────────────
+            # If we recently offered a filtered subset (2+ slots), try to bind
+            # the caller's response against that subset BEFORE running the
+            # general _is_constraint or full-list ordinal handler. This prevents
+            # "one o'clock in the afternoon works" from looping back into the
+            # constraint handler because "in the afternoon" is in _CONSTRAINT_GUARD.
+            _oc_times = self.session.get("offered_constrained_times", [])
+            _oc_slots = self.session.get("offered_constrained_slots", [])
+            if _oc_times and _oc_slots:
+                from app.vagueness_detector import _time_to_speech as _t2s_oc
+                _spoken_oc     = [_t2s_oc(t) for t in _oc_times]
+                _bound_oc_time  = None
+                _bound_oc_slot  = None
+                _bound_oc_speech = None
+                # Ordinal check against the constrained subset
+                _OC_ORDINALS = [
+                    ("first", 0), ("second", 1), ("third", 2), ("fourth", 3),
+                    ("last", -1), ("final", -1),
+                ]
+                for _oc_kw, _oc_idx in _OC_ORDINALS:
+                    if _oc_kw in text:
+                        _oc_resolved = _oc_idx if _oc_idx >= 0 else len(_oc_slots) - 1
+                        if 0 <= _oc_resolved < len(_oc_slots):
+                            _bound_oc_time   = _oc_times[_oc_resolved]
+                            _bound_oc_slot   = _oc_slots[_oc_resolved]
+                            _bound_oc_speech = (
+                                _spoken_oc[_oc_resolved]
+                                if _oc_resolved < len(_spoken_oc)
+                                else "that time"
+                            )
+                        break
+                # Direct time-phrase match
+                if _bound_oc_time is None:
+                    for _ot, _os, _osp in zip(_oc_times, _oc_slots, _spoken_oc):
+                        if _osp and _osp.lower() in text.lower():
+                            _bound_oc_time   = _ot
+                            _bound_oc_slot   = _os
+                            _bound_oc_speech = _osp
+                            break
+                if _bound_oc_time is not None:
+                    _avail_oc   = self.session.get("available_days", [])
+                    _chosen_oc  = self.session.get("chosen_day", "")
+                    _target_oc  = _find_chosen_day_entry(_avail_oc, _chosen_oc)
+                    _day_lbl_oc = (_target_oc or {}).get("day_label", "that day")
+                    _slot_sp_oc = (
+                        f"{_day_lbl_oc} at {_bound_oc_speech}"
+                        if _day_lbl_oc else _bound_oc_speech
+                    )
+                    _nxt_oc    = step["step"] + 1
+                    _nxt_st_oc = (
+                        self._active_flow[_nxt_oc]["state"]
+                        if _nxt_oc < len(self._active_flow) else "DONE"
+                    )
+                    self.session["selected_slot"]        = _bound_oc_slot.get("start", "")
+                    self.session["selected_slot_speech"] = _slot_sp_oc
+                    self.session["slot_confirmed"]       = True
+                    self.session["flow_step"]            = _nxt_oc
+                    self.session["state"]                = _nxt_st_oc
+                    self.session.pop("offered_constrained_times", None)
+                    self.session.pop("offered_constrained_slots", None)
+                    logger.info(
+                        "[ms_flow] %s: constrained-subset binding → %r speech=%r next=%s",
+                        step["state"], _bound_oc_time, _slot_sp_oc, _nxt_st_oc,
+                    )
+                    await self.ask_current_question()
+                    return
 
             _ordinal_idx: Optional[int] = None
             if not _is_constraint:
@@ -4050,6 +4182,9 @@ class FlowEngine:
             # the selected day's slot data.  NEVER fall through to LLM.
             # Slot resolution is hard-scoped to the selected day only.
             if _is_constraint:
+                # New constraint request — clear any prior offered subset
+                self.session.pop("offered_constrained_times", None)
+                self.session.pop("offered_constrained_slots", None)
                 import re as _re_ct
                 _avail_ct  = self.session.get("available_days", [])
                 _chosen_ct = self.session.get("chosen_day", "")
@@ -4191,6 +4326,15 @@ class FlowEngine:
                             f"{', '.join(_spoken_ct[:-1])}, or {_spoken_ct[-1]}"
                             " — which of those works?"
                         )
+                    # Persist multi-slot constrained subset so the next caller
+                    # turn can bind directly (ordinal or explicit time phrase).
+                    if len(_filtered_times) >= 2:
+                        self.session["offered_constrained_times"] = _filtered_times[:4]
+                        self.session["offered_constrained_slots"] = _filtered_slots[:4]
+                    else:
+                        # Single slot already pinned via selected_slot
+                        self.session.pop("offered_constrained_times", None)
+                        self.session.pop("offered_constrained_slots", None)
                 else:
                     # No matching times on the selected day — offer another day
                     _other_days_ct = [
@@ -4772,7 +4916,7 @@ class FlowEngine:
                     "can you spell", "spell that", "how do you spell",
                 )
                 if any(phrase in (text or "").lower() for phrase in _SURNAME_NOISE_PHRASES):
-                    self.session.pop("name_fragment", None)
+                    # Keep name_fragment (first name) intact — do NOT pop it
                     _sn_re = "Sorry, I didn't quite catch that — what's your surname?"
                     await self._tts.put(_sn_re)
                     self.session["last_question"] = _sn_re
