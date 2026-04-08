@@ -395,7 +395,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
             "ABSOLUTELY DO NOT ask 'how long have you had that?' or any duration question. "
             "DO NOT ask if they have been with us before.\n"
             "DO NOT mention location, pricing, or any other topic.\n"
-            "End EVERY response with exactly: 'Does that sound like a good starting point?'"
+            "End EVERY response with exactly: 'Does that sound okay?'"
         ),
         "extract": "yes_no",
     },
@@ -786,6 +786,18 @@ def _classify_confirm_assessment(text: str) -> str:
     )
     if any(p in text for p in _ADDITIVE):
         return "additive_detail"
+
+    # Interrogative starters — questions must NEVER confirm the assessment.
+    # Checked before the word-count fallback so long questions don't get
+    # misrouted as "additive_detail".
+    if text.startswith((
+        "what ", "what's", "how ", "is it", "is that", "is the",
+        "does it", "does that", "do you", "will it", "will that",
+        "would it", "can you", "could you", "tell me",
+        "how much", "how long", "how many", "how painful",
+        "why ", "when ", "where ",
+    )):
+        return "clarification"
 
     # Word-count fallback: long unparsed sentence almost certainly clinical detail
     # Short noise/garble stays as unknown
@@ -2060,27 +2072,33 @@ class FlowEngine:
                     "[ms_flow] ASK_LOCATION: no match for %r — retry_count=%d",
                     text[:40], _retry_count,
                 )
-                if _retry_count >= 2:
-                    # Two failed attempts — "Alcester" is hard to transcribe,
-                    # so default to Alcester rather than transferring.  The
-                    # caller can correct later if needed.
-                    self.session["selected_location"] = "alcester"
-                    self.session["needs_location"] = False
-                    self.session.pop("location_retry_count", None)
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION: max retries — defaulting to Alcester"
-                    )
-                    await self.ask_current_question()
-                else:
+                if _retry_count == 1:
                     _retry = (
-                        "Sorry — I didn't quite catch that. "
-                        "Which clinic would you like — Alcester or Redditch?"
+                        "Sorry, I didn't quite catch that — "
+                        "which clinic would you prefer, Alcester or Redditch? "
+                        "You can also say one for Alcester or two for Redditch."
+                    )
+                elif _retry_count >= 3:
+                    _retry = (
+                        "I'm having trouble catching the clinic name — "
+                        "let me get someone to call you back and help."
                     )
                     await self._tts.put(_retry)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _retry}
                     )
                     self.session["last_question"] = _retry
+                    self.session["graceful_exit"]    = True
+                    self.session["request_transfer"] = True
+                    self.session["needs_location"]   = False
+                    return
+                else:
+                    _retry = "Which clinic would you like — Alcester or Redditch? Say one for Alcester or two for Redditch."
+                await self._tts.put(_retry)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _retry}
+                )
+                self.session["last_question"] = _retry
             return
 
         # ════════════════════════════════════════════════════════════════════
@@ -2877,7 +2895,7 @@ class FlowEngine:
                 self.session["state"] = "COLLECT_REASON"
                 return
             # clarification / frustration / unknown — re-ask the confirmation question
-            _ca_retry = self.session.get("last_question", "Does that sound like a good starting point?")
+            _ca_retry = self.session.get("last_question", "Does that sound okay?")
             await self._tts.put(_ca_retry)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _ca_retry}
@@ -3035,7 +3053,10 @@ class FlowEngine:
             )
             if any(p in text for p in _PD_REPEAT):
                 _pd_avail  = self.session.get("available_days", [])
-                _pd_replay = _build_day_list_phrase(_pd_avail)
+                # Replay the CURRENT page, not always page 0
+                _pd_page   = self.session.get("days_page", 0)
+                _pd_paged  = _pd_avail[_pd_page * 3 : (_pd_page + 1) * 3] or _pd_avail
+                _pd_replay = _build_day_list_phrase(_pd_paged)
                 if _pd_replay:
                     await self._tts.put(_pd_replay)
                     self.session["last_question"] = _pd_replay
@@ -3044,10 +3065,134 @@ class FlowEngine:
                     )
                     logger.info(
                         "[ms_flow] %s: repeat/clarification → replaying day list "
-                        "(extract:any bypass, LLM avoided): %r",
-                        step["state"], _pd_replay[:80],
+                        "(page=%d, extract:any bypass, LLM avoided): %r",
+                        step["state"], _pd_page, _pd_replay[:80],
                     )
                     return  # keep same flow_step — wait for actual day choice
+
+            # ── NONE-OF-THESE / LATER / BACK: page through available_days ────────
+            _PD_NONE = (
+                "none of these", "none of them", "none of those",
+                "those don't work", "those dont work",
+                "they don't work", "they dont work",
+                "none of these work", "none of these suit", "none suit",
+                "nothing works for me", "doesn't work for me", "doesnt work for me",
+                "can't do any of those", "cant do any of those",
+                "not available on any", "none of those suit",
+            )
+            _PD_LATER = (
+                "later dates", "later date", "any later", "something later",
+                "further ahead", "further in advance",
+                "anything later", "anything after", "more dates", "other dates",
+                "if you have any later", "what else", "any other",
+            )
+            _PD_BACK = (
+                "go back", "previous dates", "earlier dates",
+                "the ones before", "the first ones", "back to the first",
+            )
+            _pd_all = self.session.get("available_days", [])
+
+            if any(p in text for p in _PD_NONE) or any(p in text for p in _PD_LATER):
+                _page = self.session.get("days_page", 0) + 1
+                self.session["days_page"] = _page
+                _next_days = _pd_all[_page * 3 : (_page + 1) * 3]
+                if _next_days:
+                    _phrase = _build_day_list_phrase(_next_days)
+                    await self._tts.put(_phrase)
+                    self.session["last_question"] = _phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _phrase}
+                    )
+                    logger.info("[ms_flow] PRESENT_DAYS: page=%d next days offered", _page)
+                else:
+                    _no_more = (
+                        "I'm afraid that's all the availability I have in the next 30 days. "
+                        "Can I take your details and have someone call you to arrange a time?"
+                    )
+                    await self._tts.put(_no_more)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _no_more}
+                    )
+                    self.session["graceful_exit"] = True
+                    self.session["flow_step"] = len(self._active_flow)
+                    logger.info("[ms_flow] PRESENT_DAYS: no more days — graceful exit")
+                return
+
+            if any(p in text for p in _PD_BACK):
+                _page = max(0, self.session.get("days_page", 0) - 1)
+                self.session["days_page"] = _page
+                _prev_days = _pd_all[_page * 3 : (_page + 1) * 3]
+                if _prev_days:
+                    _phrase = _build_day_list_phrase(_prev_days)
+                    await self._tts.put(_phrase)
+                    self.session["last_question"] = _phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _phrase}
+                    )
+                    logger.info("[ms_flow] PRESENT_DAYS: page back → page=%d", _page)
+                return
+
+            # ── EXPLICIT DATE: "the 25th of April" must beat generic YES/ordinal ──
+            # Run before _PD_YES so an explicit date is never collapsed into a
+            # generic affirmation and the wrong day stored.
+            import re as _re_xd
+            _XD_PAT = _re_xd.search(
+                r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)\b'
+                r'|\b([a-zA-Z]+)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+                transcript, _re_xd.IGNORECASE,
+            )
+            if _XD_PAT:
+                if _XD_PAT.group(1):
+                    _xd_day_n, _xd_month_s = int(_XD_PAT.group(1)), _XD_PAT.group(2).lower()
+                else:
+                    _xd_day_n, _xd_month_s = int(_XD_PAT.group(4)), _XD_PAT.group(3).lower()
+
+                _MONTH_NUM = {
+                    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+                    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+                    "january": 1, "february": 2, "march": 3, "april": 4,
+                    "june": 6, "july": 7, "august": 8, "september": 9,
+                    "october": 10, "november": 11, "december": 12,
+                }
+                _MONTH_SHORT = {
+                    1: "jan", 2: "feb", 3: "mar", 4: "apr", 5: "may", 6: "jun",
+                    7: "jul", 8: "aug", 9: "sep", 10: "oct", 11: "nov", 12: "dec",
+                }
+                _xd_month_n = _MONTH_NUM.get(_xd_month_s[:3]) or _MONTH_NUM.get(_xd_month_s)
+                if _xd_month_n:
+                    _xd_abbr = _MONTH_SHORT[_xd_month_n]
+                    _xd_all = self.session.get("available_days", [])
+                    _xd_matched = None
+                    # Use digit-boundary regex to prevent 1 matching 21, 10, etc.
+                    _day_re = _re_xd.compile(r'(?<!\d)' + str(_xd_day_n) + r'(?!\d)')
+                    for _xd_d in _xd_all:
+                        _xd_lbl = _xd_d.get("day_label", "").lower()
+                        if _day_re.search(_xd_lbl) and (
+                            _xd_abbr in _xd_lbl or _xd_month_s[:3] in _xd_lbl
+                        ):
+                            _xd_matched = _xd_d
+                            break
+                    if _xd_matched:
+                        self.session["chosen_day"] = _xd_matched["day_label"]
+                        self.session.setdefault("collected", {})["chosen_day"] = _xd_matched["day_label"]
+                        self.session.pop("days_page", None)
+                        self.session.pop("vague_option_pending", None)
+                        self.session.pop("vague_clarification_asked", None)
+                        self.session.pop("slot_pending_confirmation", None)
+                        _nxt_xd = step["step"] + 1
+                        _nxt_xd_state = (
+                            self._active_flow[_nxt_xd]["state"]
+                            if _nxt_xd < len(self._active_flow) else "DONE"
+                        )
+                        self.session["flow_step"] = _nxt_xd
+                        self.session["state"]     = _nxt_xd_state
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS explicit date: %r → %r",
+                            transcript[:40], _xd_matched["day_label"],
+                        )
+                        await self.ask_current_question()
+                        return
+                    # Date mentioned but not in available_days — fall through to Haiku
 
             _PD_YES = (
                 # Single-word affirmatives
@@ -3094,6 +3239,7 @@ class FlowEngine:
                 )
                 self.session["flow_step"] = _nxt_pd_yes
                 self.session["state"]     = _nxt_pd_yes_state
+                self.session.pop("days_page", None)
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
                 self.session.pop("slot_pending_confirmation", None)
@@ -3145,6 +3291,7 @@ class FlowEngine:
                 )
                 self.session["flow_step"] = _nxt_pd_ord
                 self.session["state"]     = _nxt_pd_ord_state
+                self.session.pop("days_page", None)
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
                 self.session.pop("slot_pending_confirmation", None)
@@ -3194,6 +3341,7 @@ class FlowEngine:
                     )
                     self.session["flow_step"] = _nxt_pd_nm
                     self.session["state"]     = _nxt_pd_nm_state
+                    self.session.pop("days_page", None)
                     self.session.pop("vague_option_pending", None)
                     self.session.pop("vague_clarification_asked", None)
                     self.session.pop("slot_pending_confirmation", None)
@@ -3851,6 +3999,28 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+            # ── REPAIR / CLARIFICATION: replay last_question without advancing ──────
+            # Must run BEFORE name extraction so phrases like "say that again"
+            # (3 words, passes word-count gate) are never stored as a name.
+            _CN_REPAIR = (
+                "what was the question", "say that again", "say it again",
+                "repeat that", "repeat the question",
+                "what did you ask", "what did you say",
+                "cut off", "you cut off", "got cut off", "broke up",
+                "didn't catch", "didn't hear", "couldn't hear",
+                "pardon", "come again", "could you repeat",
+                "what was that", "sorry what", "missed that",
+                "what were you asking", "what did you want",
+            )
+            if any(p in text for p in _CN_REPAIR):
+                _cn_pending = self.session.get("last_question", "Who am I booking in today?")
+                await self._tts.put(_cn_pending)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cn_pending}
+                )
+                logger.info("[ms_flow] COLLECT_NAME repair → replaying: %r", _cn_pending[:60])
+                return
+
             _cn_twilio = (
                 self.session.get("twilio_from_local")
                 or self.session.get("twilio_from", "")
@@ -4399,13 +4569,34 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 logger.info("[ms_flow] retry >= 3 on %r — graceful exit triggered", phrase_key)
                 return
-            # count == 1: sidebar check first, then Haiku fallback.
-            # Sidebar detection (Haiku, ~200-300ms) fires ONLY on the first failed
-            # extraction so there is zero overhead on clean turns.
-            # If the caller asked a clinic question mid-flow, answer it from
-            # clinic_config and re-ask the pending question — do NOT count this
-            # as a retry.  If it's not a sidebar, fall through to _haiku_fallback.
+            # count == 1: repair check → sidebar check → Haiku fallback.
+            # Repair detection runs first so clarification requests reset the
+            # retry counter and replay the last question without consuming a retry.
+            # Sidebar detection (Haiku, ~200-300ms) fires only on first failed
+            # extraction — zero overhead on clean turns.
             if count == 1:
+                # ── REPAIR / CLARIFICATION: replay last_question, reset retry ──
+                _REPAIR = (
+                    "what was the question", "say that again", "say it again",
+                    "repeat that", "what did you ask", "what did you say",
+                    "cut off", "you cut off", "got cut off", "broke up",
+                    "didn't catch", "didn't hear", "couldn't hear",
+                    "pardon", "come again", "could you repeat",
+                    "what was that", "sorry what", "missed that",
+                )
+                if any(p in text for p in _REPAIR):
+                    _pending_q = self.session.get("last_question", "")
+                    if _pending_q:
+                        retry_counts[phrase_key] = 0
+                        await self._tts.put(_pending_q)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _pending_q}
+                        )
+                        logger.info(
+                            "[ms_flow] repair detected → replaying last_question: %r",
+                            _pending_q[:80],
+                        )
+                        return
                 from app.sidebar_handler import detect_sidebar_topic
                 _sidebar_topic = await detect_sidebar_topic(transcript, step["state"])
                 if _sidebar_topic:
@@ -5879,10 +6070,36 @@ class FlowEngine:
 
         # ----- name: 1-5 word name ---------------------------------------
         if method == "name":
-            words = raw.strip().split()
+            _raw_name = raw.strip()
+
+            # 1. Strip common prefixes: "my name is X", "it's X", "I'm X", "call me X"
+            import re as _re_name
+            _prefix_m = _re_name.match(
+                r'^(?:my name(?:\s+is)?|the name(?:\s+is)?|name(?:\s+is)?'
+                r'|it\'?s|its|i\'?m|im|call me|this is)\s+',
+                _raw_name, _re_name.IGNORECASE,
+            )
+            if _prefix_m:
+                _raw_name = _raw_name[_prefix_m.end():].strip()
+
+            # 2. Strip trailing meta-questions before word-count check
+            _META_STARTS = (
+                " do you need", " do you want", " can you", " should i",
+                " is that", " do i need", " will you", " did you",
+                " need help", " by the way", " just to say", " just checking",
+                " that's", " that is", " let me spell", ", that",
+            )
+            for _ms in _META_STARTS:
+                _idx = _raw_name.lower().find(_ms)
+                if _idx > 0:
+                    _raw_name = _raw_name[:_idx].strip()
+                    break
+
+            words = _raw_name.split()
             if not (1 <= len(words) <= 5):
                 return None
-            # BUG 6: reject obvious greetings / filler as a name.
+
+            # Reject obvious greetings / filler as a name.
             # Single-word hits against this set are not valid names.
             _NOT_A_NAME = frozenset({
                 "hello", "hi", "hey", "yes", "no", "okay", "ok", "sure",
@@ -5893,10 +6110,11 @@ class FlowEngine:
                 "and", "or", "but", "so", "a", "an", "the", "my", "it",
                 "its", "i", "me", "we", "us", "he", "she", "they", "them",
             })
-            if len(words) == 1 and raw.strip().lower() in _NOT_A_NAME:
-                logger.info("[ms_extract] name: rejected filler %r as name", raw.strip())
+            if len(words) == 1 and _raw_name.lower() in _NOT_A_NAME:
+                logger.info("[ms_extract] name: rejected filler %r as name", _raw_name)
                 return None
-            return raw.strip()
+
+            return _raw_name
 
         # ----- phone: 10+ digit number ----------------------------------
         if method == "phone":
@@ -5909,8 +6127,10 @@ class FlowEngine:
 
         # ----- location_selection: Alcester or Redditch ------------------
         if method == "location_selection":
-            # "don't mind / either / wherever" — default to Alcester (main clinic)
-            _no_pref = any(p in text for p in (
+            _t = text.strip()
+
+            # No-preference — default to Alcester (the main clinic)
+            _no_pref = any(p in _t for p in (
                 "don't mind", "dont mind", "either", "doesn't matter",
                 "doesnt matter", "anywhere", "wherever", "no preference",
                 "don't have a preference", "dont have a preference",
@@ -5919,32 +6139,46 @@ class FlowEngine:
             if _no_pref:
                 return "alcester"
 
-            # Alcester patterns — names, ordinals, landmarks, mishearings
-            # Common Deepgram mishears: "ancestor", "ulster", "elster", "alcesta"
-            _alcester = any(p in text for p in (
+            # Keypad digits — exact full-text match only ("1" must not match "12")
+            if _t == "1":
+                return "alcester"
+            if _t == "2":
+                return "redditch"
+
+            # Alcester spoken name / common mishearings (substring safe — unique strings)
+            if any(p in _t for p in (
                 "alcester", "alchester", "alster", "alca", "alcesta",
                 "ancestor", "ulster", "elster", "alces", "olster",
                 "leisure", "greig", "kinwarton",
-                "first", "1",
-            ))
-            # "one" as a standalone ordinal selector — but NOT reference phrases
-            _one_match = (
-                "one" in text
-                and "the one" not in text
-                and "which one" not in text
-                and "not sure" not in text
-                and "one of" not in text
-            )
-            if _alcester or _one_match:
+            )):
                 return "alcester"
 
-            # Redditch patterns — names, ordinals, landmarks, mishearings
-            if any(p in text for p in (
+            # Redditch spoken name / common mishearings
+            if any(p in _t for p in (
                 "redditch", "reditch", "reddish", "reddit", "red itch",
                 "bromsgrove",
-                "second", "two", "2",
             )):
                 return "redditch"
+
+            # Ordinals / spoken digits — only when the word is the ENTIRE utterance
+            # or its first token (≤ 2 total words).  Prevents "first let me ask" → Alcester
+            # and "second question" → Redditch.
+            _words = _t.split()
+            if _words and _words[0] in ("first", "one") and len(_words) <= 2:
+                return "alcester"
+            if _words and _words[0] in ("second", "two") and len(_words) <= 2:
+                return "redditch"
+
+            # "one" standalone (not "the one" / "which one" / "one of")
+            if (
+                "one" in _words
+                and "the one" not in _t
+                and "which one" not in _t
+                and "not sure" not in _t
+                and "one of" not in _t
+                and len(_words) <= 3
+            ):
+                return "alcester"
 
             return None
 
