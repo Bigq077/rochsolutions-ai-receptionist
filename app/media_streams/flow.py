@@ -284,6 +284,9 @@ def _build_times_phrase(day_entry: dict) -> str:
     def _period_of(hhmm: str) -> str:
         try:
             h = int(hhmm.split(":")[0])
+            m = int(hhmm.split(":")[1]) if len(hhmm.split(":")) > 1 else 0
+            if h == 12 and m == 0:
+                return "noon"
             return "in the morning" if h < 12 else ("in the afternoon" if h < 18 else "in the evening")
         except Exception:
             return "in the afternoon"
@@ -2194,6 +2197,42 @@ class FlowEngine:
         # the CONFIRM gate immediately below.
         # ════════════════════════════════════════════════════════════════════
         if current_state == "COLLECT_PHONE" and not self.session.get("phone_readback_pending"):
+            # ── NAME-REPAIR: step back to COLLECT_NAME from COLLECT_PHONE ───────
+            # Must run before digit extraction so repair intents are not trapped
+            # as failed digit entries and silently re-asked.
+            _NAME_REPAIR_CP = (
+                "got my name wrong", "name is wrong", "name's wrong",
+                "wrong name", "wrong with my name",
+                "misspelled my name", "mispelled my name",
+                "spelled wrong", "spelt wrong",
+                "go back to the name", "back to the name question",
+                "name question", "help me spell", "spell my name",
+                "messed up on my name", "messed up my name",
+                "got the name wrong",
+            )
+            if any(p in text for p in _NAME_REPAIR_CP):
+                _collect_name_states_cp = {
+                    "COLLECT_NAME", "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                }
+                _cn_idx_cp = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in _collect_name_states_cp),
+                    None,
+                )
+                if _cn_idx_cp is not None:
+                    self.session["full_name"] = None
+                    self.session.setdefault("collected", {}).pop("full_name", None)
+                    self.session.setdefault("collected", {}).pop("name", None)
+                    self.session.pop("name_fragment", None)
+                    self.session["flow_step"] = _cn_idx_cp
+                    self.session["state"]     = self._active_flow[_cn_idx_cp]["state"]
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: name-repair → stepping back to %s",
+                        self.session["state"],
+                    )
+                    await self.ask_current_question()
+                    return
+
             import re as _re_hg
             _hg_digits = _re_hg.sub(r"\D", "", text or "")
 
@@ -4558,6 +4597,35 @@ class FlowEngine:
 
         answer = self._extract(step["extract"], text, transcript)
 
+        # ── COLLECT_NAME: single-word first-name guard ────────────────────────
+        # If the caller gives only one word (first name), hold it as a fragment
+        # and ask for their surname before advancing the flow.  On the next turn
+        # the fragment is combined with the new word to form a full name.
+        _COLLECT_NAME_STATES_FG = {
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        }
+        if step["state"] in _COLLECT_NAME_STATES_FG and answer and len(answer.split()) == 1:
+            _frag = self.session.get("name_fragment")
+            if _frag:
+                # Second turn: caller gave surname — combine into full name
+                answer = f"{_frag} {answer}".title()
+                self.session.pop("name_fragment", None)
+                logger.info("[ms_flow] COLLECT_NAME: fragment completed → %r", answer)
+            else:
+                # First turn: only first name — ask for surname
+                self.session["name_fragment"] = answer
+                _sn_phrase = "And what's your surname?"
+                await self._tts.put(_sn_phrase)
+                self.session["last_question"] = _sn_phrase
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _sn_phrase}
+                )
+                logger.info(
+                    "[ms_flow] COLLECT_NAME: single-word name %r — asking for surname", answer
+                )
+                return
+
         # ── COLLECT_REASON: fragment guard (BUG 1/2) ─────────────────────────
         # extract:"any" accepts every non-empty transcript verbatim.  Guard against
         # premature advancement on bare fragments ("my", "my left", "pain").
@@ -4937,6 +5005,7 @@ class FlowEngine:
             if step["answer_field"] == "full_name":
                 col["full_name"] = answer
                 col["name"]      = answer
+                self.session.pop("name_fragment", None)  # clear single-word fragment if present
                 # Notify name tracker — stores validated first name, resets uses
                 self._name_tracker.set_name(answer)
                 # Persist tracker state to serialisable session mirrors

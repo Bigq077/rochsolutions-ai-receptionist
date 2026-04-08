@@ -1215,12 +1215,14 @@ class WebSocketCallHandler:
                             # First caller utterance — detect intent then kick off the flow.
                             self.session["flow_started"] = True
                             logger.info("[ms_conn] flow start — first utterance: %r", utterance[:80])
+                            await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
                             await flow.handle_transcript(utterance)
                         else:
                             logger.info(
                                 "[ms_conn] flow transcript: %r  step=%s",
                                 utterance[:80], self.session.get("flow_step", 0),
                             )
+                            await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
                             await flow.handle_transcript(utterance)
 
                     if not self._call_stable:
@@ -1311,6 +1313,12 @@ class WebSocketCallHandler:
                         timeout=1.0,
                     )
                 except asyncio.TimeoutError:
+                    continue
+
+                # Sentinel: enqueued before each handle_transcript call to reset dedup
+                # state between caller turns so fresh identical phrases are not suppressed.
+                if chunk_text == "\x00DEDUP_RESET\x00":
+                    _last_tts_chunk = ""
                     continue
 
                 if not chunk_text or not chunk_text.strip():
