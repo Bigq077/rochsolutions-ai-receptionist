@@ -27,6 +27,16 @@ _CALLBACK_SUFFIX = " — if you'd like to call back when you're ready, we're her
 # Maps raw session state names → SILENCE_RESPONSES lookup key.
 # States not listed here fall through to "default".
 _STATE_TO_KEY: dict[str, str] = {
+    # Media-streams flow states
+    "COLLECT_PHONE":           "ask_phone",
+    "COLLECT_PHONE_RETURNING": "ask_phone",
+    "CONFIRM_PHONE":           "confirm_phone",
+    "CONFIRM_PHONE_RETURNING": "confirm_phone",
+    "COLLECT_NAME":            "ask_name",
+    "COLLECT_NAME_RETURNING":  "ask_name",
+    "COLLECT_NAME_RESCHEDULE": "ask_name",
+    "COLLECT_NAME_CANCEL":     "ask_name",
+    # Legacy flow states
     # Booking — phone
     "BOOK_PHONE":           "ask_phone",
     "RESCH_PHONE":          "ask_phone",

@@ -2292,14 +2292,17 @@ class FlowEngine:
                 # Full number received — accept immediately without buffering
                 _hg_phone = _hg_digits[:11] if len(_hg_digits) > 11 else _hg_digits
 
-                # Write all likely phone fields used elsewhere in the session
+                # Write phone fields for in-call use (readback template, LLM prompt etc.)
+                # collected["phone"] is intentionally deferred until phone_confirmed=True
+                # so corrupted or unconfirmed candidates never reach downstream summaries.
                 self.session["phone"]          = _hg_phone
                 self.session["phone_number"]   = _hg_phone
                 self.session["customer_phone"] = _hg_phone
-                self.session.setdefault("collected", {})["phone"] = _hg_phone
+                self.session["phone_candidate"] = _hg_phone
 
                 # Set all relevant flags
                 self.session["phone_digits_buffer"] = ""
+                self.session["phone_voice_attempts"] = 0  # successful capture resets counter
 
                 _hg_spaced = _format_phone_readback(_hg_phone)
 
@@ -2310,6 +2313,7 @@ class FlowEngine:
                     # by a readback-confirmation exchange.
                     self.session["phone_readback_pending"] = False
                     self.session["phone_confirmed"]        = True
+                    self.session.setdefault("collected", {})["phone"] = _hg_phone
                     self.session["state"]                  = "PRESENT_DAYS_RESCHEDULE"
                     self.session["flow_state"]             = "PRESENT_DAYS_RESCHEDULE"
                     self.session["flow_step"]              = _RESCHEDULE_PRESENT_DAYS_INDEX
@@ -2336,6 +2340,7 @@ class FlowEngine:
                     # jump straight to CONFIRM_CANCEL to execute the cancellation.
                     self.session["phone_readback_pending"] = False
                     self.session["phone_confirmed"]        = True
+                    self.session.setdefault("collected", {})["phone"] = _hg_phone
                     self.session["state"]                  = "CONFIRM_CANCEL"
                     self.session["flow_state"]             = "CONFIRM_CANCEL"
                     self.session["flow_step"]              = _CONFIRM_CANCEL_INDEX
@@ -2420,7 +2425,36 @@ class FlowEngine:
                         # Caller restarted and extended (e.g. 07502 → 0750211207 in one go)
                         _log_mode = "extended-restart-replace"
                         _existing_buf = ""
+                    elif len(_existing_buf) >= 3 and _existing_buf.endswith(_hg_digits):
+                        # Caller re-stated the tail of their number (e.g. 07502 → 7502)
+                        # — suffix overlap; treat as restart to prevent corrupt append.
+                        _log_mode = "suffix-overlap-restart"
+                        _existing_buf = ""
                 _hg_buffer = _existing_buf + _hg_digits
+
+                # Hard length cap — if accumulated digits exceed a plausible UK number
+                # length, the buffer is corrupt.  Hard-reset and ask caller to start over.
+                if len(_hg_buffer) > 11:
+                    _pva = self.session.get("phone_voice_attempts", 0) + 1
+                    self.session["phone_voice_attempts"] = _pva
+                    _reset_msg = "Let's start that number again from the beginning."
+                    if _pva >= 2:
+                        _reset_msg += " If it's easier, you can type it on your keypad."
+                    await self._tts.put(_reset_msg)
+                    self.session["phone_digits_buffer"] = ""
+                    self.session["last_question"] = _reset_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _reset_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: buffer exceeded 11 digits %r — hard reset (#%d)",
+                        _hg_buffer, _pva,
+                    )
+                    self.session["_last_handled_by"] = "collect_phone_hard_reset"
+                    self.session["_last_yes_detected"] = False
+                    self.session["_last_no_detected"]  = False
+                    return
+
                 self.session["phone_digits_buffer"] = _hg_buffer
                 logger.info(
                     "[ms_flow] HARD GATE COLLECT_PHONE: %s %r → %r (%d digits)",
@@ -2438,6 +2472,8 @@ class FlowEngine:
                     "[ms_flow] HARD GATE COLLECT_PHONE: no digits in %r — re-asking",
                     text[:60],
                 )
+                _pva_nd = self.session.get("phone_voice_attempts", 0) + 1
+                self.session["phone_voice_attempts"] = _pva_nd
                 self.session["_last_handled_by"]   = "collect_phone_no_digits"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = False
@@ -2522,6 +2558,15 @@ class FlowEngine:
             if _hg_yes and not _hg_no:
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = True
+                # Commit confirmed phone to collected — deferred from capture time
+                _cp_confirmed = (
+                    self.session.get("phone_candidate")
+                    or self.session.get("phone_number")
+                    or self.session.get("phone")
+                )
+                if _cp_confirmed:
+                    self.session.setdefault("collected", {})["phone"] = _cp_confirmed
+                self.session.pop("phone_candidate", None)
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"]  = _RESCHEDULE_PRESENT_DAYS_INDEX
                     self.session["state"]      = "PRESENT_DAYS_RESCHEDULE"
@@ -2557,6 +2602,7 @@ class FlowEngine:
                 self.session["phone_digits_buffer"]    = _seed_digits if _seed_digits else ""
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = False
+                self.session.pop("phone_candidate", None)
                 self.session["state"]                  = "COLLECT_PHONE"
                 self.session["flow_state"]             = "COLLECT_PHONE"
                 self.session["flow_step"]              = (
@@ -2610,6 +2656,7 @@ class FlowEngine:
                     self.session["phone_digits_buffer"]    = _cp_digits_str if _cp_digits_str else ""
                     self.session["phone_readback_pending"] = False
                     self.session["phone_confirmed"]        = False
+                    self.session.pop("phone_candidate", None)
                     self.session["state"]                  = "COLLECT_PHONE"
                     self.session["flow_state"]             = "COLLECT_PHONE"
                     self.session["flow_step"]              = (
@@ -4955,16 +5002,42 @@ class FlowEngine:
                     if _frag_cn
                     else self.session.get("last_question", "What's your name please?")
                 )
-                await self._tts.put(_noise_re)
-                self.session["last_question"] = _noise_re
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _noise_re}
-                )
+                # Suppression: don't fire duplicate TTS if already the active question
+                if self.session.get("last_question") != _noise_re:
+                    await self._tts.put(_noise_re)
+                    self.session["last_question"] = _noise_re
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _noise_re}
+                    )
                 logger.info(
                     "[ms_flow] COLLECT_NAME: noise utterance rejected %r (fragment=%r) — re-asking",
                     (text or "")[:60], _frag_cn,
                 )
                 return
+
+        # ── COLLECT_NAME: deterministic surname-prefix extraction ────────────
+        # When name_fragment exists and _extract() returned nothing (e.g. "my surname
+        # is smith" fails because "is" is a function word), strip known prefix wrappers
+        # and extract the surname token directly.  Runs BEFORE the single-word guard so
+        # multi-word prefixed forms are handled without falling to retry/Haiku.
+        if step["state"] in _COLLECT_NAME_STATES_FG and self.session.get("name_fragment") and not answer:
+            _SN_PFXS = (
+                "my surname is ", "surname is ",
+                "my last name is ", "last name is ",
+                "it's ", "it is ", "sorry it's ", "sorry, it's ",
+            )
+            _raw_sn = (text or "").strip()
+            for _pfx in _SN_PFXS:
+                if _raw_sn.lower().startswith(_pfx):
+                    _tok = _raw_sn[len(_pfx):].strip()
+                    if _tok and all(c.isalpha() or c in " -'" for c in _tok):
+                        answer = f"{self.session['name_fragment']} {_tok}".title()
+                        self.session.pop("name_fragment", None)
+                        logger.info(
+                            "[ms_flow] COLLECT_NAME: det. surname extract %r → %r",
+                            _tok, answer,
+                        )
+                    break  # matched prefix — either extracted or reject below
 
         if step["state"] in _COLLECT_NAME_STATES_FG and answer and len(answer.split()) == 1:
             # Reject single-word STT garbage / function words before storing as a name fragment.
@@ -4994,12 +5067,14 @@ class FlowEngine:
                 )
                 if any(phrase in (text or "").lower() for phrase in _SURNAME_NOISE_PHRASES):
                     # Keep name_fragment (first name) intact — do NOT pop it
-                    _sn_re = "Sorry, I didn't quite catch that — what's your surname?"
-                    await self._tts.put(_sn_re)
-                    self.session["last_question"] = _sn_re
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _sn_re}
-                    )
+                    _sn_re = "And what's your surname?"
+                    # Suppression: don't fire duplicate TTS if already the active question
+                    if self.session.get("last_question") != _sn_re:
+                        await self._tts.put(_sn_re)
+                        self.session["last_question"] = _sn_re
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sn_re}
+                        )
                     logger.info(
                         "[ms_flow] COLLECT_NAME: mixed-content surname rejected %r — re-asking",
                         (text or "")[:60],
@@ -5266,6 +5341,18 @@ class FlowEngine:
                             _sidebar_topic, step["state"],
                         )
                         return
+                # Surname-repair mode: stay deterministic — never call Haiku.
+                # If first-name fragment exists we are only awaiting a surname;
+                # replay the surname question without LLM involvement.
+                if step["state"] in _COLLECT_NAME_STATES_FG and self.session.get("name_fragment"):
+                    _sn_q = "And what's your surname?"
+                    if self.session.get("last_question") != _sn_q:
+                        await self._tts.put(_sn_q)
+                        self.session["last_question"] = _sn_q
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sn_q}
+                        )
+                    return
                 await self._haiku_fallback(transcript, step)
                 return
             # count == 2: hardcoded second retry

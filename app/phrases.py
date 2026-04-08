@@ -238,6 +238,7 @@ P: dict = {
 
 SILENCE_RESPONSES: dict = {
     "ask_phone":         "No rush — take your time finding that number.",
+    "confirm_phone":     "Please say yes to confirm, or no to try a different number.",
     "ask_name":          "Take your time.",
     "ask_day":           "Have a think — no hurry at all.",
     "ask_time":          "No rush on that.",
