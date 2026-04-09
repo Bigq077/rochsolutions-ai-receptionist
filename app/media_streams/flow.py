@@ -2499,15 +2499,17 @@ class FlowEngine:
                     self.session["phone_readback_pending"] = False
                     self.session["phone_confirmed"]        = True
                     self.session.setdefault("collected", {})["phone"] = _hg_phone
-                    self.session["state"]                  = "PRESENT_DAYS_RESCHEDULE"
-                    self.session["flow_state"]             = "PRESENT_DAYS_RESCHEDULE"
-                    self.session["flow_step"]              = _RESCHEDULE_PRESENT_DAYS_INDEX
+                    # Route to LOOKUP_RESCHEDULE so the existing appointment is
+                    # identified before new slots are offered.
+                    self.session["state"]                  = "LOOKUP_RESCHEDULE"
+                    self.session["flow_state"]             = "LOOKUP_RESCHEDULE"
+                    self.session["flow_step"]              = _RESCHEDULE_LOOKUP_INDEX
                     _hg_rb = f"Got it — I'll use {_hg_spaced}."
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _hg_rb}
                     )
                     logger.info(
-                        "[ms_flow] HARD GATE COLLECT_PHONE (RESCHEDULE): auto-confirmed %s → PRESENT_DAYS_RESCHEDULE",
+                        "[ms_flow] HARD GATE COLLECT_PHONE (RESCHEDULE): auto-confirmed %s → LOOKUP_RESCHEDULE",
                         _hg_phone,
                     )
                     self.session["_last_handled_by"]         = "collect_phone_full_digits"
@@ -3287,15 +3289,15 @@ class FlowEngine:
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
                 if self._active_flow is RESCHEDULE_FLOW:
-                    self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
-                    self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                    self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
+                    self.session["state"]     = "LOOKUP_RESCHEDULE"
                 elif self._active_flow is CANCEL_FLOW:
                     self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
                     self.session["state"]     = "CONFIRM_CANCEL"
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
-                logger.info("[ms_flow] compat_phone_accept -> %s", self.session["state"])
+                logger.info("[ms_flow] compat_phone_accept (name_readback) -> %s", self.session["state"])
                 self.session["_last_handled_by"]   = "name_readback_phone_accept_compat"
                 self.session["_last_yes_detected"] = True
                 await self.ask_current_question()
@@ -4998,8 +5000,8 @@ class FlowEngine:
                 self.session.pop("vague_option_pending", None)
                 self.session.pop("vague_clarification_asked", None)
                 if self._active_flow is RESCHEDULE_FLOW:
-                    self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
-                    self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                    self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
+                    self.session["state"]     = "LOOKUP_RESCHEDULE"
                 elif self._active_flow is CANCEL_FLOW:
                     self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
                     self.session["state"]     = "CONFIRM_CANCEL"
@@ -6686,8 +6688,8 @@ class FlowEngine:
             self.session.pop("vague_option_pending", None)
             self.session.pop("vague_clarification_asked", None)
             if self._active_flow is RESCHEDULE_FLOW:
-                self.session["flow_step"] = _RESCHEDULE_PRESENT_DAYS_INDEX
-                self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
+                self.session["state"]     = "LOOKUP_RESCHEDULE"
             elif self._active_flow is CANCEL_FLOW:
                 self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
                 self.session["state"]     = "CONFIRM_CANCEL"
