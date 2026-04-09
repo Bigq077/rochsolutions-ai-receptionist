@@ -5785,6 +5785,42 @@ class FlowEngine:
                 logger.info("[ms_flow] FAQ_BOOKING_OFFER: ack-only %r — inert", text[:40])
                 return
 
+            # ── Clinic correction intercept (BUG 2) ───────────────────────────
+            # "no it was for the redditch clinic" / "i meant alcester" — the caller
+            # is correcting the clinic for the PREVIOUS FAQ answer, not asking a new
+            # question.  _detect_intent would return general_query because there are no
+            # FAQ topic keywords.  Instead: rerun the last FAQ intent with the corrected
+            # clinic, using a synthetic transcript so sub-type detection (parking /
+            # transport / address) still works.
+            _corr_text = text.strip().lower()
+            _corr_redd = any(p in _corr_text for p in (
+                "redditch", "reditch", "reddish", "reddit", "bromsgrove",
+            ))
+            _corr_alce = any(p in _corr_text for p in ("alcester", "greig", "kinwarton"))
+            _last_faq_intent_corr = self.session.get("last_faq_intent")
+            if (
+                (_corr_redd or _corr_alce) and not (_corr_redd and _corr_alce)
+                and _last_faq_intent_corr in {"faq_location", "faq_hours"}
+                and any(s in _corr_text for s in (
+                    "no", "i meant", "actually", "not the", "it was for",
+                    "i wanted", "for the", "was for", "meant the",
+                ))
+            ):
+                _corr_clinic = "redditch" if _corr_redd else "alcester"
+                self.session["last_faq_loc_id"] = _corr_clinic
+                _last_sub = self.session.get("last_faq_sub", "")
+                # Build synthetic transcript so the sub-type lookup resolves correctly
+                _synth_tx = f"{_last_sub} {_corr_clinic}".strip() if _last_sub else _corr_clinic
+                logger.info(
+                    "[ms_flow] FAQ_BOOKING_OFFER: clinic correction → rerun %s for %s (sub=%r)",
+                    _last_faq_intent_corr, _corr_clinic, _last_sub,
+                )
+                await self._handle_mid_flow_interrupt(_last_faq_intent_corr, _synth_tx)
+                _fbo_corr_ans = self.session.get("last_faq_answer")
+                if _fbo_corr_ans:
+                    self.session["last_question"] = _fbo_corr_ans
+                return
+
             _fbo_intent = self._detect_intent(text)
 
             # Bug 8: reschedule/cancel must hard-route immediately — never fall
@@ -6588,6 +6624,15 @@ class FlowEngine:
                     _faq_info = _faq_result.get("info", "")
                     _generic = "I don't have that specific information to hand."
                     if _faq_info and _faq_info != _generic:
+                        # Cap to 2 sentences / 300 chars — same rule as
+                        # _maybe_answer_inquiry (BUG 3: prevents long monologues
+                        # mid-booking when _exec_get_clinic_info returns verbose text)
+                        if len(_faq_info) > 300:
+                            import re as _re_sib
+                            _sib_sents = _re_sib.split(r'(?<=[.!?])\s+', _faq_info)
+                            _faq_info = " ".join(_sib_sents[:2]).strip()
+                            if _faq_info and _faq_info[-1] not in ".!?":
+                                _faq_info += "."
                         # Reset retry — this wasn't a failed extraction
                         retry_counts[phrase_key] = 0
                         pending_q = self.session.get("last_question", "")
@@ -7421,7 +7466,10 @@ class FlowEngine:
             _cli_mfi = _gc_mfi(_cid_mfi)
             _locs_mfi = {loc["id"]: loc for loc in _cli_mfi.get("locations", [])}
             _mfi_text = transcript.strip().lower()
-            # Detect which clinic the caller is asking about
+            # Detect which clinic the caller is asking about.
+            # Priority: (1) explicit name in current utterance, (2) last FAQ clinic
+            # context (BUG 1 — carry-over for follow-ups like "and parking?"),
+            # (3) booking selected_location as last resort.
             _mfi_redd = any(p in _mfi_text for p in (
                 "redditch", "reditch", "reddish", "reddit", "red itch", "bromsgrove",
             ))
@@ -7433,7 +7481,13 @@ class FlowEngine:
             elif _mfi_alce and not _mfi_redd:
                 _mfi_loc_id = "alcester"
             else:
-                _mfi_loc_id = (self.session.get("selected_location") or "").lower()
+                # No explicit clinic in utterance — prefer the last FAQ clinic
+                # context so "and can I park in the area?" inherits Redditch when
+                # the caller was just asking about the Redditch clinic.
+                _mfi_loc_id = (
+                    self.session.get("last_faq_loc_id")
+                    or (self.session.get("selected_location") or "").lower()
+                )
             _mfi_loc = _locs_mfi.get(_mfi_loc_id) or (
                 # Single-location clinic — use the only location
                 list(_locs_mfi.values())[0] if len(_locs_mfi) == 1 else None
@@ -7449,6 +7503,7 @@ class FlowEngine:
                         if _ld.get("hours_summary")
                     ]
                     _mfi_ans = "  ".join(_mfi_parts)
+                self.session["last_faq_sub"] = "hours"  # for correction recovery (BUG 2)
             else:  # faq_location
                 _parking_q = any(p in _mfi_text for p in (
                     "parking", "park", "disabled", "accessible", "accessibility",
@@ -7460,12 +7515,15 @@ class FlowEngine:
                 if _mfi_loc:
                     if _parking_q:
                         _mfi_ans = _mfi_loc.get("parking", "")
+                        self.session["last_faq_sub"] = "parking"
                     elif _transport_q:
                         _mfi_ans = _mfi_loc.get("transport", "")
+                        self.session["last_faq_sub"] = "transport"
                     else:
                         # First sentence of address only — voice-friendly length
                         _fa = _mfi_loc.get("address", "")
                         _mfi_ans = _fa.split(".")[0].strip() + ("." if _fa else "")
+                        self.session["last_faq_sub"] = "address"
                 else:
                     # Two clinics — give short address for each
                     _mfi_parts = []
@@ -7474,7 +7532,12 @@ class FlowEngine:
                         if _fa:
                             _mfi_parts.append(_fa.split(".")[0].strip() + ".")
                     _mfi_ans = "  ".join(_mfi_parts)
+                    self.session["last_faq_sub"] = "address"
             if _mfi_ans:
+                # Persist clinic + intent for carry-over and correction recovery
+                # (BUG 1: follow-up inherits clinic; BUG 2: correction reruns intent)
+                self.session["last_faq_loc_id"] = _mfi_loc_id
+                self.session["last_faq_intent"] = intent
                 logger.info(
                     "[ms_flow] _handle_mid_flow_interrupt: %s deterministic (loc=%s)",
                     intent, _mfi_loc_id,
@@ -8414,6 +8477,22 @@ class FlowEngine:
                     _raw_name = _raw_name[:_idx].strip()
                     break
 
+            # Reject refusal / attitude / filler phrases before any further
+            # processing.  "i don't care" passes the word-count and function-word
+            # gates below without this guard (BUG 4).
+            _REFUSAL_PHRASES = (
+                "i don't care", "i dont care", "don't care", "dont care",
+                "whatever", "you tell me", "does it matter",
+                "i don't know", "i dont know", "don't know", "dont know",
+                "just book", "just go ahead", "skip it", "skip",
+                "nevermind", "never mind", "not telling", "why do you need",
+                "i'd rather not", "i would rather not", "none of your",
+                "why", "who cares", "not important",
+            )
+            if any(p in _raw_name.lower() for p in _REFUSAL_PHRASES):
+                logger.info("[ms_extract] name: rejected refusal phrase %r", _raw_name)
+                return None
+
             words = _raw_name.split()
             if not (1 <= len(words) <= 5):
                 return None
@@ -8433,13 +8512,18 @@ class FlowEngine:
                 logger.info("[ms_extract] name: rejected filler %r as name", _raw_name)
                 return None
 
-            # Reject multi-word "names" that contain prepositions / function words.
+            # Reject multi-word "names" that contain prepositions / function words
+            # or negative contractions (BUG 4: "i don't care" still passes after
+            # the refusal-phrase check if the phrase isn't listed — belt-and-braces).
             # STT fragments like "in rock" pass the word-count gate (2 words) and
             # neither word is a greeting, but "in" is clearly not a name component.
             _NAME_FUNCTION_WORDS = frozenset({
                 "in", "on", "at", "to", "for", "of", "by", "up", "as",
                 "is", "am", "are", "was", "be", "been", "do", "did",
                 "if", "got", "get", "has", "have", "had", "out", "off",
+                # negative contractions — never part of a real name
+                "don't", "dont", "won't", "wont", "can't", "cant",
+                "didn't", "didnt", "doesn't", "doesnt", "isn't", "isnt",
             })
             if len(words) > 1 and any(w.lower() in _NAME_FUNCTION_WORDS for w in words):
                 logger.info(
