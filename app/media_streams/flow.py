@@ -74,7 +74,7 @@ _FRAGMENT_STRONG_INTENTS = frozenset({
 # Explicit noise tokens that must never drive a response regardless of context
 _FRAGMENT_BLOCKLIST = frozenset({
     "please", "question", "ic", "and", "so", "the", "a", "i",
-    "you know", "like", "just", "right", "alright", "okay then",
+    "you know", "like", "just", "right",
     "so if", "so if i", "if i", "clinic",
     "thank you", "thanks",
 })
@@ -2350,8 +2350,8 @@ class FlowEngine:
             if len(_rw) <= 2 and _rw and _rw[0] in ("stop", "wrong"):
                 _is_repair = True
         if _is_repair:
-            _repair_line = "Sorry about that — what was your inquiry?"
-            await self._tts.put(_repair_line)
+            # Do NOT put the phrase here — the _llm_loop finally drain would wipe it.
+            # Instead set the flag; _llm_loop finally drains stale output then enqueues.
             self.session["last_question"] = "What was your inquiry?"
             self.session["repair_requested"] = True
             logger.info("[ms_flow] global repair intercept: %r", transcript[:60])
@@ -5725,6 +5725,22 @@ class FlowEngine:
                 )
                 return
 
+        # ── COLLECT_REASON: reschedule/cancel re-route ───────────────────────────
+        # Caller says "I want to reschedule" at the booking-reason step.
+        # Do NOT store this as a booking reason — switch flow immediately.
+        if step["state"] == "COLLECT_REASON":
+            _cr_intent = self._detect_intent(text)
+            if _cr_intent == "reschedule":
+                logger.info("[ms_flow] COLLECT_REASON: reschedule intent detected — switching flow")
+                self._switch_flow("reschedule")
+                await self.ask_current_question()
+                return
+            if _cr_intent == "cancel":
+                logger.info("[ms_flow] COLLECT_REASON: cancel intent detected — switching flow")
+                self._switch_flow("cancel")
+                await self.ask_current_question()
+                return
+
         # ── COLLECT_REASON: fragment guard (BUG 1/2) ─────────────────────────
         # extract:"any" accepts every non-empty transcript verbatim.  Guard against
         # premature advancement on bare fragments ("my", "my left", "pain").
@@ -6631,6 +6647,7 @@ class FlowEngine:
         elif intent in _faq_intents:
             self._active_flow = FAQ_FLOW
             self.session["faq_topic"] = _INTENT_TO_FAQ_TOPIC.get(intent, "services")
+            self.session["faq_follow_up_count"] = 0  # reset so each FAQ entry is fresh
         elif intent == "general_query":
             self._active_flow = GENERAL_QUERY_FLOW
         else:
@@ -6703,23 +6720,17 @@ class FlowEngine:
             "faq_location":  "address",
             "faq_services":  "services",
         }
-        if intent in _FAQ_TOPICS:
+        if intent == "faq_services":
+            # Deterministic fast path — no LLM needed (Bug 1 / mid-flow variant)
+            logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
+            await self._tts.put(_FAQ_SERVICES_FAST)
+        elif intent in _FAQ_TOPICS:
             topic = _FAQ_TOPICS[intent]
-            _svc_preamble = (
-                "Start with: 'Absolutely, I can help you with that! Here are our services:' "
-                "then read out the service names ONLY — nothing else. "
-                "STRICT: do NOT mention any price, cost, fee, surcharge, duration, "
-                "or appointment length. Names only. "
-                "Do NOT use any markdown formatting — no asterisks, no hyphens, no bullet symbols. "
-                "Speak naturally as if on a phone call. "
-                if topic == "services" else ""
-            )
             instruction = (
                 f"The caller asked about {topic}. "
-                f"{_svc_preamble}"
                 "Answer directly from the clinic information in your system prompt — "
                 "do NOT call any tools, do NOT ask clarifying questions. "
-                "Answer warmly and concisely in 1–2 sentences (or a brief list for services). "
+                "Answer warmly and concisely in 1–2 sentences. "
                 "Just answer and stop — do NOT re-ask the booking question or add transitions."
             )
         else:
@@ -6735,7 +6746,8 @@ class FlowEngine:
                 "Just answer and stop."
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
-        await self._llm(instruction, allow_tools=False)
+        if intent != "faq_services":
+            await self._llm(instruction, allow_tools=False)
         # After the aside, re-anchor the caller to the exact step they were in.
         # This is step-specific so the caller is never left with an open floor.
         _int_step = self.current_step()
@@ -6775,9 +6787,9 @@ class FlowEngine:
             ):
                 _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
             elif _int_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
-                # After answering a follow-up question, re-anchor with a clean open offer
-                # rather than the stale last_question (which may no longer make sense)
-                _int_anchor = "Is there anything else I can help you with?"
+                # After answering a follow-up question, re-anchor with the booking offer
+                # — not the generic "anything else" trap that causes sticky FAQ loops.
+                _int_anchor = "Would you like to go ahead and book an appointment?"
             else:
                 _int_anchor = self.session.get("last_question", "")
             if _int_anchor:

@@ -1287,6 +1287,8 @@ class WebSocketCallHandler:
                 self._silence_handler.on_llm_started()
                 self._last_audio_at     = time.monotonic()
                 self.session["llm_generation_active"] = True
+                # New turn begins — allow TTS output for this response (Bug 5).
+                self.session["tts_inhibit"] = False
                 await save_session(self.call_sid, self.session)
 
                 logger.info("[ms_conn] transcript received: %r", utterance[:120])
@@ -1416,6 +1418,10 @@ class WebSocketCallHandler:
                             except Exception:
                                 break
                         logger.info("[ms_conn] repair_requested: TTS queue drained")
+                        # Enqueue repair phrase AFTER drain so it isn't wiped.
+                        await self.tts_text_queue.put(
+                            "Sorry about that \u2014 what was your inquiry?"
+                        )
                     # Bug 9: restart silence timer after fragment suppression
                     # so the call doesn't go permanently silent.
                     if self.session.pop("fragment_suppressed", False):
@@ -1469,6 +1475,14 @@ class WebSocketCallHandler:
                     continue
 
                 if not chunk_text or not chunk_text.strip():
+                    continue
+
+                # Bug 5: discard stale LLM chunks that arrived after a confirmed barge-in.
+                # The flag is cleared in _llm_loop finally when the new turn starts.
+                if self.session.get("tts_inhibit"):
+                    logger.info(
+                        "[ms_conn] tts_inhibit: discarding stale chunk %r", chunk_text[:60]
+                    )
                     continue
 
                 # Skip consecutive identical chunks (dedup guard)
@@ -1696,6 +1710,9 @@ class WebSocketCallHandler:
             # Advance the prompt generation so any in-flight _delayed_tts_finished
             # tasks for the interrupted TTS are treated as stale and ignored.
             self._tts_gen += 1
+            # Inhibit _tts_loop from speaking any LLM chunks that arrive after
+            # the barge-in until the new turn completes (Bug 5 — stale output).
+            self.session["tts_inhibit"] = True
             logger.info(
                 "[ms_conn] barge-in start: interrupted_text=%r tts_gen=%d",
                 self._current_tts_text[:60], self._tts_gen,
