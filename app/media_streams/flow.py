@@ -2275,6 +2275,27 @@ class FlowEngine:
                     return
 
             import re as _re_hg
+
+            # ── Keypad-first mode: voice received while awaiting DTMF ────────
+            # When phone_awaiting_dtmf=True, caller was asked to use keypad.
+            # If they speak digits instead, clear the flag and proceed normally.
+            # If they speak non-digit content, offer the voice-fallback prompt.
+            if self.session.get("phone_awaiting_dtmf"):
+                _dtmf_check = _re_hg.sub(r"\D", "", text or "")
+                self.session["phone_awaiting_dtmf"] = False
+                self.session["phone_dtmf_buffer"]   = ""
+                if len(_dtmf_check) < 5:
+                    # Non-digit speech — tell caller to say the full number
+                    _voice_fb = "If you'd rather say it, please say the full number from the beginning."
+                    await self._tts.put(_voice_fb)
+                    self.session["last_question"] = _voice_fb
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _voice_fb}
+                    )
+                    logger.info("[ms_flow] COLLECT_PHONE: voice received while awaiting DTMF — voice fallback")
+                    return
+                # Caller spoke digits — fall through to normal voice processing
+
             # Slice to post-restart substring — discard digits before the final
             # restart marker so "07502 sorry actually start again 07502" captures
             # only "07502" (the fresh dictation), not "0750207502".
@@ -2476,12 +2497,27 @@ class FlowEngine:
                 return
 
             else:
-                # No digits — check for inquiry ("Why do you need my number?" etc.)
-                # before re-asking so informational questions get a real answer.
+                # No digits — only allow narrow privacy-purpose questions in this
+                # hard-gated state. Broad FAQ detection caused irrelevant monologues.
                 _cp_frozen_q = self.session.get("last_question", "")
-                if _cp_frozen_q and await self._maybe_answer_inquiry(
-                    transcript, "COLLECT_PHONE", _cp_frozen_q
-                ):
+                _CP_ALLOWED_INQUIRIES = (
+                    "why do you need my number",
+                    "what do you need my number for",
+                    "why do you need my phone number",
+                    "what's my number for",
+                    "what is my number for",
+                )
+                if _cp_frozen_q and any(p in text for p in _CP_ALLOWED_INQUIRIES):
+                    _cp_privacy = (
+                        "We use it so the team can get back to you if there are any changes "
+                        "to your appointment."
+                    )
+                    await self._tts.put(_cp_privacy)
+                    await self._tts.put(_cp_frozen_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _cp_privacy}
+                    )
+                    self.session["last_info_answer"] = _cp_privacy
                     return
                 # No digits and not an inquiry — re-ask
                 logger.info(
@@ -2615,7 +2651,11 @@ class FlowEngine:
                 self.session["phone"]                  = None
                 self.session["phone_number"]           = None
                 self.session["customer_phone"]         = None
-                self.session["phone_digits_buffer"]    = _seed_digits if _seed_digits else ""
+                # Keypad-first: clear any stale voice buffer so DTMF digits
+                # don't mix with previously spoken fragments.
+                self.session["phone_digits_buffer"]    = ""
+                self.session["phone_dtmf_buffer"]      = ""
+                self.session["phone_awaiting_dtmf"]    = True
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = False
                 self.session.pop("phone_candidate", None)
@@ -2630,19 +2670,18 @@ class FlowEngine:
                 )
                 self.session.setdefault("collected", {}).pop("phone", None)
                 logger.info(
-                    "[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE seeded=%r",
-                    _seed_digits or "(none)",
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: NO → COLLECT_PHONE (keypad-first)",
                 )
                 self.session["_last_handled_by"]   = "confirm_phone_no"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = True
-                _bridge = "Ok, what number would you like to use instead?"
+                _bridge = "No problem — please type the best number to reach you on using your keypad now."
                 await self._tts.put(_bridge)
                 self.session["last_question"] = _bridge
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _bridge}
                 )
-                logger.info("[ms_flow] CONFIRM_PHONE NO: bridge phrase spoken → COLLECT_PHONE")
+                logger.info("[ms_flow] CONFIRM_PHONE NO: keypad-first bridge → COLLECT_PHONE")
                 return
 
             else:
@@ -2695,10 +2734,27 @@ class FlowEngine:
                     )
                     return
 
-                # Ambiguous — check for inquiry ("Do you take insurance?" etc.)
-                # before replaying the readback question.
+                # Ambiguous — only allow narrow privacy-purpose inquiries here.
+                # Broad FAQ detection is disabled in phone-confirmation state.
                 _hg_lq = self.session.get("last_question", "Is that number correct?")
-                if await self._maybe_answer_inquiry(transcript, "CONFIRM_PHONE", _hg_lq):
+                _CP_ALLOWED_CONFIRM_INQUIRIES = (
+                    "why do you need my number",
+                    "what do you need my number for",
+                    "why do you need my phone number",
+                    "what's my number for",
+                    "what is my number for",
+                )
+                if any(p in text for p in _CP_ALLOWED_CONFIRM_INQUIRIES):
+                    _cp_priv2 = (
+                        "We use it so the team can get back to you if there are any changes "
+                        "to your appointment."
+                    )
+                    await self._tts.put(_cp_priv2)
+                    await self._tts.put(_hg_lq)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _cp_priv2}
+                    )
+                    self.session["last_info_answer"] = _cp_priv2
                     return
                 # Not an inquiry — replay last question
                 logger.info(
@@ -3255,16 +3311,13 @@ class FlowEngine:
         # plain affirmatives like "yeah that sounds fine" — which would incorrectly
         # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
         if step["state"] == "CONFIRM_ASSESSMENT":
-            _ca_class = _classify_confirm_assessment(text)
-            logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
-            # ── CONFIRM_ASSESSMENT: step-adjacent inquiry intercept ──────────
-            # Runs BEFORE class-based branching so it cannot be shadowed by the
-            # "clarification" catch-all in _classify_confirm_assessment.
-            # Questions like "what exactly happens in that physiotherapy assessment?"
-            # get a short canned answer + re-ask, NOT a replay of the recommendation.
+            # ── Priority 1: assessment inquiry ───────────────────────────────
+            # Check BEFORE classifier so inquiry phrases never reach the
+            # "clarification" catch-all and never trigger LLM classification.
+            # Clean precedence: inquiry → yes → no → correction → clarification.
             _CA_INQUIRY_PHRASES = (
-                "what happens",          # "what happens in that assessment"
-                "what exactly happens",  # "what exactly happens in that physiotherapy assessment"
+                "what happens",
+                "what exactly happens",
                 "what does that involve",
                 "what is that assessment",
                 "what will happen",
@@ -3287,7 +3340,11 @@ class FlowEngine:
                     {"role": "assistant", "content": _ca_info}
                 )
                 # Do NOT update last_question — the real question remains intact
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: inquiry intercept fired (pre-classifier)")
                 return
+            # ── Priority 2–5: classifier-based branching ─────────────────────
+            _ca_class = _classify_confirm_assessment(text)
+            logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
             if _ca_class in ("yes", "additive_detail"):
                 self.session["assessment_confirmed"] = True
                 self.session["flow_step"]            = step["step"] + 1
@@ -5040,6 +5097,35 @@ class FlowEngine:
             )
             return
 
+        # ── COLLECT_NAME: deterministic repair gate ───────────────────────────
+        # Common repeat/repair phrases must replay the current question without
+        # consuming a retry, incrementing slot_retry_counts, or calling any LLM.
+        # Runs before extraction so repair requests never fall into the
+        # answer-is-None retry path.
+        _COLLECT_NAME_STATES_REPAIR = {
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        }
+        if step["state"] in _COLLECT_NAME_STATES_REPAIR:
+            _CN_REPAIR_PHRASES = (
+                "could you repeat", "repeat that", "say that again",
+                "sorry what was that", "sorry, what was that",
+                "i didn't catch that", "i didn't quite catch that",
+                "i didn't catch what you said", "what did you say",
+                "didn't catch", "didn't hear", "pardon", "come again",
+            )
+            if any(p in text for p in _CN_REPAIR_PHRASES):
+                if self.session.get("name_fragment"):
+                    _cn_repair_replay = "And what's your surname?"
+                else:
+                    _cn_repair_replay = self.session.get("last_question", "Who am I booking in today?")
+                await self._tts.put(_cn_repair_replay)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cn_repair_replay}
+                )
+                logger.info("[ms_flow] COLLECT_NAME: repair gate replayed %r", _cn_repair_replay[:50])
+                return  # no retry increment, no name_fragment mutation
+
         # ── COLLECT_NAME: booking-context wrapper stripping ──────────────────
         # Strip noise wrappers so "booking in john smith" → "john smith".
         # Only in full-name collection mode (no first-name fragment yet stored).
@@ -5058,6 +5144,25 @@ class FlowEngine:
                     break
 
         answer = self._extract(step["extract"], text, transcript)
+
+        # ── PRESENT_DAYS: nullify extracted day on mixed-intent turns ─────────
+        # "quick question first are you open on saturdays" extracts "saturday"
+        # but the caller is asking an inquiry, not selecting a booking day.
+        # Nullifying answer routes through the inquiry / re-anchor path instead
+        # of silently committing the day and advancing to PRESENT_TIMES.
+        if answer is not None and step["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            _PD_MIXED_SIGNALS = (
+                "are you open", "do you open", "open on saturday", "open on sunday",
+                "open sundays", "open saturdays", "have parking", "is there parking",
+                "do you have", "how long", "what time", "are there any", "can you do",
+                "quick question", "just a question", "just wondering",
+            )
+            if any(_sig in text for _sig in _PD_MIXED_SIGNALS):
+                logger.info(
+                    "[ms_flow] PRESENT_DAYS: mixed-intent — nullifying extracted day %r",
+                    answer,
+                )
+                answer = None
 
         # ── COLLECT_NAME: single-word first-name guard ────────────────────────
         # If the caller gives only one word (first name), hold it as a fragment
@@ -5492,8 +5597,15 @@ class FlowEngine:
             # ── TOP-PRIORITY: ordinal resolves to a specific day immediately ────
             # Must run before the ordinal guard below so "last one" / "first" etc.
             # selects a day and advances instead of replaying the day list.
+            # Mixed-intent guard: skip if text also contains an inquiry signal.
             _pd_avail = self.session.get("available_days", [])
-            if _pd_avail:
+            _pd_mixed = any(_sig in text for _sig in (
+                "are you open", "do you open", "open on saturday", "open on sunday",
+                "open sundays", "open saturdays", "have parking", "is there parking",
+                "do you have", "how long", "what time", "are there any", "can you do",
+                "quick question", "just a question", "just wondering",
+            ))
+            if _pd_avail and not _pd_mixed:
                 _PD_ORD = [
                     ("first one", 0), ("second one", 1), ("third one", 2),
                     ("middle one", 1), ("the middle", 1),
@@ -5797,6 +5909,14 @@ class FlowEngine:
             _info if (_info and _info != _generic)
             else "I'm not completely sure on that, but the team can confirm when you come in."
         )
+        # Cap long info answers to 2 sentences (~300 chars) so they don't
+        # dominate mid-booking flow and make recovery awkward.
+        if len(_answer) > 300:
+            import re as _re_cap
+            _sentences = _re_cap.split(r'(?<=[.!?])\s+', _answer)
+            _answer = " ".join(_sentences[:2]).strip()
+            if _answer and not _answer[-1] in ".!?":
+                _answer += "."
         await self._tts.put(_answer)
         if frozen_q:
             await self._tts.put(frozen_q)

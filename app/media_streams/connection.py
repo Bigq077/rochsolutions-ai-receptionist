@@ -325,10 +325,16 @@ class SilenceHandler:
         callback for the *previous* question can fire after on_transcript_received()
         cancels the timer but before _llm_busy is set; without this guard the
         timer re-arms and can fire during the check_availability tool call,
-        causing a spurious re-ask concatenated with the slot list."""
+        causing a spurious re-ask concatenated with the slot list.
+        Never arms if more TTS chunks are queued — prevents stacking re-asks
+        after multi-part responses (FAQ answer + re-anchor question)."""
         if self.currently_reasking:
             return
         if self._llm_busy:
+            return
+        # Suppress if more TTS chunks are still pending (multi-part response)
+        if not self._tts_text_queue.empty():
+            logger.debug("[ms_silence] on_tts_finished: more TTS pending — suppressing timer")
             return
         if self.reask_count >= 1:
             # W1 (or both re-asks) has already fired; _run() owns its timing
@@ -907,6 +913,9 @@ class WebSocketCallHandler:
                 elif event == "media":
                     await self._handle_media(msg)
 
+                elif event == "dtmf":
+                    await self._handle_dtmf(msg)
+
                 elif event == "stop":
                     logger.info("[ms_conn] stop event stream_sid=%s", msg.get("streamSid"))
                     self._stop_event.set()
@@ -920,6 +929,46 @@ class WebSocketCallHandler:
         except Exception as exc:
             logger.error("[ms_conn] _receive_loop error: %r", exc)
             self._stop_event.set()
+
+    async def _handle_dtmf(self, msg: Dict[str, Any]) -> None:
+        """
+        Process a Twilio "dtmf" event (keypad digit press).
+
+        Accumulates digits into session["phone_dtmf_buffer"].
+        When 10–11 digits are collected, synthesises a transcript so the
+        COLLECT_PHONE hard gate can process the phone number naturally.
+
+        Only active while state == "COLLECT_PHONE" and phone_awaiting_dtmf=True.
+        Resets the silence timer after each keypress so the caller can type
+        without triggering a silence re-ask mid-entry.
+        """
+        if not self.session:
+            return
+
+        digit = (msg.get("dtmf") or {}).get("digit", "")
+        if not digit or digit in ("#", "*"):
+            return
+
+        # Only accumulate DTMF while in phone-collection state
+        if self.session.get("state") not in ("COLLECT_PHONE",):
+            return
+
+        buf = self.session.get("phone_dtmf_buffer", "") + digit
+        self.session["phone_dtmf_buffer"] = buf
+
+        # Each keypress resets the silence timer (caller is actively typing)
+        self._silence_handler.last_audio_received_at = time.time()
+
+        logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
+
+        if len(buf) >= 10:
+            # Full number collected via keypad — push as synthetic transcript
+            # The COLLECT_PHONE hard gate extracts digits naturally from it.
+            complete = buf[:11]
+            self.session["phone_dtmf_buffer"]   = ""
+            self.session["phone_awaiting_dtmf"] = False
+            logger.info("[ms_conn] DTMF buffer complete → synthetic transcript %r", complete)
+            await self.transcript_queue.put(complete)
 
     async def _handle_start(self, msg: Dict[str, Any]) -> None:
         """
