@@ -52,6 +52,20 @@ _FAQ_SERVICES_FAST = (
     "or do you want me to give you the full list of services we offer?"
 )
 
+# ── FAQ prices: deterministic from-price gate ───────────────────────────────
+# When NO specific service is named, always return this — never a full list.
+_FAQ_PRICES_NO_SERVICE = (
+    "Our sessions start from \u00a375 for a physiotherapy assessment. "
+    "Was there a particular service you wanted the price for?"
+)
+# Named-service keywords — if any of these appear in the transcript, let the LLM
+# answer with just that service's price.  Otherwise use _FAQ_PRICES_NO_SERVICE.
+_FAQ_PRICES_SERVICE_KEYWORDS = (
+    "physio", "physiotherapy", "assessment", "follow", "follow-up", "followup",
+    "acupuncture", "shockwave", "laser", "biomechanical", "biomechanics",
+    "sports", "massage", "pilates", "class",
+)
+
 # ── Global repair-intent phrases (Bug 4) ────────────────────────────────────
 # Checked at the top of handle_transcript before ALL other logic.
 _GLOBAL_REPAIR_PHRASES = (
@@ -2055,6 +2069,25 @@ class FlowEngine:
             # Skips the LLM entirely — avoids long service list readouts.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("services", "faq_services"):
                 _fast_r = _FAQ_SERVICES_FAST
+            # ANSWER_FAQ/prices: deterministic from-price gate.
+            # If no specific service was named, always return the from-price line —
+            # never a full price list.  If a service was named, let the LLM answer
+            # with just that service's price (instruction already constrains it).
+            if (
+                step["state"] == "ANSWER_FAQ"
+                and format_args.get("faq_topic") in ("prices", "faq_prices")
+                and not _fast_r
+            ):
+                _last_user = (
+                    (self.session.get("conversation_history") or [{}])[-1]
+                    .get("content", "")
+                    .lower()
+                )
+                _named_svc = any(
+                    k in _last_user for k in _FAQ_PRICES_SERVICE_KEYWORDS
+                )
+                if not _named_svc:
+                    _fast_r = _FAQ_PRICES_NO_SERVICE
             if step["state"] == "CONFIRM_ASSESSMENT" and not _fast_r:
                 response = await self._llm(
                     instruction,
@@ -6724,6 +6757,23 @@ class FlowEngine:
             # Deterministic fast path — no LLM needed (Bug 1 / mid-flow variant)
             logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
             await self._tts.put(_FAQ_SERVICES_FAST)
+        elif intent == "faq_prices":
+            # Prices: if no specific service named → deterministic from-price gate.
+            # If a service is named → LLM constrained to one sentence for that service.
+            _pr_text = transcript.strip().lower()
+            _named_svc = any(k in _pr_text for k in _FAQ_PRICES_SERVICE_KEYWORDS)
+            if not _named_svc:
+                logger.info("[ms_flow] _handle_mid_flow_interrupt: prices no-service fast path")
+                await self._tts.put(_FAQ_PRICES_NO_SERVICE)
+            else:
+                instruction = (
+                    f"The caller asked about the price of a specific service. "
+                    f"Their message: '{transcript.strip()}'\n"
+                    "Give ONLY the price and duration for that one service in one sentence. "
+                    "Do NOT list other services or prices. "
+                    "Answer directly from the clinic information in your system prompt. "
+                    "Just answer and stop."
+                )
         elif intent in _FAQ_TOPICS:
             topic = _FAQ_TOPICS[intent]
             instruction = (
@@ -6746,7 +6796,13 @@ class FlowEngine:
                 "Just answer and stop."
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
-        if intent != "faq_services":
+        _skip_llm = (
+            intent == "faq_services"
+            or (intent == "faq_prices" and not any(
+                k in transcript.strip().lower() for k in _FAQ_PRICES_SERVICE_KEYWORDS
+            ))
+        )
+        if not _skip_llm:
             await self._llm(instruction, allow_tools=False)
         # After the aside, re-anchor the caller to the exact step they were in.
         # This is step-specific so the caller is never left with an open floor.
@@ -7745,13 +7801,19 @@ class FlowEngine:
                 "yes", "yeah", "book", "booking", "appointment",
                 "sure", "i would", "i'd like",
             )
-            no_p = (
-                "no", "nope", "that's all", "thats all", "nothing else",
+            # Short tokens (≤4 chars) require whole-word matching to avoid
+            # "no" matching inside "not yet", "nope" inside "nobody", etc.
+            no_p_short = {"no", "nope"}
+            no_p_phrase = (
+                "that's all", "thats all", "nothing else",
                 "thanks", "thank you", "bye", "goodbye", "no thank",
             )
+            _words_set = set(text.split())
             for p in yes_p:
                 if p in text: return "book"
-            for p in no_p:
+            if _words_set & no_p_short:
+                return "done"
+            for p in no_p_phrase:
                 if p in text: return "done"
             return None
 
