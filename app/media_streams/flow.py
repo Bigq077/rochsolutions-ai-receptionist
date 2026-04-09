@@ -58,6 +58,51 @@ _FAQ_SERVICES_FULL = (
     "If you\u2019d like to know more about any of those, just let me know."
 )
 
+# ── Specific-service drill-down answers — max 1–2 sentences each ────────────
+# Used when the caller names a concrete modality (e.g. "shockwave therapy please").
+# Checked BEFORE the generic overview so callers get the specific answer they asked for.
+_SPECIFIC_SERVICE_ANSWERS: dict = {
+    "shockwave": (
+        "Shockwave therapy uses sound waves to stimulate healing in stubborn tendon or heel pain, "
+        "like plantar fasciitis or Achilles issues. "
+        "Your clinician will confirm whether it\u2019s right for your condition."
+    ),
+    "acupuncture": (
+        "Acupuncture uses very fine needles at specific points to help reduce pain and support "
+        "the body\u2019s natural healing. "
+        "It\u2019s often used alongside physiotherapy for musculoskeletal conditions."
+    ),
+    "laser": (
+        "Laser therapy uses low-level light energy to reduce inflammation and support tissue repair. "
+        "It\u2019s pain-free and typically used for soft-tissue injuries and joint pain."
+    ),
+    "sports_massage": (
+        "Sports massage targets muscle tension and soft tissue to improve movement and aid recovery. "
+        "Pressure is adapted to your comfort and needs."
+    ),
+    "pilates": (
+        "Our Pilates classes focus on core strength and controlled movement, "
+        "often recommended as part of a rehabilitation programme."
+    ),
+    "biomechanics": (
+        "A biomechanical assessment looks at how your body moves \u2014 particularly feet and gait \u2014 "
+        "to identify imbalances that may be causing pain or injury."
+    ),
+}
+
+# Ordered keyword → service-key map for modality drill-down detection.
+# Longer/more specific phrases checked first to avoid false matches.
+_SERVICE_KEYWORD_MAP = (
+    ("shockwave",       "shockwave"),
+    ("acupuncture",     "acupuncture"),
+    ("laser",           "laser"),
+    ("sports massage",  "sports_massage"),
+    ("massage",         "sports_massage"),
+    ("pilates",         "pilates"),
+    ("biomechanical",   "biomechanics"),
+    ("biomechanics",    "biomechanics"),
+)
+
 # ── FAQ prices: deterministic from-price gate ───────────────────────────────
 # When NO specific service is named, always return this — never a full list.
 _FAQ_PRICES_NO_SERVICE = (
@@ -5727,6 +5772,19 @@ class FlowEngine:
 
         # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
         if step["state"] == "FAQ_BOOKING_OFFER":
+            # Weak acknowledgements alone ("yeah", "okay", "understood" etc.) must NOT
+            # route to LLM — the caller is still processing the FAQ answer.
+            # Inert: hold state and let the silence handler re-prompt if needed.
+            _FBO_ACK_WORDS = frozenset({
+                "okay", "ok", "alright", "right", "sure", "yeah", "yep", "yup",
+                "great", "good", "got it", "understood", "perfect", "brilliant",
+                "lovely", "cool", "noted",
+            })
+            _fbo_words = set(text.strip().split())
+            if _fbo_words and _fbo_words <= _FBO_ACK_WORDS:
+                logger.info("[ms_flow] FAQ_BOOKING_OFFER: ack-only %r — inert", text[:40])
+                return
+
             _fbo_intent = self._detect_intent(text)
 
             # Bug 8: reschedule/cancel must hard-route immediately — never fall
@@ -7277,18 +7335,31 @@ class FlowEngine:
             "faq_services":  "services",
         }
         if intent == "faq_services":
-            # Full-list request → _FAQ_SERVICES_FULL; any other → _FAQ_SERVICES_FAST.
             _svc_text = transcript.strip().lower()
-            _FULL_LIST_PHRASES = (
-                "full list", "all of them", "all services",
-                "list them", "the whole list", "everything",
+            # ── Specific-modality drill-down: checked BEFORE generic overview ──
+            # "shockwave therapy please" / "tell me about acupuncture" etc. must
+            # produce the specific answer, not the generic services summary.
+            _specific_key = next(
+                (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _svc_text),
+                None,
             )
-            _svc_answer = (
-                _FAQ_SERVICES_FULL
-                if any(p in _svc_text for p in _FULL_LIST_PHRASES)
-                else _FAQ_SERVICES_FAST
-            )
-            logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
+            if _specific_key:
+                _svc_answer = _SPECIFIC_SERVICE_ANSWERS[_specific_key]
+                logger.info(
+                    "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
+                )
+            else:
+                # Generic overview: full list if explicitly requested, short summary otherwise.
+                _FULL_LIST_PHRASES = (
+                    "full list", "all of them", "all services",
+                    "list them", "the whole list", "everything",
+                )
+                _svc_answer = (
+                    _FAQ_SERVICES_FULL
+                    if any(p in _svc_text for p in _FULL_LIST_PHRASES)
+                    else _FAQ_SERVICES_FAST
+                )
+                logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
             await self._tts.put(_svc_answer)
             self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
