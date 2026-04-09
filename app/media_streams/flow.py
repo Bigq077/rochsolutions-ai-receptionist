@@ -68,11 +68,9 @@ _FAQ_PRICES_NO_SERVICE = (
 
 # ── FAQ insurance: deterministic self-pay / Bupa / claim-back answer ────────
 _FAQ_INSURANCE_ANSWER = (
-    "We\u2019re a self-pay clinic, so we don\u2019t bill insurers directly. "
-    "You would pay the clinic and then claim back from your insurer if your policy allows it. "
-    "We don\u2019t accept Bupa. "
-    "If you do have insurance, I can note the insurer name, "
-    "but cover would still need to be confirmed by your insurer and the clinic."
+    "We\u2019re a self-pay clinic, so we don\u2019t bill insurers directly \u2014 "
+    "you\u2019d pay the clinic directly and claim back from your insurer if your policy allows it. "
+    "Just let us know your provider when you book and we\u2019ll make a note of it."
 )
 
 # ── FAQ capability: deterministic "what can you help me with" answer ─────────
@@ -2122,10 +2120,24 @@ class FlowEngine:
                 if step["state"] == "CONFIRM_ASSESSMENT"
                 else None
             )
-            # ANSWER_FAQ/services: deterministic short summary (Bug 1).
-            # Skips the LLM entirely — avoids long service list readouts.
+            # ANSWER_FAQ/services: full-list detection takes priority over short summary.
+            # If the caller explicitly asked for the full list ("what services do you offer",
+            # "all services" etc.) respond with _FAQ_SERVICES_FULL; otherwise short summary.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("services", "faq_services"):
-                _fast_r = _FAQ_SERVICES_FAST
+                _faq_svc_text = (
+                    (self.session.get("conversation_history") or [{}])[-1]
+                    .get("content", "")
+                    .lower()
+                )
+                _LIST_PHRASES = (
+                    "full list", "all services", "everything you offer",
+                    "all of them", "what do you offer", "what services do you",
+                    "what services", "list of services",
+                )
+                if any(p in _faq_svc_text for p in _LIST_PHRASES):
+                    _fast_r = _FAQ_SERVICES_FULL
+                else:
+                    _fast_r = _FAQ_SERVICES_FAST
             # ANSWER_FAQ/insurance: deterministic self-pay / Bupa answer.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("insurance", "faq_insurance"):
                 _fast_r = _FAQ_INSURANCE_ANSWER
@@ -2489,6 +2501,27 @@ class FlowEngine:
             self.session["repeat_requested"] = True
             logger.info("[ms_flow] global repeat intercept: %r", transcript[:60])
             return
+
+        # ── GLOBAL RE-ENGAGEMENT INTERCEPT ──────────────────────────────────────
+        # "are you there", "hello", "can you hear me" etc. are not answers —
+        # they mean the caller is confused about silence.  Replay last_question
+        # immediately without disturbing the state machine.
+        _RE_ENGAGEMENT_TOKENS = frozenset({
+            "hello", "hi", "hey", "hiya",
+            "are you there", "you there", "hello are you there",
+            "can you hear me", "can you hear", "hello can you hear",
+            "what's happening", "whats happening",
+            "is anyone there", "is somebody there",
+            "hello hello",
+        })
+        _re_text = text.strip()
+        if _re_text in _RE_ENGAGEMENT_TOKENS:
+            _lq = self.session.get("last_question") or self.session.get("last_tts_spoken")
+            if _lq:
+                logger.info("[ms_flow] re-engagement token %r — replaying last_question", _re_text)
+                await self._tts.put(_lq)
+                return
+            # No last_question yet (very start of call) — fall through to normal handling
 
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
         # Very short / noisy transcripts must not drive a full response.
@@ -3041,9 +3074,18 @@ class FlowEngine:
                     self.session.setdefault("collected", {})["phone"] = _cp_confirmed
                 self.session.pop("phone_candidate", None)
                 if self._active_flow is RESCHEDULE_FLOW:
-                    self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
-                    self.session["state"]      = "LOOKUP_RESCHEDULE"
-                    self.session["flow_state"] = "LOOKUP_RESCHEDULE"
+                    if not _cp_confirmed:
+                        # Phone still missing — collect before lookup (phone is required by Acuity)
+                        self.session["flow_step"]  = _RESCHEDULE_COLLECT_PHONE_INDEX
+                        self.session["state"]      = "COLLECT_PHONE_RESCHEDULE"
+                        self.session["flow_state"] = "COLLECT_PHONE_RESCHEDULE"
+                        logger.warning(
+                            "[ms_flow] CONFIRM_PHONE yes but no phone resolved — routing to COLLECT_PHONE_RESCHEDULE"
+                        )
+                    else:
+                        self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
+                        self.session["state"]      = "LOOKUP_RESCHEDULE"
+                        self.session["flow_state"] = "LOOKUP_RESCHEDULE"
                 elif self._active_flow is CANCEL_FLOW:
                     self.session["flow_step"]  = _CANCEL_LOOKUP_INDEX
                     self.session["state"]      = "LOOKUP_CANCEL"
@@ -3116,6 +3158,11 @@ class FlowEngine:
                     "you misheard", "misheard", "the number is",
                     "my number is", "it should be", "it's actually",
                     "try again", "start again",
+                    # Additional natural rephrasings from live calls
+                    "the number on the booking", "number on the booking",
+                    "the number for the booking", "number for the booking",
+                    "the number associated", "number associated",
+                    "it is actually", "my correct number", "correct number is",
                 )
                 _is_phone_correction = (
                     len(_cp_digits_str) >= 5
@@ -3986,6 +4033,11 @@ class FlowEngine:
                 "nothing works for me", "doesn't work for me", "doesnt work for me",
                 "can't do any of those", "cant do any of those",
                 "not available on any", "none of those suit",
+                # Common spoken rejections missing from original set
+                "not really", "no not really", "nothing there",
+                "nah", "nope", "no thanks", "no thank you",
+                "that doesn't work", "that wont work", "that won't work",
+                "not ideal", "not great",
             )
             _PD_LATER = (
                 "later dates", "later date", "any later", "something later",
@@ -4320,6 +4372,51 @@ class FlowEngine:
                         "[ms_flow] PRESENT_DAYS: weekend inquiry answered deterministically",
                     )
                     return
+                # ── MONTH-ONLY FILTER ─────────────────────────────────────────
+                # "any dates in May" / "do you have anything in April" —
+                # _XD_PAT requires digit+month so these fall here.
+                # Filter offered_slots deterministically rather than calling Haiku.
+                _MONTH_NAMES = {
+                    "january": 1, "february": 2, "march": 3, "april": 4,
+                    "may": 5, "june": 6, "july": 7, "august": 8,
+                    "september": 9, "october": 10, "november": 11, "december": 12,
+                    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+                    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+                }
+                _month_hit = next((m for m in _MONTH_NAMES if m in text), None)
+                if _month_hit:
+                    _target_month = _MONTH_NAMES[_month_hit]
+                    _offered = self.session.get("offered_slots") or []
+                    import datetime as _dt_mod
+                    try:
+                        _filtered = [
+                            s for s in _offered
+                            if _dt_mod.datetime.fromisoformat(
+                                s.get("datetime", "")
+                            ).month == _target_month
+                        ]
+                    except Exception:
+                        _filtered = []
+                    if _filtered:
+                        self.session["offered_slots"] = _filtered
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS month filter: kept %d/%d slots for month=%d",
+                            len(_filtered), len(_offered), _target_month,
+                        )
+                        await self.ask_current_question()
+                        return
+                    else:
+                        _no_month_msg = (
+                            f"I\u2019m afraid I don\u2019t have any slots in "
+                            f"{_month_hit.capitalize()} right now. "
+                            "I can offer you the next available dates \u2014 would that work?"
+                        )
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS month filter: no slots in month=%d — offering alternatives",
+                            _target_month,
+                        )
+                        await self._tts.put(_no_month_msg)
+                        return
                 logger.info(
                     "[ms_flow] %s: no day match for %r → Haiku with day context",
                     step["state"], transcript[:40],
@@ -5437,6 +5534,13 @@ class FlowEngine:
                     _fbo_intent, _fbo_count + 1,
                 )
                 await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
+                # Re-anchor with a fresh offer so the stale question text isn't replayed
+                _fbo_anchor = (
+                    "Was there anything else I can help with, "
+                    "or would you like to go ahead and book?"
+                )
+                self.session["last_question"] = _fbo_anchor
+                await self._tts.put(_fbo_anchor)
                 return
 
             # Reset follow-up count on any non-FAQ answer
@@ -5481,6 +5585,13 @@ class FlowEngine:
                 "general_query",
             }:
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
+                # Re-anchor with a fresh offer so stale question text isn't replayed
+                _gbo_anchor = (
+                    "Was there anything else I can help with, "
+                    "or would you like to go ahead and book?"
+                )
+                self.session["last_question"] = _gbo_anchor
+                await self._tts.put(_gbo_anchor)
                 return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
@@ -5702,6 +5813,11 @@ class FlowEngine:
                 "touch that", "repeat that", "repeat the", "help spelling",
                 "hello", "sorry could", "what was that", "what did you",
                 "i couldn't", "couldn't hear", "can you repeat", "not sure",
+                # Re-engagement phrases that slip through fragment suppression
+                "what's happening", "whats happening",
+                "are you there", "you there",
+                "can you hear", "can you hear me",
+                "hello hello", "is anyone there",
             )
             if any(p in (text or "").lower() for p in _NAME_NOISE_PHRASES):
                 _frag_cn = self.session.get("name_fragment")
@@ -6842,6 +6958,8 @@ class FlowEngine:
             self._active_flow = GENERAL_QUERY_FLOW
         else:
             self._active_flow = BOOKING_FLOW
+        # Track the most-recent intent so infer_call_outcome sees mid-call switches
+        self.session["intent"] = intent
         self.session["flow_step"] = 0
         # Multi-location clinics (theorem_v2): ask caller which clinic before starting flow.
         # Single-location clinics: hardcode alcester as before — zero behaviour change.
