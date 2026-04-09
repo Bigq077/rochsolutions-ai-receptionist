@@ -51,6 +51,12 @@ _FAQ_SERVICES_FAST = (
     "Was there one in particular you wanted to ask about, "
     "or do you want me to give you the full list of services we offer?"
 )
+_FAQ_SERVICES_FULL = (
+    "Our full range of services includes: physiotherapy assessments and follow-up appointments, "
+    "acupuncture, shockwave therapy, laser therapy, biomechanical assessments, "
+    "sports massage, and Pilates classes. "
+    "If you\u2019d like to know more about any of those, just let me know."
+)
 
 # ── FAQ prices: deterministic from-price gate ───────────────────────────────
 # When NO specific service is named, always return this — never a full list.
@@ -77,6 +83,7 @@ _CAPABILITY_ANSWER = (
 )
 _CAPABILITY_PHRASES = (
     "what can you help me with", "what can you help with",
+    "can you help me with", "can you help with",
     "how can you help", "what exactly can you help",
     "what are you able to help", "what can you do for me",
     "what can you assist with",
@@ -100,6 +107,8 @@ _GLOBAL_REPAIR_PHRASES = (
     "that's not what i asked", "thats not what i asked",
     "not what i asked", "that wasn't my question",
     "that's not my question", "not my question",
+    "no my question was", "no my question is",
+    "no that's not the question", "no that's not what",
 )
 
 # ── Global repeat-request phrases ───────────────────────────────────────────
@@ -1563,11 +1572,12 @@ GENERAL_QUERY_FLOW: List[Dict[str, Any]] = [
 
 # Intent → FAQ topic mapping
 _INTENT_TO_FAQ_TOPIC = {
-    "faq_prices":    "prices",
-    "faq_insurance": "insurance",
-    "faq_hours":     "hours",
-    "faq_location":  "address",
-    "faq_services":  "services",
+    "faq_prices":      "prices",
+    "faq_insurance":   "insurance",
+    "faq_hours":       "hours",
+    "faq_location":    "address",
+    "faq_services":    "services",
+    "faq_capability":  "capability",
 }
 
 
@@ -1640,10 +1650,21 @@ class FlowEngine:
         # No LLM call — pure TTS, same pattern as every other static question.
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
-            _loc_q = (
-                "Of course — are you looking to book in at our Alcester or Redditch clinic? "
-                "Press 1 for Alcester or 2 for Redditch."
-            )
+            if self._active_flow is RESCHEDULE_FLOW:
+                _loc_q = (
+                    "Of course \u2014 was your original appointment at our Alcester or Redditch clinic? "
+                    "You can say it or press 1 for Alcester and 2 for Redditch."
+                )
+            elif self._active_flow is CANCEL_FLOW:
+                _loc_q = (
+                    "Of course \u2014 was your appointment at our Alcester or Redditch clinic? "
+                    "You can say it or press 1 for Alcester and 2 for Redditch."
+                )
+            else:
+                _loc_q = (
+                    "Of course \u2014 are you looking to book in at our Alcester or Redditch clinic? "
+                    "Press 1 for Alcester or 2 for Redditch."
+                )
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
@@ -2108,6 +2129,9 @@ class FlowEngine:
             # ANSWER_FAQ/insurance: deterministic self-pay / Bupa answer.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("insurance", "faq_insurance"):
                 _fast_r = _FAQ_INSURANCE_ANSWER
+            # ANSWER_FAQ/capability: deterministic "what can you help with" answer.
+            if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("capability", "faq_capability"):
+                _fast_r = _CAPABILITY_ANSWER
             # ANSWER_FAQ/prices: deterministic from-price gate.
             # If no specific service was named, always return the from-price line —
             # never a full price list.  If a service was named, let the LLM answer
@@ -2422,8 +2446,36 @@ class FlowEngine:
             if len(_rw) <= 2 and _rw and _rw[0] in ("stop", "wrong"):
                 _is_repair = True
         if _is_repair:
-            # Do NOT put the phrase here — the _llm_loop finally drain would wipe it.
-            # Instead set the flag; _llm_loop finally drains stale output then enqueues.
+            # Try to extract an embedded FAQ question before falling back to generic repair.
+            # "that's not what I asked, my question was about insurance" → route to insurance FAQ.
+            _EMBEDDED_SUFFIXES = (
+                "my question was", "my question is",
+                "i was asking about", "i was asking",
+                "i wanted to ask", "i actually wanted",
+                "what i meant", "i meant to ask",
+            )
+            _emb_intent = None
+            _emb_raw = ""
+            for _eq_sfx in _EMBEDDED_SUFFIXES:
+                _eq_idx = text.find(_eq_sfx)
+                if _eq_idx >= 0:
+                    _eq_rest = text[_eq_idx + len(_eq_sfx):].strip()
+                    if len(_eq_rest.split()) >= 2:
+                        _emb_intent = self._detect_intent(_eq_rest)
+                        _emb_raw = transcript[transcript.lower().find(_eq_sfx) + len(_eq_sfx):].strip()
+                        break
+            _faq_intents_for_repair = {
+                "faq_prices", "faq_insurance", "faq_hours",
+                "faq_location", "faq_services", "faq_capability",
+            }
+            if _emb_intent and _emb_intent in _faq_intents_for_repair:
+                logger.info(
+                    "[ms_flow] repair: embedded FAQ %s — answering directly", _emb_intent
+                )
+                await self._handle_mid_flow_interrupt(_emb_intent, _emb_raw or transcript)
+                return
+            # No extractable embedded question — generic repair.
+            # Do NOT enqueue phrase here; _llm_loop finally drains then enqueues.
             self.session["last_question"] = "What was your inquiry?"
             self.session["repair_requested"] = True
             logger.info("[ms_flow] global repair intercept: %r", transcript[:60])
@@ -2451,7 +2503,11 @@ class FlowEngine:
                 and not any(s in _frag_text for s in _FRAGMENT_STRONG_INTENTS)
             )
         )
-        if _is_fragment:
+        _NAME_COLLECTION_STATES = {
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        }
+        if _is_fragment and (not step or step["state"] not in _NAME_COLLECTION_STATES):
             logger.info("[ms_flow] global fragment suppressed: %r", transcript[:30])
             self.session["fragment_suppressed"] = True
             return
@@ -2531,6 +2587,7 @@ class FlowEngine:
                 _loc_faq_intents = {
                     "faq_prices", "faq_insurance", "faq_hours",
                     "faq_location", "faq_services", "faq_capability",
+                    "general_query",
                 }
                 _loc_intent = self._detect_intent(text)
                 if _loc_intent in _loc_faq_intents:
@@ -5326,19 +5383,22 @@ class FlowEngine:
             _mid_intent = self._detect_intent(text)
             # Hard-route reschedule/cancel before any FAQ handling — these must
             # exit booking immediately regardless of current state.
+            # Guard: do NOT reset if already in the target flow (avoids restart loops).
             if _mid_intent == "reschedule":
-                logger.info(
-                    "[ms_flow] mid-flow reschedule hard-route at %s", step["state"]
-                )
-                self._switch_flow("reschedule")
-                await self.ask_current_question()
+                if self._active_flow is not RESCHEDULE_FLOW:
+                    logger.info(
+                        "[ms_flow] mid-flow reschedule hard-route at %s", step["state"]
+                    )
+                    self._switch_flow("reschedule")
+                    await self.ask_current_question()
                 return
             if _mid_intent == "cancel":
-                logger.info(
-                    "[ms_flow] mid-flow cancel hard-route at %s", step["state"]
-                )
-                self._switch_flow("cancel")
-                await self.ask_current_question()
+                if self._active_flow is not CANCEL_FLOW:
+                    logger.info(
+                        "[ms_flow] mid-flow cancel hard-route at %s", step["state"]
+                    )
+                    self._switch_flow("cancel")
+                    await self.ask_current_question()
                 return
             if _mid_intent in _mid_intents:
                 logger.info(
@@ -5355,12 +5415,14 @@ class FlowEngine:
             # Bug 8: reschedule/cancel must hard-route immediately — never fall
             # through to booking logic or FAQ follow-up answering.
             if _fbo_intent == "reschedule":
-                self._switch_flow("reschedule")
-                await self.ask_current_question()
+                if self._active_flow is not RESCHEDULE_FLOW:
+                    self._switch_flow("reschedule")
+                    await self.ask_current_question()
                 return
             if _fbo_intent == "cancel":
-                self._switch_flow("cancel")
-                await self.ask_current_question()
+                if self._active_flow is not CANCEL_FLOW:
+                    self._switch_flow("cancel")
+                    await self.ask_current_question()
                 return
 
             # FAQ follow-ups — answer regardless of count; only booking intent
@@ -5400,6 +5462,26 @@ class FlowEngine:
 
         # ── GENERAL_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────
         if step["state"] == "GENERAL_BOOKING_OFFER":
+            _gbo_intent = self._detect_intent(text)
+            # Reschedule/cancel: hard-route immediately.
+            if _gbo_intent == "reschedule":
+                if self._active_flow is not RESCHEDULE_FLOW:
+                    self._switch_flow("reschedule")
+                    await self.ask_current_question()
+                return
+            if _gbo_intent == "cancel":
+                if self._active_flow is not CANCEL_FLOW:
+                    self._switch_flow("cancel")
+                    await self.ask_current_question()
+                return
+            # FAQ/general question — answer and re-anchor.
+            if _gbo_intent in {
+                "faq_services", "faq_prices", "faq_hours",
+                "faq_location", "faq_insurance", "faq_capability",
+                "general_query",
+            }:
+                await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
+                return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
                 self._switch_flow("booking")
@@ -6713,11 +6795,12 @@ class FlowEngine:
             "journey to", "far is", "distance", "near", "nearest",
         )
         services_p = (
-            "services", "treatments", "what do you offer",
+            "services", "service", "treatments", "what do you offer",
             "what conditions",
             "rundown", "everything you offer", "everything you do",
             "what therapies", "what therapy", "what do you treat",
             "list of", "tell me what you",
+            "what kind of service", "what type of service",
         )
         if any(p in text for p in reschedule_p): return "reschedule"
         if any(p in text for p in cancel_p):     return "cancel"
@@ -6729,6 +6812,10 @@ class FlowEngine:
         # Capability question checked before services to avoid "what can you help"
         # routing to the services list instead of the capability answer.
         if any(p in text for p in _CAPABILITY_PHRASES): return "faq_capability"
+        # "tell me more about shockwave therapy" etc. — route as faq_services so the
+        # service-detail fast path in _handle_mid_flow_interrupt handles it.
+        if "tell me more about" in text and any(k in text for k in _FAQ_PRICES_SERVICE_KEYWORDS):
+            return "faq_services"
         if any(p in text for p in services_p):   return "faq_services"
         return "general_query"  # unknown question — LLM handles it freely
 
@@ -6739,7 +6826,7 @@ class FlowEngine:
         """
         _faq_intents = {
             "faq_prices", "faq_insurance", "faq_hours",
-            "faq_location", "faq_services",
+            "faq_location", "faq_services", "faq_capability",
         }
         if intent == "transfer":
             self._active_flow = TRANSFER_FLOW
@@ -6824,18 +6911,54 @@ class FlowEngine:
             "faq_services":  "services",
         }
         if intent == "faq_services":
-            # Deterministic fast path — no LLM needed (Bug 1 / mid-flow variant)
+            # Full-list request → _FAQ_SERVICES_FULL; any other → _FAQ_SERVICES_FAST.
+            _svc_text = transcript.strip().lower()
+            _FULL_LIST_PHRASES = (
+                "full list", "all of them", "all services",
+                "list them", "the whole list", "everything",
+            )
+            _svc_answer = (
+                _FAQ_SERVICES_FULL
+                if any(p in _svc_text for p in _FULL_LIST_PHRASES)
+                else _FAQ_SERVICES_FAST
+            )
             logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
-            await self._tts.put(_FAQ_SERVICES_FAST)
-            self.session["last_faq_answer"] = _FAQ_SERVICES_FAST
+            await self._tts.put(_svc_answer)
+            self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
             logger.info("[ms_flow] _handle_mid_flow_interrupt: capability fast path")
             await self._tts.put(_CAPABILITY_ANSWER)
             self.session["last_faq_answer"] = _CAPABILITY_ANSWER
         elif intent == "faq_insurance":
+            # Insurer-specific response: Bupa rejection, named-insurer self-pay, or generic.
+            _ins_text = transcript.strip().lower()
+            _INSURERS = {
+                "axa": "AXA", "aviva": "Aviva", "wpa": "WPA",
+                "vitality": "Vitality", "cigna": "Cigna", "healix": "Healix",
+                "nuffield": "Nuffield", "simplyhealth": "Simplyhealth",
+            }
+            if "bupa" in _ins_text:
+                _ins_ans = (
+                    "I\u2019m afraid we don\u2019t accept Bupa directly. "
+                    "You\u2019re welcome to self-pay and claim back if your policy allows, "
+                    "but Bupa direct billing isn\u2019t something we offer."
+                )
+            else:
+                _named = next(
+                    (name for key, name in _INSURERS.items() if key in _ins_text), None
+                )
+                if _named:
+                    _ins_ans = (
+                        f"For {_named}, the same framework applies \u2014 we\u2019re self-pay, "
+                        f"so you\u2019d pay the clinic directly and then submit a claim to {_named} "
+                        "if your policy covers physiotherapy. "
+                        "Cover would need to be confirmed with them and the clinic beforehand."
+                    )
+                else:
+                    _ins_ans = _FAQ_INSURANCE_ANSWER
             logger.info("[ms_flow] _handle_mid_flow_interrupt: insurance fast path")
-            await self._tts.put(_FAQ_INSURANCE_ANSWER)
-            self.session["last_faq_answer"] = _FAQ_INSURANCE_ANSWER
+            await self._tts.put(_ins_ans)
+            self.session["last_faq_answer"] = _ins_ans
         elif intent == "faq_prices":
             # Prices: if no specific service named → deterministic from-price gate.
             # If a service is named → LLM constrained to one sentence for that service.
@@ -6923,15 +7046,12 @@ class FlowEngine:
             ):
                 _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
             elif _int_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
-                # After answering a follow-up question, re-anchor with the booking offer
-                # — not the generic "anything else" trap that causes sticky FAQ loops.
-                _int_anchor = "Would you like to go ahead and book an appointment?"
+                # No re-anchor here — the FAQ answer already ends naturally.
+                # Caller responds freely; silence handler replays last_question if needed.
+                _int_anchor = ""
             else:
                 _int_anchor = self.session.get("last_question", "")
             if _int_anchor:
-                # Prefix with "Coming back to that — " for booking states.
-                # Skip prefix for booking-offer states — the anchor is itself a
-                # natural question ("Would you like to go ahead and book?").
                 _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
                 _anchor_spoken = (
                     _int_anchor if _int_state in _offer_states
@@ -7761,7 +7881,7 @@ class FlowEngine:
             # 1. Strip common prefixes: "my name is X", "it's X", "I'm X", "call me X"
             import re as _re_name
             _prefix_m = _re_name.match(
-                r'^(?:my name(?:\s+is)?|the name(?:\s+is)?|name(?:\s+is)?'
+                r'^(?:my (?:first |last )?name(?:\s+is)?|the name(?:\s+is)?|name(?:\s+is)?'
                 r'|it\'?s|its|i\'?m|im|call me|this is)\s+',
                 _raw_name, _re_name.IGNORECASE,
             )
@@ -7899,7 +8019,14 @@ class FlowEngine:
             _words_set = set(text.split())
             for p in yes_p:
                 if p in text: return "book"
+            # Do not end the call when the "no" is part of a correction/question.
+            # "No my question was about prices" must go to repair intercept, not goodbye.
+            _no_correction_signals = (
+                "my question", "i was asking", "about", "what", "how", "i meant",
+            )
             if _words_set & no_p_short:
+                if any(s in text for s in _no_correction_signals):
+                    return None  # let repair intercept or flow re-ask handle it
                 return "done"
             for p in no_p_phrase:
                 if p in text: return "done"
