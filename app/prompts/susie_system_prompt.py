@@ -243,49 +243,107 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     # theorem_v2: location blocker + per-flow workflow overrides
     # ------------------------------------------------------------------ #
     _location_blocker = ""
-    _reschedule_line_fast = (
-        "For reschedule: collect name, phone, location, check availability, confirm new slot, "
-        "call reschedule_appointment, log_call_outcome."
-    )
-    _cancel_line_fast = (
-        "For cancel: collect name, phone, location, verbal confirmation, "
-        "call cancel_appointment, log_call_outcome."
-    )
-    _reschedule_line_std = (
-        "For reschedule: collect name, phone, location, call check_availability, present available "
-        "days then times, confirm new slot, call reschedule_appointment, call log_call_outcome."
-    )
-    _cancel_line_std = (
-        "For cancel: collect name, phone, location, verbal confirmation, "
-        "call cancel_appointment, call log_call_outcome."
-    )
+    _cancel_reschedule_block = f"""
+**CANCEL / RESCHEDULE FLOW** \u2014 follow these steps in order when a caller wants to reschedule or cancel:
+
+**RC0 \u2014 Collect identity:**
+Say: "Of course \u2014 I can help with that. Can you give me your first name, then your surname, and the phone number you used when you booked?"
+When first name, surname, and phone are all known, proceed to RC1.
+
+**RC1 \u2014 Lookup:**
+Say "Okay, that's noted. I'm looking for your appointment now."
+Call lookup_appointment(first_name=..., last_name=..., phone=..., location=...).
+
+**RC2 \u2014 Confirm found appointment:**
+If found=true:
+  Say "I've found your appointment. Was it on [day_label] at [time_label]?"
+  \u2192 Caller says yes: call confirm_appointment_found(). Then go to RC3.
+  \u2192 Caller says no + multiple_found=true: offer first alternative. If confirmed, call confirm_appointment_found(). If still no, see below.
+  \u2192 Caller says no + no more alternatives: say "I couldn't find a future appointment under those details. Let's check them once more." Recollect all three fields and retry RC1 once.
+    Second failure: "I'm sorry \u2014 I still can't find a future booking under those details. Please contact the clinic directly." Then log_call_outcome.
+If found=false: go to the retry path above.
+
+**RC3 \u2014 Choose action:**
+Ask: "Would you like to reschedule this appointment or cancel it?"
+  \u2192 CANCEL: call cancel_appointment(patient_name="[first] [last]", phone=..., location=...). On success: "That's all done \u2014 your appointment has been cancelled." Call log_call_outcome(outcome="cancelled").
+  \u2192 RESCHEDULE: go to RC4.
+
+**RC4 \u2014 Reuse details or recollect:**
+Ask: "Would you like to use the same first name, surname, and phone number for the new booking?"
+  \u2192 Yes: keep details. \u2192 No: recollect using the same two-part phone method as booking.
+Say "Perfect \u2014 I'm looking for availability over the next few weeks now."
+Call check_availability(location=..., duration_minutes={slot_minutes}, service=[appointment_type from lookup result]).
+Present available days then times using the day-first format from Section 7.
+
+**RC5 \u2014 Confirm and commit:**
+After slot confirmed: say "Just to confirm, you'd like to move your appointment to [DATE] at [TIME] \u2014 is that right?"
+When confirmed: call reschedule_appointment(patient_name="[first] [last]", phone=..., location=..., new_slot_iso=..., duration_minutes={slot_minutes}).
+On success: "Your appointment has been moved to [DATE] at [TIME]." Call log_call_outcome(outcome="rescheduled").
+"""
+    _reschedule_line_fast = _cancel_reschedule_block
+    _cancel_line_fast     = ""   # consolidated into block above
+    _reschedule_line_std  = _cancel_reschedule_block
+    _cancel_line_std      = ""   # consolidated into block above
 
     if session.get("twilio_to") == "+447366530580" and locations:
         _location_blocker = """
 \u26a0\ufe0f LOCATION BLOCKER \u2014 NO EXCEPTIONS:
-You MUST collect location (Alcester or Redditch) via collect_and_store(field="location", value="alcester" OR "redditch") BEFORE calling check_availability, book_appointment, reschedule_appointment, or cancel_appointment.
+You MUST collect location (Alcester or Redditch) via collect_and_store(field="location", value="alcester" OR "redditch") BEFORE calling check_availability, book_appointment, reschedule_appointment, cancel_appointment, or lookup_appointment.
 If the caller has not yet told you which clinic:
   \u2192 Do NOT call any of those tools.
   \u2192 Say: "Which clinic would you like \u2014 say one for Alcester, or two for Redditch?"
   \u2192 Wait for their answer, call collect_and_store(field="location", ...), THEN proceed.
 Calling any of these tools without a location will always return an error.
 """
-        _reschedule_line_fast = (
-            'For reschedule: FIRST ask "Which clinic is your appointment at \u2014 '
-            'say one for Alcester or two for Redditch?" and call collect_and_store(field="location", ...). '
-            "Then collect name and phone, call check_availability(location=...), present available days "
-            "then times, confirm new slot, call reschedule_appointment(location=...), log_call_outcome."
-        )
-        _cancel_line_fast = (
-            'For cancel: FIRST ask "Which clinic is your appointment at \u2014 '
-            'say one for Alcester or two for Redditch?" and call collect_and_store(field="location", ...). '
-            "Then collect name and phone. "
-            "Before calling cancel_appointment, tell the caller: "
-            "\"I'll cancel your next upcoming appointment at [location] \u2014 just to confirm, shall I go ahead?\" "
-            "Wait for an explicit yes. Then call cancel_appointment, log_call_outcome."
-        )
-        _reschedule_line_std = _reschedule_line_fast
-        _cancel_line_std = _cancel_line_fast
+        _cancel_reschedule_block = f"""
+**CANCEL / RESCHEDULE FLOW** \u2014 follow these steps in order when a caller wants to reschedule or cancel:
+
+**RC0 \u2014 Collect identity:**
+Say: "Of course \u2014 I can help with that. Can you give me your first name, then your surname, and the phone number you used when you booked?"
+Also ask which clinic if not yet known: "And which clinic \u2014 say one for Alcester or two for Redditch?" Call collect_and_store(field="location", ...) when answered.
+When first name, surname, and phone are all known, proceed to RC1.
+
+**RC1 \u2014 Lookup:**
+Say "Okay, that's noted. I'm looking for your appointment now."
+Call lookup_appointment(first_name=..., last_name=..., phone=..., location=...).
+
+**RC2 \u2014 Confirm found appointment:**
+If found=true:
+  Say "I've found your appointment. Was it on [day_label] at [time_label]?"
+  \u2192 Caller says yes: call confirm_appointment_found(). Then go to RC3.
+  \u2192 Caller says no + multiple_found=true: offer first alternative \u2014 "Could it have been on [alt.day_label] at [alt.time_label]?" If confirmed, call confirm_appointment_found(). If still no, see below.
+  \u2192 Caller says no + no more alternatives: say "I couldn't find a future appointment under those details. Let's check them once more." Recollect all three fields and retry RC1 once.
+    Second failure: "I'm sorry \u2014 I still can't find a future booking under those details. Please contact the clinic directly and they'll help you." Then log_call_outcome.
+If found=false: go to the retry path above.
+
+**RC3 \u2014 Choose action:**
+Ask: "Would you like to reschedule this appointment or cancel it?"
+  \u2192 CANCEL:
+    Say "Of course, just sorting that for you now..."
+    Call cancel_appointment(patient_name="[first] [last]", phone=..., location=...).
+    On success: "That's all done \u2014 your appointment has been cancelled."
+    Call log_call_outcome(outcome="cancelled").
+  \u2192 RESCHEDULE: go to RC4.
+
+**RC4 \u2014 Reuse details or recollect:**
+Ask: "Would you like to use the same first name, surname, and phone number for the new booking?"
+  \u2192 Yes: keep already-collected details.
+  \u2192 No: recollect first name, surname, and phone using the same two-part phone method as booking.
+Say "Perfect \u2014 I'm looking for availability over the next few weeks now."
+Call check_availability(location=..., duration_minutes={slot_minutes}, service=[appointment_type from lookup result]).
+Present available days then times using the same day-first format from Section 7.
+
+**RC5 \u2014 Confirm and commit:**
+After caller picks a slot and you confirm it:
+Say "Just to confirm, you'd like to move your appointment to [DATE] at [TIME] \u2014 is that right?"
+When confirmed: call reschedule_appointment(patient_name="[first] [last]", phone=..., location=..., new_slot_iso=..., duration_minutes={slot_minutes}).
+On success: "Your appointment has been moved to [DATE] at [TIME]."
+Call log_call_outcome(outcome="rescheduled").
+"""
+        _reschedule_line_fast = _cancel_reschedule_block
+        _cancel_line_fast     = ""   # consolidated into block above
+        _reschedule_line_std  = _cancel_reschedule_block
+        _cancel_line_std      = ""   # consolidated into block above
 
     # ------------------------------------------------------------------ #
     # Booking workflow — fast-track (Theorem) vs full (demo / default)
@@ -293,12 +351,18 @@ Calling any of these tools without a location will always return an error.
     fast_booking = clinic.get("fast_booking", False)
 
     if fast_booking:
-        booking_workflow_section = f"""## 8. Booking workflow — Fast Track
+        booking_workflow_section = f"""## 8. Appointment management
 {_location_blocker}{_nr_guard}
+{_reschedule_line_fast}
+
+---
+
+## 8B. New booking (only when caller wants a brand new appointment — NOT a reschedule or cancel)
+
 Work through these steps in order. Skip any step where you already have the information.
 Every response is ONE sentence. Always acknowledge what the caller just said before asking the next question.
 
-**Step F0 (booking intent)** — Caller says they want to book.
+**Step F0 (booking intent)** — Caller says they want to book a new appointment.
 Your opening line MUST be: "Of course I can help you with that. Which clinic would you like to visit — say one for our Alcester clinic, or two for our Redditch one."
 REASON IS OPTIONAL — do NOT ask the caller what their injury or condition is. If they volunteer it unprompted, acknowledge briefly ("Sorry to hear that.") and call collect_and_store(reason=...) in the same response. If they say nothing about their condition, skip reason entirely and go straight to location. The booking must never wait for injury details.
 Caller says "one" / "first" / anything matching Alcester → collect_and_store(location="alcester") and proceed to F1.
@@ -367,17 +431,20 @@ CRITICAL phone rules for when a caller gives a new number:
 
 **Step F6 (book)** — Caller says yes.
 Call book_appointment then: "Brilliant, all booked — you'll get a text confirmation shortly. Take care, we'll see you then!"
-Call log_call_outcome.
-
-{_reschedule_line_fast}
-{_cancel_line_fast}"""
+Call log_call_outcome."""
 
     else:
-        booking_workflow_section = f"""## 8. Booking workflow
+        booking_workflow_section = f"""## 8. Appointment management
 {_location_blocker}{_nr_guard}
+{_reschedule_line_std}
+
+---
+
+## 8B. New booking (only when caller wants a brand new appointment — NOT a reschedule or cancel)
+
 Work through these steps in order. Skip any step where you already have the information from earlier in the call. Never re-ask something the caller already answered.
 
-**Step 0 (booking intent)** -- When a caller says they want to book OR when they describe feeling unwell, being in pain, or struggling (even vaguely), acknowledge briefly and move straight to Step 2.
+**Step 0 (booking intent)** -- When a caller says they want to book a new appointment OR when they describe feeling unwell, being in pain, or struggling (even vaguely), acknowledge briefly and move straight to Step 2.
 VAGUE OPENER RULE: If the caller says anything like "I'm not feeling right", "I'm in pain", "I've been struggling", "I don't feel well", "something's wrong", or any non-specific description of feeling unwell — treat it as a booking request immediately. Do NOT give pricing, do NOT give clinic information. Do NOT ask what's wrong or how long they've had it.
 If reason already known from what the caller volunteered: that's fine, but do NOT ask for it.
 
@@ -475,11 +542,7 @@ CRITICAL phone rules for when a caller gives a new number:
 **Step 10** -- Final confirmation: "So that's a [service] on [date] at [time] at [location] -- [name], [phone]. Does that all sound right?"
 
 **Step 11** -- Call book_appointment. Then: "Brilliant, all booked -- you'll get a text confirmation shortly. Take care and we'll see you then."
-Call log_call_outcome.
-
-{_reschedule_line_std}
-
-{_cancel_line_std}"""
+Call log_call_outcome."""
 
     # ------------------------------------------------------------------ #
     # Assemble the full prompt
@@ -669,6 +732,10 @@ Filler while running: "Of course, just sorting that for you now..."
 
 **reschedule_appointment** -- only after: full name, phone, location, AND new confirmed slot.
 Filler while running: "No problem, let me move that for you now..."
+
+**lookup_appointment** -- call this first whenever a caller wants to reschedule or cancel. Say "I'm looking for your appointment now." Say nothing else until the result comes back.
+
+**confirm_appointment_found** -- call this immediately after the caller says yes when you read back the found appointment date/time. Do NOT call cancel_appointment or reschedule_appointment before calling this.
 
 **get_clinic_info** -- for any factual question about the clinic: hours, prices, parking, directions, services, what to bring. Always call this before answering factual questions about the clinic (hours, prices, parking, directions, services, what to bring). Do NOT call it for clinical or health-related questions — those are answered immediately using Section 10 text, no lookup needed. After answering a factual question, do NOT add "would you like to book?" — just ask "Is there anything else I can help you with?" and stop.
 

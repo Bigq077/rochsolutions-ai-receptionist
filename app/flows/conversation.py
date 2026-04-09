@@ -70,6 +70,8 @@ _QUALITY_TOOLS: Set[str] = {
     "book_appointment",
     "cancel_appointment",
     "reschedule_appointment",
+    "lookup_appointment",
+    "confirm_appointment_found",
     "transfer_to_human",
 }
 

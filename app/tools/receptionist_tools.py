@@ -728,12 +728,44 @@ TOOL_ADD_TO_WAITLIST = {
     },
 }
 
+TOOL_LOOKUP_APPOINTMENT = {
+    "name": "lookup_appointment",
+    "description": (
+        "Find a patient's FUTURE appointment before cancelling or rescheduling. "
+        "Only strictly future bookings are returned — past appointments are ignored. "
+        "Stores the found appointment in session so confirm_appointment_found / "
+        "cancel_appointment / reschedule_appointment can act on it directly."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "first_name": {"type": "string"},
+            "last_name":  {"type": "string"},
+            "phone":      {"type": "string", "description": "Phone number used at time of booking."},
+            "location":   {"type": "string", "enum": ["alcester", "redditch"]},
+        },
+        "required": ["first_name", "last_name", "phone", "location"],
+    },
+}
+
+TOOL_CONFIRM_APPOINTMENT_FOUND = {
+    "name": "confirm_appointment_found",
+    "description": (
+        "Call this ONLY after the caller has verbally confirmed that the appointment "
+        "found by lookup_appointment is theirs. This unlocks cancel_appointment and "
+        "reschedule_appointment for this session."
+    ),
+    "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
 # Master list passed to the Anthropic API
 TOOL_SCHEMAS = [
     TOOL_CHECK_AVAILABILITY,
     TOOL_BOOK_APPOINTMENT,
     TOOL_CANCEL_APPOINTMENT,
     TOOL_RESCHEDULE_APPOINTMENT,
+    TOOL_LOOKUP_APPOINTMENT,
+    TOOL_CONFIRM_APPOINTMENT_FOUND,
     TOOL_GET_CLINIC_INFO,
     TOOL_COLLECT_AND_STORE,
     TOOL_TRANSFER_TO_HUMAN,
@@ -1639,6 +1671,145 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Acuity executor: lookup_appointment
+# ---------------------------------------------------------------------------
+
+async def _lookup_appointment_acuity(
+    args: Dict[str, Any], session: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Find the nearest future Acuity appointment matching first+last name AND phone.
+    Strict: both name fields AND phone must match (unless Acuity record has no phone).
+    Stores results in session so subsequent tools can act without re-searching.
+    """
+    adapter = _get_acuity_adapter()
+    if not adapter:
+        return {"found": False, "error": "Booking system not configured."}
+
+    try:
+        location = _normalize_location(
+            args.get("location") or session.get("selected_location", "")
+        )
+        first_name   = (args.get("first_name") or "").strip().lower()
+        last_name    = (args.get("last_name")  or "").strip().lower()
+        phone_digits = "".join(c for c in (args.get("phone") or "") if c.isdigit())
+
+        # Code-level guard: all three identity fields must be present before searching
+        if not first_name or not last_name or not phone_digits:
+            return {
+                "found": False,
+                "error": (
+                    "First name, surname, and phone number are all required. "
+                    "Collect any missing fields before calling this tool."
+                ),
+            }
+
+        now = datetime.now(LONDON_TZ)
+        end = (now + timedelta(days=365)).date()
+
+        from app.clinic_config import THEOREM_LOCATIONS as _TL
+        cal_id = _TL.get(location, {}).get("acuity_calendar_id") if location else None
+
+        appointments = await adapter.list_appointments(
+            min_date=now.date(), max_date=end, calendar_id=cal_id
+        )
+
+        future_matches = []
+        for appt in appointments:
+            dt_str = appt.get("datetime", "")
+            if not dt_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(
+                    dt_str.replace("Z", "+00:00")
+                ).astimezone(LONDON_TZ)
+                if dt <= now:          # strictly future — skip any slot from earlier today
+                    continue
+            except Exception:
+                continue
+
+            appt_first   = (appt.get("firstName") or "").strip().lower()
+            appt_last    = (appt.get("lastName")  or "").strip().lower()
+            appt_phone_d = "".join(c for c in (appt.get("phone") or "") if c.isdigit())
+
+            # Both first AND last name must match (substring, either direction)
+            name_match = (
+                bool(first_name) and bool(appt_first) and
+                (first_name in appt_first or appt_first in first_name)
+            ) and (
+                bool(last_name) and bool(appt_last) and
+                (last_name in appt_last or appt_last in last_name)
+            )
+
+            if not name_match:
+                continue
+
+            # Strict phone gate: if Acuity has a phone on record it MUST match last 10 digits
+            if appt_phone_d:
+                if not (phone_digits and phone_digits[-10:] == appt_phone_d[-10:]):
+                    continue   # name matched but phone didn't — reject
+
+            future_matches.append((dt, appt))
+
+        if not future_matches:
+            logger.info(
+                "_lookup_appointment_acuity: no future match for %r %r", first_name, last_name
+            )
+            return {"found": False, "error": "No future appointment found under those details."}
+
+        # Nearest first
+        future_matches.sort(key=lambda x: x[0])
+        best_dt, best_appt = future_matches[0]
+
+        # Preserve original appointment type for reschedule
+        raw_type_id = best_appt.get("typeID")
+        if raw_type_id:
+            session["reschedule_original_type_id"] = f"acuity_{raw_type_id}"
+
+        # Store for cancel/reschedule fast-path
+        session["reschedule_appt_id"]       = str(best_appt["id"])
+        session["reschedule_appt_datetime"] = best_dt.isoformat()
+        session["reschedule_appt_type"]     = best_appt.get("type", "appointment")
+        session["rc_stage"]                 = "lookup_done"
+        # Clear any leftover confirmed flag from a previous lookup in this session
+        session.pop("rc_appointment_confirmed", None)
+
+        day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
+        time_label = best_dt.strftime("%H:%M")
+
+        # Up to 2 alternatives for disambiguation
+        alternatives = []
+        for alt_dt, alt_appt in future_matches[1:3]:
+            alternatives.append({
+                "id":         str(alt_appt["id"]),
+                "datetime":   alt_dt.isoformat(),
+                "day_label":  f"{alt_dt.strftime('%A')} {_ordinal(alt_dt.day)} {alt_dt.strftime('%B')}",
+                "time_label": alt_dt.strftime("%H:%M"),
+                "type":       alt_appt.get("type", "appointment"),
+            })
+        if alternatives:
+            session["reschedule_appt_alternatives"] = alternatives
+
+        logger.info(
+            "_lookup_appointment_acuity: found id=%s at %s (total matches=%d)",
+            best_appt["id"], best_dt.isoformat(), len(future_matches),
+        )
+        return {
+            "found":            True,
+            "appointment_id":   str(best_appt["id"]),
+            "day_label":        day_label,
+            "time_label":       time_label,
+            "appointment_type": best_appt.get("type", "appointment"),
+            "multiple_found":   len(future_matches) > 1,
+            "alternatives":     alternatives,
+        }
+
+    except Exception as e:
+        logger.error("_lookup_appointment_acuity error: %r", e)
+        return {"found": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Acuity executor: cancel_appointment
 # ---------------------------------------------------------------------------
 
@@ -1663,6 +1834,46 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                     "Call collect_and_store(field='location', ...) first, then retry cancel_appointment."
                 ),
             }
+
+        # RC flow fast-path: if lookup_appointment already ran, use the cached appointment ID directly
+        cached_appt_id = session.get("reschedule_appt_id")
+        if cached_appt_id:
+            # Confirmation gate — caller must have said yes before we act
+            if not session.get("rc_appointment_confirmed"):
+                return {
+                    "success": False,
+                    "error": (
+                        "The appointment must be confirmed with the caller before cancelling. "
+                        "Ask the caller to confirm the appointment, then call confirm_appointment_found()."
+                    ),
+                }
+            appt_time_str = session.get("reschedule_appt_datetime", "")
+            appt_type     = session.get("reschedule_appt_type", "appointment")
+            # Clear RC session state
+            session.pop("reschedule_appt_id", None)
+            session.pop("reschedule_appt_alternatives", None)
+            session.pop("rc_appointment_confirmed", None)
+            session.pop("rc_stage", None)
+
+            success = await adapter.cancel_booking(cached_appt_id)
+            if not success:
+                return {"success": False, "error": "Cancellation failed. Please ask the caller to call the clinic directly."}
+            session["calendar_status"] = "cancelled"
+            if not args.get("_suppress_sms"):
+                try:
+                    from app.notifications.booking_sms import send_cancellation_confirmation
+                    if appt_time_str:
+                        dt = datetime.fromisoformat(appt_time_str)
+                        await send_cancellation_confirmation(
+                            patient_phone=args.get("phone", ""),
+                            patient_name=args.get("patient_name", ""),
+                            appointment_time=dt,
+                        )
+                except Exception as e:
+                    logger.warning("_cancel_appointment_acuity SMS (cached path) failed (non-fatal): %r", e)
+                session["confirmation_sms_sent"] = True
+            return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
+        # End RC fast-path — fall through to legacy name-search below
 
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
         today = datetime.now(LONDON_TZ).date()
@@ -1733,12 +1944,9 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
 
 async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """
-    reschedule_appointment via Acuity: cancel old appointment then book new one.
-    Requires args to include both patient_name/phone/location (for finding old)
-    and new_slot_iso/duration_minutes/service (for creating new).
+    Reschedule via Acuity: book new slot FIRST, then cancel old.
+    Booking first ensures the original appointment is never destroyed if the new slot fails.
     """
-    # LOCATION GUARD for theorem_v2: resolve location before cancel+rebook.
-    # Without this, cancel succeeds and book fails → appointment is lost with no new booking.
     if session.get("twilio_to") == "+447366530580":
         _early_location = _normalize_location(
             args.get("location") or session.get("selected_location", "")
@@ -1749,68 +1957,85 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
                 "error": (
                     "Location is required before rescheduling. "
                     "Ask: 'Which clinic is your appointment at — Alcester or Redditch?' "
-                    "Call collect_and_store(field='location', value='alcester' or 'redditch') first, "
-                    "then retry reschedule_appointment."
+                    "Call collect_and_store(field='location', value='alcester' or 'redditch') first."
                 ),
             }
 
-    # Step 1: cancel the existing appointment.
-    # Suppress the cancel SMS — we'll send a single reschedule confirmation below.
+    # Confirmation gate — if RC flow was used, require explicit caller confirmation
+    if session.get("reschedule_appt_id") and not session.get("rc_appointment_confirmed"):
+        return {
+            "success": False,
+            "error": (
+                "The appointment must be confirmed with the caller before rescheduling. "
+                "Call confirm_appointment_found() first."
+            ),
+        }
+
+    # Inject original appointment type so _book_appointment_acuity uses the correct Acuity type
+    original_type_id = session.get("reschedule_original_type_id")
+    if original_type_id and not session.get("_acuity_appointment_type_id"):
+        session["_acuity_appointment_type_id"] = original_type_id
+        logger.info(
+            "_reschedule_appointment_acuity: injecting original type_id=%s", original_type_id
+        )
+
+    # STEP 1: Book the new slot FIRST — original appointment untouched until this succeeds
+    book_args = {**args, "slot_iso": args["new_slot_iso"], "_suppress_sms": True}
+    book_result = await _book_appointment_acuity(book_args, session)
+
+    if not book_result.get("success"):
+        return {
+            "success": False,
+            "error": (
+                f"Could not secure the new slot: {book_result.get('error')} "
+                "Your original appointment is still active — please try a different time."
+            ),
+        }
+
+    # STEP 2: Cancel the original appointment (only now that new slot is confirmed)
     cancel_result = await _cancel_appointment_acuity(
         {**args, "_suppress_sms": True}, session
     )
     if not cancel_result.get("success"):
-        return {
-            "success": False,
-            "error": f"Could not locate original appointment: {cancel_result.get('error')}",
-        }
+        # New booking succeeded but cancel failed — log for clinic to manually clean up
+        logger.warning(
+            "_reschedule_appointment_acuity: new booking succeeded (id=%s) but old cancel failed: %s "
+            "— clinic must manually remove duplicate appointment",
+            book_result.get("acuity_booking_id"), cancel_result.get("error"),
+        )
 
-    # Step 2: book the new slot.
-    # Also suppress the booking SMS for the same reason.
-    book_args = {
-        **args,
-        "slot_iso": args["new_slot_iso"],  # map new_slot_iso → slot_iso for book executor
-        "_suppress_sms": True,
+    session["calendar_status"] = "rescheduled"
+
+    # STEP 3: Single reschedule confirmation SMS
+    try:
+        from app.notifications.booking_sms import send_reschedule_confirmation
+        location     = _normalize_location(args.get("location") or session.get("selected_location", ""))
+        old_time_str = (
+            cancel_result.get("was_at")
+            if cancel_result.get("success")
+            else session.get("reschedule_appt_datetime", "")
+        )
+        new_time = _resolve_slot_iso(args["new_slot_iso"], session)
+        if old_time_str:
+            old_time = datetime.fromisoformat(old_time_str.replace("Z", "+00:00"))
+            await send_reschedule_confirmation(
+                patient_phone=args.get("phone", ""),
+                patient_name=args.get("patient_name", ""),
+                old_time=old_time,
+                new_time=new_time,
+                location=location.title(),
+            )
+    except Exception as e:
+        logger.warning("_reschedule_appointment_acuity SMS failed (non-fatal): %r", e)
+
+    session["confirmation_sms_sent"] = True
+
+    return {
+        "success":           True,
+        "rescheduled_to":    book_result.get("booked_slot"),
+        "location":          book_result.get("location"),
+        "acuity_booking_id": book_result.get("acuity_booking_id"),
     }
-    book_result = await _book_appointment_acuity(book_args, session)
-
-    if book_result.get("success"):
-        session["calendar_status"] = "rescheduled"
-
-        # Send ONE reschedule confirmation SMS (cancel + booking SMS already suppressed above)
-        try:
-            from app.notifications.booking_sms import send_reschedule_confirmation
-            location = (args.get("location") or session.get("selected_location", "")).lower().strip()
-            old_time_str = cancel_result.get("was_at", "")
-            new_time = _resolve_slot_iso(args["new_slot_iso"], session)
-            if old_time_str:
-                old_time = datetime.fromisoformat(old_time_str.replace("Z", "+00:00"))
-                await send_reschedule_confirmation(
-                    patient_phone=args.get("phone", ""),
-                    patient_name=args.get("patient_name", ""),
-                    old_time=old_time,
-                    new_time=new_time,
-                    location=location.title(),
-                )
-        except Exception as e:
-            logger.warning("_reschedule_appointment_acuity SMS failed (non-fatal): %r", e)
-
-        session["confirmation_sms_sent"] = True
-
-        return {
-            "success": True,
-            "rescheduled_to": book_result.get("booked_slot"),
-            "location": book_result.get("location"),
-            "acuity_booking_id": book_result.get("acuity_booking_id"),
-        }
-    else:
-        return {
-            "success": False,
-            "error": (
-                f"Old appointment cancelled but new booking failed: {book_result.get('error')}. "
-                "Please ask the caller to call the clinic to complete rescheduling."
-            ),
-        }
 
 
 # ===========================================================================
@@ -2110,6 +2335,42 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         "event_id": event_id,
         "booked_slot": start_dt.strftime("%A %d %B at %H:%M"),
         "location": location.title(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Executor: lookup_appointment + confirm_appointment_found
+# ---------------------------------------------------------------------------
+
+async def _exec_lookup_appointment(
+    args: Dict[str, Any], session: Dict[str, Any]
+) -> Dict[str, Any]:
+    if _resolve_clinic_id(session) in ("theorem", "theorem_v2"):
+        return await _lookup_appointment_acuity(args, session)
+    return {"found": False, "error": "Appointment lookup not supported for this clinic type."}
+
+
+async def _exec_confirm_appointment_found(
+    args: Dict[str, Any], session: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Stage gate: caller has verbally confirmed the found appointment is theirs.
+    Requires rc_stage == 'lookup_done' — enforces that lookup_appointment ran first.
+    Advances rc_stage to 'confirmed' so cancel/reschedule tools are unlocked.
+    """
+    if session.get("rc_stage") != "lookup_done":
+        return {
+            "error": (
+                "No pending appointment lookup. Call lookup_appointment first, "
+                "present the result to the caller, then call this tool when they confirm."
+            )
+        }
+    session["rc_appointment_confirmed"] = True
+    session["rc_stage"] = "confirmed"
+    return {
+        "confirmed":        True,
+        "appointment_id":   session.get("reschedule_appt_id"),
+        "appointment_type": session.get("reschedule_appt_type", "appointment"),
     }
 
 
@@ -2719,15 +2980,17 @@ def _iso_now() -> str:
 
 
 TOOL_EXECUTORS: Dict[str, Any] = {
-    "check_availability":     _exec_check_availability,
-    "book_appointment":       _exec_book_appointment,
-    "cancel_appointment":     _exec_cancel_appointment,
-    "reschedule_appointment": _exec_reschedule_appointment,
-    "get_clinic_info":        _exec_get_clinic_info,
-    "collect_and_store":      _exec_collect_and_store,
-    "transfer_to_human":      _exec_transfer_to_human,
-    "send_followup_sms":      _exec_send_followup_sms,
-    "log_call_outcome":       _exec_log_call_outcome,
-    "get_patient_history":    _exec_get_patient_history,
-    "add_to_waitlist":        _exec_add_to_waitlist,
+    "check_availability":       _exec_check_availability,
+    "book_appointment":         _exec_book_appointment,
+    "cancel_appointment":       _exec_cancel_appointment,
+    "reschedule_appointment":   _exec_reschedule_appointment,
+    "lookup_appointment":       _exec_lookup_appointment,
+    "confirm_appointment_found": _exec_confirm_appointment_found,
+    "get_clinic_info":          _exec_get_clinic_info,
+    "collect_and_store":        _exec_collect_and_store,
+    "transfer_to_human":        _exec_transfer_to_human,
+    "send_followup_sms":        _exec_send_followup_sms,
+    "log_call_outcome":         _exec_log_call_outcome,
+    "get_patient_history":      _exec_get_patient_history,
+    "add_to_waitlist":          _exec_add_to_waitlist,
 }

@@ -3257,6 +3257,37 @@ class FlowEngine:
         if step["state"] == "CONFIRM_ASSESSMENT":
             _ca_class = _classify_confirm_assessment(text)
             logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
+            # ── CONFIRM_ASSESSMENT: step-adjacent inquiry intercept ──────────
+            # Runs BEFORE class-based branching so it cannot be shadowed by the
+            # "clarification" catch-all in _classify_confirm_assessment.
+            # Questions like "what exactly happens in that physiotherapy assessment?"
+            # get a short canned answer + re-ask, NOT a replay of the recommendation.
+            _CA_INQUIRY_PHRASES = (
+                "what happens",          # "what happens in that assessment"
+                "what exactly happens",  # "what exactly happens in that physiotherapy assessment"
+                "what does that involve",
+                "what is that assessment",
+                "what will happen",
+                "what's involved",
+                "what does the assessment",
+                "tell me more about",
+                "what do you do in",
+                "what do they do in",
+                "what goes on",
+            )
+            if any(_p in text for _p in _CA_INQUIRY_PHRASES):
+                _ca_info = (
+                    "It's an initial appointment where the clinician talks through what's been "
+                    "going on, assesses the issue, and recommends the best next step from there."
+                )
+                _ca_recap = "Does that sound okay?"
+                await self._tts.put(_ca_info)
+                await self._tts.put(_ca_recap)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ca_info}
+                )
+                # Do NOT update last_question — the real question remains intact
+                return
             if _ca_class in ("yes", "additive_detail"):
                 self.session["assessment_confirmed"] = True
                 self.session["flow_step"]            = step["step"] + 1
@@ -3284,28 +3315,6 @@ class FlowEngine:
                 )
                 self.session["flow_step"] = 0
                 self.session["state"] = "COLLECT_REASON"
-                return
-            # ── CONFIRM_ASSESSMENT: step-adjacent inquiry intercept ──────────
-            # Questions like "what happens in that assessment?" should get a
-            # short canned answer + re-ask, NOT a replay of the recommendation.
-            _CA_INQUIRY_PHRASES = (
-                "what happens", "what does that involve", "what is that assessment",
-                "what exactly happens", "what will happen", "what's involved",
-                "what does the assessment", "tell me more about",
-                "what do you do", "what do they do",
-            )
-            if any(_p in text for _p in _CA_INQUIRY_PHRASES):
-                _ca_info = (
-                    "It's an initial appointment where the clinician talks through what's been "
-                    "going on, assesses the issue, and recommends the best next step from there."
-                )
-                _ca_recap = "Does that sound okay?"
-                await self._tts.put(_ca_info)
-                await self._tts.put(_ca_recap)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _ca_info}
-                )
-                # Do NOT update last_question — the real question remains intact
                 return
             # clarification / frustration / unknown — replay the FULL recommendation,
             # not just the tail "Does that sound okay?" question.
@@ -3711,6 +3720,21 @@ class FlowEngine:
                     p in text for p in ("middle one", "the middle one", "the middle", "middle")
                 ):
                     _ord_idx = 1  # middle of offered days = index 1
+            # Mixed-intent guard: if the utterance contains an ordinal token AND
+            # inquiry/question language, skip the bind entirely and let the turn
+            # fall through to the existing inquiry / retry path.
+            if _ord_idx is not None:
+                _PD_MIXED_MARKERS = (
+                    "are you open", "open on saturday", "open on sunday", "open on",
+                    "do you have parking", "is there parking",
+                    "how long", "what time", "do you have", "can you do", "are there any",
+                )
+                if any(m in text for m in _PD_MIXED_MARKERS):
+                    logger.info(
+                        "[ms_flow] PRESENT_DAYS: mixed ordinal+inquiry detected — skipping bind (raw=%r)",
+                        transcript[:60],
+                    )
+                    _ord_idx = None  # fall through to inquiry / retry
             if _ord_idx is not None:
                 _norm_ord = _avail_ord[_ord_idx]["day_label"]
                 self.session["chosen_day"] = _norm_ord
