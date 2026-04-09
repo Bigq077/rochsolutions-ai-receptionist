@@ -959,7 +959,7 @@ def _format_phone_readback(digits: str) -> str:
     UK landline (10 digits): similar grouping
     Other lengths: space every digit with a pause between groups of 3-4.
     """
-    # Spell each digit with a space, groups separated by " ... "
+    # Spell each digit with a space, groups separated by ", " for natural TTS pausing.
     if len(digits) == 11:
         groups = [digits[:5], digits[5:8], digits[8:]]
     elif len(digits) == 10:
@@ -967,7 +967,7 @@ def _format_phone_readback(digits: str) -> str:
     else:
         # Generic: chunks of ~4
         groups = [digits[i:i+4] for i in range(0, len(digits), 4)]
-    return " ... ".join(" ".join(g) for g in groups)
+    return ", ".join(" ".join(g) for g in groups)
 
 
 # ---------------------------------------------------------------------------
@@ -3864,10 +3864,15 @@ class FlowEngine:
             # dedicated blocks below — must NOT collapse into a generic YES here.
             # "yeah monday 10th" contains "yeah" (YES) and "monday" (weekday) —
             # weekday guard prevents it from mapping to day[0].
+            # Date-ordinal guard: "the 21st works for me" must NOT bind to day[0] —
+            # specific calendar dates should fall through to the date matcher.
             _ORDINAL_SKIP = {"first", "second", "third", "last", "final", "middle"}
+            import re as _re_dordn
+            _has_date_ordinal = bool(_re_dordn.search(r'\b\d{1,2}(?:st|nd|rd|th)\b', text))
             _pd_yes = (
                 not any(w in _ORDINAL_SKIP for w in text.split())
                 and not any(w in _WEEKDAY_WORDS for w in text.split())
+                and not _has_date_ordinal
                 and any(p in text for p in _PD_YES)
             )
             logger.info(
@@ -4025,12 +4030,30 @@ class FlowEngine:
                     _matched_nm["day_label"], transcript[:40],
                 )
             else:
-                # No day match and not a YES — hand to Haiku with available days
-                # context so it can handle "what's the earliest?", "anything next
-                # week?", "do you have mornings?" etc. without a verbatim re-ask.
+                # No day match and not a YES — check for common weekend inquiry first,
+                # then hand to Haiku for everything else.
                 _day_labels_nm = [
                     d.get("day_label", "") for d in _avail_nm[:6] if d.get("day_label")
                 ]
+                # Deterministic weekend-hours answer — the clinic is weekday-only.
+                _WEEKEND_Q = ("saturday", "sunday", "weekend", "weekends", "saturdays", "sundays")
+                if any(w in text for w in _WEEKEND_Q):
+                    _wknd_anchor = self.session.get(
+                        "last_question",
+                        "Which of the days I mentioned would work best for you?",
+                    )
+                    _wknd_msg = (
+                        "We offer weekday appointments only — Monday through Friday. "
+                        + _wknd_anchor
+                    )
+                    await self._tts.put(_wknd_msg)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _wknd_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] PRESENT_DAYS: weekend inquiry answered deterministically",
+                    )
+                    return
                 logger.info(
                     "[ms_flow] %s: no day match for %r → Haiku with day context",
                     step["state"], transcript[:40],

@@ -281,7 +281,11 @@ class SilenceHandler:
             "[ms_silence] recovery: STT miss #%d detected — prompting caller directly",
             self._stt_miss_count,
         )
-        phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
+        _sess = self._get_session() if self._get_session else {}
+        if _sess and _sess.get("phone_awaiting_dtmf"):
+            phrase = "Please type your number on the keypad now."
+        else:
+            phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
         await self._tts_text_queue.put(phrase)
         self._restart_timer()
 
