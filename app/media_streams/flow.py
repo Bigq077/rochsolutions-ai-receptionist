@@ -43,6 +43,42 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# ── FAQ fast-path for services (Bug 1) ─────────────────────────────────────
+# Spoken deterministically instead of calling the LLM — avoids long service lists.
+_FAQ_SERVICES_FAST = (
+    "We mainly offer physiotherapy assessments and follow-ups, plus services like "
+    "acupuncture, shockwave and laser therapy. "
+    "Was there one in particular you wanted to ask about, "
+    "or do you want me to give you the full list of services we offer?"
+)
+
+# ── Global repair-intent phrases (Bug 4) ────────────────────────────────────
+# Checked at the top of handle_transcript before ALL other logic.
+_GLOBAL_REPAIR_PHRASES = (
+    "not why i asked", "not that question", "wrong question",
+    "go back to the last question", "go back to the last", "go back to",
+    "i messed up", "i misheard", "my question is for",
+    "stop stop", "no no stop", "not for alcester", "not for redditch",
+    "not for our", "not for the",
+)
+
+# ── Fragment suppression (Bug 9) ────────────────────────────────────────────
+# Single words / short phrases that must never drive a full response.
+_FRAGMENT_STRONG_INTENTS = frozenset({
+    "yes", "yeah", "yep", "yup", "no", "nope", "nah",
+    "one", "two", "1", "2", "first", "second",
+    "alcester", "redditch", "alchester", "reddit",
+    "reschedule", "cancel", "book", "new", "returning", "recently",
+    "stop",
+})
+# Explicit noise tokens that must never drive a response regardless of context
+_FRAGMENT_BLOCKLIST = frozenset({
+    "please", "question", "ic", "and", "so", "the", "a", "i",
+    "you know", "like", "just", "right", "alright", "okay then",
+    "so if", "so if i", "if i", "clinic",
+    "thank you", "thanks",
+})
+
 # Spoken when Claude API fails during CONFIRM_ASSESSMENT — gives a useful
 # recommendation instead of a generic "blip" error phrase.
 _CONFIRM_ASSESSMENT_API_FALLBACK = (
@@ -812,7 +848,16 @@ def _classify_confirm_assessment(text: str) -> str:
         "that's my", "that is my",
     )
     if any(p in text for p in _YES):
-        # Guard: don't classify as yes if the sentence expresses frustration/objection
+        # Guard 1: negation before/around a YES keyword classifies as NO, not YES.
+        # "no that doesn't sound okay" → contains "sounds okay" but leading negation wins.
+        _NEGATION_GUARD = (
+            "no ", "not ", "doesn't ", "don't ", "won't ", "isn't ", "can't ",
+            "that doesn't", "that's not", "that is not", "doesn't sound",
+            "not okay", "not fine", "not good", "not right",
+        )
+        if any(n in text for n in _NEGATION_GUARD):
+            return "no"
+        # Guard 2: don't classify as yes if the sentence expresses frustration/objection
         _FRUSTRATION_GUARD = (
             "not going to repeat", "not gonna repeat",
             "already said", "said it already", "said that already",
@@ -1404,16 +1449,17 @@ FAQ_FLOW: List[Dict[str, Any]] = [
         "allow_tools": False,   # All FAQ info is in the system prompt — no tool call needed
         "llm_instruction": (
             "The caller asked about {faq_topic}. "
-            "Answer DIRECTLY from the clinic information in your system prompt — "
-            "do NOT ask any clarifying questions, do NOT ask what they want to know. "
-            "If {faq_topic} is 'services': respond with exactly this preamble first: "
-            "'Absolutely, I can help you with that! Here are our services:' "
-            "then read out the service names ONLY — nothing else. "
-            "STRICT: do NOT mention any price, cost, fee, surcharge, duration, "
-            "or appointment length. Names only. "
-            "Do NOT use any markdown formatting — no asterisks, no hyphens, no bullet symbols. "
-            "Speak naturally as if on a phone call. "
-            "After the list, ask: 'Is there anything else I can help you with?'"
+            "Answer DIRECTLY from the clinic information in your system prompt. "
+            "STRICT LENGTH: 1–2 sentences maximum — no bullet points, no lists, no markdown. "
+            "Speak naturally as if on a phone call.\n"
+            "If {faq_topic} is 'prices' or 'faq_prices': "
+            "check if the caller's most recent message named a specific service. "
+            "If yes, give ONLY that service's price and duration in one sentence. "
+            "If no specific service was named, say: "
+            "'Our sessions start from £75 for a physiotherapy assessment. "
+            "Was there a particular service you wanted the price for?'\n"
+            "Do NOT end with 'Is there anything else I can help you with?' — "
+            "the system handles follow-up automatically."
         ),
         "extract": "none",
     },
@@ -2005,6 +2051,10 @@ class FlowEngine:
                 if step["state"] == "CONFIRM_ASSESSMENT"
                 else None
             )
+            # ANSWER_FAQ/services: deterministic short summary (Bug 1).
+            # Skips the LLM entirely — avoids long service list readouts.
+            if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("services", "faq_services"):
+                _fast_r = _FAQ_SERVICES_FAST
             if step["state"] == "CONFIRM_ASSESSMENT" and not _fast_r:
                 response = await self._llm(
                     instruction,
@@ -2288,6 +2338,42 @@ class FlowEngine:
         )
 
         text = transcript.strip().lower()
+
+        # ── GLOBAL REPAIR INTERCEPT (Bug 4 — HARD REQUIREMENT) ──────────────────
+        # Runs before ALL state machine logic.
+        # If repair/correction language detected: stop current output lineage,
+        # reply with one short repair line, return.  Do NOT ask a classifier question.
+        _is_repair = any(p in text for p in _GLOBAL_REPAIR_PHRASES)
+        # Bare "stop" or "wrong" alone (≤ 2 words) also count as repair.
+        if not _is_repair:
+            _rw = text.strip().split()
+            if len(_rw) <= 2 and _rw and _rw[0] in ("stop", "wrong"):
+                _is_repair = True
+        if _is_repair:
+            _repair_line = "Sorry about that — what was your inquiry?"
+            await self._tts.put(_repair_line)
+            self.session["last_question"] = "What was your inquiry?"
+            self.session["repair_requested"] = True
+            logger.info("[ms_flow] global repair intercept: %r", transcript[:60])
+            return
+
+        # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
+        # Very short / noisy transcripts must not drive a full response.
+        # Suppress if: in explicit blocklist, OR ≤ 6 chars with no strong intent.
+        _frag_words = text.strip().split()
+        _frag_text  = text.strip()
+        _is_fragment = (
+            _frag_text in _FRAGMENT_BLOCKLIST
+            or (
+                len(_frag_words) <= 2
+                and len(_frag_text) <= 6
+                and not any(s in _frag_text for s in _FRAGMENT_STRONG_INTENTS)
+            )
+        )
+        if _is_fragment:
+            logger.info("[ms_flow] global fragment suppressed: %r", transcript[:30])
+            self.session["fragment_suppressed"] = True
+            return
 
         # ── TEST TRACE ──────────────────────────────────────────────────────────
         handled_by: str | None = None
@@ -5153,18 +5239,46 @@ class FlowEngine:
 
         # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
         if step["state"] == "FAQ_BOOKING_OFFER":
-            # Allow follow-up informational questions instead of forcing yes/no.
-            # Detect service or general queries and answer them via mid-flow interrupt,
-            # which re-asks the booking offer afterwards.
             _fbo_intent = self._detect_intent(text)
+
+            # Bug 8: reschedule/cancel must hard-route immediately — never fall
+            # through to booking logic or FAQ follow-up answering.
+            if _fbo_intent == "reschedule":
+                self._switch_flow("reschedule")
+                await self.ask_current_question()
+                return
+            if _fbo_intent == "cancel":
+                self._switch_flow("cancel")
+                await self.ask_current_question()
+                return
+
+            # Bug 3: FAQ follow-up is non-sticky — allow at most 1 follow-up
+            # question before re-evaluating intent fresh.
+            _fbo_count = self.session.get("faq_follow_up_count", 0)
             if _fbo_intent in {"faq_services", "faq_prices", "faq_hours",
                                "faq_location", "faq_insurance", "general_query"}:
-                logger.info(
-                    "[ms_flow] FAQ_BOOKING_OFFER: follow-up %s question — answering before re-offer",
-                    _fbo_intent,
-                )
-                await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
-                return
+                if _fbo_count < 1:
+                    self.session["faq_follow_up_count"] = _fbo_count + 1
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: follow-up %s (count=%d) — answering",
+                        _fbo_intent, _fbo_count + 1,
+                    )
+                    await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
+                    return
+                else:
+                    # Second consecutive FAQ question — exit follow-up loop,
+                    # switch to a fresh booking offer rather than nesting deeper.
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: follow-up limit reached — "
+                        "re-evaluating as fresh booking intent"
+                    )
+                    self.session["faq_follow_up_count"] = 0
+                    self._switch_flow("booking")
+                    await self.ask_current_question()
+                    return
+
+            # Reset follow-up count on any non-FAQ answer
+            self.session["faq_follow_up_count"] = 0
 
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":

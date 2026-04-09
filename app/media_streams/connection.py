@@ -267,6 +267,12 @@ class SilenceHandler:
         # Only act if we're still waiting (no transcript, no TTS running)
         if self._llm_busy or not (self._task is None or self._task.done()):
             return
+        # Bug 6: do not fire while caller is still actively speaking.
+        # If a partial transcript or audio energy arrived in the last 2 seconds,
+        # the caller has not finished — suppress and let them complete.
+        if time.time() - self.last_audio_received_at < 2.0:
+            logger.debug("[ms_silence] recovery: recent speech (<2s) — suppressing prompt")
+            return
         self._stt_miss_count += 1
         # FIX F: Cap speech recovery prompts at 2 per question.  Previously
         # the miss count was reset to 0 before every prompt, so the "Sorry —
@@ -321,6 +327,15 @@ class SilenceHandler:
     def on_llm_finished(self) -> None:
         """Called when the LLM finishes processing — allow silence timer again."""
         self._llm_busy = False
+
+    def restart_for_question(self, question: str) -> None:
+        """Re-arm the silence timer after fragment suppression (Bug 9 / Bug 6).
+        Ensures the silence handler keeps waiting for a real utterance instead
+        of going permanently silent when a fragment was discarded."""
+        if question and question.strip():
+            self.last_question = question.strip()
+        self._restart_timer()
+        logger.info("[ms_silence] restart_for_question: %r", (self.last_question or "")[:60])
 
     def on_tts_finished(self, text: str) -> None:
         """After a flow question finishes playing, arm the silence timer.
@@ -1392,6 +1407,21 @@ class WebSocketCallHandler:
                     self._llm_busy                        = False
                     self._silence_handler.on_llm_finished()
                     self.session["llm_generation_active"] = False
+                    # Bug 5: drain pending TTS if a repair was detected this turn
+                    # so old LLM output doesn't play after the repair phrase.
+                    if self.session.pop("repair_requested", False):
+                        while not self.tts_text_queue.empty():
+                            try:
+                                self.tts_text_queue.get_nowait()
+                            except Exception:
+                                break
+                        logger.info("[ms_conn] repair_requested: TTS queue drained")
+                    # Bug 9: restart silence timer after fragment suppression
+                    # so the call doesn't go permanently silent.
+                    if self.session.pop("fragment_suppressed", False):
+                        _frag_lq = self.session.get("last_question", "")
+                        if _frag_lq:
+                            self._silence_handler.restart_for_question(_frag_lq)
                     await save_session(self.call_sid, self.session)
 
         except asyncio.CancelledError:
