@@ -666,6 +666,57 @@ _CONFIRM_ASSESSMENT_INDEX: int = next(
 )
 
 
+# ── CONFIRM_ASSESSMENT: deterministic fast-path empathy map ──────────────────
+# Covers the vast majority of real booking reasons — avoids LLM call and the
+# associated latency (retries / GPT-fallback) for common conditions.
+_CA_FAST_MAP = (
+    (("back pain", "back ache", "backache", "lower back", "back injury", "lumbar", "spine", "my back"),
+     "Sorry to hear you're dealing with back pain — that can really get in the way of daily life."),
+    (("knee pain", "knee injury", "knee problem", "my knee", "knee ache"),
+     "Sorry to hear about your knee — that kind of pain can really limit your mobility."),
+    (("shoulder pain", "shoulder injury", "my shoulder", "rotator"),
+     "Sorry to hear about your shoulder — that can be quite uncomfortable to live with."),
+    (("neck pain", "neck injury", "my neck", "stiff neck", "cervical"),
+     "Sorry to hear you're having neck trouble — that can really affect daily life."),
+    (("hip pain", "hip injury", "my hip", "hip replacement"),
+     "Sorry to hear about your hip — that can make a lot of everyday movement harder."),
+    (("ankle pain", "ankle injury", "my ankle", "ankle sprain", "sprained ankle"),
+     "Sorry to hear about your ankle — that can really slow you down."),
+    (("foot pain", "heel pain", "my foot", "my heel", "plantar"),
+     "Sorry to hear about your foot — that can be really limiting."),
+    (("wrist pain", "wrist injury", "my wrist", "wrist strain"),
+     "Sorry to hear about your wrist — that can make a lot of daily tasks tricky."),
+    (("elbow pain", "tennis elbow", "golfer's elbow", "my elbow"),
+     "Sorry to hear about your elbow — that can be quite debilitating."),
+    (("leg pain", "calf pain", "shin pain", "hamstring", "my leg", "quad"),
+     "Sorry to hear about your leg — that can really impact getting around."),
+    (("sports injury", "running injury", "football injury", "cycling", "gym injury"),
+     "Sorry to hear about your sports injury — those can be really frustrating."),
+    (("headache", "migraine", "head pain"),
+     "Sorry to hear you're dealing with headaches — those can really take over."),
+    (("physio", "physiotherapy", "assessment", "pain"),
+     "Sorry to hear you're having some trouble — that can really affect your day-to-day."),
+)
+_CA_FAST_SUFFIX = (
+    " — I would probably recommend a physiotherapy assessment "
+    "as the best starting point. Does that sound okay?"
+)
+
+
+def _fast_assessment_response(reason: str) -> Optional[str]:
+    """Return a deterministic assessment recommendation for common conditions.
+
+    Returns the full response string (empathy + recommendation + sign-off) if
+    the reason matches a known condition, otherwise None (caller falls through
+    to the LLM path).
+    """
+    _r = reason.lower()
+    for keywords, empathy in _CA_FAST_MAP:
+        if any(k in _r for k in keywords):
+            return empathy + _CA_FAST_SUFFIX
+    return None
+
+
 def _classify_confirm_assessment(text: str) -> str:
     """
     Deterministically classify an utterance at CONFIRM_ASSESSMENT.
@@ -1113,6 +1164,36 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 3,
+        "state": "LOOKUP_RESCHEDULE",
+        "question": None,  # LLM speaks after calling lookup_appointment
+        "answer_field": "rc_appointment_confirmed",
+        "use_llm": True,
+        "allow_tools": True,
+        "extract": "none",
+        "llm_instruction": (
+            "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
+            "Parse full_name='{full_name}' into first_name / last_name (split on the first space).\n\n"
+            "TURN 1 — Lookup:\n"
+            "  Say: 'Okay, that's noted. I'm looking for your appointment now.'\n"
+            "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
+            "phone='{phone_number}', location='{selected_location}').\n"
+            "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
+            "  If found=false: say 'I couldn\\'t find a future booking under those details. "
+            "Could you double-check the name and the number you used when you booked?'\n\n"
+            "TURN 2+ — Confirm:\n"
+            "  Caller says YES → call confirm_appointment_found(). "
+            "Then say 'Perfect — let me find some new times for you.'\n"
+            "  Caller says NO + multiple_found=true → offer first alternative: "
+            "'Could it be on [alt.day_label] at [alt.time_label]?'\n"
+            "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
+            "Could you call the clinic directly and they\\'ll sort it out for you?' "
+            "Then call log_call_outcome(outcome='transferred').\n"
+            "  After a lookup failure the caller may give corrected details — re-call lookup_appointment "
+            "with the new first_name/last_name/phone and restart this flow.\n"
+        ),
+    },
+    {
+        "step": 4,
         "state": "PRESENT_DAYS_RESCHEDULE",
         "question": "Just a moment while I check which days and times we have available for you...",
         "answer_field": "chosen_day",
@@ -1133,7 +1214,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 4,
+        "step": 5,
         "state": "PRESENT_TIMES_RESCHEDULE",
         "question": None,
         "answer_field": "selected_slot",
@@ -1168,7 +1249,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 5,
+        "step": 6,
         "state": "CONFIRM_RESCHEDULE",
         "question": None,
         "answer_field": "reschedule_confirmed",
@@ -1195,6 +1276,9 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
 # that previously hard-coded BOOKING_FLOW indices and broke RESCHEDULE calls.
 _RESCHEDULE_COLLECT_PHONE_INDEX: int = next(
     i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "COLLECT_PHONE"
+)
+_RESCHEDULE_LOOKUP_INDEX: int = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "LOOKUP_RESCHEDULE"
 )
 _RESCHEDULE_PRESENT_DAYS_INDEX: int = next(
     i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "PRESENT_DAYS_RESCHEDULE"
@@ -1232,6 +1316,36 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 3,
+        "state": "LOOKUP_CANCEL",
+        "question": None,  # LLM speaks after calling lookup_appointment
+        "answer_field": "rc_appointment_confirmed",
+        "use_llm": True,
+        "allow_tools": True,
+        "extract": "none",
+        "llm_instruction": (
+            "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
+            "Parse full_name='{full_name}' into first_name / last_name (split on the first space).\n\n"
+            "TURN 1 — Lookup:\n"
+            "  Say: 'Okay, that's noted. I'm looking for your appointment now.'\n"
+            "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
+            "phone='{phone_number}', location='{selected_location}').\n"
+            "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
+            "  If found=false: say 'I couldn\\'t find a future booking under those details. "
+            "Could you double-check the name and the number you used when you booked?'\n\n"
+            "TURN 2+ — Confirm:\n"
+            "  Caller says YES → call confirm_appointment_found(). "
+            "Then say 'I\\'ll get that cancelled for you now.'\n"
+            "  Caller says NO + multiple_found=true → offer first alternative: "
+            "'Could it be on [alt.day_label] at [alt.time_label]?'\n"
+            "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
+            "Could you call the clinic directly and they\\'ll sort it out for you?' "
+            "Then call log_call_outcome(outcome='transferred').\n"
+            "  After a lookup failure the caller may give corrected details — re-call lookup_appointment "
+            "with the new first_name/last_name/phone and restart this flow.\n"
+        ),
+    },
+    {
+        "step": 4,
         "state": "CONFIRM_CANCEL",
         "question": None,
         "answer_field": "cancel_confirmed",
@@ -1257,6 +1371,9 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
 # Array indices within CANCEL_FLOW — parallel to _CONFIRM_BOOKING_INDEX /
 # _COLLECT_PHONE_INDEX for BOOKING_FLOW.  Used by phone-accept/reject handlers
 # that would otherwise hard-code BOOKING_FLOW indices and break cancel calls.
+_CANCEL_LOOKUP_INDEX: int = next(
+    i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "LOOKUP_CANCEL"
+)
 _CONFIRM_CANCEL_INDEX: int = next(
     i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "CONFIRM_CANCEL"
 )
@@ -1859,7 +1976,15 @@ class FlowEngine:
                 instruction = step["llm_instruction"] or ""
             self.session["question_asked_this_turn"] = True
             _allow_tools = step.get("allow_tools", True)
-            response = await self._llm(instruction, allow_tools=_allow_tools)
+            # CONFIRM_ASSESSMENT: deterministic fast path for common conditions.
+            # Skips the LLM call (and its retry/fallback latency) when the reason
+            # matches a known condition category.
+            _fast_r = (
+                _fast_assessment_response(format_args.get("reason", ""))
+                if step["state"] == "CONFIRM_ASSESSMENT"
+                else None
+            )
+            response = _fast_r if _fast_r else await self._llm(instruction, allow_tools=_allow_tools)
             # Store full CONFIRM_ASSESSMENT phrase for clarification replay
             if step["state"] == "CONFIRM_ASSESSMENT" and response:
                 self.session["confirm_assessment_phrase"] = response
@@ -1900,6 +2025,20 @@ class FlowEngine:
                 self.session["flow_step"] = step["step"] + 1
                 logger.info("[ms_flow] LOOKUP_TREATMENT_PLAN complete — advancing to PRESENT_DAYS")
                 await self.ask_current_question()
+                return
+            # LOOKUP_RESCHEDULE / LOOKUP_CANCEL: advance to the next step only once
+            # the caller has verbally confirmed and confirm_appointment_found() has been
+            # called (which sets rc_appointment_confirmed=True in session).
+            # If not yet confirmed, stay on this step so the next caller utterance
+            # loops back through the LLM for the confirmation exchange.
+            if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+                if self.session.get("rc_appointment_confirmed"):
+                    self.session["flow_step"] = step["step"] + 1
+                    logger.info(
+                        "[ms_flow] %s confirmed — advancing to step %d",
+                        step["state"], step["step"] + 1,
+                    )
+                    await self.ask_current_question()
                 return
             # After check_availability runs (inside _llm), save slots_offered so
             # the slot confirmation phrase can reference the full slot text strings.
@@ -2190,9 +2329,23 @@ class FlowEngine:
                 _loc_frozen_q = self.session.get(
                     "last_question",
                     "Which clinic would you like — Alcester or Redditch? "
-                    "Say one for Alcester or two for Redditch.",
+                    "Press 1 for Alcester or 2 for Redditch.",
                 )
                 if await self._maybe_answer_inquiry(transcript, "ASK_LOCATION", _loc_frozen_q):
+                    return
+                # Fragment guard: very short / garbled turns don't consume a retry
+                # slot or speak any prompt — silence handler deals with true silence.
+                _loc_words = text.split()
+                if len(_loc_words) < 2 and not any(
+                    p in text for p in (
+                        "alcester", "redditch", "1", "2", "one", "two",
+                        "first", "second", "alchester", "reddit",
+                    )
+                ):
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: sub-threshold fragment %r — suppressed",
+                        text[:30],
+                    )
                     return
                 _retry_count = self.session.get("location_retry_count", 0) + 1
                 self.session["location_retry_count"] = _retry_count
@@ -2202,9 +2355,8 @@ class FlowEngine:
                 )
                 if _retry_count == 1:
                     _retry = (
-                        "Sorry, I didn't quite catch that — "
-                        "which clinic would you prefer, Alcester or Redditch? "
-                        "You can also say one for Alcester or two for Redditch."
+                        "Which clinic would you like — Alcester or Redditch? "
+                        "You can say it, or press 1 for Alcester and 2 for Redditch."
                     )
                 elif _retry_count >= 3:
                     _retry = (
@@ -2221,7 +2373,10 @@ class FlowEngine:
                     self.session["needs_location"]   = False
                     return
                 else:
-                    _retry = "Which clinic would you like — Alcester or Redditch? Say one for Alcester or two for Redditch."
+                    _retry = (
+                        "Which clinic would you like — Alcester or Redditch? "
+                        "Press 1 for Alcester or 2 for Redditch."
+                    )
                 await self._tts.put(_retry)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _retry}
@@ -2620,13 +2775,13 @@ class FlowEngine:
                     self.session.setdefault("collected", {})["phone"] = _cp_confirmed
                 self.session.pop("phone_candidate", None)
                 if self._active_flow is RESCHEDULE_FLOW:
-                    self.session["flow_step"]  = _RESCHEDULE_PRESENT_DAYS_INDEX
-                    self.session["state"]      = "PRESENT_DAYS_RESCHEDULE"
-                    self.session["flow_state"] = "PRESENT_DAYS_RESCHEDULE"
+                    self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
+                    self.session["state"]      = "LOOKUP_RESCHEDULE"
+                    self.session["flow_state"] = "LOOKUP_RESCHEDULE"
                 elif self._active_flow is CANCEL_FLOW:
-                    self.session["flow_step"]  = _CONFIRM_CANCEL_INDEX
-                    self.session["state"]      = "CONFIRM_CANCEL"
-                    self.session["flow_state"] = "CONFIRM_CANCEL"
+                    self.session["flow_step"]  = _CANCEL_LOOKUP_INDEX
+                    self.session["state"]      = "LOOKUP_CANCEL"
+                    self.session["flow_state"] = "LOOKUP_CANCEL"
                 else:
                     self.session["state"]      = "CONFIRM_BOOKING"
                     self.session["flow_state"] = "CONFIRM_BOOKING"
@@ -4998,6 +5153,24 @@ class FlowEngine:
                 )
                 return
 
+        # ── LOOKUP_RESCHEDULE / LOOKUP_CANCEL: re-fire LLM on every caller turn ──
+        # These steps are multi-turn LLM interactions:
+        #   Turn 1 (ask_current_question): LLM calls lookup_appointment, reads back result.
+        #   Turn 2+ (handle_transcript):   Caller says "yes/no"; LLM calls
+        #                                  confirm_appointment_found when confirmed.
+        # Advance only happens in ask_current_question AFTER the LLM sets
+        # rc_appointment_confirmed=True.  We MUST NOT use generic extraction here —
+        # _extract("none") returns True which would silently advance to the next step
+        # without the LLM ever calling confirm_appointment_found.
+        if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            # transcript already appended to conversation_history above
+            logger.info(
+                "[ms_flow] %s: caller turn %r — re-firing LLM for confirmation exchange",
+                step["state"], transcript[:60],
+            )
+            await self.ask_current_question()
+            return
+
         # ── CONFIRM_BOOKING: dedicated YES handler ─────────────────────────────
         # Runs BEFORE generic extraction so the caller's response never falls
         # through to _start_readback().  Any input at this step is treated as
@@ -5247,31 +5420,132 @@ class FlowEngine:
                 return
             _frag = self.session.get("name_fragment")
             if _frag:
-                # Guard: reject if transcript mixes surname with a question/clarification
-                _SURNAME_NOISE_PHRASES = (
-                    "do you need", "need help", "help spelling", "help me spell",
-                    "is that right", "is that correct", "did i say",
-                    "can you spell", "spell that", "how do you spell",
-                )
-                if any(phrase in (text or "").lower() for phrase in _SURNAME_NOISE_PHRASES):
-                    # Keep name_fragment (first name) intact — do NOT pop it
-                    _sn_re = "And what's your surname?"
-                    # Suppression: don't fire duplicate TTS if already the active question
-                    if self.session.get("last_question") != _sn_re:
-                        await self._tts.put(_sn_re)
-                        self.session["last_question"] = _sn_re
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _sn_re}
-                        )
-                    logger.info(
-                        "[ms_flow] COLLECT_NAME: mixed-content surname rejected %r — re-asking",
-                        (text or "")[:60],
+                # ── SPELLING-CONFIRM substate ────────────────────────────────
+                # Active when a previous turn entered the substate by extracting a
+                # surname candidate from a mixed utterance (e.g. "rook do you need
+                # help spelling that?").  Next turn must either accept or spell.
+                _sc_sn = self.session.get("spelling_confirm_surname")
+                _spelling_resolved = False
+                if _sc_sn:
+                    _ACCEPT_SC = (
+                        "that's right", "that is right", "that's correct", "that is correct",
+                        "yes", "yeah", "yep", "correct", "perfect", "no change",
+                        "no that's right", "no that is right", "sounds right",
+                        "looks good", "no correction",
                     )
-                    return
-                # Second turn: caller gave surname — combine into full name
-                answer = f"{_frag} {answer}".title()
-                self.session.pop("name_fragment", None)
-                logger.info("[ms_flow] COLLECT_NAME: fragment completed → %r", answer)
+                    if any(p in text for p in _ACCEPT_SC) or text.strip() in (
+                        "no", "yes", "yeah", "correct",
+                    ):
+                        # Accepted — use stored surname
+                        answer = f"{_frag} {_sc_sn}".title()
+                        self.session.pop("spelling_confirm_surname", None)
+                        self.session.pop("name_fragment", None)
+                        _ack = "Okay, that's noted."
+                        await self._tts.put(_ack)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _ack}
+                        )
+                        logger.info("[ms_flow] COLLECT_NAME: spelling confirmed → %r", answer)
+                        _spelling_resolved = True
+                    else:
+                        # Try to parse spelled-out letters: "R O U K" or "R-O-U-K"
+                        import re as _re_sc
+                        _letters = _re_sc.sub(r"[^a-zA-Z\s]", " ", text).split()
+                        if _letters and all(len(w) == 1 and w.isalpha() for w in _letters):
+                            _new_sn = "".join(_letters).title()
+                            answer = f"{_frag} {_new_sn}".title()
+                            self.session.pop("spelling_confirm_surname", None)
+                            self.session.pop("name_fragment", None)
+                            _ack = "Okay, that's noted."
+                            await self._tts.put(_ack)
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _ack}
+                            )
+                            logger.info(
+                                "[ms_flow] COLLECT_NAME: spelling corrected %r → %r",
+                                _sc_sn, _new_sn,
+                            )
+                            _spelling_resolved = True
+                        else:
+                            # Didn't understand — re-prompt the spelling substate
+                            _sn_spaced = " ".join(list(_sc_sn.upper()))
+                            _re_sc_msg = (
+                                f"I have {_sn_spaced}. "
+                                "If you'd like to change it, please spell it out for me."
+                            )
+                            await self._tts.put(_re_sc_msg)
+                            self.session["last_question"] = _re_sc_msg
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _re_sc_msg}
+                            )
+                            return
+
+                if not _spelling_resolved:
+                    # Guard: reject if transcript mixes surname with a spelling offer /
+                    # clarification question.  Try to salvage the surname before the noise.
+                    _SURNAME_NOISE_PHRASES = (
+                        "do you need", "need help", "help spelling", "help me spell",
+                        "shall i spell", "do you want me to spell", "want me to spell",
+                        "is that right", "is that correct", "did i say", "did you catch",
+                        "can you spell", "spell that", "how do you spell", "how did you spell",
+                        "how do you have", "did you get",
+                    )
+                    if any(phrase in (text or "").lower() for phrase in _SURNAME_NOISE_PHRASES):
+                        # Prefer the already-extracted answer; fall back to pre-noise text
+                        _sn_candidate = answer
+                        if not _sn_candidate:
+                            import re as _re_np
+                            _np_start = min(
+                                (text.lower().find(p) for p in _SURNAME_NOISE_PHRASES
+                                 if p in text.lower()),
+                                default=len(text),
+                            )
+                            _pre = text[:_np_start].strip()
+                            if (
+                                _pre
+                                and all(c.isalpha() or c in " -'" for c in _pre)
+                                and 2 <= len(_pre) <= 20
+                                and len(_pre.split()) <= 2
+                            ):
+                                _sn_candidate = _pre.title()
+                        if _sn_candidate:
+                            # Enter spelling-confirm substate
+                            self.session["spelling_confirm_surname"] = _sn_candidate
+                            _spaced = " ".join(
+                                list(_sn_candidate.replace("-", "").replace(" ", "").upper())
+                            )
+                            _readback = (
+                                f"I've got that as {_spaced}. "
+                                "If you'd like to correct it, you can spell it out for me."
+                            )
+                            await self._tts.put(_readback)
+                            self.session["last_question"] = _readback
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _readback}
+                            )
+                            logger.info(
+                                "[ms_flow] COLLECT_NAME: spelling substate entered for %r",
+                                _sn_candidate,
+                            )
+                            return
+                        else:
+                            # No usable candidate — re-ask as before
+                            _sn_re = "And what's your surname?"
+                            if self.session.get("last_question") != _sn_re:
+                                await self._tts.put(_sn_re)
+                                self.session["last_question"] = _sn_re
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _sn_re}
+                                )
+                            logger.info(
+                                "[ms_flow] COLLECT_NAME: no surname candidate in %r — re-asking",
+                                (text or "")[:60],
+                            )
+                            return
+                    # Second turn: caller gave surname — combine into full name
+                    answer = f"{_frag} {answer}".title()
+                    self.session.pop("name_fragment", None)
+                    logger.info("[ms_flow] COLLECT_NAME: fragment completed → %r", answer)
             else:
                 # First turn: only first name — ask for surname
                 self.session["name_fragment"] = answer
@@ -7253,6 +7527,7 @@ class FlowEngine:
             # Alcester spoken name / common mishearings (substring safe — unique strings)
             if any(p in _t for p in (
                 "alcester", "alchester", "alster", "alca", "alcesta",
+                "allcester", "alcestr",
                 "ancestor", "ulster", "elster", "alces", "olster",
                 "leisure", "greig", "kinwarton",
             )):
