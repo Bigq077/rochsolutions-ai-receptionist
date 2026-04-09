@@ -2144,6 +2144,32 @@ class FlowEngine:
             # ANSWER_FAQ/capability: deterministic "what can you help with" answer.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("capability", "faq_capability"):
                 _fast_r = _CAPABILITY_ANSWER
+            # ANSWER_FAQ/hours: deterministic clinic-specific hours from config.
+            if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("hours", "faq_hours") and not _fast_r:
+                from app.clinic_config import get_clinic as _gc_aq
+                _cli_aq = _gc_aq(self.session.get("clinic_id") or "demo")
+                _locs_aq = {loc["id"]: loc for loc in _cli_aq.get("locations", [])}
+                _aq_sel = (self.session.get("selected_location") or "").lower()
+                _aq_loc = _locs_aq.get(_aq_sel) or (list(_locs_aq.values())[0] if len(_locs_aq) == 1 else None)
+                if _aq_loc:
+                    _fast_r = _aq_loc.get("hours_summary", "")
+                elif _locs_aq:
+                    _fast_r = "  ".join(l.get("hours_summary", "") for l in _locs_aq.values() if l.get("hours_summary"))
+            # ANSWER_FAQ/location: deterministic address from config.
+            if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("address", "faq_location") and not _fast_r:
+                from app.clinic_config import get_clinic as _gc_aq2
+                _cli_aq2 = _gc_aq2(self.session.get("clinic_id") or "demo")
+                _locs_aq2 = {loc["id"]: loc for loc in _cli_aq2.get("locations", [])}
+                _aq2_sel = (self.session.get("selected_location") or "").lower()
+                _aq2_loc = _locs_aq2.get(_aq2_sel) or (list(_locs_aq2.values())[0] if len(_locs_aq2) == 1 else None)
+                if _aq2_loc:
+                    _fa2 = _aq2_loc.get("address", "")
+                    _fast_r = _fa2.split(".")[0].strip() + ("." if _fa2 else "")
+                elif _locs_aq2:
+                    _fast_r = "  ".join(
+                        l.get("address", "").split(".")[0].strip() + "."
+                        for l in _locs_aq2.values() if l.get("address")
+                    )
             # ANSWER_FAQ/prices: deterministic from-price gate.
             # If no specific service was named, always return the from-price line —
             # never a full price list.  If a service was named, let the LLM answer
@@ -2486,11 +2512,33 @@ class FlowEngine:
                 )
                 await self._handle_mid_flow_interrupt(_emb_intent, _emb_raw or transcript)
                 return
-            # No extractable embedded question — generic repair.
+            # No extractable embedded question — state-aware repair prompt.
             # Do NOT enqueue phrase here; _llm_loop finally drains then enqueues.
-            self.session["last_question"] = "What was your inquiry?"
+            _repair_state = current_state if current_state else (step["state"] if step else "")
+            if _repair_state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+                _repair_q = "Sorry — were you asking about a different date or month?"
+            elif _repair_state in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
+                _repair_q = "Sorry — were you asking about a different time or day?"
+            elif _repair_state in (
+                "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+            ):
+                _repair_q = self.session.get("last_question", "Could you say your name again?")
+            elif _repair_state in (
+                "COLLECT_PHONE", "CONFIRM_PHONE",
+                "COLLECT_PHONE_RESCHEDULE",
+            ):
+                _repair_q = self.session.get("last_question", "Could you say that number again?")
+            elif _repair_state in (
+                "FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER",
+                "ANSWER_FAQ", "ANSWER_GENERAL",
+            ):
+                _repair_q = "Sorry about that \u2014 what was your question?"
+            else:
+                _repair_q = "Sorry about that \u2014 what was your question?"
+            self.session["last_question"] = _repair_q
             self.session["repair_requested"] = True
-            logger.info("[ms_flow] global repair intercept: %r", transcript[:60])
+            logger.info("[ms_flow] global repair intercept (state=%s): %r", _repair_state, transcript[:60])
             return
 
         # ── GLOBAL REPEAT INTERCEPT ──────────────────────────────────────────────
@@ -4375,44 +4423,51 @@ class FlowEngine:
                 # ── MONTH-ONLY FILTER ─────────────────────────────────────────
                 # "any dates in May" / "do you have anything in April" —
                 # _XD_PAT requires digit+month so these fall here.
-                # Filter offered_slots deterministically rather than calling Haiku.
-                _MONTH_NAMES = {
+                # Filter available_days deterministically rather than calling Haiku.
+                _MONTH_NAMES_PD = {
                     "january": 1, "february": 2, "march": 3, "april": 4,
                     "may": 5, "june": 6, "july": 7, "august": 8,
                     "september": 9, "october": 10, "november": 11, "december": 12,
                     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
                     "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
                 }
-                _month_hit = next((m for m in _MONTH_NAMES if m in text), None)
+                _month_hit = next((m for m in _MONTH_NAMES_PD if m in text), None)
                 if _month_hit:
-                    _target_month = _MONTH_NAMES[_month_hit]
-                    _offered = self.session.get("offered_slots") or []
+                    _target_month = _MONTH_NAMES_PD[_month_hit]
+                    # available_days is a list of {day_label, date, slots, ...} objects
                     import datetime as _dt_mod
-                    try:
-                        _filtered = [
-                            s for s in _offered
-                            if _dt_mod.datetime.fromisoformat(
-                                s.get("datetime", "")
-                            ).month == _target_month
-                        ]
-                    except Exception:
-                        _filtered = []
-                    if _filtered:
-                        self.session["offered_slots"] = _filtered
-                        logger.info(
-                            "[ms_flow] PRESENT_DAYS month filter: kept %d/%d slots for month=%d",
-                            len(_filtered), len(_offered), _target_month,
+                    _filtered_days = []
+                    for _day_obj in _pd_all:
+                        _d_str = _day_obj.get("date") or _day_obj.get("datetime", "")
+                        try:
+                            _d_month = _dt_mod.date.fromisoformat(_d_str[:10]).month
+                            if _d_month == _target_month:
+                                _filtered_days.append(_day_obj)
+                        except (ValueError, TypeError):
+                            pass
+                    if _filtered_days:
+                        # Re-present only the filtered days
+                        _mf_phrase = _build_day_list_phrase(_filtered_days)
+                        await self._tts.put(_mf_phrase)
+                        self.session["last_question"] = _mf_phrase
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _mf_phrase}
                         )
-                        await self.ask_current_question()
+                        # Reset pagination to start of the filtered set
+                        self.session["days_page"] = 0
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS month filter: %d/%d days for month=%d",
+                            len(_filtered_days), len(_pd_all), _target_month,
+                        )
                         return
                     else:
                         _no_month_msg = (
-                            f"I\u2019m afraid I don\u2019t have any slots in "
+                            f"I\u2019m afraid I don\u2019t have any availability in "
                             f"{_month_hit.capitalize()} right now. "
                             "I can offer you the next available dates \u2014 would that work?"
                         )
                         logger.info(
-                            "[ms_flow] PRESENT_DAYS month filter: no slots in month=%d — offering alternatives",
+                            "[ms_flow] PRESENT_DAYS month filter: no days in month=%d",
                             _target_month,
                         )
                         await self._tts.put(_no_month_msg)
@@ -5118,6 +5173,55 @@ class FlowEngine:
                 )
                 return  # hard stop — constraint answered, no LLM fallback
 
+            # ── Explicit date in PRESENT_TIMES ──────────────────────────────
+            # "do you have anything on 7th May" while in PRESENT_TIMES.
+            # _XD_PAT only runs in PRESENT_DAYS; we need the same logic here
+            # to avoid falling to LLM when the caller names a specific offered date.
+            import re as _re_pt_xd
+            _pt_xd_m = _re_pt_xd.search(
+                r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)\b'
+                r'|\b([a-zA-Z]+)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+                transcript, _re_pt_xd.IGNORECASE,
+            )
+            if _pt_xd_m:
+                _MONTH_MAP_PT = {
+                    "january": 1, "february": 2, "march": 3, "april": 4,
+                    "may": 5, "june": 6, "july": 7, "august": 8,
+                    "september": 9, "october": 10, "november": 11, "december": 12,
+                    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+                    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+                }
+                import datetime as _dt_pt_xd
+                _pt_xd_day = int(_pt_xd_m.group(1) or _pt_xd_m.group(4) or 0)
+                _pt_xd_mon_str = (_pt_xd_m.group(2) or _pt_xd_m.group(3) or "").lower()
+                _pt_xd_mon = _MONTH_MAP_PT.get(_pt_xd_mon_str)
+                if _pt_xd_day and _pt_xd_mon:
+                    _pt_avail_xd = self.session.get("available_days", [])
+                    _pt_xd_match = None
+                    for _pt_xd_entry in _pt_avail_xd:
+                        _pt_xd_dstr = _pt_xd_entry.get("date") or _pt_xd_entry.get("datetime", "")
+                        try:
+                            _pt_xd_date = _dt_pt_xd.date.fromisoformat(_pt_xd_dstr[:10])
+                            if _pt_xd_date.day == _pt_xd_day and _pt_xd_date.month == _pt_xd_mon:
+                                _pt_xd_match = _pt_xd_entry
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                    if _pt_xd_match:
+                        _pt_xd_new_label = _pt_xd_match.get("day_label", "")
+                        self.session["chosen_day"] = _pt_xd_new_label
+                        self.session.setdefault("collected", {})["chosen_day"] = _pt_xd_new_label
+                        self.session.pop("selected_slot", None)
+                        self.session.pop("selected_slot_speech", None)
+                        self.session.pop("slot_pending_confirmation", None)
+                        self.session.pop("offered_constrained_times", None)
+                        self.session.pop("offered_constrained_slots", None)
+                        logger.info(
+                            "[ms_flow] PRESENT_TIMES explicit date match → %r", _pt_xd_new_label
+                        )
+                        await self.ask_current_question()
+                        return
+
             # ── Day-change check ─────────────────────────────────────────────
             # Before re-asking times, check if the caller wants a different day.
             _avail_re   = self.session.get("available_days", [])
@@ -5146,6 +5250,86 @@ class FlowEngine:
                     step["state"], _chosen_re, _dc_re_label,
                 )
                 await self.ask_current_question()
+                return
+
+            # ── PRESENT_TIMES: deterministic "none/no" rejection ────────────
+            # If caller rejects all offered times (no constraint specified),
+            # offer a different day instead of looping on the same times or LLM.
+            _PT_NONE = (
+                "none of those", "none of them", "none of these",
+                "not any of those", "none suit", "none of those work",
+                "those don't work", "they don't work", "doesn't work for me",
+                "not available", "can't do any",
+                "no not those", "no none", "no none of",
+                "something else", "different time", "different day",
+                "another day", "any other day",
+            )
+            _PT_STOP = ("stop", "wait", "hold on", "actually")
+            _pt_is_none = any(p in text for p in _PT_NONE)
+            _pt_is_stop = any(p in text for p in _PT_STOP) and len(text.split()) <= 3
+            if _pt_is_none and not _is_constraint:
+                _pt_avail = self.session.get("available_days", [])
+                _pt_chosen = self.session.get("chosen_day", "")
+                _pt_other = [
+                    d for d in _pt_avail if d.get("day_label", "") != _pt_chosen
+                ]
+                if _pt_other:
+                    from app.vagueness_detector import _time_to_speech as _t2s_pt
+                    _pt_other_label = _pt_other[0].get("day_label", "another day")
+                    _pt_other_times = _pt_other[0].get("slot_times", [])[:3]
+                    if _pt_other_times:
+                        _pt_spoken = [_t2s_pt(t) for t in _pt_other_times]
+                        if len(_pt_spoken) == 1:
+                            _pt_alt = (
+                                f"No problem \u2014 I also have {_pt_spoken[0]} on "
+                                f"{_pt_other_label}. Would that work?"
+                            )
+                        elif len(_pt_spoken) == 2:
+                            _pt_alt = (
+                                f"No problem \u2014 on {_pt_other_label} I have "
+                                f"{_pt_spoken[0]} or {_pt_spoken[1]}. Would either of those work?"
+                            )
+                        else:
+                            _pt_alt = (
+                                f"No problem \u2014 on {_pt_other_label} I have "
+                                f"{', '.join(_pt_spoken[:-1])}, or {_pt_spoken[-1]}. "
+                                "Would any of those work?"
+                            )
+                    else:
+                        _pt_alt = (
+                            f"No problem \u2014 I also have availability on "
+                            f"{_pt_other_label}. Would that day work for you?"
+                        )
+                    # Update chosen day so next confirmation binds correctly
+                    self.session["chosen_day"] = _pt_other_label
+                    self.session.setdefault("collected", {})["chosen_day"] = _pt_other_label
+                    self.session.pop("selected_slot", None)
+                    self.session.pop("selected_slot_speech", None)
+                    self.session.pop("slot_pending_confirmation", None)
+                    self.session.pop("offered_constrained_times", None)
+                    self.session.pop("offered_constrained_slots", None)
+                else:
+                    _pt_alt = (
+                        "I\u2019m afraid those are the only times I have available. "
+                        "Can I take your details and have someone call you back with more options?"
+                    )
+                await self._tts.put(_pt_alt)
+                self.session["last_question"] = _pt_alt
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _pt_alt}
+                )
+                logger.info(
+                    "[ms_flow] %s: times rejected → offered alt day %r",
+                    step["state"], _pt_other[0].get("day_label", "") if _pt_other else "none",
+                )
+                return
+            if _pt_is_stop:
+                # "stop/wait/hold on" — acknowledge and wait for clarification
+                _pt_ack = (
+                    self.session.get("last_question")
+                    or "Of course \u2014 what would work better for you?"
+                )
+                await self._tts.put(_pt_ack)
                 return
 
             # No slot matched and not a day-change — pass back to LLM with full
@@ -5534,13 +5718,6 @@ class FlowEngine:
                     _fbo_intent, _fbo_count + 1,
                 )
                 await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
-                # Re-anchor with a fresh offer so the stale question text isn't replayed
-                _fbo_anchor = (
-                    "Was there anything else I can help with, "
-                    "or would you like to go ahead and book?"
-                )
-                self.session["last_question"] = _fbo_anchor
-                await self._tts.put(_fbo_anchor)
                 return
 
             # Reset follow-up count on any non-FAQ answer
@@ -5585,13 +5762,6 @@ class FlowEngine:
                 "general_query",
             }:
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
-                # Re-anchor with a fresh offer so stale question text isn't replayed
-                _gbo_anchor = (
-                    "Was there anything else I can help with, "
-                    "or would you like to go ahead and book?"
-                )
-                self.session["last_question"] = _gbo_anchor
-                await self._tts.put(_gbo_anchor)
                 return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
@@ -6980,8 +7150,13 @@ class FlowEngine:
             _hist_sf = self.session.get("conversation_history", [])
             _ctx_loc = None
             for _sf_entry in reversed(_hist_sf[-10:]):
+                # Only use CALLER messages to infer booking location.
+                # Assistant messages about Redditch hours/address must NOT cause
+                # the booking to default to Redditch — that is over-inference.
+                if _sf_entry.get("role") != "user":
+                    continue
                 _sf_c = (_sf_entry.get("content") or "").lower()
-                _sf_has_redd = "redditch" in _sf_c or "reditch" in _sf_c
+                _sf_has_redd = "redditch" in _sf_c or "reditch" in _sf_c or "reddish" in _sf_c
                 _sf_has_alce = any(p in _sf_c for p in ("alcester", "greig", "kinwarton"))
                 # Skip messages that name both clinics — those are offer/question turns
                 if _sf_has_redd and _sf_has_alce:
@@ -7095,6 +7270,82 @@ class FlowEngine:
                     "Answer directly from the clinic information in your system prompt. "
                     "Just answer and stop."
                 )
+        elif intent in ("faq_hours", "faq_location"):
+            # ── Deterministic clinic-data lookup — no LLM needed ──────────────
+            from app.clinic_config import get_clinic as _gc_mfi
+            _cid_mfi = self.session.get("clinic_id") or "demo"
+            _cli_mfi = _gc_mfi(_cid_mfi)
+            _locs_mfi = {loc["id"]: loc for loc in _cli_mfi.get("locations", [])}
+            _mfi_text = transcript.strip().lower()
+            # Detect which clinic the caller is asking about
+            _mfi_redd = any(p in _mfi_text for p in (
+                "redditch", "reditch", "reddish", "reddit", "red itch", "bromsgrove",
+            ))
+            _mfi_alce = any(p in _mfi_text for p in (
+                "alcester", "greig", "kinwarton",
+            ))
+            if _mfi_redd and not _mfi_alce:
+                _mfi_loc_id = "redditch"
+            elif _mfi_alce and not _mfi_redd:
+                _mfi_loc_id = "alcester"
+            else:
+                _mfi_loc_id = (self.session.get("selected_location") or "").lower()
+            _mfi_loc = _locs_mfi.get(_mfi_loc_id) or (
+                # Single-location clinic — use the only location
+                list(_locs_mfi.values())[0] if len(_locs_mfi) == 1 else None
+            )
+            if intent == "faq_hours":
+                if _mfi_loc:
+                    _mfi_ans = _mfi_loc.get("hours_summary", "")
+                else:
+                    # Two clinics, location ambiguous — give both
+                    _mfi_parts = [
+                        _ld.get("hours_summary", "")
+                        for _ld in _locs_mfi.values()
+                        if _ld.get("hours_summary")
+                    ]
+                    _mfi_ans = "  ".join(_mfi_parts)
+            else:  # faq_location
+                _parking_q = any(p in _mfi_text for p in (
+                    "parking", "park", "disabled", "accessible", "accessibility",
+                ))
+                _transport_q = any(p in _mfi_text for p in (
+                    "bus", "train", "transport", "station",
+                    "get there", "travel", "journey", "public",
+                ))
+                if _mfi_loc:
+                    if _parking_q:
+                        _mfi_ans = _mfi_loc.get("parking", "")
+                    elif _transport_q:
+                        _mfi_ans = _mfi_loc.get("transport", "")
+                    else:
+                        # First sentence of address only — voice-friendly length
+                        _fa = _mfi_loc.get("address", "")
+                        _mfi_ans = _fa.split(".")[0].strip() + ("." if _fa else "")
+                else:
+                    # Two clinics — give short address for each
+                    _mfi_parts = []
+                    for _ld in _locs_mfi.values():
+                        _fa = _ld.get("address", "")
+                        if _fa:
+                            _mfi_parts.append(_fa.split(".")[0].strip() + ".")
+                    _mfi_ans = "  ".join(_mfi_parts)
+            if _mfi_ans:
+                logger.info(
+                    "[ms_flow] _handle_mid_flow_interrupt: %s deterministic (loc=%s)",
+                    intent, _mfi_loc_id,
+                )
+                await self._tts.put(_mfi_ans)
+                self.session["last_faq_answer"] = _mfi_ans
+            else:
+                # Config data missing — fall back to LLM
+                _topic_fb = "opening hours" if intent == "faq_hours" else "location and address"
+                instruction = (
+                    f"The caller asked about {_topic_fb}. "
+                    "Answer directly from the clinic information in your system prompt — "
+                    "1–2 sentences, just answer and stop."
+                )
+                await self._llm(instruction, allow_tools=False)
         elif intent in _FAQ_TOPICS:
             topic = _FAQ_TOPICS[intent]
             instruction = (
@@ -7118,7 +7369,7 @@ class FlowEngine:
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
         _skip_llm = (
-            intent in ("faq_services", "faq_capability", "faq_insurance")
+            intent in ("faq_services", "faq_capability", "faq_insurance", "faq_hours", "faq_location")
             or (intent == "faq_prices" and not any(
                 k in transcript.strip().lower() for k in _FAQ_PRICES_SERVICE_KEYWORDS
             ))
@@ -8123,18 +8374,38 @@ class FlowEngine:
 
         # ----- faq_booking: wants to book after FAQ answer ---------------
         if method == "faq_booking":
+            # Only explicit booking language confirms a booking — never bare acknowledgements.
+            # "yeah/sure/okay" after a FAQ answer mean "got it" not "please book me in".
             yes_p = (
-                "yes", "yeah", "book", "booking", "appointment",
-                "sure", "i would", "i'd like",
+                "book", "booking", "appointment",
+                "i would like to book", "i'd like to book",
+                "i want to book", "make an appointment",
+                "book an appointment", "yes please book",
+                "yes i'd like",
             )
             # Short tokens (≤4 chars) require whole-word matching to avoid
             # "no" matching inside "not yet", "nope" inside "nobody", etc.
             no_p_short = {"no", "nope"}
+            # Acknowledgements + farewells → graceful end (not booking)
             no_p_phrase = (
                 "that's all", "thats all", "nothing else",
                 "thanks", "thank you", "bye", "goodbye", "no thank",
+                "cheers", "brilliant", "lovely", "perfect",
             )
+            # Single-word yes ("yes" alone) → booking; embedded in longer correction → repair
             _words_set = set(text.split())
+            _ack_words = {"yeah", "yep", "yup", "sure", "okay", "ok",
+                          "right", "alright", "great", "good", "got it"}
+            # Standalone acknowledgement → done (caller satisfied, not booking)
+            if _words_set <= _ack_words or text.strip() in _ack_words:
+                return "done"
+            # Explicit "yes" alone → book; "yes" inside correction → None
+            if "yes" in text:
+                _no_correction_signals = (
+                    "my question", "i was asking", "about", "what", "how", "i meant",
+                )
+                if not any(s in text for s in _no_correction_signals):
+                    return "book"
             for p in yes_p:
                 if p in text: return "book"
             # Do not end the call when the "no" is part of a correction/question.
