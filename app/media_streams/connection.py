@@ -953,6 +953,16 @@ class WebSocketCallHandler:
         if not digit or digit in ("#", "*"):
             return
 
+        # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
+        if self.session.get("state") == "ASK_LOCATION":
+            if digit == "1":
+                logger.info("[ms_conn] DTMF digit=1 → synthetic transcript 'alcester'")
+                await self.transcript_queue.put("alcester")
+            elif digit == "2":
+                logger.info("[ms_conn] DTMF digit=2 → synthetic transcript 'redditch'")
+                await self.transcript_queue.put("redditch")
+            return
+
         # Only accumulate DTMF while in phone-collection state
         if self.session.get("state") not in ("COLLECT_PHONE",):
             return
@@ -1208,7 +1218,7 @@ class WebSocketCallHandler:
 
         # Build the LLM callable the flow engine will use for LLM steps.
         # It streams output directly to tts_text_queue and returns full text.
-        async def _llm_fn(instruction: str, allow_tools: bool = True) -> str:
+        async def _llm_fn(instruction: str, allow_tools: bool = True, error_phrase: str = None) -> str:
             return await llm.run_instruction(
                 instruction=instruction,
                 session=self.session,
@@ -1219,6 +1229,7 @@ class WebSocketCallHandler:
                 websocket=self.websocket,
                 on_transfer=self._on_transfer_request,
                 allow_tools=allow_tools,
+                error_phrase=error_phrase,
             )
 
         flow = FlowEngine(

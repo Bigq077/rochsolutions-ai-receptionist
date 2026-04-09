@@ -420,6 +420,7 @@ class LLMStream:
         websocket: Any = None,
         on_transfer: Optional[Callable] = None,
         allow_tools: bool = True,
+        error_phrase: str = None,
     ) -> str:
         """
         Simple single-instruction LLM call for the FlowEngine.
@@ -480,8 +481,9 @@ class LLMStream:
             )
         except Exception as exc:
             logger.error("[ms_llm] run_instruction error: %r", exc)
-            full_reply = SAFE_FALLBACK_PHRASE
-            await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
+            _err = error_phrase or SAFE_FALLBACK_PHRASE
+            full_reply = _err
+            await tts_text_queue.put(_err)
 
         session["last_bot_prompt"] = full_reply
         return full_reply

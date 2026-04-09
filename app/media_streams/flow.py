@@ -42,6 +42,15 @@ except ImportError:
     _RAPIDFUZZ_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# Spoken when Claude API fails during CONFIRM_ASSESSMENT — gives a useful
+# recommendation instead of a generic "blip" error phrase.
+_CONFIRM_ASSESSMENT_API_FALLBACK = (
+    "I'm sorry to hear that — that sounds quite painful. "
+    "I would probably recommend a physiotherapy assessment as the best starting point. "
+    "Does that sound okay?"
+)
+
 if not _RAPIDFUZZ_AVAILABLE:
     logger.warning(
         "[ms_flow] rapidfuzz not installed — fuzzy matching disabled. "
@@ -486,7 +495,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "What's your first name?",
+        "question": "Could I take your full name, please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -517,14 +526,16 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "answer_field": "treatment_plan_looked_up",
         "use_llm": True,
         "llm_instruction": (
-            "Call get_patient_history with patient_name='{full_name}', "
-            "phone='{phone_number}'. "
-            "After the tool responds: "
-            "if a treatment was found (found=true), say warmly in one natural sentence — "
-            "e.g. 'I can see you\\'ve been coming in for your [most_recent_type] — "
-            "let\\'s get your next session booked in.' "
-            "If nothing is found or there is an error, say: "
-            "'No problem — let\\'s get you booked in.' "
+            "Call get_patient_history with patient_name='{full_name}' (no phone).\n"
+            "After the tool responds:\n"
+            "CASE 1 — found=True (single match): say warmly in one natural sentence, e.g. "
+            "'I can see you\\'ve been coming in for your {most_recent_type} — "
+            "let\\'s get your next session booked in.'\n"
+            "CASE 2 — found='multiple': the tool returned a list of matches with different "
+            "phone numbers. Say: 'I found a couple of patients with that name — could you "
+            "confirm which number ends in [last4 of first match] or [last4 of second match]?' "
+            "Wait for the caller to confirm their last 4 digits, then proceed.\n"
+            "CASE 3 — found=False or any error: say 'No problem — let\\'s get you booked in.'\n"
             "One warm sentence only. Do not ask about availability or time preferences here."
         ),
         "extract": "none",
@@ -1533,7 +1544,10 @@ class FlowEngine:
         # No LLM call — pure TTS, same pattern as every other static question.
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
-            _loc_q = "Of course — are you looking to book in at our Alcester or Redditch clinic?"
+            _loc_q = (
+                "Of course — are you looking to book in at our Alcester or Redditch clinic? "
+                "Press 1 for Alcester or 2 for Redditch."
+            )
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
@@ -1676,6 +1690,13 @@ class FlowEngine:
         if step["state"] in _tp_states and not self.session.get("on_treatment_plan"):
             self.session["flow_step"] = step["step"] + 1
             logger.info("[ms_flow] skipping %s — not on treatment plan", step["state"])
+            await self.ask_current_question()
+            return
+
+        # on_treatment_plan: skip phone collection entirely — lookup by name only
+        if step["state"] in ("CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING") and self.session.get("on_treatment_plan"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] on_treatment_plan — skipping %s (name-only lookup)", step["state"])
             await self.ask_current_question()
             return
 
@@ -1984,7 +2005,14 @@ class FlowEngine:
                 if step["state"] == "CONFIRM_ASSESSMENT"
                 else None
             )
-            response = _fast_r if _fast_r else await self._llm(instruction, allow_tools=_allow_tools)
+            if step["state"] == "CONFIRM_ASSESSMENT" and not _fast_r:
+                response = await self._llm(
+                    instruction,
+                    allow_tools=False,
+                    error_phrase=_CONFIRM_ASSESSMENT_API_FALLBACK,
+                )
+            else:
+                response = _fast_r if _fast_r else await self._llm(instruction, allow_tools=_allow_tools)
             # Store full CONFIRM_ASSESSMENT phrase for clarification replay
             if step["state"] == "CONFIRM_ASSESSMENT" and response:
                 self.session["confirm_assessment_phrase"] = response
@@ -2331,8 +2359,6 @@ class FlowEngine:
                     "Which clinic would you like — Alcester or Redditch? "
                     "Press 1 for Alcester or 2 for Redditch.",
                 )
-                if await self._maybe_answer_inquiry(transcript, "ASK_LOCATION", _loc_frozen_q):
-                    return
                 # Fragment guard: very short / garbled turns don't consume a retry
                 # slot or speak any prompt — silence handler deals with true silence.
                 _loc_words = text.split()

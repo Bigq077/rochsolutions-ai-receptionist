@@ -2915,6 +2915,28 @@ async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any
 
     matching.sort(key=_dt, reverse=True)
 
+    # Detect same-name ambiguity: group appointments by phone number
+    _phone_groups: dict = {}
+    for _appt in matching:
+        _ph = (_appt.get("phone") or _appt.get("smsReminderNumber") or "").strip()
+        _ph_key = _ph or "__unknown__"
+        _phone_groups.setdefault(_ph_key, []).append(_appt)
+
+    if len(_phone_groups) > 1:
+        # Multiple distinct patients share this name — return all for disambiguation
+        _multi = []
+        for _ph_key, _appts in _phone_groups.items():
+            _appts_sorted = sorted(_appts, key=_dt, reverse=True)
+            _t = next(
+                (a.get("type", "").strip() for a in _appts_sorted if a.get("type")),
+                "physiotherapy",
+            )
+            _last4 = _ph_key[-4:] if _ph_key != "__unknown__" else "????"
+            _name_appt = _appts_sorted[0]
+            _full = f"{_name_appt.get('firstName', '')} {_name_appt.get('lastName', '')}".strip()
+            _multi.append({"phone_last4": _last4, "name": _full, "most_recent_type": _t})
+        return {"found": "multiple", "matches": _multi}
+
     # Collect unique treatment types from the 5 most recent appointments
     seen: list = []
     for appt in matching[:5]:
