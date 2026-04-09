@@ -2200,8 +2200,14 @@ class FlowEngine:
                     allow_tools=False,
                     error_phrase=_CONFIRM_ASSESSMENT_API_FALLBACK,
                 )
+            elif _fast_r:
+                # Fast-path: speak the deterministic answer directly to TTS.
+                # The LLM path handles TTS internally via streaming; fast-path must
+                # do it explicitly — without this the answer is built but never spoken.
+                await self._tts.put(_fast_r)
+                response = _fast_r
             else:
-                response = _fast_r if _fast_r else await self._llm(instruction, allow_tools=_allow_tools)
+                response = await self._llm(instruction, allow_tools=_allow_tools)
             # Store full CONFIRM_ASSESSMENT phrase for clarification replay
             if step["state"] == "CONFIRM_ASSESSMENT" and response:
                 self.session["confirm_assessment_phrase"] = response
@@ -2211,6 +2217,12 @@ class FlowEngine:
             if _is_question_worth_storing(_q):
                 self.session["last_question"] = _q
                 logger.info("[ms_flow] last_question stored: %r", _q[:120])
+            # Fast-path ANSWER_FAQ answers that have no trailing question (e.g. capability)
+            # would leave last_question stale. Store the full answer so repeat/silence
+            # recovery replays the actual spoken content, not an old unrelated question.
+            if _fast_r and step["state"] in ("ANSWER_FAQ", "ANSWER_GENERAL") and not _is_question_worth_storing(_q):
+                self.session["last_question"] = response
+                logger.info("[ms_flow] last_question set to fast-path answer (no question extracted): %r", (response or "")[:80])
             # Record Susie's LLM response to conversation_history
             if response:
                 self.session.setdefault("conversation_history", []).append(
