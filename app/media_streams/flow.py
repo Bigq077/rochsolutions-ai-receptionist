@@ -257,6 +257,10 @@ _NEVER_STORE_PHRASES = [
     "theorem health",
     "of course you can book",
     "of course i can help",
+    # Generic wrappers — "Is there anything else I can help you with?" is not
+    # an actionable question; storing it causes bad silence/re-engagement replays.
+    "is there anything else i can help",
+    "anything else i can help you with",
 ]
 
 _KNOWN_QUESTION_PHRASES = [
@@ -1551,7 +1555,8 @@ GENERAL_QUERY_FLOW: List[Dict[str, Any]] = [
             "If it is something you genuinely cannot answer, say so honestly — "
             "do not guess or make things up. "
             "One or two sentences only. "
-            "End with: 'Is there anything else I can help you with?'"
+            "Do NOT end with 'Is there anything else I can help you with?' or any generic offer — "
+            "just answer the question directly and stop."
         ),
         "extract": "none",
     },
@@ -2566,8 +2571,23 @@ class FlowEngine:
         if _re_text in _RE_ENGAGEMENT_TOKENS:
             _lq = self.session.get("last_question") or self.session.get("last_tts_spoken")
             if _lq:
-                logger.info("[ms_flow] re-engagement token %r — replaying last_question", _re_text)
-                await self._tts.put(_lq)
+                _lq_lower = _lq.strip().lower()
+                _is_stale_wrapper = any(p in _lq_lower for p in (
+                    "is there anything else i can help",
+                    "anything else i can help you with",
+                ))
+                if _is_stale_wrapper:
+                    # Generic wrapper stored as last_question — give a clean re-engagement
+                    # instead of replaying the hollow offer.
+                    _re_fallback = (
+                        "Of course \u2014 was there anything else I could help with, "
+                        "or would you like to go ahead and book an appointment?"
+                    )
+                    logger.info("[ms_flow] re-engagement %r — stale wrapper, neutral re-engage", _re_text)
+                    await self._tts.put(_re_fallback)
+                else:
+                    logger.info("[ms_flow] re-engagement token %r — replaying last_question", _re_text)
+                    await self._tts.put(_lq)
                 return
             # No last_question yet (very start of call) — fall through to normal handling
 
@@ -5743,6 +5763,18 @@ class FlowEngine:
 
         # ── GENERAL_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────
         if step["state"] == "GENERAL_BOOKING_OFFER":
+            # Pure acknowledgements ("okay", "okay perfect", "alright", "that's understood")
+            # are inert — the caller is processing the answer, not asking a new question.
+            # Do nothing: silence handler will re-ask if needed.
+            _GBO_ACK_WORDS = frozenset({
+                "okay", "ok", "alright", "right", "sure", "yeah", "yep", "yup",
+                "great", "good", "got it", "understood", "perfect", "brilliant",
+                "lovely", "cool", "noted",
+            })
+            _gbo_words = set(text.strip().split())
+            if _gbo_words and _gbo_words <= _GBO_ACK_WORDS:
+                logger.info("[ms_flow] GENERAL_BOOKING_OFFER: ack-only %r — inert", text[:40])
+                return
             _gbo_intent = self._detect_intent(text)
             # Reschedule/cancel: hard-route immediately.
             if _gbo_intent == "reschedule":
@@ -5755,12 +5787,22 @@ class FlowEngine:
                     self._switch_flow("cancel")
                     await self.ask_current_question()
                 return
-            # FAQ/general question — answer and re-anchor.
+            # Specific FAQ intent — answer and re-anchor.
             if _gbo_intent in {
                 "faq_services", "faq_prices", "faq_hours",
                 "faq_location", "faq_insurance", "faq_capability",
-                "general_query",
             }:
+                await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
+                return
+            # general_query only fires for genuine questions (contains a question signal).
+            # Without a signal, "okay" / "okay that's fine" etc. reach here and must not
+            # trigger a new LLM response.
+            _GBO_QUESTION_SIGNALS = (
+                "?", "what", "how", "can you", "tell me", "do you",
+                "is there", "are you", "which", "where", "when", "why",
+                "explain", "describe",
+            )
+            if _gbo_intent == "general_query" and any(s in text for s in _GBO_QUESTION_SIGNALS):
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
                 return
             answer = self._extract("faq_booking", text, transcript)
@@ -8395,7 +8437,8 @@ class FlowEngine:
             # Single-word yes ("yes" alone) → booking; embedded in longer correction → repair
             _words_set = set(text.split())
             _ack_words = {"yeah", "yep", "yup", "sure", "okay", "ok",
-                          "right", "alright", "great", "good", "got it"}
+                          "right", "alright", "great", "good", "got it",
+                          "perfect", "brilliant", "lovely", "cool", "understood", "noted"}
             # Standalone acknowledgement → done (caller satisfied, not booking)
             if _words_set <= _ack_words or text.strip() in _ack_words:
                 return "done"
