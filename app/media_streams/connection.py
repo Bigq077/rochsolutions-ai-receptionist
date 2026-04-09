@@ -1422,6 +1422,23 @@ class WebSocketCallHandler:
                         await self.tts_text_queue.put(
                             "Sorry about that \u2014 what was your inquiry?"
                         )
+                    # Repeat request — drain stale TTS and replay last relevant answer.
+                    if self.session.pop("repeat_requested", False):
+                        while not self.tts_text_queue.empty():
+                            try:
+                                self.tts_text_queue.get_nowait()
+                            except Exception:
+                                break
+                        logger.info("[ms_conn] repeat_requested: TTS queue drained")
+                        _cur_state = self.session.get("state", "")
+                        _replay = (
+                            self.session.get("last_faq_answer", "")
+                            if _cur_state == "FAQ_BOOKING_OFFER"
+                            else ""
+                        ) or self.session.get("last_question", "")
+                        if _replay:
+                            await self.tts_text_queue.put(_replay)
+                            logger.info("[ms_conn] repeat_requested: replaying %r", _replay[:60])
                     # Bug 9: restart silence timer after fragment suppression
                     # so the call doesn't go permanently silent.
                     if self.session.pop("fragment_suppressed", False):
