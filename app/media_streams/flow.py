@@ -2646,14 +2646,18 @@ class FlowEngine:
             words = transcript.strip().split()
             if len(words) > 1:
                 from app.caller_classifier import classify_caller
-                result = await asyncio.to_thread(classify_caller, transcript)
-                self.session["caller_type"] = result["type"]
-                self.session["_classification_confidence"] = result["confidence"]
+                try:
+                    result = await asyncio.to_thread(classify_caller, transcript)
+                    self.session["caller_type"] = result["type"]
+                    self.session["_classification_confidence"] = result["confidence"]
+                    logger.info(
+                        "[ms_flow] caller classified: type=%s confidence=%s intent=%r",
+                        result["type"], result["confidence"], result.get("intent", "")[:60],
+                    )
+                except Exception as _cls_err:
+                    logger.warning("[ms_flow] classify_caller failed: %r — defaulting to patient", _cls_err)
+                    self.session["caller_type"] = "patient"
                 self.session["classification_pending"] = False
-                logger.info(
-                    "[ms_flow] caller classified: type=%s confidence=%s intent=%r",
-                    result["type"], result["confidence"], result.get("intent", "")[:60],
-                )
             elif step["state"] != "DETECT_INTENT":
                 # Past first utterance with a short response — force patient
                 self.session["caller_type"] = "patient"
@@ -5750,6 +5754,10 @@ class FlowEngine:
                     _fbo_intent, _fbo_count + 1,
                 )
                 await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
+                # Update last_question so silence/repeat replays the latest answer
+                _fbo_last_ans = self.session.get("last_faq_answer")
+                if _fbo_last_ans:
+                    self.session["last_question"] = _fbo_last_ans
                 return
 
             # Reset follow-up count on any non-FAQ answer
@@ -5805,6 +5813,9 @@ class FlowEngine:
                 "faq_location", "faq_insurance", "faq_capability",
             }:
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
+                _gbo_last_ans = self.session.get("last_faq_answer")
+                if _gbo_last_ans:
+                    self.session["last_question"] = _gbo_last_ans
                 return
             # general_query only fires for genuine questions (contains a question signal).
             # Without a signal, "okay" / "okay that's fine" etc. reach here and must not
@@ -5816,6 +5827,9 @@ class FlowEngine:
             )
             if _gbo_intent == "general_query" and any(s in text for s in _GBO_QUESTION_SIGNALS):
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
+                _gbo_last_ans = self.session.get("last_faq_answer")
+                if _gbo_last_ans:
+                    self.session["last_question"] = _gbo_last_ans
                 return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
@@ -7130,9 +7144,11 @@ class FlowEngine:
             "how many minutes", "how many miles",
         )
         location_p = (
-            "where are you", "address", "parking", "directions", "how do i get",
+            "where are you", "where is your", "where exactly is", "where is the",
+            "address", "parking", "directions", "how do i get",
             "drive to", "travel to", "get to",
             "journey to", "far is", "distance", "near", "nearest",
+            "find you", "locate you", "clinic address", "your clinic is",
         )
         services_p = (
             "services", "service", "treatments", "what do you offer",
@@ -7141,6 +7157,9 @@ class FlowEngine:
             "what therapies", "what therapy", "what do you treat",
             "list of", "tell me what you",
             "what kind of service", "what type of service",
+            # specific service names — caller asking about a modality directly
+            "shockwave", "acupuncture", "laser", "massage", "pilates",
+            "biomechanical", "biomechanics", "sports therapy", "physio assessment",
         )
         if any(p in text for p in reschedule_p): return "reschedule"
         if any(p in text for p in cancel_p):     return "cancel"
