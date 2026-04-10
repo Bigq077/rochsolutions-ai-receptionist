@@ -2899,8 +2899,9 @@ class FlowEngine:
                 )
             _hg_digits = _re_hg.sub(r"\D", "", _text_for_digits)
 
-            if len(_hg_digits) >= 10:
-                # Full number received — accept immediately without buffering
+            if len(_hg_digits) >= 11:
+                # Full UK number received (min 11 digits) — accept immediately.
+                # 10-digit strings are rejected as incomplete (BUG 5).
                 _hg_phone = _hg_digits[:11] if len(_hg_digits) > 11 else _hg_digits
 
                 # Write phone fields for in-call use (readback template, LLM prompt etc.)
@@ -5794,7 +5795,9 @@ class FlowEngine:
             # transport / address) still works.
             _corr_text = text.strip().lower()
             _corr_redd = any(p in _corr_text for p in (
-                "redditch", "reditch", "reddish", "reddit", "bromsgrove",
+                "redditch", "reditch", "reddish", "reddit",
+                "red itch", "red ditch", "red-ditch",  # BUG 1: STT near-forms
+                "bromsgrove",
             ))
             _corr_alce = any(p in _corr_text for p in ("alcester", "greig", "kinwarton"))
             _last_faq_intent_corr = self.session.get("last_faq_intent")
@@ -5953,6 +5956,25 @@ class FlowEngine:
         # _extract("none") returns True which would silently advance to the next step
         # without the LLM ever calling confirm_appointment_found.
         if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            # BUG 4: caller may abandon reschedule/cancel and ask to book new instead.
+            # Intercept positive booking intent BEFORE re-firing LLM so the call
+            # doesn't close.  Only match on unambiguous new-booking phrases — bare
+            # "never mind" without a booking signal remains plain abandonment for LLM.
+            _lu_text = text.strip().lower()
+            _lu_book_signals = (
+                "book a", "book an", "new appointment", "make an appointment",
+                "make a booking", "want to book", "like to book",
+                "need to book", "new booking", "book instead",
+                "just book", "book a new",
+            )
+            if any(s in _lu_text for s in _lu_book_signals):
+                logger.info(
+                    "[ms_flow] %s: caller pivoted to new booking — switching to BOOKING_FLOW",
+                    step["state"],
+                )
+                self._switch_flow("booking")
+                await self.ask_current_question()
+                return
             # transcript already appended to conversation_history above
             logger.info(
                 "[ms_flow] %s: caller turn %r — re-firing LLM for confirmation exchange",
@@ -7219,9 +7241,12 @@ class FlowEngine:
         if any(p in text for p in transfer_p): return "transfer"
 
         reschedule_p = (
-            "reschedule", "change my appointment", "move my appointment",
+            "reschedule", "re-schedule", "re schedule",  # BUG 3: hyphenated/spaced STT variants
+            "change my appointment", "move my appointment",
             "change the time", "different time", "different day",
-            "rebook", "move it",
+            "rebook", "re-book", "re book",              # BUG 3: rebook variants
+            "move it", "move an appointment", "rearrange my appointment",
+            "change a booking", "change my booking",
         )
         cancel_p = (
             "cancel", "cancellation", "don't want", "dont want", "not coming",
@@ -7252,6 +7277,9 @@ class FlowEngine:
             "drive to", "travel to", "get to",
             "journey to", "far is", "distance", "near", "nearest",
             "find you", "locate you", "clinic address", "your clinic is",
+            # BUG 2: parking questions that don't contain the word "parking"
+            "can i park", "where to park", "where can i park", "car park",
+            "park in the", "park near", "park there",
         )
         services_p = (
             "services", "service", "treatments", "what do you offer",
@@ -7471,7 +7499,9 @@ class FlowEngine:
             # context (BUG 1 — carry-over for follow-ups like "and parking?"),
             # (3) booking selected_location as last resort.
             _mfi_redd = any(p in _mfi_text for p in (
-                "redditch", "reditch", "reddish", "reddit", "red itch", "bromsgrove",
+                "redditch", "reditch", "reddish", "reddit",
+                "red itch", "red ditch", "red-ditch",  # BUG 1: STT near-forms
+                "bromsgrove",
             ))
             _mfi_alce = any(p in _mfi_text for p in (
                 "alcester", "greig", "kinwarton",
@@ -8533,10 +8563,10 @@ class FlowEngine:
 
             return _raw_name
 
-        # ----- phone: 10+ digit number ----------------------------------
+        # ----- phone: 11+ digit number (UK standard) --------------------
         if method == "phone":
             digits = "".join(c for c in raw if c.isdigit())
-            return digits if len(digits) >= 10 else None
+            return digits if len(digits) >= 11 else None  # BUG 5: was 10
 
         # ----- none: no extraction needed (LLM confirmation steps) ------
         if method == "none":

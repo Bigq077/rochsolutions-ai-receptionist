@@ -990,9 +990,9 @@ class WebSocketCallHandler:
 
         logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
 
-        if len(buf) >= 10:
-            # Full number collected via keypad — push as synthetic transcript
-            # The COLLECT_PHONE hard gate extracts digits naturally from it.
+        if len(buf) >= 11:
+            # Full UK number collected via keypad (min 11 digits) — push as
+            # synthetic transcript.  10-digit buffers are incomplete (BUG 5).
             complete = buf[:11]
             self.session["phone_dtmf_buffer"]   = ""
             self.session["phone_awaiting_dtmf"] = False
