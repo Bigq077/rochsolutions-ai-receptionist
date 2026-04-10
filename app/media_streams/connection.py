@@ -367,6 +367,8 @@ class SilenceHandler:
         causing a spurious re-ask concatenated with the slot list.
         Never arms if more TTS chunks are queued — prevents stacking re-asks
         after multi-part responses (FAQ answer + re-anchor question)."""
+        if self._cancelled:   # Bug 3: stale TTS callbacks must not restart after teardown
+            return
         if self.currently_reasking:
             return
         if self._llm_busy:

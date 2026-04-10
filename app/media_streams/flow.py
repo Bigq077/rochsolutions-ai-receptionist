@@ -2604,7 +2604,11 @@ class FlowEngine:
             # NOTE: elif — must not run (and must not override question_text) when
             # we are already at CONFIRM_BOOKING above.
             elif step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
-                question_text = "And the best number to reach you on — is that the number you're calling from?"
+                # Reschedule/cancel: anchor to the booking number, not a generic contact number
+                if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
+                    question_text = "Is the phone number you're calling on the one associated with your booking?"
+                else:
+                    question_text = "And the best number to reach you on — is that the number you're calling from?"
             else:
                 question_text = step["question"]
             await self._tts.put(question_text)
@@ -2911,7 +2915,15 @@ class FlowEngine:
             "COLLECT_NAME", "COLLECT_NAME_RETURNING",
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         }
-        if _is_fragment and (not step or step["state"] not in _NAME_COLLECTION_STATES):
+        # Bug 2: when appointment is already found, short confirmation fragments
+        # like "it was" / "yes it" must reach the lookup-confirmation handler,
+        # not be silently dropped here.
+        _is_lookup_confirm_state = (
+            step is not None
+            and step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL")
+            and self.session.get("rc_stage") == "lookup_done"
+        )
+        if _is_fragment and not _is_lookup_confirm_state and (not step or step["state"] not in _NAME_COLLECTION_STATES):
             logger.info("[ms_flow] global fragment suppressed: %r", transcript[:30])
             self.session["fragment_suppressed"] = True
             return
@@ -3044,7 +3056,7 @@ class FlowEngine:
                 # Keypad fallback from first failed speech attempt onwards
                 _loc_keypad_fallback = (
                     "Sorry, I didn't quite catch that. "
-                    "Please press 1 for Alcester or 2 for Redditch."
+                    "Please type 1 on your keyboard for Alcester or 2 on your keyboard for Redditch."
                 )
                 if _retry_count >= 3:
                     _retry = (
@@ -6330,9 +6342,10 @@ class FlowEngine:
                     self.session["rc_appointment_confirmed"] = True
                     self.session["rc_stage"] = "confirmed"
                     _flow_label = step["state"]
+                    _next_step = step["step"] + 1
                     logger.info(
-                        "[ms_flow] %s: deterministic YES confirmed — rc_appointment_confirmed=True",
-                        _flow_label,
+                        "[ms_flow] %s: deterministic YES confirmed — advancing to step %d",
+                        _flow_label, _next_step,
                     )
                     _confirm_msg = (
                         "Perfect — let me find some new times for you."
@@ -6343,6 +6356,10 @@ class FlowEngine:
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _confirm_msg}
                     )
+                    # Advance flow_step BEFORE ask_current_question so we never
+                    # re-fire the LLM on the lookup step (Bugs 1 and 6).
+                    self.session["flow_step"] = _next_step
+                    self.session["question_asked_this_turn"] = False
                     await self.ask_current_question()
                     return
                 # NO or ambiguous — fall through to LLM (handles alternatives / transfer)
