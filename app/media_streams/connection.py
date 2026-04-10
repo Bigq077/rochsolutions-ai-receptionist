@@ -287,11 +287,31 @@ class SilenceHandler:
             "[ms_silence] recovery: STT miss #%d detected — prompting caller directly",
             self._stt_miss_count,
         )
-        _sess = self._get_session() if self._get_session else {}
-        if _sess and _sess.get("phone_awaiting_dtmf"):
+        _sess  = self._get_session() if self._get_session else {}
+        _state = (_sess or {}).get("state", "")
+
+        # Bug 3: DTMF digits already in buffer — caller is actively typing.
+        # Reset the silence timer silently; do not interrupt with a spoken prompt.
+        if (_sess or {}).get("phone_dtmf_buffer") and _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+            self._restart_timer()
+            return
+
+        # State-specific short repair prompts (Bug 5)
+        if _state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            phrase = "Sorry — was that the right appointment? Yes or no?"
+        elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+            phrase = "Sorry — is this the right number? Yes or no?"
+        elif (_sess or {}).get("phone_awaiting_dtmf"):
             phrase = "Please type your number on the keypad now."
+        elif _state in (
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        ):
+            _nf = (_sess or {}).get("name_fragment")
+            phrase = "Sorry — what's your surname?" if _nf else "Sorry — what's your first name?"
         else:
             phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
+
         await self._tts_text_queue.put(phrase)
         self._restart_timer()
 
@@ -451,6 +471,8 @@ class SilenceHandler:
     # ── internal ───────────────────────────────────────────────────────────
 
     def _restart_timer(self) -> None:
+        if self._cancelled:   # guard: don't restart after teardown
+            return
         self._cancel_timer()
         self.currently_reasking = False
         _session = self._get_session() if self._get_session else None

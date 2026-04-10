@@ -1194,7 +1194,7 @@ def _get_bridge(
     ):
         first = str(answer).split()[0].capitalize() if answer else ""
         if first:
-            return f"Thanks, {first}." if tone == "brief" else f"Thanks, {first} — bear with me one moment."
+            return f"Thanks, {first}."
         return "Thanks."
 
     # NEW_OR_RETURNING — vary warmth based on answer
@@ -2299,6 +2299,17 @@ class FlowEngine:
                     step["step"], exc,
                 )
                 instruction = step["llm_instruction"] or ""
+            # When lookup already ran successfully, prepend a status note so the LLM
+            # does NOT re-call lookup_appointment on NO / ambiguous responses.
+            if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL") and self.session.get("rc_stage") == "lookup_done":
+                _day_hint  = self.session.get("reschedule_appt_day_label", "")
+                _time_hint = self.session.get("reschedule_appt_time_label", "")
+                _hint_str  = f" on {_day_hint} at {_time_hint}" if _day_hint else ""
+                instruction = (
+                    f"⚠️ LOOKUP ALREADY DONE (rc_stage=lookup_done{_hint_str}). "
+                    "Do NOT call lookup_appointment again — you will create a duplicate lookup. "
+                    "You are in Turn 2+: confirm the appointment or offer alternatives only.\n\n"
+                ) + instruction
             self.session["question_asked_this_turn"] = True
             _allow_tools = step.get("allow_tools", True)
             # CONFIRM_ASSESSMENT: deterministic fast path for common conditions.
@@ -3921,7 +3932,7 @@ class FlowEngine:
                 self.session["phone_confirmed"]       = True
                 self.session["phone_from_twilio"]     = True
                 self.session["phone_number"]          = _nrp_phone
-                self.session.setdefault("collected", {})["phone"] = _nrp_phone
+                self.session.setdefault("collected", {})["phone"] = _to_e164_uk(_nrp_phone)
                 self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
                 self.session.pop("slot_pending_confirmation", None)
@@ -5905,7 +5916,7 @@ class FlowEngine:
                 self.session["phone_confirmed"]     = True
                 self.session["phone_from_twilio"]   = _is_twilio_confirm
                 self.session["phone_number"]        = _cp_phone
-                self.session.setdefault("collected", {})["phone"] = _cp_phone
+                self.session.setdefault("collected", {})["phone"] = _to_e164_uk(_cp_phone)
                 self.session["phone_digits_buffer"] = ""
                 self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
@@ -6288,6 +6299,53 @@ class FlowEngine:
                     logger.info("[ms_flow] correction applied — re-firing LLM for retry lookup")
                     await self.ask_current_question()
                     return
+
+            # ── Deterministic confirmation: appointment already found ───────────
+            # When rc_stage == 'lookup_done', lookup_appointment already ran and the
+            # LLM has presented the result.  Intercept YES/fragment confirmations here
+            # so we NEVER re-fire the LLM (which risks re-running lookup_appointment
+            # and repeating the "I'm looking for your appointment now" status line).
+            if self.session.get("rc_stage") == "lookup_done":
+                _lc_t = text.strip().lower()
+                _LU_YES = (
+                    "yes", "yeah", "yep", "yup", "correct", "that's right",
+                    "thats right", "that's correct", "thats correct",
+                    "that's the one", "that's it", "that was it",
+                    "it was", "yes it was", "yes it", "yep it", "yeah it",
+                    "you found the right", "found the right", "right appointment",
+                    "right one", "the right one", "that one", "yes that's right",
+                    "perfect", "great", "confirmed", "that's correct",
+                )
+                _LU_NO = (
+                    "no", "nope", "not right", "wrong", "that's not right",
+                    "thats not right", "that's not the one", "thats not the one",
+                    "wrong appointment", "not that one", "different appointment",
+                    "that's wrong", "thats wrong",
+                )
+                _is_lu_yes = any(p in _lc_t for p in _LU_YES)
+                _is_lu_no  = any(p in _lc_t for p in _LU_NO)
+
+                if _is_lu_yes and not _is_lu_no:
+                    # Deterministic confirm — equivalent to LLM calling confirm_appointment_found()
+                    self.session["rc_appointment_confirmed"] = True
+                    self.session["rc_stage"] = "confirmed"
+                    _flow_label = step["state"]
+                    logger.info(
+                        "[ms_flow] %s: deterministic YES confirmed — rc_appointment_confirmed=True",
+                        _flow_label,
+                    )
+                    _confirm_msg = (
+                        "Perfect — let me find some new times for you."
+                        if self._active_flow is RESCHEDULE_FLOW
+                        else "I'll get that cancelled for you now."
+                    )
+                    await self._tts.put(_confirm_msg)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _confirm_msg}
+                    )
+                    await self.ask_current_question()
+                    return
+                # NO or ambiguous — fall through to LLM (handles alternatives / transfer)
 
             # BUG 4: caller may abandon reschedule/cancel and ask to book new instead.
             # Intercept positive booking intent BEFORE re-firing LLM so the call
@@ -7870,9 +7928,10 @@ class FlowEngine:
             self.session["needs_location"] = False
             self.session["selected_location"] = "alcester"
         self._intent_detected = True
+        _entry_state = "ASK_LOCATION" if self.session.get("needs_location") else self._active_flow[0]["state"]
         logger.info(
-            "[ms_flow] intent=%s → flow[0]=%s",
-            intent, self._active_flow[0]["state"],
+            "[ms_flow] intent=%s → entry_state=%s",
+            intent, _entry_state,
         )
 
     # ── mid-flow interrupt ────────────────────────────────────────────────
@@ -8187,7 +8246,7 @@ class FlowEngine:
             self.session["phone_confirmed"]       = True
             self.session["phone_from_twilio"]     = True
             self.session["phone_number"]          = _prb_phone
-            self.session.setdefault("collected", {})["phone"] = _prb_phone
+            self.session.setdefault("collected", {})["phone"] = _to_e164_uk(_prb_phone)
             self.session["phone_readback_pending"] = False
             self.session.pop("phone_readback_retry", None)
             self.session.pop("slot_pending_confirmation", None)
