@@ -2454,7 +2454,12 @@ class FlowEngine:
             else:
                 question_text = step["question"]
             await self._tts.put(question_text)
-            if _is_question_worth_storing(question_text):
+            # Always anchor silence-timer to the newest step question — bypass
+            # _is_question_worth_storing gate to prevent stale anchors after
+            # state transitions.  Only exclude clear non-question preamble text.
+            _qt_lower = (question_text or "").strip().lower()
+            _is_preamble_qt = any(p in _qt_lower for p in ("just a moment", "one moment", "bear with"))
+            if question_text and not _is_preamble_qt:
                 self.session["last_question"] = question_text
             # Record fixed-step question to conversation_history
             self.session.setdefault("conversation_history", []).append(
@@ -2605,7 +2610,16 @@ class FlowEngine:
                 "COLLECT_NAME", "COLLECT_NAME_RETURNING",
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
             ):
-                _repair_q = self.session.get("last_question", "Could you say your name again?")
+                _CN_NAME_REPAIR_TRIGGERS = (
+                    "messed up my name", "got my name wrong", "wrong name",
+                    "name is wrong", "gave the wrong name",
+                )
+                if any(p in text for p in _CN_NAME_REPAIR_TRIGGERS):
+                    self.session.pop("name_fragment", None)
+                    self.session.pop("spelling_confirm_surname", None)
+                    _repair_q = "No problem — what's your full name please?"
+                else:
+                    _repair_q = self.session.get("last_question", "Could you say your name again?")
             elif _repair_state in (
                 "COLLECT_PHONE", "CONFIRM_PHONE",
                 "COLLECT_PHONE_RESCHEDULE",
@@ -4428,6 +4442,11 @@ class FlowEngine:
                     "are you open", "open on saturday", "open on sunday", "open on",
                     "do you have parking", "is there parking",
                     "how long", "what time", "do you have", "can you do", "are there any",
+                    # Inquiry preamble — "quick question first", "had a question",
+                    # "can i ask", "just wondering" must never bind an ordinal slot.
+                    "quick question", "question first", "had a question", "have a question",
+                    "just a question", "one question", "can i ask", "before i choose",
+                    "just wondering",
                 )
                 if any(m in text for m in _PD_MIXED_MARKERS):
                     logger.info(
@@ -4822,6 +4841,42 @@ class FlowEngine:
                         step["state"], _speech_ss,
                     )
                     return
+
+            # ── INQUIRY PREAMBLE GUARD ──────────────────────────────────────────
+            # "quick question first", "i had a question first are you open on saturdays"
+            # must NEVER bind a slot — route to FAQ handling and re-ask.
+            _PT_INQUIRY_PREAMBLE = (
+                "quick question", "i had a question", "question first",
+                "just a question", "have a question", "one question",
+                "can i ask", "before i", "just to ask", "just wondering",
+                "are you open on", "open on saturday", "open on sunday",
+                "open at the weekend", "open weekends",
+            )
+            if any(p in text for p in _PT_INQUIRY_PREAMBLE):
+                _pt_inq_intent = self._detect_intent(text)
+                _pt_faq_intents = {
+                    "faq_hours", "faq_location", "faq_prices",
+                    "faq_insurance", "faq_services", "faq_capability", "general_query",
+                }
+                if _pt_inq_intent in _pt_faq_intents:
+                    await self._handle_mid_flow_interrupt(_pt_inq_intent, transcript)
+                    return
+                # Weekend-specific answer
+                if any(w in text for w in ("saturday", "sunday", "weekend", "weekends", "saturdays", "sundays")):
+                    _anchor_pt = self.session.get("last_question", "Which time works best for you?")
+                    _wknd_pt = "We offer weekday appointments only — Monday through Friday. " + _anchor_pt
+                    await self._tts.put(_wknd_pt)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _wknd_pt}
+                    )
+                    logger.info("[ms_flow] PRESENT_TIMES: inquiry preamble+weekend detected — re-asked %r", _anchor_pt[:40])
+                    return
+                # Other inquiry preamble with no detectable FAQ — re-ask current question
+                _anchor_pt2 = self.session.get("last_question", "")
+                if _anchor_pt2:
+                    await self._tts.put(_anchor_pt2)
+                logger.info("[ms_flow] PRESENT_TIMES: inquiry preamble — skipping ordinal bind, re-asked")
+                return
 
             # ── ORDINAL SELECTION ──
             # Longest-string patterns checked first to avoid "first" matching
@@ -6145,6 +6200,44 @@ class FlowEngine:
                 )
                 logger.info("[ms_flow] COLLECT_NAME: repair gate replayed %r", _cn_repair_replay[:50])
                 return  # no retry increment, no name_fragment mutation
+
+            # ── Name-negation guard: "i'm not sarah", "my name is not sarah it's mark" ──
+            _CN_NEGATION_PHRASES = (
+                "i'm not ", "im not ", "not called ", "not named ",
+                "my name is not ", "my name isn't ", "not my name",
+            )
+            if any(p in text for p in _CN_NEGATION_PHRASES):
+                self.session.pop("name_fragment", None)
+                self.session.pop("spelling_confirm_surname", None)
+                import re as _re_neg
+                _neg_m = _re_neg.search(
+                    r"(?:it'?s|its|i'?m|im|the name(?:'s| is)?|actually)\s+([a-z][a-z\-']{2,})",
+                    text,
+                )
+                _CN_NEG_FW = frozenset({
+                    "not", "called", "wrong", "sorry", "actually", "the", "a",
+                    "my", "is", "was", "been", "name", "that", "this",
+                })
+                if _neg_m:
+                    _corrected_fn = _neg_m.group(1).strip().title()
+                    if _corrected_fn.lower() not in _CN_NEG_FW:
+                        self.session["name_fragment"] = _corrected_fn
+                        _neg_ask = f"Got it — and your surname?"
+                        await self._tts.put(_neg_ask)
+                        self.session["last_question"] = "And your surname?"
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _neg_ask}
+                        )
+                        logger.info("[ms_flow] COLLECT_NAME: name negation → corrected to %r", _corrected_fn)
+                        return
+                _neg_fresh = "No problem — what's your full name please?"
+                await self._tts.put(_neg_fresh)
+                self.session["last_question"] = _neg_fresh
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _neg_fresh}
+                )
+                logger.info("[ms_flow] COLLECT_NAME: name negation — clearing fragment, asking fresh")
+                return
 
         # ── COLLECT_NAME: booking-context wrapper stripping ──────────────────
         # Strip noise wrappers so "booking in john smith" → "john smith".
