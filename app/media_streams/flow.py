@@ -152,6 +152,10 @@ _GLOBAL_REPAIR_PHRASES = (
     "that's not my question", "not my question",
     "no my question was", "no my question is",
     "no that's not the question", "no that's not what",
+    # Booking-flow backtrack / correction triggers
+    "i made an error", "i made a mistake",
+    "i need to correct", "i need to go back",
+    "step back", "go back please",
 )
 
 # ── Global repeat-request phrases ───────────────────────────────────────────
@@ -2621,10 +2625,42 @@ class FlowEngine:
                 else:
                     _repair_q = self.session.get("last_question", "Could you say your name again?")
             elif _repair_state in (
-                "COLLECT_PHONE", "CONFIRM_PHONE",
+                "COLLECT_PHONE", "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
                 "COLLECT_PHONE_RESCHEDULE",
             ):
-                _repair_q = self.session.get("last_question", "Could you say that number again?")
+                # Detect explicit name/question backtrack — caller wants to step back,
+                # not repeat the phone question. e.g. "go back to the name question",
+                # "could you go back to the main question", "i made an error go back".
+                _CP_NAME_BACK = (
+                    "back to the name", "the name question", "main question",
+                    "previous question", "my name", "name was wrong",
+                    "name is wrong", "correct my name", "change my name",
+                    "back to the question", "back to name",
+                )
+                if any(p in text for p in _CP_NAME_BACK):
+                    # Determine which COLLECT_NAME state this flow uses
+                    _cn_target = (
+                        "COLLECT_NAME_RETURNING"
+                        if _repair_state == "CONFIRM_PHONE_RETURNING"
+                        else "COLLECT_NAME"
+                    )
+                    _cn_idx = next(
+                        (i for i, s in enumerate(self._active_flow) if s["state"] == _cn_target),
+                        None,
+                    )
+                    if _cn_idx is not None:
+                        self.session.pop("name_fragment", None)
+                        self.session.pop("spelling_confirm_surname", None)
+                        _col = self.session.get("collected", {})
+                        _col.pop("full_name", None)
+                        self.session["collected"] = _col
+                        self.session["flow_step"] = _cn_idx
+                        self.session["state"] = _cn_target
+                        _repair_q = "Of course — could I take your full name again please?"
+                    else:
+                        _repair_q = self.session.get("last_question", "Could you say that number again?")
+                else:
+                    _repair_q = self.session.get("last_question", "Could you say that number again?")
             elif _repair_state in (
                 "FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER",
                 "ANSWER_FAQ", "ANSWER_GENERAL",
@@ -4239,6 +4275,9 @@ class FlowEngine:
             _pd_all = self.session.get("available_days", [])
 
             if any(p in text for p in _PD_NONE) or any(p in text for p in _PD_LATER):
+                # Caller is browsing past the currently-offered set — any month-
+                # filtered overlay is no longer the active offer.
+                self.session.pop("_pd_month_filtered", None)
                 _page = self.session.get("days_page", 0) + 1
                 self.session["days_page"] = _page
                 _next_days = _pd_all[_page * 3 : (_page + 1) * 3]
@@ -4265,6 +4304,7 @@ class FlowEngine:
                 return
 
             if any(p in text for p in _PD_BACK):
+                self.session.pop("_pd_month_filtered", None)
                 _page = max(0, self.session.get("days_page", 0) - 1)
                 self.session["days_page"] = _page
                 _prev_days = _pd_all[_page * 3 : (_page + 1) * 3]
@@ -4379,7 +4419,12 @@ class FlowEngine:
             if _pd_yes:
                 # BUG 3 fix: store the real day label, not the raw affirmation.
                 # "yeah that works for me" must NOT be stored as chosen_day.
-                _avail_yes = self.session.get("available_days", [])
+                # Prefer month-filtered subset if one was just offered — prevents
+                # YES after "any dates in May" binding to original available_days[0].
+                _avail_yes = (
+                    self.session.get("_pd_month_filtered")
+                    or self.session.get("available_days", [])
+                )
                 _chosen_label = (
                     _avail_yes[0].get("day_label", transcript.strip())
                     if _avail_yes else transcript.strip()
@@ -4408,7 +4453,10 @@ class FlowEngine:
             # Deterministic position-based resolution against the offered day list.
             # Checked BEFORE named-day match so "last"/"third"/"three"/"3" never
             # reach the reprompt branch.
-            _avail_ord = self.session.get("available_days", [])[:3]
+            _avail_ord = (
+                self.session.get("_pd_month_filtered")
+                or self.session.get("available_days", [])
+            )[:3]
             _n_ord = len(_avail_ord)
             _ord_idx: Optional[int] = None
             if _n_ord > 0:
@@ -4480,7 +4528,10 @@ class FlowEngine:
             # Prevents raw text like "i take tuesday i take tuesday" from being
             # stored verbatim as chosen_day via extract:"any".
             # Only the first 3 entries in available_days are "offered" days.
-            _avail_nm = self.session.get("available_days", [])
+            _avail_nm = (
+                self.session.get("_pd_month_filtered")
+                or self.session.get("available_days", [])
+            )
             _matched_nm: Optional[dict] = None
             import re as _re_nm
             for _dentry_nm in _avail_nm[:3]:
@@ -4589,8 +4640,12 @@ class FlowEngine:
                         self.session.setdefault("conversation_history", []).append(
                             {"role": "assistant", "content": _mf_phrase}
                         )
-                        # Reset pagination to start of the filtered set
+                        # Reset pagination to start of the filtered set.
+                        # Also rebase the offered-day reference so subsequent
+                        # YES / ordinal / named-day binding resolves against the
+                        # filtered subset, not the original unfiltered list.
                         self.session["days_page"] = 0
+                        self.session["_pd_month_filtered"] = _filtered_days
                         logger.info(
                             "[ms_flow] PRESENT_DAYS month filter: %d/%d days for month=%d",
                             len(_filtered_days), len(_pd_all), _target_month,
@@ -6300,6 +6355,12 @@ class FlowEngine:
                 "are you there", "you there",
                 "can you hear", "can you hear me",
                 "hello hello", "is anyone there",
+                # Booking-context verb phrases — clearly not a person's name
+                "you're booking", "you are booking",
+                "i'm booking", "i am booking",
+                "book me in", "book me",
+                "it's booking", "are you booking",
+                "you're booking me", "you are booking me",
             )
             if any(p in (text or "").lower() for p in _NAME_NOISE_PHRASES):
                 _frag_cn = self.session.get("name_fragment")
