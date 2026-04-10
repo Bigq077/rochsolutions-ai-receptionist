@@ -67,7 +67,9 @@ If unclear, use "unknown" with "low" confidence."""}]
             return default
         return result
     except Exception as e:
-        logging.getLogger(__name__).error("classify_caller failed: %s", e)
+        # Benign failures (empty response, truncated JSON, throttle) — downgraded
+        # from error to warning to avoid log spam on every busy call.
+        logging.getLogger(__name__).warning("classify_caller failed: %s", e)
         return default
 
 

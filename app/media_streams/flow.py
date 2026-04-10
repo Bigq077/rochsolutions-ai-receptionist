@@ -2602,9 +2602,16 @@ class FlowEngine:
                 return
             # No extractable embedded question — state-aware repair prompt.
             # Do NOT enqueue phrase here; _llm_loop finally drains then enqueues.
+            # BUG 3: needs_location must NOT override name-collection states — doing
+            # so caused "Sorry about that — what was your question?" during COLLECT_NAME.
+            _actual_state = step["state"] if step else ""
             _repair_state = (
-                "ASK_LOCATION" if self.session.get("needs_location")
-                else (step["state"] if step else "")
+                "ASK_LOCATION"
+                if (self.session.get("needs_location") and _actual_state not in {
+                    "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                    "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                })
+                else _actual_state
             )
             if _repair_state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
                 _repair_q = "Sorry — were you asking about a different date or month?"
@@ -2617,11 +2624,24 @@ class FlowEngine:
                 _CN_NAME_REPAIR_TRIGGERS = (
                     "messed up my name", "got my name wrong", "wrong name",
                     "name is wrong", "gave the wrong name",
+                    # BUG 3: additional real-world variants from live calls
+                    "messed up on giving my name", "messed up giving my name",
+                    "gave wrong name", "my name's wrong", "my name was wrong",
+                    "wrong first name", "wrong surname", "incorrect name",
+                    "not my name", "that's not my name", "thats not my name",
+                    "go back to the name", "correct my name",
                 )
                 if any(p in text for p in _CN_NAME_REPAIR_TRIGGERS):
+                    # BUG 5: clear ALL name state so corrupted fragment can't
+                    # be appended to a new surname
                     self.session.pop("name_fragment", None)
                     self.session.pop("spelling_confirm_surname", None)
-                    _repair_q = "No problem — what's your full name please?"
+                    _col_cn = self.session.get("collected", {})
+                    _col_cn.pop("full_name", None)
+                    self.session["collected"] = _col_cn
+                    # BUG 2: ask for first name specifically, not generic "full name".
+                    # Normal COLLECT_NAME flow will ask surname after first name is captured.
+                    _repair_q = "No problem — what's your first name please?"
                 else:
                     _repair_q = self.session.get("last_question", "Could you say your name again?")
             elif _repair_state in (
@@ -6313,6 +6333,27 @@ class FlowEngine:
 
         answer = self._extract(step["extract"], text, transcript)
 
+        # ── COLLECT_NAME: structured split-name fallback ─────────────────────
+        # "my first name is X my surname is Y" — the function-word guard in
+        # _extract("name") rejects "is" and returns None for these compounds.
+        # Parse them explicitly before any further guards run.
+        # (_COLLECT_NAME_STATES_STRIP defined above has the same four states)
+        if step["state"] in _COLLECT_NAME_STATES_STRIP and answer is None and not self.session.get("name_fragment"):
+            import re as _re_split_fn
+            _split_m = _re_split_fn.search(
+                r'first\s+name\s+is\s+([a-z][a-z\-\']+)'
+                r'.{0,50}?(?:sur|last\s+)?name\s+is\s+([a-z][a-z\-\']+)',
+                text, _re_split_fn.IGNORECASE,
+            )
+            if _split_m:
+                _sp_fn = _split_m.group(1).strip().title()
+                _sp_sn = _split_m.group(2).strip().title()
+                answer = f"{_sp_fn} {_sp_sn}"
+                logger.info(
+                    "[ms_flow] COLLECT_NAME: split-name fallback %r → %r",
+                    text[:60], answer,
+                )
+
         # ── PRESENT_DAYS: nullify extracted day on mixed-intent turns ─────────
         # "quick question first are you open on saturdays" extracts "saturday"
         # but the caller is asking an inquiry, not selecting a booking day.
@@ -6415,6 +6456,12 @@ class FlowEngine:
                 "yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure", "fine",
                 "works", "work", "sorry", "what", "well", "now", "just",
                 "like", "said", "please", "right", "wrong", "the", "a", "an",
+                # BUG 1: domain / context words that STT emits mid-call as fragments
+                "clinic", "clinics", "therapy", "therapist", "physio",
+                "physiotherapy", "reception", "receptionist", "appointment",
+                "appointments", "booking", "bookings", "health", "redditch",
+                "alcester", "doctor", "service", "services", "number",
+                "here", "there", "today", "tomorrow", "next", "last",
             })
             if answer.lower() in _FRAGMENT_REJECT:
                 _cn_pending = self.session.get("last_question", "Who am I booking in today?")
@@ -8701,7 +8748,7 @@ class FlowEngine:
             # 1. Strip common prefixes: "my name is X", "it's X", "I'm X", "call me X"
             import re as _re_name
             _prefix_m = _re_name.match(
-                r'^(?:my (?:first |last )?name(?:\s+is)?|the name(?:\s+is)?|name(?:\s+is)?'
+                r'^(?:my (?:full |first |last )?name(?:\s+is)?|the name(?:\s+is)?|name(?:\s+is)?'
                 r'|it\'?s|its|i\'?m|im|call me|this is)\s+',
                 _raw_name, _re_name.IGNORECASE,
             )
@@ -8751,6 +8798,14 @@ class FlowEngine:
                 # answers (e.g. "my name is and Smith" → LLM extracts "and")
                 "and", "or", "but", "so", "a", "an", "the", "my", "it",
                 "its", "i", "me", "we", "us", "he", "she", "they", "them",
+                # BUG 1: clinic-domain and context words that STT emits as fragments
+                # and must never be accepted as a person's first name
+                "clinic", "clinics", "therapy", "therapist", "physio",
+                "physiotherapy", "reception", "receptionist", "appointment",
+                "appointments", "booking", "bookings", "health", "redditch",
+                "alcester", "doctor", "service", "services", "waiting",
+                "here", "there", "today", "tomorrow", "yes", "number",
+                "first", "second", "third", "next", "last", "new", "old",
             })
             if len(words) == 1 and _raw_name.lower() in _NOT_A_NAME:
                 logger.info("[ms_extract] name: rejected filler %r as name", _raw_name)
