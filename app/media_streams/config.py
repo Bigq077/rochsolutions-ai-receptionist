@@ -458,12 +458,11 @@ AVAILABILITY_FLOW_RULE = (
 
 NAME_COLLECTION_RULE = (
     "NAME COLLECTION RULE:\n"
-    "Ask for the caller's name in a single question: "
-    "'Who am I booking in today?'\n"
-    "Store the entire response as full_name. "
-    "NEVER ask for first name and surname separately. "
-    "NEVER ask a follow-up question about the surname after receiving a name. "
-    "If the caller gives only one name, accept it and move on — do not ask for more.\n"
+    "Ask for the caller's first name: 'And what's your first name please?'\n"
+    "After receiving a first name, ask for their surname: 'And your surname?'\n"
+    "Combine both to form full_name. "
+    "NEVER store a single given name as complete full_name without asking for the surname. "
+    "If the caller gives their full name in one utterance, accept it without re-asking.\n"
 )
 
 # ---------------------------------------------------------------------------

@@ -319,7 +319,7 @@ _KNOWN_QUESTION_PHRASES = [
     "been with us before",
     "been to us before",
     "work best for you",
-    "full name please",
+    "first name please",
     "reach you on",
     "which would you prefer",
     "that right",
@@ -641,7 +641,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "Could I take your full name, please?",
+        "question": "Could I take your first name please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -672,10 +672,10 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "answer_field": "treatment_plan_looked_up",
         "use_llm": True,
         "llm_instruction": (
-            "Call get_patient_history with patient_name='{full_name}' (no phone).\n"
+            "Call get_patient_history with patient_name='{full_name}', phone='{phone_number}'.\n"
             "After the tool responds:\n"
             "CASE 1 — found=True (single match): say warmly in one natural sentence, e.g. "
-            "'I can see you\\'ve been coming in for your {most_recent_type} — "
+            "'I can see you\\'ve been coming in for your [most_recent_type] — "
             "let\\'s get your next session booked in.'\n"
             "CASE 2 — found='multiple': the tool returned a list of matches with different "
             "phone numbers. Say: 'I found a couple of patients with that name — could you "
@@ -758,7 +758,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 11,
         "state": "COLLECT_NAME",
-        "question": "Who am I booking in today?",
+        "question": "And what's your first name please?",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -1879,13 +1879,6 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # on_treatment_plan: skip phone collection entirely — lookup by name only
-        if step["state"] in ("CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING") and self.session.get("on_treatment_plan"):
-            self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] on_treatment_plan — skipping %s (name-only lookup)", step["state"])
-            await self.ask_current_question()
-            return
-
         # CONFIRM_PHONE_RETURNING: skip if no Twilio number → go to COLLECT_PHONE_RETURNING
         if step["state"] == "CONFIRM_PHONE_RETURNING" and not self.session.get("phone_from_twilio"):
             self.session["flow_step"] = step["step"] + 1
@@ -2318,6 +2311,7 @@ class FlowEngine:
             # treatment type — no patient response needed; next step asks availability.
             if step["state"] == "LOOKUP_TREATMENT_PLAN":
                 self.session["flow_step"] = step["step"] + 1
+                self.session["question_asked_this_turn"] = False
                 logger.info("[ms_flow] LOOKUP_TREATMENT_PLAN complete — advancing to PRESENT_DAYS")
                 await self.ask_current_question()
                 return
@@ -2327,8 +2321,27 @@ class FlowEngine:
             # If not yet confirmed, stay on this step so the next caller utterance
             # loops back through the LLM for the confirmation exchange.
             if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+                # Deterministic failure readback — lookup_appointment set rc_lookup_failed=True
+                if self.session.get("rc_lookup_failed"):
+                    self.session.pop("rc_lookup_failed", None)
+                    _fail_name = (self.session.get("collected") or {}).get("full_name", "the name given")
+                    _fail_msg = (
+                        f"I'm sorry — I couldn't find a future appointment under {_fail_name}. "
+                        "Could you confirm the first name, surname, and phone number "
+                        "the booking was made under?"
+                    )
+                    # Drain any LLM output already queued to TTS
+                    while not self._tts.empty():
+                        try:
+                            self._tts.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    await self._tts.put(_fail_msg)
+                    self.session["last_question"] = _fail_msg
+                    return
                 if self.session.get("rc_appointment_confirmed"):
                     self.session["flow_step"] = step["step"] + 1
+                    self.session["question_asked_this_turn"] = False
                     logger.info(
                         "[ms_flow] %s confirmed — advancing to step %d",
                         step["state"], step["step"] + 1,
@@ -2676,7 +2689,7 @@ class FlowEngine:
                         self.session["collected"] = _col
                         self.session["flow_step"] = _cn_idx
                         self.session["state"] = _cn_target
-                        _repair_q = "Of course — could I take your full name again please?"
+                        _repair_q = "Of course — could I take your first name again please?"
                     else:
                         _repair_q = self.session.get("last_question", "Could you say that number again?")
                 else:
@@ -2686,6 +2699,12 @@ class FlowEngine:
                 "ANSWER_FAQ", "ANSWER_GENERAL",
             ):
                 _repair_q = "Sorry about that \u2014 what was your question?"
+            elif _repair_state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL", "LOOKUP_TREATMENT_PLAN"):
+                # Mid-lookup repair — LLM is running tool. Re-anchor caller.
+                _repair_q = self.session.get(
+                    "last_question",
+                    "No problem — just bear with me one moment while I check your appointment.",
+                )
             else:
                 _repair_q = "Sorry about that \u2014 what was your question?"
             self.session["last_question"] = _repair_q
@@ -2780,19 +2799,31 @@ class FlowEngine:
         if self.session.get("classification_pending"):
             words = transcript.strip().split()
             if len(words) > 1:
-                from app.caller_classifier import classify_caller
-                try:
-                    result = await asyncio.to_thread(classify_caller, transcript)
-                    self.session["caller_type"] = result["type"]
-                    self.session["_classification_confidence"] = result["confidence"]
-                    logger.info(
-                        "[ms_flow] caller classified: type=%s confidence=%s intent=%r",
-                        result["type"], result["confidence"], result.get("intent", "")[:60],
-                    )
-                except Exception as _cls_err:
-                    logger.warning("[ms_flow] classify_caller failed: %r — defaulting to patient", _cls_err)
+                # Deterministic pre-check: obvious patient phrases skip LLM classification
+                _OBVIOUS_PATIENT_PHRASES = (
+                    "book", "appointment", "physio", "physiotherapy", "treatment",
+                    "reschedule", "cancel", "rebook", "coming in", "see someone",
+                    "pain", "injury", "hurting", "aching", "assessment",
+                )
+                if any(p in text for p in _OBVIOUS_PATIENT_PHRASES):
                     self.session["caller_type"] = "patient"
-                self.session["classification_pending"] = False
+                    self.session["classification_pending"] = False
+                    self.session["_classification_confidence"] = "deterministic"
+                    logger.info("[ms_flow] caller pre-classified as patient (deterministic match)")
+                else:
+                    from app.caller_classifier import classify_caller
+                    try:
+                        result = await asyncio.to_thread(classify_caller, transcript)
+                        self.session["caller_type"] = result["type"]
+                        self.session["_classification_confidence"] = result["confidence"]
+                        logger.info(
+                            "[ms_flow] caller classified: type=%s confidence=%s intent=%r",
+                            result["type"], result["confidence"], result.get("intent", "")[:60],
+                        )
+                    except Exception as _cls_err:
+                        logger.warning("[ms_flow] classify_caller failed: %r — defaulting to patient", _cls_err)
+                        self.session["caller_type"] = "patient"
+                    self.session["classification_pending"] = False
             elif step["state"] != "DETECT_INTENT":
                 # Past first utterance with a short response — force patient
                 self.session["caller_type"] = "patient"
@@ -2834,13 +2865,26 @@ class FlowEngine:
                     "Which clinic would you like — Alcester or Redditch? "
                     "Press 1 for Alcester or 2 for Redditch.",
                 )
-                # FAQ interrupt at ASK_LOCATION — answer and re-ask clinic question
-                # without consuming a retry slot.
                 _loc_faq_intents = {
                     "faq_prices", "faq_insurance", "faq_hours",
                     "faq_location", "faq_services", "faq_capability",
-                    "general_query",
+                    # general_query intentionally removed: vague/cut-off phrases score
+                    # general_query and must NOT fire the LLM at ASK_LOCATION.
                 }
+                # Fragment guard FIRST — before intent detection.
+                # Short phrases without a location token are noise/cut-off audio
+                # and must not consume a retry slot or trigger the LLM.
+                _loc_words = text.split()
+                _loc_tokens = ("alcester", "redditch", "1", "2", "one", "two",
+                               "first", "second", "alchester", "reddit")
+                _has_loc_token = any(p in text for p in _loc_tokens)
+                if not _has_loc_token and len(_loc_words) <= 4 and not text.rstrip().endswith("?"):
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: fragment suppressed (no loc token, %d words) %r",
+                        len(_loc_words), text[:40],
+                    )
+                    return
+                # FAQ interrupt — only genuine FAQ intents; general_query excluded above.
                 _loc_intent = self._detect_intent(text)
                 if _loc_intent in _loc_faq_intents:
                     logger.info(
@@ -2848,20 +2892,6 @@ class FlowEngine:
                         _loc_intent,
                     )
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
-                    return
-                # Fragment guard: very short / garbled turns don't consume a retry
-                # slot or speak any prompt — silence handler deals with true silence.
-                _loc_words = text.split()
-                if len(_loc_words) < 2 and not any(
-                    p in text for p in (
-                        "alcester", "redditch", "1", "2", "one", "two",
-                        "first", "second", "alchester", "reddit",
-                    )
-                ):
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION: sub-threshold fragment %r — suppressed",
-                        text[:30],
-                    )
                     return
                 _retry_count = self.session.get("location_retry_count", 0) + 1
                 self.session["location_retry_count"] = _retry_count
@@ -5690,7 +5720,7 @@ class FlowEngine:
                 "what were you asking", "what did you want",
             )
             if any(p in text for p in _CN_REPAIR):
-                _cn_pending = self.session.get("last_question", "Who am I booking in today?")
+                _cn_pending = self.session.get("last_question", "And what's your first name please?")
                 await self._tts.put(_cn_pending)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _cn_pending}
@@ -6268,7 +6298,7 @@ class FlowEngine:
                 if self.session.get("name_fragment"):
                     _cn_repair_replay = "And what's your surname?"
                 else:
-                    _cn_repair_replay = self.session.get("last_question", "Who am I booking in today?")
+                    _cn_repair_replay = self.session.get("last_question", "And what's your first name please?")
                 await self._tts.put(_cn_repair_replay)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _cn_repair_replay}
@@ -6305,7 +6335,7 @@ class FlowEngine:
                         )
                         logger.info("[ms_flow] COLLECT_NAME: name negation → corrected to %r", _corrected_fn)
                         return
-                _neg_fresh = "No problem — what's your full name please?"
+                _neg_fresh = "No problem — what's your first name please?"
                 await self._tts.put(_neg_fresh)
                 self.session["last_question"] = _neg_fresh
                 self.session.setdefault("conversation_history", []).append(
@@ -6365,6 +6395,8 @@ class FlowEngine:
                 "open sundays", "open saturdays", "have parking", "is there parking",
                 "do you have", "how long", "what time", "are there any", "can you do",
                 "quick question", "just a question", "just wondering",
+                # Name-introduction phrases must never bind a day:
+                "full name is", "my name is", "first name is", "surname is", "my first name",
             )
             if any(_sig in text for _sig in _PD_MIXED_SIGNALS):
                 logger.info(
@@ -6464,7 +6496,7 @@ class FlowEngine:
                 "here", "there", "today", "tomorrow", "next", "last",
             })
             if answer.lower() in _FRAGMENT_REJECT:
-                _cn_pending = self.session.get("last_question", "Who am I booking in today?")
+                _cn_pending = self.session.get("last_question", "And what's your first name please?")
                 await self._tts.put(_cn_pending)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _cn_pending}
@@ -6949,12 +6981,33 @@ class FlowEngine:
                                 {"role": "assistant", "content": _sn_q}
                             )
                     else:
-                        _cn_replay = self.session.get("last_question", "Who am I booking in today?")
+                        _cn_replay = self.session.get("last_question", "And what's your first name please?")
                         await self._tts.put(_cn_replay)
                         self.session.setdefault("conversation_history", []).append(
                             {"role": "assistant", "content": _cn_replay}
                         )
                     return
+                # Bypass Haiku for PRESENT_DAYS states when utterance is a short cut-off
+                # fragment with no unambiguous day/time content. "that's why i" etc. are
+                # audio artifacts — replay last_question instead.
+                _PD_HAIKU_STATES = {"PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"}
+                if step["state"] in _PD_HAIKU_STATES:
+                    _pd_hk_words = transcript.strip().split()
+                    _pd_day_tokens = (
+                        "monday", "tuesday", "wednesday", "thursday", "friday",
+                        "saturday", "sunday", "today", "tomorrow", "next week",
+                        "earliest", "soonest", "whenever", "morning", "afternoon",
+                        "week", "fortnight",
+                    )
+                    _pd_has_day_token = any(tok in text for tok in _pd_day_tokens)
+                    if not _pd_has_day_token and len(_pd_hk_words) <= 5:
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS: cut-off fragment suppressed before Haiku %r",
+                            transcript[:40],
+                        )
+                        _pd_replay = self.session.get("last_question", "Which day would suit you best?")
+                        await self._tts.put(_pd_replay)
+                        return
                 await self._haiku_fallback(transcript, step)
                 return
             # count == 2: hardcoded second retry

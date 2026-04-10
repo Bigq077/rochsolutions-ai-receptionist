@@ -1715,6 +1715,7 @@ async def _lookup_appointment_acuity(
         )
 
         future_matches = []
+        _near_match_used = False
         for appt in appointments:
             dt_str = appt.get("datetime", "")
             if not dt_str:
@@ -1752,10 +1753,60 @@ async def _lookup_appointment_acuity(
             future_matches.append((dt, appt))
 
         if not future_matches:
+            import difflib as _dl
+            _near: list = []
+            for appt in appointments:
+                dt_str = appt.get("datetime", "")
+                if not dt_str:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(
+                        dt_str.replace("Z", "+00:00")
+                    ).astimezone(LONDON_TZ)
+                    if dt <= now:
+                        continue
+                except Exception:
+                    continue
+                appt_first   = (appt.get("firstName") or "").strip().lower()
+                appt_last    = (appt.get("lastName")  or "").strip().lower()
+                appt_phone_d = "".join(c for c in (appt.get("phone") or "") if c.isdigit())
+                # Phone must still match exactly on near-match pass
+                if appt_phone_d and not (phone_digits and phone_digits[-10:] == appt_phone_d[-10:]):
+                    continue
+                fn_ratio = _dl.SequenceMatcher(None, first_name, appt_first).ratio()
+                ln_ratio = _dl.SequenceMatcher(None, last_name,  appt_last).ratio()
+                if fn_ratio >= 0.8 and ln_ratio >= 0.8:
+                    _near.append((dt, appt))
+
+            if not _near:
+                logger.info(
+                    "_lookup_appointment_acuity: no future match (incl. near-match) for %r %r",
+                    first_name, last_name,
+                )
+                session["rc_lookup_failed"] = True
+                return {"found": False, "error": "No future appointment found under those details."}
+
+            if len(_near) >= 2:
+                _near.sort(key=lambda x: x[0])
+                _alts = [
+                    {
+                        "id":         str(a["id"]),
+                        "datetime":   d.isoformat(),
+                        "day_label":  f"{d.strftime('%A')} {_ordinal(d.day)} {d.strftime('%B')}",
+                        "time_label": d.strftime("%H:%M"),
+                        "type":       a.get("type", "appointment"),
+                    }
+                    for d, a in _near[:3]
+                ]
+                return {"found": "multiple", "alternatives": _alts,
+                        "error": "Multiple near-matches — please confirm details."}
+
+            # Exactly one near-match
+            future_matches = _near
+            _near_match_used = True
             logger.info(
-                "_lookup_appointment_acuity: no future match for %r %r", first_name, last_name
+                "_lookup_appointment_acuity: near-match found for %r %r", first_name, last_name
             )
-            return {"found": False, "error": "No future appointment found under those details."}
 
         # Nearest first
         future_matches.sort(key=lambda x: x[0])
@@ -1771,8 +1822,9 @@ async def _lookup_appointment_acuity(
         session["reschedule_appt_datetime"] = best_dt.isoformat()
         session["reschedule_appt_type"]     = best_appt.get("type", "appointment")
         session["rc_stage"]                 = "lookup_done"
-        # Clear any leftover confirmed flag from a previous lookup in this session
+        # Clear any leftover confirmed/failure flags from a previous lookup in this session
         session.pop("rc_appointment_confirmed", None)
+        session.pop("rc_lookup_failed", None)
 
         day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
         time_label = best_dt.strftime("%H:%M")
@@ -1802,6 +1854,7 @@ async def _lookup_appointment_acuity(
             "appointment_type": best_appt.get("type", "appointment"),
             "multiple_found":   len(future_matches) > 1,
             "alternatives":     alternatives,
+            "near_match":       _near_match_used,
         }
 
     except Exception as e:
@@ -2868,6 +2921,9 @@ async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any
     if not patient_name:
         return {"found": False, "message": "Patient name required"}
 
+    caller_phone_digits = "".join(c for c in (args.get("phone") or "") if c.isdigit())
+    caller_phone_last10 = caller_phone_digits[-10:] if len(caller_phone_digits) >= 10 else ""
+
     today = datetime.now(LONDON_TZ).date()
     min_date = today - timedelta(days=120)   # look back 4 months
     max_date = today + timedelta(days=30)    # include upcoming sessions on the plan
@@ -2914,6 +2970,23 @@ async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any
             return datetime.min.replace(tzinfo=pytz.utc)
 
     matching.sort(key=_dt, reverse=True)
+
+    # If caller's phone was provided, narrow to phone-matching appointments.
+    # Collapses same-name multi-patient ambiguity without an LLM disambiguation turn.
+    if caller_phone_last10:
+        _before_count = len(matching)
+        _phone_filtered = [
+            _a for _a in matching
+            if "".join(
+                c for c in (_a.get("phone") or _a.get("smsReminderNumber") or "") if c.isdigit()
+            )[-10:] == caller_phone_last10
+        ]
+        if _phone_filtered:
+            matching = _phone_filtered
+            logger.info(
+                "get_patient_history: phone pre-filter narrowed %d → %d appointments",
+                _before_count, len(_phone_filtered),
+            )
 
     # Detect same-name ambiguity: group appointments by phone number
     _phone_groups: dict = {}

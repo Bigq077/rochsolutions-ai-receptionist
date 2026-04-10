@@ -140,7 +140,7 @@ _KNOWN_QUESTION_PHRASES = [
     "does that sound ok",
     "been with us before",
     "work best for you",
-    "full name please",
+    "first name please",
     "reach you on",
     "which would you prefer",
     "that right",
