@@ -3007,6 +3007,32 @@ class FlowEngine:
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
+                # ── Intent-pivot intercept (Bug 1) ────────────────────────────
+                # "meant to say rebook" / "could i reschedule instead" are
+                # corrections to the original routing, NOT failed location answers.
+                # Check BEFORE retry counter so no slot is burned.
+                # Uses a two-gate: cheap string check first, then _detect_intent
+                # only if a strong signal is present.  False positives on
+                # "actually I prefer mornings" are blocked by _detect_intent
+                # returning general_query (not in the routing set below).
+                _LOC_PIVOT_SIGNALS = (
+                    "reschedule", "re-schedule", "rebook", "re-book",
+                    "cancel", "instead", "meant to say", "i meant",
+                    "actually i need", "what i meant", "my mistake",
+                    "sorry i meant", "meant to book",
+                )
+                if any(p in text for p in _LOC_PIVOT_SIGNALS):
+                    _pivot_intent = self._detect_intent(text)
+                    if _pivot_intent in ("reschedule", "cancel", "booking"):
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: intent pivot %r → %s (no retry consumed)",
+                            text[:60], _pivot_intent,
+                        )
+                        self.session.pop("location_retry_count", None)
+                        self._switch_flow(_pivot_intent)
+                        await self.ask_current_question()
+                        return
+
                 # Check for general inquiry BEFORE incrementing retry counter so
                 # "Which clinic has parking?" doesn't burn a retry slot.
                 _loc_frozen_q = self.session.get(
@@ -3803,6 +3829,21 @@ class FlowEngine:
                 self.session["prof_flow_step"] = 0
                 await self._tts.put("Of course — could I take your name please?")
                 logger.info("[ms_flow] professional caller — entering professional flow")
+                return
+
+            # Bug 2: lone filler tokens ("yeah", "hi", "okay") must not trigger
+            # routing — the caller hasn't stated their request yet.
+            # Guard is strictly first-turn (DETECT_INTENT only).
+            _FIRST_TURN_FILLERS = frozenset({
+                "yeah", "yes", "yep", "yup", "hi", "hello", "hey",
+                "uh", "um", "er", "err", "okay", "ok", "right",
+            })
+            _ft_words = text.strip().split()
+            if len(_ft_words) == 1 and _ft_words[0] in _FIRST_TURN_FILLERS:
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: first-turn filler %r — waiting for real request",
+                    text[:20],
+                )
                 return
 
             intent = self._detect_intent(text)
