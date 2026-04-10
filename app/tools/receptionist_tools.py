@@ -1694,6 +1694,13 @@ async def _lookup_appointment_acuity(
         last_name    = (args.get("last_name")  or "").strip().lower()
         phone_digits = "".join(c for c in (args.get("phone") or "") if c.isdigit())
 
+        logger.info(
+            "_lookup_appointment_acuity: first=%r last=%r raw_phone=%r normalized_last10=%s",
+            first_name, last_name,
+            args.get("phone"),
+            phone_digits[-10:] if phone_digits else "(none)",
+        )
+
         # Code-level guard: all three identity fields must be present before searching
         if not first_name or not last_name or not phone_digits:
             return {
@@ -1775,7 +1782,7 @@ async def _lookup_appointment_acuity(
                     continue
                 fn_ratio = _dl.SequenceMatcher(None, first_name, appt_first).ratio()
                 ln_ratio = _dl.SequenceMatcher(None, last_name,  appt_last).ratio()
-                if fn_ratio >= 0.8 and ln_ratio >= 0.8:
+                if fn_ratio >= 0.65 and ln_ratio >= 0.65:
                     _near.append((dt, appt))
 
             if not _near:

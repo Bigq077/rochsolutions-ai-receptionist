@@ -1361,8 +1361,8 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
             "phone='{phone_number}', location='{selected_location}').\n"
             "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
-            "  If found=false: say 'I couldn\\'t find a future booking under those details. "
-            "Could you double-check the name and the number you used when you booked?'\n\n"
+            "  If found=false: say NOTHING — stay completely silent. "
+            "The system will handle the failure message automatically.\n\n"
             "TURN 2+ — Confirm:\n"
             "  Caller says YES → call confirm_appointment_found(). "
             "Then say 'Perfect — let me find some new times for you.'\n"
@@ -1371,8 +1371,10 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
             "Could you call the clinic directly and they\\'ll sort it out for you?' "
             "Then call log_call_outcome(outcome='transferred').\n"
-            "  After a lookup failure the caller may give corrected details — re-call lookup_appointment "
-            "with the new first_name/last_name/phone and restart this flow.\n"
+            "  After a lookup failure the caller corrects their details — re-call lookup_appointment "
+            "with the corrected first_name/last_name/phone. "
+            "When parsing corrections like 'surname is Pringle not the one you gave me', "
+            "use ONLY the word(s) immediately after 'is' — stop at 'not', 'and', 'but'.\n"
         ),
     },
     {
@@ -1513,8 +1515,8 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
             "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
             "phone='{phone_number}', location='{selected_location}').\n"
             "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
-            "  If found=false: say 'I couldn\\'t find a future booking under those details. "
-            "Could you double-check the name and the number you used when you booked?'\n\n"
+            "  If found=false: say NOTHING — stay completely silent. "
+            "The system will handle the failure message automatically.\n\n"
             "TURN 2+ — Confirm:\n"
             "  Caller says YES → call confirm_appointment_found(). "
             "Then say 'I\\'ll get that cancelled for you now.'\n"
@@ -1523,8 +1525,10 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
             "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
             "Could you call the clinic directly and they\\'ll sort it out for you?' "
             "Then call log_call_outcome(outcome='transferred').\n"
-            "  After a lookup failure the caller may give corrected details — re-call lookup_appointment "
-            "with the new first_name/last_name/phone and restart this flow.\n"
+            "  After a lookup failure the caller corrects their details — re-call lookup_appointment "
+            "with the corrected first_name/last_name/phone. "
+            "When parsing corrections like 'surname is Pringle not the one you gave me', "
+            "use ONLY the word(s) immediately after 'is' — stop at 'not', 'and', 'but'.\n"
         ),
     },
     {
@@ -1648,6 +1652,72 @@ _INTENT_TO_FAQ_TOPIC = {
     "faq_services":    "services",
     "faq_capability":  "capability",
 }
+
+
+# ---------------------------------------------------------------------------
+# Lookup correction parser
+# ---------------------------------------------------------------------------
+
+import re as _re_mod  # used by _parse_lookup_name_correction
+
+
+def _parse_lookup_name_correction(text: str) -> str | None:
+    """
+    Parse a caller utterance that corrects their name after a lookup failure.
+
+    Handles:
+      "surname is Pringle not the one you gave me"  → "__SURNAME__Pringle"
+      "last name is Cookbill"                        → "__SURNAME__Cookbill"
+      "full name is Matt Cookbill"                   → "Matt Cookbill"
+      "my name is Sarah Jones"                       → "Sarah Jones"
+      "it's Sarah Jones"                             → "Sarah Jones"
+
+    Surname-only results are prefixed with ``__SURNAME__`` so the caller can
+    combine with the existing first name held in the session.
+
+    Returns a cleaned, title-cased string or None if no pattern matches.
+    """
+    raw = text.strip().lower()
+
+    # Strip trailing disclaimer clauses ("not the one you gave", "and not X", …)
+    _STOP_RE = _re_mod.compile(
+        r"\b(not|and\s+not|but|actually|sorry|i mean|rather|instead)\b.*$",
+        _re_mod.IGNORECASE,
+    )
+
+    def _clean(capture: str) -> str:
+        cleaned = _STOP_RE.sub("", capture).strip()
+        cleaned = _re_mod.sub(r"[^a-zA-Z\s\-']", "", cleaned).strip()
+        return " ".join(w.capitalize() for w in cleaned.split()) if cleaned else ""
+
+    # Surname-only patterns
+    _SURNAME_PATS = [
+        r"\bsurname(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)?)",
+        r"\blast\s+name(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)?)",
+        r"\bfamily\s+name(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)?)",
+    ]
+    for pat in _SURNAME_PATS:
+        m = _re_mod.search(pat, raw, _re_mod.IGNORECASE)
+        if m:
+            surname = _clean(m.group(1))
+            if surname:
+                return f"__SURNAME__{surname}"
+
+    # Full-name patterns (require ≥ 2 tokens after cleaning)
+    _FULL_PATS = [
+        r"\bfull\s+name(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)+)",
+        r"\bmy\s+name(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)+)",
+        r"\bname(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)+)",
+        r"\bit(?:'s|\s+is)\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)+)",
+    ]
+    for pat in _FULL_PATS:
+        m = _re_mod.search(pat, raw, _re_mod.IGNORECASE)
+        if m:
+            name = _clean(m.group(1))
+            if len(name.split()) >= 2:
+                return name
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2338,6 +2408,7 @@ class FlowEngine:
                             break
                     await self._tts.put(_fail_msg)
                     self.session["last_question"] = _fail_msg
+                    self.session["lookup_correction_mode"] = True   # deterministic repair mode
                     return
                 if self.session.get("rc_appointment_confirmed"):
                     self.session["flow_step"] = step["step"] + 1
@@ -6151,6 +6222,36 @@ class FlowEngine:
         # _extract("none") returns True which would silently advance to the next step
         # without the LLM ever calling confirm_appointment_found.
         if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            # Deterministic name correction pre-check — runs before LLM re-fire.
+            # Active only when lookup_correction_mode is set (i.e. a previous lookup failed).
+            if self.session.get("lookup_correction_mode"):
+                _correction = _parse_lookup_name_correction(text)
+                if _correction:
+                    col = self.session.setdefault("collected", {})
+                    if _correction.startswith("__SURNAME__"):
+                        _new_surname = _correction[len("__SURNAME__"):]
+                        _existing_full = (col.get("full_name") or "").strip()
+                        _first = _existing_full.split()[0] if _existing_full else ""
+                        _combined = f"{_first} {_new_surname}".strip() if _first else _new_surname
+                        col["full_name"] = _combined
+                        self.session["full_name"] = _combined
+                        logger.info(
+                            "[ms_flow] correction (surname-only): %r → full_name=%r",
+                            text[:50], _combined,
+                        )
+                    else:
+                        col["full_name"] = _correction
+                        self.session["full_name"] = _correction
+                        logger.info(
+                            "[ms_flow] correction (full name): %r → full_name=%r",
+                            text[:50], _correction,
+                        )
+                    self.session.pop("lookup_correction_mode", None)
+                    # Re-fire the LLM with the updated name so it retries lookup_appointment
+                    logger.info("[ms_flow] correction applied — re-firing LLM for retry lookup")
+                    await self.ask_current_question()
+                    return
+
             # BUG 4: caller may abandon reschedule/cancel and ask to book new instead.
             # Intercept positive booking intent BEFORE re-firing LLM so the call
             # doesn't close.  Only match on unambiguous new-booking phrases — bare
@@ -6864,6 +6965,25 @@ class FlowEngine:
 
         if answer is None:
             # No valid answer extracted — acknowledged re-ask with retry counting
+
+            # ── Keypad-entry status phrases: phone states ─────────────────────
+            # Caller says "typing it in" / "one second" etc. at a phone-collection
+            # step — acknowledge and wait; do NOT increment retry counter.
+            _PHONE_KEYPAD_STATES = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING"}
+            if step["state"] in _PHONE_KEYPAD_STATES:
+                _KEYPAD_PHRASES = (
+                    "typing it in", "entering it", "on the keypad", "on the keyboard",
+                    "one second", "just getting it", "putting it in", "got it here",
+                    "just got", "typed in", "just typing", "bear with me",
+                    "give me a sec", "just a sec", "two seconds",
+                )
+                if any(p in text for p in _KEYPAD_PHRASES):
+                    _kp_q = self.session.get("last_question", "And the best number to reach you on?")
+                    await self._tts.put("That's fine — go ahead and type it in on the keypad.")
+                    self.session["last_question"] = _kp_q
+                    logger.info("[ms_flow] COLLECT_PHONE: keypad-entry phrase detected — no retry consumed")
+                    return
+
             phrase_key = _phrase_key_for_step(step)
             retry_counts = self.session.setdefault("slot_retry_counts", {})
             retry_counts[phrase_key] = retry_counts.get(phrase_key, 0) + 1
@@ -6986,6 +7106,19 @@ class FlowEngine:
                         self.session.setdefault("conversation_history", []).append(
                             {"role": "assistant", "content": _cn_replay}
                         )
+                    return
+                # Bypass Haiku for phone-collection states — any unrecognised utterance
+                # at COLLECT_PHONE / COLLECT_PHONE_RETURNING is almost always a partial
+                # number, background noise, or a filler ("hold on", "hang on").
+                # Haiku would say something confusing here; just replay the question.
+                _COLLECT_PHONE_STATES_FG = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING"}
+                if step["state"] in _COLLECT_PHONE_STATES_FG:
+                    _ph_replay = self.session.get("last_question", "And the best number to reach you on?")
+                    await self._tts.put(_ph_replay)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _ph_replay}
+                    )
+                    logger.info("[ms_flow] COLLECT_PHONE: Haiku bypassed — replaying last_question")
                     return
                 # Bypass Haiku for PRESENT_DAYS states when utterance is a short cut-off
                 # fragment with no unambiguous day/time content. "that's why i" etc. are

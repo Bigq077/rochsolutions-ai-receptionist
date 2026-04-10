@@ -635,6 +635,18 @@ class LLMStream:
 
             await save_session(call_sid, session)
 
+            # ── Deterministic failure: suppress post-tool LLM speech ─────
+            # If a lookup tool set rc_lookup_failed=True, the post-LLM block
+            # in flow.py will speak a deterministic failure message.  Break now
+            # so the loop does NOT start another LLM call that would stream a
+            # second failure message to TTS before the drain can run.
+            if session.get("rc_lookup_failed"):
+                logger.info(
+                    "[ms_llm] rc_lookup_failed detected after tool — "
+                    "suppressing post-tool LLM response to avoid duplicate TTS"
+                )
+                break
+
             # ── Transfer requested by a tool ─────────────────────────────
             # Use .get() NOT .pop() — _on_transfer_request() calls
             # _should_allow_transfer() which reads session["request_transfer"].
