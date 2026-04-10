@@ -1330,7 +1330,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 1,
         "state": "CONFIRM_PHONE",
-        "question": "And is this the same number you'd have used for the booking?",
+        "question": "And was the number associated with your booking the one you're calling on right now?",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -3109,69 +3109,19 @@ class FlowEngine:
 
                 _hg_spaced = _format_phone_readback(_hg_phone)
 
-                if self._active_flow is RESCHEDULE_FLOW:
-                    # RESCHEDULE_FLOW: auto-confirm without waiting for a yes/no turn.
-                    # Speak the readback as a notification then immediately advance to
-                    # PRESENT_DAYS_RESCHEDULE so the test's turn budget isn't consumed
-                    # by a readback-confirmation exchange.
-                    self.session["phone_readback_pending"] = False
-                    self.session["phone_confirmed"]        = True
-                    self.session.setdefault("collected", {})["phone"] = _hg_phone
-                    # Route to LOOKUP_RESCHEDULE so the existing appointment is
-                    # identified before new slots are offered.
-                    self.session["state"]                  = "LOOKUP_RESCHEDULE"
-                    self.session["flow_state"]             = "LOOKUP_RESCHEDULE"
-                    self.session["flow_step"]              = _RESCHEDULE_LOOKUP_INDEX
-                    _hg_rb = f"Got it — I'll use {_hg_spaced}."
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _hg_rb}
-                    )
-                    logger.info(
-                        "[ms_flow] HARD GATE COLLECT_PHONE (RESCHEDULE): auto-confirmed %s → LOOKUP_RESCHEDULE",
-                        _hg_phone,
-                    )
-                    self.session["_last_handled_by"]         = "collect_phone_full_digits"
-                    self.session["_last_extracted_phone"]    = _hg_phone
-                    self.session["_last_yes_detected"]       = False
-                    self.session["_last_no_detected"]        = False
-                    self.session["_last_assistant_response"] = _hg_rb
-                    await self._tts.put(_hg_rb)
-                    await self.ask_current_question()
-                    return
-
-                if self._active_flow is CANCEL_FLOW:
-                    # CANCEL_FLOW: auto-confirm without waiting for a yes/no turn.
-                    # Caller has already provided a different number — accept it and
-                    # jump straight to CONFIRM_CANCEL to execute the cancellation.
-                    self.session["phone_readback_pending"] = False
-                    self.session["phone_confirmed"]        = True
-                    self.session.setdefault("collected", {})["phone"] = _hg_phone
-                    self.session["state"]                  = "CONFIRM_CANCEL"
-                    self.session["flow_state"]             = "CONFIRM_CANCEL"
-                    self.session["flow_step"]              = _CONFIRM_CANCEL_INDEX
-                    _hg_rb = f"Got it — I'll use {_hg_spaced}."
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _hg_rb}
-                    )
-                    logger.info(
-                        "[ms_flow] HARD GATE COLLECT_PHONE (CANCEL): auto-confirmed %s → CONFIRM_CANCEL",
-                        _hg_phone,
-                    )
-                    self.session["_last_handled_by"]         = "collect_phone_full_digits"
-                    self.session["_last_extracted_phone"]    = _hg_phone
-                    self.session["_last_yes_detected"]       = False
-                    self.session["_last_no_detected"]        = False
-                    self.session["_last_assistant_response"] = _hg_rb
-                    await self._tts.put(_hg_rb)
-                    await self.ask_current_question()
-                    return
-
-                # BOOKING_FLOW (and all other flows): standard readback + wait for confirm
+                # ALL flows: standard readback + wait for YES/NO confirmation.
+                # Routing on YES is handled by the CONFIRM_PHONE YES handler which
+                # knows how to route each flow to LOOKUP_RESCHEDULE / CONFIRM_CANCEL
+                # / CONFIRM_BOOKING as appropriate.
+                _hg_confirm_idx = next(
+                    (i for i, s in enumerate(self._active_flow) if s["state"] == "CONFIRM_PHONE"),
+                    _CONFIRM_PHONE_INDEX,
+                )
                 self.session["phone_readback_pending"] = True
                 self.session["phone_confirmed"]        = False
                 self.session["state"]                  = "CONFIRM_PHONE"
                 self.session["flow_state"]             = "CONFIRM_PHONE"
-                self.session["flow_step"]              = _CONFIRM_PHONE_INDEX
+                self.session["flow_step"]              = _hg_confirm_idx
                 _hg_rb = f"Just to check — is that {_hg_spaced}?"
                 self.session["last_question"] = _hg_rb
                 self.session.setdefault("conversation_history", []).append(
@@ -3179,8 +3129,8 @@ class FlowEngine:
                 )
 
                 logger.info(
-                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s state→%s step→%d",
-                    _hg_phone, self.session["state"], self.session["flow_step"],
+                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s state→CONFIRM_PHONE step→%d",
+                    _hg_phone, _hg_confirm_idx,
                 )
 
                 self.session["_last_handled_by"]         = "collect_phone_full_digits"
@@ -5874,16 +5824,29 @@ class FlowEngine:
                 _cp_yes = any(p in text for p in _CP_YES)
                 _cp_no  = any(p in text for p in _CP_NO)
             if _cp_yes and not _cp_no:
-                # Store Twilio caller-ID as the confirmed phone number
                 import re as _re_cp
-                _cp_twilio = (
-                    self.session.get("twilio_from_local")
-                    or self.session.get("twilio_from", "")
-                )
-                _cp_digits = _re_cp.sub(r"\D", "", _cp_twilio)
-                _cp_phone  = _cp_digits or _cp_twilio
+                if self.session.get("phone_readback_pending"):
+                    # Caller typed a number on the keypad and is confirming it.
+                    # Preserve the number captured by the DTMF hard gate — do NOT
+                    # overwrite with Twilio caller-ID.
+                    _cp_phone = (
+                        self.session.get("phone_number")
+                        or self.session.get("phone")
+                        or self.session.get("phone_candidate")
+                        or ""
+                    )
+                    _is_twilio_confirm = False
+                else:
+                    # Confirming Twilio caller-ID as the phone for this booking.
+                    _cp_twilio = (
+                        self.session.get("twilio_from_local")
+                        or self.session.get("twilio_from", "")
+                    )
+                    _cp_digits = _re_cp.sub(r"\D", "", _cp_twilio)
+                    _cp_phone  = _cp_digits or _cp_twilio
+                    _is_twilio_confirm = True
                 self.session["phone_confirmed"]     = True
-                self.session["phone_from_twilio"]   = True
+                self.session["phone_from_twilio"]   = _is_twilio_confirm
                 self.session["phone_number"]        = _cp_phone
                 self.session.setdefault("collected", {})["phone"] = _cp_phone
                 self.session["phone_digits_buffer"] = ""
@@ -5908,11 +5871,14 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
             elif _cp_no and not _cp_yes:
-                # Rejected — clear number, advance to COLLECT_PHONE
+                # Rejected — clear number, advance to COLLECT_PHONE in keypad-first mode.
+                # Set phone_awaiting_dtmf=True so caller can type the number on their keypad.
                 self.session["phone_confirmed"]     = False
                 self.session["phone_from_twilio"]   = False
                 self.session["phone_number"]        = None
                 self.session["phone_digits_buffer"] = ""
+                self.session["phone_dtmf_buffer"]   = ""
+                self.session["phone_awaiting_dtmf"] = True   # accept keypad input
                 self.session.pop("phone_readback_retry", None)
                 self.session.setdefault("collected", {}).pop("phone", None)
                 _cp_no_nxt = step["step"] + 1
@@ -5922,11 +5888,25 @@ class FlowEngine:
                 )
                 self.session["flow_step"] = _cp_no_nxt
                 self.session["state"]     = _cp_no_state
-                logger.info(
-                    "[ms_flow] phone_confirm matched NO → next_state=%s", _cp_no_state,
+                # Flow-specific bridge: reschedule/cancel asks for the booking number
+                if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
+                    _cp_no_bridge = (
+                        "No problem — could you type the number associated with your booking "
+                        "on the keypad now?"
+                    )
+                else:
+                    _cp_no_bridge = (
+                        "No problem — please type the number in using your keypad now."
+                    )
+                self.session["last_question"] = _cp_no_bridge
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cp_no_bridge}
                 )
-                await self.ask_current_question()
-                return
+                await self._tts.put(_cp_no_bridge)
+                logger.info(
+                    "[ms_flow] phone_confirm matched NO → keypad-first next_state=%s", _cp_no_state,
+                )
+                return  # keypad bridge already spoken; don't call ask_current_question
             logger.info(
                 "[ms_flow] %s: no deterministic YES/NO match — falling through "
                 "(general_query blocked by DATA_COLLECTION_STATES)",

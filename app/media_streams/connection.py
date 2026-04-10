@@ -979,7 +979,7 @@ class WebSocketCallHandler:
             return
 
         # Only accumulate DTMF while in phone-collection state
-        if self.session.get("state") not in ("COLLECT_PHONE",):
+        if self.session.get("state") not in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
             return
 
         buf = self.session.get("phone_dtmf_buffer", "") + digit
