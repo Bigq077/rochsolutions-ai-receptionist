@@ -1721,6 +1721,70 @@ def _parse_lookup_name_correction(text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Clinic-location resolver
+# ---------------------------------------------------------------------------
+
+def _resolve_location(raw: str) -> str | None:
+    """
+    Deterministic phonetic / ASR-variant matching for Theorem Health clinics.
+
+    Returns ``'alcester'``, ``'redditch'``, or ``None`` (ambiguous / unknown).
+
+    Rule: strong variants → decide immediately; weak variants → only decide
+    when the opposing side is absent; mixed / empty / low-signal → None.
+    Never guess.
+    """
+    # Normalize: lowercase, strip punctuation to spaces, collapse whitespace.
+    t = _re_mod.sub(r"[^\w\s]", " ", raw.strip().lower())
+    t = _re_mod.sub(r"\s+", " ", t).strip()
+
+    # ── ALCESTER strong bucket ────────────────────────────────────────────────
+    _ALC_STRONG = (
+        "alcester", "alcesta", "alcest", "alchester", "alkester",
+        "alsester", "asester", "al sester", "our sister", "all sister",
+        "a sister", "al sister", "our sester", "all sester",
+        "i ll sister", "house sister", "old sister",
+        "l sester", "lsester",
+        # Additional unambiguous STT variants
+        "alcestr", "allcester", "alster", "alca", "alces",
+        "ancestor", "kinwarton",
+    )
+    # ── REDDITCH strong bucket ────────────────────────────────────────────────
+    _RED_STRONG = (
+        "redditch", "reddit", "red itch", "read itch", "redich", "reddich",
+        "redidge", "reditch", "red each", "read each",
+        "ready itch", "ready each", "red dish", "read edge", "red edge",
+        "radish",
+        # Additional unambiguous STT variants
+        "bromsgrove",
+    )
+    # ── Weak / ambiguous — only accept when opposing side is clearly absent ───
+    _ALC_WEAK = ("lester", "leicester")
+    _RED_WEAK = ("reddish",)
+
+    has_alc   = any(v in t for v in _ALC_STRONG)
+    has_red   = any(v in t for v in _RED_STRONG)
+
+    if has_alc and not has_red:
+        return "alcester"
+    if has_red and not has_alc:
+        return "redditch"
+    if has_alc and has_red:
+        return None  # mixed signal — don't guess
+
+    # Weak variants
+    has_alc_w = any(v in t for v in _ALC_WEAK)
+    has_red_w = any(v in t for v in _RED_WEAK)
+
+    if has_alc_w and not has_red and not has_red_w:
+        return "alcester"
+    if has_red_w and not has_alc and not has_alc_w:
+        return "redditch"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Flow engine
 # ---------------------------------------------------------------------------
 
@@ -1790,20 +1854,11 @@ class FlowEngine:
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
             if self._active_flow is RESCHEDULE_FLOW:
-                _loc_q = (
-                    "Of course \u2014 was your original appointment at our Alcester or Redditch clinic? "
-                    "You can say it or press 1 for Alcester and 2 for Redditch."
-                )
+                _loc_q = "Was your original appointment at our Alcester or Redditch clinic?"
             elif self._active_flow is CANCEL_FLOW:
-                _loc_q = (
-                    "Of course \u2014 was your appointment at our Alcester or Redditch clinic? "
-                    "You can say it or press 1 for Alcester and 2 for Redditch."
-                )
+                _loc_q = "Was your appointment at our Alcester or Redditch clinic?"
             else:
-                _loc_q = (
-                    "Of course \u2014 are you looking to book in at our Alcester or Redditch clinic? "
-                    "Press 1 for Alcester or 2 for Redditch."
-                )
+                _loc_q = "Are you looking to book at our Alcester or Redditch clinic?"
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
@@ -2943,13 +2998,18 @@ class FlowEngine:
                     # general_query and must NOT fire the LLM at ASK_LOCATION.
                 }
                 # Fragment guard FIRST — before intent detection.
-                # Short phrases without a location token are noise/cut-off audio
-                # and must not consume a retry slot or trigger the LLM.
+                # Very short utterances with no location signal are audio artifacts
+                # (background noise, cut-off, filler) and must not burn a retry slot.
                 _loc_words = text.split()
-                _loc_tokens = ("alcester", "redditch", "1", "2", "one", "two",
-                               "first", "second", "alchester", "reddit")
+                _loc_tokens = (
+                    "alcester", "redditch", "1", "2", "one", "two", "first", "second",
+                    # phonetic variants that should not be suppressed
+                    "alchester", "reddit", "alcesta", "alkester", "alsester",
+                    "red itch", "read itch", "redich", "reditch", "sister", "sester",
+                    "lester", "radish",
+                )
                 _has_loc_token = any(p in text for p in _loc_tokens)
-                if not _has_loc_token and len(_loc_words) <= 4 and not text.rstrip().endswith("?"):
+                if not _has_loc_token and len(_loc_words) <= 3 and not text.rstrip().endswith("?"):
                     logger.info(
                         "[ms_flow] ASK_LOCATION: fragment suppressed (no loc token, %d words) %r",
                         len(_loc_words), text[:40],
@@ -2970,12 +3030,12 @@ class FlowEngine:
                     "[ms_flow] ASK_LOCATION: no match for %r — retry_count=%d",
                     text[:40], _retry_count,
                 )
-                if _retry_count == 1:
-                    _retry = (
-                        "Which clinic would you like — Alcester or Redditch? "
-                        "You can say it, or press 1 for Alcester and 2 for Redditch."
-                    )
-                elif _retry_count >= 3:
+                # Keypad fallback from first failed speech attempt onwards
+                _loc_keypad_fallback = (
+                    "Sorry, I didn't quite catch that. "
+                    "Please press 1 for Alcester or 2 for Redditch."
+                )
+                if _retry_count >= 3:
                     _retry = (
                         "I'm having trouble catching the clinic name — "
                         "please give us a call back and the team will be happy to help."
@@ -2990,10 +3050,7 @@ class FlowEngine:
                     self.session["needs_location"]   = False
                     return
                 else:
-                    _retry = (
-                        "Which clinic would you like — Alcester or Redditch? "
-                        "Press 1 for Alcester or 2 for Redditch."
-                    )
+                    _retry = _loc_keypad_fallback
                 await self._tts.put(_retry)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _retry}
@@ -9021,49 +9078,14 @@ class FlowEngine:
             if _no_pref:
                 return "alcester"
 
-            # Keypad digits — exact full-text match only ("1" must not match "12")
+            # Keypad digits (DTMF synthetic transcript) — exact full-text match
             if _t == "1":
                 return "alcester"
             if _t == "2":
                 return "redditch"
 
-            # Alcester spoken name / common mishearings (substring safe — unique strings)
-            if any(p in _t for p in (
-                "alcester", "alchester", "alster", "alca", "alcesta",
-                "allcester", "alcestr",
-                "ancestor", "ulster", "elster", "alces", "olster",
-                "leisure", "greig", "kinwarton",
-            )):
-                return "alcester"
-
-            # Redditch spoken name / common mishearings
-            if any(p in _t for p in (
-                "redditch", "reditch", "reddish", "reddit", "red itch",
-                "bromsgrove",
-            )):
-                return "redditch"
-
-            # Ordinals / spoken digits — only when the word is the ENTIRE utterance
-            # or its first token (≤ 2 total words).  Prevents "first let me ask" → Alcester
-            # and "second question" → Redditch.
-            _words = _t.split()
-            if _words and _words[0] in ("first", "one") and len(_words) <= 2:
-                return "alcester"
-            if _words and _words[0] in ("second", "two") and len(_words) <= 2:
-                return "redditch"
-
-            # "one" standalone (not "the one" / "which one" / "one of")
-            if (
-                "one" in _words
-                and "the one" not in _t
-                and "which one" not in _t
-                and "not sure" not in _t
-                and "one of" not in _t
-                and len(_words) <= 3
-            ):
-                return "alcester"
-
-            return None
+            # Delegate all phonetic / ASR-variant matching to the dedicated helper
+            return _resolve_location(_t)
 
         # ----- faq_booking: wants to book after FAQ answer ---------------
         if method == "faq_booking":
