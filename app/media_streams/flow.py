@@ -1113,6 +1113,23 @@ def _is_digit_heavy(text: str) -> bool:
     return digit_count / len(stripped) >= 0.70
 
 
+def _to_e164_uk(digits: str) -> str:
+    """
+    Normalise a UK phone number to E.164 format for Acuity API calls.
+    '07xxx xxxxxx' (or any 0-prefixed UK number) → '+447xxx xxxxxx'.
+    Numbers already in +44 format pass through unchanged.
+    Non-UK or unrecognised formats pass through unchanged.
+    """
+    if not digits:
+        return digits
+    clean = digits.strip()
+    if clean.startswith("+44"):
+        return clean
+    if clean.startswith("0") and len(clean) >= 10:
+        return "+44" + clean[1:]
+    return clean
+
+
 def _format_phone_readback(digits: str) -> str:
     """
     Format a run of digits for slow TTS readback.
@@ -2386,7 +2403,7 @@ class FlowEngine:
                 from app.tools.receptionist_tools import _exec_book_appointment as _do_book
                 _book_args = {
                     "patient_name": _name_cb or "",
-                    "phone": (
+                    "phone": _to_e164_uk(
                         self.session.get("phone_number")
                         or (self.session.get("collected") or {}).get("phone")
                         or self.session.get("twilio_from", "")
@@ -2487,7 +2504,7 @@ class FlowEngine:
                 if any(p in text for p in yes_patterns):
                     logger.info("[ms_flow] CONFIRM_RESCHEDULE safety-net — executing reschedule for %r", transcript[:40])
                     from app.tools.receptionist_tools import _exec_reschedule_appointment
-                    phone_val = (
+                    phone_val = _to_e164_uk(
                         self.session.get("phone_number")
                         or self.session.get("twilio_from_local")
                         or self.session.get("twilio_from", "")
@@ -2576,7 +2593,10 @@ class FlowEngine:
                 return
             # No extractable embedded question — state-aware repair prompt.
             # Do NOT enqueue phrase here; _llm_loop finally drains then enqueues.
-            _repair_state = current_state if current_state else (step["state"] if step else "")
+            _repair_state = (
+                "ASK_LOCATION" if self.session.get("needs_location")
+                else (step["state"] if step else "")
+            )
             if _repair_state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
                 _repair_q = "Sorry — were you asking about a different date or month?"
             elif _repair_state in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
@@ -3837,6 +3857,20 @@ class FlowEngine:
                 logger.info("[ms_flow] name correction cooldown — ignoring fragment %r", transcript[:40])
                 # Fall through to normal extraction so flow continues
             else:
+                # Date/time guard — if the utterance is primarily about scheduling,
+                # never let name-correction patterns fire on it (e.g. "my appointment
+                # is on Monday morning" must not overwrite stored name).
+                _DATE_GUARD_TOKENS = (
+                    "monday", "tuesday", "wednesday", "thursday", "friday",
+                    "saturday", "sunday", "january", "february", "march",
+                    "april", "june", "july", "august", "september", "october",
+                    "november", "december", "morning", "afternoon", "evening",
+                    "today", "tomorrow", "next week", "o'clock", " am", " pm",
+                    "appointment", "booking", "session", "slot", "schedule",
+                    "date", "time", "week", "month",
+                )
+                _nc_text_lower = text.lower()
+                _has_date_token = any(d in _nc_text_lower for d in _DATE_GUARD_TOKENS)
                 import re as _nc_re
                 _NC_PATTERNS = [
                     # "I said Sarah" / "I said it was Sarah"
@@ -3863,14 +3897,15 @@ class FlowEngine:
                     "that's what you said", "like you said",
                 )
                 _new_name = None
-                for _pat in _NC_PATTERNS:
-                    _m = _nc_re.search(_pat, text)
-                    if _m:
-                        _candidate = _m.group(1).strip().title()
-                        # Only accept if actually different from stored name
-                        if _candidate.lower() != _stored_name.strip().lower():
-                            _new_name = _candidate
-                        break
+                if not _has_date_token:
+                    for _pat in _NC_PATTERNS:
+                        _m = _nc_re.search(_pat, text)
+                        if _m:
+                            _candidate = _m.group(1).strip().title()
+                            # Only accept if actually different from stored name
+                            if _candidate.lower() != _stored_name.strip().lower():
+                                _new_name = _candidate
+                            break
                 if _new_name:
                     # Apply the correction deterministically — no LLM needed
                     self.session["full_name"] = _new_name
@@ -6001,7 +6036,7 @@ class FlowEngine:
             _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
             _book_args = {
                 "patient_name": _name_cb or "",
-                "phone": (
+                "phone": _to_e164_uk(
                     self.session.get("phone_number")
                     or (self.session.get("collected") or {}).get("phone")
                     or self.session.get("twilio_from", "")
@@ -6359,7 +6394,32 @@ class FlowEngine:
                                 (text or "")[:60],
                             )
                             return
-                    # Second turn: caller gave surname — combine into full name
+                    # Second turn: caller gave surname — combine into full name.
+                    # Guard: reject combination if the extracted "surname" is a
+                    # date/time token (e.g. "monday", "morning", "pm") — these are
+                    # scheduling answers, not names, and combining would corrupt the name.
+                    _SN_DATE_TOKENS = frozenset({
+                        "monday", "tuesday", "wednesday", "thursday", "friday",
+                        "saturday", "sunday", "january", "february", "march",
+                        "april", "may", "june", "july", "august", "september",
+                        "october", "november", "december", "morning", "afternoon",
+                        "evening", "today", "tomorrow", "am", "pm", "appointment",
+                        "booking", "session", "slot", "date", "time", "week",
+                        "month", "next", "this", "yes", "no", "yeah", "nope",
+                    })
+                    if answer.lower() in _SN_DATE_TOKENS:
+                        logger.info(
+                            "[ms_flow] COLLECT_NAME: surname rejected (date token %r) — re-asking",
+                            answer,
+                        )
+                        _sn_retry = "And what's your surname?"
+                        if self.session.get("last_question") != _sn_retry:
+                            await self._tts.put(_sn_retry)
+                            self.session["last_question"] = _sn_retry
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _sn_retry}
+                            )
+                        return
                     answer = f"{_frag} {answer}".title()
                     self.session.pop("name_fragment", None)
                     logger.info("[ms_flow] COLLECT_NAME: fragment completed → %r", answer)
@@ -6845,7 +6905,7 @@ class FlowEngine:
                 self.session["name_tracker_name"] = self._name_tracker._name
                 self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
             elif step["answer_field"] == "phone_number":
-                col["phone"] = answer
+                col["phone"] = _to_e164_uk(answer)
                 # Phone readback: speak the number back slowly and ask for confirmation.
                 # Only for COLLECT_PHONE states — not CONFIRM_BOOKING (which has its own
                 # full readback) and not when Twilio caller-ID was already confirmed.
@@ -6879,7 +6939,7 @@ class FlowEngine:
         # ── CONFIRM_RESCHEDULE: patient just confirmed "yes" → execute reschedule ──
         if step["state"] == "CONFIRM_RESCHEDULE" and answer:
             from app.tools.receptionist_tools import _exec_reschedule_appointment
-            phone_val = (
+            phone_val = _to_e164_uk(
                 self.session.get("phone_number")
                 or self.session.get("twilio_from_local")
                 or self.session.get("twilio_from", "")

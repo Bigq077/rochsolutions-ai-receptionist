@@ -59,11 +59,7 @@ def build_greeting(config: dict | None = None) -> str:
 
         # Closed day or no hours defined for today
         if day_name in closed_days or day_name not in {k.lower() for k in opening_hours}:
-            next_day = get_next_open_day(config, now)
-            return (
-                f"Hi, you've reached {clinic_name} — we're closed right now but I can still "
-                f"book you in. I'm Susie, how can I help?"
-            )
+            return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
 
         day_hours = next((v for k, v in opening_hours.items() if k.lower() == day_name), None)
         if day_hours:
@@ -72,20 +68,12 @@ def build_greeting(config: dict | None = None) -> str:
             minutes_to_close = (close_dt - now).total_seconds() / 60
 
             if minutes_to_close <= 0:
-                next_day = get_next_open_day(config, now)
-                return (
-                    f"Hi, you've reached {clinic_name} — we're closed right now but I can still "
-                    f"book you in. I'm Susie, how can I help?"
-                )
+                return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
 
             if minutes_to_close <= 30:
-                return (
-                    f"Hi, you've just caught us — we're closing shortly but I can absolutely "
-                    f"get you sorted. I'm Susie at {clinic_name}."
-                )
+                return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
 
-        prefix = "Happy Monday — " if day_name == "monday" and hour < 12 else ""
-        return f"{prefix}Hi, you've reached {clinic_name} — I'm Susie, how can I help?"
+        return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
 
     except Exception:
-        return f"Hi, you've reached {clinic_name} — I'm Susie, how can I help?"
+        return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
