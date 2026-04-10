@@ -4529,7 +4529,48 @@ class FlowEngine:
                         )
                         await self.ask_current_question()
                         return
-                    # Date mentioned but not in available_days — fall through to Haiku
+                    # Explicit date requested but not available — say so and offer
+                    # the nearest alternatives in that month rather than silently
+                    # falling through to the month filter (which would re-present
+                    # the same initial 3 days because it also starts from page 0).
+                    import datetime as _dt_xd_na
+                    _xd_na_suffix = (
+                        "st" if _xd_day_n % 10 == 1 and _xd_day_n != 11 else
+                        "nd" if _xd_day_n % 10 == 2 and _xd_day_n != 12 else
+                        "rd" if _xd_day_n % 10 == 3 and _xd_day_n != 13 else
+                        "th"
+                    )
+                    _xd_spoken_date = f"the {_xd_day_n}{_xd_na_suffix} of {_xd_month_s.capitalize()}"
+                    _xd_na_month_days = []
+                    for _xd_d_na in self.session.get("available_days", []):
+                        _xd_na_str = _xd_d_na.get("date") or _xd_d_na.get("datetime", "")
+                        try:
+                            if _dt_xd_na.date.fromisoformat(_xd_na_str[:10]).month == _xd_month_n:
+                                _xd_na_month_days.append(_xd_d_na)
+                        except (ValueError, TypeError):
+                            pass
+                    if _xd_na_month_days:
+                        _xd_na_alt = _build_day_list_phrase(_xd_na_month_days)
+                        _xd_na_msg = (
+                            f"I'm afraid I don't have {_xd_spoken_date} available — "
+                            + _xd_na_alt.replace("I can do ", "but I can do ", 1)
+                            .replace("I've got ", "but I've got ", 1)
+                        )
+                    else:
+                        _xd_na_msg = (
+                            f"I'm afraid I don't have {_xd_spoken_date} available. "
+                            + _build_day_list_phrase(self.session.get("available_days", []))
+                        )
+                    await self._tts.put(_xd_na_msg)
+                    self.session["last_question"] = _xd_na_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _xd_na_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] PRESENT_DAYS: %r not in available_days — offered alternatives",
+                        _xd_spoken_date,
+                    )
+                    return
 
             _PD_YES = (
                 # Single-word affirmatives
@@ -4813,6 +4854,10 @@ class FlowEngine:
                             _target_month,
                         )
                         await self._tts.put(_no_month_msg)
+                        self.session["last_question"] = _no_month_msg
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _no_month_msg}
+                        )
                         return
                 logger.info(
                     "[ms_flow] %s: no day match for %r → Haiku with day context",
@@ -5971,12 +6016,12 @@ class FlowEngine:
                 # Flow-specific bridge: reschedule/cancel asks for the booking number
                 if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
                     _cp_no_bridge = (
-                        "No problem — could you type the number associated with your booking "
-                        "on the keypad now?"
+                        "Okay — then could you type in on your keyboard "
+                        "the number associated with your booking?"
                     )
                 else:
                     _cp_no_bridge = (
-                        "No problem — please type the number in using your keypad now."
+                        "No problem — please type the number in using your keyboard now."
                     )
                 self.session["last_question"] = _cp_no_bridge
                 self.session.setdefault("conversation_history", []).append(
@@ -6870,7 +6915,15 @@ class FlowEngine:
                     self.session.pop("name_fragment", None)
                     logger.info("[ms_flow] COLLECT_NAME: fragment completed → %r", answer)
             else:
-                # First turn: only first name — ask for surname
+                # First turn: only first name — ask for surname.
+                # Drain any stale re-ask that was queued before this valid first-name
+                # arrived (e.g. "What's your first name?" queued 300ms ago by a
+                # rejected fragment).  The new question must be the only thing heard.
+                while not self._tts.empty():
+                    try:
+                        self._tts.get_nowait()
+                    except Exception:
+                        break
                 self.session["name_fragment"] = answer
                 _sn_phrase = "And what's your surname?"
                 await self._tts.put(_sn_phrase)
@@ -7697,7 +7750,9 @@ class FlowEngine:
         if not _text:
             _text = pending_q or "Sorry, which of those days works for you?"
         await self._tts.put(_text)
-        self.session["last_question"] = pending_q
+        # Anchor to the actual spoken phrase so silence re-ask replays
+        # what the caller just heard, not the stale original day offer.
+        self.session["last_question"] = _text
         self.session.setdefault("conversation_history", []).append(
             {"role": "assistant", "content": _text}
         )

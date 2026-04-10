@@ -299,6 +299,8 @@ class SilenceHandler:
         # State-specific short repair prompts (Bug 5)
         if _state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
             phrase = "Sorry — was that the right appointment? Yes or no?"
+        elif _state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
+            phrase = "Sorry — which day works best for you?"
         elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
             phrase = "Sorry — is this the right number? Yes or no?"
         elif (_sess or {}).get("phone_awaiting_dtmf"):
