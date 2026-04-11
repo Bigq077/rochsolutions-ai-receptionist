@@ -1365,7 +1365,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "The system will handle the failure message automatically.\n\n"
             "TURN 2+ — Confirm:\n"
             "  Caller says YES → call confirm_appointment_found(). "
-            "Then say 'Perfect — let me find some new times for you.'\n"
+            "Then say NOTHING. Do NOT speak after calling confirm_appointment_found() — the system will handle it automatically.\n"
             "  Caller says NO + multiple_found=true → offer first alternative: "
             "'Could it be on [alt.day_label] at [alt.time_label]?'\n"
             "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
@@ -2488,10 +2488,17 @@ class FlowEngine:
                     self.session["lookup_correction_mode"] = True   # deterministic repair mode
                     return
                 if self.session.get("rc_appointment_confirmed"):
+                    # Drain any LLM-queued speech before advancing — prevents
+                    # "Perfect — let me find new times" overlapping with PRESENT_DAYS_RESCHEDULE question.
+                    while True:
+                        try:
+                            self._tts.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                     self.session["flow_step"] = step["step"] + 1
                     self.session["question_asked_this_turn"] = False
                     logger.info(
-                        "[ms_flow] %s confirmed — advancing to step %d",
+                        "[ms_flow] %s confirmed — advancing to step %d (TTS drained)",
                         step["state"], step["step"] + 1,
                     )
                     await self.ask_current_question()
@@ -3074,9 +3081,12 @@ class FlowEngine:
                         "[ms_flow] ASK_LOCATION: fragment suppressed (no loc token, %d words) %r",
                         len(_loc_words), text[:40],
                     )
-                    _loc_reanchor = "Sorry — was that Alcester or Redditch?"
-                    await self._tts.put(_loc_reanchor)
-                    self.session["last_question"] = _loc_reanchor
+                    # Only re-anchor on the very first attempt — if location_retry_count > 0
+                    # a retry/keypad prompt is already queued; speaking again creates double prompts.
+                    if not self.session.get("location_retry_count", 0):
+                        _loc_reanchor = "Sorry — was that Alcester or Redditch?"
+                        await self._tts.put(_loc_reanchor)
+                        self.session["last_question"] = _loc_reanchor
                     return
                 # FAQ interrupt — only genuine FAQ intents; general_query excluded above.
                 _loc_intent = self._detect_intent(text)
@@ -3188,6 +3198,63 @@ class FlowEngine:
                     "already typed", "just pressed",
                 )
                 _is_kp_phrase = any(p in (text or "").lower() for p in _KP_PHRASES)
+                # Restart/correction phrases — caller wants to re-enter the number.
+                # Clear the buffer and re-prompt with the keypad bridge so they start fresh.
+                _KP_RESTART = (
+                    "start again", "start over", "let me start", "can i start",
+                    "begin again", "from the beginning", "wrong number", "that's wrong",
+                    "thats wrong", "wrong one", "made a mistake", "got it wrong",
+                    "actually no", "no wait", "scratch that", "never mind that",
+                )
+                _is_restart = any(p in (text or "").lower() for p in _KP_RESTART)
+                # Progress queries — caller asking if digits have arrived yet.
+                _KP_PROGRESS_Q = (
+                    "did you get", "have you got", "did that come through",
+                    "did you receive", "did you catch", "got the number",
+                    "can you see", "have you received", "is that through",
+                )
+                _is_progress_q = any(p in (text or "").lower() for p in _KP_PROGRESS_Q)
+
+                if _is_restart:
+                    # Clear buffer and re-prompt the keypad bridge
+                    self.session["phone_dtmf_buffer"] = ""
+                    _restart_prompt = self.session.get(
+                        "last_question",
+                        "No problem — please type your number from the start on the keypad.",
+                    )
+                    await self._tts.put(_restart_prompt)
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: keypad restart %r — buffer cleared, re-prompting",
+                        (text or "")[:50],
+                    )
+                    return
+
+                if _is_progress_q:
+                    if len(_buf_digits) >= 10:
+                        # Buffer is already full — finalize and fall through
+                        pass  # handled by the buffer-full branch below
+                    elif len(_buf_digits) >= 5:
+                        _prog_reply = (
+                            f"I've received {len(_buf_digits)} digits so far — "
+                            "please carry on typing the rest."
+                        )
+                        await self._tts.put(_prog_reply)
+                        logger.info(
+                            "[ms_flow] COLLECT_PHONE: progress query with %d digits buffered",
+                            len(_buf_digits),
+                        )
+                        return
+                    else:
+                        _prog_reply = (
+                            "I haven't received any digits yet — "
+                            "please type your number on the keypad now."
+                        )
+                        await self._tts.put(_prog_reply)
+                        logger.info(
+                            "[ms_flow] COLLECT_PHONE: progress query with no usable buffer — re-prompting keypad",
+                        )
+                        return
+
                 if len(_buf_digits) >= 10:
                     # Buffer holds a completable number — finalize regardless of speech.
                     # Pad to 11 digits with a leading 0 if the caller omitted it.
@@ -4491,7 +4558,8 @@ class FlowEngine:
             import re as _re_xd
             _XD_PAT = _re_xd.search(
                 r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)\b'
-                r'|\b([a-zA-Z]+)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+                r'|\b(january|february|march|april|may|june|july|august|september|october|november|december'
+                r'|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
                 transcript, _re_xd.IGNORECASE,
             )
             if _XD_PAT:
