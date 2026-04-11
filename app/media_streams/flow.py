@@ -4205,7 +4205,26 @@ class FlowEngine:
             )
             and any(p in text for p in _ACTIVE_NAV_SIGNALS)
         )
-        if step["state"] != "DETECT_INTENT" and not _is_active_nav and any(sig in text for sig in _ABANDON_SIGNALS):
+        # BUG 5: In PRESENT_DAYS/PRESENT_TIMES, ambiguous signals like
+        # "never mind", "forget it", "forget this" must NOT trigger abandonment —
+        # they are handled as step-back navigation signals in the state handlers.
+        _SCHED_NAV_STATES = frozenset({
+            "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+            "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+        })
+        _SCHED_NAV_AMBIGUOUS = frozenset({
+            "never mind", "nevermind", "forget it", "forget this",
+        })
+        _is_sched_nav_ambiguous = (
+            step["state"] in _SCHED_NAV_STATES
+            and any(p in text for p in _SCHED_NAV_AMBIGUOUS)
+        )
+        if (
+            step["state"] != "DETECT_INTENT"
+            and not _is_active_nav
+            and not _is_sched_nav_ambiguous
+            and any(sig in text for sig in _ABANDON_SIGNALS)
+        ):
             # Insertion point 2 — name usage tracker (final sign-off)
             _sign_off_name = self._name_tracker.get_name_if_available()
             self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
@@ -4603,6 +4622,63 @@ class FlowEngine:
         # plain affirmatives like "yeah that sounds fine" — which would incorrectly
         # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
         if step["state"] == "CONFIRM_ASSESSMENT":
+            # ── BUG 3 safety net: stale-reason continuation ──────────────────
+            # If the stored reason ends with a dangling linking verb AND the
+            # incoming text looks like a symptom continuation (no yes/no/confirm
+            # tokens), merge it into the reason and re-ask confirmation.
+            import re as _re_ca_dangle
+            _ca_stored_reason = self.session.get("reason", "")
+            _CA_DANGLE_RE = _re_ca_dangle.compile(
+                r'\b(?:is|are|was|were|has|have|had|feels?|felt|seems?)\s*$',
+                _re_ca_dangle.IGNORECASE,
+            )
+            _CA_YES_TOKENS = frozenset({
+                "yes", "yeah", "yep", "yup", "ok", "okay", "sure",
+                "fine", "alright", "no", "nope", "nah",
+            })
+            _CA_BODY_PARTS = frozenset({
+                "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
+                "elbow", "leg", "arm", "foot", "heel", "spine", "head",
+            })
+            _CA_SYMPTOM_WORDS = frozenset({
+                "pain", "ache", "hurt", "hurting", "sore", "stiff", "swollen",
+                "bit", "quite", "lot", "much", "severe", "bad", "worse",
+            })
+            _ca_text_words = frozenset(text.split())
+            _ca_has_yn     = bool(_ca_text_words & _CA_YES_TOKENS)
+            _ca_has_body   = bool(_ca_text_words & _CA_BODY_PARTS)
+            _ca_has_sym    = bool(_ca_text_words & _CA_SYMPTOM_WORDS)
+            if (
+                _ca_stored_reason
+                and _CA_DANGLE_RE.search(_ca_stored_reason.lower())
+                and not _ca_has_yn
+                and (_ca_has_body or _ca_has_sym)
+            ):
+                _ca_merged_reason = _ca_stored_reason.rstrip() + " " + transcript.strip()
+                self.session["reason"] = _ca_merged_reason
+                logger.info(
+                    "[ms_flow] CONFIRM_ASSESSMENT: BUG3 continuation merged → %r",
+                    _ca_merged_reason[:80],
+                )
+                # Drain stale TTS before re-asking
+                while not self._tts.empty():
+                    try:
+                        self._tts.get_nowait()
+                    except Exception:
+                        break
+                # Re-run confirmation with updated reason (re-ask only anchor)
+                _ca_anchor = "Does that sound okay?"
+                _ca_full   = self.session.get("confirm_assessment_phrase", "")
+                if _ca_full:
+                    # Re-speak full phrase (includes new reason context) + anchor
+                    await self._tts.put(_ca_full)
+                await self._tts.put(_ca_anchor)
+                self.session["last_question"] = _ca_anchor
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ca_anchor}
+                )
+                return
+
             # ── Priority 1: assessment inquiry ───────────────────────────────
             # Check BEFORE classifier so inquiry phrases never reach the
             # "clarification" catch-all and never trigger LLM classification.
@@ -4665,12 +4741,15 @@ class FlowEngine:
                 self.session["flow_step"] = 0
                 self.session["state"] = "COLLECT_REASON"
                 return
-            # clarification / frustration / unknown — replay the FULL recommendation,
-            # not just the tail "Does that sound okay?" question.
-            _ca_retry = (
-                self.session.get("confirm_assessment_phrase")
-                or self.session.get("last_question", "Does that sound okay?")
-            )
+            # BUG 4: clarification / frustration / unknown — drain stale TTS first,
+            # then replay ONLY the short anchor question, NOT the full recommendation
+            # bundle (which would cause a duplicate/stale replay).
+            while not self._tts.empty():
+                try:
+                    self._tts.get_nowait()
+                except Exception:
+                    break
+            _ca_retry = "Does that sound okay?"
             await self._tts.put(_ca_retry)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _ca_retry}
@@ -5470,6 +5549,49 @@ class FlowEngine:
                     "[ms_flow] PRESENT_TIMES stale guard fired: slot_confirmed=%s slot_pending=%s — skipping",
                     self.session.get("slot_confirmed"), self.session.get("slot_pending_confirmation"),
                 )
+                return
+
+            # ── BUG 5+6: step-back to date selection ─────────────────────────
+            # "never mind", "any other availability", "go back", "another day",
+            # "different day" inside PRESENT_TIMES must NOT trigger abandonment.
+            # Instead: clear day selection and step back to PRESENT_DAYS.
+            _PT_STEPBACK = (
+                "never mind", "nevermind",
+                "actually never mind", "not that one", "not that",
+                "forget that", "forget it",
+                "any other availability", "any other day",
+                "another day", "different day",
+                "go back", "back to dates", "back to days",
+                "other options", "other days",
+            )
+            if any(p in text for p in _PT_STEPBACK):
+                # Clear day + slot state
+                self.session.pop("chosen_day", None)
+                self.session.pop("selected_slot", None)
+                self.session.pop("selected_slot_speech", None)
+                self.session.pop("slot_pending_confirmation", None)
+                self.session.pop("offered_constrained_times", None)
+                self.session.pop("offered_constrained_slots", None)
+                self.session.pop("_pd_month_filtered", None)
+                # Drain stale TTS
+                while not self._tts.empty():
+                    try:
+                        self._tts.get_nowait()
+                    except Exception:
+                        break
+                # Step back to PRESENT_DAYS
+                _pt_sb_pd_step = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")),
+                    max(0, step["step"] - 1),
+                )
+                self.session["flow_step"] = _pt_sb_pd_step
+                self.session["state"]     = self._active_flow[_pt_sb_pd_step]["state"]
+                logger.info(
+                    "[ms_flow] PRESENT_TIMES: step-back %r → %s",
+                    text[:40], self.session["state"],
+                )
+                await self.ask_current_question()
                 return
 
             # ── MONTH / EXPLICIT-DATE ESCAPE ─────────────────────────────────
@@ -7764,6 +7886,20 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+        # ── COLLECT_REASON: partial-reason join (BUG 2 continuation) ─────────────
+        # If BUG 2 guard stored a partial reason (dangling-verb re-ask), prepend it
+        # to the new transcript so "in quite a bit of pain" merges with
+        # "my left ankle is" to form "my left ankle is in quite a bit of pain".
+        if step["state"] == "COLLECT_REASON" and self.session.get("_partial_reason"):
+            _pr = self.session.pop("_partial_reason")
+            transcript = _pr + " " + transcript.strip()
+            text       = transcript.lower()
+            if answer is not None:
+                answer = _pr + " " + answer.strip()
+            logger.info(
+                "[ms_flow] COLLECT_REASON: joined partial reason → %r", transcript[:80],
+            )
+
         # ── COLLECT_REASON: fragment guard (BUG 1/2) ─────────────────────────
         # extract:"any" accepts every non-empty transcript verbatim.  Guard against
         # premature advancement on bare fragments ("my", "my left", "pain").
@@ -7788,6 +7924,32 @@ class FlowEngine:
                     answer[:50],
                 )
                 answer = None   # fall through to re-ask logic below
+
+            # ── BUG 2: dangling linking-verb guard ────────────────────────────
+            # "my left ankle is" ends with a linking verb — the caller hasn't
+            # finished.  Reject and prompt for more, unless answer was already
+            # rejected above (answer is None).
+            if answer is not None:
+                import re as _re_cr_dangle
+                _DANGLE_RE = _re_cr_dangle.compile(
+                    r'\b(?:is|are|was|were|has|have|had|feels?|felt|seems?)\s*$',
+                    _re_cr_dangle.IGNORECASE,
+                )
+                if _DANGLE_RE.search(_reason_lower):
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON: dangling clause %r — re-asking for more",
+                        answer[:50],
+                    )
+                    # Store the partial so we can prefix it if caller continues
+                    self.session["_partial_reason"] = answer.strip()
+                    # Re-ask by overriding answer to None and injecting a re-ask phrase
+                    _dangle_phrase = "Sorry, could you tell me a bit more about that?"
+                    await self._tts.put(_dangle_phrase)
+                    self.session["last_question"] = _dangle_phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _dangle_phrase}
+                    )
+                    return  # wait for caller to complete the phrase
 
         # ── NEW_OR_RETURNING: Haiku silent classifier fallback ───────────────────
         # Fires when deterministic keyword matching missed — e.g. "I came about
@@ -8649,9 +8811,20 @@ class FlowEngine:
             "book an appointment", "make an appointment", "see a physio",
             "book me in", "book me",
             "another clinic", "different clinic",  # implicit booking intent (competitor threat)
+            # BUG 1: STT variants — "book" near "appointment" in longer utterances
+            "book an appointment", "book appointment",
+            "booking an appointment", "booking appointment",
+            "book of appointment",  # STT mishear of "book an appointment"
+            "that's a book", "thats a book",  # "that's a book of appointment"
+            "i was asking to book", "asking to book",
+            "i'd like to book", "like to book",
         )
         # Very short direct booking utterances: "book", "book pls", "book now", "book please"
         if len(text.split()) <= 3 and "book" in text:
+            return "booking"
+        # BUG 1: longer utterances containing BOTH "book" and "appointment" anywhere
+        if "book" in text and "appoint" in text:
+            logger.debug("[ms_flow] detect_intent book+appoint match: %r", text[:60])
             return "booking"
         if any(p in text for p in booking_priority_p):
             logger.debug("[ms_flow] detect_intent_booking_symptom_rule matched: %r", text[:60])
