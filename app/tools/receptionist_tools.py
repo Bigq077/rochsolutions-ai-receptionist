@@ -55,10 +55,17 @@ def _ordinal(n: int) -> str:
     return f"{n}{['th', 'st', 'nd', 'rd', 'th'][min(n % 10, 4)]}"
 
 
-def _build_days_data(slot_tuples: list) -> list:
+def _build_days_data(slot_tuples: list, max_days: int = 30) -> list:
     """
     Group (start_dt, end_dt) tuples into per-day summaries for the day-first
-    availability presentation flow.  Returns up to 8 unique days.
+    availability presentation flow.
+
+    max_days matches the 30-day Acuity search window so that every date
+    Acuity returns is stored in session["available_days"].  The old cap of 8
+    was the root cause of "I don't have the 23rd of April available" failures:
+    when 8+ April days existed, April 23 was silently excluded from
+    available_days even though Acuity returned it.  Presentation still shows
+    only 3 days at a time via _build_day_list_phrase(:3) and paging.
     """
     from collections import defaultdict as _dd
     days_map: "_dd[Any, list]" = _dd(list)
@@ -66,7 +73,7 @@ def _build_days_data(slot_tuples: list) -> list:
         days_map[start.date()].append((start, end))
 
     days_data = []
-    for day in sorted(days_map.keys())[:8]:          # cap at 8 days
+    for day in sorted(days_map.keys())[:max_days]:   # default 30 = full search window
         day_slots = days_map[day]
         dt = day_slots[0][0]
         day_name  = dt.strftime("%A")                # "Thursday"
@@ -2186,7 +2193,9 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         if not candidates:
             return {"error": "No slots found in the next 7 days.", "slots": []}
         presented  = _select_presented_tuples(candidates)
-        days_data  = _build_days_data(presented)
+        # Build from ALL candidates so available_days contains the full window,
+        # not just the 3 presented slots.  Mirrors the Acuity path fix.
+        days_data  = _build_days_data(candidates)
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -2214,7 +2223,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         if not free_slots:
             return {"error": "No candidate slots found in the next 7 days.", "slots": []}
         presented  = _select_presented_tuples(free_slots)
-        days_data  = _build_days_data(presented)
+        # Build from ALL free_slots (= candidates here) so available_days is complete.
+        days_data  = _build_days_data(free_slots)
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -2226,7 +2236,9 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
 
     presented  = _select_presented_tuples(free_slots)
-    days_data  = _build_days_data(presented)
+    # Build from ALL free_slots so available_days contains the full window,
+    # not just the 3 presented slots.  Mirrors the Acuity path fix.
+    days_data  = _build_days_data(free_slots)
     pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
     pres_labels = [format_slot(s) for s in presented]
     session["last_offered_slots"] = pres_raw
