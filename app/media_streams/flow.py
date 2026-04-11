@@ -139,6 +139,93 @@ _FAQ_PRICES_SERVICE_KEYWORDS = (
     "sports", "massage", "pilates", "class",
 )
 
+# ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
+# Patterns that callers use as labels instead of actual names.
+# If the transcript matches one of these entirely (or after stripping,
+# only stop-words remain), reject it and re-ask for the real name.
+import re as _re_nw
+_NAME_WRAPPER_PATTERNS = [
+    _re_nw.compile(r"^my first name(?:\s+is)?$"),
+    _re_nw.compile(r"^first name(?:\s+is)?$"),
+    _re_nw.compile(r"^my surname(?:\s+is)?$"),
+    _re_nw.compile(r"^surname(?:\s+is)?$"),
+    _re_nw.compile(r"^my family name(?:\s+is)?$"),
+    _re_nw.compile(r"^family name(?:\s+is)?$"),
+    _re_nw.compile(r"^my last name(?:\s+is)?$"),
+    _re_nw.compile(r"^last name(?:\s+is)?$"),
+    _re_nw.compile(r"^my name(?:\s+is)?$"),
+    _re_nw.compile(r"^name(?:\s+is)?$"),
+    # "it is" prefix when name_fragment present (surname context)
+    _re_nw.compile(r"^it(?:'?s| is)$"),
+]
+# Stop-words that are NOT real name tokens even after stripping wrapper prefix
+_NAME_WRAPPER_STOP_WORDS = frozenset({
+    "my", "first", "last", "name", "surname", "family", "is", "the",
+    "it", "its", "s",
+})
+
+
+def _strip_name_wrapper(text: str) -> str:
+    """
+    Strip leading name-label wrappers from a transcript fragment.
+    Returns the residual token(s), or empty string if nothing real remains.
+
+    Examples:
+      "my first name is karen"  → "karen"
+      "first name is"           → ""
+      "my name"                 → ""
+      "karen"                   → "karen"
+    """
+    t = text.strip().lower()
+    # Strip obvious prefix wrappers in order of specificity
+    _PREFIXES = (
+        "my first name is ",
+        "first name is ",
+        "my surname is ",
+        "surname is ",
+        "my family name is ",
+        "family name is ",
+        "my last name is ",
+        "last name is ",
+        "my name is ",
+        "name is ",
+        "my first name's ",
+        "my name's ",
+    )
+    for _pfx in _PREFIXES:
+        if t.startswith(_pfx):
+            t = t[len(_pfx):].strip()
+            break
+    return t
+
+
+def _is_pure_name_wrapper(text: str) -> bool:
+    """
+    Return True if text is ONLY a wrapper phrase with no real name token.
+    Used to reject 'my first name' when caller just says the label, not the value.
+    """
+    t = text.strip().lower()
+    for pat in _NAME_WRAPPER_PATTERNS:
+        if pat.fullmatch(t):
+            return True
+    # Also reject if after stripping all wrapper words nothing real remains
+    tokens = [tok for tok in t.split() if tok not in _NAME_WRAPPER_STOP_WORDS]
+    if not tokens:
+        return True
+    return False
+
+
+def _is_valid_name_token(s: str) -> bool:
+    """
+    Return True if s contains at least one real name token (≥2 chars, non-stop-word).
+    Used to gate lookup_appointment — prevents lookup with wrapper garbage.
+    """
+    s = s.strip().lower()
+    tokens = s.split()
+    real = [t for t in tokens if t not in _NAME_WRAPPER_STOP_WORDS and len(t) >= 2]
+    return len(real) >= 1
+
+
 # ── Global repair-intent phrases (Bug 4) ────────────────────────────────────
 # Checked at the top of handle_transcript before ALL other logic.
 _GLOBAL_REPAIR_PHRASES = (
@@ -176,6 +263,11 @@ _FRAGMENT_STRONG_INTENTS = frozenset({
     "alcester", "redditch", "alchester", "reddit",
     "reschedule", "cancel", "book", "new", "returning", "recently",
     "stop",
+    # BUG 22 fix: day names are valid answers in PRESENT_DAYS states
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    "mon", "tue", "wed", "thu", "fri",
+    # Short confirmations that should never be swallowed
+    "correct", "right", "sure", "okay", "ok",
 })
 # Explicit noise tokens that must never drive a response regardless of context
 _FRAGMENT_BLOCKLIST = frozenset({
@@ -1357,7 +1449,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
             "Parse full_name='{full_name}' into first_name / last_name (split on the first space).\n\n"
             "TURN 1 — Lookup:\n"
-            "  Say: 'Okay, that's noted. I'm looking for your appointment now.'\n"
+            "  Say: 'Bear with me one moment.'\n"
             "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
             "phone='{phone_number}', location='{selected_location}').\n"
             "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
@@ -1511,7 +1603,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
             "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
             "Parse full_name='{full_name}' into first_name / last_name (split on the first space).\n\n"
             "TURN 1 — Lookup:\n"
-            "  Say: 'Okay, that's noted. I'm looking for your appointment now.'\n"
+            "  Say: 'Bear with me one moment.'\n"
             "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
             "phone='{phone_number}', location='{selected_location}').\n"
             "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
@@ -2272,6 +2364,46 @@ class FlowEngine:
                     return
 
         if step["use_llm"]:
+            # BUG 13 fix: pre-lookup name validation — abort with a re-ask if the
+            # collected name is empty or consists only of wrapper garbage.
+            if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL") and not self.session.get("rc_stage"):
+                _lu_full = (
+                    self.session.get("full_name")
+                    or (self.session.get("collected") or {}).get("full_name")
+                    or ""
+                ).strip()
+                _lu_parts = _lu_full.split()
+                _lu_first = _lu_parts[0] if _lu_parts else ""
+                _lu_last  = _lu_parts[-1] if len(_lu_parts) > 1 else ""
+                if not _is_valid_name_token(_lu_first) or not _is_valid_name_token(_lu_last):
+                    logger.warning(
+                        "[ms_flow] BUG13: lookup blocked — invalid name tokens: first=%r last=%r full=%r",
+                        _lu_first, _lu_last, _lu_full,
+                    )
+                    _lu_reask = (
+                        "Sorry — I didn't quite catch that name. "
+                        "Could you give me the first name and surname the booking was made under?"
+                    )
+                    await self._tts.put(_lu_reask)
+                    self.session["last_question"] = _lu_reask
+                    # Step back to COLLECT_NAME_RESCHEDULE / COLLECT_NAME_CANCEL
+                    _cn_state = (
+                        "COLLECT_NAME_CANCEL"
+                        if step["state"] == "LOOKUP_CANCEL"
+                        else "COLLECT_NAME_RESCHEDULE"
+                    )
+                    _cn_idx = next(
+                        (i for i, s in enumerate(self._active_flow) if s["state"] == _cn_state),
+                        None,
+                    )
+                    if _cn_idx is not None:
+                        self.session["flow_step"] = _cn_idx
+                        self.session["state"] = _cn_state
+                        self.session.pop("name_fragment", None)
+                        _col = self.session.get("collected", {})
+                        _col.pop("full_name", None)
+                        self.session["collected"] = _col
+                    return
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
             if step["question"]:
                 await self._tts.put(step["question"])
@@ -2472,11 +2604,28 @@ class FlowEngine:
                 # Deterministic failure readback — lookup_appointment set rc_lookup_failed=True
                 if self.session.get("rc_lookup_failed"):
                     self.session.pop("rc_lookup_failed", None)
-                    _fail_name = (self.session.get("collected") or {}).get("full_name", "the name given")
-                    _fail_msg = (
-                        f"I'm sorry — I couldn't find an appointment under {_fail_name}. "
-                        "Could you give me the first name and surname the booking was made under?"
-                    )
+                    _fail_full = (
+                        self.session.get("full_name")
+                        or (self.session.get("collected") or {}).get("full_name")
+                        or ""
+                    ).strip()
+                    _fail_parts = _fail_full.split()
+                    _fail_first = _fail_parts[0] if _fail_parts else ""
+                    _fail_last  = _fail_parts[-1] if len(_fail_parts) > 1 else ""
+                    # BUG 14 fix: format as confirmation question using extracted name tokens
+                    if _fail_first and _fail_last:
+                        _fail_msg = (
+                            f"I have the booking under {_fail_first} {_fail_last} — is that correct?"
+                        )
+                    elif _fail_full:
+                        _fail_msg = (
+                            f"I have the booking under {_fail_full} — is that correct?"
+                        )
+                    else:
+                        _fail_msg = (
+                            "Sorry — I couldn't find that appointment. "
+                            "Could you give me the first name and surname the booking was made under?"
+                        )
                     # Drain any LLM output already queued to TTS
                     while not self._tts.empty():
                         try:
@@ -2865,7 +3014,27 @@ class FlowEngine:
                     "No problem — just bear with me one moment while I check your appointment.",
                 )
             else:
-                _repair_q = "Sorry about that \u2014 what was your question?"
+                # BUG 11 fix: state-aware fallback — phone/name states get targeted responses
+                _PHONE_REPAIR_STATES = {
+                    "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+                    "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+                    "COLLECT_PHONE_RESCHEDULE",
+                }
+                _NAME_REPAIR_STATES = {
+                    "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                    "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                }
+                if _repair_state in _PHONE_REPAIR_STATES:
+                    _repair_q = self.session.get("last_question", "Could you say that number again?")
+                elif _repair_state in _NAME_REPAIR_STATES:
+                    _nf = self.session.get("name_fragment")
+                    _repair_q = (
+                        "And your surname?"
+                        if _nf
+                        else self.session.get("last_question", "What's your first name please?")
+                    )
+                else:
+                    _repair_q = "Sorry about that \u2014 what was your question?"
             self.session["last_question"] = _repair_q
             self.session["repair_requested"] = True
             logger.info("[ms_flow] global repair intercept (state=%s): %r", _repair_state, transcript[:60])
@@ -2878,6 +3047,67 @@ class FlowEngine:
         if _is_repeat:
             self.session["repeat_requested"] = True
             logger.info("[ms_flow] global repeat intercept: %r", transcript[:60])
+            return
+
+        # ── BUG 25 / BUG 7: GLOBAL "WHAT DID YOU CATCH/HEAR" INTERCEPT ─────────
+        # Caller wants to know what Susie captured — answer based on last collected
+        # field then re-anchor with last_question.
+        # BUG 7 fix: "i don't think you asked for it" added here so the recap path
+        # works at ANY state, not just CONFIRM_PHONE.
+        _GLOBAL_CATCH_PHRASES = (
+            "what did you catch", "what did you get", "what did you hear",
+            "what have you got", "what do you have", "what name do you have",
+            "what did you record", "what did you take down",
+            "what have you written", "what have you captured",
+            "i don't think you asked for it", "i dont think you asked for it",
+            "did you catch my name", "did you get my name",
+            "what name did you get",
+        )
+        if any(p in text for p in _GLOBAL_CATCH_PHRASES):
+            _catch_state = self.session.get("state", "")
+            _catch_name  = (
+                self.session.get("full_name")
+                or (self.session.get("collected") or {}).get("full_name")
+                or ""
+            ).strip()
+            _catch_phone = (
+                self.session.get("phone_number")
+                or (self.session.get("collected") or {}).get("phone")
+                or ""
+            )
+            _catch_day   = self.session.get("chosen_day", "")
+            if _catch_name and _catch_phone:
+                _catch_reply = (
+                    f"I have {_catch_name} on {_catch_phone}. "
+                    + (self.session.get("last_question") or "Is that right?")
+                )
+            elif _catch_name:
+                _catch_reply = (
+                    f"I have the name as {_catch_name}. "
+                    + (self.session.get("last_question") or "Is that right?")
+                )
+            elif _catch_phone:
+                _catch_reply = (
+                    f"I have the number as {_catch_phone}. "
+                    + (self.session.get("last_question") or "Is that right?")
+                )
+            elif _catch_day:
+                _catch_reply = (
+                    f"You chose {_catch_day}. "
+                    + (self.session.get("last_question") or "Is that right?")
+                )
+            else:
+                _catch_reply = (
+                    (self.session.get("last_question") or "Sorry — could you say that again?")
+                )
+            await self._tts.put(_catch_reply)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _catch_reply}
+            )
+            logger.info(
+                "[ms_flow] BUG25 catch intercept (state=%s): %r → %r",
+                _catch_state, transcript[:40], _catch_reply[:60],
+            )
             return
 
         # ── GLOBAL RE-ENGAGEMENT INTERCEPT ──────────────────────────────────────
@@ -2941,7 +3171,28 @@ class FlowEngine:
             and step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL")
             and self.session.get("rc_stage") == "lookup_done"
         )
-        if _is_fragment and not _is_lookup_confirm_state and (not step or step["state"] not in _NAME_COLLECTION_STATES):
+        # BUG 12 fix: CONFIRM_PHONE and phone-confirmation states must let through
+        # short affirmatives like "it is", "that's right", "correct", "yes it is".
+        _CONFIRM_PHONE_STATES = {
+            "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+        }
+        _CONFIRM_BYPASS_TOKENS = frozenset({
+            "it is", "it was", "that's right", "thats right",
+            "correct", "yes it is", "yes it was", "that is correct",
+            "that's correct", "thats correct", "yes that's right",
+            "yes thats right", "yes correct", "right",
+        })
+        _is_confirm_phone_state = (
+            step is not None and step["state"] in _CONFIRM_PHONE_STATES
+        )
+        _is_confirm_bypass_token = _frag_text in _CONFIRM_BYPASS_TOKENS
+        # BUG 22 fix: day-selection and lookup states must never suppress valid short answers
+        _FRAG_BYPASS_STATES = {
+            "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+            "LOOKUP_RESCHEDULE", "LOOKUP_CANCEL",
+        }
+        _is_frag_bypass_state = step is not None and step["state"] in _FRAG_BYPASS_STATES
+        if _is_fragment and not _is_lookup_confirm_state and not (_is_confirm_phone_state and _is_confirm_bypass_token) and not _is_frag_bypass_state and (not step or step["state"] not in _NAME_COLLECTION_STATES):
             logger.info("[ms_flow] global fragment suppressed: %r", transcript[:30])
             self.session["fragment_suppressed"] = True
             return
@@ -3216,15 +3467,23 @@ class FlowEngine:
                 _is_progress_q = any(p in (text or "").lower() for p in _KP_PROGRESS_Q)
 
                 if _is_restart:
-                    # Clear buffer and re-prompt the keypad bridge
-                    self.session["phone_dtmf_buffer"] = ""
-                    _restart_prompt = self.session.get(
-                        "last_question",
-                        "No problem — please type your number from the start on the keypad.",
+                    # BUG 9 & 10 fix: clear ALL phone-entry buffers before restart.
+                    # Use a dedicated restart prompt — not last_question (stale) — so the
+                    # caller hears a clean re-anchor specifically about number entry.
+                    self.session["phone_dtmf_buffer"]    = ""
+                    self.session["phone_digits_buffer"]  = ""
+                    self.session["phone_voice_attempts"] = 0
+                    _restart_prompt = (
+                        "No problem — let's start that number again. "
+                        "Please type the full number your booking was made under on your keypad."
                     )
                     await self._tts.put(_restart_prompt)
+                    self.session["last_question"] = _restart_prompt
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _restart_prompt}
+                    )
                     logger.info(
-                        "[ms_flow] COLLECT_PHONE: keypad restart %r — buffer cleared, re-prompting",
+                        "[ms_flow] COLLECT_PHONE: keypad restart %r — ALL buffers cleared, re-prompting",
                         (text or "")[:50],
                     )
                     return
@@ -3491,6 +3750,7 @@ class FlowEngine:
         # ════════════════════════════════════════════════════════════════════
         if self.session.get("state") == "CONFIRM_PHONE":
             # ── NAME-REPAIR: caller says the captured name was wrong ───────────
+            # BUG 6 fix: extended to catch more natural name-correction phrases.
             # Must run BEFORE the YES/NO gate so repair utterances are never
             # trapped as ambiguous phone confirmations.
             _NAME_REPAIR = (
@@ -3502,6 +3762,12 @@ class FlowEngine:
                 "name question", "help me spell", "spell my name",
                 "messed up on my name", "messed up my name",
                 "got the name wrong",
+                # BUG 6 extended: natural correction phrasing from live calls
+                "actually my name is", "my name is actually",
+                "no my name is", "no, my name",
+                "the name is", "it should be under", "it's under",
+                "name should be", "my surname is", "my first name is",
+                "actually it's", "no it's",
             )
             if any(p in text for p in _NAME_REPAIR):
                 # Locate COLLECT_NAME step in the active flow (works for all flows)
@@ -3526,6 +3792,32 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
+
+            # BUG 7 fix: caller asks what name was captured — restate and ask to confirm.
+            _RECAP_PHRASES = (
+                "what did you catch", "what did you get", "what name do you have",
+                "what name have you got", "what name have you got me as",
+                "what did you get my name as", "what did you write down",
+                "what have you got for my name", "what name is there",
+                "i don't think you asked for it", "did you get my name",
+                "what name do you have for me", "what name did you catch",
+                "what have you got", "what did you note",
+            )
+            if any(p in text for p in _RECAP_PHRASES):
+                _recap_name = (
+                    self.session.get("full_name")
+                    or (self.session.get("collected") or {}).get("full_name")
+                    or (self.session.get("collected") or {}).get("name")
+                    or "I haven't got a name yet"
+                )
+                _recap_q = f"I currently have the booking under {_recap_name} — is that correct?"
+                await self._tts.put(_recap_q)
+                self.session["last_question"] = _recap_q
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _recap_q}
+                )
+                logger.info("[ms_flow] CONFIRM_PHONE BUG 7: recap requested — restated name %r", _recap_name)
+                return
 
             _HG_YES = (
                 "yes", "yeah", "yep", "yup", "yeh", "ya",
@@ -3633,8 +3925,12 @@ class FlowEngine:
                 self.session["_last_handled_by"]   = "confirm_phone_no"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = True
+                # BUG 8 fix: reschedule/cancel context — anchor to booking number explicitly
                 if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
-                    _bridge = "No problem — could you type in the number your booking was made under?"
+                    _bridge = (
+                        "No problem — please type the number your booking was made under "
+                        "on your keypad now."
+                    )
                 else:
                     _bridge = "No problem — please type the best number to reach you on using your keypad now."
                 await self._tts.put(_bridge)
@@ -4551,6 +4847,33 @@ class FlowEngine:
                         step["state"], _pd_page, _pd_replay[:80],
                     )
                     return  # keep same flow_step — wait for actual day choice
+
+            # ── BUG 21: EXPLORATORY UTTERANCES — incomplete day requests ──────────
+            # "can you do", "do you have" without a specific day name means the caller
+            # hasn't committed to a day yet.  Prompt for clarification rather than
+            # routing to Haiku (which may read the sentence fragment as a selection).
+            _PD_EXPLORATORY = (
+                "can you do", "could you do", "do you have", "do you do",
+                "is there", "are there any", "have you got",
+                "is that possible", "would that be",
+            )
+            _WEEKDAY_WORDS_EXP = {
+                "monday", "tuesday", "wednesday", "thursday", "friday",
+                "mon", "tue", "wed", "thu", "fri",
+            }
+            _exp_match = any(p in text for p in _PD_EXPLORATORY)
+            _exp_has_day = any(w in text.split() for w in _WEEKDAY_WORDS_EXP)
+            if _exp_match and not _exp_has_day:
+                _exp_replay = self.session.get("last_question", "Which day would suit you best?")
+                await self._tts.put(_exp_replay)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _exp_replay}
+                )
+                logger.info(
+                    "[ms_flow] %s: exploratory utterance %r — prompting for day (Haiku avoided)",
+                    step["state"], transcript[:40],
+                )
+                return
 
             # ── EXPLICIT DATE: "the 25th of April" must beat NONE-OF-THESE/ordinal ──
             # Run before _PD_NONE so "none of those, what about the 25th of April?"
@@ -6505,6 +6828,10 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] correction_mode: caller confirmed name unchanged — retrying lookup"
                     )
+                    # BUG 15 fix: flush any stale prompts before re-firing LLM
+                    while not self._tts.empty():
+                        try: self._tts.get_nowait()
+                        except Exception: break
                     await self.ask_current_question()
                     return
 
@@ -6532,6 +6859,10 @@ class FlowEngine:
                     self.session.pop("lookup_correction_mode", None)
                     # Re-fire the LLM with the updated name so it retries lookup_appointment
                     logger.info("[ms_flow] correction applied — re-firing LLM for retry lookup")
+                    # BUG 15 fix: flush stale prompts from previous invalid state
+                    while not self._tts.empty():
+                        try: self._tts.get_nowait()
+                        except Exception: break
                     await self.ask_current_question()
                     return
                 else:
@@ -6805,7 +7136,44 @@ class FlowEngine:
                     logger.info("[ms_flow] COLLECT_NAME: stripped wrapper %r → %r", _cw, transcript[:40])
                     break
 
+        # BUG 3 & BUG 4 fix: detect pure name-wrapper utterances BEFORE extraction.
+        # "my first name" / "first name is" with no actual name token must be rejected
+        # immediately — they must never be passed to _extract() which would return None
+        # and then fall through to the retry path, nor should they store garbage.
+        if step["state"] in _COLLECT_NAME_STATES_STRIP and _is_pure_name_wrapper(text):
+            _wrapper_q = (
+                "And your surname?" if self.session.get("name_fragment")
+                else self.session.get("last_question", "What's your first name please?")
+            )
+            # BUG 2 fix: drain stale duplicate before re-queuing
+            while not self._tts.empty():
+                try:
+                    self._tts.get_nowait()
+                except Exception:
+                    break
+            await self._tts.put(_wrapper_q)
+            self.session["last_question"] = _wrapper_q
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _wrapper_q}
+            )
+            logger.info(
+                "[ms_flow] COLLECT_NAME: pure wrapper phrase rejected %r — re-asking %r",
+                text[:50], _wrapper_q[:50],
+            )
+            return
+
         answer = self._extract(step["extract"], text, transcript)
+
+        # BUG 4 fix: after extraction, if the answer is a wrapper-only phrase, strip it.
+        # e.g. _extract("name") returns "My First Name" from "my first name" → reject.
+        if step["state"] in _COLLECT_NAME_STATES_STRIP and answer:
+            _stripped_answer = _strip_name_wrapper(answer.lower())
+            if not _stripped_answer or _is_pure_name_wrapper(answer.lower()):
+                logger.info(
+                    "[ms_flow] COLLECT_NAME: extracted answer %r is wrapper-only — rejecting",
+                    answer,
+                )
+                answer = None
 
         # ── COLLECT_NAME: structured split-name fallback ─────────────────────
         # "my first name is X my surname is Y" — the function-word guard in
@@ -6949,11 +7317,17 @@ class FlowEngine:
             })
             if answer.lower() in _FRAGMENT_REJECT:
                 _cn_pending = self.session.get("last_question", "And what's your first name please?")
+                # BUG 2 fix: drain any stale re-ask already queued so only one prompt plays
+                while not self._tts.empty():
+                    try:
+                        self._tts.get_nowait()
+                    except Exception:
+                        break
                 await self._tts.put(_cn_pending)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _cn_pending}
                 )
-                logger.info("[ms_flow] COLLECT_NAME: rejecting noise fragment %r — re-asking", answer)
+                logger.info("[ms_flow] COLLECT_NAME: rejecting noise fragment %r — re-asking (deduped)", answer)
                 return
             _frag = self.session.get("name_fragment")
             if _frag:

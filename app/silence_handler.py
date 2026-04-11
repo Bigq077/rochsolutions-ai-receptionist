@@ -32,6 +32,8 @@ _STATE_TO_KEY: dict[str, str] = {
     "COLLECT_PHONE_RETURNING": "ask_phone",
     "CONFIRM_PHONE":           "confirm_phone",
     "CONFIRM_PHONE_RETURNING": "confirm_phone",
+    # BUG 1 fix: COLLECT_NAME states map to ask_name (generic fallback);
+    # the SilenceHandler._speech_recovery already handles fragment-aware sub-states.
     "COLLECT_NAME":            "ask_name",
     "COLLECT_NAME_RETURNING":  "ask_name",
     "COLLECT_NAME_RESCHEDULE": "ask_name",
@@ -51,9 +53,11 @@ _STATE_TO_KEY: dict[str, str] = {
     # Booking — reason
     "BOOK_REASON":          "ask_reason",
     "BOOK_INTAKE":          "ask_reason",
-    # Greeting / triage
+    # BUG 1 fix: GREETING → booking-intent re-ask; ASK_LOCATION → location re-ask
     "TRIAGE":               "greeting",
-    "ASK_LOCATION":         "greeting",
+    "GREETING":             "greeting",
+    "DETECT_INTENT":        "greeting",
+    "ASK_LOCATION":         "ask_location",
     # Confirmation
     "BOOK_CONFIRM":         "confirm_read_back",
     "RESCH_CONFIRM":        "confirm_read_back",

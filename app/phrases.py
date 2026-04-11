@@ -240,10 +240,15 @@ SILENCE_RESPONSES: dict = {
     "ask_phone":         "No rush — take your time finding that number.",
     "confirm_phone":     "Please say yes to confirm, or no to try a different number.",
     "ask_name":          "Take your time.",
+    # BUG 1 fix: state-aware name sub-categories
+    "ask_first_name":    "Sorry, I missed that. Could you tell me your first name again?",
+    "ask_surname":       "Sorry, I missed that. And your family name?",
     "ask_day":           "Have a think — no hurry at all.",
     "ask_time":          "No rush on that.",
     "ask_reason":        "Take your time telling me.",
-    "greeting":          "Hello? I'm Susie at {clinic_name} — were you looking to book an appointment?",
+    # BUG 1 fix: GREETING gets a booking-intent re-ask; ASK_LOCATION gets a location re-ask
+    "greeting":          "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?",
+    "ask_location":      "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?",
     "confirm_read_back": "Just let me know if any of those details need changing.",
     "default":           "I didn't quite catch that — could you say that again?",
     "default_retry":     "Sorry about that — could you say that again?",

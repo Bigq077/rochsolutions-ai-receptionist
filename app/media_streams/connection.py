@@ -296,7 +296,7 @@ class SilenceHandler:
             self._restart_timer()
             return
 
-        # State-specific short repair prompts (Bug 5)
+        # BUG 1 fix: state-specific short repair prompts — each state gets a targeted re-ask
         if _state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
             if (_sess or {}).get("lookup_correction_mode"):
                 # Lookup failed — we asked for name correction; re-anchor to that
@@ -319,9 +319,16 @@ class SilenceHandler:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         ):
             _nf = (_sess or {}).get("name_fragment")
-            phrase = "Sorry — what's your surname?" if _nf else "Sorry — what's your first name?"
-        elif _state in ("DETECT_INTENT", ""):
-            phrase = "Sorry — how can I help you today?"
+            # BUG 1 fix: distinguish first-name vs surname sub-state
+            phrase = "Sorry, I missed that. And your family name?" if _nf else "Sorry, I missed that. Could you tell me your first name again?"
+        elif _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+            phrase = "Sorry, I missed that. Could you type the phone number using your keypad?"
+        elif _state in ("GREETING", "DETECT_INTENT", ""):
+            # BUG 1 fix: GREETING state gets booking-intent re-ask
+            phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
+        elif _state == "ASK_LOCATION":
+            # BUG 1 fix: ASK_LOCATION gets location-anchored re-ask
+            phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?"
         else:
             phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
 
