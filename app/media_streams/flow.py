@@ -1710,11 +1710,23 @@ def _parse_lookup_name_correction(text: str) -> str | None:
         r"\bname(?:\s+is|\s+was|\s*'s)?\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)+)",
         r"\bit(?:'s|\s+is)\s+([a-zA-Z][\w\-']*(?:\s+[a-zA-Z][\w\-']*)+)",
     ]
+    # Function/filler words that must not appear in a captured name.
+    # Guards against "it's the same", "it is from before" etc. which pass the
+    # length check but are not real names.
+    _FUNC_WORDS = frozenset({
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "as", "is", "was", "are", "were", "be", "been",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "not", "no", "yes", "same", "that",
+        "this", "these", "those", "it", "its", "my", "your", "our", "their",
+        "from", "before", "after", "right", "correct", "wrong", "just", "still",
+    })
     for pat in _FULL_PATS:
         m = _re_mod.search(pat, raw, _re_mod.IGNORECASE)
         if m:
             name = _clean(m.group(1))
-            if len(name.split()) >= 2:
+            _name_words = name.split()
+            if len(_name_words) >= 2 and not any(w.lower() in _FUNC_WORDS for w in _name_words):
                 return name
 
     return None
@@ -2462,9 +2474,8 @@ class FlowEngine:
                     self.session.pop("rc_lookup_failed", None)
                     _fail_name = (self.session.get("collected") or {}).get("full_name", "the name given")
                     _fail_msg = (
-                        f"I'm sorry — I couldn't find a future appointment under {_fail_name}. "
-                        "Could you confirm the first name, surname, and phone number "
-                        "the booking was made under?"
+                        f"I'm sorry — I couldn't find an appointment under {_fail_name}. "
+                        "Could you give me the first name and surname the booking was made under?"
                     )
                     # Drain any LLM output already queued to TTS
                     while not self._tts.empty():
@@ -3063,6 +3074,9 @@ class FlowEngine:
                         "[ms_flow] ASK_LOCATION: fragment suppressed (no loc token, %d words) %r",
                         len(_loc_words), text[:40],
                     )
+                    _loc_reanchor = "Sorry — was that Alcester or Redditch?"
+                    await self._tts.put(_loc_reanchor)
+                    self.session["last_question"] = _loc_reanchor
                     return
                 # FAQ interrupt — only genuine FAQ intents; general_query excluded above.
                 _loc_intent = self._detect_intent(text)
@@ -3515,7 +3529,10 @@ class FlowEngine:
                 self.session["_last_handled_by"]   = "confirm_phone_no"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = True
-                _bridge = "No problem — please type the best number to reach you on using your keypad now."
+                if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
+                    _bridge = "No problem — could you type in the number your booking was made under?"
+                else:
+                    _bridge = "No problem — please type the best number to reach you on using your keypad now."
                 await self._tts.put(_bridge)
                 self.session["last_question"] = _bridge
                 self.session.setdefault("conversation_history", []).append(
@@ -4431,88 +4448,9 @@ class FlowEngine:
                     )
                     return  # keep same flow_step — wait for actual day choice
 
-            # ── NONE-OF-THESE / LATER / BACK: page through available_days ────────
-            _PD_NONE = (
-                "none of these", "none of them", "none of those",
-                "those don't work", "those dont work",
-                "they don't work", "they dont work",
-                "none of these work", "none of these suit", "none suit",
-                "nothing works for me", "doesn't work for me", "doesnt work for me",
-                "can't do any of those", "cant do any of those",
-                "not available on any", "none of those suit",
-                # Common spoken rejections missing from original set
-                "not really", "no not really", "nothing there",
-                "nah", "nope", "no thanks", "no thank you",
-                "that doesn't work", "that wont work", "that won't work",
-                "not ideal", "not great",
-            )
-            _PD_LATER = (
-                "later dates", "later date", "any later", "something later",
-                "further ahead", "further in advance",
-                "anything later", "anything after", "more dates", "other dates",
-                "if you have any later", "what else", "any other",
-                # Common spoken variants — "late dates", "any late" without trailing "r"
-                "late dates", "any late", "any later dates",
-                "later availability", "later days", "further dates",
-                "have any late", "got any late", "got any later",
-            )
-            _PD_BACK = (
-                "go back", "previous dates", "earlier dates",
-                "the ones before", "the first ones", "back to the first",
-                # "original" / "initial" phrasing from live calls
-                "original dates", "the original", "initial dates",
-                "the initial", "first set", "back to the original",
-                "list the original", "list the initial",
-            )
-            _pd_all = self.session.get("available_days", [])
-
-            if any(p in text for p in _PD_NONE) or any(p in text for p in _PD_LATER):
-                # Caller is browsing past the currently-offered set — any month-
-                # filtered overlay is no longer the active offer.
-                self.session.pop("_pd_month_filtered", None)
-                _page = self.session.get("days_page", 0) + 1
-                self.session["days_page"] = _page
-                _next_days = _pd_all[_page * 3 : (_page + 1) * 3]
-                if _next_days:
-                    _phrase = _build_day_list_phrase(_next_days)
-                    await self._tts.put(_phrase)
-                    self.session["last_question"] = _phrase
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _phrase}
-                    )
-                    logger.info("[ms_flow] PRESENT_DAYS: page=%d next days offered", _page)
-                else:
-                    _no_more = (
-                        "I'm afraid that's all the availability I have in the next 30 days. "
-                        "Can I take your details and have someone call you to arrange a time?"
-                    )
-                    await self._tts.put(_no_more)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _no_more}
-                    )
-                    self.session["graceful_exit"] = True
-                    self.session["flow_step"] = len(self._active_flow)
-                    logger.info("[ms_flow] PRESENT_DAYS: no more days — graceful exit")
-                return
-
-            if any(p in text for p in _PD_BACK):
-                self.session.pop("_pd_month_filtered", None)
-                _page = max(0, self.session.get("days_page", 0) - 1)
-                self.session["days_page"] = _page
-                _prev_days = _pd_all[_page * 3 : (_page + 1) * 3]
-                if _prev_days:
-                    _phrase = _build_day_list_phrase(_prev_days)
-                    await self._tts.put(_phrase)
-                    self.session["last_question"] = _phrase
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _phrase}
-                    )
-                    logger.info("[ms_flow] PRESENT_DAYS: page back → page=%d", _page)
-                return
-
-            # ── EXPLICIT DATE: "the 25th of April" must beat generic YES/ordinal ──
-            # Run before _PD_YES so an explicit date is never collapsed into a
-            # generic affirmation and the wrong day stored.
+            # ── EXPLICIT DATE: "the 25th of April" must beat NONE-OF-THESE/ordinal ──
+            # Run before _PD_NONE so "none of those, what about the 25th of April?"
+            # is handled as an explicit date request, not a page-advance.
             import re as _re_xd
             _XD_PAT = _re_xd.search(
                 r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)\b'
@@ -4612,6 +4550,85 @@ class FlowEngine:
                         _xd_spoken_date,
                     )
                     return
+
+            # ── NONE-OF-THESE / LATER / BACK: page through available_days ────────
+            _PD_NONE = (
+                "none of these", "none of them", "none of those",
+                "those don't work", "those dont work",
+                "they don't work", "they dont work",
+                "none of these work", "none of these suit", "none suit",
+                "nothing works for me", "doesn't work for me", "doesnt work for me",
+                "can't do any of those", "cant do any of those",
+                "not available on any", "none of those suit",
+                # Common spoken rejections missing from original set
+                "not really", "no not really", "nothing there",
+                "nah", "nope", "no thanks", "no thank you",
+                "that doesn't work", "that wont work", "that won't work",
+                "not ideal", "not great",
+            )
+            _PD_LATER = (
+                "later dates", "later date", "any later", "something later",
+                "further ahead", "further in advance",
+                "anything later", "anything after", "more dates", "other dates",
+                "if you have any later", "what else", "any other",
+                # Common spoken variants — "late dates", "any late" without trailing "r"
+                "late dates", "any late", "any later dates",
+                "later availability", "later days", "further dates",
+                "have any late", "got any late", "got any later",
+            )
+            _PD_BACK = (
+                "go back", "previous dates", "earlier dates",
+                "the ones before", "the first ones", "back to the first",
+                # "original" / "initial" phrasing from live calls
+                "original dates", "the original", "initial dates",
+                "the initial", "first set", "back to the original",
+                "list the original", "list the initial",
+            )
+            _pd_all = self.session.get("available_days", [])
+
+            if any(p in text for p in _PD_NONE) or any(p in text for p in _PD_LATER):
+                # Caller is browsing past the currently-offered set — any month-
+                # filtered overlay is no longer the active offer.
+                self.session.pop("_pd_month_filtered", None)
+                _page = self.session.get("days_page", 0) + 1
+                self.session["days_page"] = _page
+                _next_days = _pd_all[_page * 3 : (_page + 1) * 3]
+                if _next_days:
+                    _phrase = _build_day_list_phrase(_next_days)
+                    await self._tts.put(_phrase)
+                    self.session["last_question"] = _phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _phrase}
+                    )
+                    logger.info("[ms_flow] PRESENT_DAYS: page=%d next days offered", _page)
+                else:
+                    _no_more = (
+                        "I'm afraid that's all the availability I have in the next 30 days. "
+                        "Can I take your details and have someone call you to arrange a time?"
+                    )
+                    await self._tts.put(_no_more)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _no_more}
+                    )
+                    self.session["graceful_exit"] = True
+                    self.session["flow_step"] = len(self._active_flow)
+                    logger.info("[ms_flow] PRESENT_DAYS: no more days — graceful exit")
+                return
+
+            if any(p in text for p in _PD_BACK):
+                self.session.pop("_pd_month_filtered", None)
+                _page = max(0, self.session.get("days_page", 0) - 1)
+                self.session["days_page"] = _page
+                _prev_days = _pd_all[_page * 3 : (_page + 1) * 3]
+                if _prev_days:
+                    _phrase = _build_day_list_phrase(_prev_days)
+                    await self._tts.put(_phrase)
+                    self.session["last_question"] = _phrase
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _phrase}
+                    )
+                    logger.info("[ms_flow] PRESENT_DAYS: page back → page=%d", _page)
+                return
 
             _PD_YES = (
                 # Single-word affirmatives
@@ -6371,6 +6388,21 @@ class FlowEngine:
             # Deterministic name correction pre-check — runs before LLM re-fire.
             # Active only when lookup_correction_mode is set (i.e. a previous lookup failed).
             if self.session.get("lookup_correction_mode"):
+                # Bug 6: caller confirms the name is already correct — retry lookup unchanged
+                _lc_corr = text.strip().lower()
+                _CORR_CONFIRM = (
+                    "yes", "yeah", "yep", "correct", "that's right", "thats right",
+                    "it's right", "it is right", "yes it is", "that's correct",
+                    "yes it's", "yes that's",
+                )
+                if any(p in _lc_corr for p in _CORR_CONFIRM):
+                    self.session.pop("lookup_correction_mode", None)
+                    logger.info(
+                        "[ms_flow] correction_mode: caller confirmed name unchanged — retrying lookup"
+                    )
+                    await self.ask_current_question()
+                    return
+
                 _correction = _parse_lookup_name_correction(text)
                 if _correction:
                     col = self.session.setdefault("collected", {})
@@ -6396,6 +6428,15 @@ class FlowEngine:
                     # Re-fire the LLM with the updated name so it retries lookup_appointment
                     logger.info("[ms_flow] correction applied — re-firing LLM for retry lookup")
                     await self.ask_current_question()
+                    return
+                else:
+                    # Bug 5: can't parse a name from this utterance — re-anchor caller
+                    _corr_reask = (
+                        "Sorry — I didn't quite catch that. "
+                        "Could you give me the first name and surname the booking was made under?"
+                    )
+                    await self._tts.put(_corr_reask)
+                    self.session["last_question"] = _corr_reask
                     return
 
             # ── Deterministic confirmation: appointment already found ───────────
@@ -6433,15 +6474,14 @@ class FlowEngine:
                         "[ms_flow] %s: deterministic YES confirmed — advancing to step %d",
                         _flow_label, _next_step,
                     )
-                    _confirm_msg = (
-                        "Perfect — let me find some new times for you."
-                        if self._active_flow is RESCHEDULE_FLOW
-                        else "I'll get that cancelled for you now."
-                    )
-                    await self._tts.put(_confirm_msg)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _confirm_msg}
-                    )
+                    # CANCEL_FLOW: emit confirm bridge before CONFIRM_CANCEL (LLM step, no question).
+                    # RESCHEDULE_FLOW: skip — PRESENT_DAYS_RESCHEDULE question is the bridge.
+                    if self._active_flow is not RESCHEDULE_FLOW:
+                        _confirm_msg = "I'll get that cancelled for you now."
+                        await self._tts.put(_confirm_msg)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _confirm_msg}
+                        )
                     # Advance flow_step BEFORE ask_current_question so we never
                     # re-fire the LLM on the lookup step (Bugs 1 and 6).
                     self.session["flow_step"] = _next_step

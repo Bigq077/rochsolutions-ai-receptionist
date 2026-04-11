@@ -298,9 +298,18 @@ class SilenceHandler:
 
         # State-specific short repair prompts (Bug 5)
         if _state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
-            phrase = "Sorry — was that the right appointment? Yes or no?"
+            if (_sess or {}).get("lookup_correction_mode"):
+                # Lookup failed — we asked for name correction; re-anchor to that
+                phrase = "Sorry — what first name and surname was the booking under?"
+            elif (_sess or {}).get("rc_stage") == "lookup_done":
+                # Appointment found — awaiting YES/NO confirmation
+                phrase = "Sorry — was that the right appointment? Yes or no?"
+            else:
+                # Lookup still in progress
+                phrase = "Sorry — just bear with me while I look up your appointment."
         elif _state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
-            phrase = "Sorry — which day works best for you?"
+            _lq = (_sess or {}).get("last_question", "")
+            phrase = _lq if _lq else "Sorry — which day works best for you?"
         elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
             phrase = "Sorry — is this the right number? Yes or no?"
         elif (_sess or {}).get("phone_awaiting_dtmf"):
@@ -311,6 +320,8 @@ class SilenceHandler:
         ):
             _nf = (_sess or {}).get("name_fragment")
             phrase = "Sorry — what's your surname?" if _nf else "Sorry — what's your first name?"
+        elif _state in ("DETECT_INTENT", ""):
+            phrase = "Sorry — how can I help you today?"
         else:
             phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
 
