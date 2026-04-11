@@ -628,6 +628,122 @@ def _find_chosen_day_entry(available_days: list, chosen_day: str) -> Optional[di
 
 
 # ---------------------------------------------------------------------------
+# Calendar navigation helpers  (shared by PRESENT_DAYS and PRESENT_TIMES)
+# ---------------------------------------------------------------------------
+
+import datetime as _dt_cal
+
+
+def _week_days_for_anchor(available_days: list, anchor_date) -> list:
+    """
+    Return entries from available_days that fall in the ISO week (Mon–Sun)
+    containing anchor_date.
+
+    anchor_date may be a datetime.date object or an ISO string (YYYY-MM-DD).
+    Returns an empty list when anchor_date cannot be parsed.
+    """
+    if isinstance(anchor_date, str):
+        try:
+            anchor_date = _dt_cal.date.fromisoformat(anchor_date)
+        except (ValueError, TypeError):
+            return []
+    monday = anchor_date - _dt_cal.timedelta(days=anchor_date.weekday())
+    sunday = monday + _dt_cal.timedelta(days=6)
+    result = []
+    for d in available_days:
+        ds = d.get("date", "")
+        try:
+            dobj = _dt_cal.date.fromisoformat(ds[:10])
+            if monday <= dobj <= sunday:
+                result.append(d)
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
+def _nearest_days(available_days: list, anchor_date, n: int = 3) -> list:
+    """
+    Return up to n entries from available_days sorted by proximity to
+    anchor_date (closest first).
+
+    anchor_date may be a datetime.date object or an ISO string (YYYY-MM-DD).
+    Falls back to first n entries when anchor_date cannot be parsed.
+    """
+    if isinstance(anchor_date, str):
+        try:
+            anchor_date = _dt_cal.date.fromisoformat(anchor_date)
+        except (ValueError, TypeError):
+            return available_days[:n]
+
+    def _dist(d: dict) -> int:
+        ds = d.get("date", "")
+        try:
+            return abs((_dt_cal.date.fromisoformat(ds[:10]) - anchor_date).days)
+        except (ValueError, TypeError):
+            return 9999
+
+    return sorted(available_days, key=_dist)[:n]
+
+
+def _parse_transcript_date(transcript: str, available_days: list):
+    """
+    Extract an explicit date from a transcript string.
+
+    Handles:
+      "8th of May", "May 8th", "April 23rd"     → date from digit+month pattern
+      "the 23rd", "on the 8th" (bare ordinal)    → first match in available_days
+    Returns a datetime.date object, or None if nothing matched.
+
+    Year is inferred as the current year when month >= today's month,
+    otherwise next year (handles year-boundary callers).
+    """
+    import re as _re_ptd
+    text = transcript.lower()
+    _MONTH_ALT = (
+        r'january|february|march|april|may|june|july|august|september'
+        r'|october|november|december'
+        r'|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec'
+    )
+    _MONTH_NUM = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "june": 6, "july": 7, "august": 8, "september": 9,
+        "october": 10, "november": 11, "december": 12,
+    }
+    m = _re_ptd.search(
+        r'\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+|\s+)(' + _MONTH_ALT + r')\b'
+        r'|\b(' + _MONTH_ALT + r')\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+        transcript, _re_ptd.IGNORECASE,
+    )
+    if m:
+        day_n   = int(m.group(1) if m.group(1) else m.group(4))
+        month_s = (m.group(2) if m.group(2) else m.group(3)).lower()
+        month_n = _MONTH_NUM.get(month_s[:3]) or _MONTH_NUM.get(month_s)
+        if month_n:
+            today = _dt_cal.date.today()
+            year  = today.year if month_n >= today.month else today.year + 1
+            try:
+                return _dt_cal.date(year, month_n, day_n)
+            except ValueError:
+                pass
+    # Bare ordinal fallback — look up day-of-month in available_days
+    bo = _re_ptd.search(r'\b(?:the\s+)?(\d{1,2})(st|nd|rd|th)\b', text, _re_ptd.IGNORECASE)
+    if bo:
+        day_n = int(bo.group(1))
+        if 1 <= day_n <= 31:
+            for d in available_days:
+                ds = d.get("date", "")
+                try:
+                    dobj = _dt_cal.date.fromisoformat(ds[:10])
+                    if dobj.day == day_n:
+                        return dobj
+                except (ValueError, TypeError):
+                    pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Flow definitions
 # ---------------------------------------------------------------------------
 
@@ -1828,46 +1944,50 @@ def _parse_lookup_name_correction(text: str) -> str | None:
 # Clinic-location resolver
 # ---------------------------------------------------------------------------
 
-def _resolve_location(raw: str) -> str | None:
+def _resolve_location(raw: str, in_location_state: bool = False) -> str | None:
     """
     Deterministic phonetic / ASR-variant matching for Theorem Health clinics.
 
     Returns ``'alcester'``, ``'redditch'``, or ``None`` (ambiguous / unknown).
 
-    Rule: strong variants → decide immediately; weak variants → only decide
-    when the opposing side is absent; mixed / empty / low-signal → None.
-    Never guess.
+    Three-tier design:
+    - Tier 1 (strong): applied always; high-confidence ASR variants.
+    - Tier 2 (probable-context): applied only when ``in_location_state=True``;
+      noisy but likely-correct when the system has just asked the clinic
+      question ("Are you looking to book at our Alcester or Redditch clinic?").
+    - Tier 3 (ambiguous / risky): never auto-route — always return None.
+
+    Mixed signals on either tier always return None — never guess.
     """
     # Normalize: lowercase, strip punctuation to spaces, collapse whitespace.
     t = _re_mod.sub(r"[^\w\s]", " ", raw.strip().lower())
     t = _re_mod.sub(r"\s+", " ", t).strip()
 
-    # ── ALCESTER strong bucket ────────────────────────────────────────────────
+    # ── TIER 1 — ALCESTER strong bucket ──────────────────────────────────────
     _ALC_STRONG = (
-        "alcester", "alcesta", "alcest", "alchester", "alkester",
-        "alsester", "asester", "al sester", "our sister", "all sister",
-        "a sister", "al sister", "our sester", "all sester",
-        "i ll sister", "house sister", "old sister",
-        "l sester", "lsester",
+        "alcester", "alcesta", "alcest", "alcestra", "alchester", "alkester",
+        "alsester", "asester", "al sester", "al-sester", "our sister",
+        "all sister", "a sister", "al sister", "our sester", "all sester",
+        "i ll sister", "house sister", "old sister", "l sester", "lsester",
+        "sister clinic", "sester clinic", "our sister clinic",
         # Additional unambiguous STT variants
         "alcestr", "allcester", "alster", "alca", "alces",
         "ancestor", "kinwarton",
     )
-    # ── REDDITCH strong bucket ────────────────────────────────────────────────
+    # ── TIER 1 — REDDITCH strong bucket ──────────────────────────────────────
     _RED_STRONG = (
         "redditch", "reddit", "red itch", "read itch", "redich", "reddich",
         "redidge", "reditch", "red each", "read each",
         "ready itch", "ready each", "red dish", "read edge", "red edge",
-        "radish",
+        "ready edge", "red idge", "red itch clinic",
         # Additional unambiguous STT variants
         "bromsgrove",
     )
-    # ── Weak / ambiguous — only accept when opposing side is clearly absent ───
-    _ALC_WEAK = ("lester", "leicester")
-    _RED_WEAK = ("reddish",)
+    # NOTE: "radish", "reddish", "lester", "leicester", "ulster" are Tier 3
+    # (ambiguous collisions) and must NOT appear in Tier 1 or Tier 2 buckets.
 
-    has_alc   = any(v in t for v in _ALC_STRONG)
-    has_red   = any(v in t for v in _RED_STRONG)
+    has_alc = any(v in t for v in _ALC_STRONG)
+    has_red = any(v in t for v in _RED_STRONG)
 
     if has_alc and not has_red:
         return "alcester"
@@ -1876,14 +1996,37 @@ def _resolve_location(raw: str) -> str | None:
     if has_alc and has_red:
         return None  # mixed signal — don't guess
 
-    # Weak variants
-    has_alc_w = any(v in t for v in _ALC_WEAK)
-    has_red_w = any(v in t for v in _RED_WEAK)
+    # ── TIER 2 — PROBABLE CLINIC-CONTEXT (only active during ASK_LOCATION) ───
+    # These are noisy ASR outputs that are ambiguous globally but very likely
+    # clinic answers when the system has just asked the either/or clinic question.
+    if in_location_state:
+        _ALC_T2 = (
+            "your access", "your access clinic", "your access to clinic",
+            "are you access", "are you access to clinic",
+            "your ancestor", "your ancestor clinic", "are you ancestor clinic",
+            "at your house as", "at your house",
+            "our cester", "arlcester", "alcaster", "alceister", "alcesster",
+            "el sester", "elsester", "al sister clinic",
+        )
+        _RED_T2 = (
+            "raditch", "read dish",
+            "red age", "read age", "red idge", "reddis", "redish",
+        )
 
-    if has_alc_w and not has_red and not has_red_w:
-        return "alcester"
-    if has_red_w and not has_alc and not has_alc_w:
-        return "redditch"
+        has_alc_t2 = any(v in t for v in _ALC_T2)
+        has_red_t2 = any(v in t for v in _RED_T2)
+
+        if has_alc_t2 and not has_red and not has_red_t2:
+            return "alcester"
+        if has_red_t2 and not has_alc and not has_alc_t2:
+            return "redditch"
+        if (has_alc_t2 and has_red_t2) or (has_alc_t2 and has_red) or (has_red_t2 and has_alc):
+            return None  # conflicting Tier 2 — don't guess
+
+    # ── TIER 3 — AMBIGUOUS / RISKY — fall through to None; never auto-route ──
+    # "leicester", "lester", "ulster" → Alcester collisions
+    # "radish", "reddish", "registry", "wreckage" → Redditch collisions
+    # These are intentionally unhandled here so they reach the retry path.
 
     return None
 
@@ -3325,10 +3468,11 @@ class FlowEngine:
                 _loc_words = text.split()
                 _loc_tokens = (
                     "alcester", "redditch", "1", "2", "one", "two", "first", "second",
-                    # phonetic variants that should not be suppressed
+                    # Tier 1 phonetic variants that should not be suppressed
                     "alchester", "reddit", "alcesta", "alkester", "alsester",
                     "red itch", "read itch", "redich", "reditch", "sister", "sester",
-                    "lester", "radish",
+                    # Tier 2 tokens — short utterances containing these are valid clinic answers
+                    "ancestor", "access", "alcaster", "arlcester",
                 )
                 _has_loc_token = any(p in text for p in _loc_tokens)
                 if not _has_loc_token and len(_loc_words) <= 3 and not text.rstrip().endswith("?"):
@@ -5077,7 +5221,20 @@ class FlowEngine:
             })
             _exp_has_ordinal = bool(_re_exp_ord.search(r'\b\d{1,2}(?:st|nd|rd|th)\b', text))
             _exp_has_month   = any(m in text for m in _MONTH_NAMES_EXP)
-            if _exp_match and not _exp_has_day and not _exp_has_ordinal and not _exp_has_month:
+            # BUG FIX: also bypass when week-of or proximity phrases are present
+            # so "do you have anything that week" / "do you have anything around then"
+            # reach the week-of-date / proximity handlers rather than being swallowed
+            # by the exploratory guard and replaying the current day list.
+            _exp_has_week_or_prox = any(p in text for p in (
+                "week of", "that week", "same week", "week containing",
+                "in that week", "during that week",
+                "earlier that week", "later that week",
+                "around then", "around that", "around there",
+                "near that", "near then", "near there",
+                "nearby", "close to that", "closest to", "nearest to",
+                "in that area", "around that area", "around that time",
+            ))
+            if _exp_match and not _exp_has_day and not _exp_has_ordinal and not _exp_has_month and not _exp_has_week_or_prox:
                 _exp_replay = self.session.get("last_question", "Which day would suit you best?")
                 await self._tts.put(_exp_replay)
                 self.session.setdefault("conversation_history", []).append(
@@ -5088,6 +5245,139 @@ class FlowEngine:
                     step["state"], transcript[:40],
                 )
                 return
+
+            # ── WEEK-OF-DATE / PROXIMITY: calendar-range and anchor navigation ──
+            # Handles: "week of the 8th of May", "the week of April 23rd"
+            #          "that week", "same week", "earlier that week"
+            #          "around then", "around that", "near that", "nearby"
+            #          "closest to that", "anything near that date"
+            # Must come BEFORE _XD_PAT so "week of the 8th" is treated as a
+            # range request rather than an exact-date lookup.
+            _WK_WEEK_PHRASES = (
+                "week of the", "week of", "that week", "same week",
+                "week containing", "the week around", "week starting",
+                "earlier that week", "later that week",
+                "earlier in that week", "later in that week",
+                "anything that week", "what have you got that week",
+                "around that week", "that particular week",
+            )
+            _WK_AROUND_PHRASES = (
+                "around then", "around that", "around there", "around that time",
+                "near that", "near then", "near there",
+                "nearby", "close to that", "close to then",
+                "anything near", "anything close", "something near",
+                "near to that", "around the same time", "around that sort of time",
+                "closest to", "nearest to", "nearest date",
+                "in that area", "around that area",
+            )
+            _wk_week_hit   = any(p in text for p in _WK_WEEK_PHRASES)
+            _wk_around_hit = any(p in text for p in _WK_AROUND_PHRASES)
+
+            if _wk_week_hit or _wk_around_hit:
+                # Extract explicit date from utterance if present ("week of the 8th of May")
+                _wk_avail = self.session.get("available_days", [])
+                _wk_expl  = _parse_transcript_date(transcript, _wk_avail)
+                # Fall back to session anchor set by a prior explicit-date request
+                _wk_anchor_str = (
+                    _wk_expl.isoformat() if _wk_expl
+                    else self.session.get("last_requested_date")
+                )
+                if _wk_anchor_str:
+                    import datetime as _dt_wk
+                    self.session["last_requested_date"] = _wk_anchor_str
+                    try:
+                        _wk_anchor_obj = _dt_wk.date.fromisoformat(_wk_anchor_str)
+                    except (ValueError, TypeError):
+                        _wk_anchor_obj = None
+                    if _wk_anchor_obj and _wk_avail:
+                        if _wk_week_hit:
+                            # WEEK-OF-DATE: filter to ISO week (Mon–Sun) containing anchor
+                            _wk_in_week = _week_days_for_anchor(_wk_avail, _wk_anchor_obj)
+                            _wk_suf = (
+                                "st" if _wk_anchor_obj.day % 10 == 1 and _wk_anchor_obj.day != 11 else
+                                "nd" if _wk_anchor_obj.day % 10 == 2 and _wk_anchor_obj.day != 12 else
+                                "rd" if _wk_anchor_obj.day % 10 == 3 and _wk_anchor_obj.day != 13 else
+                                "th"
+                            )
+                            _wk_label = (
+                                f"the week of the {_wk_anchor_obj.day}{_wk_suf}"
+                                if _wk_expl else "that week"
+                            )
+                            if _wk_in_week:
+                                _wk_phrase = _build_day_list_phrase(_wk_in_week)
+                                _wk_out    = f"For {_wk_label}, {_wk_phrase}"
+                                await self._tts.put(_wk_out)
+                                self.session["last_question"] = _wk_out
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _wk_out}
+                                )
+                                self.session["days_page"]          = 0
+                                self.session["_pd_month_filtered"] = _wk_in_week
+                                logger.info(
+                                    "[ms_flow] %s week-of-date: anchor=%s → %d day(s) in week",
+                                    step["state"], _wk_anchor_str, len(_wk_in_week),
+                                )
+                                return
+                            # No availability that week — offer nearest alternatives
+                            _wk_near_p = _build_day_list_phrase(
+                                _nearest_days(_wk_avail, _wk_anchor_obj)
+                            )
+                            _wk_na_out = (
+                                f"I\u2019m afraid I don\u2019t have anything in {_wk_label} \u2014 "
+                                + _wk_near_p.replace("I can do ", "but the nearest I have is ", 1)
+                                            .replace("I\u2019ve got ", "but the nearest I have is ", 1)
+                                            .replace("The next opening I have is ",
+                                                     "but the nearest I have is ", 1)
+                            )
+                            await self._tts.put(_wk_na_out)
+                            self.session["last_question"] = _wk_na_out
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _wk_na_out}
+                            )
+                            logger.info(
+                                "[ms_flow] %s week-of-date: no availability in %s",
+                                step["state"], _wk_label,
+                            )
+                            return
+                        else:
+                            # PROXIMITY: "around then", "near that" — nearest 3 days
+                            _prox_days   = _nearest_days(_wk_avail, _wk_anchor_obj)
+                            _prox_phrase = _build_day_list_phrase(_prox_days)
+                            _prox_out    = _prox_phrase.replace(
+                                "I can do ",     "The closest I have to that is ",
+                            ).replace(
+                                "I\u2019ve got ", "The closest I have to that is ",
+                            ).replace(
+                                "The next opening I have is ", "The closest to that is ",
+                            )
+                            await self._tts.put(_prox_out)
+                            self.session["last_question"] = _prox_out
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _prox_out}
+                            )
+                            self.session["days_page"]          = 0
+                            self.session["_pd_month_filtered"] = _prox_days
+                            logger.info(
+                                "[ms_flow] %s proximity: anchor=%s → %d nearest day(s)",
+                                step["state"], _wk_anchor_str, len(_prox_days),
+                            )
+                            return
+                else:
+                    # No anchor in session — ask caller for a date to anchor on
+                    _wk_no_anchor = (
+                        "Which date did you have in mind? "
+                        "If you give me a rough date I\u2019ll check what\u2019s available around then."
+                    )
+                    await self._tts.put(_wk_no_anchor)
+                    self.session["last_question"] = _wk_no_anchor
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _wk_no_anchor}
+                    )
+                    logger.info(
+                        "[ms_flow] %s week/proximity: no anchor date — asking caller",
+                        step["state"],
+                    )
+                    return
 
             # ── EXPLICIT DATE: "the 25th of April" must beat NONE-OF-THESE/ordinal ──
             # Run before _PD_NONE so "none of those, what about the 25th of April?"
@@ -5143,6 +5433,8 @@ class FlowEngine:
                     if _xd_matched:
                         self.session["chosen_day"] = _xd_matched["day_label"]
                         self.session.setdefault("collected", {})["chosen_day"] = _xd_matched["day_label"]
+                        # Store anchor so follow-up "that week"/"around then" resolves correctly
+                        self.session["last_requested_date"] = _xd_matched.get("date", "")
                         self.session.pop("days_page", None)
                         self.session.pop("vague_option_pending", None)
                         self.session.pop("vague_clarification_asked", None)
@@ -5165,6 +5457,16 @@ class FlowEngine:
                     # falling through to the month filter (which would re-present
                     # the same initial 3 days because it also starts from page 0).
                     import datetime as _dt_xd_na
+                    # Store anchor even for unavailable dates — caller may follow up
+                    # with "that week" / "around then" and we need the reference.
+                    try:
+                        _today_xd_na = _dt_xd_na.date.today()
+                        _xd_yr_na = _today_xd_na.year if _xd_month_n >= _today_xd_na.month else _today_xd_na.year + 1
+                        self.session["last_requested_date"] = _dt_xd_na.date(
+                            _xd_yr_na, _xd_month_n, _xd_day_n
+                        ).isoformat()
+                    except ValueError:
+                        pass
                     _xd_na_suffix = (
                         "st" if _xd_day_n % 10 == 1 and _xd_day_n != 11 else
                         "nd" if _xd_day_n % 10 == 2 and _xd_day_n != 12 else
@@ -5172,25 +5474,32 @@ class FlowEngine:
                         "th"
                     )
                     _xd_spoken_date = f"the {_xd_day_n}{_xd_na_suffix} of {_xd_month_s.capitalize()}"
-                    _xd_na_month_days = []
-                    for _xd_d_na in self.session.get("available_days", []):
-                        _xd_na_str = _xd_d_na.get("date") or _xd_d_na.get("datetime", "")
-                        try:
-                            if _dt_xd_na.date.fromisoformat(_xd_na_str[:10]).month == _xd_month_n:
-                                _xd_na_month_days.append(_xd_d_na)
-                        except (ValueError, TypeError):
-                            pass
+                    _xd_all_avail_na = self.session.get("available_days", [])
+                    # Prefer same-week alternatives, then nearest overall — not
+                    # "first 3 in month" which re-presents dates the caller already
+                    # rejected when asking for a specific later date.
+                    try:
+                        _xd_req_obj_na = _dt_xd_na.date(_xd_yr_na, _xd_month_n, _xd_day_n)
+                        _xd_same_week_na = _week_days_for_anchor(_xd_all_avail_na, _xd_req_obj_na)
+                        _xd_na_month_days = (
+                            _xd_same_week_na
+                            if _xd_same_week_na
+                            else _nearest_days(_xd_all_avail_na, _xd_req_obj_na, n=3)
+                        )
+                    except (ValueError, AttributeError):
+                        _xd_na_month_days = _xd_all_avail_na[:3]
                     if _xd_na_month_days:
                         _xd_na_alt = _build_day_list_phrase(_xd_na_month_days)
                         _xd_na_msg = (
                             f"I'm afraid I don't have {_xd_spoken_date} available — "
                             + _xd_na_alt.replace("I can do ", "but I can do ", 1)
                             .replace("I've got ", "but I've got ", 1)
+                            .replace("I\u2019ve got ", "but I\u2019ve got ", 1)
                         )
                     else:
                         _xd_na_msg = (
                             f"I'm afraid I don't have {_xd_spoken_date} available. "
-                            + _build_day_list_phrase(self.session.get("available_days", []))
+                            + _build_day_list_phrase(_xd_all_avail_na)
                         )
                     await self._tts.put(_xd_na_msg)
                     self.session["last_question"] = _xd_na_msg
@@ -5228,6 +5537,8 @@ class FlowEngine:
                     if _bo_matched:
                         self.session["chosen_day"] = _bo_matched["day_label"]
                         self.session.setdefault("collected", {})["chosen_day"] = _bo_matched["day_label"]
+                        # Store anchor for follow-up "that week"/"around then" references
+                        self.session["last_requested_date"] = _bo_matched.get("date", "")
                         self.session.pop("days_page", None)
                         self.session.pop("vague_option_pending", None)
                         self.session.pop("vague_clarification_asked", None)
@@ -5584,10 +5895,16 @@ class FlowEngine:
                         "[ms_flow] PRESENT_DAYS: weekend inquiry answered deterministically",
                     )
                     return
-                # ── MONTH-ONLY FILTER ─────────────────────────────────────────
-                # "any dates in May" / "do you have anything in April" —
-                # _XD_PAT requires digit+month so these fall here.
-                # Filter available_days deterministically rather than calling Haiku.
+                # ── MONTH FILTER (with directional awareness) ─────────────────
+                # Handles:
+                #   "any dates in May"              → all May dates
+                #   "later in April" / "further April" / "end of April"
+                #                                   → April dates AFTER anchor
+                #   "earlier in April" / "start of April"
+                #                                   → April dates BEFORE anchor
+                # Directional detection runs first; generic (all-month) is the
+                # fallback when no direction is found or the directional slice
+                # returns nothing.
                 _MONTH_NAMES_PD = {
                     "january": 1, "february": 2, "march": 3, "april": 4,
                     "may": 5, "june": 6, "july": 7, "august": 8,
@@ -5598,8 +5915,8 @@ class FlowEngine:
                 _month_hit = next((m for m in _MONTH_NAMES_PD if m in text), None)
                 if _month_hit:
                     _target_month = _MONTH_NAMES_PD[_month_hit]
-                    # available_days is a list of {day_label, date, slots, ...} objects
                     import datetime as _dt_mod
+                    # Collect all available days in the target month
                     _filtered_days = []
                     for _day_obj in _pd_all:
                         _d_str = _day_obj.get("date") or _day_obj.get("datetime", "")
@@ -5610,22 +5927,97 @@ class FlowEngine:
                         except (ValueError, TypeError):
                             pass
                     if _filtered_days:
-                        # Re-present only the filtered days
-                        _mf_phrase = _build_day_list_phrase(_filtered_days)
+                        # ── Directional filter ────────────────────────────────
+                        # "later/further/end/towards the end" → dates after anchor
+                        # "earlier/start/beginning" → dates before anchor
+                        _dir_later = any(w in text for w in (
+                            "later", "further", "end of", "towards the end",
+                            "toward the end", "latter", "rest of", "other end",
+                        ))
+                        _dir_earlier = any(w in text for w in (
+                            "earlier in", "start of", "beginning of", "early",
+                        ))
+                        _dir_slice: list = []
+                        if _dir_later or _dir_earlier:
+                            # Determine directional anchor:
+                            # 1. last_requested_date if in target month
+                            # 2. last offered cluster's last/first date in month
+                            # 3. midpoint of month as neutral baseline
+                            _dir_anchor_obj = None
+                            _lrd_dir = self.session.get("last_requested_date")
+                            if _lrd_dir:
+                                try:
+                                    _lrd_obj_dir = _dt_mod.date.fromisoformat(_lrd_dir)
+                                    if _lrd_obj_dir.month == _target_month:
+                                        _dir_anchor_obj = _lrd_obj_dir
+                                except (ValueError, TypeError):
+                                    pass
+                            if _dir_anchor_obj is None:
+                                _off_dir = (
+                                    self.session.get("_pd_month_filtered")
+                                    or self.session.get("available_days", [])
+                                )
+                                _off_page_dir = self.session.get("days_page", 0)
+                                _off_slice_dir = (
+                                    _off_dir[_off_page_dir * 3: (_off_page_dir + 1) * 3]
+                                    or _off_dir[:3]
+                                )
+                                _scan_dir = (
+                                    reversed(_off_slice_dir) if _dir_later
+                                    else iter(_off_slice_dir)
+                                )
+                                for _o_dir in _scan_dir:
+                                    _o_str_dir = _o_dir.get("date", "")
+                                    try:
+                                        _o_obj_dir = _dt_mod.date.fromisoformat(_o_str_dir[:10])
+                                        if _o_obj_dir.month == _target_month:
+                                            _dir_anchor_obj = _o_obj_dir
+                                            break
+                                    except (ValueError, TypeError):
+                                        pass
+                            if _dir_anchor_obj is not None:
+                                if _dir_later:
+                                    _dir_slice = [
+                                        d for d in _filtered_days
+                                        if _dt_mod.date.fromisoformat(
+                                            (d.get("date") or "9999-12-31")[:10]
+                                        ) > _dir_anchor_obj
+                                    ]
+                                    if not _dir_slice:
+                                        # Already past last — offer last few
+                                        _dir_slice = _filtered_days[-3:]
+                                else:
+                                    _dir_slice = [
+                                        d for d in _filtered_days
+                                        if _dt_mod.date.fromisoformat(
+                                            (d.get("date") or "0001-01-01")[:10]
+                                        ) < _dir_anchor_obj
+                                    ]
+                                    if not _dir_slice:
+                                        _dir_slice = _filtered_days[:3]
+                            else:
+                                # No anchor — split month in half
+                                _mid_dir = max(1, len(_filtered_days) // 2)
+                                _dir_slice = (
+                                    _filtered_days[_mid_dir:]
+                                    if _dir_later
+                                    else _filtered_days[:_mid_dir]
+                                ) or _filtered_days
+
+                        # Use directional slice if available, else all-month
+                        _mf_days = _dir_slice if _dir_slice else _filtered_days
+                        _mf_phrase = _build_day_list_phrase(_mf_days)
                         await self._tts.put(_mf_phrase)
                         self.session["last_question"] = _mf_phrase
                         self.session.setdefault("conversation_history", []).append(
                             {"role": "assistant", "content": _mf_phrase}
                         )
-                        # Reset pagination to start of the filtered set.
-                        # Also rebase the offered-day reference so subsequent
-                        # YES / ordinal / named-day binding resolves against the
-                        # filtered subset, not the original unfiltered list.
                         self.session["days_page"] = 0
-                        self.session["_pd_month_filtered"] = _filtered_days
+                        self.session["_pd_month_filtered"] = _mf_days
                         logger.info(
-                            "[ms_flow] PRESENT_DAYS month filter: %d/%d days for month=%d",
-                            len(_filtered_days), len(_pd_all), _target_month,
+                            "[ms_flow] PRESENT_DAYS month filter: dir=%s %d/%d days for month=%d",
+                            ("later" if _dir_later else "earlier" if _dir_earlier else "any"),
+                            len(_mf_days), len(_pd_all), _target_month,
                         )
                         return
                     else:
@@ -5747,10 +6139,28 @@ class FlowEngine:
                 r'\b(?:\d{1,2}(?::\d{2})?(?:\s*[ap]m)?|o\'?clock|morning|afternoon|evening|noon|lunchtime)\b',
                 text, _re_pt_esc.IGNORECASE,
             ))
-            _pt_esc_trigger = _pt_esc_xd or (
-                _pt_esc_month_hit and not _pt_esc_has_time_token
-                # also exclude "that may work" / "may be" false positives
-                and _pt_esc_month_hit != "may" or (
+            # Week-of-date / proximity escape phrases — same sets as PRESENT_DAYS handler
+            _pt_wk_hit = any(p in text for p in (
+                "week of the", "week of", "that week", "same week",
+                "week containing", "earlier that week", "later that week",
+                "earlier in that week", "later in that week",
+                "anything that week", "around that week",
+            ))
+            _pt_around_hit = any(p in text for p in (
+                "around then", "around that", "around there", "around that time",
+                "near that", "near then", "near there",
+                "nearby", "close to that", "closest to", "nearest to",
+                "in that area", "around that area",
+            ))
+            _pt_esc_trigger = (
+                _pt_esc_xd
+                or (_pt_wk_hit and not _pt_esc_has_time_token)
+                or (_pt_around_hit and not _pt_esc_has_time_token)
+                or (
+                    _pt_esc_month_hit and not _pt_esc_has_time_token
+                    # also exclude "that may work" / "may be" false positives
+                    and _pt_esc_month_hit != "may"
+                ) or (
                     _pt_esc_month_hit == "may"
                     and any(p in text for p in ("in may", "for may", "any may", "the month of may", "slots in may", "dates in may"))
                 )
@@ -5779,6 +6189,97 @@ class FlowEngine:
                 self.session["flow_step"] = _pt_esc_pd_step
                 self.session["state"]     = self._active_flow[_pt_esc_pd_step]["state"]
                 _pt_esc_avail = self.session.get("available_days", [])
+                # ── WEEK-OF-DATE / PROXIMITY inline handling ──────────────────
+                # Must come BEFORE explicit-date check: "week of the 8th of May"
+                # matches both _pt_wk_hit and _pt_esc_xd — week wins.
+                if _pt_wk_hit or _pt_around_hit:
+                    _pt_wk_expl      = _parse_transcript_date(transcript, _pt_esc_avail)
+                    _pt_wk_anchor_str = (
+                        _pt_wk_expl.isoformat() if _pt_wk_expl
+                        else self.session.get("last_requested_date")
+                    )
+                    if _pt_wk_anchor_str:
+                        import datetime as _dt_pt_wk
+                        self.session["last_requested_date"] = _pt_wk_anchor_str
+                        try:
+                            _pt_wk_anchor_obj = _dt_pt_wk.date.fromisoformat(_pt_wk_anchor_str)
+                        except (ValueError, TypeError):
+                            _pt_wk_anchor_obj = None
+                        if _pt_wk_anchor_obj and _pt_esc_avail:
+                            if _pt_wk_hit:
+                                _pt_wk_in_week = _week_days_for_anchor(_pt_esc_avail, _pt_wk_anchor_obj)
+                                _pt_wk_suf = (
+                                    "st" if _pt_wk_anchor_obj.day % 10 == 1 and _pt_wk_anchor_obj.day != 11 else
+                                    "nd" if _pt_wk_anchor_obj.day % 10 == 2 and _pt_wk_anchor_obj.day != 12 else
+                                    "rd" if _pt_wk_anchor_obj.day % 10 == 3 and _pt_wk_anchor_obj.day != 13 else
+                                    "th"
+                                )
+                                _pt_wk_label = (
+                                    f"the week of the {_pt_wk_anchor_obj.day}{_pt_wk_suf}"
+                                    if _pt_wk_expl else "that week"
+                                )
+                                if _pt_wk_in_week:
+                                    _pt_wk_phrase = _build_day_list_phrase(_pt_wk_in_week)
+                                    _pt_wk_out    = f"For {_pt_wk_label}, {_pt_wk_phrase}"
+                                    await self._tts.put(_pt_wk_out)
+                                    self.session["last_question"] = _pt_wk_out
+                                    self.session.setdefault("conversation_history", []).append(
+                                        {"role": "assistant", "content": _pt_wk_out}
+                                    )
+                                    self.session["days_page"]          = 0
+                                    self.session["_pd_month_filtered"] = _pt_wk_in_week
+                                    logger.info(
+                                        "[ms_flow] PRESENT_TIMES escape week-of-date: %s → %d day(s)",
+                                        _pt_wk_label, len(_pt_wk_in_week),
+                                    )
+                                    return
+                                _pt_wk_near_p = _build_day_list_phrase(
+                                    _nearest_days(_pt_esc_avail, _pt_wk_anchor_obj)
+                                )
+                                _pt_wk_na_out = (
+                                    f"I\u2019m afraid I don\u2019t have anything in {_pt_wk_label} \u2014 "
+                                    + _pt_wk_near_p.replace("I can do ", "but the nearest I have is ", 1)
+                                                   .replace("I\u2019ve got ", "but the nearest I have is ", 1)
+                                                   .replace("The next opening I have is ",
+                                                            "but the nearest I have is ", 1)
+                                )
+                                await self._tts.put(_pt_wk_na_out)
+                                self.session["last_question"] = _pt_wk_na_out
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _pt_wk_na_out}
+                                )
+                                logger.info(
+                                    "[ms_flow] PRESENT_TIMES escape week-of-date: no availability in %s",
+                                    _pt_wk_label,
+                                )
+                                return
+                            else:
+                                # PROXIMITY
+                                _pt_prox_days   = _nearest_days(_pt_esc_avail, _pt_wk_anchor_obj)
+                                _pt_prox_phrase = _build_day_list_phrase(_pt_prox_days)
+                                _pt_prox_out    = _pt_prox_phrase.replace(
+                                    "I can do ",     "The closest I have to that is ",
+                                ).replace(
+                                    "I\u2019ve got ", "The closest I have to that is ",
+                                ).replace(
+                                    "The next opening I have is ", "The closest to that is ",
+                                )
+                                await self._tts.put(_pt_prox_out)
+                                self.session["last_question"] = _pt_prox_out
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _pt_prox_out}
+                                )
+                                self.session["days_page"]          = 0
+                                self.session["_pd_month_filtered"] = _pt_prox_days
+                                logger.info(
+                                    "[ms_flow] PRESENT_TIMES escape proximity: anchor=%s → %d day(s)",
+                                    _pt_wk_anchor_str, len(_pt_prox_days),
+                                )
+                                return
+                    # No anchor — let ask_current_question() re-display PRESENT_DAYS
+                    await self.ask_current_question()
+                    return
+
                 # Handle inline: explicit date → jump directly; month → filter
                 if _pt_esc_xd:
                     # Explicit date: resolve day+month groups
@@ -5823,17 +6324,61 @@ class FlowEngine:
                         except (ValueError, TypeError):
                             pass
                     if _pt_esc_filtered:
-                        _pt_esc_phrase = _build_day_list_phrase(_pt_esc_filtered)
+                        # Directional month filter — same logic as PRESENT_DAYS
+                        _pt_esc_dir_later = any(w in text for w in (
+                            "later", "further", "end of", "towards the end",
+                            "toward the end", "latter", "rest of", "other end",
+                        ))
+                        _pt_esc_dir_earlier = any(w in text for w in (
+                            "earlier in", "start of", "beginning of", "early",
+                        ))
+                        _pt_esc_dir_slice: list = []
+                        if _pt_esc_dir_later or _pt_esc_dir_earlier:
+                            _pt_esc_anchor = None
+                            _lrd_pe = self.session.get("last_requested_date")
+                            if _lrd_pe:
+                                try:
+                                    _lrd_pe_obj = _dt_pt_esc.date.fromisoformat(_lrd_pe)
+                                    if _lrd_pe_obj.month == _pt_esc_target_month:
+                                        _pt_esc_anchor = _lrd_pe_obj
+                                except (ValueError, TypeError):
+                                    pass
+                            if _pt_esc_anchor is None:
+                                _mid_pe = max(1, len(_pt_esc_filtered) // 2)
+                                _pt_esc_dir_slice = (
+                                    _pt_esc_filtered[_mid_pe:]
+                                    if _pt_esc_dir_later
+                                    else _pt_esc_filtered[:_mid_pe]
+                                ) or _pt_esc_filtered
+                            else:
+                                if _pt_esc_dir_later:
+                                    _pt_esc_dir_slice = [
+                                        d for d in _pt_esc_filtered
+                                        if _dt_pt_esc.date.fromisoformat(
+                                            (d.get("date") or "9999-12-31")[:10]
+                                        ) > _pt_esc_anchor
+                                    ] or _pt_esc_filtered[-3:]
+                                else:
+                                    _pt_esc_dir_slice = [
+                                        d for d in _pt_esc_filtered
+                                        if _dt_pt_esc.date.fromisoformat(
+                                            (d.get("date") or "0001-01-01")[:10]
+                                        ) < _pt_esc_anchor
+                                    ] or _pt_esc_filtered[:3]
+                        _pt_esc_offer = _pt_esc_dir_slice if _pt_esc_dir_slice else _pt_esc_filtered
+                        _pt_esc_phrase = _build_day_list_phrase(_pt_esc_offer)
                         await self._tts.put(_pt_esc_phrase)
                         self.session["last_question"] = _pt_esc_phrase
                         self.session.setdefault("conversation_history", []).append(
                             {"role": "assistant", "content": _pt_esc_phrase}
                         )
                         self.session["days_page"] = 0
-                        self.session["_pd_month_filtered"] = _pt_esc_filtered
+                        self.session["_pd_month_filtered"] = _pt_esc_offer
                         logger.info(
-                            "[ms_flow] PRESENT_TIMES escape: month=%r → %d day(s) in %s offered",
-                            _pt_esc_month_hit, len(_pt_esc_filtered), _pt_esc_month_hit.capitalize(),
+                            "[ms_flow] PRESENT_TIMES escape: month=%r dir=%s → %d day(s) offered",
+                            _pt_esc_month_hit,
+                            ("later" if _pt_esc_dir_later else "earlier" if _pt_esc_dir_earlier else "any"),
+                            len(_pt_esc_offer),
                         )
                         return
                     else:
@@ -6379,6 +6924,70 @@ class FlowEngine:
                             step["state"], _matched_hour, _slot_idx_dt, _slot_iso_dt, _nxt_dt_state,
                         )
                         await self.ask_current_question()
+                        return
+                    else:
+                        # ── EXACT HOUR UNAVAILABLE ────────────────────────────
+                        # Caller asked for a specific time (e.g. "5 o'clock") that
+                        # does not exist on the chosen day.  Answer directly with
+                        # the nearest available alternatives — never fall to LLM.
+                        from app.vagueness_detector import _time_to_speech as _t2s_na
+                        _day_label_na = _target_dt.get("day_label", "that day")
+                        _spoken_req_na = _t2s_na(f"{_matched_hour:02d}:00")
+                        # Sort slot_times by proximity to requested hour
+                        def _hour_dist_na(t: str) -> int:
+                            try:
+                                return abs(int(t.split(":")[0]) - _matched_hour)
+                            except (ValueError, IndexError):
+                                return 999
+                        _alt_times_na = sorted(_slot_times_dt, key=_hour_dist_na)[:2]
+                        # Resolve matching slot objects for the alternatives
+                        _alt_slots_na: list = []
+                        for _at_na in _alt_times_na:
+                            for _si_na, _st_na in enumerate(_slot_times_dt):
+                                if _st_na == _at_na:
+                                    _avail_slots_na = _target_dt.get("slots", [])
+                                    if _si_na < len(_avail_slots_na):
+                                        _alt_slots_na.append(_avail_slots_na[_si_na])
+                                    break
+                        _spoken_alts_na = [_t2s_na(t) for t in _alt_times_na]
+                        if len(_spoken_alts_na) == 1:
+                            _na_phrase = (
+                                f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
+                                f"on {_day_label_na}, but I do have "
+                                f"{_spoken_alts_na[0]} \u2014 would that work?"
+                            )
+                            if _alt_slots_na:
+                                self.session["selected_slot"] = (
+                                    _alt_slots_na[0].get("start", "")
+                                )
+                                self.session["selected_slot_speech"] = (
+                                    f"{_day_label_na} at {_spoken_alts_na[0]}"
+                                )
+                        elif _spoken_alts_na:
+                            _na_phrase = (
+                                f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
+                                f"on {_day_label_na}, but I do have "
+                                f"{_spoken_alts_na[0]} or {_spoken_alts_na[1]}"
+                                " \u2014 which would suit you?"
+                            )
+                            self.session["offered_constrained_times"] = _alt_times_na
+                            self.session["offered_constrained_slots"] = _alt_slots_na
+                        else:
+                            _na_phrase = (
+                                f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
+                                f"on {_day_label_na}. "
+                                "Would you like to try a different time or a different day?"
+                            )
+                        await self._tts.put(_na_phrase)
+                        self.session["last_question"] = _na_phrase
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _na_phrase}
+                        )
+                        logger.info(
+                            "[ms_flow] %s: exact hour %d unavailable on %r — "
+                            "offered nearest alternatives deterministically",
+                            step["state"], _matched_hour, _day_label_na,
+                        )
                         return
 
         # ── PRESENT_TIMES: catch-all re-ask when nothing matched ────────────────
@@ -9986,8 +10595,9 @@ class FlowEngine:
             if _t == "2":
                 return "redditch"
 
-            # Delegate all phonetic / ASR-variant matching to the dedicated helper
-            return _resolve_location(_t)
+            # Delegate all phonetic / ASR-variant matching to the dedicated helper.
+            # Pass in_location_state=True so Tier 2 context-aware variants are active.
+            return _resolve_location(_t, in_location_state=True)
 
         # ----- faq_booking: wants to book after FAQ answer ---------------
         if method == "faq_booking":

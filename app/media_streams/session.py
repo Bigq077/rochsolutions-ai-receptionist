@@ -284,6 +284,13 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "vague_option_pending":     False,   # True while awaiting option selection
     "presented_vague_options":  [],      # list of option dicts from build_vague_options
 
+    # ── Calendar navigation anchors ───────────────────────────────────────
+    # Set whenever the caller explicitly requests a date (exact, bare ordinal,
+    # week-of, or proximity).  Used by follow-up references such as
+    # "that week" / "around then" in subsequent turns — the caller never has
+    # to repeat the date.  Persists across PRESENT_DAYS → PRESENT_TIMES.
+    "last_requested_date":  None,   # ISO YYYY-MM-DD of most recently requested date
+
     # ── Filler phrases ────────────────────────────────────────────────────
     # Tracks which filler phrases have been used this call so they are not
     # repeated. Stored as a list (JSON-serialisable; treated as a set by

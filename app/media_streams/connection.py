@@ -233,6 +233,11 @@ class SilenceHandler:
         self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
         self._stt_miss_count: int = 0  # consecutive STT misses since last successful transcript
         self._cancelled: bool = False  # set by cancel() — hard synchronous guard for _run()/_transfer()
+        # Timestamp when the last question's TTS audio finished playing (set in
+        # on_tts_finished just before _restart_timer).  Used by _speech_recovery to
+        # enforce a minimum response window so energy VAD noise before the caller
+        # has realistically had time to answer cannot trigger a premature re-ask.
+        self._tts_done_at: float = 0.0
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -251,61 +256,104 @@ class SilenceHandler:
         # Cancel any previous recovery task before starting a new one
         if self._recovery_task and not self._recovery_task.done():
             self._recovery_task.cancel()
+        # Capture the current flow_step so _speech_recovery can detect if the
+        # state has advanced during its sleep and suppress a stale prompt.
+        _recovery_step = self._replay_flow_step
         self._recovery_task = asyncio.create_task(
-            self._speech_recovery(), name="ms_silence_speech_recovery"
+            self._speech_recovery(_recovery_step), name="ms_silence_speech_recovery"
         )
-        logger.debug("[ms_silence] speech started — timer cancelled, recovery armed")
+        logger.debug("[ms_silence] speech started — timer cancelled, recovery armed (step=%d)", _recovery_step)
 
-    async def _speech_recovery(self) -> None:
-        """If STT doesn't transcribe within 5s of speech detection,
-        speak up immediately rather than staying silent while the timer keeps
-        getting cancelled by new audio energy detections."""
+    async def _speech_recovery(self, recovery_step: int = -1) -> None:
+        """If STT doesn't transcribe within 5s of speech detection, prompt the caller.
+
+        Guards (evaluated after the 5 s sleep, in order):
+          1. Stale flow_step — state has advanced since this recovery was armed.
+          2. Minimum response window — TTS finished fewer than 8 s ago so the
+             caller has not had a realistic window to answer.  Prevents energy
+             VAD noise (shuffle, cough) from triggering a premature re-ask.
+          3. Caller still speaking — last_audio_received_at < 2 s ago.
+          4. LLM busy or main timer running.
+          5. STT miss cap — max 2 misses per question (stt_miss_count > 2).
+
+        Sequencing fix (prevents double-fire loop):
+          previously _restart_timer() was called BEFORE the phrase played, so:
+            _run() W1 started → on_tts_started() cancelled it (currently_reasking=False)
+            → on_tts_finished() re-armed it → W1 fired again 26 s later.
+          Now: currently_reasking=True while phrase plays (blocks on_tts_started
+          cancel and on_tts_finished re-arm), then _restart_timer() is called AFTER
+          a 5 s TTS-play wait — exactly as _run() does for W1/W2.
+        """
         try:
             await asyncio.sleep(5.0)
         except asyncio.CancelledError:
             return
-        # Only act if we're still waiting (no transcript, no TTS running)
-        if self._llm_busy or not (self._task is None or self._task.done()):
+
+        # Guard 1: stale flow_step — the flow has advanced since we were armed.
+        # recovery_step == -1 means no question was active (e.g. greeting);
+        # in that case skip step validation.
+        if recovery_step != -1:
+            _sess_chk = self._get_session() if self._get_session else {}
+            _current_step = (_sess_chk or {}).get("flow_step", -1)
+            if _current_step != recovery_step:
+                logger.debug(
+                    "[ms_silence] recovery: stale step stored=%d current=%d — suppressed",
+                    recovery_step, _current_step,
+                )
+                return
+
+        # Guard 2: minimum response window — caller must have had ≥8 s after TTS
+        # finished to realistically answer before we can interrupt with a re-ask.
+        # _tts_done_at is 0.0 at call start (no question asked yet); skip guard then.
+        if self._tts_done_at > 0 and (time.time() - self._tts_done_at) < 8.0:
+            logger.debug(
+                "[ms_silence] recovery: TTS finished only %.1fs ago — suppressing premature re-ask",
+                time.time() - self._tts_done_at,
+            )
             return
-        # Bug 6: do not fire while caller is still actively speaking.
-        # If a partial transcript or audio energy arrived in the last 2 seconds,
-        # the caller has not finished — suppress and let them complete.
+
+        # Guard 3: caller still actively speaking
         if time.time() - self.last_audio_received_at < 2.0:
             logger.debug("[ms_silence] recovery: recent speech (<2s) — suppressing prompt")
             return
+
+        # Guard 4: LLM busy or main timer running (transcript already being processed)
+        if self._llm_busy or not (self._task is None or self._task.done()):
+            return
+
+        # Guard 5: STT miss cap — max 2 recovery prompts per question.
+        # _stt_miss_count is reset ONLY by on_transcript_received, never by
+        # on_tts_started, so this cap is now effective across re-arm cycles.
         self._stt_miss_count += 1
-        # FIX F: Cap speech recovery prompts at 2 per question.  Previously
-        # the miss count was reset to 0 before every prompt, so the "Sorry —
-        # I'm having a little trouble hearing you" loop could repeat endlessly.
         if self._stt_miss_count > 2:
             logger.info(
-                "[ms_silence] recovery: STT miss #%d — max reached, suppressing prompt",
+                "[ms_silence] recovery: STT miss #%d — cap reached, suppressing prompt",
                 self._stt_miss_count,
             )
             return
-        logger.info(
-            "[ms_silence] recovery: STT miss #%d detected — prompting caller directly",
-            self._stt_miss_count,
-        )
+
         _sess  = self._get_session() if self._get_session else {}
         _state = (_sess or {}).get("state", "")
 
-        # Bug 3: DTMF digits already in buffer — caller is actively typing.
+        logger.info(
+            "[ms_silence] recovery: STT miss #%d — prompting (step=%d state=%s tts_age=%.1fs)",
+            self._stt_miss_count, recovery_step, _state,
+            (time.time() - self._tts_done_at) if self._tts_done_at > 0 else -1.0,
+        )
+
+        # DTMF digits already in buffer — caller is actively typing.
         # Reset the silence timer silently; do not interrupt with a spoken prompt.
         if (_sess or {}).get("phone_dtmf_buffer") and _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
             self._restart_timer()
             return
 
-        # BUG 1 fix: state-specific short repair prompts — each state gets a targeted re-ask
+        # State-specific repair prompts
         if _state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
             if (_sess or {}).get("lookup_correction_mode"):
-                # Lookup failed — we asked for name correction; re-anchor to that
                 phrase = "Sorry — what first name and surname was the booking under?"
             elif (_sess or {}).get("rc_stage") == "lookup_done":
-                # Appointment found — awaiting YES/NO confirmation
                 phrase = "Sorry — was that the right appointment? Yes or no?"
             else:
-                # Lookup still in progress
                 phrase = "Sorry — just bear with me while I look up your appointment."
         elif _state in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"):
             _lq = (_sess or {}).get("last_question", "")
@@ -319,20 +367,35 @@ class SilenceHandler:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         ):
             _nf = (_sess or {}).get("name_fragment")
-            # BUG 1 fix: distinguish first-name vs surname sub-state
             phrase = "Sorry, I missed that. And your family name?" if _nf else "Sorry, I missed that. Could you tell me your first name again?"
         elif _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
             phrase = "Sorry, I missed that. Could you type the phone number using your keypad?"
         elif _state in ("GREETING", "DETECT_INTENT", ""):
-            # BUG 1 fix: GREETING state gets booking-intent re-ask
             phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
         elif _state == "ASK_LOCATION":
-            # BUG 1 fix: ASK_LOCATION gets location-anchored re-ask
             phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?"
         else:
             phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
 
+        # Set currently_reasking BEFORE enqueuing the phrase.
+        # This prevents the double-fire loop:
+        #   on_tts_started() checks `if not self.currently_reasking` before cancelling
+        #   the silence timer; with currently_reasking=True it does nothing.
+        #   on_tts_finished() returns early when currently_reasking=True, so it does
+        #   not re-arm the timer — preventing W1 from firing a second phrase 26 s later.
+        self.currently_reasking = True
         await self._tts_text_queue.put(phrase)
+        if self._on_reask:
+            asyncio.create_task(self._on_reask(phrase))
+
+        # Wait ~5 s for TTS to finish, then hand off to the main cascade (_run).
+        # _restart_timer() is called HERE (after the phrase plays), not before.
+        try:
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            self.currently_reasking = False
+            return
+        self.currently_reasking = False
         self._restart_timer()
 
     def set_state(self, state: str) -> None:
@@ -353,7 +416,9 @@ class SilenceHandler:
 
     def on_tts_started(self) -> None:
         """Cancel silence timer before Susie speaks."""
-        self._stt_miss_count = 0  # transcript was processed — reset miss counter
+        # NOTE: _stt_miss_count is intentionally NOT reset here.  It must only
+        # reset when a real caller transcript arrives (on_transcript_received).
+        # Resetting here allowed recovery to loop: miss→TTS starts→reset→miss→repeat.
         if not self.currently_reasking:
             self._cancel_timer()
             logger.debug("[ms_silence] TTS started — timer cancelled")
@@ -453,6 +518,9 @@ class SilenceHandler:
                         "[ms_silence] on_tts_finished: last_question already live %r — not overwriting stale %r",
                         self.last_question[:40], t[:40],
                     )
+            # Record when the question's audio finished so _speech_recovery can
+            # enforce a minimum response window before firing a premature re-ask.
+            self._tts_done_at = time.time()
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
         elif self._task is None:
