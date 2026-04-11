@@ -3192,7 +3192,11 @@ class FlowEngine:
             "LOOKUP_RESCHEDULE", "LOOKUP_CANCEL",
         }
         _is_frag_bypass_state = step is not None and step["state"] in _FRAG_BYPASS_STATES
-        if _is_fragment and not _is_lookup_confirm_state and not (_is_confirm_phone_state and _is_confirm_bypass_token) and not _is_frag_bypass_state and (not step or step["state"] not in _NAME_COLLECTION_STATES):
+        # If a partial reason is pending (COLLECT_REASON completeness gate stored it),
+        # the very next utterance — however short — must reach the join block at
+        # COLLECT_REASON so it can be merged before suppression runs.
+        _has_pending_partial_reason = bool(self.session.get("_partial_reason"))
+        if _is_fragment and not _is_lookup_confirm_state and not (_is_confirm_phone_state and _is_confirm_bypass_token) and not _is_frag_bypass_state and (not step or step["state"] not in _NAME_COLLECTION_STATES) and not _has_pending_partial_reason:
             logger.info("[ms_flow] global fragment suppressed: %r", transcript[:30])
             self.session["fragment_suppressed"] = True
             return
@@ -7652,17 +7656,64 @@ class FlowEngine:
                 )
                 answer = None   # fall through to re-ask logic below
 
-            # ── BUG 2: dangling linking-verb guard ────────────────────────────
-            # "my left ankle is" ends with a linking verb — the caller hasn't
-            # finished.  Reject and prompt for more, unless answer was already
-            # rejected above (answer is None).
+            # ── Incomplete-tail guard ─────────────────────────────────────────
+            # Rejects any utterance whose final word/phrase signals that the
+            # caller hasn't finished their sentence.  Covers:
+            #   • linking / auxiliary verbs  (original set)
+            #   • extended auxiliaries       (been, being, getting, …)
+            #   • prepositions               (of, in, for, at, …)
+            #   • articles / possessives     (the, a, an, my, your, …)
+            #   • quantifiers / degree words (few, bit, lot, quite, …)
+            #   • subordinating conjunctions (when, since, after, because, …)
+            #   • coordinating conjunctions  (and, but, or)
+            #   • infinitive marker          (to)
+            #   • positional adjectives      (lower, upper, inner, outer)
+            #   PLUS a second pattern for "subordinator + subject pronoun" at
+            #   end (e.g. "it started when I").
             if answer is not None:
                 import re as _re_cr_dangle
                 _DANGLE_RE = _re_cr_dangle.compile(
-                    r'\b(?:is|are|was|were|has|have|had|feels?|felt|seems?)\s*$',
+                    r'\b(?:'
+                    # linking / auxiliary verbs (original)
+                    r'is|are|was|were|has|have|had|feels?|felt|seems?|appears?'
+                    r'|'
+                    # extended auxiliaries that need a complement
+                    r'been|being|getting|becoming|become'
+                    r'|'
+                    # prepositions that always require an object
+                    r'of|into|towards|onto|upon|like'
+                    r'|'
+                    # common prepositions — almost always dangle at end of a reason
+                    r'in|for|at|on|with|by|from|around|through|about|near|along'
+                    r'|'
+                    # articles and possessives — always require a following noun
+                    r'the|a|an|my|your|his|her|their|our'
+                    r'|'
+                    # quantifiers / degree words that require a noun to complete
+                    r'few|bit|lot|quite|much|some|also'
+                    r'|'
+                    # subordinating conjunctions — open an unfinished clause
+                    r'when|since|after|because|while|although|though|if|whenever|until|before'
+                    r'|'
+                    # coordinating conjunctions at end — obviously unfinished
+                    r'and|but|or'
+                    r'|'
+                    # infinitive marker at end (e.g. "I try to", "when I try to")
+                    r'to'
+                    r'|'
+                    # positional adjectives that require a body-part noun to follow
+                    r'lower|upper|inner|outer'
+                    r')\s*$',
                     _re_cr_dangle.IGNORECASE,
                 )
-                if _DANGLE_RE.search(_reason_lower):
+                # "subordinator + subject pronoun" tail — e.g. "it started when I",
+                # "especially when I try", "after I"
+                _SUBJ_DANGLE_RE = _re_cr_dangle.compile(
+                    r'\b(?:when|since|after|because|while|if|before|until|whenever)'
+                    r"\s+(?:i|i'm|i've|i'd|i'll|we|you|they|he|she|it)\s*$",
+                    _re_cr_dangle.IGNORECASE,
+                )
+                if _DANGLE_RE.search(_reason_lower) or _SUBJ_DANGLE_RE.search(_reason_lower):
                     logger.info(
                         "[ms_flow] COLLECT_REASON: dangling clause %r — re-asking for more",
                         answer[:50],
