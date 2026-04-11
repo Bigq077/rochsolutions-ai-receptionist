@@ -3414,10 +3414,8 @@ class FlowEngine:
                     None,
                 )
                 if _cn_idx_cp is not None:
-                    self.session["full_name"] = None
-                    self.session.setdefault("collected", {}).pop("full_name", None)
-                    self.session.setdefault("collected", {}).pop("name", None)
-                    self.session.pop("name_fragment", None)
+                    from app.media_streams.name_collector import NameCollector as _NC_cp
+                    _NC_cp(self.session).reset()
                     self.session["flow_step"] = _cn_idx_cp
                     self.session["state"]     = self._active_flow[_cn_idx_cp]["state"]
                     logger.info(
@@ -3815,9 +3813,8 @@ class FlowEngine:
                     None,
                 )
                 if _cn_idx is not None:
-                    self.session["full_name"] = None
-                    self.session.setdefault("collected", {}).pop("full_name", None)
-                    self.session.setdefault("collected", {}).pop("name", None)
+                    from app.media_streams.name_collector import NameCollector as _NC_cfp
+                    _NC_cfp(self.session).reset()
                     self.session["phone_readback_pending"] = False
                     self.session["flow_step"] = _cn_idx
                     self.session["state"]     = self._active_flow[_cn_idx]["state"]
@@ -7550,154 +7547,34 @@ class FlowEngine:
             )
             return
 
-        # ── COLLECT_NAME: deterministic repair gate ───────────────────────────
-        # Common repeat/repair phrases must replay the current question without
-        # consuming a retry, incrementing slot_retry_counts, or calling any LLM.
-        # Runs before extraction so repair requests never fall into the
-        # answer-is-None retry path.
-        _COLLECT_NAME_STATES_REPAIR = {
+        # ── COLLECT_NAME: unified NameCollector dispatch ──────────────────────
+        # All first-name/surname collection across all booking flows routes
+        # through a single deterministic substate machine — no LLM, no duplicated
+        # guards, no scattered fragment logic.
+        _COLLECT_NAME_STATES_ALL = frozenset({
             "COLLECT_NAME", "COLLECT_NAME_RETURNING",
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
-        }
-        if step["state"] in _COLLECT_NAME_STATES_REPAIR:
-            _CN_REPAIR_PHRASES = (
-                "could you repeat", "repeat that", "say that again",
-                "sorry what was that", "sorry, what was that",
-                "i didn't catch that", "i didn't quite catch that",
-                "i didn't catch what you said", "what did you say",
-                "didn't catch", "didn't hear", "pardon", "come again",
-            )
-            if any(p in text for p in _CN_REPAIR_PHRASES):
-                if self.session.get("name_fragment"):
-                    _cn_repair_replay = "And what's your surname?"
-                else:
-                    _cn_repair_replay = self.session.get("last_question", "And what's your first name please?")
-                await self._tts.put(_cn_repair_replay)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _cn_repair_replay}
-                )
-                logger.info("[ms_flow] COLLECT_NAME: repair gate replayed %r", _cn_repair_replay[:50])
-                return  # no retry increment, no name_fragment mutation
-
-            # ── Name-negation guard: "i'm not sarah", "my name is not sarah it's mark" ──
-            _CN_NEGATION_PHRASES = (
-                "i'm not ", "im not ", "not called ", "not named ",
-                "my name is not ", "my name isn't ", "not my name",
-            )
-            if any(p in text for p in _CN_NEGATION_PHRASES):
-                self.session.pop("name_fragment", None)
-                self.session.pop("spelling_confirm_surname", None)
-                import re as _re_neg
-                _neg_m = _re_neg.search(
-                    r"(?:it'?s|its|i'?m|im|the name(?:'s| is)?|actually)\s+([a-z][a-z\-']{2,})",
-                    text,
-                )
-                _CN_NEG_FW = frozenset({
-                    "not", "called", "wrong", "sorry", "actually", "the", "a",
-                    "my", "is", "was", "been", "name", "that", "this",
-                })
-                if _neg_m:
-                    _corrected_fn = _neg_m.group(1).strip().title()
-                    if _corrected_fn.lower() not in _CN_NEG_FW:
-                        self.session["name_fragment"] = _corrected_fn
-                        _neg_ask = f"Got it — and your surname?"
-                        await self._tts.put(_neg_ask)
-                        self.session["last_question"] = "And your surname?"
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _neg_ask}
-                        )
-                        logger.info("[ms_flow] COLLECT_NAME: name negation → corrected to %r", _corrected_fn)
-                        return
-                _neg_fresh = "No problem — what's your first name please?"
-                await self._tts.put(_neg_fresh)
-                self.session["last_question"] = _neg_fresh
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _neg_fresh}
-                )
-                logger.info("[ms_flow] COLLECT_NAME: name negation — clearing fragment, asking fresh")
-                return
-
-        # ── COLLECT_NAME: booking-context wrapper stripping ──────────────────
-        # Strip noise wrappers so "booking in john smith" → "john smith".
-        # Only in full-name collection mode (no first-name fragment yet stored).
-        _COLLECT_NAME_STATES_STRIP = {
-            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
-            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
-        }
-        if step["state"] in _COLLECT_NAME_STATES_STRIP and not self.session.get("name_fragment"):
-            _CN_WRAPPERS = ("booking in ", "booking for ", "it's for ", "for booking ",)
-            _raw_cn = transcript.strip()
-            for _cw in _CN_WRAPPERS:
-                if _raw_cn.lower().startswith(_cw):
-                    transcript = _raw_cn[len(_cw):].strip()
-                    text       = transcript.lower()
-                    logger.info("[ms_flow] COLLECT_NAME: stripped wrapper %r → %r", _cw, transcript[:40])
-                    break
-
-        # BUG 3 & BUG 4 fix: detect pure name-wrapper utterances BEFORE extraction.
-        # "my first name" / "first name is" with no actual name token must be rejected
-        # immediately — they must never be passed to _extract() which would return None
-        # and then fall through to the retry path, nor should they store garbage.
-        if step["state"] in _COLLECT_NAME_STATES_STRIP and _is_pure_name_wrapper(text):
-            _wrapper_q = (
-                "And your surname?" if self.session.get("name_fragment")
-                else self.session.get("last_question", "What's your first name please?")
-            )
-            # BUG 2 fix: drain stale duplicate before re-queuing
+        })
+        if step["state"] in _COLLECT_NAME_STATES_ALL:
+            from app.media_streams.name_collector import NameCollector as _NameColl
+            _nc_action, _nc_payload = _NameColl(self.session).handle(text, transcript)
             while not self._tts.empty():
                 try:
                     self._tts.get_nowait()
                 except Exception:
                     break
-            await self._tts.put(_wrapper_q)
-            self.session["last_question"] = _wrapper_q
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": _wrapper_q}
-            )
-            logger.info(
-                "[ms_flow] COLLECT_NAME: pure wrapper phrase rejected %r — re-asking %r",
-                text[:50], _wrapper_q[:50],
-            )
-            return
-
-        answer = self._extract(step["extract"], text, transcript)
-
-        # BUG 4 fix: after extraction, if the answer is a wrapper-only phrase, strip it.
-        # e.g. _extract("name") returns "My First Name" from "my first name" → reject.
-        if step["state"] in _COLLECT_NAME_STATES_STRIP and answer:
-            _stripped_answer = _strip_name_wrapper(answer.lower())
-            if not _stripped_answer or _is_pure_name_wrapper(answer.lower()):
-                logger.info(
-                    "[ms_flow] COLLECT_NAME: extracted answer %r is wrapper-only — rejecting",
-                    answer,
+            if _nc_action != "accept":
+                await self._tts.put(_nc_payload)
+                self.session["last_question"] = _nc_payload
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _nc_payload}
                 )
-                answer = None
-
-        # ── COLLECT_NAME: structured split-name fallback ─────────────────────
-        # "my first name is X my surname is Y" — the function-word guard in
-        # _extract("name") rejects "is" and returns None for these compounds.
-        # Parse them explicitly before any further guards run.
-        # (_COLLECT_NAME_STATES_STRIP defined above has the same four states)
-        # Gate: runs even when name_fragment is set so a caller who cleanly volunteers
-        # "my first name is X and my surname is Y" overrides any stale junk fragment.
-        if step["state"] in _COLLECT_NAME_STATES_STRIP and answer is None:
-            import re as _re_split_fn
-            _split_m = _re_split_fn.search(
-                r'first\s+name\s+is\s+([a-z][a-z\-\']+)'
-                r'.{0,50}?(?:sur|last\s+)?name\s+is\s+([a-z][a-z\-\']+)',
-                text, _re_split_fn.IGNORECASE,
-            )
-            if _split_m:
-                _sp_fn = _split_m.group(1).strip().title()
-                _sp_sn = _split_m.group(2).strip().title()
-                answer = f"{_sp_fn} {_sp_sn}"
-                _stale_frag = self.session.pop("name_fragment", None)
-                self.session.pop("spelling_confirm_surname", None)
-                logger.info(
-                    "[ms_flow] COLLECT_NAME: split-name fallback %r → %r%s",
-                    text[:60], answer,
-                    f" (cleared stale fragment {_stale_frag!r})" if _stale_frag else "",
-                )
+                return
+            # accept — NameCollector stored full_name in session; set answer
+            # and fall through to the standard answer-storage + advancement code.
+            answer = _nc_payload
+        else:
+            answer = self._extract(step["extract"], text, transcript)
 
         # ── PRESENT_DAYS: nullify extracted day on mixed-intent turns ─────────
         # "quick question first are you open on saturdays" extracts "saturday"
@@ -7719,390 +7596,6 @@ class FlowEngine:
                     answer,
                 )
                 answer = None
-
-        # ── COLLECT_NAME: single-word first-name guard ────────────────────────
-        # If the caller gives only one word (first name), hold it as a fragment
-        # and ask for their surname before advancing the flow.  On the next turn
-        # the fragment is combined with the new word to form a full name.
-        _COLLECT_NAME_STATES_FG = {
-            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
-            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
-        }
-        # ── COLLECT_NAME: noise/clarification guard (single AND multi-word) ───
-        # Runs before the single-word fragment path so "i didn't quite touch that"
-        # (or any repair/clarification utterance) can never be committed as a name.
-        if step["state"] in _COLLECT_NAME_STATES_FG and answer:
-            _NAME_NOISE_PHRASES = (
-                "i didn't", "didn't catch", "didn't hear", "didn't quite",
-                "could you", "do you", "say that again", "say it again",
-                "touch that", "repeat that", "repeat the", "help spelling",
-                "hello", "sorry could", "what was that", "what did you",
-                "i couldn't", "couldn't hear", "can you repeat", "not sure",
-                # Re-engagement phrases that slip through fragment suppression
-                "what's happening", "whats happening",
-                "are you there", "you there",
-                "can you hear", "can you hear me",
-                "hello hello", "is anyone there",
-                # Booking-context verb phrases — clearly not a person's name
-                "you're booking", "you are booking",
-                "i'm booking", "i am booking",
-                "book me in", "book me",
-                "it's booking", "are you booking",
-                "you're booking me", "you are booking me",
-                # BUG 3 fix: meta/repair utterances that STT returns as if they were names
-                "you repeat", "you're repeating", "you are repeating",
-                "can you say", "need you to", "you need to",
-                "do you need help", "need help spelling",
-            )
-            _noise_hit = next(
-                (p for p in _NAME_NOISE_PHRASES if p in (text or "").lower()), None
-            )
-            if _noise_hit:
-                _frag_cn = self.session.get("name_fragment")
-                # BUG 3 fix: before re-asking, try to salvage the leading word/token
-                # from utterances like "slater do you need help spelling that" where
-                # the name appears before the noise phrase.
-                _noise_salvaged = None
-                if not _frag_cn:
-                    # First-name phase: extract leading alphabetic token before noise
-                    import re as _re_noise_sv
-                    _noise_pos = (text or "").lower().find(_noise_hit)
-                    if _noise_pos > 0:
-                        _pre_noise = (text or "")[:_noise_pos].strip()
-                        _sv_toks = _re_noise_sv.findall(r"[a-zA-Z'\-]{2,}", _pre_noise)
-                        _CN_FW_SV = frozenset({
-                            "my", "the", "a", "an", "is", "am", "it", "its",
-                            "name", "first", "surname", "last", "call", "called",
-                        })
-                        _sv_clean = [t for t in _sv_toks if t.lower() not in _CN_FW_SV]
-                        if len(_sv_clean) == 1:
-                            _noise_salvaged = _sv_clean[0].title()
-                elif _frag_cn:
-                    # Surname phase: same leading-token salvage
-                    import re as _re_noise_sv2
-                    _noise_pos2 = (text or "").lower().find(_noise_hit)
-                    if _noise_pos2 > 0:
-                        _pre_noise2 = (text or "")[:_noise_pos2].strip()
-                        _sv_toks2 = _re_noise_sv2.findall(r"[a-zA-Z'\-]{2,}", _pre_noise2)
-                        _CN_FW_SV2 = frozenset({
-                            "my", "the", "a", "an", "is", "am", "it", "its",
-                            "name", "first", "surname", "last",
-                        })
-                        _sv_clean2 = [t for t in _sv_toks2 if t.lower() not in _CN_FW_SV2]
-                        if len(_sv_clean2) == 1:
-                            _noise_salvaged = _sv_clean2[0].title()
-                if _noise_salvaged:
-                    if _frag_cn:
-                        # Combine first name + salvaged surname via spelling-confirm
-                        self.session["spelling_confirm_surname"] = _noise_salvaged
-                        _spaced_sv = " ".join(list(_noise_salvaged.upper()))
-                        _sv_readback = (
-                            f"I've got that as {_spaced_sv}. "
-                            "If you'd like to correct it, you can spell it out for me."
-                        )
-                        await self._tts.put(_sv_readback)
-                        self.session["last_question"] = _sv_readback
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _sv_readback}
-                        )
-                        logger.info(
-                            "[ms_flow] COLLECT_NAME: noise salvage (surname) %r → "
-                            "spelling-confirm substate", _noise_salvaged,
-                        )
-                        return
-                    else:
-                        # Store salvaged token as first-name fragment and ask for surname
-                        while not self._tts.empty():
-                            try:
-                                self._tts.get_nowait()
-                            except Exception:
-                                break
-                        self.session["name_fragment"] = _noise_salvaged
-                        _sv_sn_q = "And what's your surname?"
-                        await self._tts.put(_sv_sn_q)
-                        self.session["last_question"] = _sv_sn_q
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _sv_sn_q}
-                        )
-                        logger.info(
-                            "[ms_flow] COLLECT_NAME: noise salvage (first name) %r → "
-                            "asking for surname", _noise_salvaged,
-                        )
-                        return
-                _noise_re = (
-                    "And what's your surname?"
-                    if _frag_cn
-                    else self.session.get("last_question", "What's your name please?")
-                )
-                # Suppression: don't fire duplicate TTS if already the active question
-                if self.session.get("last_question") != _noise_re:
-                    await self._tts.put(_noise_re)
-                    self.session["last_question"] = _noise_re
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _noise_re}
-                    )
-                logger.info(
-                    "[ms_flow] COLLECT_NAME: noise utterance rejected %r (fragment=%r) — re-asking",
-                    (text or "")[:60], _frag_cn,
-                )
-                return
-
-        # ── COLLECT_NAME: deterministic surname-prefix extraction ────────────
-        # When name_fragment exists and _extract() returned nothing (e.g. "my surname
-        # is smith" fails because "is" is a function word), strip known prefix wrappers
-        # and extract the surname token directly.  Runs BEFORE the single-word guard so
-        # multi-word prefixed forms are handled without falling to retry/Haiku.
-        if step["state"] in _COLLECT_NAME_STATES_FG and self.session.get("name_fragment") and not answer:
-            _SN_PFXS = (
-                "my surname is ", "surname is ",
-                "my last name is ", "last name is ",
-                "it's ", "it is ", "sorry it's ", "sorry, it's ",
-            )
-            _raw_sn = (text or "").strip()
-            for _pfx in _SN_PFXS:
-                if _raw_sn.lower().startswith(_pfx):
-                    _tok = _raw_sn[len(_pfx):].strip()
-                    if _tok and all(c.isalpha() or c in " -'" for c in _tok):
-                        answer = f"{self.session['name_fragment']} {_tok}".title()
-                        self.session.pop("name_fragment", None)
-                        logger.info(
-                            "[ms_flow] COLLECT_NAME: det. surname extract %r → %r",
-                            _tok, answer,
-                        )
-                    break  # matched prefix — either extracted or reject below
-
-        if step["state"] in _COLLECT_NAME_STATES_FG and answer and len(answer.split()) == 1:
-            # Reject single-word STT garbage / function words before storing as a name fragment.
-            _FRAGMENT_REJECT = frozenset({
-                "in", "on", "at", "to", "for", "of", "by", "up", "as",
-                "is", "am", "are", "was", "be", "been", "do", "did",
-                "if", "got", "get", "has", "have", "had", "out", "off",
-                "yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure", "fine",
-                "works", "work", "sorry", "what", "well", "now", "just",
-                "like", "said", "please", "right", "wrong", "the", "a", "an",
-                # Domain / context words that STT emits mid-call as fragments
-                "clinic", "clinics", "therapy", "therapist", "physio",
-                "physiotherapy", "reception", "receptionist", "appointment",
-                "appointments", "booking", "bookings", "health", "redditch",
-                "alcester", "doctor", "service", "services", "number",
-                "here", "there", "today", "tomorrow", "next", "last",
-                # Ultra-short STT noise — word-end fragments and filler sounds
-                # that can never be standalone first names (e.g. "ic" from "telephonic")
-                "ic", "ck", "ng", "nk", "uh", "um", "er", "ah", "hm", "mm", "eh",
-            })
-            if answer.lower() in _FRAGMENT_REJECT:
-                _cn_pending = self.session.get("last_question", "And what's your first name please?")
-                # BUG 2 fix: drain any stale re-ask already queued so only one prompt plays
-                while not self._tts.empty():
-                    try:
-                        self._tts.get_nowait()
-                    except Exception:
-                        break
-                await self._tts.put(_cn_pending)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _cn_pending}
-                )
-                logger.info("[ms_flow] COLLECT_NAME: rejecting noise fragment %r — re-asking (deduped)", answer)
-                return
-            _frag = self.session.get("name_fragment")
-            if _frag:
-                # ── SPELLING-CONFIRM substate ────────────────────────────────
-                # Active when a previous turn entered the substate by extracting a
-                # surname candidate from a mixed utterance (e.g. "rook do you need
-                # help spelling that?").  Next turn must either accept or spell.
-                _sc_sn = self.session.get("spelling_confirm_surname")
-                _spelling_resolved = False
-                if _sc_sn:
-                    _ACCEPT_SC = (
-                        "that's right", "that is right", "that's correct", "that is correct",
-                        "yes", "yeah", "yep", "correct", "perfect", "no change",
-                        "no that's right", "no that is right", "sounds right",
-                        "looks good", "no correction",
-                    )
-                    if any(p in text for p in _ACCEPT_SC) or text.strip() in (
-                        "no", "yes", "yeah", "correct",
-                    ):
-                        # Accepted — use stored surname
-                        answer = f"{_frag} {_sc_sn}".title()
-                        self.session.pop("spelling_confirm_surname", None)
-                        self.session.pop("name_fragment", None)
-                        _ack = "Okay, that's noted."
-                        await self._tts.put(_ack)
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _ack}
-                        )
-                        logger.info("[ms_flow] COLLECT_NAME: spelling confirmed → %r", answer)
-                        _spelling_resolved = True
-                    else:
-                        # Try to parse spelled-out letters: "R O U K" or "R-O-U-K"
-                        import re as _re_sc
-                        _letters = _re_sc.sub(r"[^a-zA-Z\s]", " ", text).split()
-                        if _letters and all(len(w) == 1 and w.isalpha() for w in _letters):
-                            _new_sn = "".join(_letters).title()
-                            answer = f"{_frag} {_new_sn}".title()
-                            self.session.pop("spelling_confirm_surname", None)
-                            self.session.pop("name_fragment", None)
-                            _ack = "Okay, that's noted."
-                            await self._tts.put(_ack)
-                            self.session.setdefault("conversation_history", []).append(
-                                {"role": "assistant", "content": _ack}
-                            )
-                            logger.info(
-                                "[ms_flow] COLLECT_NAME: spelling corrected %r → %r",
-                                _sc_sn, _new_sn,
-                            )
-                            _spelling_resolved = True
-                        else:
-                            # Didn't understand — re-prompt the spelling substate
-                            _sn_spaced = " ".join(list(_sc_sn.upper()))
-                            _re_sc_msg = (
-                                f"I have {_sn_spaced}. "
-                                "If you'd like to change it, please spell it out for me."
-                            )
-                            await self._tts.put(_re_sc_msg)
-                            self.session["last_question"] = _re_sc_msg
-                            self.session.setdefault("conversation_history", []).append(
-                                {"role": "assistant", "content": _re_sc_msg}
-                            )
-                            return
-
-                if not _spelling_resolved:
-                    # Guard: reject if transcript mixes surname with a spelling offer /
-                    # clarification question.  Try to salvage the surname before the noise.
-                    _SURNAME_NOISE_PHRASES = (
-                        "do you need", "need help", "help spelling", "help me spell",
-                        "shall i spell", "do you want me to spell", "want me to spell",
-                        "is that right", "is that correct", "did i say", "did you catch",
-                        "can you spell", "spell that", "how do you spell", "how did you spell",
-                        "how do you have", "did you get",
-                    )
-                    if any(phrase in (text or "").lower() for phrase in _SURNAME_NOISE_PHRASES):
-                        # Prefer the already-extracted answer; fall back to pre-noise text
-                        _sn_candidate = answer
-                        if not _sn_candidate:
-                            import re as _re_np
-                            _np_start = min(
-                                (text.lower().find(p) for p in _SURNAME_NOISE_PHRASES
-                                 if p in text.lower()),
-                                default=len(text),
-                            )
-                            _pre = text[:_np_start].strip()
-                            if (
-                                _pre
-                                and all(c.isalpha() or c in " -'" for c in _pre)
-                                and 2 <= len(_pre) <= 20
-                                and len(_pre.split()) <= 2
-                            ):
-                                _sn_candidate = _pre.title()
-                        if _sn_candidate:
-                            # Enter spelling-confirm substate
-                            self.session["spelling_confirm_surname"] = _sn_candidate
-                            _spaced = " ".join(
-                                list(_sn_candidate.replace("-", "").replace(" ", "").upper())
-                            )
-                            _readback = (
-                                f"I've got that as {_spaced}. "
-                                "If you'd like to correct it, you can spell it out for me."
-                            )
-                            await self._tts.put(_readback)
-                            self.session["last_question"] = _readback
-                            self.session.setdefault("conversation_history", []).append(
-                                {"role": "assistant", "content": _readback}
-                            )
-                            logger.info(
-                                "[ms_flow] COLLECT_NAME: spelling substate entered for %r",
-                                _sn_candidate,
-                            )
-                            return
-                        else:
-                            # No usable candidate — re-ask as before
-                            _sn_re = "And what's your surname?"
-                            if self.session.get("last_question") != _sn_re:
-                                await self._tts.put(_sn_re)
-                                self.session["last_question"] = _sn_re
-                                self.session.setdefault("conversation_history", []).append(
-                                    {"role": "assistant", "content": _sn_re}
-                                )
-                            logger.info(
-                                "[ms_flow] COLLECT_NAME: no surname candidate in %r — re-asking",
-                                (text or "")[:60],
-                            )
-                            return
-                    # Second turn: caller gave surname — combine into full name.
-                    # Guard: reject combination if the extracted "surname" is a
-                    # date/time token (e.g. "monday", "morning", "pm") — these are
-                    # scheduling answers, not names, and combining would corrupt the name.
-                    _SN_DATE_TOKENS = frozenset({
-                        "monday", "tuesday", "wednesday", "thursday", "friday",
-                        "saturday", "sunday", "january", "february", "march",
-                        "april", "may", "june", "july", "august", "september",
-                        "october", "november", "december", "morning", "afternoon",
-                        "evening", "today", "tomorrow", "am", "pm", "appointment",
-                        "booking", "session", "slot", "date", "time", "week",
-                        "month", "next", "this", "yes", "no", "yeah", "nope",
-                    })
-                    if answer.lower() in _SN_DATE_TOKENS:
-                        logger.info(
-                            "[ms_flow] COLLECT_NAME: surname rejected (date token %r) — re-asking",
-                            answer,
-                        )
-                        _sn_retry = "And what's your surname?"
-                        if self.session.get("last_question") != _sn_retry:
-                            await self._tts.put(_sn_retry)
-                            self.session["last_question"] = _sn_retry
-                            self.session.setdefault("conversation_history", []).append(
-                                {"role": "assistant", "content": _sn_retry}
-                            )
-                        return
-                    # BUG 5 fix: very short surnames (≤ 3 chars) are often STT
-                    # fragments of a longer name (e.g. "hew" from "Hewitson").
-                    # Enter the spelling-confirm substate instead of finalising
-                    # immediately so the caller can correct if needed.
-                    if (
-                        len(answer) <= 3
-                        and answer.isalpha()
-                        and not self.session.get("spelling_confirm_surname")
-                    ):
-                        self.session["spelling_confirm_surname"] = answer.title()
-                        _spaced_short = " ".join(list(answer.upper()))
-                        _short_readback = (
-                            f"I've got that as {_spaced_short}. "
-                            "Is that correct, or would you like to spell it out?"
-                        )
-                        await self._tts.put(_short_readback)
-                        self.session["last_question"] = _short_readback
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _short_readback}
-                        )
-                        logger.info(
-                            "[ms_flow] COLLECT_NAME: short surname %r → "
-                            "spelling-confirm substate", answer,
-                        )
-                        return
-                    answer = f"{_frag} {answer}".title()
-                    self.session.pop("name_fragment", None)
-                    logger.info("[ms_flow] COLLECT_NAME: fragment completed → %r", answer)
-            else:
-                # First turn: only first name — ask for surname.
-                # Drain any stale re-ask that was queued before this valid first-name
-                # arrived (e.g. "What's your first name?" queued 300ms ago by a
-                # rejected fragment).  The new question must be the only thing heard.
-                while not self._tts.empty():
-                    try:
-                        self._tts.get_nowait()
-                    except Exception:
-                        break
-                self.session["name_fragment"] = answer
-                _sn_phrase = "And what's your surname?"
-                await self._tts.put(_sn_phrase)
-                self.session["last_question"] = _sn_phrase
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _sn_phrase}
-                )
-                logger.info(
-                    "[ms_flow] COLLECT_NAME: single-word name %r — asking for surname", answer
-                )
-                return
 
         # ── COLLECT_REASON: reschedule/cancel re-route ───────────────────────────
         # Caller says "I want to reschedule" at the booking-reason step.
@@ -8462,23 +7955,17 @@ class FlowEngine:
                 # Bypass Haiku for ALL COLLECT_NAME states — prevents Haiku
                 # pseudo-confirmation wording ("Thanks John! Just to confirm…")
                 # that diverges from the real deterministic question.
-                # When awaiting a surname, replay the surname question;
-                # otherwise replay last_question (the real pending ask).
-                if step["state"] in _COLLECT_NAME_STATES_FG:
-                    if self.session.get("name_fragment"):
-                        _sn_q = "And what's your surname?"
-                        if self.session.get("last_question") != _sn_q:
-                            await self._tts.put(_sn_q)
-                            self.session["last_question"] = _sn_q
-                            self.session.setdefault("conversation_history", []).append(
-                                {"role": "assistant", "content": _sn_q}
-                            )
-                    else:
-                        _cn_replay = self.session.get("last_question", "And what's your first name please?")
-                        await self._tts.put(_cn_replay)
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _cn_replay}
-                        )
+                # NameCollector always keeps last_question up to date.
+                _CN_HAIKU_STATES = frozenset({
+                    "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                    "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                })
+                if step["state"] in _CN_HAIKU_STATES:
+                    _cn_replay = self.session.get("last_question", "What's your first name please?")
+                    await self._tts.put(_cn_replay)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _cn_replay}
+                    )
                     return
                 # Bypass Haiku for phone-collection states — any unrecognised utterance
                 # at COLLECT_PHONE / COLLECT_PHONE_RETURNING is almost always a partial
