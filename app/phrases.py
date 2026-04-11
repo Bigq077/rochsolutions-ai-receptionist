@@ -237,21 +237,25 @@ P: dict = {
 # ---------------------------------------------------------------------------
 
 SILENCE_RESPONSES: dict = {
-    "ask_phone":         "No rush — take your time finding that number.",
-    "confirm_phone":     "Please say yes to confirm, or no to try a different number.",
-    "ask_name":          "Take your time.",
+    "ask_phone":          "No rush — take your time finding that number.",
+    "confirm_phone":      "Please say yes to confirm, or no to try a different number.",
+    "ask_name":           "Take your time.",
     # BUG 1 fix: state-aware name sub-categories
-    "ask_first_name":    "Sorry, I missed that. Could you tell me your first name again?",
-    "ask_surname":       "Sorry, I missed that. And your family name?",
-    "ask_day":           "Have a think — no hurry at all.",
-    "ask_time":          "No rush on that.",
-    "ask_reason":        "Take your time telling me.",
+    "ask_first_name":     "Sorry, I missed that. Could you tell me your first name again?",
+    "ask_surname":        "Sorry, I missed that. And your family name?",
+    "ask_day":            "Have a think — no hurry at all.",
+    "ask_time":           "No rush on that.",
+    "ask_reason":         "Take your time telling me.",
     # BUG 1 fix: GREETING gets a booking-intent re-ask; ASK_LOCATION gets a location re-ask
-    "greeting":          "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?",
-    "ask_location":      "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?",
-    "confirm_read_back": "Just let me know if any of those details need changing.",
-    "default":           "I didn't quite catch that — could you say that again?",
-    "default_retry":     "Sorry about that — could you say that again?",
+    "greeting":           "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?",
+    "ask_location":       "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?",
+    "confirm_read_back":  "Just let me know if any of those details need changing.",
+    # Long list / long explanation states — encourage patient thinking
+    "present_days":       "No rush — take your time picking a day.",
+    "present_times":      "No rush — take your time picking a time.",
+    "confirm_assessment": "Take your time.",
+    "default":            "I didn't quite catch that — could you say that again?",
+    "default_retry":      "Sorry about that — could you say that again?",
 }
 
 # Per-state silence window in seconds (Window 1 — first re-ask threshold).
@@ -259,9 +263,28 @@ SILENCE_RESPONSES: dict = {
 # 26 s is intentionally higher than the automated test runner's TURN_WAIT_SECONDS
 # (25 s) so the silence timer never fires between test injections.
 # The SILENCE_WINDOW_1_SEC env var overrides this if set.
+#
+# State families:
+#   fast  (<25 s) — binary or very short answers: location choice, confirm yes/no,
+#                   greeting intent
+#   medium (26 s) — identity / phone / name collection
+#   slow  (28-30 s) — date/time picking; caller may consult calendar
+#   extra_slow (32-34 s) — long option lists (PRESENT_DAYS/TIMES), symptom
+#                           descriptions, post-explanation confirmations
 SILENCE_THRESHOLDS: dict = {
-    "ask_phone": 26.0,
-    "default":   26.0,
+    "ask_phone":          26.0,
+    "confirm_phone":      22.0,   # yes/no — short answer expected
+    "ask_name":           26.0,
+    "ask_day":            30.0,   # caller may check calendar / diary
+    "ask_time":           28.0,
+    "ask_reason":         32.0,   # describing symptoms takes time
+    "greeting":           22.0,   # simple booking-intent question
+    "ask_location":       20.0,   # binary choice (Alcester / Redditch)
+    "confirm_read_back":  24.0,   # yes/no after hearing readback
+    "present_days":       34.0,   # caller just heard a list of 4+ days
+    "present_times":      34.0,   # caller just heard a list of time slots
+    "confirm_assessment": 32.0,   # follows a long explanation
+    "default":            26.0,
 }
 
 # ---------------------------------------------------------------------------

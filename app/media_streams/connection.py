@@ -214,6 +214,12 @@ class SilenceHandler:
     ) -> None:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
+        # last_engagement_at — broadest "caller was doing something" clock.
+        # Updated by: speech-start/VAD, partial transcripts, final transcripts,
+        # DTMF presses, confirmed barge-in, fragment-suppressed transcripts.
+        # Unlike last_audio_received_at it is NOT reset between questions and
+        # serves as the primary guard in _speech_recovery.
+        self.last_engagement_at:      float = time.time()
         self.last_question:           str   = ""
         self._replay_flow_step:       int   = -1
         self.current_state:           str   = "default"
@@ -238,6 +244,12 @@ class SilenceHandler:
         # enforce a minimum response window so energy VAD noise before the caller
         # has realistically had time to answer cannot trigger a premature re-ask.
         self._tts_done_at: float = 0.0
+        # True while any TTS chunk is actively being sent to Twilio.
+        # Set in on_tts_started(), cleared in on_tts_finished().
+        # _speech_recovery checks this as Guard 0 — no recovery phrase can fire
+        # while Susie is already speaking, which was the root cause of prompts
+        # playing on top of long PRESENT_DAYS / FAQ TTS responses.
+        self._tts_playing: bool = False
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -249,9 +261,10 @@ class SilenceHandler:
     def on_speech_started(self) -> None:
         """Call when STT detects actual speech (partial transcript or energy VAD).
         Cancels the silence timer so Susie doesn't re-ask while caller is speaking.
-        Schedules a 5-second recovery task: if no transcript arrives, re-arms the
+        Schedules a state-aware recovery task: if no transcript arrives, re-arms the
         timer so the call doesn't go permanently silent on an STT miss."""
         self.last_audio_received_at = time.time()
+        self.last_engagement_at     = time.time()
         self._cancel_timer()
         # Cancel any previous recovery task before starting a new one
         if self._recovery_task and not self._recovery_task.done():
@@ -265,28 +278,63 @@ class SilenceHandler:
         logger.debug("[ms_silence] speech started — timer cancelled, recovery armed (step=%d)", _recovery_step)
 
     async def _speech_recovery(self, recovery_step: int = -1) -> None:
-        """If STT doesn't transcribe within 5s of speech detection, prompt the caller.
+        """If STT doesn't transcribe within N seconds of speech detection, prompt the caller.
 
-        Guards (evaluated after the 5 s sleep, in order):
+        The wait window is state-aware (not a hardcoded 5 s):
+          - extra_slow states (PRESENT_DAYS, PRESENT_TIMES, COLLECT_REASON,
+            CONFIRM_ASSESSMENT): 10 s — caller may still be choosing or thinking
+            after a long option list or detailed explanation.
+          - medium states (phone, name, day, time):  7 s
+          - fast states (greeting, location, confirm yes/no): 5 s
+
+        Guards (evaluated after the sleep, in order):
+          0. TTS currently playing — never interrupt Susie mid-sentence.
+             This was the primary root cause: energy VAD during PRESENT_DAYS
+             playback fired a 5 s recovery that surfaced before the list ended.
           1. Stale flow_step — state has advanced since this recovery was armed.
-          2. Minimum response window — TTS finished fewer than 8 s ago so the
-             caller has not had a realistic window to answer.  Prevents energy
-             VAD noise (shuffle, cough) from triggering a premature re-ask.
-          3. Caller still speaking — last_audio_received_at < 2 s ago.
-          4. LLM busy or main timer running.
+          2. Minimum response window — TTS finished fewer than 8 s ago (belt-and-
+             suspenders backup for Guard 0 in case _tts_playing is momentarily stale).
+          3. Recent engagement — last_engagement_at < 3.5 s ago (extended from 2 s;
+             consistent with the W1 since_audio guard).
+          4. LLM busy or main timer running (transcript already being processed).
           5. STT miss cap — max 2 misses per question (stt_miss_count > 2).
 
         Sequencing fix (prevents double-fire loop):
-          previously _restart_timer() was called BEFORE the phrase played, so:
-            _run() W1 started → on_tts_started() cancelled it (currently_reasking=False)
-            → on_tts_finished() re-armed it → W1 fired again 26 s later.
-          Now: currently_reasking=True while phrase plays (blocks on_tts_started
-          cancel and on_tts_finished re-arm), then _restart_timer() is called AFTER
-          a 5 s TTS-play wait — exactly as _run() does for W1/W2.
+          currently_reasking=True while phrase plays (blocks on_tts_started cancel
+          and on_tts_finished re-arm), then _restart_timer() is called AFTER a 5 s
+          TTS-play wait — exactly as _run() does for W1/W2.
         """
+        # ── State-aware wait window ───────────────────────────────────────────
+        import os as _os_r
+        _env_w1 = _os_r.getenv("SILENCE_WINDOW_1_SEC")
+        if _env_w1:
+            # In test mode the env override shortens W1; keep recovery proportionally
+            # shorter so tests are not blocked by a long recovery sleep.
+            _recovery_wait = max(3.0, float(_env_w1) * 0.20)
+        else:
+            _sess_r = self._get_session() if self._get_session else {}
+            _state_r = (_sess_r or {}).get("state", "")
+            from app.silence_handler import get_silence_threshold as _gst
+            _thresh_r = _gst(_state_r)
+            # Scale: extra_slow (≥30 s) → 10 s; medium (≥26 s) → 7 s; fast → 5 s
+            if _thresh_r >= 30.0:
+                _recovery_wait = 10.0
+            elif _thresh_r >= 26.0:
+                _recovery_wait = 7.0
+            else:
+                _recovery_wait = 5.0
+
         try:
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(_recovery_wait)
         except asyncio.CancelledError:
+            return
+
+        # Guard 0: TTS is currently playing — never fire while Susie is speaking.
+        # on_tts_started() sets _tts_playing=True; on_tts_finished() clears it.
+        # This is the primary fix for energy VAD triggering recovery during long
+        # PRESENT_DAYS / FAQ TTS responses.
+        if self._tts_playing:
+            logger.debug("[ms_silence] recovery: TTS currently playing — suppressed")
             return
 
         # Guard 1: stale flow_step — the flow has advanced since we were armed.
@@ -302,8 +350,7 @@ class SilenceHandler:
                 )
                 return
 
-        # Guard 2: minimum response window — caller must have had ≥8 s after TTS
-        # finished to realistically answer before we can interrupt with a re-ask.
+        # Guard 2: minimum response window — belt-and-suspenders backup for Guard 0.
         # _tts_done_at is 0.0 at call start (no question asked yet); skip guard then.
         if self._tts_done_at > 0 and (time.time() - self._tts_done_at) < 8.0:
             logger.debug(
@@ -312,9 +359,14 @@ class SilenceHandler:
             )
             return
 
-        # Guard 3: caller still actively speaking
-        if time.time() - self.last_audio_received_at < 2.0:
-            logger.debug("[ms_silence] recovery: recent speech (<2s) — suppressing prompt")
+        # Guard 3: recent engagement — extended from 2.0 s to 3.5 s to match the
+        # W1 since_audio guard.  Protects split answers and delayed STT finals.
+        since_engagement = time.time() - self.last_engagement_at
+        if since_engagement < 3.5:
+            logger.debug(
+                "[ms_silence] recovery: recent engagement (%.1fs ago) — suppressing prompt",
+                since_engagement,
+            )
             return
 
         # Guard 4: LLM busy or main timer running (transcript already being processed)
@@ -415,12 +467,34 @@ class SilenceHandler:
             self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
 
     def on_tts_started(self) -> None:
-        """Cancel silence timer before Susie speaks."""
-        # NOTE: _stt_miss_count is intentionally NOT reset here.  It must only
-        # reset when a real caller transcript arrives (on_transcript_received).
-        # Resetting here allowed recovery to loop: miss→TTS starts→reset→miss→repeat.
+        """Track TTS activity and cancel silence/recovery timers before Susie speaks.
+
+        _tts_playing is set unconditionally (even when currently_reasking=True) so
+        _speech_recovery Guard 0 reliably suppresses recovery while the recovery
+        phrase itself is playing — preventing a second recovery firing on top of
+        the first.
+
+        _recovery_task is cancelled when NOT currently_reasking: if TTS is starting
+        for a flow response (not a re-ask), any pending recovery is stale because the
+        flow has already decided to speak again.  Cancelling it here prevents the
+        race where energy VAD fires during Susie's response, a 7-10 s recovery task
+        starts, and the task later fires its prompt after the real response has ended.
+
+        NOTE: _stt_miss_count is intentionally NOT reset here.  It must only
+        reset when a real caller transcript arrives (on_transcript_received).
+        Resetting here allowed recovery to loop: miss→TTS starts→reset→miss→repeat.
+        """
+        self._tts_playing = True  # always track, even during re-ask playback
         if not self.currently_reasking:
             self._cancel_timer()
+            # Cancel stale recovery task — TTS starting without a fresh transcript
+            # means either (a) the flow responded to a previous utterance (recovery
+            # is moot) or (b) energy VAD fired and a recovery task is pending; in
+            # both cases the task would be stale by the time it wakes up.
+            if self._recovery_task and not self._recovery_task.done():
+                self._recovery_task.cancel()
+                self._recovery_task = None
+                logger.debug("[ms_silence] TTS started — recovery task cancelled")
             logger.debug("[ms_silence] TTS started — timer cancelled")
 
     def on_llm_started(self) -> None:
@@ -452,6 +526,9 @@ class SilenceHandler:
         causing a spurious re-ask concatenated with the slot list.
         Never arms if more TTS chunks are queued — prevents stacking re-asks
         after multi-part responses (FAQ answer + re-anchor question)."""
+        # Always clear _tts_playing regardless of other early-return guards.
+        # _speech_recovery Guard 0 depends on this being accurate at all times.
+        self._tts_playing = False
         if self._cancelled:   # Bug 3: stale TTS callbacks must not restart after teardown
             return
         if self.currently_reasking:
@@ -543,9 +620,11 @@ class SilenceHandler:
             self._recovery_task.cancel()
         self._recovery_task              = None
         self.reask_count                 = 0
+        self._stt_miss_count             = 0  # real transcript — reset STT miss counter
         self._consecutive_silence_count  = 0
         self.currently_reasking          = False
         self.last_audio_received_at      = time.time()
+        self.last_engagement_at          = time.time()
         self.last_question               = ""
         self._replay_flow_step           = -1
         logger.info("[ms_silence] transcript — timer cancelled")
@@ -1099,6 +1178,7 @@ class WebSocketCallHandler:
 
         # Each keypress resets the silence timer (caller is actively typing)
         self._silence_handler.last_audio_received_at = time.time()
+        self._silence_handler.last_engagement_at     = time.time()
 
         logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
 

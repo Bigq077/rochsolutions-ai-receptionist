@@ -38,6 +38,20 @@ _STATE_TO_KEY: dict[str, str] = {
     "COLLECT_NAME_RETURNING":  "ask_name",
     "COLLECT_NAME_RESCHEDULE": "ask_name",
     "COLLECT_NAME_CANCEL":     "ask_name",
+    # Day / time slot presentation — extra patient (long option lists)
+    "PRESENT_DAYS":              "present_days",
+    "PRESENT_DAYS_RESCHEDULE":   "present_days",
+    "PRESENT_TIMES":             "present_times",
+    "PRESENT_TIMES_RESCHEDULE":  "present_times",
+    # Reason collection — caller may need time to articulate symptoms
+    "COLLECT_REASON":            "ask_reason",
+    # Post-explanation confirmations — follow long TTS utterances
+    "CONFIRM_ASSESSMENT":        "confirm_assessment",
+    "FAQ_BOOKING_OFFER":         "confirm_assessment",
+    # Booking confirmations
+    "CONFIRM_BOOKING":           "confirm_read_back",
+    "LOOKUP_RESCHEDULE":         "confirm_read_back",
+    "LOOKUP_CANCEL":             "confirm_read_back",
     # Legacy flow states
     # Booking — phone
     "BOOK_PHONE":           "ask_phone",
