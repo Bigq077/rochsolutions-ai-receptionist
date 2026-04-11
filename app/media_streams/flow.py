@@ -4863,7 +4863,22 @@ class FlowEngine:
             }
             _exp_match = any(p in text for p in _PD_EXPLORATORY)
             _exp_has_day = any(w in text.split() for w in _WEEKDAY_WORDS_EXP)
-            if _exp_match and not _exp_has_day:
+            # BUG FIX: also bypass exploratory guard when utterance contains a
+            # calendar ordinal ("23rd", "the 27th") or a month name — these are
+            # specific date/month requests that must reach the _XD_PAT handler or
+            # the month-filter block below.  Without these bypasses, "do you have
+            # anything on the 23rd" / "do you have anything in May" were being
+            # caught here and replaying the day list instead of answering correctly.
+            import re as _re_exp_ord
+            _MONTH_NAMES_EXP = frozenset({
+                "january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november", "december",
+                "jan", "feb", "mar", "apr", "jun", "jul", "aug",
+                "sep", "sept", "oct", "nov", "dec",
+            })
+            _exp_has_ordinal = bool(_re_exp_ord.search(r'\b\d{1,2}(?:st|nd|rd|th)\b', text))
+            _exp_has_month   = any(m in text for m in _MONTH_NAMES_EXP)
+            if _exp_match and not _exp_has_day and not _exp_has_ordinal and not _exp_has_month:
                 _exp_replay = self.session.get("last_question", "Which day would suit you best?")
                 await self._tts.put(_exp_replay)
                 self.session.setdefault("conversation_history", []).append(
@@ -4976,6 +4991,74 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] PRESENT_DAYS: %r not in available_days — offered alternatives",
                         _xd_spoken_date,
+                    )
+                    return
+
+            # ── BARE ORDINAL: "the 23rd", "on the 27th" — no month name given ────
+            # _XD_PAT above requires digit+month (or month+digit).  When the caller
+            # says only a day number we must still look it up deterministically
+            # rather than falling to Haiku which offers the wrong dates.
+            # Strategy: search available_days for a date whose day-of-month matches.
+            # If multiple months contain that day, prefer the earliest one.
+            import re as _re_bo
+            _BO_PAT = _re_bo.search(r'\b(the\s+)?(\d{1,2})(st|nd|rd|th)\b', text, _re_bo.IGNORECASE)
+            if _BO_PAT and not _XD_PAT:
+                _bo_day_n = int(_BO_PAT.group(2))
+                if 1 <= _bo_day_n <= 31:
+                    import datetime as _dt_bo
+                    _bo_all = self.session.get("available_days", [])
+                    _bo_matched = None
+                    for _bo_d in _bo_all:
+                        _bo_str = _bo_d.get("date") or _bo_d.get("datetime", "")
+                        try:
+                            if _dt_bo.date.fromisoformat(_bo_str[:10]).day == _bo_day_n:
+                                _bo_matched = _bo_d
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                    if _bo_matched:
+                        self.session["chosen_day"] = _bo_matched["day_label"]
+                        self.session.setdefault("collected", {})["chosen_day"] = _bo_matched["day_label"]
+                        self.session.pop("days_page", None)
+                        self.session.pop("vague_option_pending", None)
+                        self.session.pop("vague_clarification_asked", None)
+                        self.session.pop("slot_pending_confirmation", None)
+                        _nxt_bo = step["step"] + 1
+                        _nxt_bo_state = (
+                            self._active_flow[_nxt_bo]["state"]
+                            if _nxt_bo < len(self._active_flow) else "DONE"
+                        )
+                        self.session["flow_step"] = _nxt_bo
+                        self.session["state"]     = _nxt_bo_state
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS bare ordinal: %r → %r",
+                            transcript[:40], _bo_matched["day_label"],
+                        )
+                        await self.ask_current_question()
+                        return
+                    # Bare ordinal not found in available_days — say so and offer alternatives
+                    _bo_suffix = (
+                        "st" if _bo_day_n % 10 == 1 and _bo_day_n != 11 else
+                        "nd" if _bo_day_n % 10 == 2 and _bo_day_n != 12 else
+                        "rd" if _bo_day_n % 10 == 3 and _bo_day_n != 13 else
+                        "th"
+                    )
+                    _bo_spoken = f"the {_bo_day_n}{_bo_suffix}"
+                    _bo_alt = _build_day_list_phrase(_bo_all)
+                    _bo_msg = (
+                        f"I'm afraid I don't have {_bo_spoken} available — "
+                        + (_bo_alt.replace("I can do ", "but I can do ", 1)
+                                  .replace("I've got ", "but I've got ", 1)
+                           if _bo_alt else "but let me know which day works for you.")
+                    )
+                    await self._tts.put(_bo_msg)
+                    self.session["last_question"] = _bo_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _bo_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] PRESENT_DAYS: bare ordinal %r not in available_days — offered alternatives",
+                        _bo_spoken,
                     )
                     return
 
