@@ -3749,6 +3749,41 @@ class FlowEngine:
         # Every branch returns — no fallthrough.
         # ════════════════════════════════════════════════════════════════════
         if self.session.get("state") == "CONFIRM_PHONE":
+            # ── BUG 4 fix: PHONE-CORRECTION early-exit ───────────────────────
+            # "no it's a different number" / "no I want to use a different number"
+            # must be caught BEFORE the name-repair check because _NAME_REPAIR
+            # includes "no it's" and "actually it's" which false-fire on phone
+            # correction phrases.  Check alternate-number intent first.
+            _PHONE_CORRECTION_EARLY = (
+                "different number", "another number", "use another",
+                "give you another", "use a different", "use another number",
+                "different phone", "another phone", "give you a different",
+                "use a different number", "different mobile",
+                "no it's a different", "no its a different",
+                "no it is a different", "not that number",
+            )
+            if any(p in text for p in _PHONE_CORRECTION_EARLY):
+                # Route to COLLECT_PHONE step
+                _cp_idx_early = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")),
+                    None,
+                )
+                if _cp_idx_early is not None:
+                    self.session["phone_readback_pending"] = False
+                    self.session.pop("phone_candidate", None)
+                    self.session.pop("phone_number", None)
+                    self.session.pop("phone", None)
+                    self.session.setdefault("collected", {}).pop("phone", None)
+                    self.session["flow_step"] = _cp_idx_early
+                    self.session["state"]     = self._active_flow[_cp_idx_early]["state"]
+                    logger.info(
+                        "[ms_flow] CONFIRM_PHONE BUG4: phone-correction early-exit → %s",
+                        self.session["state"],
+                    )
+                    await self.ask_current_question()
+                    return
+
             # ── NAME-REPAIR: caller says the captured name was wrong ───────────
             # BUG 6 fix: extended to catch more natural name-correction phrases.
             # Must run BEFORE the YES/NO gate so repair utterances are never
@@ -4282,6 +4317,25 @@ class FlowEngine:
                 )
                 return
 
+            # BUG 7 fix: multi-word pause / hold phrases at DETECT_INTENT.
+            # "one second please", "just a moment" etc. must NOT advance the
+            # state or trigger a flow switch — the caller hasn't stated their
+            # intent yet and will speak again in a moment.
+            # Stale state produced by routing "one second please" as general_query
+            # (e.g. wrong flow switch, intent stored) is the bookkeeping bug.
+            _GREETING_PAUSE_PHRASES = (
+                "one second", "one sec", "just a second", "just a moment",
+                "hold on", "bear with me", "two seconds", "give me a second",
+                "give me a moment", "just a minute", "hang on", "two secs",
+                "half a second", "half a moment",
+            )
+            if any(p in text for p in _GREETING_PAUSE_PHRASES):
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: greeting pause %r — "
+                    "holding state, no flow switch", text[:40],
+                )
+                return
+
             intent = self._detect_intent(text)
             self.session["intent"] = intent
             # For general queries, store the original transcript so the LLM
@@ -4695,8 +4749,32 @@ class FlowEngine:
                 "what do you do in",
                 "what do they do in",
                 "what goes on",
+                # BUG 1 fix: short direct inquiry forms missed by phrase list
+                "what exactly is",
+                "what is a physio",
+                "what is an assess",
+                "what is the assess",
+                "what does it involve",
+                "what does it entail",
+                "what will it involve",
+                "what's the assessment",
+                "what is the appointment",
+                "what is a physiotherapy",
+                "what happens in",
+                "what happens at",
             )
-            if any(_p in text for _p in _CA_INQUIRY_PHRASES):
+            # BUG 1 fix: keyword-based fallback — catches any "what … assessment/physio"
+            # form that the phrase list doesn't have verbatim.
+            _ca_is_inquiry = (
+                any(_p in text for _p in _CA_INQUIRY_PHRASES)
+                or (
+                    "what" in text
+                    and any(w in text for w in (
+                        "assessment", "assess", "physio", "physiotherapy",
+                    ))
+                )
+            )
+            if _ca_is_inquiry:
                 _ca_info = (
                     "It's an initial appointment where the clinician talks through what's been "
                     "going on, assesses the issue, and recommends the best next step from there."
@@ -4780,6 +4858,47 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] NEW_OR_RETURNING: clarification request → replaying "
                         "last_question (LLM avoided): %r", _nor_lq[:80],
+                    )
+                    return
+
+            # BUG 2 fix: FAQ / off-topic guard — caller is asking a question,
+            # not answering "new or returning?".  Utterances like "first do you
+            # have any parking in the alcester area" contain "first" which can
+            # substring-match new_patterns or the fuzzy fallback.
+            # If the text has both a question signal AND FAQ vocabulary,
+            # route through FAQ handling and re-ask instead of extracting.
+            _NOR_FAQ_VOCAB = (
+                "parking", "car park", "car-park", "location", "address",
+                "directions", "where are you", "where is", "how do i get",
+                "how much", "cost", "price", "insurance",
+                "opening hours", "what time do you", "are you open",
+                "what services", "do you do", "do you offer",
+            )
+            _nor_q_signals = (
+                "?" in transcript
+                or any(p in text for p in (
+                    "do you", "have you", "is there", "are you",
+                    "can you", "where", "how ", "what time",
+                ))
+            )
+            if _nor_q_signals and any(p in text for p in _NOR_FAQ_VOCAB):
+                _nor_faq_intent = self._detect_intent(text)
+                _nor_faq_intents = {
+                    "faq_hours", "faq_location", "faq_prices",
+                    "faq_insurance", "faq_services", "faq_capability", "general_query",
+                }
+                if _nor_faq_intent in _nor_faq_intents:
+                    await self._handle_mid_flow_interrupt(_nor_faq_intent, transcript)
+                    # Re-ask the new/returning question after answering
+                    _nor_reask = self.session.get("last_question", "")
+                    if _nor_reask:
+                        await self._tts.put(_nor_reask)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _nor_reask}
+                        )
+                    logger.info(
+                        "[ms_flow] NEW_OR_RETURNING: FAQ guard fired (%s) — "
+                        "answered and re-asking", _nor_faq_intent,
                     )
                     return
 
@@ -6161,6 +6280,14 @@ class FlowEngine:
             # Priority: digit > word.  Afternoon indicator shifts word hours < 12.
             # FIX D: Skip direct time matching when the caller is expressing a
             # constraint — "anything later than 1pm" should NOT confirm the 1pm slot.
+            # BUG 6 fix: EXCEPTION — "at five o'clock in the afternoon" is a selection,
+            # not a constraint.  Detect "at [time_word]" pattern and allow direct
+            # matching even when _is_constraint is True.
+            import re as _re_at_sel
+            _has_explicit_at_time = bool(_re_at_sel.search(
+                r'\bat\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b',
+                text,
+            ))
             import re as _re_dt
             _FILLER_DT = (
                 "i said ", "said ", "suits me", "for me", "that works",
@@ -6175,7 +6302,12 @@ class FlowEngine:
             _avail_dt  = self.session.get("available_days", [])
             _chosen_dt = self.session.get("chosen_day", "")
             _target_dt = _find_chosen_day_entry(_avail_dt, _chosen_dt)
-            if _target_dt and _target_dt.get("slots") and not _is_constraint:
+            # Allow direct-time matching when caller says "at [time]" even if a
+            # broad period word (afternoon/morning) also appears — that is a
+            # selection ("at five in the afternoon"), not a constraint.
+            if _target_dt and _target_dt.get("slots") and (
+                not _is_constraint or _has_explicit_at_time
+            ):
                 _slot_times_dt = _target_dt.get("slot_times", [])
                 _matched_hour: Optional[int] = None
 
@@ -7617,9 +7749,86 @@ class FlowEngine:
                 "book me in", "book me",
                 "it's booking", "are you booking",
                 "you're booking me", "you are booking me",
+                # BUG 3 fix: meta/repair utterances that STT returns as if they were names
+                "you repeat", "you're repeating", "you are repeating",
+                "can you say", "need you to", "you need to",
+                "do you need help", "need help spelling",
             )
-            if any(p in (text or "").lower() for p in _NAME_NOISE_PHRASES):
+            _noise_hit = next(
+                (p for p in _NAME_NOISE_PHRASES if p in (text or "").lower()), None
+            )
+            if _noise_hit:
                 _frag_cn = self.session.get("name_fragment")
+                # BUG 3 fix: before re-asking, try to salvage the leading word/token
+                # from utterances like "slater do you need help spelling that" where
+                # the name appears before the noise phrase.
+                _noise_salvaged = None
+                if not _frag_cn:
+                    # First-name phase: extract leading alphabetic token before noise
+                    import re as _re_noise_sv
+                    _noise_pos = (text or "").lower().find(_noise_hit)
+                    if _noise_pos > 0:
+                        _pre_noise = (text or "")[:_noise_pos].strip()
+                        _sv_toks = _re_noise_sv.findall(r"[a-zA-Z'\-]{2,}", _pre_noise)
+                        _CN_FW_SV = frozenset({
+                            "my", "the", "a", "an", "is", "am", "it", "its",
+                            "name", "first", "surname", "last", "call", "called",
+                        })
+                        _sv_clean = [t for t in _sv_toks if t.lower() not in _CN_FW_SV]
+                        if len(_sv_clean) == 1:
+                            _noise_salvaged = _sv_clean[0].title()
+                elif _frag_cn:
+                    # Surname phase: same leading-token salvage
+                    import re as _re_noise_sv2
+                    _noise_pos2 = (text or "").lower().find(_noise_hit)
+                    if _noise_pos2 > 0:
+                        _pre_noise2 = (text or "")[:_noise_pos2].strip()
+                        _sv_toks2 = _re_noise_sv2.findall(r"[a-zA-Z'\-]{2,}", _pre_noise2)
+                        _CN_FW_SV2 = frozenset({
+                            "my", "the", "a", "an", "is", "am", "it", "its",
+                            "name", "first", "surname", "last",
+                        })
+                        _sv_clean2 = [t for t in _sv_toks2 if t.lower() not in _CN_FW_SV2]
+                        if len(_sv_clean2) == 1:
+                            _noise_salvaged = _sv_clean2[0].title()
+                if _noise_salvaged:
+                    if _frag_cn:
+                        # Combine first name + salvaged surname via spelling-confirm
+                        self.session["spelling_confirm_surname"] = _noise_salvaged
+                        _spaced_sv = " ".join(list(_noise_salvaged.upper()))
+                        _sv_readback = (
+                            f"I've got that as {_spaced_sv}. "
+                            "If you'd like to correct it, you can spell it out for me."
+                        )
+                        await self._tts.put(_sv_readback)
+                        self.session["last_question"] = _sv_readback
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sv_readback}
+                        )
+                        logger.info(
+                            "[ms_flow] COLLECT_NAME: noise salvage (surname) %r → "
+                            "spelling-confirm substate", _noise_salvaged,
+                        )
+                        return
+                    else:
+                        # Store salvaged token as first-name fragment and ask for surname
+                        while not self._tts.empty():
+                            try:
+                                self._tts.get_nowait()
+                            except Exception:
+                                break
+                        self.session["name_fragment"] = _noise_salvaged
+                        _sv_sn_q = "And what's your surname?"
+                        await self._tts.put(_sv_sn_q)
+                        self.session["last_question"] = _sv_sn_q
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sv_sn_q}
+                        )
+                        logger.info(
+                            "[ms_flow] COLLECT_NAME: noise salvage (first name) %r → "
+                            "asking for surname", _noise_salvaged,
+                        )
+                        return
                 _noise_re = (
                     "And what's your surname?"
                     if _frag_cn
@@ -7844,6 +8053,31 @@ class FlowEngine:
                             self.session.setdefault("conversation_history", []).append(
                                 {"role": "assistant", "content": _sn_retry}
                             )
+                        return
+                    # BUG 5 fix: very short surnames (≤ 3 chars) are often STT
+                    # fragments of a longer name (e.g. "hew" from "Hewitson").
+                    # Enter the spelling-confirm substate instead of finalising
+                    # immediately so the caller can correct if needed.
+                    if (
+                        len(answer) <= 3
+                        and answer.isalpha()
+                        and not self.session.get("spelling_confirm_surname")
+                    ):
+                        self.session["spelling_confirm_surname"] = answer.title()
+                        _spaced_short = " ".join(list(answer.upper()))
+                        _short_readback = (
+                            f"I've got that as {_spaced_short}. "
+                            "Is that correct, or would you like to spell it out?"
+                        )
+                        await self._tts.put(_short_readback)
+                        self.session["last_question"] = _short_readback
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _short_readback}
+                        )
+                        logger.info(
+                            "[ms_flow] COLLECT_NAME: short surname %r → "
+                            "spelling-confirm substate", answer,
+                        )
                         return
                     answer = f"{_frag} {answer}".title()
                     self.session.pop("name_fragment", None)
@@ -9850,6 +10084,20 @@ class FlowEngine:
                         )
                         return "returning"
             # Fuzzy fallback for new_or_returning
+            # BUG 2 fix: skip fuzzy entirely if the utterance looks like a question
+            # (contains a question signal or FAQ vocabulary) — the partial_ratio
+            # algorithm can match "first time" against "first do you have any parking"
+            # because it finds "first" as a shared substring with a high score.
+            _nor_skip_fuzzy = (
+                "?" in raw
+                or any(p in text for p in (
+                    "do you", "have you", "is there", "are you", "can you",
+                    "where", "how ", "what time", "parking", "location",
+                    "address", "opening", "insurance", "cost", "price",
+                ))
+            )
+            if _nor_skip_fuzzy:
+                return None
             new_fuzzy = [
                 "not been", "never been", "first time",
                 "have not", "haven't been", "new patient",
@@ -9858,10 +10106,10 @@ class FlowEngine:
                 "been before", "been there", "have been",
                 "visited before", "existing patient",
             ]
-            if _fuzzy_match(text, new_fuzzy, threshold=75):
+            if _fuzzy_match(text, new_fuzzy, threshold=85):
                 logger.info("[ms_extract] fuzzy new: '%s'", text)
                 return "new"
-            if _fuzzy_match(text, returning_fuzzy, threshold=75):
+            if _fuzzy_match(text, returning_fuzzy, threshold=85):
                 logger.info("[ms_extract] fuzzy returning: '%s'", text)
                 return "returning"
             return None
