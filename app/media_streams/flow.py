@@ -1339,7 +1339,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 2,
         "state": "COLLECT_PHONE",
-        "question": "And the best number to reach you on?",
+        "question": "Could you type the number your booking was made under?",
         "answer_field": "phone_number",
         "use_llm": False,
         "extract": "phone",
@@ -1493,7 +1493,7 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     {
         "step": 2,
         "state": "COLLECT_PHONE",
-        "question": "And the best number to reach you on?",
+        "question": "Could you type the number your booking was made under?",
         "answer_field": "phone_number",
         "use_llm": False,
         "extract": "phone",
@@ -3169,24 +3169,61 @@ class FlowEngine:
             import re as _re_hg
 
             # ── Keypad-first mode: voice received while awaiting DTMF ────────
-            # When phone_awaiting_dtmf=True, caller was asked to use keypad.
-            # If they speak digits instead, clear the flag and proceed normally.
-            # If they speak non-digit content, offer the voice-fallback prompt.
+            # Priority order:
+            #  1. Buffer already has ≥10 digits → finalize it (ignore what was spoken).
+            #  2. Keypad-progress phrase ("I'm typing it in", "I'm finished") → stay silent.
+            #  3. Caller spoke actual digits → fall through to voice processing.
+            #  4. Non-digit non-keypad speech → voice fallback.
             if self.session.get("phone_awaiting_dtmf"):
-                _dtmf_check = _re_hg.sub(r"\D", "", text or "")
-                self.session["phone_awaiting_dtmf"] = False
-                self.session["phone_dtmf_buffer"]   = ""
-                if len(_dtmf_check) < 5:
-                    # Non-digit speech — tell caller to say the full number
-                    _voice_fb = "If you'd rather say it, please say the full number from the beginning."
-                    await self._tts.put(_voice_fb)
-                    self.session["last_question"] = _voice_fb
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _voice_fb}
+                _existing_buf = self.session.get("phone_dtmf_buffer", "")
+                _buf_digits   = _re_hg.sub(r"\D", "", _existing_buf)
+                _dtmf_check   = _re_hg.sub(r"\D", "", text or "")
+                # Phrases the caller uses to narrate keypad activity — not phone digits
+                _KP_PHRASES = (
+                    "typing it in", "typing in", "i'm typing", "im typing", "i am typing",
+                    "just typed", "finished typing", "i've typed", "ive typed",
+                    "typed it in", "typed in", "done typing",
+                    "on the keypad", "on the key pad", "keypad now", "key pad now",
+                    "just entered", "i'm finished", "im finished", "just finished",
+                    "already typed", "just pressed",
+                )
+                _is_kp_phrase = any(p in (text or "").lower() for p in _KP_PHRASES)
+                if len(_buf_digits) >= 10:
+                    # Buffer holds a completable number — finalize regardless of speech.
+                    # Pad to 11 digits with a leading 0 if the caller omitted it.
+                    _finalized = ("0" + _buf_digits) if len(_buf_digits) == 10 else _buf_digits[:11]
+                    self.session["phone_awaiting_dtmf"] = False
+                    self.session["phone_dtmf_buffer"]   = ""
+                    # Inject the buffered digits as the text so the hard gate processes them
+                    text       = _finalized
+                    transcript = _finalized
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: %s with %d-digit buffer → finalizing as %r",
+                        "keypad-phrase" if _is_kp_phrase else "voice-while-DTMF",
+                        len(_buf_digits), _finalized,
                     )
-                    logger.info("[ms_flow] COLLECT_PHONE: voice received while awaiting DTMF — voice fallback")
+                    # Fall through to hard gate
+                elif _is_kp_phrase:
+                    # Caller is narrating keypad activity but hasn't typed enough digits yet
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: keypad-progress %r (buf=%r) — staying in keypad mode",
+                        (text or "")[:50], _existing_buf,
+                    )
                     return
-                # Caller spoke digits — fall through to normal voice processing
+                else:
+                    self.session["phone_awaiting_dtmf"] = False
+                    self.session["phone_dtmf_buffer"]   = ""
+                    if len(_dtmf_check) < 5:
+                        # Non-digit speech — tell caller to say the full number
+                        _voice_fb = "If you'd rather say it, please say the full number from the beginning."
+                        await self._tts.put(_voice_fb)
+                        self.session["last_question"] = _voice_fb
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _voice_fb}
+                        )
+                        logger.info("[ms_flow] COLLECT_PHONE: voice received while awaiting DTMF — voice fallback")
+                        return
+                    # Caller spoke digits — fall through to normal voice processing
 
             # Slice to post-restart substring — discard digits before the final
             # restart marker so "07502 sorry actually start again 07502" captures
@@ -6707,7 +6744,9 @@ class FlowEngine:
         # _extract("name") rejects "is" and returns None for these compounds.
         # Parse them explicitly before any further guards run.
         # (_COLLECT_NAME_STATES_STRIP defined above has the same four states)
-        if step["state"] in _COLLECT_NAME_STATES_STRIP and answer is None and not self.session.get("name_fragment"):
+        # Gate: runs even when name_fragment is set so a caller who cleanly volunteers
+        # "my first name is X and my surname is Y" overrides any stale junk fragment.
+        if step["state"] in _COLLECT_NAME_STATES_STRIP and answer is None:
             import re as _re_split_fn
             _split_m = _re_split_fn.search(
                 r'first\s+name\s+is\s+([a-z][a-z\-\']+)'
@@ -6718,9 +6757,12 @@ class FlowEngine:
                 _sp_fn = _split_m.group(1).strip().title()
                 _sp_sn = _split_m.group(2).strip().title()
                 answer = f"{_sp_fn} {_sp_sn}"
+                _stale_frag = self.session.pop("name_fragment", None)
+                self.session.pop("spelling_confirm_surname", None)
                 logger.info(
-                    "[ms_flow] COLLECT_NAME: split-name fallback %r → %r",
+                    "[ms_flow] COLLECT_NAME: split-name fallback %r → %r%s",
                     text[:60], answer,
+                    f" (cleared stale fragment {_stale_frag!r})" if _stale_frag else "",
                 )
 
         # ── PRESENT_DAYS: nullify extracted day on mixed-intent turns ─────────
@@ -6827,12 +6869,15 @@ class FlowEngine:
                 "yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure", "fine",
                 "works", "work", "sorry", "what", "well", "now", "just",
                 "like", "said", "please", "right", "wrong", "the", "a", "an",
-                # BUG 1: domain / context words that STT emits mid-call as fragments
+                # Domain / context words that STT emits mid-call as fragments
                 "clinic", "clinics", "therapy", "therapist", "physio",
                 "physiotherapy", "reception", "receptionist", "appointment",
                 "appointments", "booking", "bookings", "health", "redditch",
                 "alcester", "doctor", "service", "services", "number",
                 "here", "there", "today", "tomorrow", "next", "last",
+                # Ultra-short STT noise — word-end fragments and filler sounds
+                # that can never be standalone first names (e.g. "ic" from "telephonic")
+                "ic", "ck", "ng", "nk", "uh", "um", "er", "ah", "hm", "mm", "eh",
             })
             if answer.lower() in _FRAGMENT_REJECT:
                 _cn_pending = self.session.get("last_question", "And what's your first name please?")
