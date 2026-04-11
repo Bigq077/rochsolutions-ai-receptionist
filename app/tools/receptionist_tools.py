@@ -1549,22 +1549,12 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                 policy_number=policy or None,
             )
 
-        # Email: use whatever was collected in session; otherwise synthesise a
-        # placeholder from the caller's phone number so Acuity's required-email
-        # constraint is satisfied without asking the caller to spell it out.
-        _email_domain = _os.getenv("BOOKING_PLACEHOLDER_EMAIL_DOMAIN", "theorem-health.com")
-        _caller_email = (
-            session.get("email")
-            or (session.get("collected") or {}).get("email")
+        # Email: fixed address used for all bookings.
+        _caller_email = "julienroch56@gmail.com"
+        logger.info(
+            "_book_appointment_acuity: using fixed booking email %r",
+            _caller_email,
         )
-        if not _caller_email:
-            import re as _re_email
-            _phone_digits = _re_email.sub(r"\D", "", phone) or "unknown"
-            _caller_email = f"voicebooking+{_phone_digits}@{_email_domain}"
-            logger.info(
-                "_book_appointment_acuity: no caller email — using placeholder %r",
-                _caller_email,
-            )
 
         request = BookingRequest(
             appointment_type_id=appointment_type_id,
