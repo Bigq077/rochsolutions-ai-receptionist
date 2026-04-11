@@ -4894,10 +4894,20 @@ class FlowEngine:
             # Run before _PD_NONE so "none of those, what about the 25th of April?"
             # is handled as an explicit date request, not a page-advance.
             import re as _re_xd
+            # Two-pattern explicit date regex.  The old single pattern
+            # r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)\b'
+            # was broken for "23rd of april": (?:of\s+)? is optional so
+            # [a-zA-Z]+ captured "of" instead of "april", making _xd_month_n=None
+            # and silently skipping the whole date lookup while leaving _XD_PAT
+            # truthy (which in turn blocked the bare-ordinal fallback).
+            # Fix: anchor group 2 to an explicit month-name alternation.
+            _XD_MONTH_ALT = (
+                r'january|february|march|april|may|june|july|august|september|october|november|december'
+                r'|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec'
+            )
             _XD_PAT = _re_xd.search(
-                r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)\b'
-                r'|\b(january|february|march|april|may|june|july|august|september|october|november|december'
-                r'|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+                r'\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+|\s+)(' + _XD_MONTH_ALT + r')\b'
+                r'|\b(' + _XD_MONTH_ALT + r')\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
                 transcript, _re_xd.IGNORECASE,
             )
             if _XD_PAT:
@@ -5097,7 +5107,11 @@ class FlowEngine:
             )
             _pd_all = self.session.get("available_days", [])
 
-            if any(p in text for p in _PD_NONE) or any(p in text for p in _PD_LATER):
+            # Month-guard: "none of those, do you have anything in May" must reach
+            # the month filter, not the page-advance logic.  If a month name is
+            # present in the utterance we skip page-navigation entirely so the
+            # month filter (further below) can run.
+            if (any(p in text for p in _PD_NONE) or any(p in text for p in _PD_LATER)) and not _exp_has_month:
                 # Caller is browsing past the currently-offered set — any month-
                 # filtered overlay is no longer the active offer.
                 self.session.pop("_pd_month_filtered", None)
@@ -5164,6 +5178,8 @@ class FlowEngine:
             # weekday guard prevents it from mapping to day[0].
             # Date-ordinal guard: "the 21st works for me" must NOT bind to day[0] —
             # specific calendar dates should fall through to the date matcher.
+            # Month-name guard: "yeah i was asking do you have any slots in may" must NOT
+            # bind as YES — the month intent must reach the month filter below.
             _ORDINAL_SKIP = {"first", "second", "third", "last", "final", "middle"}
             import re as _re_dordn
             _has_date_ordinal = bool(_re_dordn.search(r'\b\d{1,2}(?:st|nd|rd|th)\b', text))
@@ -5171,6 +5187,7 @@ class FlowEngine:
                 not any(w in _ORDINAL_SKIP for w in text.split())
                 and not any(w in _WEEKDAY_WORDS for w in text.split())
                 and not _has_date_ordinal
+                and not _exp_has_month
                 and any(p in text for p in _PD_YES)
             )
             logger.info(
@@ -5453,6 +5470,150 @@ class FlowEngine:
                     "[ms_flow] PRESENT_TIMES stale guard fired: slot_confirmed=%s slot_pending=%s — skipping",
                     self.session.get("slot_confirmed"), self.session.get("slot_pending_confirmation"),
                 )
+                return
+
+            # ── MONTH / EXPLICIT-DATE ESCAPE ─────────────────────────────────
+            # If the caller says a month name ("in May") or a specific date
+            # ("the 27th of April") while inside PRESENT_TIMES, they are asking
+            # to change the selected day.  We must exit the current-day slot
+            # context immediately and route back to date-search logic rather
+            # than re-speaking the current day's time slots.
+            # Priority: explicit date > month > fall through to slot selection.
+            import re as _re_pt_esc, datetime as _dt_pt_esc
+            _PT_ESC_MONTH_MAP = {
+                "january": 1, "february": 2, "march": 3, "april": 4,
+                "may": 5, "june": 6, "july": 7, "august": 8,
+                "september": 9, "october": 10, "november": 11, "december": 12,
+                "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+                "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+            }
+            _PT_ESC_MONTH_ALT = (
+                r'january|february|march|april|may|june|july|august|september|october|november|december'
+                r'|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec'
+            )
+            _pt_esc_xd = _re_pt_esc.search(
+                r'\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+|\s+)(' + _PT_ESC_MONTH_ALT + r')\b'
+                r'|\b(' + _PT_ESC_MONTH_ALT + r')\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+                transcript, _re_pt_esc.IGNORECASE,
+            )
+            _pt_esc_month_hit = next((m for m in _PT_ESC_MONTH_MAP if m in text), None)
+            # Only treat a bare month name as an escape signal if:
+            # - there is NO time-like token in the utterance (avoids "nine in the morning"
+            #   firing on "morning" or "may" appearing in "that may work")
+            # - or an explicit date pattern also matched
+            _pt_esc_has_time_token = bool(_re_pt_esc.search(
+                r'\b(?:\d{1,2}(?::\d{2})?(?:\s*[ap]m)?|o\'?clock|morning|afternoon|evening|noon|lunchtime)\b',
+                text, _re_pt_esc.IGNORECASE,
+            ))
+            _pt_esc_trigger = _pt_esc_xd or (
+                _pt_esc_month_hit and not _pt_esc_has_time_token
+                # also exclude "that may work" / "may be" false positives
+                and _pt_esc_month_hit != "may" or (
+                    _pt_esc_month_hit == "may"
+                    and any(p in text for p in ("in may", "for may", "any may", "the month of may", "slots in may", "dates in may"))
+                )
+            )
+            if _pt_esc_trigger:
+                # Clear current-day selection state
+                self.session.pop("chosen_day", None)
+                self.session.pop("selected_slot", None)
+                self.session.pop("selected_slot_speech", None)
+                self.session.pop("slot_pending_confirmation", None)
+                self.session.pop("offered_constrained_times", None)
+                self.session.pop("offered_constrained_slots", None)
+                self.session.pop("_pd_month_filtered", None)
+                # Drain stale TTS
+                while not self._tts.empty():
+                    try:
+                        self._tts.get_nowait()
+                    except Exception:
+                        break
+                # Step back to the PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE step
+                _pt_esc_pd_step = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")),
+                    max(0, step["step"] - 1),
+                )
+                self.session["flow_step"] = _pt_esc_pd_step
+                self.session["state"]     = self._active_flow[_pt_esc_pd_step]["state"]
+                _pt_esc_avail = self.session.get("available_days", [])
+                # Handle inline: explicit date → jump directly; month → filter
+                if _pt_esc_xd:
+                    # Explicit date: resolve day+month groups
+                    if _pt_esc_xd.group(1):
+                        _pt_xd_day_n  = int(_pt_esc_xd.group(1))
+                        _pt_xd_month_s = _pt_esc_xd.group(2).lower()
+                    else:
+                        _pt_xd_day_n  = int(_pt_esc_xd.group(4))
+                        _pt_xd_month_s = _pt_esc_xd.group(3).lower()
+                    _pt_xd_month_n = _PT_ESC_MONTH_MAP.get(_pt_xd_month_s[:3]) or _PT_ESC_MONTH_MAP.get(_pt_xd_month_s)
+                    if _pt_xd_month_n:
+                        _pt_xd_day_re = _re_pt_esc.compile(r'(?<!\d)' + str(_pt_xd_day_n) + r'(?!\d)')
+                        _pt_xd_abbr   = {1:"jan",2:"feb",3:"mar",4:"apr",5:"may",6:"jun",
+                                          7:"jul",8:"aug",9:"sep",10:"oct",11:"nov",12:"dec"}[_pt_xd_month_n]
+                        _pt_xd_matched = next(
+                            (d for d in _pt_esc_avail
+                             if _pt_xd_day_re.search(d.get("day_label","").lower())
+                             and (_pt_xd_abbr in d.get("day_label","").lower()
+                                  or _pt_xd_month_s[:3] in d.get("day_label","").lower())),
+                            None,
+                        )
+                        if _pt_xd_matched:
+                            self.session["chosen_day"] = _pt_xd_matched["day_label"]
+                            self.session.setdefault("collected", {})["chosen_day"] = _pt_xd_matched["day_label"]
+                            self.session["flow_step"] = _pt_esc_pd_step + 1
+                            self.session["state"]     = self._active_flow[_pt_esc_pd_step + 1]["state"]
+                            logger.info(
+                                "[ms_flow] PRESENT_TIMES escape: explicit date %r → %r (advancing to slots)",
+                                transcript[:40], _pt_xd_matched["day_label"],
+                            )
+                            await self.ask_current_question()
+                            return
+                    # Explicit date not found — fall through to month filter below
+                if _pt_esc_month_hit:
+                    _pt_esc_target_month = _PT_ESC_MONTH_MAP[_pt_esc_month_hit]
+                    _pt_esc_filtered = []
+                    for _pt_esc_d in _pt_esc_avail:
+                        _pt_esc_ds = _pt_esc_d.get("date") or _pt_esc_d.get("datetime", "")
+                        try:
+                            if _dt_pt_esc.date.fromisoformat(_pt_esc_ds[:10]).month == _pt_esc_target_month:
+                                _pt_esc_filtered.append(_pt_esc_d)
+                        except (ValueError, TypeError):
+                            pass
+                    if _pt_esc_filtered:
+                        _pt_esc_phrase = _build_day_list_phrase(_pt_esc_filtered)
+                        await self._tts.put(_pt_esc_phrase)
+                        self.session["last_question"] = _pt_esc_phrase
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _pt_esc_phrase}
+                        )
+                        self.session["days_page"] = 0
+                        self.session["_pd_month_filtered"] = _pt_esc_filtered
+                        logger.info(
+                            "[ms_flow] PRESENT_TIMES escape: month=%r → %d day(s) in %s offered",
+                            _pt_esc_month_hit, len(_pt_esc_filtered), _pt_esc_month_hit.capitalize(),
+                        )
+                        return
+                    else:
+                        _pt_esc_no_msg = (
+                            f"I'm afraid I don't have any availability in "
+                            f"{_pt_esc_month_hit.capitalize()} right now. "
+                            "Would you like to hear the next available dates instead?"
+                        )
+                        await self._tts.put(_pt_esc_no_msg)
+                        self.session["last_question"] = _pt_esc_no_msg
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _pt_esc_no_msg}
+                        )
+                        logger.info(
+                            "[ms_flow] PRESENT_TIMES escape: month=%r — no days found",
+                            _pt_esc_month_hit,
+                        )
+                        return
+                # If we reach here (XD matched but not in availability, no month hit),
+                # fall through to normal PRESENT_DAYS routing by returning — the
+                # flow_step is already set back to PRESENT_DAYS.
+                await self.ask_current_question()
                 return
 
             # ── FIRST-CHECK: single-slot confirm YES/NO ──────────────────────
