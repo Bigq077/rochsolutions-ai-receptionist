@@ -5933,12 +5933,29 @@ class FlowEngine:
                         _dir_later = any(w in text for w in (
                             "later", "further", "end of", "towards the end",
                             "toward the end", "latter", "rest of", "other end",
+                            "late ",  # "late April" — trailing space avoids matching "later"
                         ))
                         _dir_earlier = any(w in text for w in (
                             "earlier in", "start of", "beginning of", "early",
                         ))
+                        _dir_mid = (
+                            not _dir_later and not _dir_earlier
+                            and any(w in text for w in (
+                                "mid ", "mid-", "middle of", "midway",
+                                "halfway through", "half way through",
+                            ))
+                        )
                         _dir_slice: list = []
-                        if _dir_later or _dir_earlier:
+                        if _dir_mid:
+                            # "mid April" / "middle of April" → middle third of month
+                            _n_fd = len(_filtered_days)
+                            _third = max(1, _n_fd // 3)
+                            _dir_slice = (
+                                _filtered_days[_third: _third * 2]
+                                or _filtered_days[_n_fd // 3:]
+                                or _filtered_days
+                            )
+                        elif _dir_later or _dir_earlier:
                             # Determine directional anchor:
                             # 1. last_requested_date if in target month
                             # 2. last offered cluster's last/first date in month
@@ -6016,7 +6033,7 @@ class FlowEngine:
                         self.session["_pd_month_filtered"] = _mf_days
                         logger.info(
                             "[ms_flow] PRESENT_DAYS month filter: dir=%s %d/%d days for month=%d",
-                            ("later" if _dir_later else "earlier" if _dir_earlier else "any"),
+                            ("mid" if _dir_mid else "later" if _dir_later else "earlier" if _dir_earlier else "any"),
                             len(_mf_days), len(_pd_all), _target_month,
                         )
                         return
@@ -6328,12 +6345,28 @@ class FlowEngine:
                         _pt_esc_dir_later = any(w in text for w in (
                             "later", "further", "end of", "towards the end",
                             "toward the end", "latter", "rest of", "other end",
+                            "late ",  # "late April" — trailing space avoids matching "later"
                         ))
                         _pt_esc_dir_earlier = any(w in text for w in (
                             "earlier in", "start of", "beginning of", "early",
                         ))
+                        _pt_esc_dir_mid = (
+                            not _pt_esc_dir_later and not _pt_esc_dir_earlier
+                            and any(w in text for w in (
+                                "mid ", "mid-", "middle of", "midway",
+                                "halfway through", "half way through",
+                            ))
+                        )
                         _pt_esc_dir_slice: list = []
-                        if _pt_esc_dir_later or _pt_esc_dir_earlier:
+                        if _pt_esc_dir_mid:
+                            _n_pe = len(_pt_esc_filtered)
+                            _third_pe = max(1, _n_pe // 3)
+                            _pt_esc_dir_slice = (
+                                _pt_esc_filtered[_third_pe: _third_pe * 2]
+                                or _pt_esc_filtered[_n_pe // 3:]
+                                or _pt_esc_filtered
+                            )
+                        elif _pt_esc_dir_later or _pt_esc_dir_earlier:
                             _pt_esc_anchor = None
                             _lrd_pe = self.session.get("last_requested_date")
                             if _lrd_pe:
@@ -6377,7 +6410,7 @@ class FlowEngine:
                         logger.info(
                             "[ms_flow] PRESENT_TIMES escape: month=%r dir=%s → %d day(s) offered",
                             _pt_esc_month_hit,
-                            ("later" if _pt_esc_dir_later else "earlier" if _pt_esc_dir_earlier else "any"),
+                            ("mid" if _pt_esc_dir_mid else "later" if _pt_esc_dir_later else "earlier" if _pt_esc_dir_earlier else "any"),
                             len(_pt_esc_offer),
                         )
                         return
@@ -6697,6 +6730,11 @@ class FlowEngine:
                 "afternoon then", "any afternoon slots", "any morning slots",
                 "in the afternoon", "in the morning",
                 "anything in the afternoon", "anything in the morning",
+                # "anything else that day" — remaining slots on same day
+                "anything else that day", "anything else on that day",
+                "anything else available", "what else do you have",
+                "any other times", "any other slots",
+                "other times on that day", "other slots on that day",
             )
             _is_constraint = any(p in text for p in _CONSTRAINT_GUARD)
 
@@ -7018,6 +7056,13 @@ class FlowEngine:
                 _wants_earlier = any(p in text for p in (
                     "earlier", "before", "morning",
                 ))
+                # "anything else that day" — remaining/all slots on same day
+                _wants_remaining = any(p in text for p in (
+                    "anything else that day", "anything else on that day",
+                    "anything else available", "what else do you have",
+                    "any other times", "any other slots",
+                    "other times on that day", "other slots on that day",
+                ))
                 # Period-only: no explicit "later than N" — just "afternoon" / "morning"
                 _wants_afternoon_period = (
                     "afternoon" in text
@@ -7087,6 +7132,11 @@ class FlowEngine:
                                     _filtered_slots.append(_all_slots_ct[_ci])
                         except (ValueError, IndexError):
                             pass
+                elif _wants_remaining:
+                    # "anything else that day?" — slots beyond first page (index 4+)
+                    # If none remain, empty list → "no matching times" branch below
+                    _filtered_times = _all_times_ct[4:]
+                    _filtered_slots = _all_slots_ct[4:]
                 elif _presented_ct:
                     # No explicit hour — "anything later" / "something earlier"
                     # relative to the times we already presented.
