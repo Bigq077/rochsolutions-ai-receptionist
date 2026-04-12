@@ -5737,6 +5737,67 @@ class FlowEngine:
             import re as _re_bo
             _BO_PAT = _re_bo.search(r'\b(the\s+)?(\d{1,2})(st|nd|rd|th)\b', text, _re_bo.IGNORECASE)
             if _BO_PAT and not _XD_PAT:
+                # ── CANDIDATE-PAIR: "the 3rd or the 4th", "3rd or 4th" ───────
+                # When 2+ bare ordinals are joined by "or"/"and", resolve each
+                # against available_days and respond grounded to what's available.
+                _cp_all_days = _re_bo.findall(
+                    r'\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b', text, _re_bo.IGNORECASE,
+                )
+                if len(_cp_all_days) >= 2 and any(w in text for w in (" or ", " and ")):
+                    import datetime as _dt_cp
+                    _cp_avail  = self.session.get("available_days", [])
+                    _cp_matched: list = []
+                    _cp_tried:  list = []
+                    for _cp_ds in _cp_all_days[:3]:
+                        _cp_dn = int(_cp_ds)
+                        if 1 <= _cp_dn <= 31 and _cp_dn not in _cp_tried:
+                            _cp_tried.append(_cp_dn)
+                            for _cp_d in _cp_avail:
+                                _cp_str = _cp_d.get("date") or _cp_d.get("datetime", "")
+                                try:
+                                    if _dt_cp.date.fromisoformat(_cp_str[:10]).day == _cp_dn:
+                                        _cp_matched.append(_cp_d)
+                                        break
+                                except (ValueError, TypeError):
+                                    pass
+                    if len(_cp_matched) == 1:
+                        # Exactly one candidate is available — bind it directly
+                        _cp_entry = _cp_matched[0]
+                        self.session["chosen_day"] = _cp_entry["day_label"]
+                        self.session.setdefault("collected", {})["chosen_day"] = _cp_entry["day_label"]
+                        self.session["last_requested_date"] = _cp_entry.get("date", "")
+                        self.session.pop("days_page", None)
+                        self.session.pop("slot_pending_confirmation", None)
+                        _nxt_cp = step["step"] + 1
+                        _nxt_cp_st = (
+                            self._active_flow[_nxt_cp]["state"]
+                            if _nxt_cp < len(self._active_flow) else "DONE"
+                        )
+                        self.session["flow_step"] = _nxt_cp
+                        self.session["state"]     = _nxt_cp_st
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS candidate-pair: 1 available → %r",
+                            _cp_entry["day_label"],
+                        )
+                        await self.ask_current_question()
+                        return
+                    elif len(_cp_matched) >= 2:
+                        # Multiple candidates available — offer the ones we have
+                        _cp_phrase = _build_day_list_phrase(_cp_matched[:2])
+                        await self._tts.put(_cp_phrase)
+                        self.session["last_question"] = _cp_phrase
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _cp_phrase}
+                        )
+                        self.session["days_page"]          = 0
+                        self.session["_pd_month_filtered"] = _cp_matched[:2]
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS candidate-pair: %d available → offered both",
+                            len(_cp_matched),
+                        )
+                        return
+                    # else: none of the candidates available — fall through to
+                    # single-ordinal not-found path which offers alternatives
                 _bo_day_n = int(_BO_PAT.group(2))
                 if 1 <= _bo_day_n <= 31:
                     import datetime as _dt_bo
