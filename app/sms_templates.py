@@ -7,7 +7,9 @@ build_sms(session) is the single entry point — takes a full session dict
 and returns a TTS-ready SMS body string.
 """
 import os
+import re
 import urllib.parse
+from datetime import datetime
 
 CLINIC_NAME    = os.getenv("CLINIC_NAME",    "the clinic")   # MARK_REVIEW
 CLINIC_ADDRESS = os.getenv("CLINIC_ADDRESS", "")              # MARK_REVIEW
@@ -45,14 +47,14 @@ def build_sms(session: dict) -> str:
     """
     Build the booking confirmation SMS body from a session dict.
 
-    Adapted field names (from pre-task audit):
-      - patient name  → session["collected"]["name"]   (first word only)
-      - appointment   → session["selected_slot_label"] (e.g. "Friday 18 July at 2:30pm")
-      - first visit   → session["collected"]["patient_type"] == "NEW"
+    Slot resolution order:
+      1. session["selected_slot"]        — ISO datetime, always set by live flow
+      2. session["selected_slot_speech"] — human-readable, always set by live flow
+      3. session["selected_slot_label"]  — legacy key, never written by live flow
 
-    # TODO: wire up first_visit detection — no is_first_visit field exists in
-    # session; using patient_type="NEW" as proxy. Default True (new patient)
-    # when patient_type is absent so callers always get the arrival note.
+    Patient name  → session["collected"]["name"]
+    First visit   → session["collected"]["patient_type"] == "NEW"
+                    (defaults True when absent so new callers always get arrival note)
     """
     collected = session.get("collected") or {}
 
@@ -60,35 +62,53 @@ def build_sms(session: dict) -> str:
     name_raw     = (collected.get("name") or "").strip()
     patient_name = name_raw.split()[0] if name_raw else "there"
 
-    # Appointment day / time — split "Friday 18 July at 2:30pm" → ("Friday 18 July", "2:30pm")
-    slot_label = (session.get("selected_slot_label") or "").strip()
-    if " at " in slot_label:
-        appointment_day, appointment_time = slot_label.rsplit(" at ", 1)
-    else:
-        appointment_day  = slot_label
-        appointment_time = ""
+    # Slot resolution — priority:
+    #   1. selected_slot (ISO datetime) — always set by the live call flow, most reliable
+    #   2. selected_slot_speech (e.g. "Tuesday 15th April at 2:30pm") — also always set
+    #   3. selected_slot_label — legacy key, never written by live flow (kept as last resort)
+    _slot_iso    = (session.get("selected_slot") or "").strip()
+    _slot_speech = (session.get("selected_slot_speech") or "").strip()
+    slot_label   = (session.get("selected_slot_label") or _slot_speech or "").strip()
 
-    # Format full appointment date as "April 8, 2026"
-    # Extract month and day from appointment_day (e.g., "Friday 18 July")
-    from datetime import datetime
-    appointment_date = appointment_day  # fallback to day for now
-    try:
-        # Try to parse "Day DD Month" format and add current/next year
-        parts = appointment_day.split()
-        if len(parts) >= 3:
-            day_num = parts[1]
-            month_name = parts[2]
-            current_year = datetime.now().year
-            # Parse the date to get the proper formatted string
-            date_obj = datetime.strptime(f"{day_num} {month_name} {current_year}", "%d %B %Y")
-            # If the date is in the past, assume it's next year
-            if date_obj < datetime.now():
-                date_obj = datetime.strptime(f"{day_num} {month_name} {current_year + 1}", "%d %B %Y")
-            appointment_date = date_obj.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
-            # Remove leading zero from day
-            appointment_date = appointment_date.replace(" 0", " ")
-    except (ValueError, IndexError):
-        pass  # Use appointment_day as fallback
+    appointment_date = ""
+    appointment_time = ""
+
+    # Path 1: parse ISO datetime directly — exact and unambiguous
+    if _slot_iso:
+        try:
+            _slot_dt = datetime.fromisoformat(_slot_iso)
+            appointment_date = _slot_dt.strftime("%B %d, %Y").replace(" 0", " ")
+            appointment_time = _slot_dt.strftime("%I:%M%p").lstrip("0").lower()
+        except (ValueError, TypeError):
+            pass
+
+    # Path 2: parse from human-readable speech label (e.g. "Tuesday 15th April at 2:30pm")
+    if not appointment_date and slot_label:
+        if " at " in slot_label:
+            appointment_day, appointment_time = slot_label.rsplit(" at ", 1)
+        else:
+            appointment_day = slot_label
+        try:
+            parts = appointment_day.split()
+            if len(parts) >= 3:
+                # Strip ordinal suffix: "15th" → "15", "3rd" → "3"
+                day_num    = re.sub(r"(st|nd|rd|th)$", "", parts[1], flags=re.IGNORECASE)
+                month_name = parts[2]
+                current_year = datetime.now().year
+                date_obj = datetime.strptime(f"{day_num} {month_name} {current_year}", "%d %B %Y")
+                if date_obj < datetime.now():
+                    date_obj = datetime.strptime(
+                        f"{day_num} {month_name} {current_year + 1}", "%d %B %Y"
+                    )
+                appointment_date = date_obj.strftime("%B %d, %Y").replace(" 0", " ")
+        except (ValueError, IndexError):
+            appointment_date = appointment_day  # raw fallback
+
+    # Final fallback — should never reach here on a real call
+    if not appointment_date:
+        appointment_date = slot_label or "—"
+    if not appointment_time:
+        appointment_time = "—"
 
     # First-visit note
     # TODO: wire up first_visit detection — no is_first_visit field exists in
