@@ -2035,6 +2035,33 @@ def _resolve_location(raw: str, in_location_state: bool = False) -> str | None:
 # Flow engine
 # ---------------------------------------------------------------------------
 
+class _TrackedQueue:
+    """
+    Thin wrapper around asyncio.Queue that marks session["_turn_speech_emitted"]
+    whenever a non-empty, non-sentinel chunk is enqueued.
+
+    This lets connection.py detect whether handle_transcript produced ANY audible
+    speech and fire a hard global fallback if it did not — without requiring every
+    `await self._tts.put(...)` call to set the flag manually.
+    """
+    __slots__ = ("_q", "_session")
+
+    def __init__(self, q: Any, session: "Dict[str, Any]") -> None:
+        self._q      = q
+        self._session = session
+
+    async def put(self, item: str) -> None:
+        if item and item.strip() and item != "\x00DEDUP_RESET\x00":
+            self._session["_turn_speech_emitted"] = True
+        await self._q.put(item)
+
+    def empty(self) -> bool:
+        return self._q.empty()
+
+    def get_nowait(self) -> str:
+        return self._q.get_nowait()
+
+
 class FlowEngine:
     """
     Drives the Susie booking conversation one step at a time.
@@ -2057,7 +2084,7 @@ class FlowEngine:
         llm_fn: Callable,           # async (instruction: str) -> str
     ) -> None:
         self.session          = session
-        self._tts             = tts_queue
+        self._tts             = _TrackedQueue(tts_queue, session)
         self._llm             = llm_fn
         self._active_flow: List[Dict[str, Any]] = DETECT_INTENT_FLOW
         self._intent_detected: bool = False
@@ -4933,6 +4960,22 @@ class FlowEngine:
                 # Do NOT update last_question — the real question remains intact
                 logger.info("[ms_flow] CONFIRM_ASSESSMENT: inquiry intercept fired (pre-classifier)")
                 return
+            # ── Priority 1b: general FAQ intercept at CONFIRM_ASSESSMENT ──────
+            # Catches parking, pricing, hours, insurance, services — questions that
+            # are NOT about the assessment itself but are genuine clinic FAQs.
+            # Must run AFTER the assessment-inquiry check (more specific) and BEFORE
+            # the classifier so they are answered rather than getting "Does that sound okay?".
+            _ca_faq_intent = self._detect_intent(text)
+            _ca_faq_allowed = {
+                "faq_prices", "faq_insurance", "faq_hours",
+                "faq_location", "faq_services", "faq_capability",
+            }
+            if _ca_faq_intent in _ca_faq_allowed:
+                logger.info(
+                    "[ms_flow] CONFIRM_ASSESSMENT: general FAQ intercept — intent=%s", _ca_faq_intent
+                )
+                await self._handle_mid_flow_interrupt(_ca_faq_intent, transcript)
+                return
             # ── Priority 2–5: classifier-based branching ─────────────────────
             _ca_class = _classify_confirm_assessment(text)
             logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
@@ -5033,17 +5076,12 @@ class FlowEngine:
                     "faq_insurance", "faq_services", "faq_capability", "general_query",
                 }
                 if _nor_faq_intent in _nor_faq_intents:
+                    # _handle_mid_flow_interrupt already emits answer + re-anchor;
+                    # do NOT also re-send last_question here or the caller hears it twice.
                     await self._handle_mid_flow_interrupt(_nor_faq_intent, transcript)
-                    # Re-ask the new/returning question after answering
-                    _nor_reask = self.session.get("last_question", "")
-                    if _nor_reask:
-                        await self._tts.put(_nor_reask)
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _nor_reask}
-                        )
                     logger.info(
                         "[ms_flow] NEW_OR_RETURNING: FAQ guard fired (%s) — "
-                        "answered and re-asking", _nor_faq_intent,
+                        "answered and re-anchored by _handle_mid_flow_interrupt", _nor_faq_intent,
                     )
                     return
 
@@ -7693,6 +7731,14 @@ class FlowEngine:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
             "PRESENT_DAYS", "PRESENT_TIMES",
             "PRESENT_DAYS_RESCHEDULE", "PRESENT_TIMES_RESCHEDULE",
+            # COLLECT_REASON: caller may ask a FAQ while being asked what brings them in.
+            # Reschedule/cancel are also hard-routed here so the duplicate guard below (line ~8310)
+            # is never reached; booking/symptom answers fall through to extraction unchanged.
+            "COLLECT_REASON",
+            # CONFIRM_BOOKING: caller may ask a last-minute FAQ before confirming.
+            # General-query (incl. plain "yes") is blocked by _DATA_COLLECTION_STATES so the
+            # dedicated CONFIRM_BOOKING YES handler below still fires correctly.
+            "CONFIRM_BOOKING",
         }
         if step["state"] in _interruptable_states:
             # Data-collection states (phone/name) are asking for specific input.
@@ -7751,6 +7797,14 @@ class FlowEngine:
                 # general_query interrupt that would swallow the response.
                 "GENERAL_BOOKING_OFFER",
                 "FAQ_BOOKING_OFFER",
+                # COLLECT_REASON: open-ended "what brings you in?".  Fragment guard
+                # (BUG 1/2) rejects partial answers; general_query must not also fire LLM.
+                # Specific FAQ intents (prices, hours, etc.) are still allowed to interrupt.
+                "COLLECT_REASON",
+                # CONFIRM_BOOKING: final yes/no gate.  "yes please" and plain "yes" score
+                # general_query in _detect_intent — must not fire LLM.  FAQ intents are
+                # still allowed so callers can ask a last-minute question before confirming.
+                "CONFIRM_BOOKING",
             }
             _mid_intents = {
                 "faq_prices", "faq_insurance", "faq_hours",
@@ -7769,6 +7823,16 @@ class FlowEngine:
                     )
                     self._switch_flow("reschedule")
                     await self.ask_current_question()
+                else:
+                    # Already in reschedule flow — re-anchor to current question so
+                    # the caller hears something instead of dead air.
+                    _rrs_lq = self.session.get("last_question", "")
+                    if _rrs_lq:
+                        await self._tts.put(_rrs_lq)
+                    logger.info(
+                        "[ms_flow] mid-flow reschedule already in RESCHEDULE_FLOW at %s — re-anchoring",
+                        step["state"],
+                    )
                 return
             if _mid_intent == "cancel":
                 if self._active_flow is not CANCEL_FLOW:
@@ -7777,6 +7841,16 @@ class FlowEngine:
                     )
                     self._switch_flow("cancel")
                     await self.ask_current_question()
+                else:
+                    # Already in cancel flow — re-anchor to current question so
+                    # the caller hears something instead of dead air.
+                    _rcs_lq = self.session.get("last_question", "")
+                    if _rcs_lq:
+                        await self._tts.put(_rcs_lq)
+                    logger.info(
+                        "[ms_flow] mid-flow cancel already in CANCEL_FLOW at %s — re-anchoring",
+                        step["state"],
+                    )
                 return
             if _mid_intent in _mid_intents:
                 logger.info(
@@ -9683,25 +9757,64 @@ class FlowEngine:
             ):
                 _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
             elif _int_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
-                # No re-anchor here — the FAQ answer already ends naturally.
-                # Caller responds freely; silence handler replays last_question if needed.
-                _int_anchor = ""
+                # These states sit after an FAQ answer; the caller responds freely.
+                # Normally no explicit re-anchor is needed — the FAQ answer ends
+                # naturally and the silence handler will re-ask if needed.
+                # Exception: if the FAQ answer itself was empty (LLM failed), we
+                # must still produce something or the turn is completely silent.
+                _int_anchor = self.session.get("last_question", "") or "Would you like to go ahead and book?"
             else:
                 _int_anchor = self.session.get("last_question", "")
-            if _int_anchor:
-                _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
-                _anchor_spoken = (
-                    _int_anchor if _int_state in _offer_states
-                    else f"Coming back to that \u2014 {_int_anchor}"
-                )
-                await self._tts.put(_anchor_spoken)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _anchor_spoken}
+
+            # Safety net: if _int_anchor is still empty, use a state-aware hard default
+            # so the caller is NEVER left in dead air after a mid-flow interrupt.
+            if not _int_anchor:
+                _ANCHOR_DEFAULTS: "Dict[str, str]" = {
+                    "CONFIRM_ASSESSMENT":          "Does that sound okay?",
+                    "NEW_OR_RETURNING":            "Have you been with us before, or is this your first time?",
+                    "RETURNING_RECENCY":           "And was that recently, or a little while ago?",
+                    "RETURNING_TREATMENT_PLAN":    "Are you still on a current treatment plan with us?",
+                    "COLLECT_NAME":                "Could I take your name please?",
+                    "COLLECT_NAME_RETURNING":      "And could I take your name please?",
+                    "COLLECT_NAME_RESCHEDULE":     "And could I take your name please?",
+                    "COLLECT_NAME_CANCEL":         "And could I take your name please?",
+                    "COLLECT_PHONE":               "And the best number to reach you on?",
+                    "COLLECT_PHONE_RETURNING":     "And the best number to reach you on?",
+                    "COLLECT_PHONE_RESCHEDULE":    "And the best number to reach you on?",
+                    "PRESENT_DAYS":                "Which day would work best for you?",
+                    "PRESENT_DAYS_RESCHEDULE":     "Which day would work best for you?",
+                    "PRESENT_TIMES":               "Which time would suit you?",
+                    "PRESENT_TIMES_RESCHEDULE":    "Which time would suit you?",
+                    "CONFIRM_BOOKING":             "Does that all sound right?",
+                    "FAQ_BOOKING_OFFER":           "Would you like to go ahead and book?",
+                    "GENERAL_BOOKING_OFFER":       "Would you like to go ahead and book?",
+                    "COLLECT_REASON":              "What is it that's bringing you in?",
+                    "CONFIRM_PHONE":               "Is that number correct?",
+                    "CONFIRM_PHONE_RETURNING":     "Is that number correct?",
+                }
+                _int_anchor = _ANCHOR_DEFAULTS.get(
+                    _int_state or "",
+                    "Can I help you continue with your booking?",
                 )
                 logger.info(
-                    "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
-                    _int_state, _anchor_spoken[:80],
+                    "[ms_flow] mid-flow interrupt: last_question empty — using default anchor for %s",
+                    _int_state,
                 )
+
+            # Always emit re-anchor (non-empty guaranteed by the safety net above).
+            _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
+            _anchor_spoken = (
+                _int_anchor if _int_state in _offer_states
+                else f"Coming back to that \u2014 {_int_anchor}"
+            )
+            await self._tts.put(_anchor_spoken)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _anchor_spoken}
+            )
+            logger.info(
+                "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
+                _int_state, _anchor_spoken[:80],
+            )
         else:
             logger.info("[ms_flow] mid-flow interrupt: flow complete — no re-anchor")
 
