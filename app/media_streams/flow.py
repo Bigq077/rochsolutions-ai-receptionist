@@ -5489,9 +5489,32 @@ class FlowEngine:
                                 "rd" if _wk_anchor_obj.day % 10 == 3 and _wk_anchor_obj.day != 13 else
                                 "th"
                             )
+                            # Directional week filtering: "late/later in that week" → latter half
+                            #                             "early/earlier in that week" → first half
+                            _wk_dir_late = any(w in text for w in (
+                                "later that week", "late in that week", "later in that week",
+                                "end of that week", "end of the week", "towards the end of that week",
+                                "latter part", "second half of that week",
+                            ))
+                            _wk_dir_early = any(w in text for w in (
+                                "earlier that week", "early in that week", "earlier in that week",
+                                "start of that week", "beginning of that week",
+                                "early part", "first half of that week",
+                            ))
+                            if _wk_in_week and len(_wk_in_week) > 1:
+                                if _wk_dir_late:
+                                    _wk_in_week = _wk_in_week[max(1, len(_wk_in_week) // 2):]
+                                elif _wk_dir_early:
+                                    _wk_in_week = _wk_in_week[:max(1, len(_wk_in_week) // 2)]
                             _wk_label = (
-                                f"the week of the {_wk_anchor_obj.day}{_wk_suf}"
-                                if _wk_expl else "that week"
+                                (f"the later part of the week of the {_wk_anchor_obj.day}{_wk_suf}"
+                                 if _wk_expl else "the later part of that week")
+                                if _wk_dir_late else
+                                (f"the earlier part of the week of the {_wk_anchor_obj.day}{_wk_suf}"
+                                 if _wk_expl else "the earlier part of that week")
+                                if _wk_dir_early else
+                                (f"the week of the {_wk_anchor_obj.day}{_wk_suf}"
+                                 if _wk_expl else "that week")
                             )
                             if _wk_in_week:
                                 _wk_phrase = _build_day_list_phrase(_wk_in_week)
@@ -5504,8 +5527,10 @@ class FlowEngine:
                                 self.session["days_page"]          = 0
                                 self.session["_pd_month_filtered"] = _wk_in_week
                                 logger.info(
-                                    "[ms_flow] %s week-of-date: anchor=%s → %d day(s) in week",
-                                    step["state"], _wk_anchor_str, len(_wk_in_week),
+                                    "[ms_flow] %s week-of-date: anchor=%s dir=%s → %d day(s) in week",
+                                    step["state"], _wk_anchor_str,
+                                    "late" if _wk_dir_late else "early" if _wk_dir_early else "any",
+                                    len(_wk_in_week),
                                 )
                                 return
                             # No availability that week — offer nearest alternatives
@@ -6048,6 +6073,73 @@ class FlowEngine:
                 "list the original", "list the initial",
             )
             _pd_all = self.session.get("available_days", [])
+
+            # ── ANCHOR-RELATIVE FILTER: "later than that" / "earlier than that" ──
+            # When the caller references the last anchor date (e.g. "anything later
+            # than that?", "do you have anything earlier than that?") and a
+            # last_requested_date is set in session, filter to days strictly after
+            # (or before) that anchor rather than doing a blind page-advance.
+            # This must run BEFORE _PD_NONE/_PD_LATER so "anything later than that"
+            # doesn't hit the generic next-page path and lose the anchor context.
+            _PD_LATER_THAN = (
+                "later than that", "later than this",
+                "anything later than that", "anything later than this",
+                "anything after that", "anything after this",
+                "after that date", "after that",
+                "beyond that", "past that",
+            )
+            _PD_EARLIER_THAN = (
+                "earlier than that", "earlier than this",
+                "anything earlier than that", "anything earlier than this",
+                "anything before that", "anything before this",
+                "before that date", "before that",
+            )
+            _pd_lrd = self.session.get("last_requested_date")
+            if _pd_lrd and not _exp_has_month:
+                import datetime as _dt_anchor
+                _pd_later_than_hit   = any(p in text for p in _PD_LATER_THAN)
+                _pd_earlier_than_hit = any(p in text for p in _PD_EARLIER_THAN)
+                if _pd_later_than_hit or _pd_earlier_than_hit:
+                    try:
+                        _pd_anchor_obj = _dt_anchor.date.fromisoformat(_pd_lrd)
+                    except (ValueError, TypeError):
+                        _pd_anchor_obj = None
+                    if _pd_anchor_obj:
+                        if _pd_later_than_hit:
+                            _pd_rel_days = [
+                                d for d in _pd_all
+                                if _dt_anchor.date.fromisoformat(
+                                    (d.get("date") or "9999-12-31")[:10]
+                                ) > _pd_anchor_obj
+                            ]
+                            _pd_rel_label = "after that"
+                        else:
+                            _pd_rel_days = [
+                                d for d in _pd_all
+                                if _dt_anchor.date.fromisoformat(
+                                    (d.get("date") or "0001-01-01")[:10]
+                                ) < _pd_anchor_obj
+                            ]
+                            _pd_rel_label = "before that"
+                        if _pd_rel_days:
+                            _pd_rel_phrase = _build_day_list_phrase(_pd_rel_days[:3])
+                            await self._tts.put(_pd_rel_phrase)
+                            self.session["last_question"] = _pd_rel_phrase
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _pd_rel_phrase}
+                            )
+                            self.session["days_page"] = 0
+                            self.session["_pd_month_filtered"] = _pd_rel_days
+                            logger.info(
+                                "[ms_flow] PRESENT_DAYS anchor-relative: %s %s → %d day(s)",
+                                _pd_rel_label, _pd_lrd, len(_pd_rel_days),
+                            )
+                            return
+                        # Nothing in that direction — fall through to normal handling
+                        logger.info(
+                            "[ms_flow] PRESENT_DAYS anchor-relative: no days %s %s — falling through",
+                            _pd_rel_label, _pd_lrd,
+                        )
 
             # Month-guard: "none of those, do you have anything in May" must reach
             # the month filter, not the page-advance logic.  If a month name is
