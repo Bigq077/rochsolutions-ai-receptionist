@@ -2237,6 +2237,10 @@ class FlowEngine:
             )
             return
 
+        # CONFIRM_PHONE turn-boundary: clear the arm flag for every question;
+        # it is re-set only when we emit the CONFIRM_PHONE question below.
+        self.session["phone_confirm_armed"] = False
+
         # Stamp session state so LLM prompt / silence handler know the current step
         if step["state"] != "DETECT_INTENT":
             self.session["state"] = step["state"]
@@ -3033,6 +3037,8 @@ class FlowEngine:
                     question_text = "Is the phone number you're calling on the one associated with your booking?"
                 else:
                     question_text = "And the best number to reach you on — is that the number you're calling from?"
+                # Arm the YES/NO gate so only this specific question's response is accepted
+                self.session["phone_confirm_armed"] = True
             else:
                 question_text = step["question"]
             await self._tts.put(question_text)
@@ -4132,12 +4138,27 @@ class FlowEngine:
                 logger.info("[ms_flow] CONFIRM_PHONE BUG 7: recap requested — restated name %r", _recap_name)
                 return
 
+            # ── Turn-boundary guard ───────────────────────────────────────────
+            # Only accept YES/NO when the phone question was the last question
+            # emitted by ask_current_question().  This prevents surname remnants
+            # ("right", "rock is", "okay") landing here via a split-turn and
+            # being consumed as a false phone confirmation.
+            if not self.session.get("phone_confirm_armed"):
+                logger.warning(
+                    "[ms_flow] CONFIRM_PHONE: gate not armed "
+                    "(phone_confirm_armed=False) — re-asking. text=%r", text[:80],
+                )
+                await self.ask_current_question()
+                return
+
+            # Weak standalone tokens ("right", "ok", "correct", "aye") removed:
+            # phrase-level variants ("that's right", "that's ok") kept because
+            # they require explicit phone-adjacent context.
             _HG_YES = (
                 "yes", "yeah", "yep", "yup", "yeh", "ya",
-                "correct", "right", "that's right", "thats right",
+                "that's right", "thats right",
                 "that's correct", "thats correct",
                 "that's fine", "thats fine", "that's ok", "thats ok",
-                "ok", "okay", "aye", "confirmed", "confirm",
                 "use this number", "yes use this number",
                 "use my number", "yes use my number",
                 "same number", "use my current number",
@@ -4162,6 +4183,7 @@ class FlowEngine:
             )
 
             if _hg_yes and not _hg_no:
+                self.session["phone_confirm_armed"]    = False  # disarm — gate consumed
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = True
                 # Commit confirmed phone to collected — deferred from capture time
@@ -4206,6 +4228,7 @@ class FlowEngine:
                 return
 
             elif _hg_no and not _hg_yes:
+                self.session["phone_confirm_armed"]    = False  # disarm — gate consumed
                 # Seed partial digits already spoken in the same utterance
                 # e.g. "the right number is 07502" → seed "07502" so the
                 # next COLLECT_PHONE turn completes accumulation immediately.

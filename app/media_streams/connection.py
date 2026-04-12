@@ -1492,7 +1492,7 @@ class WebSocketCallHandler:
         # Build the LLM callable the flow engine will use for LLM steps.
         # It streams output directly to tts_text_queue and returns full text.
         async def _llm_fn(instruction: str, allow_tools: bool = True, error_phrase: str = None) -> str:
-            return await llm.run_instruction(
+            result = await llm.run_instruction(
                 instruction=instruction,
                 session=self.session,
                 tts_text_queue=self.tts_text_queue,
@@ -1504,6 +1504,11 @@ class WebSocketCallHandler:
                 allow_tools=allow_tools,
                 error_phrase=error_phrase,
             )
+            # Mark that LLM produced audible speech this turn so the global
+            # hard-fallback in the outer loop does not fire a duplicate response.
+            if result and result.strip():
+                self.session["_turn_speech_emitted"] = True
+            return result
 
         flow = FlowEngine(
             session=self.session,
@@ -1593,6 +1598,9 @@ class WebSocketCallHandler:
                         # BUG 1 fix — clear stale LLM reply before each transcript so
                         # post-turn diagnostic log always reflects the NEW bot output
                         self.session["last_bot_prompt"] = ""
+                        # Reset per-turn speech-emission flag.  _TrackedQueue and _llm_fn
+                        # both set this True whenever audible text is enqueued.
+                        self.session["_turn_speech_emitted"] = False
                         if not self.session.get("flow_started"):
                             # First caller utterance — detect intent then kick off the flow.
                             self.session["flow_started"] = True
@@ -1606,6 +1614,37 @@ class WebSocketCallHandler:
                             )
                             await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
                             await flow.handle_transcript(utterance)
+
+                        # ── GLOBAL HARD FALLBACK ──────────────────────────────────────
+                        # If handle_transcript completed without producing any audible
+                        # speech, and the turn is not already handled by a deferred
+                        # path (repair / repeat / fragment / transfer / graceful exit),
+                        # emit a recovery phrase + the current live re-anchor question.
+                        # This is the last-resort guarantee that no turn is ever silent.
+                        _turn_silent = (
+                            not self.session.get("_turn_speech_emitted")
+                            and not self.session.get("repair_requested")
+                            and not self.session.get("repeat_requested")
+                            and not self.session.get("fragment_suppressed")
+                            and not self.session.get("request_transfer")
+                            and not self.session.get("graceful_exit")
+                            and not flow.is_complete()
+                        )
+                        if _turn_silent:
+                            _fallback_lq = self.session.get("last_question", "")
+                            _fallback_text = (
+                                "Sorry, I can\u2019t answer that properly right now, "
+                                "but I can still help you continue."
+                            )
+                            if _fallback_lq:
+                                _fallback_text += f" {_fallback_lq}"
+                            await self.tts_text_queue.put(_fallback_text)
+                            self.session["last_question"] = _fallback_text
+                            logger.warning(
+                                "[ms_conn] GLOBAL HARD FALLBACK: no speech this turn "
+                                "(state=%s) — emitting: %r",
+                                self.session.get("state", "?"), _fallback_text[:100],
+                            )
 
                     # ── Transfer check (deterministic flow path) ─────────────
                     # The LLM stream handles transfers that fire via tool call.
@@ -1694,9 +1733,12 @@ class WebSocketCallHandler:
                             if _cur_state == "FAQ_BOOKING_OFFER"
                             else ""
                         ) or self.session.get("last_question", "")
-                        if _replay:
-                            await self.tts_text_queue.put(_replay)
-                            logger.info("[ms_conn] repeat_requested: replaying %r", _replay[:60])
+                        # Guard: always emit something — never let repeat leave the
+                        # caller in silence when last_question/last_faq_answer are empty.
+                        if not _replay:
+                            _replay = "Sorry, could you say that again?"
+                        await self.tts_text_queue.put(_replay)
+                        logger.info("[ms_conn] repeat_requested: replaying %r", _replay[:60])
                     # Bug 9: restart silence timer after fragment suppression
                     # so the call doesn't go permanently silent.
                     if self.session.pop("fragment_suppressed", False):
