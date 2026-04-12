@@ -8832,94 +8832,262 @@ class FlowEngine:
             logger.info("[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: ambiguous — re-asking")
             return
 
-        # ── CONFIRM_BOOKING: dedicated YES handler ─────────────────────────────
-        # Runs BEFORE generic extraction so the caller's response never falls
-        # through to _start_readback().  Any input at this step is treated as
-        # confirmation — booking_confirmed is set here (not in ask_current_question).
+        # ── CONFIRM_BOOKING: strong-confirm-only gate ──────────────────────────
+        # _exec_book_appointment is ONLY reachable via the strong YES branch.
+        # Questions, repeats, corrections, weak acks, and ambiguous input all
+        # exit through non-booking branches.  The gate fails closed.
         if step["state"] == "CONFIRM_BOOKING":
-            # Make the actual Acuity booking now that the caller has confirmed
-            from app.tools.receptionist_tools import _exec_book_appointment as _do_book
-            _name_cb = (
-                self.session.get("full_name")
-                or (self.session.get("collected") or {}).get("full_name")
-                or (self.session.get("collected") or {}).get("name")
-                or self.session.get("patient_name")
-                or self.session.get("caller_name")
+            import re as _cb_re
+
+            # ── PART 1: strong explicit confirmation phrases ─────────────────
+            _CB_YES = (
+                "yes", "yeah", "yep", "yup", "yeh", "ya",
+                "yes please", "yes go ahead", "yes that's right", "yes that's correct",
+                "yes please book", "yes book it", "yes confirm",
+                "please book it", "book it", "book that", "book that please",
+                "go ahead", "go ahead and book", "please go ahead",
+                "confirm it", "confirm that", "confirm the booking",
+                "that's correct", "that's right", "that all sounds right",
+                "that all sounds correct", "sounds right", "sounds correct",
+                "i confirm", "i'd like to book", "i want to book",
+                "please confirm",
             )
-            _loc_cb = (self.session.get("selected_location") or "alcester").lower()
-            _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
-            _book_args = {
-                "patient_name": _name_cb or "",
-                "phone": _to_e164_uk(
-                    self.session.get("phone_number")
-                    or (self.session.get("collected") or {}).get("phone")
-                    or self.session.get("twilio_from", "")
-                ),
-                "slot_iso": (
-                    self.session.get("selected_slot")
-                    or self.session.get("selected_slot_speech")
-                    or ""
-                ),
-                "location": _loc_cb,
-                "service": "physiotherapy assessment",
-                "is_new_patient": (
-                    (self.session.get("new_or_returning") or "new") != "returning"
-                ),
-            }
-            _book_success = False
-            try:
-                _book_result = await _do_book(_book_args, self.session)
-                _book_success = bool(_book_result.get("success"))
-                if not _book_success:
-                    logger.error(
-                        "[ms_flow] CONFIRM_BOOKING YES: book failed: %r",
-                        _book_result.get("error"),
+
+            # ── PART 2: question-like detection — blocks booking ─────────────
+            _cb_q_starters = (
+                "do you", "what ", "which ", "can you", "could you", "how ",
+                "is that", "is it", "was that", "did you", "have you",
+                "are you", "will you", "when ", "where ", "why ",
+            )
+            _cb_q_phrases = (
+                "what time", "which clinic", "what name", "what number",
+                "how much", "what did you say", "need my phone",
+                "need my number", "do you need", "what was that",
+                "is that right", "is that correct", "is that the", "is that for",
+            )
+            _is_q = (
+                text.endswith("?")
+                or any(text.startswith(p) for p in _cb_q_starters)
+                or any(p in text for p in _cb_q_phrases)
+            )
+
+            # ── PART 3: explicit NO / rejection ─────────────────────────────
+            _is_no = (
+                bool(_cb_re.search(r'\bno\b', text))
+                or any(p in text for p in (
+                    "nope", "nah", "no thank", "don't book", "don't confirm",
+                    "not yet", "hold on", "wait a", "actually no", "actually not",
+                    "not quite", "that's wrong", "not right", "something's wrong",
+                ))
+            )
+
+            # ── PART 4: correction language — must not book ──────────────────
+            _cb_corr_phrases = (
+                "wrong clinic", "wrong name", "wrong time", "wrong number",
+                "not that clinic", "not that time", "not that name",
+                "not redditch", "not alcester",
+                "different clinic", "different time", "different day",
+                "that's not my name", "that's not my surname",
+                "the name is wrong", "surname is wrong", "first name is wrong",
+                "i meant the other", "i said the other",
+            )
+            _is_correction = any(p in text for p in _cb_corr_phrases)
+
+            # Also treat name-repair phrases as corrections (reuses CONFIRM_PHONE logic)
+            _cb_name_fix_phrases = (
+                "my name is", "my surname is", "my first name is",
+                "it should be under", "the name should be",
+            )
+            _is_name_fix = any(p in text for p in _cb_name_fix_phrases)
+            if _is_name_fix:
+                _is_correction = True
+
+            # ── PART 5: repeat / replay ──────────────────────────────────────
+            _is_repeat = (
+                text in ("sorry", "sorry?", "pardon", "pardon?")
+                or any(p in text for p in (
+                    "repeat", "say that again", "again please",
+                    "could you repeat", "can you repeat", "say it again",
+                    "once more", "what did you say",
+                ))
+            )
+
+            _is_yes = any(p in text for p in _CB_YES)
+
+            # ── Decision tree — fail closed ──────────────────────────────────
+            if _is_yes and not _is_q and not _is_no and not _is_correction:
+                # Strong explicit confirm — execute booking
+                from app.tools.receptionist_tools import _exec_book_appointment as _do_book
+                _name_cb = (
+                    self.session.get("full_name")
+                    or (self.session.get("collected") or {}).get("full_name")
+                    or (self.session.get("collected") or {}).get("name")
+                    or self.session.get("patient_name")
+                    or self.session.get("caller_name")
+                )
+                _loc_cb = (self.session.get("selected_location") or "alcester").lower()
+                _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
+                _book_args = {
+                    "patient_name": _name_cb or "",
+                    "phone": _to_e164_uk(
+                        self.session.get("phone_number")
+                        or (self.session.get("collected") or {}).get("phone")
+                        or self.session.get("twilio_from", "")
+                    ),
+                    "slot_iso": (
+                        self.session.get("selected_slot")
+                        or self.session.get("selected_slot_speech")
+                        or ""
+                    ),
+                    "location": _loc_cb,
+                    "service": "physiotherapy assessment",
+                    "is_new_patient": (
+                        (self.session.get("new_or_returning") or "new") != "returning"
+                    ),
+                }
+                _book_success = False
+                try:
+                    _book_result = await _do_book(_book_args, self.session)
+                    _book_success = bool(_book_result.get("success"))
+                    if not _book_success:
+                        logger.error(
+                            "[ms_flow] CONFIRM_BOOKING YES: book failed: %r",
+                            _book_result.get("error"),
+                        )
+                    else:
+                        logger.info("[ms_flow] CONFIRM_BOOKING YES: booking created successfully")
+                except Exception as _be:
+                    logger.error("[ms_flow] CONFIRM_BOOKING YES: book exception: %r", _be)
+                    _book_success = False
+
+                _slot_cb = (
+                    self.session.get("selected_slot_speech")
+                    or self.session.get("selected_slot")
+                    or "your appointment"
+                )
+                self.session["state"]      = "DONE"
+                self.session["flow_state"] = "DONE"
+                self.session["flow_step"]  = len(self._active_flow)
+
+                if _book_success:
+                    self.session["booking_confirmed"] = True
+                    _cb_done = (
+                        f"Brilliant — you're all booked in for {_slot_cb} "
+                        f"at our {_clinic_name} clinic. "
+                        "We'll send a confirmation text shortly. Have a great day!"
+                    )
+                    logger.info(
+                        "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True "
+                        "state=DONE name=%r slot=%r",
+                        _name_cb, str(_slot_cb)[:40],
                     )
                 else:
-                    logger.info("[ms_flow] CONFIRM_BOOKING YES: booking created successfully")
-            except Exception as _be:
-                logger.error("[ms_flow] CONFIRM_BOOKING YES: book exception: %r", _be)
-                _book_success = False
+                    self.session["booking_confirmed"] = False
+                    _cb_done = (
+                        "I'm sorry — there was a problem securing that slot. "
+                        "I'll make sure the team knows, and someone will call you back "
+                        "to confirm your booking. Apologies for the inconvenience!"
+                    )
+                    logger.error(
+                        "[ms_flow] CONFIRM_BOOKING YES handler → booking FAILED, "
+                        "booking_confirmed=False state=DONE name=%r slot=%r",
+                        _name_cb, str(_slot_cb)[:40],
+                    )
 
-            _slot_cb = (
-                self.session.get("selected_slot_speech")
-                or self.session.get("selected_slot")
-                or "your appointment"
-            )
-            self.session["state"]      = "DONE"
-            self.session["flow_state"] = "DONE"
-            self.session["flow_step"]  = len(self._active_flow)
+                await self._tts.put(_cb_done)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cb_done}
+                )
+                return
 
-            if _book_success:
-                self.session["booking_confirmed"] = True
-                _cb_done = (
-                    f"Brilliant — you're all booked in for {_slot_cb} "
-                    f"at our {_clinic_name} clinic. "
-                    "We'll send a confirmation text shortly. Have a great day!"
+            # ── Non-YES paths — _exec_book_appointment is unreachable below ──
+
+            elif _is_repeat:
+                # Replay the booking summary; do not advance state
+                _replay = self.session.get("last_question") or "Shall I go ahead and book that?"
+                await self._tts.put(_replay)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _replay}
                 )
-                logger.info(
-                    "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True "
-                    "state=DONE name=%r slot=%r",
-                    _name_cb, str(_slot_cb)[:40],
+                logger.info("[ms_flow] CONFIRM_BOOKING: repeat → replayed summary")
+                return
+
+            elif _is_name_fix:
+                # Route back to COLLECT_NAME so caller can correct their name
+                _cn_states = {"COLLECT_NAME", "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL"}
+                _cn_idx = next(
+                    (i for i, s in enumerate(self._active_flow) if s["state"] in _cn_states),
+                    None,
                 )
+                if _cn_idx is not None:
+                    from app.media_streams.name_collector import NameCollector as _NC_cb
+                    _NC_cb(self.session).reset()
+                    self.session["flow_step"] = _cn_idx
+                    self.session["state"]     = self._active_flow[_cn_idx]["state"]
+                    self.session["question_asked_this_turn"] = False
+                    logger.info(
+                        "[ms_flow] CONFIRM_BOOKING name-fix → %s", self.session["state"],
+                    )
+                    await self.ask_current_question()
+                    return
+                # COLLECT_NAME not found (should never happen) — safe re-anchor
+                _corr_fallback = "No problem — what is the correct name for the booking?"
+                await self._tts.put(_corr_fallback)
+                self.session["last_question"] = _corr_fallback
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _corr_fallback}
+                )
+                return
+
+            elif _is_correction:
+                # Generic field correction — re-anchor at CONFIRM_BOOKING
+                _corr_text = (
+                    "No problem — what would you like to change? "
+                    "Just let me know and I'll update it."
+                )
+                await self._tts.put(_corr_text)
+                self.session["last_question"] = _corr_text
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _corr_text}
+                )
+                logger.info("[ms_flow] CONFIRM_BOOKING: correction detected — re-anchoring")
+                return
+
+            elif _is_no:
+                _no_text = (
+                    "No problem. Is there something you'd like to change, "
+                    "or shall I leave it there for now?"
+                )
+                await self._tts.put(_no_text)
+                self.session["last_question"] = _no_text
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _no_text}
+                )
+                logger.info("[ms_flow] CONFIRM_BOOKING: NO — re-anchoring without booking")
+                return
+
             else:
-                self.session["booking_confirmed"] = False
-                _cb_done = (
-                    "I'm sorry — there was a problem securing that slot. "
-                    "I'll make sure the team knows, and someone will call you back "
-                    "to confirm your booking. Apologies for the inconvenience!"
+                # Question, weak ack ("okay", "right", "fine"), or unknown.
+                # For question-like utterances replay the full summary;
+                # for everything else ask for an explicit yes/no.
+                if _is_q:
+                    _safe_text = self.session.get("last_question") or "Shall I go ahead and book that?"
+                else:
+                    _safe_text = (
+                        "Sorry — would you like me to go ahead and book that, "
+                        "or is there something you'd like to change?"
+                    )
+                await self._tts.put(_safe_text)
+                self.session["last_question"] = _safe_text
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _safe_text}
                 )
-                logger.error(
-                    "[ms_flow] CONFIRM_BOOKING YES handler → booking FAILED, "
-                    "booking_confirmed=False state=DONE name=%r slot=%r",
-                    _name_cb, str(_slot_cb)[:40],
+                logger.warning(
+                    "[ms_flow] CONFIRM_BOOKING: non-YES blocked "
+                    "(is_yes=%s is_q=%s is_no=%s is_corr=%s) text=%r",
+                    _is_yes, _is_q, _is_no, _is_correction, text[:80],
                 )
-
-            await self._tts.put(_cb_done)
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": _cb_done}
-            )
-            return
+                return
 
         # ── Final compat guard: abort extraction if booking already done ────────
         # Note: CONFIRM_BOOKING is handled by the dedicated block above, so only
