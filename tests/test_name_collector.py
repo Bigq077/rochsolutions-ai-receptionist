@@ -780,3 +780,131 @@ class TestEdgeCases:
         """_BEST_EFFORT_ACK contains the required phrases from the spec."""
         assert "confirmation message" in _BEST_EFFORT_ACK.lower() or "confirmation" in _BEST_EFFORT_ACK.lower()
         assert "reply" in _BEST_EFFORT_ACK.lower() or "correcting" in _BEST_EFFORT_ACK.lower()
+
+
+# ── 19. needs_name_correction_sms flag ───────────────────────────────────────
+# These tests verify the deterministic trust model:
+#   - clean path (no retries, confirmed YES) → flag NOT set
+#   - fn_reask path  → flag SET
+#   - sn_reask path  → flag SET
+#   - fn_confirm YES after fn_retries > 0 → flag SET
+#   - sn_confirm YES after sn_retries > 0 → flag SET
+#   - reset() / reset_to_surname() → flag CLEARED
+
+class TestNameCorrectionSmsFlag:
+
+    def test_clean_full_path_no_flag(self):
+        """Clean first name + clean surname → needs_name_correction_sms NOT set."""
+        s = sess()
+        NameCollector(s).handle("quentin", "Quentin")   # fn_normal → fn_confirm
+        NameCollector(s).handle("yes", "Yes")            # fn_confirm YES (retries=0)
+        NameCollector(s).handle("roch", "Roch")          # sn_normal → sn_confirm
+        NameCollector(s).handle("yes", "Yes")            # sn_confirm YES (retries=0)
+        assert s.get("needs_name_correction_sms") is not True
+
+    def test_fn_reask_sets_flag(self):
+        """fn_reask (fn_confirm denied → re-ask → any response) sets the flag."""
+        s = sess()
+        NameCollector(s).handle("quentin", "Quentin")   # fn_confirm
+        NameCollector(s).handle("no", "No")             # → fn_reask
+        NameCollector(s).handle("quentin", "Quentin")   # fn_reask → store best-effort
+        assert s.get("needs_name_correction_sms") is True
+
+    def test_sn_reask_sets_flag(self):
+        """sn_reask (sn_confirm denied → re-ask → any response) sets the flag."""
+        s = sess()
+        NameCollector(s).handle("matt", "Matt")
+        NameCollector(s).handle("yes", "Yes")           # fn clean
+        NameCollector(s).handle("hew", "Hew")           # sn_confirm
+        NameCollector(s).handle("no", "No")             # → sn_reask
+        action, _ = NameCollector(s).handle("hewitson", "Hewitson")  # sn_reask accept
+        assert action == "accept"
+        assert s.get("needs_name_correction_sms") is True
+
+    def test_fn_confirm_yes_after_retries_sets_flag(self):
+        """YES in fn_confirm after fn_retries > 0 marks capture as unreliable."""
+        s = sess()
+        # Force fn_retries=2 via repeated fn_normal failures
+        NameCollector(s).handle("uh um", "Uh um")       # fn_fail → fn_retries=1
+        NameCollector(s).handle("uh um", "Uh um")       # fn_fail → fn_retries=2
+        NameCollector(s).handle("quentin", "Quentin")   # fn_confirm
+        assert s["_nc"]["fn_retries"] == 2
+        NameCollector(s).handle("yes", "Yes")           # YES after retries
+        assert s.get("needs_name_correction_sms") is True
+
+    def test_sn_confirm_yes_after_retries_sets_flag(self):
+        """YES in sn_confirm after sn_retries > 0 marks capture as unreliable."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_NORMAL,
+            first_name="Matt",
+            fn_confirmed=True,
+            sn_retries=1,        # already had one sn failure
+        )
+        s["name_fragment"] = "Matt"
+        NameCollector(s).handle("rook", "Rook")         # sn_normal → sn_confirm
+        NameCollector(s).handle("yeah", "Yeah")         # YES after sn_retries=1
+        assert s.get("needs_name_correction_sms") is True
+
+    def test_sn_confirm_yes_after_retries_sets_preamble(self):
+        """YES in sn_confirm after sn_retries > 0 also sets the TTS preamble."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_NORMAL,
+            first_name="Matt",
+            fn_confirmed=True,
+            sn_retries=1,
+        )
+        s["name_fragment"] = "Matt"
+        NameCollector(s).handle("rook", "Rook")
+        NameCollector(s).handle("yeah", "Yeah")
+        assert s.get("_nc_accept_preamble") == _BEST_EFFORT_ACK
+
+    def test_live_log_regression_rook_after_sn_retry(self):
+        """
+        Regression: live call where 'Rook' was heard after a messy surname path.
+        System said 'I'll send you a confirmation message' but SMS correction
+        was never sent — because the flag was never set.
+        sn_retries=1 → sn_confirm('Rook') → 'yeah' must set needs_name_correction_sms.
+        """
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_NORMAL,
+            first_name="Quentin",
+            fn_confirmed=True,
+            sn_retries=1,
+        )
+        s["name_fragment"] = "Quentin"
+        NameCollector(s).handle("rook", "Rook")         # sn_confirm("Rook")
+        action, name = NameCollector(s).handle("yeah", "Yeah")
+        assert action == "accept"
+        assert "Quentin" in name and "Rook" in name
+        assert s.get("needs_name_correction_sms") is True
+
+    def test_clean_path_no_flag_after_sn_reask_if_sn_retries_zero(self):
+        """
+        Clean fn_confirm (no retries) + clean sn_confirm (no retries) → no flag,
+        even if sn went through sn_confirm → sn_reask path (explicit denial counts
+        as degraded, tested separately).
+        """
+        s = sess()
+        NameCollector(s).handle("anna", "Anna")          # fn_confirm
+        NameCollector(s).handle("yes", "Yes")            # fn YES (retries=0)
+        NameCollector(s).handle("schmidt", "Schmidt")   # sn_confirm
+        NameCollector(s).handle("yes", "Yes")            # sn YES (retries=0)
+        assert s.get("needs_name_correction_sms") is not True
+
+    def test_reset_clears_flag(self):
+        """reset() clears needs_name_correction_sms."""
+        s = sess()
+        s["needs_name_correction_sms"] = True
+        NameCollector(s).reset()
+        assert "needs_name_correction_sms" not in s
+
+    def test_reset_to_surname_clears_flag(self):
+        """reset_to_surname() clears needs_name_correction_sms."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(first_name="Matt", fn_confirmed=True)
+        s["needs_name_correction_sms"] = True
+        NameCollector(s).reset_to_surname()
+        assert "needs_name_correction_sms" not in s

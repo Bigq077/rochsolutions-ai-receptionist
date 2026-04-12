@@ -480,6 +480,7 @@ class NameCollector:
         self._s.pop("spelling_confirm_surname", None)
         self._s.pop("full_name", None)
         self._s.pop("_nc_accept_preamble", None)
+        self._s.pop("needs_name_correction_sms", None)
         col = self._s.get("collected", {})
         col.pop("full_name", None)
         col.pop("name", None)
@@ -501,6 +502,7 @@ class NameCollector:
         self._s.pop("spelling_confirm_surname", None)
         self._s.pop("full_name", None)
         self._s.pop("_nc_accept_preamble", None)
+        self._s.pop("needs_name_correction_sms", None)
         col = self._s.get("collected", {})
         col.pop("full_name", None)
         col.pop("name", None)
@@ -661,10 +663,18 @@ class NameCollector:
         if has_yes and has_no and any(p in text for p in _STRONG_NO):
             has_yes = False
 
-        # YES — store first name as confirmed
+        # YES — store first name as confirmed (or degraded if retries occurred)
         if has_yes and not has_no:
+            _fn_degraded = self._nc.get("fn_retries", 0) > 0
+            if _fn_degraded:
+                self._s["needs_name_correction_sms"] = True
+                logger.info(
+                    "[NameCollector] fn_confirm: YES after %d fn_retries — "
+                    "fn_confirmed=False, needs_name_correction_sms=True",
+                    self._nc["fn_retries"],
+                )
             pending_sn = self._nc.get("pending_surname")
-            self._store_first_name(cand, confirmed=True)
+            self._store_first_name(cand, confirmed=not _fn_degraded)
             if pending_sn:
                 self._nc["pending_surname"] = None
                 logger.info("[NameCollector] fn_confirm: YES — sn_confirm for pending %r", pending_sn)
@@ -740,7 +750,12 @@ class NameCollector:
                 best = "Unknown"
 
         self._store_first_name(best, confirmed=False)
-        logger.info("[NameCollector] fn_reask: stored best-effort first_name=%r", best)
+        self._s["needs_name_correction_sms"] = True
+        logger.info(
+            "[NameCollector] fn_reask: best-effort first_name=%r → "
+            "needs_name_correction_sms=True",
+            best,
+        )
 
         return (
             "ask",
@@ -814,9 +829,24 @@ class NameCollector:
             has_yes = False
 
         # YES — accept
+        # Trust check: if sn_retries > 0 the candidate arrived after at least one
+        # failed extraction, making it less reliable than a clean first-attempt
+        # capture.  Accept for flow continuity but mark as unreliable so that
+        # _accept() sets needs_name_correction_sms and the outgoing SMS includes
+        # the correction instruction.
         if has_yes and not has_no:
             full = f"{fn} {cand}".strip().title() if fn else cand.title()
-            self._nc["sn_confirmed"] = True
+            _sn_degraded = self._nc.get("sn_retries", 0) > 0
+            self._nc["sn_confirmed"] = not _sn_degraded
+            if _sn_degraded:
+                # Signal flow.py to play the "noted" acknowledgement
+                self._s["_nc_accept_preamble"] = _BEST_EFFORT_ACK
+                self._s["needs_name_correction_sms"] = True
+                logger.info(
+                    "[NameCollector] sn_confirm: YES after %d sn_retries — "
+                    "sn_confirmed=False, preamble set, needs_name_correction_sms=True",
+                    self._nc["sn_retries"],
+                )
             self._accept(full)
             return ("accept", full)
 
@@ -887,8 +917,14 @@ class NameCollector:
 
         # Signal flow.py to play the acknowledgement before advancing
         self._s["_nc_accept_preamble"] = _BEST_EFFORT_ACK
+        # SMS correction must fire — sn_reask is always a degraded capture path
+        self._s["needs_name_correction_sms"] = True
 
-        logger.info("[NameCollector] sn_reask: stored best-effort surname=%r → full=%r", best, full)
+        logger.info(
+            "[NameCollector] sn_reask: best-effort surname=%r → full=%r "
+            "needs_name_correction_sms=True",
+            best, full,
+        )
         return ("accept", full)
 
     # ── Retry helpers (no spelling escalation) ────────────────────────────────
@@ -950,6 +986,10 @@ class NameCollector:
         Updates both the _nc substate and all legacy session vars so that
         downstream code (phone readback, CONFIRM_BOOKING, lookup) continues
         to work without modification.
+
+        session["needs_name_correction_sms"] is set BEFORE this method is called
+        by the degraded-path handlers (_fn_reask, _sn_reask, and the retry-aware
+        branches of _fn_confirm / _sn_confirm).  This method only handles storage.
         """
         self._nc["substate"]          = NC_DONE
         self._nc["surname_candidate"] = None

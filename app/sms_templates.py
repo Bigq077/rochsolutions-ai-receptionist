@@ -117,16 +117,22 @@ def build_sms(session: dict) -> str:
     first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
     note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
 
-    # New-patient extras: show full name and invite correction via SMS
+    # Name display + correction invite
+    # name_line    — shown for new patients only (👤 full name)
+    # name_correction — shown for new patients OR when name capture was unreliable
+    #   (needs_name_correction_sms=True is set by NameCollector._accept() when
+    #    fn_confirmed=False or sn_confirmed=False after a degraded/retry path)
     full_name_raw = (collected.get("full_name") or collected.get("name") or "").strip()
-    if first_visit and full_name_raw:
-        name_line      = f"👤 {full_name_raw}\n"
+    _needs_name_fix = session.get("needs_name_correction_sms", False)
+
+    name_line = f"👤 {full_name_raw}\n" if (first_visit and full_name_raw) else ""
+
+    if (first_visit and full_name_raw) or _needs_name_fix:
         name_correction = (
             "If we got your name wrong, just text back the correct spelling "
             "and we'll update it for you.\n\n"
         )
     else:
-        name_line       = ""
         name_correction = ""
 
     # Clinic-level values — address resolved from selected_location for
