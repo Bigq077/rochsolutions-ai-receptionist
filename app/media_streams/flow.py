@@ -743,6 +743,51 @@ def _parse_transcript_date(transcript: str, available_days: list):
     return None
 
 
+def _extract_hour_from_text(text: str):
+    """
+    Extract a clinic-context hour (int, 24h) from a caller utterance.
+    Returns None if no time is found.
+    Handles: "10", "10 am", "3 pm", "three o'clock", "half past two",
+             digit o'clock, word o'clock, with/without am/pm context.
+    """
+    import re as _re_eh
+    _t = (
+        text.lower()
+        .replace("p.m.", "pm").replace("a.m.", "am")
+        .replace("o'clock", "").replace("oclock", "")
+    )
+    _t = " ".join(_t.split())
+    # 1. Digit match: "10 am", "3 pm", "14:00", "10"
+    _dm = _re_eh.search(r'\b(\d{1,2})(?::\d{2})?\s*(?:pm|am)?\b', _t)
+    if _dm:
+        _h = int(_dm.group(1))
+        if "pm" in _t and _h < 12:
+            _h += 12
+        elif "am" in _t and _h == 12:
+            _h = 0
+        elif "am" not in _t and 1 <= _h <= 6:
+            _h += 12  # clinic context: 1–6 without am → afternoon
+        if 7 <= _h <= 20:
+            return _h
+    # 2. Word match: "three", "eleven", etc.
+    _HOUR_WORDS_EH = {
+        "one": 1, "two": 2, "three": 3, "four": 4,
+        "five": 5, "six": 6, "seven": 7, "eight": 8,
+        "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    }
+    for _word, _n in _HOUR_WORDS_EH.items():
+        if _re_eh.search(r'\b' + _word + r'\b', _t):
+            _h2 = _n
+            if any(p in _t for p in ("afternoon", "evening", "pm")):
+                if _h2 < 12:
+                    _h2 += 12
+            elif _h2 < 8:
+                _h2 += 12
+            if 7 <= _h2 <= 20:
+                return _h2
+            break
+    return None
+
 # ---------------------------------------------------------------------------
 # Flow definitions
 # ---------------------------------------------------------------------------
@@ -5518,6 +5563,98 @@ class FlowEngine:
                         self.session.pop("vague_option_pending", None)
                         self.session.pop("vague_clarification_asked", None)
                         self.session.pop("slot_pending_confirmation", None)
+                        # ── INLINE TIME: "30th at 10", "23rd April in the morning" ──
+                        # If the same utterance also contains a time, resolve it now
+                        # so we don't replay the full time list unnecessarily.
+                        _xd_inline_hour = _extract_hour_from_text(text)
+                        if _xd_inline_hour is not None:
+                            _xd_il_slots = _xd_matched.get("slots", [])
+                            _xd_il_times = _xd_matched.get("slot_times", [])
+                            _xd_il_label = _xd_matched.get("day_label", "")
+                            _xd_il_idx: Optional[int] = None
+                            for _xi, _xt in enumerate(_xd_il_times):
+                                try:
+                                    if int(_xt.split(":")[0]) == _xd_inline_hour:
+                                        _xd_il_idx = _xi
+                                        break
+                                except (ValueError, IndexError):
+                                    pass
+                            from app.vagueness_detector import _time_to_speech as _t2s_il
+                            if _xd_il_idx is not None:
+                                # Exact slot found — bind and skip PRESENT_TIMES entirely
+                                _xd_il_sp = _t2s_il(_xd_il_times[_xd_il_idx])
+                                _xd_il_ss = f"{_xd_il_label} at {_xd_il_sp}"
+                                _nxt_il   = step["step"] + 2
+                                _nxt_il_state = (
+                                    self._active_flow[_nxt_il]["state"]
+                                    if _nxt_il < len(self._active_flow) else "DONE"
+                                )
+                                self.session["selected_slot"]        = _xd_il_slots[_xd_il_idx].get("start", "")
+                                self.session["selected_slot_speech"] = _xd_il_ss
+                                self.session["slot_confirmed"]       = True
+                                self.session["flow_step"]            = _nxt_il
+                                self.session["state"]                = _nxt_il_state
+                                logger.info(
+                                    "[ms_flow] PRESENT_DAYS inline date+time: %r hour=%d → %r (PRESENT_TIMES skipped)",
+                                    _xd_il_label, _xd_inline_hour, _xd_il_ss,
+                                )
+                                await self.ask_current_question()
+                                return
+                            elif _xd_il_times:
+                                # Day found, exact time not available — offer nearest same-day alts
+                                _xd_il_req_sp = _t2s_il(f"{_xd_inline_hour:02d}:00")
+                                def _xd_il_dist(t):
+                                    try: return abs(int(t.split(":")[0]) - _xd_inline_hour)
+                                    except: return 999
+                                _xd_near_t = sorted(_xd_il_times, key=_xd_il_dist)[:2]
+                                _xd_near_s: list = []
+                                for _nt in _xd_near_t:
+                                    for _si2, _st2 in enumerate(_xd_il_times):
+                                        if _st2 == _nt and _si2 < len(_xd_il_slots):
+                                            _xd_near_s.append(_xd_il_slots[_si2])
+                                            break
+                                _xd_near_sp = [_t2s_il(t) for t in _xd_near_t]
+                                if len(_xd_near_sp) == 1:
+                                    _xd_il_msg = (
+                                        f"I\u2019ve got {_xd_il_label} for you, but I don\u2019t have "
+                                        f"{_xd_il_req_sp} on that day \u2014 the closest I have is "
+                                        f"{_xd_near_sp[0]}. Would that work?"
+                                    )
+                                    if _xd_near_s:
+                                        self.session["selected_slot"]             = _xd_near_s[0].get("start", "")
+                                        self.session["selected_slot_speech"]      = f"{_xd_il_label} at {_xd_near_sp[0]}"
+                                        self.session["slot_pending_confirmation"] = True
+                                elif _xd_near_sp:
+                                    _xd_il_msg = (
+                                        f"I\u2019ve got {_xd_il_label} for you, but I don\u2019t have "
+                                        f"{_xd_il_req_sp} \u2014 I do have {_xd_near_sp[0]} or "
+                                        f"{_xd_near_sp[1]}. Which would suit you?"
+                                    )
+                                    self.session["offered_constrained_times"] = _xd_near_t
+                                    self.session["offered_constrained_slots"] = _xd_near_s
+                                else:
+                                    _xd_il_msg = (
+                                        f"I\u2019ve got {_xd_il_label} for you, but I don\u2019t have "
+                                        f"{_xd_il_req_sp} on that day. Which time would work for you?"
+                                    )
+                                _nxt_il_pt  = step["step"] + 1
+                                _nxt_il_pst = (
+                                    self._active_flow[_nxt_il_pt]["state"]
+                                    if _nxt_il_pt < len(self._active_flow) else "DONE"
+                                )
+                                self.session["flow_step"] = _nxt_il_pt
+                                self.session["state"]     = _nxt_il_pst
+                                await self._tts.put(_xd_il_msg)
+                                self.session["last_question"] = _xd_il_msg
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _xd_il_msg}
+                                )
+                                logger.info(
+                                    "[ms_flow] PRESENT_DAYS inline date+time: hour=%d not on %r — offered alts",
+                                    _xd_inline_hour, _xd_il_label,
+                                )
+                                return
+                        # No inline time (or no slots for day) — present full time list
                         _nxt_xd = step["step"] + 1
                         _nxt_xd_state = (
                             self._active_flow[_nxt_xd]["state"]
@@ -5622,6 +5759,95 @@ class FlowEngine:
                         self.session.pop("vague_option_pending", None)
                         self.session.pop("vague_clarification_asked", None)
                         self.session.pop("slot_pending_confirmation", None)
+                        # ── INLINE TIME: "the 30th at 10" ──────────────────────
+                        _bo_inline_hour = _extract_hour_from_text(text)
+                        if _bo_inline_hour is not None:
+                            _bo_il_slots = _bo_matched.get("slots", [])
+                            _bo_il_times = _bo_matched.get("slot_times", [])
+                            _bo_il_label = _bo_matched.get("day_label", "")
+                            _bo_il_idx: Optional[int] = None
+                            for _bxi, _bxt in enumerate(_bo_il_times):
+                                try:
+                                    if int(_bxt.split(":")[0]) == _bo_inline_hour:
+                                        _bo_il_idx = _bxi
+                                        break
+                                except (ValueError, IndexError):
+                                    pass
+                            from app.vagueness_detector import _time_to_speech as _t2s_bo_il
+                            if _bo_il_idx is not None:
+                                _bo_il_sp = _t2s_bo_il(_bo_il_times[_bo_il_idx])
+                                _bo_il_ss = f"{_bo_il_label} at {_bo_il_sp}"
+                                _nxt_bo_il = step["step"] + 2
+                                _nxt_bo_il_state = (
+                                    self._active_flow[_nxt_bo_il]["state"]
+                                    if _nxt_bo_il < len(self._active_flow) else "DONE"
+                                )
+                                self.session["selected_slot"]        = _bo_il_slots[_bo_il_idx].get("start", "")
+                                self.session["selected_slot_speech"] = _bo_il_ss
+                                self.session["slot_confirmed"]       = True
+                                self.session["flow_step"]            = _nxt_bo_il
+                                self.session["state"]                = _nxt_bo_il_state
+                                logger.info(
+                                    "[ms_flow] PRESENT_DAYS bare-ordinal+time: %r hour=%d → %r (PRESENT_TIMES skipped)",
+                                    _bo_il_label, _bo_inline_hour, _bo_il_ss,
+                                )
+                                await self.ask_current_question()
+                                return
+                            elif _bo_il_times:
+                                from app.vagueness_detector import _time_to_speech as _t2s_bo_na
+                                _bo_il_req_sp = _t2s_bo_na(f"{_bo_inline_hour:02d}:00")
+                                def _bo_il_dist(t):
+                                    try: return abs(int(t.split(":")[0]) - _bo_inline_hour)
+                                    except: return 999
+                                _bo_near_t = sorted(_bo_il_times, key=_bo_il_dist)[:2]
+                                _bo_near_s: list = []
+                                for _bnt in _bo_near_t:
+                                    for _bsi, _bst in enumerate(_bo_il_times):
+                                        if _bst == _bnt and _bsi < len(_bo_il_slots):
+                                            _bo_near_s.append(_bo_il_slots[_bsi])
+                                            break
+                                _bo_near_sp = [_t2s_bo_na(t) for t in _bo_near_t]
+                                if len(_bo_near_sp) == 1:
+                                    _bo_il_msg = (
+                                        f"I\u2019ve got {_bo_il_label} for you, but I don\u2019t have "
+                                        f"{_bo_il_req_sp} \u2014 the closest I have is {_bo_near_sp[0]}. "
+                                        "Would that work?"
+                                    )
+                                    if _bo_near_s:
+                                        self.session["selected_slot"]             = _bo_near_s[0].get("start", "")
+                                        self.session["selected_slot_speech"]      = f"{_bo_il_label} at {_bo_near_sp[0]}"
+                                        self.session["slot_pending_confirmation"] = True
+                                elif _bo_near_sp:
+                                    _bo_il_msg = (
+                                        f"I\u2019ve got {_bo_il_label} for you, but I don\u2019t have "
+                                        f"{_bo_il_req_sp} \u2014 I do have {_bo_near_sp[0]} or "
+                                        f"{_bo_near_sp[1]}. Which would suit you?"
+                                    )
+                                    self.session["offered_constrained_times"] = _bo_near_t
+                                    self.session["offered_constrained_slots"] = _bo_near_s
+                                else:
+                                    _bo_il_msg = (
+                                        f"I\u2019ve got {_bo_il_label} for you, but I don\u2019t have "
+                                        f"{_bo_il_req_sp} on that day. Which time would work for you?"
+                                    )
+                                _nxt_bo_pt  = step["step"] + 1
+                                _nxt_bo_pst = (
+                                    self._active_flow[_nxt_bo_pt]["state"]
+                                    if _nxt_bo_pt < len(self._active_flow) else "DONE"
+                                )
+                                self.session["flow_step"] = _nxt_bo_pt
+                                self.session["state"]     = _nxt_bo_pst
+                                await self._tts.put(_bo_il_msg)
+                                self.session["last_question"] = _bo_il_msg
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _bo_il_msg}
+                                )
+                                logger.info(
+                                    "[ms_flow] PRESENT_DAYS bare-ordinal+time: hour=%d not on %r — offered alts",
+                                    _bo_inline_hour, _bo_il_label,
+                                )
+                                return
+                        # No inline time — present full time list
                         _nxt_bo = step["step"] + 1
                         _nxt_bo_state = (
                             self._active_flow[_nxt_bo]["state"]
@@ -6848,7 +7074,7 @@ class FlowEngine:
                                 else "that time"
                             )
                         break
-                # Direct time-phrase match
+                # Direct time-phrase match (spoken form: "nine", "eleven")
                 if _bound_oc_time is None:
                     for _ot, _os, _osp in zip(_oc_times, _oc_slots, _spoken_oc):
                         if _osp and _osp.lower() in text.lower():
@@ -6856,6 +7082,32 @@ class FlowEngine:
                             _bound_oc_slot   = _os
                             _bound_oc_speech = _osp
                             break
+                # Digit-form hour match ("11 o'clock", "11 in the morning")
+                import re as _re_oc_dig
+                if _bound_oc_time is None:
+                    for _ot, _os, _osp in zip(_oc_times, _oc_slots, _spoken_oc):
+                        try:
+                            _oc_h = int(_ot.split(":")[0])
+                            if _re_oc_dig.search(r'\b' + str(_oc_h) + r'\b', text):
+                                _bound_oc_time   = _ot
+                                _bound_oc_slot   = _os
+                                _bound_oc_speech = _osp or f"{_oc_h}:00"
+                                break
+                        except (ValueError, IndexError):
+                            pass
+                # Vague acceptance ("works for me", "that works", "yeah") when single constrained slot
+                if _bound_oc_time is None and len(_oc_slots) == 1:
+                    _OC_VAGUE_ACCEPT = (
+                        "works for me", "that works", "works", "i'll take that",
+                        "i'll take it", "i'll go with", "sounds good", "that sounds",
+                        "sounds great", "perfect", "great", "suits me", "that suits",
+                        "happy with", "yeah that", "yes that", "ok", "okay",
+                        "sure", "fine", "alright", "yes please",
+                    )
+                    if any(p in text for p in _OC_VAGUE_ACCEPT):
+                        _bound_oc_time   = _oc_times[0]
+                        _bound_oc_slot   = _oc_slots[0]
+                        _bound_oc_speech = _spoken_oc[0] if _spoken_oc else "that time"
                 if _bound_oc_time is not None:
                     _avail_oc   = self.session.get("available_days", [])
                     _chosen_oc  = self.session.get("chosen_day", "")
@@ -6947,10 +7199,16 @@ class FlowEngine:
             # not a constraint.  Detect "at [time_word]" pattern and allow direct
             # matching even when _is_constraint is True.
             import re as _re_at_sel
-            _has_explicit_at_time = bool(_re_at_sel.search(
-                r'\bat\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b',
-                text,
-            ))
+            _has_explicit_at_time = bool(
+                _re_at_sel.search(
+                    r'\bat\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b',
+                    text,
+                )
+                or _re_at_sel.search(
+                    r'\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+o\'?clock\b',
+                    text,
+                )
+            )
             import re as _re_dt
             _FILLER_DT = (
                 "i said ", "said ", "suits me", "for me", "that works",
