@@ -7108,15 +7108,43 @@ class FlowEngine:
             )
             _is_constraint = any(p in text for p in _CONSTRAINT_GUARD)
 
+            # ── TIME_QUERY early detection (hoisted) ────────────────────────
+            # Defined here so constrained-subset binding can respect it.
+            # Full time-query handling block lives below in the DIRECT TIME path.
+            _TIME_QUERY_PHRASES_EARLY = (
+                "do you have anything", "have you got anything", "got anything",
+                "do you have any", "have you got any",
+                "is there anything", "is there any",
+                "are there any", "any availability",
+                "anything around", "anything near", "anything close",
+                "anything after", "anything before",
+                "anything later than", "anything earlier than",
+                "later than that", "earlier than that",
+                "around ", "near to ", "close to ",
+                "closer to", "nearest to",
+                "what about ", "what have you got",
+                "is that available", "is it available",
+                "is 5 available", "is there a 5",
+                "do you have 5", "have you got 5",
+                "anything at all", "any slots",
+                "like later on", "later on that day",
+                "do you do", "do you offer",
+                "can you do", "could you do",
+                "would you have",
+            )
+            _is_time_query_early = any(p in text for p in _TIME_QUERY_PHRASES_EARLY)
+
             # ── Constrained-subset binding ───────────────────────────────────
             # If we recently offered a filtered subset (2+ slots), try to bind
             # the caller's response against that subset BEFORE running the
             # general _is_constraint or full-list ordinal handler. This prevents
             # "one o'clock in the afternoon works" from looping back into the
             # constraint handler because "in the afternoon" is in _CONSTRAINT_GUARD.
+            # Guard: if this is a TIME_QUERY, skip binding — the query handler below
+            # will answer it and offer the relevant slot as a pending confirmation.
             _oc_times = self.session.get("offered_constrained_times", [])
             _oc_slots = self.session.get("offered_constrained_slots", [])
-            if _oc_times and _oc_slots:
+            if _oc_times and _oc_slots and not _is_time_query_early:
                 from app.vagueness_detector import _time_to_speech as _t2s_oc
                 _spoken_oc     = [_t2s_oc(t) for t in _oc_times]
                 _bound_oc_time  = None
@@ -7258,11 +7286,34 @@ class FlowEngine:
             # etc. when ordinal matching failed.  Strips filler, parses the spoken
             # hour, then matches against slot_times for the chosen day.
             # Priority: digit > word.  Afternoon indicator shifts word hours < 12.
-            # FIX D: Skip direct time matching when the caller is expressing a
-            # constraint — "anything later than 1pm" should NOT confirm the 1pm slot.
-            # BUG 6 fix: EXCEPTION — "at five o'clock in the afternoon" is a selection,
-            # not a constraint.  Detect "at [time_word]" pattern and allow direct
-            # matching even when _is_constraint is True.
+            #
+            # ── SEMANTIC GATE: QUERY vs SELECTION ─────────────────────────────
+            # An explicit hour is NOT sufficient to bind.  The utterance must be
+            # semantically classified first.  Time queries ("do you have anything
+            # around 5?") must never advance the flow even when an hour is present.
+            #
+            # TIME_QUERY — reuse already-computed value (hoisted above
+            # constrained-subset binding to protect that block too).
+            _is_time_query = _is_time_query_early
+
+            # TIME_SELECTION phrases — caller is explicitly choosing.
+            # These override _is_time_query only when unambiguously binding.
+            _TIME_SELECTION_PHRASES = (
+                "works for me", "work for me", "that works",
+                "i'll do", "i'll take", "i will take", "i will do",
+                "book ", "book me in", "please book",
+                "suits me", "that suits", "i'll go with",
+                "i'd like ", "i would like ", "i want ",
+                "the ", # "the 5 o'clock one" — combined with hour check below
+                "sign me up", "confirm",
+            )
+            _is_time_selection = any(p in text for p in _TIME_SELECTION_PHRASES)
+
+            # Final gate: allow direct-time binding only when:
+            #   a) NOT a query phrase, AND
+            #   b) either a selection phrase is present OR
+            #      the utterance has an explicit "at [time]" / "[time] o'clock" form
+            #      AND no query language is present.
             import re as _re_at_sel
             _has_explicit_at_time = bool(
                 _re_at_sel.search(
@@ -7273,6 +7324,12 @@ class FlowEngine:
                     r'\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+o\'?clock\b',
                     text,
                 )
+            )
+            # If the utterance is clearly a query, the explicit-at-time exception
+            # must NOT override — "around 5 o'clock" must stay as a query.
+            _allow_time_bind = (
+                not _is_time_query
+                and (not _is_constraint or _has_explicit_at_time or _is_time_selection)
             )
             import re as _re_dt
             _FILLER_DT = (
@@ -7288,12 +7345,95 @@ class FlowEngine:
             _avail_dt  = self.session.get("available_days", [])
             _chosen_dt = self.session.get("chosen_day", "")
             _target_dt = _find_chosen_day_entry(_avail_dt, _chosen_dt)
-            # Allow direct-time matching when caller says "at [time]" even if a
-            # broad period word (afternoon/morning) also appears — that is a
-            # selection ("at five in the afternoon"), not a constraint.
-            if _target_dt and _target_dt.get("slots") and (
-                not _is_constraint or _has_explicit_at_time
-            ):
+
+            # ── TIME_QUERY handling: answer availability question, do NOT bind ─
+            # Must run BEFORE the direct-bind path.  If _is_time_query is True
+            # and an hour can be extracted, answer the question deterministically
+            # from the current day's slots and stay in PRESENT_TIMES.
+            if _is_time_query and _target_dt and _target_dt.get("slots"):
+                _tq_times = _target_dt.get("slot_times", [])
+                _tq_slots = _target_dt.get("slots", [])
+                _tq_label = _target_dt.get("day_label", "that day")
+                _tq_hour  = _extract_hour_from_text(text)
+                from app.vagueness_detector import _time_to_speech as _t2s_tq
+                if _tq_hour is not None:
+                    # Check for exact match on current day
+                    _tq_exact_idx: Optional[int] = None
+                    for _tqi, _tqt in enumerate(_tq_times):
+                        try:
+                            if int(_tqt.split(":")[0]) == _tq_hour:
+                                _tq_exact_idx = _tqi
+                                break
+                        except (ValueError, IndexError):
+                            pass
+                    if _tq_exact_idx is not None:
+                        # Exact time exists — tell the caller and offer it as a choice
+                        _tq_sp = _t2s_tq(_tq_times[_tq_exact_idx])
+                        _tq_msg = (
+                            f"Yes \u2014 I do have {_tq_sp} on {_tq_label}. "
+                            "Would you like to book that?"
+                        )
+                        self.session["selected_slot"]             = _tq_slots[_tq_exact_idx].get("start", "")
+                        self.session["selected_slot_speech"]      = f"{_tq_label} at {_tq_sp}"
+                        self.session["slot_pending_confirmation"] = True
+                        self.session.pop("offered_constrained_times", None)
+                        self.session.pop("offered_constrained_slots", None)
+                    else:
+                        # No exact match — offer nearest same-day alternatives
+                        def _tq_dist(t: str) -> int:
+                            try: return abs(int(t.split(":")[0]) - _tq_hour)
+                            except: return 999
+                        _tq_req_sp  = _t2s_tq(f"{_tq_hour:02d}:00")
+                        _tq_near_t  = sorted(_tq_times, key=_tq_dist)[:2]
+                        _tq_near_s: list = []
+                        for _tqnt in _tq_near_t:
+                            for _tqsi, _tqst in enumerate(_tq_times):
+                                if _tqst == _tqnt and _tqsi < len(_tq_slots):
+                                    _tq_near_s.append(_tq_slots[_tqsi])
+                                    break
+                        _tq_near_sp = [_t2s_tq(t) for t in _tq_near_t]
+                        if len(_tq_near_sp) == 1:
+                            _tq_msg = (
+                                f"I don\u2019t have {_tq_req_sp} on {_tq_label}, "
+                                f"but the closest I have is {_tq_near_sp[0]} \u2014 "
+                                "would that work?"
+                            )
+                            if _tq_near_s:
+                                self.session["selected_slot"]             = _tq_near_s[0].get("start", "")
+                                self.session["selected_slot_speech"]      = f"{_tq_label} at {_tq_near_sp[0]}"
+                                self.session["slot_pending_confirmation"] = True
+                                self.session.pop("offered_constrained_times", None)
+                                self.session.pop("offered_constrained_slots", None)
+                        elif _tq_near_sp:
+                            _tq_msg = (
+                                f"I don\u2019t have {_tq_req_sp} on {_tq_label}, "
+                                f"but I do have {_tq_near_sp[0]} or {_tq_near_sp[1]} \u2014 "
+                                "which would suit you?"
+                            )
+                            self.session["offered_constrained_times"] = _tq_near_t
+                            self.session["offered_constrained_slots"] = _tq_near_s
+                            self.session.pop("selected_slot", None)
+                            self.session.pop("selected_slot_speech", None)
+                            self.session.pop("slot_pending_confirmation", None)
+                        else:
+                            _tq_msg = (
+                                f"I\u2019m afraid I don\u2019t have {_tq_req_sp} on {_tq_label}. "
+                                "Which time would work for you?"
+                            )
+                    await self._tts.put(_tq_msg)
+                    self.session["last_question"] = _tq_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _tq_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: TIME_QUERY hour=%d on %r → answered without binding",
+                        step["state"], _tq_hour, _tq_label,
+                    )
+                    return
+                # _is_time_query but no parseable hour → fall through to
+                # existing _is_constraint handler below which handles period-only queries
+
+            if _target_dt and _target_dt.get("slots") and _allow_time_bind:
                 _slot_times_dt = _target_dt.get("slot_times", [])
                 _matched_hour: Optional[int] = None
 
