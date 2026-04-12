@@ -103,33 +103,6 @@ def format_insurance_booking_confirmation(
     return msg
 
 
-def format_first_visit_welcome(
-    patient_name: str,
-    appointment_time: datetime,
-    location: str,
-    clinic_name:  Optional[str] = None,
-    clinic_phone: Optional[str] = None,
-) -> str:
-    """✅ First-visit welcome — new patient."""
-    day_name = appointment_time.strftime("%A")
-    day_num  = appointment_time.strftime("%d").lstrip("0")
-    month    = appointment_time.strftime("%b")
-    time_str = appointment_time.strftime("%I:%M%p").lstrip("0").lower()
-    date_str = appointment_time.strftime("%B %d, %Y")  # e.g., "April 08, 2026"
-    date_str = date_str.replace(" 0", " ")  # Remove leading zero from day
-
-    name  = _cn(clinic_name)
-    phone = _cp(clinic_phone)
-    loc_str = location.title() if location else "our"
-
-    return (
-        f"Hi {patient_name}, welcome to {name}! Your first appointment is on "
-        f"{date_str} at {time_str} at our {loc_str} clinic. "
-        f"Please arrive 5 minutes early — we look forward to meeting you! "
-        f"Any questions? Call us on {phone}."
-    )
-
-
 # ============================================================================
 # 🔔 REMINDER TEMPLATES
 # ============================================================================

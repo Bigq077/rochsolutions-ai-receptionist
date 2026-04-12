@@ -20,7 +20,6 @@ from app.notifications.templates import (
     format_late_cancellation_warning,
     format_callback_confirmation,
     format_message_received_confirmation,
-    format_first_visit_welcome,
     format_what_to_bring_reminder,
     format_post_appointment_thankyou,
     format_insurance_receipt_ready,
@@ -90,13 +89,6 @@ async def send_booking_confirmation(
                     insurer=insurer,
                     **ck,
                 )
-            elif is_new_patient:
-                message = format_first_visit_welcome(
-                    patient_name=patient_name,
-                    appointment_time=appointment_time,
-                    location=location_short,
-                    **ck,
-                )
             else:
                 message = format_booking_confirmation(
                     patient_name=patient_name,
@@ -104,6 +96,7 @@ async def send_booking_confirmation(
                     location=location_short,
                     service=service,
                     practitioner=practitioner,
+                    is_new_patient=is_new_patient,
                     **ck,
                 )
 
