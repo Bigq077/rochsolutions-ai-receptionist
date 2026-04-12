@@ -273,6 +273,10 @@ _LEADING_FILLERS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Denial prefix stripper (for inline-correction extraction) ─────────────────
+# Matches "no" with any trailing punctuation/whitespace so "no, it's X" →  "it's X"
+_DENIAL_PREFIX_RE = re.compile(r'^no[,\.!\s]+', re.IGNORECASE)
+
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
@@ -423,6 +427,33 @@ def _is_repair_request(text: str) -> bool:
 
 def _has_meta_language(text: str) -> bool:
     return any(p in text for p in _META_LANGUAGE)
+
+
+def _is_incomplete_scaffold(text: str) -> bool:
+    """
+    Return True if the utterance is a pure setup/scaffold fragment with no
+    name content — e.g. "my surname is", "my name is", "it's", "my".
+
+    These arise when STT finalizes early on a multi-fragment utterance (the
+    caller said "my surname is" and the name chunk arrived in a separate STT
+    event).  They must NOT count as failed name-capture attempts or the retry
+    counter gets inflated, causing the system to treat a subsequently clean
+    name as degraded and wrongly fire the correction-SMS flag.
+    """
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    # Single isolated setup tokens
+    if lowered in {"my", "it's", "its", "i'm", "im"}:
+        return True
+    # Exact match of any known name-label prefix (without trailing name content).
+    # _PREFIXES entries carry a trailing space (e.g. "my surname is "); we strip
+    # that to get the bare phrase and compare against the full utterance.
+    for p in _PREFIXES:
+        p_core = p.strip()  # e.g. "my surname is"
+        if lowered == p_core:
+            return True
+    return False
 
 
 # ── NameCollector class ───────────────────────────────────────────────────────
@@ -611,9 +642,16 @@ class NameCollector:
 
         Fast path:  1 valid token → fn_confirm.
         Two-token:  first token → fn_confirm, second queued as pending_surname.
+        Scaffold:   pure setup phrase with no name — re-ask WITHOUT retry count.
         Meta/noise: salvage leading token if possible; otherwise re-ask.
         Spelling offer: treated as garbled input (not routed to spelling mode).
         """
+        # Incomplete scaffold ("my name is", "it's", "my") — STT finalized early
+        # before the name arrived.  Re-ask without counting this as a failed attempt.
+        if _is_incomplete_scaffold(text):
+            logger.info("[NameCollector] fn_normal: incomplete scaffold %r — no retry", text)
+            return ("ask", "What's your first name please?")
+
         cleaned = _strip_filler_prefix(text)
 
         # Negation: "I'm not Sarah, it's Emma" → extract corrected name
@@ -701,6 +739,18 @@ class NameCollector:
         # caller is unhappy with the readback, so give them one more chance.
         is_denial = (has_no and not has_yes) or _is_spelling_offer(text)
         if is_denial:
+            # Inline correction: "no, it's Quentin" / "no Quentin" — extract the
+            # corrected name directly rather than bouncing through fn_reask.
+            _tail = _DENIAL_PREFIX_RE.sub("", text).strip()
+            if _tail:
+                _corr_tokens = _tokenise(_strip_filler_prefix(_tail))
+                if _corr_tokens:
+                    logger.info(
+                        "[NameCollector] fn_confirm: inline correction %r → confirming",
+                        _corr_tokens[0],
+                    )
+                    return self._enter_fn_confirm(_corr_tokens[0].title())
+            # Plain denial — one normal re-ask
             self._nc["substate"] = NC_FN_REASK
             self._nc["fn_candidate"] = cand   # keep candidate as fallback
             # Clear pending_surname — full name was apparently wrong
@@ -784,9 +834,16 @@ class NameCollector:
         Collect surname in normal mode.
 
         ALL accepts route through sn_confirm so the caller can verify once.
+        Scaffold:   pure setup phrase with no name — re-ask WITHOUT retry count.
         Meta-language with a leading token → salvage into sn_confirm.
         Spelling offers → treated as garbled (not routed to spelling mode).
         """
+        # Incomplete scaffold ("my surname is", "it's", "my") — STT finalized
+        # early before the name arrived.  Re-ask without counting as failure.
+        if _is_incomplete_scaffold(text):
+            logger.info("[NameCollector] sn_normal: incomplete scaffold %r — no retry", text)
+            return ("ask", "And what's your surname?")
+
         # Salvage: name token before a meta/spelling trigger phrase
         _triggers = _META_LANGUAGE + _SPELLING_OFFER
         if any(p in text for p in _triggers):
@@ -868,6 +925,17 @@ class NameCollector:
         # NO / spelling offer — one normal re-ask, no spelling mode
         is_denial = (has_no and not has_yes) or _is_spelling_offer(text)
         if is_denial:
+            # Inline correction: "no, it's Roch" / "no Roch" / "no my surname is Roch"
+            _tail = _DENIAL_PREFIX_RE.sub("", text).strip()
+            if _tail:
+                _corr_tokens = _tokenise(_strip_filler_prefix(_tail))
+                if _corr_tokens:
+                    logger.info(
+                        "[NameCollector] sn_confirm: inline correction %r → confirming",
+                        _corr_tokens[0],
+                    )
+                    return self._enter_sn_confirm(_corr_tokens[0].title())
+            # Plain denial — one normal re-ask
             self._nc["substate"] = NC_SN_REASK
             self._nc["surname_candidate"] = cand   # keep as fallback
             logger.info("[NameCollector] sn_confirm: denial — entering sn_reask")
@@ -946,16 +1014,20 @@ class NameCollector:
 
     def _fn_fail(self, re_ask: str) -> Tuple[str, str]:
         """
-        Increment first-name retry counter and re-ask.
+        Increment first-name retry counter.
 
-        After 2 failed extractions (fn_retries >= 2) escalate to NC_FN_REASK
-        so the next turn runs _fn_reask() which accepts best-effort input and
-        sets needs_name_correction_sms=True.
+        One retry only: on the very first genuine failure (fn_retries == 1)
+        escalate immediately to NC_FN_REASK so the next turn runs _fn_reask()
+        which accepts best-effort input and sets needs_name_correction_sms=True.
+
+        Scaffold fragments ("my name is", "it's", "my") are handled upstream in
+        _fn_normal and never reach here, so every call to _fn_fail is a real
+        extraction failure.
         """
         self._nc["fn_retries"] = self._nc.get("fn_retries", 0) + 1
         retries = self._nc["fn_retries"]
         logger.info("[NameCollector] fn_fail: retry #%d", retries)
-        if retries >= 2:
+        if retries >= 1:
             self._nc["substate"] = NC_FN_REASK
             logger.info("[NameCollector] fn_fail: escalating to NC_FN_REASK after %d retries", retries)
             return ("ask", "Sorry about that — what's your first name please?")
@@ -963,16 +1035,19 @@ class NameCollector:
 
     def _sn_fail(self, re_ask: str) -> Tuple[str, str]:
         """
-        Increment surname retry counter and re-ask.
+        Increment surname retry counter.
 
-        After 2 failed extractions (sn_retries >= 2) escalate to NC_SN_REASK
-        so the next turn runs _sn_reask() which accepts best-effort input and
-        sets needs_name_correction_sms=True.
+        One retry only: on the very first genuine failure (sn_retries == 1)
+        escalate immediately to NC_SN_REASK so the next turn runs _sn_reask()
+        which accepts best-effort input and sets needs_name_correction_sms=True.
+
+        Scaffold fragments ("my surname is", "it's", "my") are handled upstream
+        in _sn_normal and never reach here.
         """
         self._nc["sn_retries"] = self._nc.get("sn_retries", 0) + 1
         retries = self._nc["sn_retries"]
         logger.info("[NameCollector] sn_fail: retry #%d", retries)
-        if retries >= 2:
+        if retries >= 1:
             self._nc["substate"] = NC_SN_REASK
             logger.info("[NameCollector] sn_fail: escalating to NC_SN_REASK after %d retries", retries)
             return ("ask", "Sorry about that — please just say your surname.")

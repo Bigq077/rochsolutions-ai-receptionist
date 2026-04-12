@@ -335,14 +335,14 @@ class TestSnConfirm:
 # ── 8. No spelling mode in live flow ─────────────────────────────────────────
 
 class TestNoSpellingMode:
-    def test_spelling_offer_in_fn_normal_stays_in_fn_normal(self):
-        """'Shall I spell it' in fn_normal — garbled, re-ask in fn_normal."""
+    def test_spelling_offer_in_fn_normal_escalates_to_fn_reask(self):
+        """'Shall I spell it' in fn_normal — garbled input triggers one-retry escalation."""
         s = sess()
         action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
         assert action == "ask"
-        # Substate must NOT be NC_FN_SPELLING
+        # Must NOT enter spelling mode; with one-retry-only, first failure → fn_reask
         assert s["_nc"]["substate"] != NC_FN_SPELLING
-        assert s["_nc"]["substate"] == NC_FN_NORMAL
+        assert s["_nc"]["substate"] == NC_FN_REASK
 
     def test_spelling_offer_in_fn_confirm_enters_fn_reask(self):
         """'Shall I spell it' in fn_confirm = denial → fn_reask."""
@@ -352,15 +352,16 @@ class TestNoSpellingMode:
         assert action == "ask"
         assert s["_nc"]["substate"] == NC_FN_REASK
 
-    def test_spelling_offer_in_sn_normal_stays_in_sn_normal(self):
-        """'Shall I spell it' in sn_normal — garbled, re-ask in sn_normal."""
+    def test_spelling_offer_in_sn_normal_escalates_to_sn_reask(self):
+        """'Shall I spell it' in sn_normal — garbled input triggers one-retry escalation."""
         s = sess()
         s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt")
         s["name_fragment"] = "Matt"
         action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
         assert action == "ask"
-        assert s["_nc"]["substate"] not in (NC_SN_SPELLING, NC_SN_REASK)
-        assert s["_nc"]["substate"] == NC_SN_NORMAL
+        # Must NOT enter spelling mode; with one-retry-only, first failure → sn_reask
+        assert s["_nc"]["substate"] != NC_SN_SPELLING
+        assert s["_nc"]["substate"] == NC_SN_REASK
 
     def test_spelling_offer_in_sn_confirm_enters_sn_reask(self):
         """'Shall I spell it' in sn_confirm = denial → sn_reask."""
@@ -508,18 +509,17 @@ class TestBestEffortPaths:
 # ── 10. Retry escalation ──────────────────────────────────────────────────────
 
 class TestRetryEscalation:
-    def test_fn_failures_below_threshold_stay_in_fn_normal(self):
-        """First fn failure (retries=1) stays in fn_normal — not yet at threshold."""
+    def test_fn_failure_escalates_immediately_to_fn_reask(self):
+        """First genuine fn failure (retries=1) immediately escalates to fn_reask (one retry only)."""
         s = sess()
         action, _ = NameCollector(s).handle("uh um er", "Uh um er")
-        assert action in ("ask", "repair")
-        assert s["_nc"]["substate"] == NC_FN_NORMAL
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_FN_REASK
 
     def test_fn_failures_at_threshold_escalate_to_fn_reask(self):
-        """2 fn failures escalate substate to NC_FN_REASK (bounded retry)."""
+        """One fn failure escalates substate to NC_FN_REASK (one-retry-only)."""
         s = sess()
-        NameCollector(s).handle("uh um er", "Uh um er")   # fn_retries=1
-        action, _ = NameCollector(s).handle("uh um er", "Uh um er")  # fn_retries=2
+        action, _ = NameCollector(s).handle("uh um er", "Uh um er")   # fn_retries=1 → escalate
         assert action == "ask"
         assert s["_nc"]["substate"] == NC_FN_REASK
 
@@ -530,21 +530,21 @@ class TestRetryEscalation:
             NameCollector(s).handle("uh um er", "Uh um er")
         assert s["_nc"]["substate"] != "fn_spelling"
 
-    def test_sn_failures_below_threshold_stay_in_sn_normal(self):
-        """First sn failure stays in sn_normal — not yet at threshold."""
+    def test_sn_failure_escalates_immediately_to_sn_reask(self):
+        """First genuine sn failure (retries=1) immediately escalates to sn_reask (one retry only)."""
         s = sess()
         s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=0)
         s["name_fragment"] = "Matt"
         action, _ = NameCollector(s).handle("uh um er", "Uh um er")
-        assert action in ("ask", "repair")
-        assert s["_nc"]["substate"] == NC_SN_NORMAL
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_SN_REASK
 
     def test_sn_failures_at_threshold_escalate_to_sn_reask(self):
-        """2 sn failures escalate substate to NC_SN_REASK (bounded retry)."""
+        """One sn failure escalates substate to NC_SN_REASK (one-retry-only)."""
         s = sess()
-        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=1)
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=0)
         s["name_fragment"] = "Matt"
-        action, _ = NameCollector(s).handle("uh um er", "Uh um er")  # sn_retries=2
+        action, _ = NameCollector(s).handle("uh um er", "Uh um er")  # sn_retries=1 → escalate
         assert action == "ask"
         assert s["_nc"]["substate"] == NC_SN_REASK
 
@@ -592,10 +592,10 @@ class TestRepairRequest:
         assert "surname" in payload.lower()
 
     def test_spelling_offer_in_fn_normal_not_caught_as_repair(self):
-        """Spelling offer in fn_normal is garbled input, not a repair — stays fn_normal."""
+        """Spelling offer in fn_normal is garbled input — triggers escalation, never spelling mode."""
         s = sess()
         action, _ = NameCollector(s).handle("shall i spell it", "Shall I spell it")
-        assert s["_nc"]["substate"] == NC_FN_NORMAL  # not fn_spelling, not repair
+        assert s["_nc"]["substate"] != NC_FN_SPELLING  # never spelling mode
 
 
 # ── 12. Name negation ─────────────────────────────────────────────────────────
@@ -844,14 +844,12 @@ class TestNameCorrectionSmsFlag:
         assert s.get("needs_name_correction_sms") is True
 
     def test_fn_confirm_yes_after_retries_sets_flag(self):
-        """YES in fn_confirm after fn_retries > 0 marks capture as unreliable."""
+        """YES in fn_confirm with fn_retries > 0 marks capture as unreliable (defensive path)."""
         s = sess()
-        # Force fn_retries=2 via repeated fn_normal failures
-        NameCollector(s).handle("uh um", "Uh um")       # fn_fail → fn_retries=1
-        NameCollector(s).handle("uh um", "Uh um")       # fn_fail → fn_retries=2
-        NameCollector(s).handle("quentin", "Quentin")   # fn_confirm
-        assert s["_nc"]["fn_retries"] == 2
-        NameCollector(s).handle("yes", "Yes")           # YES after retries
+        # Directly construct fn_confirm state with fn_retries=1 (defensive: can't happen via
+        # normal flow since first failure escalates to fn_reask, but the check is kept for safety)
+        s["_nc"] = _full_nc_dict(substate=NC_FN_CONFIRM, fn_candidate="Quentin", fn_retries=1)
+        NameCollector(s).handle("yes", "Yes")
         assert s.get("needs_name_correction_sms") is True
 
     def test_sn_confirm_yes_after_retries_sets_flag(self):
@@ -932,10 +930,9 @@ class TestNameCorrectionSmsFlag:
         assert "needs_name_correction_sms" not in s
 
     def test_fn_reask_via_bounded_escalation_sets_flag(self):
-        """fn_fail×2 → NC_FN_REASK → any response sets needs_name_correction_sms."""
+        """fn_fail×1 → NC_FN_REASK → any response sets needs_name_correction_sms."""
         s = sess()
-        NameCollector(s).handle("uh um", "Uh um")   # fn_retries=1
-        NameCollector(s).handle("uh um", "Uh um")   # fn_retries=2 → NC_FN_REASK
+        NameCollector(s).handle("uh um", "Uh um")   # fn_retries=1 → NC_FN_REASK immediately
         assert s["_nc"]["substate"] == NC_FN_REASK
         NameCollector(s).handle("quentin", "Quentin")  # fn_reask → accept
         assert s.get("needs_name_correction_sms") is True
