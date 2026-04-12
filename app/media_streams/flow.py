@@ -1632,6 +1632,18 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 4,
+        "state": "CONFIRM_RESCHEDULE_OR_CANCEL",
+        "question": (
+            "Would you like to reschedule this appointment to another time, "
+            "or would you like to cancel it altogether?"
+        ),
+        "answer_field": "reschedule_or_cancel_choice",
+        "use_llm": False,
+        "extract": "none",
+        "llm_instruction": None,
+    },
+    {
+        "step": 5,
         "state": "PRESENT_DAYS_RESCHEDULE",
         "question": "Just a moment while I check which days and times we have available for you...",
         "answer_field": "chosen_day",
@@ -1652,14 +1664,14 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 5,
+        "step": 6,
         "state": "PRESENT_TIMES_RESCHEDULE",
         "question": None,
         "answer_field": "selected_slot",
         "use_llm": True,
         "allow_tools": False,
         "extract": "slot_selection",
-        "llm_instruction": (
+        "llm_instruction": (  # step 6 — was step 5 before CONFIRM_RESCHEDULE_OR_CANCEL insertion
             "⚠️ SPOKEN OUTPUT ONLY — every word is read aloud by TTS. "
             "Sound like a warm, efficient UK clinic receptionist.\n\n"
             "The caller just responded to the day options with: '{chosen_day}'.\n"
@@ -1687,7 +1699,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 6,
+        "step": 7,
         "state": "CONFIRM_RESCHEDULE",
         "question": None,
         "answer_field": "reschedule_confirmed",
@@ -1772,7 +1784,8 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
             "The system will handle the failure message automatically.\n\n"
             "TURN 2+ — Confirm:\n"
             "  Caller says YES → call confirm_appointment_found(). "
-            "Then say 'I\\'ll get that cancelled for you now.'\n"
+            "Then say NOTHING. Do NOT speak after calling confirm_appointment_found() — "
+            "the system will handle it automatically.\n"
             "  Caller says NO + multiple_found=true → offer first alternative: "
             "'Could it be on [alt.day_label] at [alt.time_label]?'\n"
             "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
@@ -1786,6 +1799,18 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     },
     {
         "step": 4,
+        "state": "CONFIRM_RESCHEDULE_OR_CANCEL",
+        "question": (
+            "Would you like to reschedule this appointment to another time, "
+            "or would you like to cancel it altogether?"
+        ),
+        "answer_field": "reschedule_or_cancel_choice",
+        "use_llm": False,
+        "extract": "none",
+        "llm_instruction": None,
+    },
+    {
+        "step": 5,
         "state": "CONFIRM_CANCEL",
         "question": None,
         "answer_field": "cancel_confirmed",
@@ -2403,6 +2428,20 @@ class FlowEngine:
                 {"role": "assistant", "content": q}
             )
             logger.info("[ms_flow] CONFIRM_RESCHEDULE — asked static confirmation question")
+            return
+
+        # ── CONFIRM_RESCHEDULE_OR_CANCEL: speak binary choice, wait for caller ──
+        if step["state"] == "CONFIRM_RESCHEDULE_OR_CANCEL":
+            _roc_q = (
+                "Would you like to reschedule this appointment to another time, "
+                "or would you like to cancel it altogether?"
+            )
+            await self._tts.put(_roc_q)
+            self.session["last_question"] = _roc_q
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _roc_q}
+            )
+            logger.info("[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL — asked binary choice")
             return
 
         # ── CONFIRM_CANCEL: directly execute via Acuity API (no LLM / no extra
@@ -8646,14 +8685,8 @@ class FlowEngine:
                         "[ms_flow] %s: deterministic YES confirmed — advancing to step %d",
                         _flow_label, _next_step,
                     )
-                    # CANCEL_FLOW: emit confirm bridge before CONFIRM_CANCEL (LLM step, no question).
-                    # RESCHEDULE_FLOW: skip — PRESENT_DAYS_RESCHEDULE question is the bridge.
-                    if self._active_flow is not RESCHEDULE_FLOW:
-                        _confirm_msg = "I'll get that cancelled for you now."
-                        await self._tts.put(_confirm_msg)
-                        self.session.setdefault("conversation_history", []).append(
-                            {"role": "assistant", "content": _confirm_msg}
-                        )
+                    # Both flows now advance to CONFIRM_RESCHEDULE_OR_CANCEL which speaks
+                    # the binary choice question — no bridge message needed here.
                     # Advance flow_step BEFORE ask_current_question so we never
                     # re-fire the LLM on the lookup step (Bugs 1 and 6).
                     self.session["flow_step"] = _next_step
@@ -8687,6 +8720,93 @@ class FlowEngine:
                 step["state"], transcript[:60],
             )
             await self.ask_current_question()
+            return
+
+        # ── CONFIRM_RESCHEDULE_OR_CANCEL: deterministic binary fork ───────────
+        # Reschedule → jump to PRESENT_DAYS_RESCHEDULE (slot selection).
+        # Cancel     → execute cancel directly and close.
+        # Ambiguous  → re-ask; never silently assume either path.
+        if step["state"] == "CONFIRM_RESCHEDULE_OR_CANCEL":
+            _roc_text = text.strip().lower()
+            _ROC_RESCHEDULE = (
+                "reschedule", "move it", "change the time", "another time",
+                "another day", "another slot", "different time", "different day",
+                "rearrange", "move the appointment", "change my appointment",
+                "book another", "new time", "different slot", "move to",
+            )
+            _ROC_CANCEL = (
+                "cancel", "cancel it", "cancel altogether", "just cancel",
+                "remove it", "delete it", "don't want it", "dont want it",
+                "cancel the appointment", "no longer need", "not going",
+                "want to cancel", "like to cancel",
+            )
+            _roc_is_reschedule = any(p in _roc_text for p in _ROC_RESCHEDULE)
+            _roc_is_cancel     = any(p in _roc_text for p in _ROC_CANCEL)
+
+            if _roc_is_reschedule and not _roc_is_cancel:
+                # Jump to PRESENT_DAYS_RESCHEDULE in the active flow.
+                # If we're in CANCEL_FLOW (no such step), switch to RESCHEDULE_FLOW.
+                _pdr_idx = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] == "PRESENT_DAYS_RESCHEDULE"),
+                    None,
+                )
+                if _pdr_idx is None:
+                    self._active_flow = RESCHEDULE_FLOW
+                    self.session["active_flow"] = "reschedule"
+                    _pdr_idx = _RESCHEDULE_PRESENT_DAYS_INDEX
+                self.session["flow_step"] = _pdr_idx
+                self.session["question_asked_this_turn"] = False
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: reschedule — "
+                    "jumping to PRESENT_DAYS_RESCHEDULE (idx=%d)", _pdr_idx,
+                )
+                await self.ask_current_question()
+                return
+
+            if _roc_is_cancel and not _roc_is_reschedule:
+                from app.tools.receptionist_tools import _exec_cancel_appointment
+                _roc_phone = (
+                    self.session.get("phone_number")
+                    or self.session.get("twilio_from_local")
+                    or self.session.get("twilio_from", "")
+                )
+                _roc_args = {
+                    "patient_name": self.session.get("full_name", ""),
+                    "phone":        _roc_phone,
+                    "location":     self.session.get("selected_location", "alcester"),
+                }
+                self.session["cancel_confirmed"] = True
+                _roc_result = await _exec_cancel_appointment(_roc_args, self.session)
+                if _roc_result.get("success"):
+                    _roc_resp = (
+                        "Okay — that appointment is now cancelled. "
+                        "You can book again at any time on this number."
+                    )
+                else:
+                    _roc_resp = (
+                        "I wasn't able to find an upcoming appointment under those details — "
+                        "please call us directly and the team will be happy to help."
+                    )
+                await self._tts.put(_roc_resp)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _roc_resp}
+                )
+                self.session["flow_step"] = len(self._active_flow)
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: cancel — success=%s",
+                    _roc_result.get("success"),
+                )
+                return
+
+            # Ambiguous (yes/no/okay/maybe etc.) — re-ask, never drift forward
+            _roc_reask = "Sorry — would you like to reschedule it, or cancel it altogether?"
+            await self._tts.put(_roc_reask)
+            self.session["last_question"] = _roc_reask
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _roc_reask}
+            )
+            logger.info("[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: ambiguous — re-asking")
             return
 
         # ── CONFIRM_BOOKING: dedicated YES handler ─────────────────────────────
