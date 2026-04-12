@@ -2017,7 +2017,9 @@ def _resolve_location(raw: str, in_location_state: bool = False) -> str | None:
         "sister clinic", "sester clinic", "our sister clinic",
         # Additional unambiguous STT variants
         "alcestr", "allcester", "alster", "alca", "alces",
-        "ancestor", "kinwarton",
+        "kinwarton",
+        # NOTE: "ancestor" removed from Tier 1 — too phonetically ambiguous;
+        # "at your ancestor clinic" (live ASR noise) must not auto-bind.
     )
     # ── TIER 1 — REDDITCH strong bucket ──────────────────────────────────────
     _RED_STRONG = (
@@ -2048,7 +2050,8 @@ def _resolve_location(raw: str, in_location_state: bool = False) -> str | None:
         _ALC_T2 = (
             "your access", "your access clinic", "your access to clinic",
             "are you access", "are you access to clinic",
-            "your ancestor", "your ancestor clinic", "are you ancestor clinic",
+            # NOTE: "your ancestor / ancestor clinic" removed — too weak even in
+            # location-state context; confirmed to produce false binds in live logs.
             "at your house as", "at your house",
             "our cester", "arlcester", "alcaster", "alceister", "alcesster",
             "el sester", "elsester", "al sister clinic",
@@ -3562,7 +3565,8 @@ class FlowEngine:
                     "alchester", "reddit", "alcesta", "alkester", "alsester",
                     "red itch", "read itch", "redich", "reditch", "sister", "sester",
                     # Tier 2 tokens — short utterances containing these are valid clinic answers
-                    "ancestor", "access", "alcaster", "arlcester",
+                    "access", "alcaster", "arlcester",
+                    # NOTE: "ancestor" removed — no longer a bindable location signal
                 )
                 _has_loc_token = any(p in text for p in _loc_tokens)
                 if not _has_loc_token and len(_loc_words) <= 3 and not text.rstrip().endswith("?"):
