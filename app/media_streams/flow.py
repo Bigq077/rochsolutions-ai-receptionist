@@ -3442,6 +3442,24 @@ class FlowEngine:
         # and the caller naming their clinic).  No LLM call — rule-based extractor only.
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
+            # ── FAQ-first gate: detect question intent BEFORE extracting location ──
+            # "is there parking at alcester?" / "first is there any parking at your
+            # alcester clinic" → must answer the FAQ, NOT extract "alcester" and advance.
+            # Location tokens inside questions are context for the FAQ answer, not
+            # booking answers.  This gate must run BEFORE the extractor so those tokens
+            # cannot greedily bind to flow state.
+            _loc_faq_pre_intents = {
+                "faq_prices", "faq_insurance", "faq_hours",
+                "faq_location", "faq_services", "faq_capability",
+            }
+            _loc_pre_intent = self._detect_intent(text)
+            if _loc_pre_intent in _loc_faq_pre_intents:
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: FAQ gate before extraction — %s (no retry consumed)",
+                    _loc_pre_intent,
+                )
+                await self._handle_mid_flow_interrupt(_loc_pre_intent, transcript)
+                return
             loc = self._extract("location_selection", text, transcript)
             if loc:
                 self.session["selected_location"] = loc
@@ -4905,10 +4923,49 @@ class FlowEngine:
                 )
                 return
 
-            # ── Priority 1: assessment inquiry ───────────────────────────────
-            # Check BEFORE classifier so inquiry phrases never reach the
-            # "clarification" catch-all and never trigger LLM classification.
-            # Clean precedence: inquiry → yes → no → correction → clarification.
+            # ── Priority 1a: general FAQ intercept ───────────────────────────
+            # MUST run before assessment-inquiry.  "what's the physiotherapy
+            # assessment price and length" contains "what" + "physiotherapy", so
+            # the old inquiry catch-all fired instead of pricing.  Specific FAQ
+            # signals (price, insurance, hours, location, services) must outrank
+            # the generic "what ... assessment" keyword match.
+            _ca_faq_intent = self._detect_intent(text)
+            _ca_faq_allowed = {
+                "faq_prices", "faq_insurance", "faq_hours",
+                "faq_location", "faq_services", "faq_capability",
+            }
+            if _ca_faq_intent in _ca_faq_allowed:
+                logger.info(
+                    "[ms_flow] CONFIRM_ASSESSMENT: FAQ intercept (pre-inquiry) — intent=%s",
+                    _ca_faq_intent,
+                )
+                await self._handle_mid_flow_interrupt(_ca_faq_intent, transcript)
+                return
+
+            # ── Priority 1b: duration / appointment-length questions ──────────
+            # "how long does the physiotherapy assessment last" → general_query in
+            # _detect_intent (journey_p matches "how long"), but in CONFIRM_ASSESSMENT
+            # context it is an appointment-length question.  Route to faq_prices so
+            # _handle_mid_flow_interrupt returns price + duration info.
+            _CA_DURATION_SIGNALS = (
+                "how long", "how many minutes", "how many hours",
+                "how long is the", "how long does", "how long will",
+                "how long for", "long does it take", "long will it take",
+                "duration", "appointment length", "length of the appoint",
+                "length of the assess",
+            )
+            if any(p in text for p in _CA_DURATION_SIGNALS):
+                logger.info(
+                    "[ms_flow] CONFIRM_ASSESSMENT: duration question → faq_prices"
+                )
+                await self._handle_mid_flow_interrupt("faq_prices", transcript)
+                return
+
+            # ── Priority 1c: assessment inquiry ──────────────────────────────
+            # Only reached when NOT a price/insurance/location/duration FAQ.
+            # Safe to explain "what is a physiotherapy assessment" now without
+            # risk of catching price/duration questions in the "what...assessment"
+            # keyword fallback.
             _CA_INQUIRY_PHRASES = (
                 "what happens",
                 "what exactly happens",
@@ -4921,7 +4978,6 @@ class FlowEngine:
                 "what do you do in",
                 "what do they do in",
                 "what goes on",
-                # BUG 1 fix: short direct inquiry forms missed by phrase list
                 "what exactly is",
                 "what is a physio",
                 "what is an assess",
@@ -4935,8 +4991,9 @@ class FlowEngine:
                 "what happens in",
                 "what happens at",
             )
-            # BUG 1 fix: keyword-based fallback — catches any "what … assessment/physio"
-            # form that the phrase list doesn't have verbatim.
+            # Keyword-based fallback for "what … assessment/physio" forms.
+            # Now safe to use because price/duration/insurance/location FAQs
+            # were already caught by Priority 1a/1b above.
             _ca_is_inquiry = (
                 any(_p in text for _p in _CA_INQUIRY_PHRASES)
                 or (
@@ -4958,23 +5015,7 @@ class FlowEngine:
                     {"role": "assistant", "content": _ca_info}
                 )
                 # Do NOT update last_question — the real question remains intact
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: inquiry intercept fired (pre-classifier)")
-                return
-            # ── Priority 1b: general FAQ intercept at CONFIRM_ASSESSMENT ──────
-            # Catches parking, pricing, hours, insurance, services — questions that
-            # are NOT about the assessment itself but are genuine clinic FAQs.
-            # Must run AFTER the assessment-inquiry check (more specific) and BEFORE
-            # the classifier so they are answered rather than getting "Does that sound okay?".
-            _ca_faq_intent = self._detect_intent(text)
-            _ca_faq_allowed = {
-                "faq_prices", "faq_insurance", "faq_hours",
-                "faq_location", "faq_services", "faq_capability",
-            }
-            if _ca_faq_intent in _ca_faq_allowed:
-                logger.info(
-                    "[ms_flow] CONFIRM_ASSESSMENT: general FAQ intercept — intent=%s", _ca_faq_intent
-                )
-                await self._handle_mid_flow_interrupt(_ca_faq_intent, transcript)
+                logger.info("[ms_flow] CONFIRM_ASSESSMENT: inquiry intercept fired (post-FAQ)")
                 return
             # ── Priority 2–5: classifier-based branching ─────────────────────
             _ca_class = _classify_confirm_assessment(text)
