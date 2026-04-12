@@ -137,6 +137,12 @@ _META_WORDS = frozenset({
     "noted", "understood", "received", "confirmed", "acknowledged",
     "recorded", "registered", "entered", "captured",
     "cheers", "brilliant", "great", "lovely", "wonderful",
+    # Structural label words — these appear in prefix phrases like
+    # "my surname is", "my last name is", "my first name is".
+    # After prefix stripping they become the sole surviving token.
+    # They must NEVER be promoted into a name candidate.
+    "surname", "name", "firstname", "lastname", "familyname",
+    "first", "family",
 })
 
 _DOMAIN_WORDS = frozenset({
@@ -178,6 +184,15 @@ _META_LANGUAGE: tuple = (
     "can you hear", "do you hear", "if you catch", "if you get that",
     "i can spell", "can spell", "i'll spell that",
     "want to spell", "going to spell", "i could spell",
+    # Additional repair / control phrases not covered above ──────────────────
+    # "if you not catch that", "if you didn't catch that" etc.
+    "if you didn't", "if you not", "if you couldn't",
+    # "let me try again", "let me say it again"
+    "let me try", "let me say",
+    # "you not catch", "you couldn't hear", "didn't get that"
+    "not catch", "couldn't hear", "didn't get that",
+    # catch plain repair signals not already in _REPAIR
+    "you didn't hear", "didn't hear that",
 )
 
 # ── Spelling offer phrases (kept for helper function; no longer route to spelling mode) ──
@@ -932,20 +947,35 @@ class NameCollector:
     def _fn_fail(self, re_ask: str) -> Tuple[str, str]:
         """
         Increment first-name retry counter and re-ask.
-        No escalation to spelling mode — after repeated failures the caller
-        will eventually be re-asked normally until something usable arrives.
+
+        After 2 failed extractions (fn_retries >= 2) escalate to NC_FN_REASK
+        so the next turn runs _fn_reask() which accepts best-effort input and
+        sets needs_name_correction_sms=True.
         """
         self._nc["fn_retries"] = self._nc.get("fn_retries", 0) + 1
-        logger.info("[NameCollector] fn_fail: retry #%d", self._nc["fn_retries"])
+        retries = self._nc["fn_retries"]
+        logger.info("[NameCollector] fn_fail: retry #%d", retries)
+        if retries >= 2:
+            self._nc["substate"] = NC_FN_REASK
+            logger.info("[NameCollector] fn_fail: escalating to NC_FN_REASK after %d retries", retries)
+            return ("ask", "Sorry about that — what's your first name please?")
         return ("ask", re_ask)
 
     def _sn_fail(self, re_ask: str) -> Tuple[str, str]:
         """
         Increment surname retry counter and re-ask.
-        No escalation to spelling mode.
+
+        After 2 failed extractions (sn_retries >= 2) escalate to NC_SN_REASK
+        so the next turn runs _sn_reask() which accepts best-effort input and
+        sets needs_name_correction_sms=True.
         """
         self._nc["sn_retries"] = self._nc.get("sn_retries", 0) + 1
-        logger.info("[NameCollector] sn_fail: retry #%d", self._nc["sn_retries"])
+        retries = self._nc["sn_retries"]
+        logger.info("[NameCollector] sn_fail: retry #%d", retries)
+        if retries >= 2:
+            self._nc["substate"] = NC_SN_REASK
+            logger.info("[NameCollector] sn_fail: escalating to NC_SN_REASK after %d retries", retries)
+            return ("ask", "Sorry about that — please just say your surname.")
         return ("ask", re_ask)
 
     # ── State-transition helpers ──────────────────────────────────────────────

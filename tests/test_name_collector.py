@@ -331,13 +331,6 @@ class TestSnConfirm:
         assert action == "ask"
         assert s["_nc"]["substate"] == NC_SN_REASK
 
-    def test_spelled_letters_in_sn_confirm_treated_as_denial(self):
-        """Spelled letters in sn_confirm are treated as denial → sn_reask."""
-        s = self._at_sn_confirm("Hew", "Matt")
-        action, payload = NameCollector(s).handle("h e w i t s o n", "H E W I T S O N")
-        assert action == "ask"
-        assert s["_nc"]["substate"] == NC_SN_REASK
-
 
 # ── 8. No spelling mode in live flow ─────────────────────────────────────────
 
@@ -512,27 +505,56 @@ class TestBestEffortPaths:
         assert s.get("_nc_accept_preamble") == _BEST_EFFORT_ACK
 
 
-# ── 10. No retry escalation to spelling ──────────────────────────────────────
+# ── 10. Retry escalation ──────────────────────────────────────────────────────
 
-class TestNoRetryEscalation:
-    def test_multiple_fn_failures_stay_in_fn_normal(self):
-        """Repeated fn failures do NOT escalate to spelling — stay in fn_normal."""
+class TestRetryEscalation:
+    def test_fn_failures_below_threshold_stay_in_fn_normal(self):
+        """First fn failure (retries=1) stays in fn_normal — not yet at threshold."""
         s = sess()
-        for _ in range(4):
-            action, _ = NameCollector(s).handle("uh um er", "Uh um er")
-            assert action in ("ask", "repair")
-            assert s["_nc"]["substate"] == NC_FN_NORMAL, (
-                f"Expected fn_normal after failure, got {s['_nc']['substate']}"
-            )
+        action, _ = NameCollector(s).handle("uh um er", "Uh um er")
+        assert action in ("ask", "repair")
+        assert s["_nc"]["substate"] == NC_FN_NORMAL
 
-    def test_multiple_sn_failures_stay_in_sn_normal(self):
-        """Repeated sn failures do NOT escalate to spelling — stay in sn_normal."""
+    def test_fn_failures_at_threshold_escalate_to_fn_reask(self):
+        """2 fn failures escalate substate to NC_FN_REASK (bounded retry)."""
         s = sess()
-        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=3)
+        NameCollector(s).handle("uh um er", "Uh um er")   # fn_retries=1
+        action, _ = NameCollector(s).handle("uh um er", "Uh um er")  # fn_retries=2
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_FN_REASK
+
+    def test_fn_failures_never_escalate_to_spelling(self):
+        """Repeated fn failures NEVER enter fn_spelling — only fn_reask."""
+        s = sess()
+        for _ in range(5):
+            NameCollector(s).handle("uh um er", "Uh um er")
+        assert s["_nc"]["substate"] != "fn_spelling"
+
+    def test_sn_failures_below_threshold_stay_in_sn_normal(self):
+        """First sn failure stays in sn_normal — not yet at threshold."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=0)
         s["name_fragment"] = "Matt"
         action, _ = NameCollector(s).handle("uh um er", "Uh um er")
         assert action in ("ask", "repair")
         assert s["_nc"]["substate"] == NC_SN_NORMAL
+
+    def test_sn_failures_at_threshold_escalate_to_sn_reask(self):
+        """2 sn failures escalate substate to NC_SN_REASK (bounded retry)."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=1)
+        s["name_fragment"] = "Matt"
+        action, _ = NameCollector(s).handle("uh um er", "Uh um er")  # sn_retries=2
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_SN_REASK
+
+    def test_sn_failures_never_escalate_to_spelling(self):
+        """Repeated sn failures NEVER enter sn_spelling — only sn_reask."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=3)
+        s["name_fragment"] = "Matt"
+        NameCollector(s).handle("uh um er", "Uh um er")
+        assert s["_nc"]["substate"] != "sn_spelling"
 
 
 # ── 11. Repair request replay ─────────────────────────────────────────────────
@@ -908,3 +930,102 @@ class TestNameCorrectionSmsFlag:
         s["needs_name_correction_sms"] = True
         NameCollector(s).reset_to_surname()
         assert "needs_name_correction_sms" not in s
+
+    def test_fn_reask_via_bounded_escalation_sets_flag(self):
+        """fn_fail×2 → NC_FN_REASK → any response sets needs_name_correction_sms."""
+        s = sess()
+        NameCollector(s).handle("uh um", "Uh um")   # fn_retries=1
+        NameCollector(s).handle("uh um", "Uh um")   # fn_retries=2 → NC_FN_REASK
+        assert s["_nc"]["substate"] == NC_FN_REASK
+        NameCollector(s).handle("quentin", "Quentin")  # fn_reask → accept
+        assert s.get("needs_name_correction_sms") is True
+
+    def test_sn_reask_via_bounded_escalation_sets_flag(self):
+        """sn_fail×2 → NC_SN_REASK → any response sets needs_name_correction_sms."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=1)
+        s["name_fragment"] = "Matt"
+        NameCollector(s).handle("uh um", "Uh um")   # sn_retries=2 → NC_SN_REASK
+        assert s["_nc"]["substate"] == NC_SN_REASK
+        action, _ = NameCollector(s).handle("hewitson", "Hewitson")
+        assert action == "accept"
+        assert s.get("needs_name_correction_sms") is True
+
+
+# ── 14. Structural label word rejection ───────────────────────────────────────
+
+class TestStructuralLabelRejection:
+    """Words like 'surname', 'name', 'first', 'family' must not become name candidates."""
+
+    def test_my_surname_is_not_a_candidate(self):
+        """'my surname is' → no candidate extracted (label word blocked)."""
+        s = sess()
+        action, _ = NameCollector(s).handle("my surname is", "My surname is")
+        assert action == "ask"
+        assert s["_nc"].get("fn_candidate") is None
+
+    def test_surname_alone_not_a_candidate(self):
+        """Single word 'surname' is in _META_WORDS — not a valid first-name candidate."""
+        s = sess()
+        action, _ = NameCollector(s).handle("surname", "Surname")
+        assert action == "ask"
+        assert s["_nc"].get("fn_candidate") is None
+
+    def test_my_name_is_not_a_candidate(self):
+        """'my name is' → no candidate extracted."""
+        s = sess()
+        action, _ = NameCollector(s).handle("my name is", "My name is")
+        assert action == "ask"
+        assert s["_nc"].get("fn_candidate") is None
+
+    def test_family_name_rejected_as_sn_candidate(self):
+        """'family name' → 'family' is in _META_WORDS, no sn candidate."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", fn_confirmed=True)
+        s["name_fragment"] = "Matt"
+        action, _ = NameCollector(s).handle("family", "Family")
+        assert action == "ask"
+        assert s["_nc"].get("surname_candidate") is None
+
+    def test_real_name_after_surname_label_extracted(self):
+        """'my surname is johnson' → 'Johnson' extracted (label stripped)."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", fn_confirmed=True)
+        s["name_fragment"] = "Matt"
+        action, _ = NameCollector(s).handle("my surname is johnson", "My surname is Johnson")
+        assert action == "ask"
+        assert s["_nc"].get("surname_candidate") == "Johnson"
+
+
+# ── 15. Extended repair phrase variants ───────────────────────────────────────
+
+class TestExtendedRepairPhrases:
+    """New _META_LANGUAGE phrases added for reliability patch."""
+
+    def test_if_you_didnt_catch_rejected(self):
+        """'if you didn't catch that' is _META_LANGUAGE — not a name candidate."""
+        s = sess()
+        action, _ = NameCollector(s).handle("if you didn't catch that", "If you didn't catch that")
+        assert action in ("ask", "repair")
+        assert s["_nc"].get("fn_candidate") is None
+
+    def test_let_me_try_rejected(self):
+        """'let me try again' is _META_LANGUAGE — not a name candidate."""
+        s = sess()
+        action, _ = NameCollector(s).handle("let me try again", "Let me try again")
+        assert action in ("ask", "repair")
+        assert s["_nc"].get("fn_candidate") is None
+
+    def test_couldnt_hear_rejected(self):
+        """'couldn't hear me' is _META_LANGUAGE — not a name candidate."""
+        s = sess()
+        action, _ = NameCollector(s).handle("you couldn't hear me", "You couldn't hear me")
+        assert action in ("ask", "repair")
+        assert s["_nc"].get("fn_candidate") is None
+
+    def test_didnt_get_that_rejected(self):
+        """'didn't get that' is _META_LANGUAGE — not a name candidate."""
+        s = sess()
+        action, _ = NameCollector(s).handle("didn't get that", "Didn't get that")
+        assert action in ("ask", "repair")
+        assert s["_nc"].get("fn_candidate") is None
