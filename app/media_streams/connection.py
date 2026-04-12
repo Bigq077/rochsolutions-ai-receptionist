@@ -244,6 +244,17 @@ class SilenceHandler:
         # enforce a minimum response window so energy VAD noise before the caller
         # has realistically had time to answer cannot trigger a premature re-ask.
         self._tts_done_at: float = 0.0
+        # Question generation counter — incremented by on_question_asked() for every
+        # distinct question.  All timers (_run) and recovery tasks (_speech_recovery)
+        # capture the generation at creation time and are no-ops if _q_gen has since
+        # advanced.  This eliminates stale recovery from a previous question firing
+        # during a new question and prevents double-fire in re-ask cycles.
+        self._q_gen: int = 0
+        # Timestamp of the most recent on_tts_started() call.  Used by
+        # on_tts_finished() to detect whether a newer TTS chunk has already started,
+        # preventing _tts_playing from being cleared prematurely during multi-chunk /
+        # multi-part responses (FAQ answer + re-anchor, long PRESENT_DAYS lists, etc.).
+        self._tts_last_start_ts: float = 0.0
         # True while any TTS chunk is actively being sent to Twilio.
         # Set in on_tts_started(), cleared in on_tts_finished().
         # _speech_recovery checks this as Guard 0 — no recovery phrase can fire
@@ -272,12 +283,13 @@ class SilenceHandler:
         # Capture the current flow_step so _speech_recovery can detect if the
         # state has advanced during its sleep and suppress a stale prompt.
         _recovery_step = self._replay_flow_step
+        _my_q_gen = self._q_gen  # bind recovery to this question generation
         self._recovery_task = asyncio.create_task(
-            self._speech_recovery(_recovery_step), name="ms_silence_speech_recovery"
+            self._speech_recovery(_recovery_step, _my_q_gen), name="ms_silence_speech_recovery"
         )
-        logger.debug("[ms_silence] speech started — timer cancelled, recovery armed (step=%d)", _recovery_step)
+        logger.debug("[ms_silence] speech started — timer cancelled, recovery armed (step=%d q_gen=%d)", _recovery_step, _my_q_gen)
 
-    async def _speech_recovery(self, recovery_step: int = -1) -> None:
+    async def _speech_recovery(self, recovery_step: int = -1, q_gen: int = 0) -> None:
         """If STT doesn't transcribe within N seconds of speech detection, prompt the caller.
 
         The wait window is state-aware (not a hardcoded 5 s):
@@ -327,6 +339,18 @@ class SilenceHandler:
         try:
             await asyncio.sleep(_recovery_wait)
         except asyncio.CancelledError:
+            return
+
+        # Guard -1: stale question generation.  If on_question_asked() was called
+        # after this recovery task was created, _q_gen has advanced and this task
+        # belongs to the previous question — suppress unconditionally.
+        # This eliminates stale recovery firing after a state transition and
+        # prevents double-fire across re-ask cycles.
+        if q_gen != 0 and q_gen != self._q_gen:
+            logger.debug(
+                "[ms_silence] recovery: stale q_gen %d vs current %d — suppressed",
+                q_gen, self._q_gen,
+            )
             return
 
         # Guard 0: TTS is currently playing — never fire while Susie is speaking.
@@ -463,6 +487,7 @@ class SilenceHandler:
             self.last_question         = question.strip()
             self.reask_count           = 0
             self._last_question_set_at = time.time()
+            self._q_gen               += 1   # new question = new silence generation
             _session = self._get_session() if self._get_session else None
             self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
 
@@ -485,6 +510,7 @@ class SilenceHandler:
         Resetting here allowed recovery to loop: miss→TTS starts→reset→miss→repeat.
         """
         self._tts_playing = True  # always track, even during re-ask playback
+        self._tts_last_start_ts = time.time()  # record when this chunk started
         if not self.currently_reasking:
             self._cancel_timer()
             # Cancel stale recovery task — TTS starting without a fresh transcript
@@ -516,7 +542,7 @@ class SilenceHandler:
         self._restart_timer()
         logger.info("[ms_silence] restart_for_question: %r", (self.last_question or "")[:60])
 
-    def on_tts_finished(self, text: str) -> None:
+    def on_tts_finished(self, text: str, chunk_started_at: float = 0.0) -> None:
         """After a flow question finishes playing, arm the silence timer.
         Never restarts timer while currently_reasking — _run() owns its timing.
         Never arms timer while LLM is still processing — the delayed TTS-done
@@ -525,10 +551,22 @@ class SilenceHandler:
         timer re-arms and can fire during the check_availability tool call,
         causing a spurious re-ask concatenated with the slot list.
         Never arms if more TTS chunks are queued — prevents stacking re-asks
-        after multi-part responses (FAQ answer + re-anchor question)."""
-        # Always clear _tts_playing regardless of other early-return guards.
-        # _speech_recovery Guard 0 depends on this being accurate at all times.
-        self._tts_playing = False
+        after multi-part responses (FAQ answer + re-anchor question).
+
+        chunk_started_at — the _tts_last_start_ts value captured when this chunk
+        began synthesis (set in _tts_loop before the sub-chunk loop).  If a newer
+        chunk has since started (_tts_last_start_ts > chunk_started_at), we must
+        NOT clear _tts_playing — doing so would open a window where _speech_recovery
+        Guard 0 passes while the new chunk is still playing.  This was the root
+        cause of false recovery firing during long multi-chunk FAQ / PRESENT_DAYS
+        responses."""
+        # Conditionally clear _tts_playing — only if no newer TTS chunk has started.
+        # When chunk N's _delayed_tts_finished fires while chunk N+1 is already
+        # playing, _tts_last_start_ts will be > chunk_started_at (chunk N's timestamp),
+        # so we leave _tts_playing=True and Guard 0 stays effective.
+        if chunk_started_at == 0.0 or chunk_started_at >= self._tts_last_start_ts:
+            self._tts_playing = False
+        # else: a newer chunk is actively playing — preserve _tts_playing=True
         if self._cancelled:   # Bug 3: stale TTS callbacks must not restart after teardown
             return
         if self.currently_reasking:
@@ -646,8 +684,9 @@ class SilenceHandler:
         self.currently_reasking = False
         _session = self._get_session() if self._get_session else None
         self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
-        self._task = asyncio.create_task(self._run(), name="ms_silence_timer")
-        logger.debug("[ms_silence] timer started")
+        _my_q_gen = self._q_gen  # bind timer to current question generation
+        self._task = asyncio.create_task(self._run(_my_q_gen), name="ms_silence_timer")
+        logger.debug("[ms_silence] timer started (q_gen=%d)", _my_q_gen)
 
     def _cancel_timer(self) -> None:
         if self._task and not self._task.done():
@@ -655,11 +694,16 @@ class SilenceHandler:
         self._task              = None
         self.currently_reasking = False
 
-    async def _run(self) -> None:
+    async def _run(self, q_gen: int = 0) -> None:
         """
         Flat sequential re-ask coroutine.
 
-        Window 1: 26s sleep → since_audio guard → re-ask #1 → 5s TTS wait
+        q_gen — the _q_gen value at timer creation.  If on_question_asked() fires
+        after this task starts (new question), _q_gen advances and we return early
+        at each window check.  This prevents stale timers from a previous question
+        firing during a new question's silence window.
+
+        Window 1: per-state sleep → since_audio guard → re-ask #1 → 5s TTS wait
         Window 2: 15s sleep → since_audio guard → re-ask #2 → 5s TTS wait
         Window 3: 15s sleep → since_audio guard → transfer
 
@@ -752,6 +796,16 @@ class SilenceHandler:
         if self._llm_busy:
             return
 
+        # Stale question generation guard — if on_question_asked() fired after
+        # this timer was created, _q_gen has advanced and we belong to the old
+        # question.  Return silently; the new question has its own timer.
+        if q_gen != 0 and q_gen != self._q_gen:
+            logger.info(
+                "[ms_silence] W1: stale q_gen %d vs current %d — suppressed",
+                q_gen, self._q_gen,
+            )
+            return
+
         _session_now = self._get_session() if self._get_session else None
         _current_step = (_session_now or {}).get("flow_step", -1) if _session_now else -1
         if _current_step != self._replay_flow_step:
@@ -815,6 +869,14 @@ class SilenceHandler:
         if self.currently_reasking:
             return
         if self._llm_busy:
+            return
+
+        # Stale question generation guard (same as W1)
+        if q_gen != 0 and q_gen != self._q_gen:
+            logger.info(
+                "[ms_silence] W2: stale q_gen %d vs current %d — suppressed",
+                q_gen, self._q_gen,
+            )
             return
 
         _session_now = self._get_session() if self._get_session else None
@@ -992,6 +1054,10 @@ class WebSocketCallHandler:
         # Set in _tts_loop when synthesis completes; cleared in send_loop when
         # the _TTS_DONE_SENTINEL is drained — at that point on_tts_finished fires.
         self._tts_text_pending: str = ""
+        # _tts_last_start_ts captured when the current chunk's on_tts_started() fired.
+        # Forwarded to _delayed_tts_finished so on_tts_finished() can detect whether a
+        # newer chunk has started before clearing _tts_playing (fixes multi-chunk gap).
+        self._tts_pending_chunk_start_ts: float = 0.0
 
         # ── Silence handler (4-second re-ask) ─────────────────────────────
         # Created eagerly so _handle_media can call on_audio_received() before
@@ -1710,10 +1776,18 @@ class WebSocketCallHandler:
                 sub_chunks = split_tts_text(chunk_text)
                 _any_cancelled = False
 
-                for sub_text in sub_chunks:
-                    # Tell the silence handler Susie is about to speak.
-                    self._silence_handler.on_tts_started()
+                # Notify silence handler ONCE per chunk (not per sub-chunk).
+                # on_tts_started() is paired with exactly one on_tts_finished() call
+                # (via _delayed_tts_finished after the sentinel).  Calling it per
+                # sub-chunk created a counting imbalance that let chunk N's delayed
+                # callback clear _tts_playing while chunk N+1 was already playing,
+                # opening a Guard-0 gap in _speech_recovery.
+                self._silence_handler.on_tts_started()
+                # Capture the timestamp set by on_tts_started() so _delayed_tts_finished
+                # can pass it to on_tts_finished() for the multi-chunk stale check.
+                _chunk_tts_start_ts = self._silence_handler._tts_last_start_ts
 
+                for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
                     self._current_tts_text = sub_text
 
@@ -1744,6 +1818,7 @@ class WebSocketCallHandler:
                     # All sub-chunks completed — place sentinel so send_loop can
                     # fire on_tts_finished once every byte has been sent to Twilio.
                     self._tts_text_pending = chunk_text
+                    self._tts_pending_chunk_start_ts = _chunk_tts_start_ts
                     await self.audio_out_queue.put(_TTS_DONE_SENTINEL)
 
         except asyncio.CancelledError:
@@ -1783,7 +1858,9 @@ class WebSocketCallHandler:
                 # has actually played out (bytes_sent / 8000 Hz = play duration).
                 if b64_payload is _TTS_DONE_SENTINEL:
                     text = self._tts_text_pending
+                    chunk_start_ts = self._tts_pending_chunk_start_ts
                     self._tts_text_pending = ""
+                    self._tts_pending_chunk_start_ts = 0.0
                     play_secs = _tts_bytes_sent / 8000.0
                     _tts_bytes_sent = 0
                     # Only arm the silence timer if audio was actually delivered.
@@ -1797,7 +1874,7 @@ class WebSocketCallHandler:
                             play_secs, text[:60],
                         )
                         asyncio.create_task(
-                            self._delayed_tts_finished(play_secs, text, self._tts_gen),
+                            self._delayed_tts_finished(play_secs, text, self._tts_gen, chunk_start_ts),
                             name="ms_silence_tts_delay",
                         )
                     elif text:
@@ -1837,7 +1914,13 @@ class WebSocketCallHandler:
         except Exception as exc:
             logger.error("[ms_conn] _send_loop fatal: %r", exc)
 
-    async def _delayed_tts_finished(self, delay: float, text: str, gen: int = 0) -> None:
+    async def _delayed_tts_finished(
+        self,
+        delay: float,
+        text: str,
+        gen: int = 0,
+        chunk_started_at: float = 0.0,
+    ) -> None:
         """
         Fire on_tts_finished after `delay` seconds so the silence timer starts
         only once the caller has actually heard the last word, not when the
@@ -1849,6 +1932,11 @@ class WebSocketCallHandler:
         this callback is stale: firing it would overwrite last_question with an
         old prompt (e.g. "does that sound OK?") after the flow has already moved
         on, and re-arm the silence timer for the wrong question.
+
+        chunk_started_at — the _tts_last_start_ts value when this chunk's
+        on_tts_started() fired.  Forwarded to on_tts_finished() so it can
+        detect whether a newer chunk has started, preventing premature
+        clearing of _tts_playing during multi-chunk / multi-part responses.
         """
         try:
             if delay > 0:
@@ -1868,7 +1956,7 @@ class WebSocketCallHandler:
             if hasattr(self, "_flow") and self._flow.is_complete():
                 logger.debug("[ms_silence] flow complete — skipping tts_finished")
                 return
-            self._silence_handler.on_tts_finished(text)
+            self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
             pass
