@@ -8811,8 +8811,15 @@ class FlowEngine:
                     {"role": "assistant", "content": _nc_payload}
                 )
                 return
-            # accept — NameCollector stored full_name in session; set answer
-            # and fall through to the standard answer-storage + advancement code.
+            # accept — play any best-effort preamble ("Okay, noted — I'll send
+            # you a confirmation message…") before falling through to the standard
+            # answer-storage + advancement code.
+            _preamble = self.session.pop("_nc_accept_preamble", None)
+            if _preamble:
+                await self._tts.put(_preamble)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _preamble}
+                )
             answer = _nc_payload
         else:
             answer = self._extract(step["extract"], text, transcript)

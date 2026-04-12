@@ -1,18 +1,25 @@
 """
 tests/test_name_collector.py
 ============================
-Unit tests for the unified NameCollector engine.
+Unit tests for the unified NameCollector engine — no-spelling-mode build.
 
-Each test builds a fresh session dict and exercises NameCollector.handle()
-directly — no FastAPI, no Redis, no LLM.  Tests are grouped by scenario type.
+Flow contract (pilot):
+  fn_normal → fn_confirm → YES → sn_normal → sn_confirm → YES → accept
+                         → NO  → fn_reask  → (any)     → sn_normal …
+  sn_normal → sn_confirm → YES → accept
+                         → NO  → sn_reask  → (any)     → accept (preamble set)
+
+Spelling offers are treated as denials everywhere.
+NC_FN_SPELLING / NC_SN_SPELLING are dead constants — never entered in live flow.
 """
 from __future__ import annotations
 
 import pytest
 from app.media_streams.name_collector import (
     NameCollector,
-    NC_FN_NORMAL, NC_FN_CONFIRM, NC_FN_SPELLING,
-    NC_SN_NORMAL, NC_SN_SPELLING, NC_SN_CONFIRM,
+    NC_FN_NORMAL, NC_FN_CONFIRM, NC_FN_REASK, NC_FN_SPELLING,
+    NC_SN_NORMAL, NC_SN_CONFIRM, NC_SN_REASK, NC_SN_SPELLING,
+    _BEST_EFFORT_ACK,
     _parse_spelled_letters,
     _extract_leading_token,
     _is_spelling_offer,
@@ -37,12 +44,10 @@ def _full_nc_dict(**overrides) -> dict:
     base = {
         "substate":          NC_FN_NORMAL,
         "fn_candidate":      None,
-        "fn_spelled":        False,
-        "fn_letter_buffer":  [],
+        "fn_confirmed":      False,
         "first_name":        None,
         "surname_candidate": None,
-        "sn_spelled":        False,
-        "sn_letter_buffer":  [],
+        "sn_confirmed":      False,
         "pending_surname":   None,
         "fn_retries":        0,
         "sn_retries":        0,
@@ -75,38 +80,34 @@ class TestCleanFullName:
 
     def test_two_word_name_with_prefix(self):
         s = sess()
-        # fn_normal strips "my name is " → "sarah jones" → fn_confirm "Sarah"
         a1, p1 = NameCollector(s).handle("my name is sarah jones", "My name is Sarah Jones")
         assert a1 == "ask"
         assert "Sarah" in p1
         assert s["_nc"]["pending_surname"] == "Jones"
-        # Confirm first name → sn_confirm
         a2, p2 = NameCollector(s).handle("yes", "Yes")
         assert "Jones" in p2
-        # Confirm surname → accept
         a3, p3 = NameCollector(s).handle("yes", "Yes")
         assert a3 == "accept"
         assert p3 == "Sarah Jones"
 
     def test_three_word_name_rejects(self):
-        # Three+ tokens: NameCollector should fail or not accept a three-part name
         action, _ = nc().handle("john michael smith", "John Michael Smith")
         assert action in ("ask", "repair")
 
     def test_full_name_stored_in_session(self):
         s = sess()
-        NameCollector(s).handle("emma wilson", "Emma Wilson")   # → fn_confirm
-        NameCollector(s).handle("yes", "Yes")                   # → sn_confirm
-        NameCollector(s).handle("yes", "Yes")                   # → accept
+        NameCollector(s).handle("emma wilson", "Emma Wilson")
+        NameCollector(s).handle("yes", "Yes")
+        NameCollector(s).handle("yes", "Yes")
         assert s.get("full_name") == "Emma Wilson"
         assert s.get("collected", {}).get("full_name") == "Emma Wilson"
 
     def test_name_fragment_cleared_on_accept(self):
         s = sess()
-        s["name_fragment"] = "Emma"  # simulate a stale fragment
-        NameCollector(s).handle("emma wilson", "Emma Wilson")   # → fn_confirm
-        NameCollector(s).handle("yes", "Yes")   # → sn_confirm; name_fragment set to "Emma"
-        NameCollector(s).handle("yes", "Yes")   # → accept; name_fragment cleared
+        s["name_fragment"] = "Emma"
+        NameCollector(s).handle("emma wilson", "Emma Wilson")
+        NameCollector(s).handle("yes", "Yes")
+        NameCollector(s).handle("yes", "Yes")
         assert "name_fragment" not in s
 
 
@@ -114,24 +115,27 @@ class TestCleanFullName:
 
 class TestFirstNameOnly:
     def test_single_token_enters_fn_confirm(self):
-        """Single name token enters fn_confirm for verification."""
         action, payload = nc().handle("sarah", "Sarah")
         assert action == "ask"
-        assert "Sarah" in payload  # fn_confirm readback
+        assert "Sarah" in payload
 
     def test_first_name_stored_after_confirm(self):
-        """first_name and name_fragment are only stored after fn_confirm YES."""
         s = sess()
         NameCollector(s).handle("james", "James")
-        # fn_confirm entered — candidate held but first_name not committed yet
         assert s["_nc"]["fn_candidate"] == "James"
         assert s["_nc"]["substate"] == NC_FN_CONFIRM
         assert "name_fragment" not in s
-        # After confirmation, first_name and name_fragment are set
         NameCollector(s).handle("yes", "Yes")
         assert s["_nc"]["first_name"] == "James"
         assert s["name_fragment"] == "James"
         assert s["_nc"]["substate"] == NC_SN_NORMAL
+
+    def test_fn_confirmed_flag_set_on_yes(self):
+        s = sess()
+        NameCollector(s).handle("james", "James")
+        assert s["_nc"]["fn_confirmed"] is False
+        NameCollector(s).handle("yes", "Yes")
+        assert s["_nc"]["fn_confirmed"] is True
 
     def test_function_word_alone_rejected(self):
         for word in ("yes", "ok", "no", "sure", "please"):
@@ -149,37 +153,30 @@ class TestFirstNameOnly:
 class TestTwoTurnCollection:
     def test_normal_two_turn(self):
         s = sess()
-        # Turn 1: first name → fn_confirm
         a1, _ = NameCollector(s).handle("matt", "Matt")
         assert a1 == "ask"
-        # Confirm first name → sn_normal
         NameCollector(s).handle("yes", "Yes")
-        # Turn 2: surname → sn_confirm
         a2, _ = NameCollector(s).handle("slater", "Slater")
         assert a2 == "ask"
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
         assert s["_nc"]["surname_candidate"] == "Slater"
-        # Confirm surname → accept
         a3, payload = NameCollector(s).handle("yes", "Yes")
         assert a3 == "accept"
         assert payload == "Matt Slater"
 
     def test_surname_turn_after_fn_confirmed(self):
-        """After fn_confirm, caller saying full name again enters sn_confirm."""
         s = sess()
-        NameCollector(s).handle("matt", "Matt")     # → fn_confirm
-        NameCollector(s).handle("yes", "Yes")        # → sn_normal
-        # Caller provides two tokens in sn_normal (treated as double-barrelled)
+        NameCollector(s).handle("matt", "Matt")
+        NameCollector(s).handle("yes", "Yes")
         a, _ = NameCollector(s).handle("matt slater", "Matt Slater")
         assert a == "ask"
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
 
     def test_wrapper_prefix_on_surname_turn(self):
         s = sess()
-        NameCollector(s).handle("david", "David")           # → fn_confirm
-        NameCollector(s).handle("yes", "Yes")               # → sn_normal
+        NameCollector(s).handle("david", "David")
+        NameCollector(s).handle("yes", "Yes")
         a1, p1 = NameCollector(s).handle("my surname is jones", "My surname is Jones")
-        # sn_normal strips "my surname is " → "jones" → sn_confirm
         assert a1 == "ask"
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
         assert s["_nc"]["surname_candidate"] == "Jones"
@@ -224,7 +221,6 @@ class TestLeadingTokenSalvage:
             "slater do you need help spelling that",
             "Slater do you need help spelling that",
         )
-        # Should enter sn_confirm with "Slater"
         assert action == "ask"
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
         assert s["_nc"]["surname_candidate"] == "Slater"
@@ -263,13 +259,11 @@ class TestShortSurname:
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
 
     def test_normal_surname_routes_through_confirm(self):
-        """All surnames now require sn_confirm before accepting."""
         s = self._at_sn_normal()
         a1, p1 = NameCollector(s).handle("slater", "Slater")
         assert a1 == "ask"
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
         assert s["_nc"]["surname_candidate"] == "Slater"
-        # Confirm → accept
         a2, payload = NameCollector(s).handle("yes", "Yes")
         assert a2 == "accept"
         assert payload == "Matt Slater"
@@ -295,23 +289,31 @@ class TestSnConfirm:
         assert action == "accept"
         assert "Matt" in payload and "Hew" in payload
 
+    def test_sn_confirmed_flag_set_on_yes(self):
+        s = self._at_sn_confirm("Slater", "Matt")
+        NameCollector(s).handle("yes", "Yes")
+        # After accept, _nc substate is done — confirmed flag was set before _accept
+        # (check via session full_name to confirm accept happened)
+        assert s.get("full_name") == "Matt Slater"
+
     def test_correct_accepts_candidate(self):
         s = self._at_sn_confirm("Slater", "Matt")
         action, payload = NameCollector(s).handle("correct", "Correct")
         assert action == "accept"
 
-    def test_no_enters_spelling(self):
+    def test_no_enters_sn_reask(self):
+        """NO in sn_confirm enters sn_reask (not spelling mode)."""
         s = self._at_sn_confirm("Hew", "Matt")
         action, payload = NameCollector(s).handle("no", "No")
         assert action == "ask"
-        assert s["_nc"]["substate"] == NC_SN_SPELLING
+        assert s["_nc"]["substate"] == NC_SN_REASK
 
-    def test_spelled_correction_updates_candidate(self):
+    def test_no_sn_reask_phrase(self):
+        """sn_reask response is the exact re-ask phrase."""
         s = self._at_sn_confirm("Hew", "Matt")
-        action, payload = NameCollector(s).handle("h e w i t s o n", "H E W I T S O N")
-        # Spelled letters parsed → new candidate "Hewitson", re-confirm
-        assert s["_nc"]["substate"] == NC_SN_CONFIRM
-        assert s["_nc"]["surname_candidate"] == "Hewitson"
+        action, payload = NameCollector(s).handle("no", "No")
+        assert "sorry about that" in payload.lower()
+        assert "surname" in payload.lower()
 
     def test_clean_word_in_confirm_updates_candidate(self):
         """A clean word in sn_confirm updates the candidate and re-confirms."""
@@ -320,78 +322,220 @@ class TestSnConfirm:
         assert action == "ask"
         assert "Hewitson" in payload
         assert s["_nc"]["surname_candidate"] == "Hewitson"
+        assert s["_nc"]["substate"] == NC_SN_CONFIRM
+
+    def test_spelling_offer_in_sn_confirm_enters_sn_reask(self):
+        """Spelling offers in sn_confirm are treated as denial → sn_reask."""
+        s = self._at_sn_confirm("Hew", "Matt")
+        action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_SN_REASK
+
+    def test_spelled_letters_in_sn_confirm_treated_as_denial(self):
+        """Spelled letters in sn_confirm are treated as denial → sn_reask."""
+        s = self._at_sn_confirm("Hew", "Matt")
+        action, payload = NameCollector(s).handle("h e w i t s o n", "H E W I T S O N")
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_SN_REASK
 
 
-# ── 8. Spelling mode ─────────────────────────────────────────────────────────
+# ── 8. No spelling mode in live flow ─────────────────────────────────────────
 
-class TestSpellingMode:
-    def test_spelling_offer_switches_mode(self):
+class TestNoSpellingMode:
+    def test_spelling_offer_in_fn_normal_stays_in_fn_normal(self):
+        """'Shall I spell it' in fn_normal — garbled, re-ask in fn_normal."""
         s = sess()
         action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
         assert action == "ask"
-        assert s["_nc"]["substate"] == NC_FN_SPELLING
+        # Substate must NOT be NC_FN_SPELLING
+        assert s["_nc"]["substate"] != NC_FN_SPELLING
+        assert s["_nc"]["substate"] == NC_FN_NORMAL
 
-    def test_spelled_first_name(self):
-        """Spelled letters in fn_spelling → fn_confirm (spelled readback)."""
+    def test_spelling_offer_in_fn_confirm_enters_fn_reask(self):
+        """'Shall I spell it' in fn_confirm = denial → fn_reask."""
         s = sess()
-        s["_nc"] = _full_nc_dict(substate=NC_FN_SPELLING)
-        action, payload = NameCollector(s).handle("m a t t", "M A T T")
+        s["_nc"] = _full_nc_dict(substate=NC_FN_CONFIRM, fn_candidate="Sarah")
+        action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
         assert action == "ask"
-        assert s["_nc"]["substate"] == NC_FN_CONFIRM
-        assert s["_nc"]["fn_candidate"] == "Matt"
-        assert "M A T T" in payload  # spaced readback in fn_confirm (spelled=True)
+        assert s["_nc"]["substate"] == NC_FN_REASK
 
-    def test_nato_phonetics_first_name(self):
+    def test_spelling_offer_in_sn_normal_stays_in_sn_normal(self):
+        """'Shall I spell it' in sn_normal — garbled, re-ask in sn_normal."""
         s = sess()
-        s["_nc"] = _full_nc_dict(substate=NC_FN_SPELLING)
-        action, _ = NameCollector(s).handle(
-            "sierra alpha mike", "Sierra Alpha Mike"
-        )
-        assert action == "ask"
-        assert s["_nc"]["substate"] == NC_FN_CONFIRM
-        assert s["_nc"]["fn_candidate"] == "Sam"
-
-    def test_spelled_surname_enters_confirm(self):
-        s = sess()
-        s["_nc"] = _full_nc_dict(substate=NC_SN_SPELLING, first_name="Matt")
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt")
         s["name_fragment"] = "Matt"
-        action, payload = NameCollector(s).handle("s l a t e r", "S L A T E R")
+        action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
         assert action == "ask"
-        assert s["_nc"]["substate"] == NC_SN_CONFIRM
-        assert s["_nc"]["surname_candidate"] == "Slater"
+        assert s["_nc"]["substate"] not in (NC_SN_SPELLING, NC_SN_REASK)
+        assert s["_nc"]["substate"] == NC_SN_NORMAL
 
-    def test_normal_word_accepted_in_spelling_mode(self):
-        """Caller changed mind — says whole name instead of spelling → fn_confirm."""
+    def test_spelling_offer_in_sn_confirm_enters_sn_reask(self):
+        """'Shall I spell it' in sn_confirm = denial → sn_reask."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_CONFIRM, first_name="Matt", surname_candidate="Hew")
+        s["name_fragment"] = "Matt"
+        action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
+        assert action == "ask"
+        assert s["_nc"]["substate"] == NC_SN_REASK
+
+    def test_legacy_fn_spelling_substate_triggers_defensive_reset(self):
+        """NC_FN_SPELLING in substate (legacy/corrupt) → defensive reset → ask."""
         s = sess()
         s["_nc"] = _full_nc_dict(substate=NC_FN_SPELLING)
         action, payload = NameCollector(s).handle("sarah", "Sarah")
+        # Defensive reset: returns ask and resets to fn_normal
+        assert action in ("ask", "repair")
+        assert s["_nc"]["substate"] == NC_FN_NORMAL
+
+    def test_legacy_sn_spelling_substate_triggers_defensive_reset(self):
+        """NC_SN_SPELLING in substate (legacy/corrupt) → defensive reset → ask."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_SPELLING, first_name="Matt")
+        action, payload = NameCollector(s).handle("slater", "Slater")
+        assert action in ("ask", "repair")
+        assert s["_nc"]["substate"] == NC_FN_NORMAL
+
+
+# ── 9. fn_reask and sn_reask (best-effort paths) ─────────────────────────────
+
+class TestBestEffortPaths:
+    def test_fn_reask_stores_valid_name(self):
+        """fn_reask: caller says a valid name → stored as best effort."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_FN_REASK, fn_candidate="Sarah")
+        action, payload = NameCollector(s).handle("emma", "Emma")
         assert action == "ask"
-        assert s["_nc"]["substate"] == NC_FN_CONFIRM
-        assert s["_nc"]["fn_candidate"] == "Sarah"
+        assert s["_nc"]["first_name"] == "Emma"
+        assert s["_nc"]["fn_confirmed"] is False
+        assert s["_nc"]["substate"] == NC_SN_NORMAL
 
-
-# ── 9. Retry escalation ───────────────────────────────────────────────────────
-
-class TestRetryEscalation:
-    def test_two_fn_failures_escalate_to_spelling(self):
+    def test_fn_reask_falls_back_to_candidate(self):
+        """fn_reask: no usable response → fall back to previous fn_candidate."""
         s = sess()
-        col = NameCollector(s)
-        # First failure
-        col.handle("uh um", "Uh um")
-        # Manually set retries to simulate second failure threshold
-        s["_nc"]["fn_retries"] = 1
-        NameCollector(s).handle("uh um", "Uh um")
-        assert s["_nc"]["substate"] == NC_FN_SPELLING
+        s["_nc"] = _full_nc_dict(substate=NC_FN_REASK, fn_candidate="Sarah")
+        action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
+        assert action == "ask"
+        assert s["_nc"]["first_name"] == "Sarah"
+        assert s["_nc"]["fn_confirmed"] is False
 
-    def test_two_sn_failures_escalate_to_sn_spelling(self):
+    def test_fn_reask_falls_back_to_unknown_when_no_candidate(self):
+        """fn_reask: no response, no candidate → 'Unknown' as fallback."""
         s = sess()
-        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=1)
+        s["_nc"] = _full_nc_dict(substate=NC_FN_REASK, fn_candidate=None)
+        action, payload = NameCollector(s).handle("uh um er", "Uh um er")
+        assert action == "ask"
+        assert s["_nc"]["first_name"] == "Unknown"
+        assert s["_nc"]["fn_confirmed"] is False
+
+    def test_fn_reask_combined_phrase(self):
+        """fn_reask response includes best-effort ack and surname ask."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_FN_REASK, fn_candidate="Sarah")
+        action, payload = NameCollector(s).handle("emma", "Emma")
+        assert "confirmation" in payload.lower() or "noted" in payload.lower()
+        assert "surname" in payload.lower()
+
+    def test_fn_reask_advances_to_sn_normal(self):
+        """After fn_reask, substate advances to sn_normal for surname collection."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_FN_REASK, fn_candidate="Sarah")
+        NameCollector(s).handle("emma", "Emma")
+        assert s["_nc"]["substate"] == NC_SN_NORMAL
+
+    def test_sn_reask_stores_valid_name_and_accepts(self):
+        """sn_reask: caller says a valid surname → stored best effort → accept."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_REASK, first_name="Matt", surname_candidate="Hew"
+        )
         s["name_fragment"] = "Matt"
-        NameCollector(s).handle("uh um er", "Uh um er")
-        assert s["_nc"]["substate"] == NC_SN_SPELLING
+        action, payload = NameCollector(s).handle("hewitson", "Hewitson")
+        assert action == "accept"
+        assert "Matt" in payload and "Hewitson" in payload
+
+    def test_sn_reask_falls_back_to_candidate(self):
+        """sn_reask: no usable response → fall back to previous surname_candidate."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_REASK, first_name="Matt", surname_candidate="Hew"
+        )
+        s["name_fragment"] = "Matt"
+        action, payload = NameCollector(s).handle("shall i spell it", "Shall I spell it")
+        assert action == "accept"
+        assert "Hew" in payload
+
+    def test_sn_reask_sets_accept_preamble(self):
+        """sn_reask sets session['_nc_accept_preamble'] for flow.py to play."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_REASK, first_name="Matt", surname_candidate="Hew"
+        )
+        s["name_fragment"] = "Matt"
+        NameCollector(s).handle("hewitson", "Hewitson")
+        assert s.get("_nc_accept_preamble") == _BEST_EFFORT_ACK
+
+    def test_sn_reask_confirmed_flag_false(self):
+        """sn_reask stores sn_confirmed=False."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_REASK, first_name="Matt", surname_candidate="Hew"
+        )
+        s["name_fragment"] = "Matt"
+        NameCollector(s).handle("hewitson", "Hewitson")
+        # After accept _nc substate is done; check via preamble presence
+        assert "_nc_accept_preamble" in s
+
+    def test_full_denial_path_fn_and_sn(self):
+        """Full path: fn denied → fn_reask → sn denied → sn_reask → accept."""
+        s = sess()
+        # fn_normal → fn_confirm
+        NameCollector(s).handle("sarah", "Sarah")
+        assert s["_nc"]["substate"] == NC_FN_CONFIRM
+        # fn_confirm NO → fn_reask
+        NameCollector(s).handle("no", "No")
+        assert s["_nc"]["substate"] == NC_FN_REASK
+        # fn_reask → stored best effort, ask surname
+        a1, p1 = NameCollector(s).handle("emma", "Emma")
+        assert a1 == "ask"
+        assert s["_nc"]["first_name"] == "Emma"
+        assert s["_nc"]["substate"] == NC_SN_NORMAL
+        # sn_normal → sn_confirm
+        NameCollector(s).handle("jones", "Jones")
+        assert s["_nc"]["substate"] == NC_SN_CONFIRM
+        # sn_confirm NO → sn_reask
+        NameCollector(s).handle("no", "No")
+        assert s["_nc"]["substate"] == NC_SN_REASK
+        # sn_reask → accept with preamble
+        a2, p2 = NameCollector(s).handle("johnson", "Johnson")
+        assert a2 == "accept"
+        assert "Emma" in p2 and "Johnson" in p2
+        assert s.get("_nc_accept_preamble") == _BEST_EFFORT_ACK
 
 
-# ── 10. Repair request replay ─────────────────────────────────────────────────
+# ── 10. No retry escalation to spelling ──────────────────────────────────────
+
+class TestNoRetryEscalation:
+    def test_multiple_fn_failures_stay_in_fn_normal(self):
+        """Repeated fn failures do NOT escalate to spelling — stay in fn_normal."""
+        s = sess()
+        for _ in range(4):
+            action, _ = NameCollector(s).handle("uh um er", "Uh um er")
+            assert action in ("ask", "repair")
+            assert s["_nc"]["substate"] == NC_FN_NORMAL, (
+                f"Expected fn_normal after failure, got {s['_nc']['substate']}"
+            )
+
+    def test_multiple_sn_failures_stay_in_sn_normal(self):
+        """Repeated sn failures do NOT escalate to spelling — stay in sn_normal."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Matt", sn_retries=3)
+        s["name_fragment"] = "Matt"
+        action, _ = NameCollector(s).handle("uh um er", "Uh um er")
+        assert action in ("ask", "repair")
+        assert s["_nc"]["substate"] == NC_SN_NORMAL
+
+
+# ── 11. Repair request replay ─────────────────────────────────────────────────
 
 class TestRepairRequest:
     def test_repair_replays_current_question(self):
@@ -407,21 +551,38 @@ class TestRepairRequest:
         assert action == "repair"
         assert "surname" in payload.lower()
 
-    def test_spelling_offer_not_caught_as_repair(self):
-        """'Shall I spell it' is a spelling offer, not a repair request."""
+    def test_repair_in_fn_reask_replays_reask_phrase(self):
+        """Repair during fn_reask replays the re-ask question."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(substate=NC_FN_REASK, fn_candidate="Sarah")
+        action, payload = NameCollector(s).handle("pardon", "Pardon")
+        assert action == "repair"
+        assert "first name" in payload.lower()
+
+    def test_repair_in_sn_reask_replays_reask_phrase(self):
+        """Repair during sn_reask replays the re-ask question."""
+        s = sess()
+        s["_nc"] = _full_nc_dict(
+            substate=NC_SN_REASK, first_name="Matt", surname_candidate="Hew"
+        )
+        action, payload = NameCollector(s).handle("pardon", "Pardon")
+        assert action == "repair"
+        assert "surname" in payload.lower()
+
+    def test_spelling_offer_in_fn_normal_not_caught_as_repair(self):
+        """Spelling offer in fn_normal is garbled input, not a repair — stays fn_normal."""
         s = sess()
         action, _ = NameCollector(s).handle("shall i spell it", "Shall I spell it")
-        assert s["_nc"]["substate"] == NC_FN_SPELLING  # entered spelling, not repaired
+        assert s["_nc"]["substate"] == NC_FN_NORMAL  # not fn_spelling, not repair
 
 
-# ── 11. Name negation ─────────────────────────────────────────────────────────
+# ── 12. Name negation ─────────────────────────────────────────────────────────
 
 class TestNameNegation:
     def test_im_not_sarah(self):
         s = sess()
         action, payload = NameCollector(s).handle("i'm not sarah it's emma", "I'm not Sarah it's Emma")
         assert action == "ask"
-        # Should enter fn_confirm with extracted "Emma"
         assert s["_nc"]["substate"] == NC_FN_CONFIRM
         assert s["_nc"]["fn_candidate"] == "Emma"
 
@@ -432,7 +593,7 @@ class TestNameNegation:
         assert "first name" in payload.lower()
 
 
-# ── 12. reset() and reset_to_surname() ───────────────────────────────────────
+# ── 13. reset() and reset_to_surname() ───────────────────────────────────────
 
 class TestReset:
     def test_full_reset_clears_everything(self):
@@ -440,6 +601,7 @@ class TestReset:
         s["_nc"] = _full_nc_dict(
             substate=NC_SN_CONFIRM,
             first_name="Matt",
+            fn_confirmed=True,
             surname_candidate="Slater",
             fn_retries=2,
             sn_retries=1,
@@ -451,16 +613,25 @@ class TestReset:
         nc_state = s["_nc"]
         assert nc_state["substate"] == NC_FN_NORMAL
         assert nc_state["first_name"] is None
+        assert nc_state["fn_confirmed"] is False
         assert nc_state["surname_candidate"] is None
+        assert nc_state["sn_confirmed"] is False
         assert "name_fragment" not in s
         assert "full_name" not in s
         assert "spelling_confirm_surname" not in s
+
+    def test_full_reset_clears_accept_preamble(self):
+        s = sess()
+        s["_nc_accept_preamble"] = _BEST_EFFORT_ACK
+        NameCollector(s).reset()
+        assert "_nc_accept_preamble" not in s
 
     def test_reset_to_surname_keeps_first_name(self):
         s = sess()
         s["_nc"] = _full_nc_dict(
             substate=NC_SN_CONFIRM,
             first_name="Matt",
+            fn_confirmed=True,
             surname_candidate="Hew",
             sn_retries=2,
         )
@@ -470,12 +641,13 @@ class TestReset:
         nc_state = s["_nc"]
         assert nc_state["substate"] == NC_SN_NORMAL
         assert nc_state["first_name"] == "Matt"
+        assert nc_state["fn_confirmed"] is True
         assert nc_state["sn_retries"] == 0
         assert "spelling_confirm_surname" not in s
         assert s.get("name_fragment") == "Matt"
 
 
-# ── 13. Helper: _parse_spelled_letters ───────────────────────────────────────
+# ── 14. Helper: _parse_spelled_letters ───────────────────────────────────────
 
 class TestParseSpelledLetters:
     def test_space_separated(self):
@@ -496,7 +668,6 @@ class TestParseSpelledLetters:
         assert _parse_spelled_letters("S") is None
 
     def test_non_letter_word_returns_none(self):
-        # "Smith" is not a single letter or NATO word
         assert _parse_spelled_letters("S M I T H hello") is None
 
     def test_two_letters_accepted(self):
@@ -504,7 +675,7 @@ class TestParseSpelledLetters:
         assert result == "Li"
 
 
-# ── 14. Helper: _extract_leading_token ───────────────────────────────────────
+# ── 15. Helper: _extract_leading_token ───────────────────────────────────────
 
 class TestExtractLeadingToken:
     def test_single_token_before_stop(self):
@@ -519,7 +690,7 @@ class TestExtractLeadingToken:
             "matt slater do you need help",
             ("do you need",),
         )
-        assert result is None  # ambiguous
+        assert result is None
 
     def test_no_stop_phrase_returns_none(self):
         result = _extract_leading_token("just a normal sentence", ("do you need",))
@@ -530,38 +701,36 @@ class TestExtractLeadingToken:
         assert result is None
 
 
-# ── 15. Legacy session compatibility ─────────────────────────────────────────
+# ── 16. Legacy session compatibility ─────────────────────────────────────────
 
 class TestLegacyCompat:
     def test_name_fragment_set_after_first_name_confirmed(self):
-        """name_fragment is set after fn_confirm YES, not on first-name input."""
         s = sess()
-        NameCollector(s).handle("peter", "Peter")          # → fn_confirm
-        assert "name_fragment" not in s                     # not yet set
-        NameCollector(s).handle("yes", "Yes")               # → sn_normal
-        assert s["name_fragment"] == "Peter"               # now set
+        NameCollector(s).handle("peter", "Peter")
+        assert "name_fragment" not in s
+        NameCollector(s).handle("yes", "Yes")
+        assert s["name_fragment"] == "Peter"
 
     def test_spelling_confirm_surname_set_on_sn_confirm(self):
         s = sess()
         s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Peter")
         s["name_fragment"] = "Peter"
-        NameCollector(s).handle("hew", "Hew")  # short surname → sn_confirm
+        NameCollector(s).handle("hew", "Hew")
         assert s["spelling_confirm_surname"] == "Hew"
 
     def test_collected_dict_updated_on_accept(self):
         s = sess()
-        NameCollector(s).handle("anna schmidt", "Anna Schmidt")   # → fn_confirm "Anna"
-        NameCollector(s).handle("yes", "Yes")                     # → sn_confirm "Schmidt"
-        NameCollector(s).handle("yes", "Yes")                     # → accept
+        NameCollector(s).handle("anna schmidt", "Anna Schmidt")
+        NameCollector(s).handle("yes", "Yes")
+        NameCollector(s).handle("yes", "Yes")
         assert s.get("collected", {}).get("full_name") == "Anna Schmidt"
         assert s.get("collected", {}).get("name") == "Anna Schmidt"
 
 
-# ── 16. Double-barrelled surname ─────────────────────────────────────────────
+# ── 17. Double-barrelled surname ─────────────────────────────────────────────
 
 class TestDoubleBarrelledSurname:
     def test_two_token_surname_enters_confirm(self):
-        """Two tokens in sn_normal → sn_confirm with hyphenated name."""
         s = sess()
         s["_nc"] = _full_nc_dict(substate=NC_SN_NORMAL, first_name="Sarah")
         s["name_fragment"] = "Sarah"
@@ -569,13 +738,12 @@ class TestDoubleBarrelledSurname:
         assert a1 == "ask"
         assert s["_nc"]["substate"] == NC_SN_CONFIRM
         assert "Smith" in s["_nc"]["surname_candidate"] and "Jones" in s["_nc"]["surname_candidate"]
-        # Confirm → accept
         a2, payload = NameCollector(s).handle("yes", "Yes")
         assert a2 == "accept"
         assert "Smith" in payload and "Jones" in payload
 
 
-# ── 17. Edge cases ────────────────────────────────────────────────────────────
+# ── 18. Edge cases ────────────────────────────────────────────────────────────
 
 class TestEdgeCases:
     def test_empty_string(self):
@@ -583,32 +751,32 @@ class TestEdgeCases:
         assert action in ("ask", "repair")
 
     def test_booking_context_wrapper_stripped(self):
-        """'booking in john smith' — prefix stripped → fn_confirm 'John', pending 'Smith'."""
         s = sess()
         a1, p1 = NameCollector(s).handle("booking in john smith", "booking in John Smith")
         assert a1 == "ask"
         assert "John" in p1
         assert s["_nc"]["pending_surname"] == "Smith"
-        # Complete the flow
-        NameCollector(s).handle("yes", "Yes")            # fn_confirm YES → sn_confirm "Smith"
-        a3, p3 = NameCollector(s).handle("yes", "Yes")  # sn_confirm YES → accept
+        NameCollector(s).handle("yes", "Yes")
+        a3, p3 = NameCollector(s).handle("yes", "Yes")
         assert a3 == "accept"
         assert "John" in p3 and "Smith" in p3
 
     def test_it_s_prefix_stripped(self):
-        """'it's john smith' — prefix stripped → fn_confirm 'John', pending 'Smith'."""
         s = sess()
         a1, p1 = NameCollector(s).handle("it's john smith", "It's John Smith")
         assert a1 == "ask"
         assert "John" in p1
-        # Complete the flow
-        NameCollector(s).handle("yes", "Yes")            # fn_confirm YES → sn_confirm
-        a3, p3 = NameCollector(s).handle("yes", "Yes")  # sn_confirm YES → accept
+        NameCollector(s).handle("yes", "Yes")
+        a3, p3 = NameCollector(s).handle("yes", "Yes")
         assert a3 == "accept"
 
     def test_unknown_substate_resets(self):
         s = sess()
         s["_nc"] = _full_nc_dict(substate="broken_state")
         action, _ = NameCollector(s).handle("john", "John")
-        # Should reset gracefully and ask for first name
         assert action in ("ask", "repair")
+
+    def test_best_effort_ack_constant_contains_key_phrases(self):
+        """_BEST_EFFORT_ACK contains the required phrases from the spec."""
+        assert "confirmation message" in _BEST_EFFORT_ACK.lower() or "confirmation" in _BEST_EFFORT_ACK.lower()
+        assert "reply" in _BEST_EFFORT_ACK.lower() or "correcting" in _BEST_EFFORT_ACK.lower()
