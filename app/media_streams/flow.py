@@ -4401,6 +4401,7 @@ class FlowEngine:
                 "wrong number", "not the right number",
                 "that's not the right number", "that's the wrong number",
                 "thats not the right number", "thats the wrong number",
+                "not the best number",
             )
             import re as _hg_re
             _hg_yes = any(p in text for p in _HG_YES)
@@ -4410,8 +4411,26 @@ class FlowEngine:
                 bool(_hg_re.search(r'\bno\b', text))
                 or any(p in text for p in _HG_NO_PHRASES)
             )
+            # Semantic YES — natural caller affirmations that don't use the word "yes".
+            # Guard: must not fire if "no" is present or negation word is present.
+            _SEMANTIC_YES_PHRASES = (
+                "that's the best number", "thats the best number",
+                "that's the right number", "thats the right number",
+                "this is the best number", "this is the right number",
+                "that's the one", "thats the one",
+                "you can use this one", "you can use this number",
+                "this number is fine", "that number is fine",
+                "best number to reach me", "best number for me",
+                "that one is fine", "this one is fine",
+            )
+            _SEMANTIC_YES_NEGATION = ("not", "different", "another", "wrong")
+            _semantic_yes = (
+                any(p in text for p in _SEMANTIC_YES_PHRASES)
+                and not _hg_re.search(r'\bno\b', text)
+                and not any(n in text for n in _SEMANTIC_YES_NEGATION)
+            )
 
-            if _hg_yes and not _hg_no:
+            if (_hg_yes or _semantic_yes) and not _hg_no:
                 self.session["phone_confirm_armed"]    = False  # disarm — gate consumed
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = True
@@ -4442,7 +4461,8 @@ class FlowEngine:
                     self.session["flow_state"] = "CONFIRM_BOOKING"
                     self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
                 logger.info(
-                    "[ms_flow] HARD GATE CONFIRM_PHONE: YES → %s phone=...%s",
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: %s → %s phone=...%s",
+                    "semantic_yes" if _semantic_yes and not _hg_yes else "explicit_yes",
                     self.session.get("state"),
                     (self.session.get("phone_number") or self.session.get("phone") or "")[-4:],
                 )
@@ -4579,16 +4599,21 @@ class FlowEngine:
                     )
                     self.session["last_info_answer"] = _cp_priv2
                     return
-                # Not an inquiry — replay last question
+                # Not an inquiry — tight re-ask rather than replaying the full readback
+                _ambiguous_reask = "Just to check — should I use this number, yes or no?"
                 logger.info(
-                    "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — re-asking",
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — tight re-ask",
                     text[:60],
                 )
                 self.session["_last_handled_by"]         = "confirm_phone_ambiguous"
                 self.session["_last_yes_detected"]       = _hg_yes
                 self.session["_last_no_detected"]        = _hg_no
-                self.session["_last_assistant_response"] = _hg_lq
-                await self._tts.put(_hg_lq)
+                self.session["_last_assistant_response"] = _ambiguous_reask
+                self.session["last_question"]            = _ambiguous_reask
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _ambiguous_reask}
+                )
+                await self._tts.put(_ambiguous_reask)
                 return
 
         # ── HARD PHONE-STEP GUARD (Phase 5): once we are in a phone step or
@@ -8559,8 +8584,25 @@ class FlowEngine:
                     "wrong number", "not the right number",
                     "that's not the right number", "that's the wrong number",
                     "thats not the right number", "thats the wrong number",
+                    "not the best number",
                 )
-                _cp_yes = any(p in text for p in _CP_YES)
+                _CP_SEMANTIC_YES = (
+                    "that's the best number", "thats the best number",
+                    "that's the right number", "thats the right number",
+                    "this is the best number", "this is the right number",
+                    "that's the one", "thats the one",
+                    "you can use this one", "you can use this number",
+                    "this number is fine", "that number is fine",
+                    "best number to reach me", "best number for me",
+                    "that one is fine", "this one is fine",
+                )
+                import re as _re_cp2
+                _cp_semantic_yes = (
+                    any(p in text for p in _CP_SEMANTIC_YES)
+                    and not _re_cp2.search(r'\bno\b', text)
+                    and not any(n in text for n in ("not", "different", "another", "wrong"))
+                )
+                _cp_yes = any(p in text for p in _CP_YES) or _cp_semantic_yes
                 _cp_no  = any(p in text for p in _CP_NO)
             if _cp_yes and not _cp_no:
                 import re as _re_cp
