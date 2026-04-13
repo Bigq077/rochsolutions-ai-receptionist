@@ -3684,100 +3684,113 @@ class FlowEngine:
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
 
-            # ── RECOVERY MODE: yes/no disambiguation ─────────────────────────────
-            # Active after a first failed extraction.  We ask "Was it Alcester?"
-            # (then "Was it Redditch?" if denied).  Only falls to keypad if yes/no
-            # cannot be parsed, or if the caller denies both clinics.
-            _loc_recovery_mode = self.session.get("location_recovery_mode")
-            if _loc_recovery_mode:
-                # Always try direct extraction first — handles DTMF synthetic
-                # transcripts ("alcester"/"redditch") and any Tier-1 STT hit that
-                # arrives despite the yes/no framing.
-                _rec_faq_intents = {
+            # ── FORCED CONFIRM MODE: waiting for yes/no on our guessed clinic ──────
+            # Active immediately after the resolver returns None for any input.
+            # One binary confirm question; yes binds guess, no binds the opposite.
+            _loc_pending_guess = self.session.get("location_pending_guess")
+            if _loc_pending_guess:
+                # Direct extraction still wins (DTMF / Tier-1 STT hits arrive here too)
+                _fc_faq_intents = {
                     "faq_prices", "faq_insurance", "faq_hours",
                     "faq_location", "faq_services", "faq_capability",
                 }
-                _rec_intent = self._detect_intent(text)
-                if _rec_intent in _rec_faq_intents:
-                    await self._handle_mid_flow_interrupt(_rec_intent, transcript)
+                _fc_intent = self._detect_intent(text)
+                if _fc_intent in _fc_faq_intents:
+                    await self._handle_mid_flow_interrupt(_fc_intent, transcript)
                     return
                 loc = self._extract("location_selection", text, transcript)
                 if loc:
                     self.session["selected_location"] = loc
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
-                    self.session.pop("location_recovery_mode", None)
+                    self.session.pop("location_pending_guess", None)
                     logger.info(
-                        "[ms_flow] ASK_LOCATION recovery: direct extraction — %s", loc
+                        "[ms_flow] ASK_LOCATION forced-confirm: direct extraction — %s", loc
                     )
                     await self.ask_current_question()
                     return
-                # Yes/No detection (narrow — explicit clinic-selection context only)
-                _t_rec = text.lower()
-                _YES_SIGS = (
+                # Yes/No detection — narrow, explicit confirmation signals only
+                _fc_t = text.lower()
+                _FC_YES = (
                     "yes", "yeah", "yep", "yup", "correct",
                     "that's right", "thats right", "that's it", "thats it",
                     "absolutely", "definitely", "sure", "confirmed",
                 )
-                _NO_SIGS = (
+                _FC_NO = (
                     "no", "nope", "nah", "not that", "not right",
                     "wrong", "other one", "other clinic", "different",
                 )
-                _is_yes = any(sig in _t_rec for sig in _YES_SIGS)
-                _is_no  = any(sig in _t_rec for sig in _NO_SIGS)
-                if _is_yes and not _is_no:
-                    _confirmed = "alcester" if _loc_recovery_mode == "ask_alcester" else "redditch"
-                    self.session["selected_location"] = _confirmed
+                _fc_is_yes = any(sig in _fc_t for sig in _FC_YES)
+                _fc_is_no  = any(sig in _fc_t for sig in _FC_NO)
+                if _fc_is_yes and not _fc_is_no:
+                    # Yes → bind the guessed clinic
+                    self.session["selected_location"] = _loc_pending_guess
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
-                    self.session.pop("location_recovery_mode", None)
+                    self.session.pop("location_pending_guess", None)
                     logger.info(
-                        "[ms_flow] ASK_LOCATION recovery: yes-confirmed %s", _confirmed
+                        "[ms_flow] ASK_LOCATION forced-confirm: yes → %s", _loc_pending_guess
                     )
                     await self.ask_current_question()
                     return
-                if _is_no and not _is_yes and _loc_recovery_mode == "ask_alcester":
-                    # Denied Alcester — ask about Redditch before falling to keypad
-                    self.session["location_recovery_mode"] = "ask_redditch"
-                    _redditch_q = "Okay — was it Redditch?"
-                    await self._tts.put(_redditch_q)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _redditch_q}
+                if _fc_is_no and not _fc_is_yes:
+                    # No → bind the OPPOSITE clinic immediately — no second ask
+                    _fc_opposite = "redditch" if _loc_pending_guess == "alcester" else "alcester"
+                    self.session["selected_location"] = _fc_opposite
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION forced-confirm: no → opposite %s", _fc_opposite
                     )
-                    self.session["last_question"] = _redditch_q
-                    logger.info("[ms_flow] ASK_LOCATION recovery: Alcester denied → asking Redditch")
+                    await self.ask_current_question()
                     return
-                # Cannot parse yes/no, or denied both clinics → keypad fallback
-                self.session.pop("location_recovery_mode", None)
-                _rec_retry = self.session.get("location_retry_count", 1) + 1
-                self.session["location_retry_count"] = _rec_retry
-                logger.info(
-                    "[ms_flow] ASK_LOCATION recovery: yes/no unclear — retry_count=%d → keypad",
-                    _rec_retry,
+                # Neither yes nor no → final DTMF fallback
+                self.session.pop("location_pending_guess", None)
+                self.session["location_awaiting_dtmf"] = True
+                _fc_dtmf = "Just to make sure, press 1 for Alcester or 2 for Redditch."
+                await self._tts.put(_fc_dtmf)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _fc_dtmf}
                 )
-                if _rec_retry >= 3:
-                    _rec_exit = (
+                self.session["last_question"] = _fc_dtmf
+                logger.info("[ms_flow] ASK_LOCATION forced-confirm: unclear → DTMF fallback")
+                return
+
+            # ── DTMF MODE: waiting for keypad press (final fallback) ──────────────
+            if self.session.get("location_awaiting_dtmf"):
+                loc = self._extract("location_selection", text, transcript)
+                if loc:
+                    self.session["selected_location"] = loc
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_awaiting_dtmf", None)
+                    logger.info("[ms_flow] ASK_LOCATION DTMF: resolved — %s", loc)
+                    await self.ask_current_question()
+                    return
+                # DTMF not received — one short re-prompt then graceful exit
+                _dtmf_retry = self.session.get("location_dtmf_retry", 0) + 1
+                self.session["location_dtmf_retry"] = _dtmf_retry
+                if _dtmf_retry >= 2:
+                    _dtmf_exit = (
                         "I'm having trouble catching the clinic name — "
                         "please give us a call back and the team will be happy to help."
                     )
-                    await self._tts.put(_rec_exit)
+                    await self._tts.put(_dtmf_exit)
                     self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _rec_exit}
+                        {"role": "assistant", "content": _dtmf_exit}
                     )
-                    self.session["last_question"] = _rec_exit
+                    self.session["last_question"] = _dtmf_exit
                     self.session["graceful_exit"]    = True
                     self.session["request_transfer"] = True
                     self.session["needs_location"]   = False
                 else:
-                    _rec_kp = (
-                        "No problem. Please type 1 on your keyboard for Alcester "
-                        "or 2 for Redditch."
-                    )
-                    await self._tts.put(_rec_kp)
+                    _dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                    await self._tts.put(_dtmf_re)
                     self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _rec_kp}
+                        {"role": "assistant", "content": _dtmf_re}
                     )
-                    self.session["last_question"] = _rec_kp
+                    self.session["last_question"] = _dtmf_re
                 return
 
             # ── FAQ-first gate: detect question intent BEFORE extracting location ──
@@ -3803,18 +3816,14 @@ class FlowEngine:
                 self.session["selected_location"] = loc
                 self.session["needs_location"] = False
                 self.session.pop("location_retry_count", None)
-                self.session.pop("location_recovery_mode", None)
+                self.session.pop("location_pending_guess", None)
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
-                # ── Intent-pivot intercept (Bug 1) ────────────────────────────
+                # ── Intent-pivot intercept ────────────────────────────────────
                 # "meant to say rebook" / "could i reschedule instead" are
                 # corrections to the original routing, NOT failed location answers.
-                # Check BEFORE retry counter so no slot is burned.
-                # Uses a two-gate: cheap string check first, then _detect_intent
-                # only if a strong signal is present.  False positives on
-                # "actually I prefer mornings" are blocked by _detect_intent
-                # returning general_query (not in the routing set below).
+                # Check BEFORE entering the fallback ladder so no slot is burned.
                 _LOC_PIVOT_SIGNALS = (
                     "reschedule", "re-schedule", "rebook", "re-book",
                     "cancel", "instead", "meant to say", "i meant",
@@ -3829,51 +3838,16 @@ class FlowEngine:
                             text[:60], _pivot_intent,
                         )
                         self.session.pop("location_retry_count", None)
-                        self.session.pop("location_recovery_mode", None)
                         self._switch_flow(_pivot_intent)
                         await self.ask_current_question()
                         return
 
-                # Check for general inquiry BEFORE incrementing retry counter so
-                # "Which clinic has parking?" doesn't burn a retry slot.
-                _loc_frozen_q = self.session.get(
-                    "last_question",
-                    "Which clinic would you like — Alcester or Redditch? "
-                    "Press 1 for Alcester or 2 for Redditch.",
-                )
+                # ── FAQ interrupt — check before entering fallback ladder ──────
+                # general_query excluded: vague phrases must not fire the LLM here.
                 _loc_faq_intents = {
                     "faq_prices", "faq_insurance", "faq_hours",
                     "faq_location", "faq_services", "faq_capability",
-                    # general_query intentionally removed: vague/cut-off phrases score
-                    # general_query and must NOT fire the LLM at ASK_LOCATION.
                 }
-                # Fragment guard FIRST — before intent detection.
-                # Very short utterances with no location signal are audio artifacts
-                # (background noise, cut-off, filler) and must not burn a retry slot.
-                _loc_words = text.split()
-                _loc_tokens = (
-                    "alcester", "redditch", "1", "2", "one", "two", "first", "second",
-                    # Tier 1 phonetic variants that should not be suppressed
-                    "alchester", "reddit", "alcesta", "alkester", "alsester",
-                    "red itch", "read itch", "redich", "reditch", "sister", "sester",
-                    # Tier 2 tokens — short utterances containing these are valid clinic answers
-                    "access", "alcaster", "arlcester",
-                    # NOTE: "ancestor" removed — no longer a bindable location signal
-                )
-                _has_loc_token = any(p in text for p in _loc_tokens)
-                if not _has_loc_token and len(_loc_words) <= 3 and not text.rstrip().endswith("?"):
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION: fragment suppressed (no loc token, %d words) %r",
-                        len(_loc_words), text[:40],
-                    )
-                    # Only re-anchor on the very first attempt — if location_retry_count > 0
-                    # a retry/keypad prompt is already queued; speaking again creates double prompts.
-                    if not self.session.get("location_retry_count", 0):
-                        _loc_reanchor = "Sorry — was that Alcester or Redditch?"
-                        await self._tts.put(_loc_reanchor)
-                        self.session["last_question"] = _loc_reanchor
-                    return
-                # FAQ interrupt — only genuine FAQ intents; general_query excluded above.
                 _loc_intent = self._detect_intent(text)
                 if _loc_intent in _loc_faq_intents:
                     logger.info(
@@ -3882,49 +3856,38 @@ class FlowEngine:
                     )
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
-                _retry_count = self.session.get("location_retry_count", 0) + 1
-                self.session["location_retry_count"] = _retry_count
-                logger.info(
-                    "[ms_flow] ASK_LOCATION: no match for %r — retry_count=%d",
-                    text[:40], _retry_count,
+
+                # ── Forced confirm guess: resolver returned None ───────────────
+                # Detect R/RE/RED opening signal to guess Redditch; otherwise
+                # default to Alcester.  Fires immediately — no vague open re-ask.
+                # Fragment suppression is intentionally removed: even short noisy
+                # inputs get a deterministic forced-confirm rather than a silent
+                # re-anchor that restarts the open loop.
+                _fc_words = text.strip().split()
+                _fc_first = _fc_words[0] if _fc_words else ""
+                _RED_OPEN = (
+                    "red", "read", "rit", "rid", "reed", "ready", "reddit", "redd",
                 )
-                if _retry_count >= 3:
-                    _retry = (
-                        "I'm having trouble catching the clinic name — "
-                        "please give us a call back and the team will be happy to help."
-                    )
-                    await self._tts.put(_retry)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _retry}
-                    )
-                    self.session["last_question"] = _retry
-                    self.session["graceful_exit"]    = True
-                    self.session["request_transfer"] = True
-                    self.session["needs_location"]   = False
-                    return
-                elif _retry_count == 1:
-                    # First failed speech attempt: enter yes/no recovery mode.
-                    # Ask "Was it Alcester?" and wait for confirmation before
-                    # falling to keypad.  Keypad is only offered if yes/no cannot
-                    # be parsed, or if the caller denies both clinics.
-                    self.session["location_recovery_mode"] = "ask_alcester"
-                    _retry = "Just to confirm — was it Alcester?"
-                    await self._tts.put(_retry)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _retry}
-                    )
-                    self.session["last_question"] = _retry
-                else:
-                    # retry_count == 2: recovery already attempted — fall to keypad
-                    _retry = (
-                        "Sorry, I didn't quite catch that. "
-                        "Please type 1 on your keyboard for Alcester or 2 on your keyboard for Redditch."
-                    )
-                    await self._tts.put(_retry)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _retry}
-                    )
-                    self.session["last_question"] = _retry
+                _has_red_open = (
+                    any(_fc_first.startswith(p) for p in _RED_OPEN)
+                    or _fc_first == "re"
+                )
+                _pending = "redditch" if _has_red_open else "alcester"
+                self.session["location_pending_guess"] = _pending
+                _confirm_q = (
+                    "Just to confirm \u2014 was that Redditch?"
+                    if _pending == "redditch"
+                    else "Just to confirm \u2014 was that Alcester?"
+                )
+                await self._tts.put(_confirm_q)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _confirm_q}
+                )
+                self.session["last_question"] = _confirm_q
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: resolver None → forced confirm (guess=%s) for %r",
+                    _pending, text[:40],
+                )
             return
 
         # ════════════════════════════════════════════════════════════════════
