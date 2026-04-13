@@ -27,11 +27,12 @@ _CALLBACK_SUFFIX = " — if you'd like to call back when you're ready, we're her
 # Maps raw session state names → SILENCE_RESPONSES lookup key.
 # States not listed here fall through to "default".
 _STATE_TO_KEY: dict[str, str] = {
-    # Media-streams flow states
-    "COLLECT_PHONE":           "ask_phone",
-    "COLLECT_PHONE_RETURNING": "ask_phone",
-    "CONFIRM_PHONE":           "confirm_phone",
-    "CONFIRM_PHONE_RETURNING": "confirm_phone",
+    # Media-streams flow states — phone capture: 3 s fast-recovery threshold.
+    "COLLECT_PHONE":            "ask_phone",
+    "COLLECT_PHONE_RETURNING":  "ask_phone",
+    "COLLECT_PHONE_RESCHEDULE": "ask_phone",
+    "CONFIRM_PHONE":            "confirm_phone",
+    "CONFIRM_PHONE_RETURNING":  "confirm_phone",
     # NC-managed name collection: 3 s fast-recovery threshold so a missed
     # short name auto-prompts with the scaffold phrase, not 26 s of silence.
     "COLLECT_NAME":            "collect_name_nc",

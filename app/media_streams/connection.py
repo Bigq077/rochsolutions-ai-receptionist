@@ -419,7 +419,9 @@ class SilenceHandler:
 
         # DTMF digits already in buffer — caller is actively typing.
         # Reset the silence timer silently; do not interrupt with a spoken prompt.
-        if (_sess or {}).get("phone_dtmf_buffer") and _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+        if (_sess or {}).get("phone_dtmf_buffer") and _state in (
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"
+        ):
             self._restart_timer()
             return
 
@@ -435,9 +437,16 @@ class SilenceHandler:
             _lq = (_sess or {}).get("last_question", "")
             phrase = _lq if _lq else "Sorry — which day works best for you?"
         elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
-            phrase = "Sorry — is this the right number? Yes or no?"
+            phrase = (
+                "Sorry, I didn't quite catch that — "
+                "please say yes if I can use this number, "
+                "or no if you'd like to use a different one."
+            )
         elif (_sess or {}).get("phone_awaiting_dtmf"):
-            phrase = "Please type your number on the keypad now."
+            phrase = (
+                "Sorry, I didn't quite catch that — "
+                "please enter the phone number using your keypad."
+            )
         elif _state in (
             "COLLECT_NAME", "COLLECT_NAME_RETURNING",
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
@@ -456,8 +465,11 @@ class SilenceHandler:
                     "Sorry, I didn't quite catch that \u2014 "
                     "please say: my first name is..."
                 )
-        elif _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
-            phrase = "Sorry, I missed that. Could you type the phone number using your keypad?"
+        elif _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"):
+            phrase = (
+                "Sorry, I didn't quite catch that — "
+                "please say the phone number slowly."
+            )
         elif _state in ("GREETING", "DETECT_INTENT", ""):
             phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
         elif _state == "ASK_LOCATION":
@@ -840,6 +852,17 @@ class SilenceHandler:
             self.last_question = _live_q_w1.strip()
             q = self.last_question
 
+        # Phone-capture DTMF guard: if digit collection is already underway,
+        # do not interrupt with a spoken prompt — the keypress flow owns timing.
+        if (
+            self.current_state in (
+                "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"
+            )
+            and (_session_now or {}).get("phone_dtmf_buffer")
+        ):
+            logger.debug("[ms_silence] W1: DTMF digits in buffer — suppressing phone recovery")
+            return
+
         self.currently_reasking = True
         self.reask_count += 1
         secs_since_q = time.time() - self._last_question_set_at
@@ -856,6 +879,30 @@ class SilenceHandler:
             self.reask_count, q[:80], secs_since_q,
         )
         _reask1 = phrase1 + (" " + q if q else "")
+
+        # Phone-capture structured recovery: replace generic phrase+last_question
+        # with a targeted prompt. For COLLECT_PHONE, distinguish keypad vs speech.
+        # One structured recovery fires at 3 s; W2/W3 handle the longer fallback.
+        if self.current_state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+            _reask1 = (
+                "Sorry, I didn't quite catch that — "
+                "please say yes if I can use this number, "
+                "or no if you'd like to use a different one."
+            )
+        elif self.current_state in (
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"
+        ):
+            if (_session_now or {}).get("phone_awaiting_dtmf"):
+                _reask1 = (
+                    "Sorry, I didn't quite catch that — "
+                    "please enter the phone number using your keypad."
+                )
+            else:
+                _reask1 = (
+                    "Sorry, I didn't quite catch that — "
+                    "please say the phone number slowly."
+                )
+
         await self._tts_text_queue.put(_reask1)
         if self._on_reask:
             asyncio.create_task(self._on_reask(_reask1))

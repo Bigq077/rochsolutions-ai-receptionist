@@ -237,8 +237,10 @@ P: dict = {
 # ---------------------------------------------------------------------------
 
 SILENCE_RESPONSES: dict = {
-    "ask_phone":          "No rush — take your time finding that number.",
-    "confirm_phone":      "Please say yes to confirm, or no to try a different number.",
+    # Phone capture: structured prompts mirror the name-state fast-recovery style.
+    # connection.py _run() W1 overrides these with DTMF-vs-speech variants.
+    "ask_phone":     "Sorry, I didn't quite catch that — please say the phone number slowly.",
+    "confirm_phone": "Sorry, I didn't quite catch that — please say yes if I can use this number, or no if you'd like to use a different one.",
     "ask_name":           "Take your time.",
     # BUG 1 fix: state-aware name sub-categories
     "ask_first_name":     "Sorry, I missed that. Could you tell me your first name again?",
@@ -272,8 +274,11 @@ SILENCE_RESPONSES: dict = {
 #   extra_slow (32-34 s) — long option lists (PRESENT_DAYS/TIMES), symptom
 #                           descriptions, post-explanation confirmations
 SILENCE_THRESHOLDS: dict = {
-    "ask_phone":          26.0,
-    "confirm_phone":      22.0,   # yes/no — short answer expected
+    # Phone capture: fast 3 s auto-recovery mirrors name-state behaviour.
+    # A missed phone answer auto-prompts with a structured hint instead of
+    # waiting 22–26 s of dead silence.
+    "ask_phone":          3.0,
+    "confirm_phone":      3.0,
     "ask_name":           26.0,
     # NC-managed name collection (COLLECT_NAME*): fast 3 s auto-recovery so
     # a missed short name auto-prompts with the scaffold "please say: my first
