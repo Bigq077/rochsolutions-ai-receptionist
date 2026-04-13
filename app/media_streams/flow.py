@@ -33,6 +33,7 @@ import logging
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from app.phrases import RETRY_PHRASES
+from app.media_streams.location_resolver import resolve_clinic_location as _resolve_clinic
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -11782,9 +11783,11 @@ class FlowEngine:
             if _t == "2":
                 return "redditch"
 
-            # Delegate all phonetic / ASR-variant matching to the dedicated helper.
-            # Pass in_location_state=True so Tier 2 context-aware variants are active.
-            return _resolve_location(_t, in_location_state=True)
+            # Delegate to the dedicated weighted resolver (prefix + alias + similarity).
+            _loc_result = _resolve_clinic(_t, context="ask_location")
+            if _loc_result["status"] == "resolved":
+                return _loc_result["location"]
+            return None
 
         # ----- faq_booking: wants to book after FAQ answer ---------------
         if method == "faq_booking":
