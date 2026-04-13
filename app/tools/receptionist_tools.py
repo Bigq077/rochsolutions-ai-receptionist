@@ -1792,6 +1792,21 @@ async def _lookup_appointment_acuity(
 
             if len(_near) >= 2:
                 _near.sort(key=lambda x: x[0])
+                # Pick the nearest future appointment as the best candidate and
+                # commit it to session NOW — same path as the single-match case.
+                # This ensures rc_stage is set to "lookup_done" so the
+                # deterministic YES gate in handle_transcript fires on the
+                # caller's confirmation instead of re-running lookup.
+                best_dt, best_appt = _near[0]
+                raw_type_id = best_appt.get("typeID")
+                if raw_type_id:
+                    session["reschedule_original_type_id"] = f"acuity_{raw_type_id}"
+                session["reschedule_appt_id"]       = str(best_appt["id"])
+                session["reschedule_appt_datetime"] = best_dt.isoformat()
+                session["reschedule_appt_type"]     = best_appt.get("type", "appointment")
+                session["rc_stage"]                 = "lookup_done"
+                session.pop("rc_appointment_confirmed", None)
+                session.pop("rc_lookup_failed", None)
                 _alts = [
                     {
                         "id":         str(a["id"]),
@@ -1800,10 +1815,26 @@ async def _lookup_appointment_acuity(
                         "time_label": d.strftime("%H:%M"),
                         "type":       a.get("type", "appointment"),
                     }
-                    for d, a in _near[:3]
+                    for d, a in _near[1:3]
                 ]
-                return {"found": "multiple", "alternatives": _alts,
-                        "error": "Multiple near-matches — please confirm details."}
+                session["reschedule_appt_alternatives"] = _alts
+                day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
+                time_label = best_dt.strftime("%H:%M")
+                logger.info(
+                    "_lookup_appointment_acuity: multiple near-matches, best id=%s at %s "
+                    "(rc_stage=lookup_done set, %d alternatives stored)",
+                    best_appt["id"], best_dt.isoformat(), len(_alts),
+                )
+                return {
+                    "found":            True,
+                    "appointment_id":   str(best_appt["id"]),
+                    "day_label":        day_label,
+                    "time_label":       time_label,
+                    "appointment_type": best_appt.get("type", "appointment"),
+                    "multiple_found":   True,
+                    "alternatives":     _alts,
+                    "near_match":       True,
+                }
 
             # Exactly one near-match
             future_matches = _near

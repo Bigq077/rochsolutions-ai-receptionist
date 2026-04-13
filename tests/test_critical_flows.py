@@ -15,6 +15,14 @@ Covers:
        7d. Repair utterance in COLLECT_PHONE clears DTMF buffer (local reset)
        7e. No old digits survive after a local repair + re-entry
        7f. Normal booking phone path is not regressed
+  8. LOOKUP_RESCHEDULE confirmation loop
+       8a. Multiple near-match lookup sets rc_stage=lookup_done in session
+       8b. Multiple near-match lookup returns found=True (not "multiple")
+       8c. Multiple near-match: best candidate saved to session keys
+       8d. Multiple near-match: alternatives stored (not including best)
+       8e. Deterministic YES gate advances flow when rc_stage=lookup_done
+       8f. Deterministic YES gate does not re-fire LLM / repeat lookup
+       8g. NO after lookup stays at LOOKUP_RESCHEDULE for disambiguation
 
 Run with: pytest tests/ -v
 """
@@ -629,4 +637,339 @@ class TestReschedulePhoneGate:
         assert engine.session.get("state") in ("CONFIRM_BOOKING", "COLLECT_REASON", "PRESENT_DAYS"), (
             f"Booking flow after phone YES should not go to LOOKUP_RESCHEDULE. "
             f"Got: {engine.session.get('state')}"
+        )
+
+
+# ===========================================================================
+# 8. LOOKUP_RESCHEDULE confirmation loop — Bug fix coverage
+# ===========================================================================
+
+def _make_fake_acuity_appointments(now_iso: str | None = None) -> list:
+    """
+    Return two future Acuity appointment dicts with fuzzy-matching name fields
+    so that `_lookup_appointment_acuity` classifies them as near-matches.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    return [
+        {
+            "id":        "111",
+            "datetime":  (now + timedelta(days=7)).isoformat(),
+            "firstName": "Jane",
+            "lastName":  "Smith",
+            "phone":     "+447912345678",
+            "type":      "Physiotherapy",
+            "typeID":    "42",
+        },
+        {
+            "id":        "222",
+            "datetime":  (now + timedelta(days=14)).isoformat(),
+            "firstName": "Jane",
+            "lastName":  "Smyth",
+            "phone":     "+447912345678",
+            "type":      "Sports Massage",
+            "typeID":    "43",
+        },
+    ]
+
+
+def _make_lookup_engine(extra_session: Dict[str, Any] | None = None) -> tuple:
+    """
+    Return (engine, tts) with FlowEngine at LOOKUP_RESCHEDULE step.
+    Session is set up as if COLLECT_PHONE / CONFIRM_PHONE just completed.
+    """
+    from app.media_streams.flow import (
+        FlowEngine,
+        RESCHEDULE_FLOW,
+        _RESCHEDULE_LOOKUP_INDEX,
+    )
+    from app.media_streams.session import DEFAULT_MS_SESSION
+
+    session = copy.deepcopy(DEFAULT_MS_SESSION)
+    session.update({
+        "full_name":            "Jane Smith",
+        "state":                "LOOKUP_RESCHEDULE",
+        "flow_state":           "LOOKUP_RESCHEDULE",
+        "flow_step":            _RESCHEDULE_LOOKUP_INDEX,
+        "phone_confirmed":      True,
+        "phone_confirm_armed":  False,
+        "customer_phone":       "+447912345678",
+        "selected_location":    "alcester",
+    })
+    if extra_session:
+        session.update(extra_session)
+
+    tts = _FakeTTS()
+    engine = FlowEngine(session, tts, _noop_llm)
+    engine._active_flow = RESCHEDULE_FLOW
+    engine._intent_detected = True
+    return engine, tts
+
+
+class TestLookupRescheduleConfirmationGate:
+    """
+    Covers the bug where lookup_appointment returns found="multiple" (multiple
+    near-matches) and rc_stage is never set to "lookup_done", causing the
+    deterministic YES gate to never fire and every caller confirmation to
+    re-run the LLM / re-run appointment lookup.
+
+    Fix: _lookup_appointment_acuity now picks the nearest candidate as the
+    best match, saves it to session (rc_stage="lookup_done"), and returns
+    found=True with multiple_found=True.
+    """
+
+    # ── 8a: multiple near-match sets rc_stage=lookup_done ─────────────────
+
+    async def test_multiple_near_match_sets_rc_stage(self):
+        """
+        When ≥2 near-matches exist, _lookup_appointment_acuity must set
+        session["rc_stage"] = "lookup_done" so the deterministic gate fires.
+        """
+        from app.tools.receptionist_tools import _lookup_appointment_acuity
+
+        session: Dict[str, Any] = {
+            "full_name":      "Jane Smith",
+            "customer_phone": "+447912345678",
+        }
+        appointments = _make_fake_acuity_appointments()
+
+        with patch(
+            "app.tools.receptionist_tools._get_acuity_adapter"
+        ) as mock_adapter_fn:
+            mock_adapter = MagicMock()
+            mock_adapter.list_appointments = AsyncMock(return_value=appointments)
+            mock_adapter_fn.return_value = mock_adapter
+
+            result = await _lookup_appointment_acuity(
+                {"name": "Jane Smith", "phone": "+447912345678"},
+                session,
+            )
+
+        assert session.get("rc_stage") == "lookup_done", (
+            f"rc_stage must be 'lookup_done' after multiple near-match lookup, "
+            f"got {session.get('rc_stage')!r}. result={result}"
+        )
+
+    # ── 8b: return value has found=True (not "multiple") ──────────────────
+
+    async def test_multiple_near_match_returns_found_true(self):
+        """
+        Return value must have found=True (not found="multiple") so the LLM
+        instruction's 'If found=true' branch handles it correctly.
+        """
+        from app.tools.receptionist_tools import _lookup_appointment_acuity
+
+        session: Dict[str, Any] = {
+            "full_name":      "Jane Smith",
+            "customer_phone": "+447912345678",
+        }
+        appointments = _make_fake_acuity_appointments()
+
+        with patch(
+            "app.tools.receptionist_tools._get_acuity_adapter"
+        ) as mock_adapter_fn:
+            mock_adapter = MagicMock()
+            mock_adapter.list_appointments = AsyncMock(return_value=appointments)
+            mock_adapter_fn.return_value = mock_adapter
+
+            result = await _lookup_appointment_acuity(
+                {"name": "Jane Smith", "phone": "+447912345678"},
+                session,
+            )
+
+        assert result.get("found") is True, (
+            f"found must be True (not 'multiple'). Got: {result.get('found')!r}"
+        )
+        assert result.get("multiple_found") is True, (
+            "multiple_found must be True to signal the LLM there are alternatives"
+        )
+
+    # ── 8c: best candidate saved to session keys ──────────────────────────
+
+    async def test_multiple_near_match_saves_best_to_session(self):
+        """
+        The nearest future appointment must be saved as the pending candidate
+        with the correct session keys.
+        """
+        from app.tools.receptionist_tools import _lookup_appointment_acuity
+
+        session: Dict[str, Any] = {
+            "full_name":      "Jane Smith",
+            "customer_phone": "+447912345678",
+        }
+        appointments = _make_fake_acuity_appointments()
+
+        with patch(
+            "app.tools.receptionist_tools._get_acuity_adapter"
+        ) as mock_adapter_fn:
+            mock_adapter = MagicMock()
+            mock_adapter.list_appointments = AsyncMock(return_value=appointments)
+            mock_adapter_fn.return_value = mock_adapter
+
+            await _lookup_appointment_acuity(
+                {"name": "Jane Smith", "phone": "+447912345678"},
+                session,
+            )
+
+        # Best is the nearest appointment (id="111", 7 days out)
+        assert session.get("reschedule_appt_id") == "111", (
+            f"Best (nearest) appt id must be saved. Got: {session.get('reschedule_appt_id')!r}"
+        )
+        assert session.get("reschedule_appt_datetime") is not None, (
+            "reschedule_appt_datetime must be set"
+        )
+        assert session.get("reschedule_appt_type") == "Physiotherapy", (
+            f"reschedule_appt_type must match best appt. Got: {session.get('reschedule_appt_type')!r}"
+        )
+        assert session.get("reschedule_original_type_id") == "acuity_42", (
+            f"reschedule_original_type_id must be set. Got: {session.get('reschedule_original_type_id')!r}"
+        )
+
+    # ── 8d: alternatives stored (excluding best) ──────────────────────────
+
+    async def test_multiple_near_match_stores_alternatives(self):
+        """
+        The remaining near-matches (not the best) must be stored in
+        session["reschedule_appt_alternatives"] for downstream disambiguation.
+        The best candidate must NOT appear in alternatives.
+        """
+        from app.tools.receptionist_tools import _lookup_appointment_acuity
+
+        session: Dict[str, Any] = {
+            "full_name":      "Jane Smith",
+            "customer_phone": "+447912345678",
+        }
+        appointments = _make_fake_acuity_appointments()
+
+        with patch(
+            "app.tools.receptionist_tools._get_acuity_adapter"
+        ) as mock_adapter_fn:
+            mock_adapter = MagicMock()
+            mock_adapter.list_appointments = AsyncMock(return_value=appointments)
+            mock_adapter_fn.return_value = mock_adapter
+
+            await _lookup_appointment_acuity(
+                {"name": "Jane Smith", "phone": "+447912345678"},
+                session,
+            )
+
+        alts = session.get("reschedule_appt_alternatives", [])
+        assert isinstance(alts, list) and len(alts) >= 1, (
+            f"At least 1 alternative must be stored. Got: {alts!r}"
+        )
+        alt_ids = [a["id"] for a in alts]
+        assert "111" not in alt_ids, (
+            f"Best candidate (id=111) must not appear in alternatives. Got: {alt_ids}"
+        )
+        assert "222" in alt_ids, (
+            f"Second appointment (id=222) must be in alternatives. Got: {alt_ids}"
+        )
+
+    # ── 8e: deterministic YES gate advances flow ──────────────────────────
+
+    async def test_yes_gate_advances_flow_when_lookup_done(self):
+        """
+        When rc_stage='lookup_done' and reschedule_appt_id is set (simulating
+        state after lookup ran), a YES confirmation must:
+          - set rc_appointment_confirmed=True
+          - set rc_stage='confirmed'
+          - advance flow_step past LOOKUP_RESCHEDULE
+          - NOT loop back to LOOKUP_RESCHEDULE
+        """
+        from app.media_streams.flow import _RESCHEDULE_LOOKUP_INDEX
+
+        engine, tts = _make_lookup_engine({
+            "rc_stage":              "lookup_done",
+            "reschedule_appt_id":    "111",
+            "reschedule_appt_datetime": "2026-04-20T10:00:00+01:00",
+            "reschedule_appt_type":  "Physiotherapy",
+        })
+
+        await engine.handle_transcript("yes that's correct")
+
+        assert engine.session.get("rc_appointment_confirmed") is True, (
+            "rc_appointment_confirmed must be True after YES"
+        )
+        assert engine.session.get("rc_stage") == "confirmed", (
+            f"rc_stage must be 'confirmed' after YES. Got: {engine.session.get('rc_stage')!r}"
+        )
+        assert engine.session.get("flow_step") > _RESCHEDULE_LOOKUP_INDEX, (
+            f"flow_step must advance past LOOKUP_RESCHEDULE ({_RESCHEDULE_LOOKUP_INDEX}). "
+            f"Got: {engine.session.get('flow_step')}"
+        )
+
+    # ── 8f: YES gate does not re-fire LLM / repeat lookup ────────────────
+
+    async def test_yes_gate_does_not_call_llm(self):
+        """
+        The deterministic YES gate must consume the confirmation without
+        calling the LLM.  We track this by verifying _noop_llm is never
+        awaited (the engine's llm_fn records its calls via a counter wrapper).
+        """
+        llm_call_count = 0
+
+        async def _counting_llm(instruction: str, allow_tools: bool = True) -> str:
+            nonlocal llm_call_count
+            llm_call_count += 1
+            return ""
+
+        from app.media_streams.flow import (
+            FlowEngine,
+            RESCHEDULE_FLOW,
+            _RESCHEDULE_LOOKUP_INDEX,
+        )
+        from app.media_streams.session import DEFAULT_MS_SESSION
+
+        session = copy.deepcopy(DEFAULT_MS_SESSION)
+        session.update({
+            "full_name":             "Jane Smith",
+            "state":                 "LOOKUP_RESCHEDULE",
+            "flow_state":            "LOOKUP_RESCHEDULE",
+            "flow_step":             _RESCHEDULE_LOOKUP_INDEX,
+            "phone_confirmed":       True,
+            "customer_phone":        "+447912345678",
+            "selected_location":     "alcester",
+            "rc_stage":              "lookup_done",
+            "reschedule_appt_id":    "111",
+            "reschedule_appt_datetime": "2026-04-20T10:00:00+01:00",
+            "reschedule_appt_type":  "Physiotherapy",
+        })
+        tts = _FakeTTS()
+        engine = FlowEngine(session, tts, _counting_llm)
+        engine._active_flow = RESCHEDULE_FLOW
+        engine._intent_detected = True
+
+        await engine.handle_transcript("yes perfect")
+
+        assert llm_call_count == 0, (
+            f"LLM must NOT be called when rc_stage=lookup_done and caller says YES. "
+            f"Called {llm_call_count} time(s)."
+        )
+
+    # ── 8g: NO stays at LOOKUP_RESCHEDULE for disambiguation ─────────────
+
+    async def test_no_stays_at_lookup_reschedule(self):
+        """
+        When rc_stage='lookup_done' and the caller says NO, the flow must
+        NOT advance — it should stay at LOOKUP_RESCHEDULE so the LLM can
+        offer alternatives or transfer.
+        """
+        from app.media_streams.flow import _RESCHEDULE_LOOKUP_INDEX
+
+        engine, tts = _make_lookup_engine({
+            "rc_stage":              "lookup_done",
+            "reschedule_appt_id":    "111",
+            "reschedule_appt_datetime": "2026-04-20T10:00:00+01:00",
+            "reschedule_appt_type":  "Physiotherapy",
+        })
+
+        await engine.handle_transcript("no that's not right")
+
+        assert engine.session.get("flow_step") == _RESCHEDULE_LOOKUP_INDEX, (
+            f"flow_step must stay at LOOKUP_RESCHEDULE on NO. "
+            f"Got: {engine.session.get('flow_step')}"
+        )
+        assert engine.session.get("rc_appointment_confirmed") is not True, (
+            "rc_appointment_confirmed must not be set to True on NO"
         )
