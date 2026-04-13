@@ -1591,11 +1591,16 @@ def _get_bridge(
 
     tone = session.get("caller_tone", "warm")  # "brief" or "warm"
 
-    # Name states — acknowledge with first name for a personal touch
+    # Name states — acknowledge with first name for a personal touch.
+    # Suppressed when a recovery transition prefix is already queued so that
+    # the prefix + next-question compose into one utterance without a gratitude
+    # line sandwiched between them.
     if state in (
         "COLLECT_NAME", "COLLECT_NAME_RETURNING",
         "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
     ):
+        if session.pop("_nc_suppress_bridge", False):
+            return None
         first = str(answer).split()[0].capitalize() if answer else ""
         if first:
             return f"Thanks, {first}."
@@ -3192,6 +3197,13 @@ class FlowEngine:
                 self.session["phone_confirm_armed"] = True
             else:
                 question_text = step["question"]
+            # Post-name-recovery: fold any deferred transition prefix into the
+            # question so both are spoken as ONE utterance.  This eliminates the
+            # three-item stack (preamble / bridge / question) that occurs after
+            # surname best-effort fallback or inline correction.
+            _nc_prefix = self.session.pop("_nc_transition_prefix", None)
+            if _nc_prefix and question_text:
+                question_text = f"{_nc_prefix} {question_text}"
             await self._tts.put(question_text)
             # Always anchor silence-timer to the newest step question — bypass
             # _is_question_worth_storing gate to prevent stale anchors after
@@ -9499,14 +9511,21 @@ class FlowEngine:
                     {"role": "assistant", "content": _nc_payload}
                 )
                 return
-            # accept — play any best-effort preamble ("Okay, noted — I'll send
-            # you a confirmation message…") before falling through to the standard
-            # answer-storage + advancement code.
+            # accept — surname collection resolved.
+            # If it resolved via a degraded/best-effort path a preamble is set.
+            # Instead of speaking it as a standalone utterance (which stacks with
+            # the bridge and the next question), we fold it into a short transition
+            # prefix that ask_current_question() will prepend to the next question,
+            # producing ONE composed outbound utterance.  The bridge (_get_bridge)
+            # is suppressed for this recovery path to prevent "Thanks, Quentin."
+            # sandwiched between the correction note and the next question.
             _preamble = self.session.pop("_nc_accept_preamble", None)
             if _preamble:
-                await self._tts.put(_preamble)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _preamble}
+                # Recovery path: compose once in ask_current_question, not here.
+                self.session["_nc_suppress_bridge"] = True
+                self.session["_nc_transition_prefix"] = (
+                    "No problem — I'll include a correction option in the "
+                    "confirmation message."
                 )
             answer = _nc_payload
         else:
