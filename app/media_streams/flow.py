@@ -744,6 +744,156 @@ def _parse_transcript_date(transcript: str, available_days: list):
     return None
 
 
+def _constrained_day_alternatives(
+    text,
+    transcript,
+    requested_month_n,
+    all_available,
+    last_requested_date=None,
+):
+    """
+    When an explicit date is unavailable, check whether the utterance carries
+    search constraints (month, lower-bound, pair-of-dates) that should restrict
+    the alternatives offered.
+
+    This prevents "after the 1st of May but in May" from receiving an April
+    alternative — the caller's constraint is preserved and alternatives are
+    drawn only from the valid constrained set.
+
+    Returns:
+        list  — filtered alternatives from all_available (may be empty)
+        None  — no meaningful constraint detected; caller uses existing logic
+    """
+    import re as _re_cda
+    import datetime as _dt_cda
+
+    _MONTH_NUM_CDA = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+        "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+
+    # ── Exploratory markers ────────────────────────────────────────────────
+    _EXPLORATORY = (
+        "do you have", "have you got", "got anything", "anything",
+        "what's the next", "next day after", "later than", "after the",
+        "but in", "still in", "like the", "or the", "anything like",
+        "what have you got", "is there", "any availability", "any dates",
+        "around", "near", "something like", "after that", "but still",
+    )
+    is_exploratory = any(m in text for m in _EXPLORATORY)
+
+    # ── Month constraint ───────────────────────────────────────────────────
+    # Longest match first to avoid "may" inside "maybe" etc.
+    month_c = None
+    for mn in sorted(_MONTH_NUM_CDA, key=len, reverse=True):
+        if _re_cda.search(r'\b' + mn + r'\b', text):
+            month_c = _MONTH_NUM_CDA[mn]
+            break
+    # If no explicit month in text but the requested date has one AND the
+    # utterance looks like a constrained search ("later than", "after"), treat
+    # requested_month_n as the implied constraint (e.g. "later than the 1st of
+    # May" means stay in May even if May isn't repeated).
+    if month_c is None and requested_month_n and any(
+        p in text for p in (
+            "later than", "after the", "next day after", "after that",
+            "but in", "still in",
+        )
+    ):
+        month_c = requested_month_n
+
+    # ── Lower-bound constraint ─────────────────────────────────────────────
+    lower_bound = None
+    _LB_PHRASES = (
+        "after the", "later than the", "later than", "next day after the",
+        "next day after", "after that",
+    )
+    has_lb = any(p in text for p in _LB_PHRASES)
+    if has_lb:
+        _MONTH_ALT_CDA = (
+            r'january|february|march|april|may|june|july|august|september'
+            r'|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec'
+        )
+        _lb_m = _re_cda.search(
+            r'\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+|\s+)(' + _MONTH_ALT_CDA + r')\b'
+            r'|\b(' + _MONTH_ALT_CDA + r')\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b',
+            transcript.lower(),
+        )
+        if _lb_m:
+            if _lb_m.group(1) and _lb_m.group(2):
+                lb_day, lb_mon_s = int(_lb_m.group(1)), _lb_m.group(2).lower()
+            else:
+                lb_day, lb_mon_s = int(_lb_m.group(4)), _lb_m.group(3).lower()
+            lb_mon_n = (
+                _MONTH_NUM_CDA.get(lb_mon_s[:3]) or _MONTH_NUM_CDA.get(lb_mon_s)
+            )
+            if lb_mon_n and lb_day:
+                _today_cda = _dt_cda.date.today()
+                _yr_cda = (
+                    _today_cda.year if lb_mon_n >= _today_cda.month
+                    else _today_cda.year + 1
+                )
+                try:
+                    lower_bound = _dt_cda.date(_yr_cda, lb_mon_n, lb_day)
+                except ValueError:
+                    pass
+        if lower_bound is None and last_requested_date:
+            try:
+                lower_bound = _dt_cda.date.fromisoformat(last_requested_date)
+            except (ValueError, TypeError):
+                pass
+
+    # ── Additional target days (pair: "7th or 8th of May") ────────────────
+    # Collect all day-numbers in the utterance — when a month constraint
+    # applies they all share it, so preferred matching can try each in turn.
+    extra_target_days = []
+    if month_c:
+        for _od in _re_cda.findall(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', text):
+            n = int(_od)
+            if 1 <= n <= 31:
+                extra_target_days.append(n)
+
+    # ── No meaningful constraint → fall through to existing logic ─────────
+    if not is_exploratory or (
+        month_c is None and lower_bound is None and not extra_target_days
+    ):
+        return None
+
+    # ── Apply filters to all_available ────────────────────────────────────
+    result = list(all_available)
+
+    if month_c is not None:
+        result = [
+            d for d in result
+            if _dt_cda.date.fromisoformat(
+                (d.get("date") or "9999-12-31")[:10]
+            ).month == month_c
+        ]
+
+    if lower_bound is not None:
+        result = [
+            d for d in result
+            if _dt_cda.date.fromisoformat(
+                (d.get("date") or "9999-12-31")[:10]
+            ) > lower_bound
+        ]
+
+    # Within the constrained set, prefer explicitly mentioned day-of-month
+    if extra_target_days and result:
+        preferred = [
+            d for d in result
+            if _dt_cda.date.fromisoformat(
+                (d.get("date") or "9999-12-31")[:10]
+            ).day in extra_target_days
+        ]
+        if preferred:
+            return preferred
+
+    return result  # may be empty — signals "constrained but nothing available"
+
+
 def _extract_hour_from_text(text: str):
     """
     Extract a clinic-context hour (int, 24h) from a caller utterance.
@@ -5893,31 +6043,54 @@ class FlowEngine:
                     )
                     _xd_spoken_date = f"the {_xd_day_n}{_xd_na_suffix} of {_xd_month_s.capitalize()}"
                     _xd_all_avail_na = self.session.get("available_days", [])
-                    # Prefer same-week alternatives, then nearest overall — not
-                    # "first 3 in month" which re-presents dates the caller already
-                    # rejected when asking for a specific later date.
-                    try:
-                        _xd_req_obj_na = _dt_xd_na.date(_xd_yr_na, _xd_month_n, _xd_day_n)
-                        _xd_same_week_na = _week_days_for_anchor(_xd_all_avail_na, _xd_req_obj_na)
-                        _xd_na_month_days = (
-                            _xd_same_week_na
-                            if _xd_same_week_na
-                            else _nearest_days(_xd_all_avail_na, _xd_req_obj_na, n=3)
-                        )
-                    except (ValueError, AttributeError):
-                        _xd_na_month_days = _xd_all_avail_na[:3]
+                    # ── CONSTRAINED EXPLORATORY: check for month/bound/pair ────
+                    # If the utterance is a search expression ("later than the 1st
+                    # of May but in May", "anything like the 7th or 8th of May"),
+                    # filter available_days by the caller's constraints BEFORE
+                    # choosing alternatives.  This prevents offering April dates
+                    # when the caller clearly asked for May.
+                    _xd_constrained = _constrained_day_alternatives(
+                        text, transcript, _xd_month_n, _xd_all_avail_na,
+                        self.session.get("last_requested_date"),
+                    )
+                    if _xd_constrained is not None:
+                        # Constraints detected — use constrained pool
+                        _xd_na_month_days = _xd_constrained[:3]
+                        _xd_constrained_applied = True
+                    else:
+                        # No constraints — same-week first, nearest overall fallback
+                        _xd_constrained_applied = False
+                        try:
+                            _xd_req_obj_na = _dt_xd_na.date(_xd_yr_na, _xd_month_n, _xd_day_n)
+                            _xd_same_week_na = _week_days_for_anchor(_xd_all_avail_na, _xd_req_obj_na)
+                            _xd_na_month_days = (
+                                _xd_same_week_na
+                                if _xd_same_week_na
+                                else _nearest_days(_xd_all_avail_na, _xd_req_obj_na, n=3)
+                            )
+                        except (ValueError, AttributeError):
+                            _xd_na_month_days = _xd_all_avail_na[:3]
                     if _xd_na_month_days:
                         _xd_na_alt = _build_day_list_phrase(_xd_na_month_days)
                         _xd_na_msg = (
-                            f"I'm afraid I don't have {_xd_spoken_date} available — "
+                            f"I\u2019m afraid I don\u2019t have {_xd_spoken_date} available \u2014 "
                             + _xd_na_alt.replace("I can do ", "but I can do ", 1)
                             .replace("I've got ", "but I've got ", 1)
                             .replace("I\u2019ve got ", "but I\u2019ve got ", 1)
                         )
+                        # Keep constrained set as new offered context
+                        if _xd_constrained_applied:
+                            self.session["_pd_month_filtered"] = _xd_na_month_days
                     else:
+                        # Constrained and empty — no dates in that constraint frame
                         _xd_na_msg = (
-                            f"I'm afraid I don't have {_xd_spoken_date} available. "
-                            + _build_day_list_phrase(_xd_all_avail_na)
+                            f"I\u2019m afraid I don\u2019t have {_xd_spoken_date} available"
+                            + (
+                                f" in {_xd_month_s.capitalize()} right now. "
+                                "I can offer you the next available dates \u2014 would that work?"
+                                if _xd_constrained_applied
+                                else ". " + _build_day_list_phrase(_xd_all_avail_na)
+                            )
                         )
                     await self._tts.put(_xd_na_msg)
                     self.session["last_question"] = _xd_na_msg
@@ -5925,8 +6098,9 @@ class FlowEngine:
                         {"role": "assistant", "content": _xd_na_msg}
                     )
                     logger.info(
-                        "[ms_flow] PRESENT_DAYS: %r not in available_days — offered alternatives",
-                        _xd_spoken_date,
+                        "[ms_flow] PRESENT_DAYS: %r not available — constrained=%s offered=%d alt(s)",
+                        _xd_spoken_date, _xd_constrained_applied,
+                        len(_xd_na_month_days) if _xd_na_month_days else 0,
                     )
                     return
 
