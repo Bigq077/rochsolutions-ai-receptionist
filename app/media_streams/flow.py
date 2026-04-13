@@ -9430,6 +9430,15 @@ class FlowEngine:
                     self._tts.get_nowait()
                 except Exception:
                     break
+            if _nc_action == "scaffold_continue":
+                # Caller sent only a setup fragment ("my surname is", "my first name is").
+                # Do NOT speak the re-ask question — hold silence so the completion
+                # token ("Roch", "Quentin") can arrive without interruption.
+                # connection.py will restart the silence timer, which fires the
+                # structured scaffold recovery prompt after 3 s if nothing arrives.
+                self.session["last_question"] = _nc_payload
+                self.session["_nc_scaffold_hold"] = True
+                return
             if _nc_action != "accept":
                 await self._tts.put(_nc_payload)
                 self.session["last_question"] = _nc_payload

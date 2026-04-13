@@ -241,6 +241,10 @@ SILENCE_RESPONSES: dict = {
     # connection.py _run() W1 overrides these with DTMF-vs-speech variants.
     "ask_phone":     "Sorry, I didn't quite catch that — please say the phone number slowly.",
     "confirm_phone": "Sorry, I didn't quite catch that — please say yes if I can use this number, or no if you'd like to use a different one.",
+    # NC-managed name collection (COLLECT_NAME*): W1 overrides this in
+    # connection.py with a substate-aware scaffold prompt; this entry is the
+    # W2 fallback only.
+    "collect_name_nc":    "Sorry, I didn't quite catch that — could you say your name again?",
     "ask_name":           "Take your time.",
     # BUG 1 fix: state-aware name sub-categories
     "ask_first_name":     "Sorry, I missed that. Could you tell me your first name again?",

@@ -880,10 +880,29 @@ class SilenceHandler:
         )
         _reask1 = phrase1 + (" " + q if q else "")
 
+        # Name-capture structured recovery: replace generic phrase+last_question
+        # with a substate-aware scaffold prompt. name_fragment is set (in session)
+        # when the first name has been accepted, so its presence identifies the
+        # surname step.  One recovery fires at 3 s; W2/W3 handle the fallback.
+        if self.current_state in (
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        ):
+            if (_session_now or {}).get("name_fragment"):
+                _reask1 = (
+                    "Sorry, I didn't quite catch that \u2014 "
+                    "please say: my surname is..."
+                )
+            else:
+                _reask1 = (
+                    "Sorry, I didn't quite catch that \u2014 "
+                    "please say: my first name is..."
+                )
+
         # Phone-capture structured recovery: replace generic phrase+last_question
         # with a targeted prompt. For COLLECT_PHONE, distinguish keypad vs speech.
         # One structured recovery fires at 3 s; W2/W3 handle the longer fallback.
-        if self.current_state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+        elif self.current_state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
             _reask1 = (
                 "Sorry, I didn't quite catch that — "
                 "please say yes if I can use this number, "
@@ -1740,6 +1759,19 @@ class WebSocketCallHandler:
                                 self.session.get("state", "default")
                             )
                             self._silence_handler.on_question_asked(_last_q)
+                            # Scaffold continuation: fragment received but no TTS was
+                            # spoken.  Backdate last_audio_received_at so W1's 3.5 s
+                            # audio-recency guard doesn't suppress the recovery prompt,
+                            # then arm the silence timer directly.
+                            if self.session.pop("_nc_scaffold_hold", False):
+                                self._silence_handler.last_audio_received_at = (
+                                    time.time() - 4.0
+                                )
+                                self._silence_handler.restart_for_question(_last_q)
+                                logger.info(
+                                    "[ms_conn] scaffold_hold: silence timer armed for %r",
+                                    _last_q[:60],
+                                )
                     logger.info(
                         "[ms_conn] state after turn: %s  flow_step=%s",
                         self.session.get("state", "?"),

@@ -649,8 +649,8 @@ class NameCollector:
         # Incomplete scaffold ("my name is", "it's", "my") — STT finalized early
         # before the name arrived.  Re-ask without counting this as a failed attempt.
         if _is_incomplete_scaffold(text):
-            logger.info("[NameCollector] fn_normal: incomplete scaffold %r — no retry", text)
-            return ("ask", "What's your first name please?")
+            logger.info("[NameCollector] fn_normal: incomplete scaffold %r — scaffold_continue", text)
+            return ("scaffold_continue", "What's your first name please?")
 
         cleaned = _strip_filler_prefix(text)
 
@@ -841,8 +841,8 @@ class NameCollector:
         # Incomplete scaffold ("my surname is", "it's", "my") — STT finalized
         # early before the name arrived.  Re-ask without counting as failure.
         if _is_incomplete_scaffold(text):
-            logger.info("[NameCollector] sn_normal: incomplete scaffold %r — no retry", text)
-            return ("ask", "And what's your surname?")
+            logger.info("[NameCollector] sn_normal: incomplete scaffold %r — scaffold_continue", text)
+            return ("scaffold_continue", "And what's your surname?")
 
         # Salvage: name token before a meta/spelling trigger phrase
         _triggers = _META_LANGUAGE + _SPELLING_OFFER
