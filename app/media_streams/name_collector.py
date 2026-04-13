@@ -35,7 +35,7 @@ CONFIRMATION CONTRACT
   FIRST NAME
     fn_normal → fn_confirm ("I've got Quentin — is that right?")
       YES           → sn_normal (fn_confirmed=True)
-      NO / any deny → fn_reask  ("Sorry about that — what's your first name?")
+      NO / any deny → fn_reask  ("Sorry, I didn't quite catch that — please say: my first name is...")
     fn_reask  → store best effort (fn_confirmed=False) → sn_normal
       Response:  "Okay, noted — I'll send you a confirmation message after
                   the call, and if the name needs correcting you can reply there.
@@ -44,7 +44,7 @@ CONFIRMATION CONTRACT
   SURNAME
     sn_normal → sn_confirm ("I've got Roch — is that right?")
       YES           → accept (sn_confirmed=True)
-      NO / any deny → sn_reask ("Sorry about that — what's your surname?")
+      NO / any deny → sn_reask ("Sorry, I didn't quite catch that — please say: my surname is...")
     sn_reask  → store best effort (sn_confirmed=False) → accept
       Before accepting: session["_nc_accept_preamble"] is set so flow.py can
       play "Okay, noted — ..." before advancing to the next step.
@@ -577,7 +577,7 @@ class NameCollector:
             cand = self._nc.get("fn_candidate") or ""
             return f"I've got {cand} — is that right?" if cand else "What's your first name please?"
         if ss == NC_FN_REASK:
-            return "Sorry about that — what's your first name?"
+            return "Sorry, I didn't quite catch that — please say: my first name is..."
         if ss in (NC_FN_SPELLING,):
             return "What's your first name please?"
         if ss == NC_SN_NORMAL:
@@ -586,7 +586,7 @@ class NameCollector:
             cand = self._nc.get("surname_candidate") or ""
             return f"I've got {cand} — is that right?" if cand else "And what's your surname?"
         if ss == NC_SN_REASK:
-            return "Sorry about that — what's your surname?"
+            return "Sorry, I didn't quite catch that — please say: my surname is..."
         if ss in (NC_SN_SPELLING,):
             return "And what's your surname?"
         return "What's your first name please?"
@@ -789,7 +789,7 @@ class NameCollector:
     def _fn_reask(self, text: str, raw: str) -> Tuple[str, str]:
         """
         One normal re-ask after first-name confirmation denial.
-        Question played: "Sorry about that — what's your first name?"
+        Question played: "Sorry, I didn't quite catch that — please say: my first name is..."
 
         Whatever the caller says next is stored as best effort and the flow
         moves on unconditionally.  No second confirmation loop, no spelling.
@@ -973,7 +973,7 @@ class NameCollector:
     def _sn_reask(self, text: str, raw: str) -> Tuple[str, str]:
         """
         One normal re-ask after surname confirmation denial.
-        Question played: "Sorry about that — what's your surname?"
+        Question played: "Sorry, I didn't quite catch that — please say: my surname is..."
 
         Whatever the caller says next is stored as best effort.
         Sets session["_nc_accept_preamble"] so flow.py can play the
@@ -1030,7 +1030,7 @@ class NameCollector:
         if retries >= 1:
             self._nc["substate"] = NC_FN_REASK
             logger.info("[NameCollector] fn_fail: escalating to NC_FN_REASK after %d retries", retries)
-            return ("ask", "Sorry about that — what's your first name please?")
+            return ("ask", "Sorry, I didn't quite catch that — please say: my first name is...")
         return ("ask", re_ask)
 
     def _sn_fail(self, re_ask: str) -> Tuple[str, str]:
@@ -1050,7 +1050,7 @@ class NameCollector:
         if retries >= 1:
             self._nc["substate"] = NC_SN_REASK
             logger.info("[NameCollector] sn_fail: escalating to NC_SN_REASK after %d retries", retries)
-            return ("ask", "Sorry about that — please just say your surname.")
+            return ("ask", "Sorry, I didn't quite catch that — please say: my surname is...")
         return ("ask", re_ask)
 
     # ── State-transition helpers ──────────────────────────────────────────────
