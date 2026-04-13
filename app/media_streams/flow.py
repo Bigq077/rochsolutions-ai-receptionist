@@ -7513,12 +7513,14 @@ class FlowEngine:
             # Full time-query handling block lives below in the DIRECT TIME path.
             _TIME_QUERY_PHRASES_EARLY = (
                 "do you have anything", "have you got anything", "got anything",
+                "have anything",  # "have anything later on than..." — exploratory
                 "do you have any", "have you got any",
                 "is there anything", "is there any",
                 "are there any", "any availability",
                 "anything around", "anything near", "anything close",
                 "anything after", "anything before",
                 "anything later than", "anything earlier than",
+                "anything later on than",  # "have anything later on than one" variant
                 "later than that", "earlier than that",
                 "around ", "near to ", "close to ",
                 "closer to", "nearest to",
@@ -7704,7 +7706,10 @@ class FlowEngine:
                 "book ", "book me in", "please book",
                 "suits me", "that suits", "i'll go with",
                 "i'd like ", "i would like ", "i want ",
-                "the ", # "the 5 o'clock one" — combined with hour check below
+                # NOTE: "the " was intentionally removed — it matched "in the afternoon"
+                # making _is_time_selection True inside exploratory phrases and defeating
+                # the _is_constraint guard.  "the 5 o'clock one" has no constraint phrase
+                # so _allow_time_bind is True anyway without this entry.
                 "sign me up", "confirm",
             )
             _is_time_selection = any(p in text for p in _TIME_SELECTION_PHRASES)
