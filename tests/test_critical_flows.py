@@ -8,10 +8,21 @@ Covers:
   4. Duplicate /status webhook — idempotency lock prevents double-processing
   5. Location redirect loop breaker — defaults location after 4 redirects
   6. Phase 3 fallback counter increments on MAX_TOOL_ITERATIONS
+  7. Reschedule COLLECT_PHONE / CONFIRM_PHONE gate bugs
+       7a. DTMF capture arms phone_confirm_armed so yes/no is accepted
+       7b. YES after DTMF readback advances to LOOKUP_RESCHEDULE
+       7c. NO after DTMF readback returns to COLLECT_PHONE with clean buffers
+       7d. Repair utterance in COLLECT_PHONE clears DTMF buffer (local reset)
+       7e. No old digits survive after a local repair + re-entry
+       7f. Normal booking phone path is not regressed
 
 Run with: pytest tests/ -v
 """
 from __future__ import annotations
+
+import asyncio
+import copy
+from typing import Any, Dict, List
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -338,3 +349,284 @@ class TestPhase3FallbackCounter:
         with patch("app.storage.redis_store.redis_client", None):
             from app.flows.conversation import _increment_fallback_counter
             await _increment_fallback_counter()   # must not raise
+
+
+# ===========================================================================
+# 7. Reschedule COLLECT_PHONE / CONFIRM_PHONE gate — Bug fix coverage
+# ===========================================================================
+
+class _FakeTTS:
+    """asyncio.Queue stand-in that records every put() call."""
+    def __init__(self):
+        self.items: List[str] = []
+    async def put(self, text: str) -> None:
+        self.items.append(text)
+    def last(self) -> str:
+        return self.items[-1] if self.items else ""
+    def all_text(self) -> str:
+        return " | ".join(self.items)
+
+async def _noop_llm(instruction: str, allow_tools: bool = True) -> str:
+    return ""
+
+def _make_reschedule_engine(extra_session: Dict[str, Any] | None = None) -> tuple:
+    """
+    Return (engine, tts) with FlowEngine wired to RESCHEDULE_FLOW.
+
+    The session is set up as if:
+      - caller's name has been collected
+      - caller confirmed the booking number is DIFFERENT from their calling number
+        (so we are now in COLLECT_PHONE, step 2, awaiting DTMF)
+    """
+    from app.media_streams.flow import (
+        FlowEngine,
+        RESCHEDULE_FLOW,
+        _RESCHEDULE_COLLECT_PHONE_INDEX,
+    )
+    from app.media_streams.session import DEFAULT_MS_SESSION
+
+    session = copy.deepcopy(DEFAULT_MS_SESSION)
+    session.update({
+        "full_name":          "Jane Smith",
+        "state":              "COLLECT_PHONE",
+        "flow_state":         "COLLECT_PHONE",
+        "flow_step":          _RESCHEDULE_COLLECT_PHONE_INDEX,
+        "phone_from_twilio":  True,   # caller has a Twilio number
+        "phone_confirmed":    False,
+        "phone_confirm_armed": False,
+        "phone_dtmf_buffer":  "",
+        "phone_digits_buffer": "",
+        "phone_awaiting_dtmf": True,
+        "selected_location":  "alcester",
+    })
+    if extra_session:
+        session.update(extra_session)
+
+    tts = _FakeTTS()
+    engine = FlowEngine(session, tts, _noop_llm)
+    engine._active_flow = RESCHEDULE_FLOW
+    engine._intent_detected = True
+    return engine, tts
+
+
+class TestReschedulePhoneGate:
+    """
+    Covers the two bugs fixed in the reschedule COLLECT_PHONE / CONFIRM_PHONE path:
+
+    Bug 1 — phone_confirm_armed not set after DTMF capture (gate mismatch)
+    Bug 2 — repair utterance in COLLECT_PHONE triggered global "what was your
+             inquiry?" reset instead of a local keypad retry with cleared buffers
+    """
+
+    # ── 7a: gate is armed immediately after DTMF capture ───────────────────
+
+    async def test_dtmf_capture_arms_phone_confirm_gate(self):
+        """
+        After DTMF digits complete and the readback prompt is emitted,
+        phone_confirm_armed must be True so the CONFIRM_PHONE handler
+        will accept the caller's yes/no on the next turn.
+        """
+        engine, tts = _make_reschedule_engine()
+        # Synthetic transcript created by connection.py when DTMF buffer completes
+        await engine.handle_transcript("07912345678")
+
+        assert engine.session.get("state") == "CONFIRM_PHONE", (
+            f"Expected state CONFIRM_PHONE, got {engine.session.get('state')}"
+        )
+        assert engine.session.get("phone_confirm_armed") is True, (
+            "phone_confirm_armed must be True after DTMF capture so the "
+            "gate accepts the caller's yes/no on the next turn"
+        )
+        assert engine.session.get("phone_readback_pending") is True
+        # Readback prompt must be spoken
+        assert "Just to check" in tts.last(), (
+            f"Expected readback prompt, got: {tts.last()!r}"
+        )
+
+    # ── 7b: YES after readback advances to LOOKUP_RESCHEDULE ───────────────
+
+    async def test_dtmf_yes_advances_to_lookup(self):
+        """
+        'yes it is' after the DTMF readback must accept the number and
+        route to LOOKUP_RESCHEDULE, not loop back to the generic caller-number
+        question.
+        """
+        from app.media_streams.flow import RESCHEDULE_FLOW, _RESCHEDULE_LOOKUP_INDEX
+
+        engine, tts = _make_reschedule_engine()
+        # Step 1: DTMF capture
+        await engine.handle_transcript("07912345678")
+        assert engine.session.get("phone_confirm_armed") is True
+
+        # Step 2: caller says yes
+        await engine.handle_transcript("yes it is")
+
+        assert engine.session.get("phone_confirmed") is True, (
+            "phone_confirmed must be True after YES"
+        )
+        assert engine.session.get("state") == "LOOKUP_RESCHEDULE", (
+            f"Expected LOOKUP_RESCHEDULE after YES, got {engine.session.get('state')}"
+        )
+        assert engine.session.get("phone_confirm_armed") is False, (
+            "Gate must be disarmed after YES is consumed"
+        )
+        # Must not loop back to the generic caller-number question
+        _generic = "Is the phone number you're calling on"
+        assert not any(_generic in t for t in tts.items), (
+            f"Generic caller-number question must not appear after DTMF yes-flow. TTS: {tts.items}"
+        )
+
+    # ── 7c: NO after readback returns to COLLECT_PHONE with clean buffers ──
+
+    async def test_dtmf_no_returns_to_collect_phone_clean(self):
+        """
+        'no' after the DTMF readback must route back to COLLECT_PHONE and
+        clear all digit buffers so the re-entry starts from scratch.
+        """
+        engine, tts = _make_reschedule_engine()
+        # Step 1: DTMF capture
+        await engine.handle_transcript("07912345678")
+        assert engine.session.get("phone_confirm_armed") is True
+
+        # Step 2: caller says no
+        await engine.handle_transcript("no that's wrong")
+
+        assert engine.session.get("state") == "COLLECT_PHONE", (
+            f"Expected COLLECT_PHONE after NO, got {engine.session.get('state')}"
+        )
+        assert engine.session.get("phone_dtmf_buffer", "") == "", (
+            "phone_dtmf_buffer must be cleared after NO"
+        )
+        assert engine.session.get("phone_digits_buffer", "") == "", (
+            "phone_digits_buffer must be cleared after NO"
+        )
+        assert engine.session.get("phone_confirmed") is False
+        assert engine.session.get("phone_readback_pending") is False
+        assert engine.session.get("phone_confirm_armed") is False
+
+    # ── 7d: repair utterance clears DTMF buffer (local reset) ──────────────
+
+    async def test_collect_phone_repair_clears_dtmf_buffer(self):
+        """
+        A repair utterance ('i messed up') while in COLLECT_PHONE must:
+          - clear phone_dtmf_buffer
+          - clear phone_digits_buffer
+          - stay in COLLECT_PHONE
+          - NOT play 'Sorry about that — what was your inquiry?'
+        """
+        engine, tts = _make_reschedule_engine({
+            "phone_dtmf_buffer":   "0794",   # partial entry already in buffer
+            "phone_digits_buffer": "0794",
+        })
+
+        await engine.handle_transcript("i messed up")
+
+        # Buffers must be cleared
+        assert engine.session.get("phone_dtmf_buffer", "") == "", (
+            "phone_dtmf_buffer must be cleared after repair in COLLECT_PHONE"
+        )
+        assert engine.session.get("phone_digits_buffer", "") == "", (
+            "phone_digits_buffer must be cleared after repair in COLLECT_PHONE"
+        )
+        # State must remain COLLECT_PHONE (local repair, not global reset)
+        assert engine.session.get("state") == "COLLECT_PHONE", (
+            f"State must remain COLLECT_PHONE after local repair, got {engine.session.get('state')}"
+        )
+        # Must NOT play the generic global-repair phrase
+        _wrong_phrase = "what was your inquiry"
+        _last_q = engine.session.get("last_question", "")
+        assert _wrong_phrase not in _last_q.lower(), (
+            f"Local repair must not produce global inquiry reset. last_question={_last_q!r}"
+        )
+        # repair_requested must be set (so TTS queue gets drained in connection.py)
+        assert engine.session.get("repair_requested") is True
+
+    # ── 7e: no old digits survive after repair + re-entry ──────────────────
+
+    async def test_no_digit_carryover_after_repair(self):
+        """
+        After a local repair, the next DTMF entry must produce a number
+        containing ONLY the post-repair digits, with no prefix from the
+        aborted partial entry.
+        """
+        engine, tts = _make_reschedule_engine({
+            "phone_dtmf_buffer":   "0794",
+            "phone_digits_buffer": "0794",
+        })
+
+        # Repair clears partial entry
+        await engine.handle_transcript("i messed up")
+        assert engine.session.get("phone_dtmf_buffer", "") == ""
+        assert engine.session.get("phone_digits_buffer", "") == ""
+
+        # Re-arm engine state for the new entry
+        engine.session["repair_requested"] = False   # simulate connection.py drain
+
+        # New complete number entered
+        await engine.handle_transcript("07700900123")
+
+        # Must be in CONFIRM_PHONE with ONLY the new digits
+        assert engine.session.get("state") == "CONFIRM_PHONE", (
+            f"Expected CONFIRM_PHONE after clean re-entry, got {engine.session.get('state')}"
+        )
+        captured = (
+            engine.session.get("phone_candidate")
+            or engine.session.get("phone_number")
+            or engine.session.get("phone")
+            or ""
+        )
+        assert "0794" not in captured, (
+            f"Old digits must not survive in captured number: {captured!r}"
+        )
+        assert "07700900123" in captured or captured.replace("+44", "0")[:11] == "07700900123", (
+            f"New number must be fully captured: {captured!r}"
+        )
+
+    # ── 7f: booking flow phone gate not regressed ──────────────────────────
+
+    async def test_booking_flow_phone_gate_not_regressed(self):
+        """
+        Normal booking flow: DTMF capture → CONFIRM_PHONE gate armed → YES
+        accepts and routes to CONFIRM_BOOKING (not LOOKUP_RESCHEDULE).
+        """
+        from app.media_streams.flow import (
+            FlowEngine,
+            BOOKING_FLOW,
+            _COLLECT_PHONE_INDEX,
+        )
+        from app.media_streams.session import DEFAULT_MS_SESSION
+
+        session = copy.deepcopy(DEFAULT_MS_SESSION)
+        session.update({
+            "full_name":          "Tom Brown",
+            "state":              "COLLECT_PHONE",
+            "flow_state":         "COLLECT_PHONE",
+            "flow_step":          _COLLECT_PHONE_INDEX,
+            "phone_from_twilio":  True,
+            "phone_confirmed":    False,
+            "phone_confirm_armed": False,
+            "phone_dtmf_buffer":  "",
+            "phone_digits_buffer": "",
+            "phone_awaiting_dtmf": True,
+            "selected_location":  "alcester",
+        })
+        tts = _FakeTTS()
+        engine = FlowEngine(session, tts, _noop_llm)
+        engine._active_flow = BOOKING_FLOW
+        engine._intent_detected = True
+
+        # DTMF capture
+        await engine.handle_transcript("07700900456")
+        assert engine.session.get("phone_confirm_armed") is True, (
+            "Booking flow: gate must be armed after DTMF capture"
+        )
+        assert engine.session.get("state") == "CONFIRM_PHONE"
+
+        # YES confirmation
+        await engine.handle_transcript("yes")
+        assert engine.session.get("phone_confirmed") is True
+        # Booking flow should route to CONFIRM_BOOKING (not LOOKUP_RESCHEDULE)
+        assert engine.session.get("state") in ("CONFIRM_BOOKING", "COLLECT_REASON", "PRESENT_DAYS"), (
+            f"Booking flow after phone YES should not go to LOOKUP_RESCHEDULE. "
+            f"Got: {engine.session.get('state')}"
+        )

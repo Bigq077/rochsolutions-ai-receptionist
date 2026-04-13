@@ -1875,98 +1875,8 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         ),
         "extract": "none",
     },
-]
-
-# Array indices within RESCHEDULE_FLOW — parallel to _CONFIRM_BOOKING_INDEX /
-# _COLLECT_PHONE_INDEX for BOOKING_FLOW.  Used by phone-accept/reject handlers
-# that previously hard-coded BOOKING_FLOW indices and broke RESCHEDULE calls.
-_RESCHEDULE_COLLECT_PHONE_INDEX: int = next(
-    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "COLLECT_PHONE"
-)
-_RESCHEDULE_LOOKUP_INDEX: int = next(
-    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "LOOKUP_RESCHEDULE"
-)
-_RESCHEDULE_PRESENT_DAYS_INDEX: int = next(
-    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "PRESENT_DAYS_RESCHEDULE"
-)
-
-# ---------- Cancel flow ---------------------------------------------------
-
-CANCEL_FLOW: List[Dict[str, Any]] = [
     {
-        "step": 0,
-        "state": "COLLECT_NAME_CANCEL",
-        "question": "What's your first name?",
-        "answer_field": "full_name",
-        "use_llm": False,
-        "extract": "name",
-        "llm_instruction": None,
-    },
-    {
-        "step": 1,
-        "state": "CONFIRM_PHONE",
-        "question": "And is this the same number you'd have used when you booked?",
-        "answer_field": "phone_confirmed",
-        "use_llm": False,
-        "extract": "phone_confirm",
-        "llm_instruction": None,
-    },
-    {
-        "step": 2,
-        "state": "COLLECT_PHONE",
-        "question": "Could you type the number your booking was made under?",
-        "answer_field": "phone_number",
-        "use_llm": False,
-        "extract": "phone",
-        "llm_instruction": None,
-    },
-    {
-        "step": 3,
-        "state": "LOOKUP_CANCEL",
-        "question": None,  # LLM speaks after calling lookup_appointment
-        "answer_field": "rc_appointment_confirmed",
-        "use_llm": True,
-        "allow_tools": True,
-        "extract": "none",
-        "llm_instruction": (
-            "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
-            "Parse full_name='{full_name}' into first_name / last_name (split on the first space).\n\n"
-            "TURN 1 — Lookup:\n"
-            "  Say: 'Bear with me one moment.'\n"
-            "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
-            "phone='{phone_number}', location='{selected_location}').\n"
-            "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
-            "  If found=false: say NOTHING — stay completely silent. "
-            "The system will handle the failure message automatically.\n\n"
-            "TURN 2+ — Confirm:\n"
-            "  Caller says YES → call confirm_appointment_found(). "
-            "Then say NOTHING. Do NOT speak after calling confirm_appointment_found() — "
-            "the system will handle it automatically.\n"
-            "  Caller says NO + multiple_found=true → offer first alternative: "
-            "'Could it be on [alt.day_label] at [alt.time_label]?'\n"
-            "  Still no + no more alternatives → say 'I\\'m sorry — I still can\\'t find that booking. "
-            "Could you call the clinic directly and they\\'ll sort it out for you?' "
-            "Then call log_call_outcome(outcome='transferred').\n"
-            "  After a lookup failure the caller corrects their details — re-call lookup_appointment "
-            "with the corrected first_name/last_name/phone. "
-            "When parsing corrections like 'surname is Pringle not the one you gave me', "
-            "use ONLY the word(s) immediately after 'is' — stop at 'not', 'and', 'but'.\n"
-        ),
-    },
-    {
-        "step": 4,
-        "state": "CONFIRM_RESCHEDULE_OR_CANCEL",
-        "question": (
-            "Would you like to reschedule this appointment to another time, "
-            "or would you like to cancel it altogether?"
-        ),
-        "answer_field": "reschedule_or_cancel_choice",
-        "use_llm": False,
-        "extract": "none",
-        "llm_instruction": None,
-    },
-    {
-        "step": 5,
+        "step": 8,
         "state": "CONFIRM_CANCEL",
         "question": None,
         "answer_field": "cancel_confirmed",
@@ -1989,18 +1899,33 @@ CANCEL_FLOW: List[Dict[str, Any]] = [
     },
 ]
 
-# Array indices within CANCEL_FLOW — parallel to _CONFIRM_BOOKING_INDEX /
+# Array indices within RESCHEDULE_FLOW — parallel to _CONFIRM_BOOKING_INDEX /
 # _COLLECT_PHONE_INDEX for BOOKING_FLOW.  Used by phone-accept/reject handlers
-# that would otherwise hard-code BOOKING_FLOW indices and break cancel calls.
-_CANCEL_LOOKUP_INDEX: int = next(
-    i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "LOOKUP_CANCEL"
+# that previously hard-coded BOOKING_FLOW indices and broke RESCHEDULE calls.
+_RESCHEDULE_COLLECT_PHONE_INDEX: int = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "COLLECT_PHONE"
 )
-_CONFIRM_CANCEL_INDEX: int = next(
-    i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "CONFIRM_CANCEL"
+_RESCHEDULE_LOOKUP_INDEX: int = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "LOOKUP_RESCHEDULE"
 )
-_CANCEL_COLLECT_PHONE_INDEX: int = next(
-    i for i, s in enumerate(CANCEL_FLOW) if s["state"] == "COLLECT_PHONE"
+_RESCHEDULE_PRESENT_DAYS_INDEX: int = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "PRESENT_DAYS_RESCHEDULE"
 )
+
+# ---------- Cancel flow ---------------------------------------------------
+
+# Cancel and reschedule share the same steps up through CONFIRM_RESCHEDULE_OR_CANCEL.
+# After that the engine branches: reschedule → PRESENT_DAYS → PRESENT_TIMES →
+# CONFIRM_RESCHEDULE; cancel → CONFIRM_CANCEL (step 8).
+CANCEL_FLOW = RESCHEDULE_FLOW
+
+# Array indices within CANCEL_FLOW — aliases to RESCHEDULE_FLOW since both
+# are now the same flow object.
+_CANCEL_LOOKUP_INDEX: int        = _RESCHEDULE_LOOKUP_INDEX
+_CONFIRM_CANCEL_INDEX: int       = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_CANCEL"
+)
+_CANCEL_COLLECT_PHONE_INDEX: int = _RESCHEDULE_COLLECT_PHONE_INDEX
 
 # ---------- FAQ flow (price / insurance / hours / services) ---------------
 
@@ -2358,8 +2283,6 @@ class FlowEngine:
             self.session["state"] = "ASK_LOCATION"
             if self._active_flow is RESCHEDULE_FLOW:
                 _loc_q = "Was your original appointment at our Alcester or Redditch clinic?"
-            elif self._active_flow is CANCEL_FLOW:
-                _loc_q = "Was your appointment at our Alcester or Redditch clinic?"
             else:
                 _loc_q = "Are you looking to book at our Alcester or Redditch clinic?"
             await self._tts.put(_loc_q)
@@ -2803,12 +2726,8 @@ class FlowEngine:
                     )
                     await self._tts.put(_lu_reask)
                     self.session["last_question"] = _lu_reask
-                    # Step back to COLLECT_NAME_RESCHEDULE / COLLECT_NAME_CANCEL
-                    _cn_state = (
-                        "COLLECT_NAME_CANCEL"
-                        if step["state"] == "LOOKUP_CANCEL"
-                        else "COLLECT_NAME_RESCHEDULE"
-                    )
+                    # Step back to COLLECT_NAME_RESCHEDULE
+                    _cn_state = "COLLECT_NAME_RESCHEDULE"
                     _cn_idx = next(
                         (i for i, s in enumerate(self._active_flow) if s["state"] == _cn_state),
                         None,
@@ -3464,6 +3383,34 @@ class FlowEngine:
                         _repair_q = "Of course — could I take your first name again please?"
                     else:
                         _repair_q = self.session.get("last_question", "Could you say that number again?")
+                elif _repair_state in ("COLLECT_PHONE", "COLLECT_PHONE_RESCHEDULE"):
+                    # LOCAL phone-entry reset: clear ALL digit state so the next
+                    # DTMF entry starts from an empty buffer.  Do NOT treat this as
+                    # a global "what was your inquiry?" reset — the caller is still
+                    # in number-entry context and just wants to re-type the number.
+                    self.session["phone_dtmf_buffer"]      = ""
+                    self.session["phone_digits_buffer"]    = ""
+                    self.session["phone_candidate"]        = None
+                    self.session["phone_readback_pending"] = False
+                    self.session["phone_confirm_armed"]    = False
+                    self.session.pop("phone_number", None)
+                    self.session.pop("phone", None)
+                    self.session.pop("customer_phone", None)
+                    self.session.setdefault("collected", {}).pop("phone", None)
+                    # Context-aware prompt: reschedule/cancel → booking number; booking → contact number
+                    if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
+                        _repair_q = (
+                            "No problem — let's try that again. "
+                            "Please enter the number your booking was made under using your keypad."
+                        )
+                    else:
+                        _repair_q = (
+                            "No problem — let's try that again. "
+                            "Please enter your number using your keypad."
+                        )
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE local repair: all digit buffers cleared, re-prompting keypad"
+                    )
                 else:
                     _repair_q = self.session.get("last_question", "Could you say that number again?")
             elif _repair_state in (
@@ -4201,6 +4148,14 @@ class FlowEngine:
                 self.session["state"]                  = "CONFIRM_PHONE"
                 self.session["flow_state"]             = "CONFIRM_PHONE"
                 self.session["flow_step"]              = _hg_confirm_idx
+                # ARM the CONFIRM_PHONE gate immediately.
+                # ask_current_question() resets phone_confirm_armed=False at the
+                # top of every call, but the COLLECT_PHONE hard gate bypasses
+                # ask_current_question() and emits the readback directly.  Without
+                # this explicit arm the gate check at the start of the next turn
+                # sees phone_confirm_armed=False and loops back to the generic
+                # caller-number question instead of accepting the yes/no answer.
+                self.session["phone_confirm_armed"]    = True
                 _hg_rb = f"Just to check — is that {_hg_spaced}?"
                 self.session["last_question"] = _hg_rb
                 self.session.setdefault("conversation_history", []).append(
@@ -4208,7 +4163,7 @@ class FlowEngine:
                 )
 
                 logger.info(
-                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s state→CONFIRM_PHONE step→%d",
+                    "[ms_flow] HARD GATE COLLECT_PHONE: phone_digits_captured=%s state→CONFIRM_PHONE step→%d (gate armed)",
                     _hg_phone, _hg_confirm_idx,
                 )
 
@@ -4519,10 +4474,6 @@ class FlowEngine:
                         self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
                         self.session["state"]      = "LOOKUP_RESCHEDULE"
                         self.session["flow_state"] = "LOOKUP_RESCHEDULE"
-                elif self._active_flow is CANCEL_FLOW:
-                    self.session["flow_step"]  = _CANCEL_LOOKUP_INDEX
-                    self.session["state"]      = "LOOKUP_CANCEL"
-                    self.session["flow_state"] = "LOOKUP_CANCEL"
                 else:
                     self.session["state"]      = "CONFIRM_BOOKING"
                     self.session["flow_state"] = "CONFIRM_BOOKING"
@@ -5096,9 +5047,6 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                     self.session["state"]     = "LOOKUP_RESCHEDULE"
-                elif self._active_flow is CANCEL_FLOW:
-                    self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
-                    self.session["state"]     = "CONFIRM_CANCEL"
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
@@ -8575,9 +8523,9 @@ class FlowEngine:
                     if _cn_name:
                         self.session["full_name"] = _cn_name
                         self.session.setdefault("collected", {})["full_name"] = _cn_name
-                if self._active_flow is CANCEL_FLOW:
-                    self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
-                    self.session["state"]     = "CONFIRM_CANCEL"
+                if self._active_flow is RESCHEDULE_FLOW:
+                    self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
+                    self.session["state"]     = "LOOKUP_RESCHEDULE"
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
@@ -8658,9 +8606,6 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                     self.session["state"]     = "LOOKUP_RESCHEDULE"
-                elif self._active_flow is CANCEL_FLOW:
-                    self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
-                    self.session["state"]     = "CONFIRM_CANCEL"
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
@@ -9215,38 +9160,13 @@ class FlowEngine:
                 return
 
             if _roc_is_cancel and not _roc_is_reschedule:
-                from app.tools.receptionist_tools import _exec_cancel_appointment
-                _roc_phone = (
-                    self.session.get("phone_number")
-                    or self.session.get("twilio_from_local")
-                    or self.session.get("twilio_from", "")
-                )
-                _roc_args = {
-                    "patient_name": self.session.get("full_name", ""),
-                    "phone":        _roc_phone,
-                    "location":     self.session.get("selected_location", "alcester"),
-                }
-                self.session["cancel_confirmed"] = True
-                _roc_result = await _exec_cancel_appointment(_roc_args, self.session)
-                if _roc_result.get("success"):
-                    _roc_resp = (
-                        "Okay — that appointment is now cancelled. "
-                        "You can book again at any time on this number."
-                    )
-                else:
-                    _roc_resp = (
-                        "I wasn't able to find an upcoming appointment under those details — "
-                        "please call us directly and the team will be happy to help."
-                    )
-                await self._tts.put(_roc_resp)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _roc_resp}
-                )
-                self.session["flow_step"] = len(self._active_flow)
+                self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
+                self.session["question_asked_this_turn"] = False
                 logger.info(
-                    "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: cancel — success=%s",
-                    _roc_result.get("success"),
+                    "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: cancel — jumping to CONFIRM_CANCEL (idx=%d)",
+                    _CONFIRM_CANCEL_INDEX,
                 )
+                await self.ask_current_question()
                 return
 
             # Ambiguous (yes/no/okay/maybe etc.) — re-ask, never drift forward
@@ -11112,9 +11032,6 @@ class FlowEngine:
             if self._active_flow is RESCHEDULE_FLOW:
                 self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                 self.session["state"]     = "LOOKUP_RESCHEDULE"
-            elif self._active_flow is CANCEL_FLOW:
-                self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
-                self.session["state"]     = "CONFIRM_CANCEL"
             else:
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"

@@ -1715,10 +1715,16 @@ class WebSocketCallHandler:
                             except Exception:
                                 break
                         logger.info("[ms_conn] repair_requested: TTS queue drained")
-                        # Enqueue repair phrase AFTER drain so it isn't wiped.
-                        await self.tts_text_queue.put(
-                            "Sorry about that \u2014 what was your inquiry?"
+                        # Use the state-aware repair phrase set by flow.py (stored in
+                        # last_question before repair_requested=True was set).  Fall back
+                        # to the generic phrase only when flow.py left it empty, which
+                        # should not happen for any mapped state.
+                        _repair_phrase = (
+                            self.session.get("last_question")
+                            or "Sorry about that \u2014 what was your inquiry?"
                         )
+                        # Enqueue repair phrase AFTER drain so it isn't wiped.
+                        await self.tts_text_queue.put(_repair_phrase)
                     # Repeat request — drain stale TTS and replay last relevant answer.
                     if self.session.pop("repeat_requested", False):
                         while not self.tts_text_queue.empty():
