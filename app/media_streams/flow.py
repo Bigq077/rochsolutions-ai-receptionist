@@ -3535,6 +3535,103 @@ class FlowEngine:
         # and the caller naming their clinic).  No LLM call — rule-based extractor only.
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
+
+            # ── RECOVERY MODE: yes/no disambiguation ─────────────────────────────
+            # Active after a first failed extraction.  We ask "Was it Alcester?"
+            # (then "Was it Redditch?" if denied).  Only falls to keypad if yes/no
+            # cannot be parsed, or if the caller denies both clinics.
+            _loc_recovery_mode = self.session.get("location_recovery_mode")
+            if _loc_recovery_mode:
+                # Always try direct extraction first — handles DTMF synthetic
+                # transcripts ("alcester"/"redditch") and any Tier-1 STT hit that
+                # arrives despite the yes/no framing.
+                _rec_faq_intents = {
+                    "faq_prices", "faq_insurance", "faq_hours",
+                    "faq_location", "faq_services", "faq_capability",
+                }
+                _rec_intent = self._detect_intent(text)
+                if _rec_intent in _rec_faq_intents:
+                    await self._handle_mid_flow_interrupt(_rec_intent, transcript)
+                    return
+                loc = self._extract("location_selection", text, transcript)
+                if loc:
+                    self.session["selected_location"] = loc
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_recovery_mode", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION recovery: direct extraction — %s", loc
+                    )
+                    await self.ask_current_question()
+                    return
+                # Yes/No detection (narrow — explicit clinic-selection context only)
+                _t_rec = text.lower()
+                _YES_SIGS = (
+                    "yes", "yeah", "yep", "yup", "correct",
+                    "that's right", "thats right", "that's it", "thats it",
+                    "absolutely", "definitely", "sure", "confirmed",
+                )
+                _NO_SIGS = (
+                    "no", "nope", "nah", "not that", "not right",
+                    "wrong", "other one", "other clinic", "different",
+                )
+                _is_yes = any(sig in _t_rec for sig in _YES_SIGS)
+                _is_no  = any(sig in _t_rec for sig in _NO_SIGS)
+                if _is_yes and not _is_no:
+                    _confirmed = "alcester" if _loc_recovery_mode == "ask_alcester" else "redditch"
+                    self.session["selected_location"] = _confirmed
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_recovery_mode", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION recovery: yes-confirmed %s", _confirmed
+                    )
+                    await self.ask_current_question()
+                    return
+                if _is_no and not _is_yes and _loc_recovery_mode == "ask_alcester":
+                    # Denied Alcester — ask about Redditch before falling to keypad
+                    self.session["location_recovery_mode"] = "ask_redditch"
+                    _redditch_q = "Okay — was it Redditch?"
+                    await self._tts.put(_redditch_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _redditch_q}
+                    )
+                    self.session["last_question"] = _redditch_q
+                    logger.info("[ms_flow] ASK_LOCATION recovery: Alcester denied → asking Redditch")
+                    return
+                # Cannot parse yes/no, or denied both clinics → keypad fallback
+                self.session.pop("location_recovery_mode", None)
+                _rec_retry = self.session.get("location_retry_count", 1) + 1
+                self.session["location_retry_count"] = _rec_retry
+                logger.info(
+                    "[ms_flow] ASK_LOCATION recovery: yes/no unclear — retry_count=%d → keypad",
+                    _rec_retry,
+                )
+                if _rec_retry >= 3:
+                    _rec_exit = (
+                        "I'm having trouble catching the clinic name — "
+                        "please give us a call back and the team will be happy to help."
+                    )
+                    await self._tts.put(_rec_exit)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rec_exit}
+                    )
+                    self.session["last_question"] = _rec_exit
+                    self.session["graceful_exit"]    = True
+                    self.session["request_transfer"] = True
+                    self.session["needs_location"]   = False
+                else:
+                    _rec_kp = (
+                        "No problem. Please type 1 on your keyboard for Alcester "
+                        "or 2 for Redditch."
+                    )
+                    await self._tts.put(_rec_kp)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rec_kp}
+                    )
+                    self.session["last_question"] = _rec_kp
+                return
+
             # ── FAQ-first gate: detect question intent BEFORE extracting location ──
             # "is there parking at alcester?" / "first is there any parking at your
             # alcester clinic" → must answer the FAQ, NOT extract "alcester" and advance.
@@ -3558,6 +3655,7 @@ class FlowEngine:
                 self.session["selected_location"] = loc
                 self.session["needs_location"] = False
                 self.session.pop("location_retry_count", None)
+                self.session.pop("location_recovery_mode", None)
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
@@ -3583,6 +3681,7 @@ class FlowEngine:
                             text[:60], _pivot_intent,
                         )
                         self.session.pop("location_retry_count", None)
+                        self.session.pop("location_recovery_mode", None)
                         self._switch_flow(_pivot_intent)
                         await self.ask_current_question()
                         return
@@ -3641,11 +3740,6 @@ class FlowEngine:
                     "[ms_flow] ASK_LOCATION: no match for %r — retry_count=%d",
                     text[:40], _retry_count,
                 )
-                # Keypad fallback from first failed speech attempt onwards
-                _loc_keypad_fallback = (
-                    "Sorry, I didn't quite catch that. "
-                    "Please type 1 on your keyboard for Alcester or 2 on your keyboard for Redditch."
-                )
                 if _retry_count >= 3:
                     _retry = (
                         "I'm having trouble catching the clinic name — "
@@ -3660,13 +3754,29 @@ class FlowEngine:
                     self.session["request_transfer"] = True
                     self.session["needs_location"]   = False
                     return
+                elif _retry_count == 1:
+                    # First failed speech attempt: enter yes/no recovery mode.
+                    # Ask "Was it Alcester?" and wait for confirmation before
+                    # falling to keypad.  Keypad is only offered if yes/no cannot
+                    # be parsed, or if the caller denies both clinics.
+                    self.session["location_recovery_mode"] = "ask_alcester"
+                    _retry = "Just to confirm — was it Alcester?"
+                    await self._tts.put(_retry)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _retry}
+                    )
+                    self.session["last_question"] = _retry
                 else:
-                    _retry = _loc_keypad_fallback
-                await self._tts.put(_retry)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _retry}
-                )
-                self.session["last_question"] = _retry
+                    # retry_count == 2: recovery already attempted — fall to keypad
+                    _retry = (
+                        "Sorry, I didn't quite catch that. "
+                        "Please type 1 on your keyboard for Alcester or 2 on your keyboard for Redditch."
+                    )
+                    await self._tts.put(_retry)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _retry}
+                    )
+                    self.session["last_question"] = _retry
             return
 
         # ════════════════════════════════════════════════════════════════════
