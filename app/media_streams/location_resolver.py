@@ -472,6 +472,24 @@ def resolve_clinic_location(
     if winner_score >= threshold and margin >= margin_needed:
         return _resolve("resolved", winner, confidence, reason)
 
+    # ── 5. ASK_LOCATION-only prefix fallback ──────────────────────────────────
+    # After scoring fails to meet the resolution threshold, inspect the first
+    # meaningful token's prefix as a last-resort lean in explicit clinic-
+    # selection context.  Only fires when the opposing clinic has weak evidence
+    # (< 40 pts) so it cannot override a genuinely competitive score.
+    # Confidence is capped at 0.55 to signal low certainty; the flow opens a
+    # one-turn correction window so the caller can immediately override.
+    if context == "ask_location":
+        _first = candidate.split()[0]
+        _alc_pfx = any(_first.startswith(p) for p, _ in _PREFIX_ALC)
+        _red_pfx = any(_first.startswith(p) for p, _ in _PREFIX_RED)
+        if _alc_pfx and not _red_pfx and red_score < 40:
+            debug["prefix_hit"] = f"fallback:alcester:{_first}"
+            return _resolve("resolved", "alcester", 0.55, "prefix_fallback")
+        if _red_pfx and not _alc_pfx and alc_score < 40:
+            debug["prefix_hit"] = f"fallback:redditch:{_first}"
+            return _resolve("resolved", "redditch", 0.55, "prefix_fallback")
+
     if winner_score >= 40 and margin >= 15:
         # Some signal but not enough to auto-resolve — ask for clarification
         return _resolve("ambiguous", None, confidence, reason)

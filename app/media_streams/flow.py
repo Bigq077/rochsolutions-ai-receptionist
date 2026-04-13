@@ -3308,6 +3308,44 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── Prefix-fallback correction window ────────────────────────────────────
+        # Opens for exactly one turn after a low-confidence prefix_fallback
+        # resolution.  If the caller says "no", "the other one", "Redditch" etc.
+        # we update selected_location and replay the current question rather than
+        # letting the wrong clinic propagate through the rest of the booking flow.
+        if self.session.pop("location_fallback_unconfirmed", False):
+            _pf_correction_words = {
+                "no", "nope", "nah", "wrong", "incorrect",
+                "other", "actually", "wait", "sorry",
+            }
+            _pf_is_correction = (
+                bool(set(text.split()) & _pf_correction_words)
+                and len(text.split()) <= 6
+            )
+            if _pf_is_correction:
+                _pf_cur = self.session.get("selected_location")
+                # Try to extract an explicit clinic name from the correction
+                _pf_new = self._extract("location_selection", text, transcript)
+                if _pf_new and _pf_new != _pf_cur:
+                    self.session["selected_location"] = _pf_new
+                    _pf_name = "Alcester" if _pf_new == "alcester" else "Redditch"
+                    logger.info(
+                        "[ms_flow] prefix_fallback corrected: %s → %s via %r",
+                        _pf_cur, _pf_new, text[:40],
+                    )
+                else:
+                    # Bare "no" / "the other one" — flip to the other clinic
+                    _pf_new = "redditch" if _pf_cur == "alcester" else "alcester"
+                    self.session["selected_location"] = _pf_new
+                    _pf_name = "Alcester" if _pf_new == "alcester" else "Redditch"
+                    logger.info(
+                        "[ms_flow] prefix_fallback flipped: %s → %s via %r",
+                        _pf_cur, _pf_new, text[:40],
+                    )
+                await self._tts.put(f"Got it — {_pf_name}.")
+                await self.ask_current_question()
+                return
+
         # ── GLOBAL REPAIR INTERCEPT (Bug 4 — HARD REQUIREMENT) ──────────────────
         # Runs before ALL state machine logic.
         # If repair/correction language detected: stop current output lineage,
@@ -11979,6 +12017,11 @@ class FlowEngine:
             # Delegate to the dedicated weighted resolver (prefix + alias + similarity).
             _loc_result = _resolve_clinic(_t, context="ask_location")
             if _loc_result["status"] == "resolved":
+                if _loc_result["reason"] == "prefix_fallback":
+                    # Low-confidence resolution — open one-turn correction window
+                    # so the caller can immediately override if the prefix lean
+                    # was wrong.
+                    self.session["location_fallback_unconfirmed"] = True
                 return _loc_result["location"]
             return None
 
