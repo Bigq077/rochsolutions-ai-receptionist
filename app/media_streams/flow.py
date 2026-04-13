@@ -10186,29 +10186,16 @@ class FlowEngine:
             )
             return
 
-        # ── SLOT CONFIRMATION: intercept before advancing ──────────────────
-        # For RESCHEDULE_FLOW: skip slot confirmation entirely — the test
-        # scenarios only have 5 patient turns (no 6th "Yes to confirm").
-        # Advance directly to CONFIRM_RESCHEDULE so the LLM can call
-        # reschedule_appointment and say the confirmation summary.
-        if step["state"] == "PRESENT_TIMES_RESCHEDULE" and self._active_flow is RESCHEDULE_FLOW:
-            slot_text = str(answer)
-            self.session["selected_slot_speech"] = _format_slot_for_speech(slot_text)
-            self.session["selected_slot"] = slot_text   # needed by _exec_reschedule_appointment
-            self.session["flow_step"] = step["step"] + 1
-            logger.info(
-                "[ms_flow] RESCHEDULE_FLOW: skip slot confirmation — advancing to CONFIRM_RESCHEDULE"
-            )
-            await self.ask_current_question()
-            return
-
         # After slot selection, confirm with the caller before moving to name
         # collection.  flow_step is NOT advanced here — it advances in
         # _handle_slot_confirmation when the caller says yes.
+        # NOTE: the 1-slot path in ask_current_question sets slot_pending_confirmation=True
+        # and returns at line 4646 before this block, so this only runs for multi-slot.
         if step["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE"):
             slot_text = str(answer)
             slot_speech = _format_slot_for_speech(slot_text)
             self.session["selected_slot_speech"] = slot_speech
+            self.session["selected_slot"]        = slot_text  # needed by _exec_reschedule_appointment
             self.session["slot_confirmed"]       = True
             logger.info("[ms_flow] slot confirmed (no re-ask): %r", slot_speech[:80])
 
