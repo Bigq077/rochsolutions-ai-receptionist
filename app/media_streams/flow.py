@@ -7260,7 +7260,26 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
-                if any(p in text for p in _SSC_NO):
+                # Correction guard: "no i said ...", "no i meant ..." are
+                # repair utterances, not slot rejections.  Clear the stale
+                # pending slot and fall through so the constraint / time-query
+                # handlers can reparse the caller's actual request.
+                _SSC_REPAIR_PHRASES = (
+                    "no i said", "no i meant", "no i was asking",
+                    "no i asked", "that's not what i",
+                    "i said do you", "i was asking",
+                )
+                _is_ssc_repair = any(p in text for p in _SSC_REPAIR_PHRASES)
+                if _is_ssc_repair:
+                    self.session.pop("selected_slot", None)
+                    self.session.pop("selected_slot_speech", None)
+                    self.session.pop("slot_pending_confirmation", None)
+                    logger.info(
+                        "[ms_flow] %s: SSC correction detected %r — clearing pending slot, reparsing",
+                        step["state"], text[:60],
+                    )
+                    # Fall through to constraint / time-query parsing below
+                elif any(p in text for p in _SSC_NO):
                     logger.info("[ms_flow] single_slot_confirm matched NO → offering retry")
                     self.session.pop("selected_slot", None)
                     self.session.pop("selected_slot_speech", None)
@@ -7755,7 +7774,11 @@ class FlowEngine:
             # Must run BEFORE the direct-bind path.  If _is_time_query is True
             # and an hour can be extracted, answer the question deterministically
             # from the current day's slots and stay in PRESENT_TIMES.
-            if _is_time_query and _target_dt and _target_dt.get("slots"):
+            # Guard: skip when _is_constraint is also True — comparative queries
+            # ("do you have anything later than one in the afternoon") must go to
+            # the _is_constraint handler below, not here.  Without this guard the
+            # boundary hour (e.g. 1pm) was extracted and offered as the answer.
+            if _is_time_query and not _is_constraint and _target_dt and _target_dt.get("slots"):
                 _tq_times = _target_dt.get("slot_times", [])
                 _tq_slots = _target_dt.get("slots", [])
                 _tq_label = _target_dt.get("day_label", "that day")
