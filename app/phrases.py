@@ -275,6 +275,10 @@ SILENCE_THRESHOLDS: dict = {
     "ask_phone":          26.0,
     "confirm_phone":      22.0,   # yes/no — short answer expected
     "ask_name":           26.0,
+    # NC-managed name collection (COLLECT_NAME*): fast 3 s auto-recovery so
+    # a missed short name auto-prompts with the scaffold "please say: my first
+    # name is..." rather than waiting the generic 26 s.
+    "collect_name_nc":    3.0,
     "ask_day":            30.0,   # caller may check calendar / diary
     "ask_time":           28.0,
     "ask_reason":         32.0,   # describing symptoms takes time

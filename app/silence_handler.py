@@ -32,12 +32,12 @@ _STATE_TO_KEY: dict[str, str] = {
     "COLLECT_PHONE_RETURNING": "ask_phone",
     "CONFIRM_PHONE":           "confirm_phone",
     "CONFIRM_PHONE_RETURNING": "confirm_phone",
-    # BUG 1 fix: COLLECT_NAME states map to ask_name (generic fallback);
-    # the SilenceHandler._speech_recovery already handles fragment-aware sub-states.
-    "COLLECT_NAME":            "ask_name",
-    "COLLECT_NAME_RETURNING":  "ask_name",
-    "COLLECT_NAME_RESCHEDULE": "ask_name",
-    "COLLECT_NAME_CANCEL":     "ask_name",
+    # NC-managed name collection: 3 s fast-recovery threshold so a missed
+    # short name auto-prompts with the scaffold phrase, not 26 s of silence.
+    "COLLECT_NAME":            "collect_name_nc",
+    "COLLECT_NAME_RETURNING":  "collect_name_nc",
+    "COLLECT_NAME_RESCHEDULE": "collect_name_nc",
+    "COLLECT_NAME_CANCEL":     "collect_name_nc",
     # Day / time slot presentation — extra patient (long option lists)
     "PRESENT_DAYS":              "present_days",
     "PRESENT_DAYS_RESCHEDULE":   "present_days",

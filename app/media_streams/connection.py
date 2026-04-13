@@ -442,8 +442,20 @@ class SilenceHandler:
             "COLLECT_NAME", "COLLECT_NAME_RETURNING",
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         ):
+            # Use NC substate to pick the right scaffold prompt.
+            # name_fragment == NC's first_name (set when first name is stored).
+            # When present we are in the surname step; otherwise first-name step.
             _nf = (_sess or {}).get("name_fragment")
-            phrase = "Sorry, I missed that. And your family name?" if _nf else "Sorry, I missed that. Could you tell me your first name again?"
+            if _nf:
+                phrase = (
+                    "Sorry, I didn't quite catch that \u2014 "
+                    "please say: my surname is..."
+                )
+            else:
+                phrase = (
+                    "Sorry, I didn't quite catch that \u2014 "
+                    "please say: my first name is..."
+                )
         elif _state in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
             phrase = "Sorry, I missed that. Could you type the phone number using your keypad?"
         elif _state in ("GREETING", "DETECT_INTENT", ""):
