@@ -279,15 +279,70 @@ class SilenceHandler:
 
     def on_speech_started(self) -> None:
         """Call when STT detects actual speech (partial transcript or energy VAD).
-        Cancels the silence timer so Susie doesn't re-ask while caller is speaking.
-        Schedules a state-aware recovery task: if no transcript arrives, re-arms the
-        timer so the call doesn't go permanently silent on an STT miss."""
+
+        Cancels the W1/W2/W3 silence cascade timer so Susie doesn't re-ask while
+        the caller is speaking.
+
+        WATCHDOG BEHAVIOUR — re-arm, not cancel:
+        Previously _cancel_timer() was called here, which permanently killed both
+        the main timer AND the no-input watchdog on any VAD event.  That made the
+        watchdog useless: near-instant echo when TTS finishes, speakerphone hiss,
+        or a brief noise burst would all permanently cancel the 3-second guarantee,
+        and the only surviving path was _speech_recovery — which has its own guards
+        that can independently suppress.
+
+        The correct semantic for VAD is "caller may be speaking — give them 3 more
+        seconds", NOT "caller has responded — kill the deadline forever."  So the
+        watchdog is now RESET to a fresh 3-second window from this moment.  It fires
+        3s after the most recent VAD event.  Only a real final transcript from STT
+        (on_transcript_received) should permanently cancel the deadline.
+
+        If _no_input_watchdog_task is None, no question is live (or the answer has
+        already arrived), so no re-arm is performed.
+        """
         self.last_audio_received_at = time.time()
         self.last_engagement_at     = time.time()
-        self._cancel_timer()
-        # Cancel any previous recovery task before starting a new one
+
+        # ── Cancel W1/W2/W3 main timer (caller is speaking; W1 would fire too early) ──
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+        self.currently_reasking = False
+
+        # ── Cancel stale recovery task before starting a new one ──────────────
         if self._recovery_task and not self._recovery_task.done():
             self._recovery_task.cancel()
+
+        # ── Re-arm no-input watchdog with a fresh 3-second deadline ───────────
+        # Only re-arm if the watchdog was already live (set by _restart_timer when
+        # a question's TTS finished — meaning a question is actually outstanding).
+        # This prevents spurious arming between questions while LLM is processing.
+        import os as _os_sp
+        if (
+            self._no_input_watchdog_task is not None
+            and not self._cancelled
+            and not _os_sp.getenv("SILENCE_WINDOW_1_SEC")
+        ):
+            if not self._no_input_watchdog_task.done():
+                self._no_input_watchdog_task.cancel()
+            self._no_input_watchdog_task = None
+            _wdg_wait = float(_os_sp.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+            if _wdg_wait > 0:
+                _armed_at = time.time()
+                _my_q_gen_w = self._q_gen
+                self._no_input_watchdog_task = asyncio.create_task(
+                    self._no_input_watchdog(_armed_at, _my_q_gen_w),
+                    name="ms_silence_no_input_watchdog",
+                )
+                logger.debug(
+                    "[ms_watchdog] re-armed on speech event (q_gen=%d armed=%.3f)",
+                    _my_q_gen_w, _armed_at,
+                )
+        elif self._no_input_watchdog_task is not None and self._no_input_watchdog_task.done():
+            # Completed task — clear stale reference; no re-arm needed (question resolved)
+            self._no_input_watchdog_task = None
+
+        # ── Arm speech-recovery as secondary safety net ────────────────────────
         # Capture the current flow_step so _speech_recovery can detect if the
         # state has advanced during its sleep and suppress a stale prompt.
         _recovery_step = self._replay_flow_step
@@ -295,7 +350,11 @@ class SilenceHandler:
         self._recovery_task = asyncio.create_task(
             self._speech_recovery(_recovery_step, _my_q_gen), name="ms_silence_speech_recovery"
         )
-        logger.debug("[ms_silence] speech started — timer cancelled, recovery armed (step=%d q_gen=%d)", _recovery_step, _my_q_gen)
+        logger.debug(
+            "[ms_silence] speech started — W1 timer cancelled, watchdog re-armed, "
+            "recovery armed (step=%d q_gen=%d)",
+            _recovery_step, _my_q_gen,
+        )
 
     async def _speech_recovery(self, recovery_step: int = -1, q_gen: int = 0) -> None:
         """If STT doesn't transcribe within N seconds of speech detection, prompt the caller.
