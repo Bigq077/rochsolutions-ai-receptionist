@@ -336,13 +336,22 @@ class SilenceHandler:
             _state_r = (_sess_r or {}).get("state", "")
             from app.silence_handler import get_silence_threshold as _gst
             _thresh_r = _gst(_state_r)
-            # Scale: extra_slow (≥30 s) → 10 s; medium (≥26 s) → 7 s; fast → 5 s
+            # Scale recovery wait to match state cadence:
+            #   extra_slow (≥30 s, e.g. PRESENT_DAYS/TIMES) → 8 s — caller may
+            #     still be scanning a long option list or mid-thought.
+            #   medium/default (≥10 s, e.g. default 26 s) → 5 s — down from 7 s;
+            #     faster re-ask but still clears Guard-3's 3.5 s engagement window.
+            #   fast (< 10 s, e.g. phone/name/confirm at 3 s) → 4 s — well above
+            #     Guard-3's 3.5 s floor so a single VAD event always passes Guard 3.
+            # The 0.5 s gap above Guard-3 (4.0 > 3.5) also protects against a
+            # second VAD pulse at T+0.4 s pushing last_engagement_at forward and
+            # causing Guard 3 to suppress, which would orphan the call.
             if _thresh_r >= 30.0:
-                _recovery_wait = 10.0
-            elif _thresh_r >= 26.0:
-                _recovery_wait = 7.0
-            else:
+                _recovery_wait = 8.0
+            elif _thresh_r >= 10.0:
                 _recovery_wait = 5.0
+            else:
+                _recovery_wait = 4.0
 
         try:
             await asyncio.sleep(_recovery_wait)
@@ -384,10 +393,19 @@ class SilenceHandler:
 
         # Guard 2: minimum response window — belt-and-suspenders backup for Guard 0.
         # _tts_done_at is 0.0 at call start (no question asked yet); skip guard then.
-        if self._tts_done_at > 0 and (time.time() - self._tts_done_at) < 8.0:
+        # Threshold is dynamic: _recovery_wait + 0.5 s.  This scales the echo-
+        # protection window to the state's recovery cadence so that a legitimate
+        # VAD event (caller spoke ≥ 0.5 s after TTS ended) always passes Guard 2
+        # after one _recovery_wait sleep, while a near-instant echo (< 0.5 s) is
+        # still suppressed and handled by the watchdog re-arm below.
+        # Previously hardcoded at 8.0 s, which meant fast-state (3 s threshold)
+        # recovery always suppressed here even 5 s after TTS — causing 8–9 s
+        # total dead air instead of ~4 s.
+        _guard2_min = _recovery_wait + 0.5
+        if self._tts_done_at > 0 and (time.time() - self._tts_done_at) < _guard2_min:
             logger.debug(
-                "[ms_silence] recovery: TTS finished only %.1fs ago — suppressing premature re-ask",
-                time.time() - self._tts_done_at,
+                "[ms_silence] recovery: TTS finished only %.1fs ago (guard2_min=%.1fs) — suppressing premature re-ask",
+                time.time() - self._tts_done_at, _guard2_min,
             )
             # Re-arm the silence cascade so the call does not go permanently
             # silent.  on_speech_started() cancelled both _run() and the
@@ -407,6 +425,13 @@ class SilenceHandler:
                 "[ms_silence] recovery: recent engagement (%.1fs ago) — suppressing prompt",
                 since_engagement,
             )
+            # Re-arm so neither _run() nor the watchdog is left orphaned.
+            # This path fires when a second VAD pulse (or a late partial) pushes
+            # last_engagement_at forward just before we wake up — without re-arm
+            # the call silently hangs because on_speech_started() already cancelled
+            # all running timers.
+            if not self._cancelled and not self._tts_playing and not self._llm_busy:
+                self._restart_timer()
             return
 
         # Guard 4: LLM busy or main timer running (transcript already being processed)
