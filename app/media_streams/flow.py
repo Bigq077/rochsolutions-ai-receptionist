@@ -3863,14 +3863,25 @@ class FlowEngine:
                 # Fragment suppression is intentionally removed: even short noisy
                 # inputs get a deterministic forced-confirm rather than a silent
                 # re-anchor that restarts the open loop.
-                _fc_words = text.strip().split()
-                _fc_first = _fc_words[0] if _fc_words else ""
+                #
+                # Strip leading filler words before inspecting the opening token
+                # so that "your red ditch clinic" → "red" (not "your").
+                _fc_words = text.strip().lower().split()
+                _FC_FILLERS = {
+                    "the", "our", "your", "a", "an", "at", "for",
+                    "that", "this", "clinic", "is", "it",
+                }
+                _fc_meaningful = [w for w in _fc_words if w not in _FC_FILLERS]
+                _fc_first = (
+                    _fc_meaningful[0] if _fc_meaningful
+                    else (_fc_words[0] if _fc_words else "")
+                )
                 _RED_OPEN = (
                     "red", "read", "rit", "rid", "reed", "ready", "reddit", "redd",
                 )
                 _has_red_open = (
                     any(_fc_first.startswith(p) for p in _RED_OPEN)
-                    or _fc_first == "re"
+                    or _fc_first in ("re", "r")
                 )
                 _pending = "redditch" if _has_red_open else "alcester"
                 self.session["location_pending_guess"] = _pending
