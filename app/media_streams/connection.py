@@ -2036,6 +2036,30 @@ class WebSocketCallHandler:
                         # path (repair / repeat / fragment / transfer / graceful exit),
                         # emit a recovery phrase + the current live re-anchor question.
                         # This is the last-resort guarantee that no turn is ever silent.
+                        #
+                        # BLOCK in structured deterministic collection / confirmation
+                        # states.  Those states own their recovery path: the watchdog
+                        # fires the state-specific re-ask after 3 s of quiet.  Letting
+                        # the generic blended fallback speak here produces pilot-bad
+                        # wording ("I can't answer that properly right now") inside a
+                        # deterministic booking flow, and double-fires on scaffold-hold
+                        # turns (scaffold_continue sets _nc_scaffold_hold and returns
+                        # silently; the timer re-arm runs AFTER this block, but the
+                        # fallback would already have spoken first).
+                        _STRUCTURED_STATES_NO_FB = frozenset({
+                            "ASK_LOCATION",
+                            "COLLECT_NAME",            "COLLECT_NAME_RETURNING",
+                            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                            "CONFIRM_PHONE",           "CONFIRM_PHONE_RETURNING",
+                            "PRESENT_DAYS",            "PRESENT_DAYS_RESCHEDULE",
+                            "PRESENT_TIMES",           "PRESENT_TIMES_RESCHEDULE",
+                            "CONFIRM_BOOKING",
+                            "COLLECT_PHONE",           "COLLECT_PHONE_RETURNING",
+                            "COLLECT_PHONE_RESCHEDULE",
+                            "COLLECT_REASON",          "CONFIRM_ASSESSMENT",
+                            "LOOKUP_RESCHEDULE",       "LOOKUP_CANCEL",
+                        })
+                        _turn_state = self.session.get("state", "")
                         _turn_silent = (
                             not self.session.get("_turn_speech_emitted")
                             and not self.session.get("repair_requested")
@@ -2044,6 +2068,7 @@ class WebSocketCallHandler:
                             and not self.session.get("request_transfer")
                             and not self.session.get("graceful_exit")
                             and not flow.is_complete()
+                            and _turn_state not in _STRUCTURED_STATES_NO_FB
                         )
                         if _turn_silent:
                             _fallback_lq = self.session.get("last_question", "")

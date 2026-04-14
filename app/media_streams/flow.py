@@ -4402,6 +4402,10 @@ class FlowEngine:
                 "use this number", "yes use this number",
                 "use my number", "yes use my number",
                 "same number", "use my current number",
+                # Partial / scaffold-like affirmatives where STT finalises before
+                # the caller finishes the sentence — treat as YES immediately.
+                "you can use this", "can use this", "use this",
+                "go ahead", "that's the one", "thats the one",
             )
             _HG_NO_PHRASES = (
                 "nope", "nah",
