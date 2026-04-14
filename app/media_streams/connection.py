@@ -389,6 +389,14 @@ class SilenceHandler:
                 "[ms_silence] recovery: TTS finished only %.1fs ago — suppressing premature re-ask",
                 time.time() - self._tts_done_at,
             )
+            # Re-arm the silence cascade so the call does not go permanently
+            # silent.  on_speech_started() cancelled both _run() and the
+            # no-input watchdog before this task started; without re-arming
+            # here there is nothing left to fire a re-ask if STT missed the
+            # utterance.  _tts_playing and _llm_busy guards prevent a
+            # spurious arm during active TTS / LLM turns.
+            if not self._cancelled and not self._tts_playing and not self._llm_busy:
+                self._restart_timer()
             return
 
         # Guard 3: recent engagement — extended from 2.0 s to 3.5 s to match the
@@ -414,6 +422,11 @@ class SilenceHandler:
                 "[ms_silence] recovery: STT miss #%d — cap reached, suppressing prompt",
                 self._stt_miss_count,
             )
+            # Re-arm so the main silence windows (_run W1/W2/W3) can take
+            # over and eventually transfer, rather than leaving the call in
+            # permanent dead air after the cap is reached.
+            if not self._cancelled and not self._tts_playing and not self._llm_busy:
+                self._restart_timer()
             return
 
         _sess  = self._get_session() if self._get_session else {}
