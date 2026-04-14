@@ -465,13 +465,15 @@ class SilenceHandler:
                 "[ms_silence] recovery: TTS finished only %.1fs ago (guard2_min=%.1fs) — suppressing premature re-ask",
                 time.time() - self._tts_done_at, _guard2_min,
             )
-            # Re-arm the silence cascade so the call does not go permanently
-            # silent.  on_speech_started() cancelled both _run() and the
-            # no-input watchdog before this task started; without re-arming
-            # here there is nothing left to fire a re-ask if STT missed the
-            # utterance.  _tts_playing and _llm_busy guards prevent a
-            # spurious arm during active TTS / LLM turns.
-            if not self._cancelled and not self._tts_playing and not self._llm_busy:
+            # Re-arm only if the no-input watchdog is NOT already live.
+            # If it is running it will fire 3 s after TTS ends — resetting it
+            # here would cancel the countdown and create a restart loop where
+            # recovery perpetually resets the watchdog without ever letting it fire.
+            _wdg_live = (
+                self._no_input_watchdog_task is not None
+                and not self._no_input_watchdog_task.done()
+            )
+            if not _wdg_live and not self._cancelled and not self._tts_playing and not self._llm_busy:
                 self._restart_timer()
             return
 
@@ -483,12 +485,17 @@ class SilenceHandler:
                 "[ms_silence] recovery: recent engagement (%.1fs ago) — suppressing prompt",
                 since_engagement,
             )
-            # Re-arm so neither _run() nor the watchdog is left orphaned.
-            # This path fires when a second VAD pulse (or a late partial) pushes
-            # last_engagement_at forward just before we wake up — without re-arm
-            # the call silently hangs because on_speech_started() already cancelled
-            # all running timers.
-            if not self._cancelled and not self._tts_playing and not self._llm_busy:
+            # Same watchdog-preservation logic as Guard 2: only restart timers
+            # when the watchdog is not already counting down.  The leading cause
+            # of the perpetual-reset loop is recovery waking at T+3 (recovery_wait)
+            # when last_engagement_at is T+0 — since_engagement=3.0 < 3.5 fires
+            # this guard, which calls _restart_timer(), which cancels + resets
+            # the watchdog, which cancels the just-armed watchdog — repeat forever.
+            _wdg_live = (
+                self._no_input_watchdog_task is not None
+                and not self._no_input_watchdog_task.done()
+            )
+            if not _wdg_live and not self._cancelled and not self._tts_playing and not self._llm_busy:
                 self._restart_timer()
             return
 
@@ -505,10 +512,13 @@ class SilenceHandler:
                 "[ms_silence] recovery: STT miss #%d — cap reached, suppressing prompt",
                 self._stt_miss_count,
             )
-            # Re-arm so the main silence windows (_run W1/W2/W3) can take
-            # over and eventually transfer, rather than leaving the call in
-            # permanent dead air after the cap is reached.
-            if not self._cancelled and not self._tts_playing and not self._llm_busy:
+            # Re-arm only if watchdog is not already live (same restart-loop
+            # prevention as Guard 2/3 above).
+            _wdg_live = (
+                self._no_input_watchdog_task is not None
+                and not self._no_input_watchdog_task.done()
+            )
+            if not _wdg_live and not self._cancelled and not self._tts_playing and not self._llm_busy:
                 self._restart_timer()
             return
 
