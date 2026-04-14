@@ -59,7 +59,7 @@ def build_greeting(config: dict | None = None) -> str:
 
         # Closed day or no hours defined for today
         if day_name in closed_days or day_name not in {k.lower() for k in opening_hours}:
-            return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
+            return "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
 
         day_hours = next((v for k, v in opening_hours.items() if k.lower() == day_name), None)
         if day_hours:
@@ -68,12 +68,12 @@ def build_greeting(config: dict | None = None) -> str:
             minutes_to_close = (close_dt - now).total_seconds() / 60
 
             if minutes_to_close <= 0:
-                return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
+                return "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
 
             if minutes_to_close <= 30:
-                return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
+                return "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
 
-        return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
+        return "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
 
     except Exception:
-        return "Hi there, I'm Susie, Theorem Health AI receptionist — how can I help you today?"
+        return "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
