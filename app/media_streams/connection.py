@@ -293,8 +293,15 @@ class SilenceHandler:
         (_restart_timer / on_question_asked) should cancel the watchdog via
         _cancel_timer().  This avoids spawn/cancel churn on every VAD event.
         """
-        self.last_audio_received_at = time.time()
-        self.last_engagement_at     = time.time()
+        _now = time.time()
+        self.last_audio_received_at = _now
+        # Debounce: only advance the watchdog deadline if at least 500 ms have
+        # elapsed since the last update.  This prevents a flood of rapid partial-
+        # transcript callbacks from perpetually pushing the deadline forward during
+        # a single utterance, while still letting genuine re-engagement events
+        # (e.g. caller starts speaking again after a pause) extend it correctly.
+        if _now - self.last_engagement_at >= 0.5:
+            self.last_engagement_at = _now
 
         # ── Cancel W1/W2/W3 main timer (caller is speaking; W1 would fire too early) ──
         if self._task and not self._task.done():
@@ -823,6 +830,17 @@ class SilenceHandler:
         if _wait <= 0:
             return
 
+        # Ownership check: yield once so any pending cancellation of a superseded
+        # task is delivered before we log WATCHDOG_START.  If a newer watchdog task
+        # has already been assigned to _no_input_watchdog_task, this task is stale
+        # and should exit silently rather than emit a duplicate WATCHDOG_START line.
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            return  # superseded before we even started
+        if asyncio.current_task() is not self._no_input_watchdog_task:
+            return  # a newer task took ownership — exit silently
+
         logger.info("[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs", q_gen, _wait)
 
         while True:
@@ -877,7 +895,7 @@ class SilenceHandler:
             # we were in the terminal-guard checks above.
             _last_activity = max(armed_at, self.last_engagement_at)
             if (time.time() - _last_activity) < _wait:
-                logger.info("[ms_watchdog] WATCHDOG_ACTIVITY q_gen=%d — deadline extended", q_gen)
+                logger.debug("[ms_watchdog] WATCHDOG_ACTIVITY q_gen=%d — deadline extended", q_gen)
                 continue
 
             if self.currently_reasking:
@@ -1029,10 +1047,6 @@ class SilenceHandler:
             self._no_input_watchdog_task = asyncio.create_task(
                 self._no_input_watchdog(_armed_at, _my_q_gen),
                 name="ms_silence_no_input_watchdog",
-            )
-            logger.info(
-                "[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs",
-                _my_q_gen, _wdg_wait,
             )
         else:
             logger.info("[ms_watchdog] WATCHDOG_NOT_STARTED reason=NO_INPUT_WATCHDOG_SEC=0 q_gen=%d", _my_q_gen)
@@ -2129,6 +2143,12 @@ class WebSocketCallHandler:
                                 self._silence_handler.last_audio_received_at = (
                                     time.time() - 4.0
                                 )
+                                # Reset engagement timestamp so the watchdog deadline
+                                # starts fresh from now — without this, a debounced
+                                # last_engagement_at from the scaffold fragment itself
+                                # would push the watchdog 3 s into the future from the
+                                # wrong origin point.
+                                self._silence_handler.last_engagement_at = time.time()
                                 self._silence_handler.restart_for_question(_last_q)
                                 logger.info(
                                     "[ms_conn] scaffold_hold: silence timer armed for %r",

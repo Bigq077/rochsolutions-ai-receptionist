@@ -4288,12 +4288,29 @@ class FlowEngine:
                 "no it is a different", "not that number",
             )
             if any(p in text for p in _PHONE_CORRECTION_EARLY):
-                # Route to COLLECT_PHONE step
+                # Route back to the appropriate phone-collection step.
+                # A new patient must go to COLLECT_PHONE (not COLLECT_PHONE_RETURNING)
+                # so the correct question is asked.  Use on_treatment_plan to
+                # distinguish: treatment-plan returning patients → COLLECT_PHONE_RETURNING,
+                # everyone else → COLLECT_PHONE.  Fall back to whichever state exists
+                # in the active flow if the primary target isn't found.
+                _primary_phone_state = (
+                    "COLLECT_PHONE_RETURNING"
+                    if self.session.get("on_treatment_plan")
+                    else "COLLECT_PHONE"
+                )
                 _cp_idx_early = next(
                     (i for i, s in enumerate(self._active_flow)
-                     if s["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")),
+                     if s["state"] == _primary_phone_state),
                     None,
                 )
+                if _cp_idx_early is None:
+                    # Fallback: accept either state if the primary wasn't found
+                    _cp_idx_early = next(
+                        (i for i, s in enumerate(self._active_flow)
+                         if s["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")),
+                        None,
+                    )
                 if _cp_idx_early is not None:
                     self.session["phone_readback_pending"] = False
                     self.session.pop("phone_candidate", None)
