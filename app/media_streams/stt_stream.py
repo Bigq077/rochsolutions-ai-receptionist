@@ -279,7 +279,7 @@ class STTStream:
         transcript_queue : Queue where final transcript strings are placed
         stop_event       : Set when the call ends
         on_partial       : async(text: str) called on partial Turn (barge-in)
-        on_final_clear   : async() called on each end-of-turn to reset _clearing
+        on_final_clear   : async(text: str) called on each end-of-turn to reset _clearing
         tts_text_queue   : If set, failure phrase is played here on fatal STT error
         """
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
@@ -632,7 +632,7 @@ class STTStream:
                         # Final — enqueue for LLM
                         if on_final_clear:
                             try:
-                                await on_final_clear()
+                                await on_final_clear(text)
                             except Exception:
                                 pass
                         self._last_final_at = time.monotonic()
@@ -657,7 +657,7 @@ class STTStream:
                 elif msg_type == "FinalTranscript":
                     if on_final_clear:
                         try:
-                            await on_final_clear()
+                            await on_final_clear(text)
                         except Exception:
                             pass
                     self._last_final_at = time.monotonic()

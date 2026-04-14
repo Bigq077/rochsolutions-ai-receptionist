@@ -3944,6 +3944,35 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
 
+            # ── KEYPAD MODE REQUEST: caller asks to use the keypad ───────────────
+            # Handles "can I type it", "use the keypad" etc. arriving when
+            # phone_awaiting_dtmf is not yet active.  Must run before the
+            # phone_awaiting_dtmf block and the digit-extraction import below
+            # so the mode-switch response is emitted cleanly.
+            if not self.session.get("phone_awaiting_dtmf"):
+                _KEYPAD_MODE_REQUEST = (
+                    "can i type", "i want to type", "can i use the keypad",
+                    "use the keypad", "use my keypad", "can i use the keyboard",
+                    "use the keyboard", "type the number", "enter it on",
+                    "enter it manually", "type it on the keypad",
+                    "type it on the keyboard", "can i enter", "enter on the keypad",
+                    "press it on", "use my keyboard",
+                )
+                if any(p in (text or "").lower() for p in _KEYPAD_MODE_REQUEST):
+                    self.session["phone_awaiting_dtmf"] = True
+                    self.session["phone_dtmf_buffer"]   = ""
+                    _kp_req_reply = "Yes — please go ahead and enter the number using your keypad."
+                    await self._tts.put(_kp_req_reply)
+                    self.session["last_question"] = _kp_req_reply
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _kp_req_reply}
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: keypad-mode request %r → phone_awaiting_dtmf=True",
+                        (text or "")[:50],
+                    )
+                    return
+
             import re as _re_hg
 
             # ── Keypad-first mode: voice received while awaiting DTMF ────────
@@ -4316,14 +4345,26 @@ class FlowEngine:
                     self.session.pop("phone_candidate", None)
                     self.session.pop("phone_number", None)
                     self.session.pop("phone", None)
+                    self.session["phone_digits_buffer"]  = ""
+                    self.session["phone_dtmf_buffer"]    = ""
+                    self.session["phone_confirmed"]      = False
                     self.session.setdefault("collected", {}).pop("phone", None)
-                    self.session["flow_step"] = _cp_idx_early
-                    self.session["state"]     = self._active_flow[_cp_idx_early]["state"]
+                    self.session["flow_step"]            = _cp_idx_early
+                    self.session["state"]                = self._active_flow[_cp_idx_early]["state"]
+                    # Switch immediately into keypad-first mode so the caller hears
+                    # an explicit instruction — not the generic "best number to reach
+                    # you on" voice question.
+                    self.session["phone_awaiting_dtmf"]  = True
+                    _cp_bridge = "No problem — please type the number using your keypad."
+                    await self._tts.put(_cp_bridge)
+                    self.session["last_question"] = _cp_bridge
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _cp_bridge}
+                    )
                     logger.info(
-                        "[ms_flow] CONFIRM_PHONE BUG4: phone-correction early-exit → %s",
+                        "[ms_flow] CONFIRM_PHONE phone-correction early-exit → %s (keypad mode)",
                         self.session["state"],
                     )
-                    await self.ask_current_question()
                     return
 
             # ── NAME-REPAIR: caller says the captured name was wrong ───────────
@@ -7679,6 +7720,34 @@ class FlowEngine:
                         _bound_oc_time   = _oc_times[0]
                         _bound_oc_slot   = _oc_slots[0]
                         _bound_oc_speech = _spoken_oc[0] if _spoken_oc else "that time"
+                # Period-only fallback: "in the afternoon" / "the morning one" when
+                # filler stripping consumed the hour word (e.g. "o'clock in the afternoon
+                # works for me").  Only fires when exactly one constrained slot matches.
+                if _bound_oc_time is None and _oc_times:
+                    _txt_oc_pf = (text or "").lower()
+                    _oc_is_afternoon = any(
+                        p in _txt_oc_pf for p in ("afternoon", "evening", "pm")
+                    )
+                    _oc_is_morning = "morning" in _txt_oc_pf and not _oc_is_afternoon
+                    if _oc_is_afternoon or _oc_is_morning:
+                        _oc_pf_matches = []
+                        for _opft, _opfs, _opfsp in zip(_oc_times, _oc_slots, _spoken_oc):
+                            try:
+                                _opfh = int(_opft.split(":")[0])
+                                if (_oc_is_afternoon and _opfh >= 12) or (
+                                    _oc_is_morning and _opfh < 12
+                                ):
+                                    _oc_pf_matches.append((_opft, _opfs, _opfsp))
+                            except (ValueError, IndexError):
+                                pass
+                        if len(_oc_pf_matches) == 1:
+                            _bound_oc_time   = _oc_pf_matches[0][0]
+                            _bound_oc_slot   = _oc_pf_matches[0][1]
+                            _bound_oc_speech = _oc_pf_matches[0][2]
+                            logger.info(
+                                "[ms_flow] %s: constrained period-only bind → %r",
+                                step["state"], _bound_oc_time,
+                            )
                 if _bound_oc_time is not None:
                     _avail_oc   = self.session.get("available_days", [])
                     _chosen_oc  = self.session.get("chosen_day", "")
@@ -7957,6 +8026,32 @@ class FlowEngine:
                             if 7 <= _h2 <= 20:
                                 _matched_hour = _h2
                             break
+
+                # Period-only fallback: no explicit hour found, but "afternoon" / "morning"
+                # is present and selection intent is confirmed ("works for me", etc.).
+                # Binds only when exactly one offered slot matches the stated period.
+                if _matched_hour is None and _is_time_selection:
+                    _is_dt_afternoon = any(
+                        p in _txt_dt for p in ("afternoon", "evening", "pm")
+                    )
+                    _is_dt_morning = "morning" in _txt_dt and not _is_dt_afternoon
+                    if _is_dt_afternoon or _is_dt_morning:
+                        _dt_pf_matches = []
+                        for _dpfi, _dpft in enumerate(_slot_times_dt):
+                            try:
+                                _dpfh = int(_dpft.split(":")[0])
+                                if (_is_dt_afternoon and _dpfh >= 12) or (
+                                    _is_dt_morning and _dpfh < 12
+                                ):
+                                    _dt_pf_matches.append((_dpfi, _dpfh))
+                            except (ValueError, IndexError):
+                                pass
+                        if len(_dt_pf_matches) == 1:
+                            _matched_hour = _dt_pf_matches[0][1]
+                            logger.info(
+                                "[ms_flow] %s: direct period-only fallback → hour=%d",
+                                step["state"], _matched_hour,
+                            )
 
                 if _matched_hour is not None:
                     _slot_idx_dt: Optional[int] = None

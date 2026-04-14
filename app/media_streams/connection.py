@@ -247,6 +247,15 @@ class SilenceHandler:
         # the current question; reset on every real transcript or new question.
         self._no_input_reask_count: int = 0
         self._no_input_watchdog_task: Optional[asyncio.Task] = None
+        # Scaffold-hold grace deadline: set by the scaffold-hold path to extend
+        # the watchdog patience window without corrupting last_engagement_at's
+        # semantics.  Watchdog reads max(last_engagement_at, _watchdog_grace_until)
+        # as its activity anchor.  Naturally expires — no explicit reset needed.
+        self._watchdog_grace_until: float = 0.0
+        # Timestamp of the most recent DTMF keypress received in a COLLECT_PHONE
+        # state.  Used by the watchdog Phase 3 guard to suppress firing during
+        # active keypad entry even if phone_dtmf_buffer has been cleared by a race.
+        self.last_dtmf_at: float = 0.0
         # Timestamp when the last question's TTS audio finished playing (set in
         # on_tts_finished just before _restart_timer).  Used by _speech_recovery to
         # enforce a minimum response window so energy VAD noise before the caller
@@ -778,8 +787,18 @@ class SilenceHandler:
                 "[ms_silence] non-question TTS — NOT arming timer: %r", t[:50]
             )
 
-    def on_transcript_received(self) -> None:
+    def on_transcript_received(self, text: str = "") -> None:
         """Call whenever a FinalTranscript arrives from STT."""
+        # Guard: garbage / junk finals (single chars, noise-only) must NOT cancel
+        # the watchdog — the caller hasn't answered; the watchdog should fire.
+        # Reuse the same _is_garbage_transcript predicate used by the STT stream
+        # so both filters stay aligned if the predicate is ever updated.
+        from app.media_streams.stt_stream import _is_garbage_transcript as _is_garbage_sil
+        if _is_garbage_sil(text or ""):
+            logger.info(
+                "[ms_silence] garbage_transcript=%r — watchdog preserved", text
+            )
+            return
         self._cancel_timer()
         # Cancel recovery task — transcript arrived, no re-arm needed
         if self._recovery_task and not self._recovery_task.done():
@@ -850,7 +869,7 @@ class SilenceHandler:
             # If it advances while we sleep, the next loop iteration recomputes
             # _remaining and extends the deadline — no new task needed.
             while True:
-                _last_activity = max(armed_at, self.last_engagement_at)
+                _last_activity = max(armed_at, self.last_engagement_at, self._watchdog_grace_until)
                 _remaining = (_last_activity + _wait) - time.time()
                 if _remaining <= 0.02:
                     break  # deadline reached — proceed to guards
@@ -890,6 +909,28 @@ class SilenceHandler:
                     logger.info("[ms_watchdog] WATCHDOG_CANCEL q_gen=%d", q_gen)
                     return
                 continue
+
+            # DTMF guard: caller is actively entering a phone number on the keypad.
+            # Uses last_dtmf_at (not phone_dtmf_buffer) so a buffer-clear race cannot
+            # produce a false fire.  _DTMF_QUIET_SEC gives the caller time between
+            # individual keypresses without triggering a no-input re-ask.
+            _DTMF_QUIET_SEC = 5.0
+            _sess_dtmf = self._get_session() if self._get_session else {}
+            if (_sess_dtmf or {}).get("state") in (
+                "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"
+            ):
+                if (time.time() - self.last_dtmf_at) < _DTMF_QUIET_SEC:
+                    logger.debug(
+                        "[ms_watchdog] WATCHDOG_DTMF_HOLD q_gen=%d last_dtmf=%.1fs ago",
+                        q_gen, time.time() - self.last_dtmf_at,
+                    )
+                    try:
+                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        logger.info("[ms_watchdog] WATCHDOG_CANCEL q_gen=%d", q_gen)
+                        return
+                    continue
 
             # Activity re-check: last_engagement_at may have been updated while
             # we were in the terminal-guard checks above.
@@ -1671,9 +1712,13 @@ class WebSocketCallHandler:
         buf = self.session.get("phone_dtmf_buffer", "") + digit
         self.session["phone_dtmf_buffer"] = buf
 
-        # Each keypress resets the silence timer (caller is actively typing)
-        self._silence_handler.last_audio_received_at = time.time()
-        self._silence_handler.last_engagement_at     = time.time()
+        # Each keypress resets the silence timer (caller is actively typing).
+        # last_dtmf_at is the authoritative "DTMF is live" signal used by the
+        # watchdog Phase 3 guard — it persists even if phone_dtmf_buffer is cleared.
+        _now_dtmf = time.time()
+        self._silence_handler.last_audio_received_at = _now_dtmf
+        self._silence_handler.last_engagement_at     = _now_dtmf
+        self._silence_handler.last_dtmf_at           = _now_dtmf
 
         logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
 
@@ -2143,12 +2188,12 @@ class WebSocketCallHandler:
                                 self._silence_handler.last_audio_received_at = (
                                     time.time() - 4.0
                                 )
-                                # Reset engagement timestamp so the watchdog deadline
-                                # starts fresh from now — without this, a debounced
-                                # last_engagement_at from the scaffold fragment itself
-                                # would push the watchdog 3 s into the future from the
-                                # wrong origin point.
-                                self._silence_handler.last_engagement_at = time.time()
+                                # Extend watchdog patience via the dedicated grace field —
+                                # NOT last_engagement_at (which has real-time semantics
+                                # used by _speech_recovery and debounce guards).
+                                # grace=5s + wait=3s → 8s total before first re-ask,
+                                # giving the caller time to complete "my surname is [name]".
+                                self._silence_handler._watchdog_grace_until = time.time() + 5.0
                                 self._silence_handler.restart_for_question(_last_q)
                                 logger.info(
                                     "[ms_conn] scaffold_hold: silence timer armed for %r",
@@ -2641,7 +2686,7 @@ class WebSocketCallHandler:
         # flow.handle_transcript() normally; re-ask only fires if that fails.
         return True  # skip current utterance (ack plays, next turn processes)
 
-    async def _on_final_transcript_clear(self) -> None:
+    async def _on_final_transcript_clear(self, text: str = "") -> None:
         """
         Called by STTStream on each FinalTranscript to reset _clearing.
         Ensures audio is no longer dropped once the caller finishes speaking.
@@ -2652,8 +2697,8 @@ class WebSocketCallHandler:
         """
         if self._barge_in_pending and self._barge_in_ts > 0:
             self._barge_in_duration = time.monotonic() - self._barge_in_ts
-        self._clearing = False
-        self._silence_handler.on_transcript_received()
+        self._clearing = False  # always reset — even garbage finals end the barge-in window
+        self._silence_handler.on_transcript_received(text)
 
     # ========================================================================
     # Greeting injection
