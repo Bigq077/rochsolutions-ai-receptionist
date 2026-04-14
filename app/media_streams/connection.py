@@ -334,9 +334,9 @@ class SilenceHandler:
                     self._no_input_watchdog(_armed_at, _my_q_gen_w),
                     name="ms_silence_no_input_watchdog",
                 )
-                logger.debug(
-                    "[ms_watchdog] re-armed on speech event (q_gen=%d armed=%.3f)",
-                    _my_q_gen_w, _armed_at,
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_ARMED q_gen=%d wait=%.1fs (re-arm on speech event)",
+                    _my_q_gen_w, _wdg_wait,
                 )
         elif self._no_input_watchdog_task is not None and self._no_input_watchdog_task.done():
             # Completed task — clear stale reference; no re-arm needed (question resolved)
@@ -635,6 +635,14 @@ class SilenceHandler:
         race where energy VAD fires during Susie's response, a 7-10 s recovery task
         starts, and the task later fires its prompt after the real response has ended.
 
+        WATCHDOG: the no-input watchdog is intentionally NOT cancelled here.
+        Previously _cancel_timer() was called, which killed the watchdog for ALL TTS
+        events including non-question bridge/filler phrases.  When a non-question
+        phrase's on_tts_finished() ran, is_question=False so _restart_timer() was
+        never called, orphaning the call permanently.  The watchdog now survives TTS:
+        Guard 2 (_tts_playing) suppresses it while audio is playing and re-arms it
+        so it fires 3 s after TTS ends if no caller response arrives.
+
         NOTE: _stt_miss_count is intentionally NOT reset here.  It must only
         reset when a real caller transcript arrives (on_transcript_received).
         Resetting here allowed recovery to loop: miss→TTS starts→reset→miss→repeat.
@@ -642,7 +650,12 @@ class SilenceHandler:
         self._tts_playing = True  # always track, even during re-ask playback
         self._tts_last_start_ts = time.time()  # record when this chunk started
         if not self.currently_reasking:
-            self._cancel_timer()
+            # Cancel main silence timer (_task / W1-W2-W3) — Susie is speaking.
+            # Do NOT cancel the no-input watchdog: it must survive non-question TTS
+            # so it can fire once the audio ends if caller still hasn't responded.
+            if self._task and not self._task.done():
+                self._task.cancel()
+            self._task = None
             # Cancel stale recovery task — TTS starting without a fresh transcript
             # means either (a) the flow responded to a previous utterance (recovery
             # is moot) or (b) energy VAD fired and a recovery task is pending; in
@@ -650,8 +663,7 @@ class SilenceHandler:
             if self._recovery_task and not self._recovery_task.done():
                 self._recovery_task.cancel()
                 self._recovery_task = None
-                logger.debug("[ms_silence] TTS started — recovery task cancelled")
-            logger.debug("[ms_silence] TTS started — timer cancelled")
+            logger.debug("[ms_silence] TTS started — W1 timer cancelled (watchdog preserved)")
 
     def on_llm_started(self) -> None:
         """Called when the LLM begins processing — suppress silence timer."""
@@ -833,33 +845,49 @@ class SilenceHandler:
         """
         import os as _os_w
         _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+        logger.info("[ms_watchdog] WATCHDOG_ARMED q_gen=%d wait=%.1fs", q_gen, _wait)
         try:
             await asyncio.sleep(_wait)
             await asyncio.sleep(0)  # deliver any pending cancels
         except asyncio.CancelledError:
+            logger.info("[ms_watchdog] WATCHDOG_CANCELLED q_gen=%d (CancelledError in sleep)", q_gen)
             return
+
+        logger.info("[ms_watchdog] WATCHDOG_WAKE q_gen=%d armed_at=%.3f", q_gen, armed_at)
 
         # Guard 0: call teardown
         if self._cancelled:
+            logger.info("[ms_watchdog] WATCHDOG_SUPPRESSED reason=call_cancelled q_gen=%d", q_gen)
             return
 
         # Guard 1: stale question generation — new question owns silence
         if q_gen != 0 and q_gen != self._q_gen:
-            logger.debug(
-                "[ms_watchdog] stale q_gen %d vs current %d — suppressed",
+            logger.info(
+                "[ms_watchdog] WATCHDOG_SUPPRESSED reason=stale_q_gen stale=%d current=%d",
                 q_gen, self._q_gen,
             )
             return
 
-        # Guard 2: TTS currently playing (another chunk started after we armed)
+        # Guard 2: TTS currently playing — re-arm for post-TTS so the watchdog fires
+        # 3 s after the audio ends, rather than silently dying here.
         if self._tts_playing:
-            logger.debug("[ms_watchdog] TTS playing — suppressed")
+            logger.info(
+                "[ms_watchdog] WATCHDOG_SUPPRESSED reason=tts_playing q_gen=%d — re-arming for post-TTS",
+                q_gen,
+            )
+            if not self._cancelled:
+                _rearm_at = time.time()
+                _rearm_gen = self._q_gen
+                self._no_input_watchdog_task = asyncio.create_task(
+                    self._no_input_watchdog(_rearm_at, _rearm_gen),
+                    name="ms_silence_no_input_watchdog",
+                )
             return
 
         # Guard 3: any caller engagement since watchdog was armed
         if self.last_engagement_at > armed_at:
-            logger.debug(
-                "[ms_watchdog] engagement since arming (last=%.3f armed=%.3f) — suppressed",
+            logger.info(
+                "[ms_watchdog] WATCHDOG_SUPPRESSED reason=caller_engaged last=%.3f armed=%.3f",
                 self.last_engagement_at, armed_at,
             )
             return
@@ -867,17 +895,17 @@ class SilenceHandler:
         # Guard 4: caller-requested pause mode
         _sess = self._get_session() if self._get_session else {}
         if (_sess or {}).get("caller_pause_active"):
-            logger.debug("[ms_watchdog] pause mode active — suppressed")
+            logger.info("[ms_watchdog] WATCHDOG_SUPPRESSED reason=pause_mode q_gen=%d", q_gen)
             return
 
         # Guard 5: another recovery phrase already mid-play
         if self.currently_reasking:
-            logger.debug("[ms_watchdog] currently_reasking — suppressed")
+            logger.info("[ms_watchdog] WATCHDOG_SUPPRESSED reason=currently_reasking q_gen=%d", q_gen)
             return
 
         # Guard 6: LLM is processing a transcript
         if self._llm_busy:
-            logger.debug("[ms_watchdog] LLM busy — suppressed")
+            logger.info("[ms_watchdog] WATCHDOG_SUPPRESSED reason=llm_busy q_gen=%d", q_gen)
             return
 
         self._no_input_reask_count += 1
@@ -885,7 +913,7 @@ class SilenceHandler:
         _state = (_sess or {}).get("state", "")
 
         logger.info(
-            "[ms_watchdog] no-input attempt #%d state=%s q_gen=%d",
+            "[ms_watchdog] WATCHDOG_FIRE attempt=#%d state=%s q_gen=%d",
             _attempt, _state, q_gen,
         )
 
@@ -960,6 +988,7 @@ class SilenceHandler:
             else:
                 phrase = _prefix + " — could you say that again?"
 
+        logger.info("[ms_watchdog] WATCHDOG_FIRE prompt=%r attempt=#%d state=%s", phrase[:80], _attempt, _state)
         self.currently_reasking = True
         await self._tts_text_queue.put(phrase)
         if self._on_reask:
@@ -995,8 +1024,9 @@ class SilenceHandler:
             self._no_input_watchdog(_new_armed_at, _my_q_gen),
             name="ms_silence_no_input_watchdog",
         )
-        logger.debug(
-            "[ms_watchdog] re-armed for attempt #%d (q_gen=%d)", _attempt + 1, _my_q_gen
+        logger.info(
+            "[ms_watchdog] WATCHDOG_ARMED q_gen=%d wait=%.1fs (re-arm after attempt #%d)",
+            _my_q_gen, _wait, _attempt,
         )
 
     def _restart_timer(self) -> None:
@@ -1021,9 +1051,14 @@ class SilenceHandler:
                     self._no_input_watchdog(_armed_at, _my_q_gen),
                     name="ms_silence_no_input_watchdog",
                 )
-                logger.debug(
-                    "[ms_watchdog] armed (q_gen=%d wait=%.1fs)", _my_q_gen, _wdg_wait
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_ARMED q_gen=%d wait=%.1fs (via _restart_timer)",
+                    _my_q_gen, _wdg_wait,
                 )
+            else:
+                logger.info("[ms_watchdog] WATCHDOG_NOT_ARMED reason=NO_INPUT_WATCHDOG_SEC=0 q_gen=%d", _my_q_gen)
+        else:
+            logger.info("[ms_watchdog] WATCHDOG_NOT_ARMED reason=SILENCE_WINDOW_1_SEC_set q_gen=%d", _my_q_gen)
         logger.debug("[ms_silence] timer started (q_gen=%d)", _my_q_gen)
 
     def _cancel_timer(self) -> None:
@@ -1034,6 +1069,11 @@ class SilenceHandler:
         # All callers of _cancel_timer (speech detected, transcript received, TTS
         # starting for a new response, LLM busy) should also abort the watchdog.
         if self._no_input_watchdog_task and not self._no_input_watchdog_task.done():
+            logger.info(
+                "[ms_watchdog] WATCHDOG_CANCELLED caller=%s",
+                # cheaply identify the caller for log traceability
+                __import__("traceback").extract_stack()[-2].name,
+            )
             self._no_input_watchdog_task.cancel()
         self._no_input_watchdog_task = None
         self.currently_reasking = False
