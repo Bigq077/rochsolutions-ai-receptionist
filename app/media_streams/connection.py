@@ -321,7 +321,6 @@ class SilenceHandler:
         if (
             self._no_input_watchdog_task is not None
             and not self._cancelled
-            and not _os_sp.getenv("SILENCE_WINDOW_1_SEC")
         ):
             if not self._no_input_watchdog_task.done():
                 self._no_input_watchdog_task.cancel()
@@ -1038,27 +1037,23 @@ class SilenceHandler:
         self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
         _my_q_gen = self._q_gen  # bind timer to current question generation
         self._task = asyncio.create_task(self._run(_my_q_gen), name="ms_silence_timer")
-        # Arm the no-input watchdog unless we are in the automated test harness.
-        # SILENCE_WINDOW_1_SEC is only set by the test runner — its presence means
-        # silence scenarios are driven by explicit transcript injection and the
-        # watchdog must not fire during the 25-second injection window.
+        # Arm the no-input watchdog.  Set NO_INPUT_WATCHDOG_SEC=0 to disable it
+        # (e.g. in the automated test harness where silence scenarios are driven
+        # by explicit transcript injection and a 3-second watchdog would race).
         import os as _os_w
-        if not _os_w.getenv("SILENCE_WINDOW_1_SEC"):
-            _wdg_wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
-            if _wdg_wait > 0:
-                _armed_at = time.time()
-                self._no_input_watchdog_task = asyncio.create_task(
-                    self._no_input_watchdog(_armed_at, _my_q_gen),
-                    name="ms_silence_no_input_watchdog",
-                )
-                logger.info(
-                    "[ms_watchdog] WATCHDOG_ARMED q_gen=%d wait=%.1fs (via _restart_timer)",
-                    _my_q_gen, _wdg_wait,
-                )
-            else:
-                logger.info("[ms_watchdog] WATCHDOG_NOT_ARMED reason=NO_INPUT_WATCHDOG_SEC=0 q_gen=%d", _my_q_gen)
+        _wdg_wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+        if _wdg_wait > 0:
+            _armed_at = time.time()
+            self._no_input_watchdog_task = asyncio.create_task(
+                self._no_input_watchdog(_armed_at, _my_q_gen),
+                name="ms_silence_no_input_watchdog",
+            )
+            logger.info(
+                "[ms_watchdog] WATCHDOG_ARMED q_gen=%d wait=%.1fs (via _restart_timer)",
+                _my_q_gen, _wdg_wait,
+            )
         else:
-            logger.info("[ms_watchdog] WATCHDOG_NOT_ARMED reason=SILENCE_WINDOW_1_SEC_set q_gen=%d", _my_q_gen)
+            logger.info("[ms_watchdog] WATCHDOG_NOT_ARMED reason=NO_INPUT_WATCHDOG_SEC=0 q_gen=%d", _my_q_gen)
         logger.debug("[ms_silence] timer started (q_gen=%d)", _my_q_gen)
 
     def _cancel_timer(self) -> None:
