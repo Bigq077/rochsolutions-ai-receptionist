@@ -239,6 +239,14 @@ class SilenceHandler:
         self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
         self._stt_miss_count: int = 0  # consecutive STT misses since last successful transcript
         self._cancelled: bool = False  # set by cancel() — hard synchronous guard for _run()/_transfer()
+        # No-input watchdog: fires 3 s after TTS ended if there is zero caller
+        # engagement (no VAD, no partial, no final transcript).  Unlike
+        # _speech_recovery, it does not require a preceding VAD event — it is
+        # the only recovery path when STT misses the utterance entirely.
+        # _no_input_reask_count tracks how many watchdog prompts have fired for
+        # the current question; reset on every real transcript or new question.
+        self._no_input_reask_count: int = 0
+        self._no_input_watchdog_task: Optional[asyncio.Task] = None
         # Timestamp when the last question's TTS audio finished playing (set in
         # on_tts_finished just before _restart_timer).  Used by _speech_recovery to
         # enforce a minimum response window so energy VAD noise before the caller
@@ -510,6 +518,7 @@ class SilenceHandler:
         if _is_question_worth_storing(question):
             self.last_question         = question.strip()
             self.reask_count           = 0
+            self._no_input_reask_count = 0  # new question — reset dead-air watchdog counter
             self._last_question_set_at = time.time()
             self._q_gen               += 1   # new question = new silence generation
             _session = self._get_session() if self._get_session else None
@@ -683,6 +692,7 @@ class SilenceHandler:
         self._recovery_task              = None
         self.reask_count                 = 0
         self._stt_miss_count             = 0  # real transcript — reset STT miss counter
+        self._no_input_reask_count       = 0  # real transcript — reset dead-air watchdog counter
         self._consecutive_silence_count  = 0
         self.currently_reasking          = False
         self.last_audio_received_at      = time.time()
@@ -701,6 +711,197 @@ class SilenceHandler:
 
     # ── internal ───────────────────────────────────────────────────────────
 
+    async def _no_input_watchdog(self, armed_at: float, q_gen: int) -> None:
+        """Dead-air watchdog: fires 3 s after TTS ended with ZERO caller activity.
+
+        Unlike _speech_recovery — which requires a preceding VAD/partial event —
+        this watchdog covers the case where the caller spoke but STT emitted nothing
+        at all (no partials, no finals, no energy detection).  The two paths are
+        mutually exclusive: on_speech_started() calls _cancel_timer(), which cancels
+        this task, before scheduling _speech_recovery, so they cannot double-fire.
+
+        Escalation ladder:
+          Attempt 1 — "Sorry, I didn't catch that — <state-specific re-ask>"
+          Attempt 2 — "I'm sorry, I'm still not hearing you clearly. Let's try again — <re-ask>"
+          Attempt 3+ — graceful exit phrase → _transfer()
+
+        Guards (evaluated after the sleep, in order):
+          0. _cancelled          — call torn down
+          1. Stale q_gen         — new question owns silence; this one is stale
+          2. _tts_playing        — Susie is mid-speech; never interrupt
+          3. last_engagement_at  — any caller activity (VAD/partial/DTMF) after arming
+          4. caller_pause_active — pause mode; caller explicitly asked to wait
+          5. currently_reasking  — another recovery path is already mid-phrase
+          6. _llm_busy           — LLM processing a transcript; prompt not needed
+        """
+        import os as _os_w
+        _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+        try:
+            await asyncio.sleep(_wait)
+            await asyncio.sleep(0)  # deliver any pending cancels
+        except asyncio.CancelledError:
+            return
+
+        # Guard 0: call teardown
+        if self._cancelled:
+            return
+
+        # Guard 1: stale question generation — new question owns silence
+        if q_gen != 0 and q_gen != self._q_gen:
+            logger.debug(
+                "[ms_watchdog] stale q_gen %d vs current %d — suppressed",
+                q_gen, self._q_gen,
+            )
+            return
+
+        # Guard 2: TTS currently playing (another chunk started after we armed)
+        if self._tts_playing:
+            logger.debug("[ms_watchdog] TTS playing — suppressed")
+            return
+
+        # Guard 3: any caller engagement since watchdog was armed
+        if self.last_engagement_at > armed_at:
+            logger.debug(
+                "[ms_watchdog] engagement since arming (last=%.3f armed=%.3f) — suppressed",
+                self.last_engagement_at, armed_at,
+            )
+            return
+
+        # Guard 4: caller-requested pause mode
+        _sess = self._get_session() if self._get_session else {}
+        if (_sess or {}).get("caller_pause_active"):
+            logger.debug("[ms_watchdog] pause mode active — suppressed")
+            return
+
+        # Guard 5: another recovery phrase already mid-play
+        if self.currently_reasking:
+            logger.debug("[ms_watchdog] currently_reasking — suppressed")
+            return
+
+        # Guard 6: LLM is processing a transcript
+        if self._llm_busy:
+            logger.debug("[ms_watchdog] LLM busy — suppressed")
+            return
+
+        self._no_input_reask_count += 1
+        _attempt = self._no_input_reask_count
+        _state = (_sess or {}).get("state", "")
+
+        logger.info(
+            "[ms_watchdog] no-input attempt #%d state=%s q_gen=%d",
+            _attempt, _state, q_gen,
+        )
+
+        # ── Graceful exit on 3rd+ attempt ──────────────────────────────────
+        if _attempt >= 3:
+            phrase = (
+                "I'm sorry, I'm having trouble hearing you right now. "
+                "Please call again in a moment."
+            )
+            self.currently_reasking = True
+            await self._tts_text_queue.put(phrase)
+            if self._on_reask:
+                asyncio.create_task(self._on_reask(phrase))
+            logger.info("[ms_watchdog] graceful exit — max attempts reached")
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                self.currently_reasking = False
+                return
+            self.currently_reasking = False
+            await self._transfer()
+            return
+
+        # ── Build contextual re-ask phrase ─────────────────────────────────
+        if _attempt == 1:
+            _prefix = "Sorry, I didn't catch that"
+        else:  # attempt 2
+            _prefix = "I'm sorry, I'm still not hearing you clearly. Let's try again"
+
+        if _state in ("GREETING", "DETECT_INTENT", ""):
+            phrase = _prefix + " — how can I help today?"
+        elif _state == "ASK_LOCATION":
+            phrase = _prefix + " — please say Alcester or Redditch."
+        elif _state in (
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+            "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+        ):
+            _nf = (_sess or {}).get("name_fragment")
+            if _nf:
+                phrase = _prefix + " \u2014 please say: my surname is\u2026"
+            else:
+                phrase = _prefix + " \u2014 please say: my first name is\u2026"
+        elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+            phrase = (
+                _prefix + " — please say yes if I can use this number, "
+                "or no if you'd like to use a different one."
+            )
+        elif _state in (
+            "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+            "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+        ):
+            _lq = (_sess or {}).get("last_question", "")
+            phrase = _lq if _lq else _prefix + " — which option works best?"
+        elif _state == "CONFIRM_BOOKING":
+            phrase = _prefix + " — please say yes to confirm, or no to change it."
+        elif _state in (
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"
+        ):
+            if (_sess or {}).get("phone_awaiting_dtmf"):
+                phrase = _prefix + " — please enter the phone number using your keypad."
+            else:
+                phrase = _prefix + " — please say the phone number slowly."
+        elif _state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            if (_sess or {}).get("lookup_correction_mode"):
+                phrase = _prefix + " — what first name and surname was the booking under?"
+            else:
+                phrase = _prefix + " — could you say that again?"
+        else:
+            _lq = (_sess or {}).get("last_question") or self.last_question
+            if _lq and _lq.strip():
+                phrase = _prefix + ". " + _lq.strip()
+            else:
+                phrase = _prefix + " — could you say that again?"
+
+        self.currently_reasking = True
+        await self._tts_text_queue.put(phrase)
+        if self._on_reask:
+            asyncio.create_task(self._on_reask(phrase))
+
+        # Wait ~5 s for TTS to play before re-arming.
+        # CancelledError means caller spoke during the phrase — reset and exit.
+        try:
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            self.currently_reasking = False
+            return
+        self.currently_reasking = False
+
+        # Re-arm: replace self in the watchdog slot and restart the main silence
+        # timer.  We do NOT call _restart_timer() here to avoid self-cancellation
+        # (it would call _cancel_timer() which holds self._no_input_watchdog_task
+        # and cancels it — i.e. cancels the currently-running coroutine, which
+        # is harmless but unnecessary).  Instead we update the slots directly.
+        if self._cancelled or q_gen != self._q_gen:
+            return
+
+        _new_armed_at = time.time()
+        _my_q_gen = self._q_gen
+        _session2 = self._get_session() if self._get_session else None
+        self._replay_flow_step = (_session2 or {}).get("flow_step", -1) if _session2 else -1
+        # Restart main silence timer (stale after re-ask)
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = asyncio.create_task(self._run(_my_q_gen), name="ms_silence_timer")
+        # Self-replace: current task is about to return; new task owns the slot.
+        self._no_input_watchdog_task = asyncio.create_task(
+            self._no_input_watchdog(_new_armed_at, _my_q_gen),
+            name="ms_silence_no_input_watchdog",
+        )
+        logger.debug(
+            "[ms_watchdog] re-armed for attempt #%d (q_gen=%d)", _attempt + 1, _my_q_gen
+        )
+
     def _restart_timer(self) -> None:
         if self._cancelled:   # guard: don't restart after teardown
             return
@@ -710,12 +911,34 @@ class SilenceHandler:
         self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
         _my_q_gen = self._q_gen  # bind timer to current question generation
         self._task = asyncio.create_task(self._run(_my_q_gen), name="ms_silence_timer")
+        # Arm the no-input watchdog unless we are in the automated test harness.
+        # SILENCE_WINDOW_1_SEC is only set by the test runner — its presence means
+        # silence scenarios are driven by explicit transcript injection and the
+        # watchdog must not fire during the 25-second injection window.
+        import os as _os_w
+        if not _os_w.getenv("SILENCE_WINDOW_1_SEC"):
+            _wdg_wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+            if _wdg_wait > 0:
+                _armed_at = time.time()
+                self._no_input_watchdog_task = asyncio.create_task(
+                    self._no_input_watchdog(_armed_at, _my_q_gen),
+                    name="ms_silence_no_input_watchdog",
+                )
+                logger.debug(
+                    "[ms_watchdog] armed (q_gen=%d wait=%.1fs)", _my_q_gen, _wdg_wait
+                )
         logger.debug("[ms_silence] timer started (q_gen=%d)", _my_q_gen)
 
     def _cancel_timer(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
         self._task              = None
+        # Cancel the no-input watchdog with the same triggers as the main timer.
+        # All callers of _cancel_timer (speech detected, transcript received, TTS
+        # starting for a new response, LLM busy) should also abort the watchdog.
+        if self._no_input_watchdog_task and not self._no_input_watchdog_task.done():
+            self._no_input_watchdog_task.cancel()
+        self._no_input_watchdog_task = None
         self.currently_reasking = False
 
     async def _run(self, q_gen: int = 0) -> None:
