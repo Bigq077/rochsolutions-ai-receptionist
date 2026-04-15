@@ -4532,59 +4532,72 @@ class FlowEngine:
             if (_hg_yes or _semantic_yes) and not _hg_no:
                 self.session["phone_confirm_armed"]    = False  # disarm — gate consumed
                 self.session["phone_readback_pending"] = False
-                self.session["phone_confirmed"]        = True
-                # Commit confirmed phone to collected — deferred from capture time.
-                # PART 1 FIX: include twilio_from_local / twilio_from so that
-                # "yes" when the number came from Twilio caller-ID resolves correctly
-                # and never bounces through COLLECT_PHONE before skipping it again.
+                self.session.pop("phone_candidate", None)
+
+                # ── Resolve phone before branching — single source of truth ────
+                # Check every store in canonical priority order.
+                # collected["phone"] is set by connection.py at call-start from
+                # Twilio caller-ID; it is the same number as twilio_from but is
+                # the canonical key used by downstream lookup tools.
                 _cp_confirmed = (
-                    self.session.get("phone_candidate")
-                    or self.session.get("phone_number")
+                    self.session.get("phone_number")
+                    or self.session.get("phone_candidate")
                     or self.session.get("phone")
+                    or (self.session.get("collected") or {}).get("phone")
                     or self.session.get("twilio_from_local")
                     or self.session.get("twilio_from")
                 )
                 _cp_source = (
-                    "phone_candidate" if self.session.get("phone_candidate") else
-                    "phone_number"    if self.session.get("phone_number")    else
-                    "phone"           if self.session.get("phone")           else
+                    "phone_number"      if self.session.get("phone_number")      else
+                    "phone_candidate"   if self.session.get("phone_candidate")   else
+                    "phone"             if self.session.get("phone")             else
+                    "collected.phone"   if (self.session.get("collected") or {}).get("phone") else
                     "twilio_from_local" if self.session.get("twilio_from_local") else
                     "twilio_from"       if self.session.get("twilio_from")       else
                     "none"
                 )
+                _cp_kind = "semantic_yes" if _semantic_yes and not _hg_yes else "explicit_yes"
+
                 if _cp_confirmed:
+                    # ── CLEAN PATH: phone found — mark confirmed, advance directly ──
+                    # phone_confirmed is set TRUE only here; COLLECT_PHONE skip
+                    # at ask_current_question() can never fire as accidental recovery.
+                    self.session["phone_confirmed"] = True
                     self.session.setdefault("collected", {})["phone"] = _cp_confirmed
-                self.session.pop("phone_candidate", None)
-                if self._active_flow is RESCHEDULE_FLOW:
-                    if not _cp_confirmed:
-                        # Truly no phone anywhere — collect before lookup
-                        self.session["flow_step"]  = _RESCHEDULE_COLLECT_PHONE_INDEX
-                        self.session["state"]      = "COLLECT_PHONE_RESCHEDULE"
-                        self.session["flow_state"] = "COLLECT_PHONE_RESCHEDULE"
-                        logger.warning(
-                            "[ms_flow] CONFIRM_PHONE yes but truly no phone resolved "
-                            "(source=none) — routing to COLLECT_PHONE_RESCHEDULE"
-                        )
-                    else:
+                    if self._active_flow is RESCHEDULE_FLOW:
                         self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
                         self.session["state"]      = "LOOKUP_RESCHEDULE"
                         self.session["flow_state"] = "LOOKUP_RESCHEDULE"
-                        logger.info(
-                            "[ms_flow] CONFIRM_PHONE yes + resolved phone (source=%s) "
-                            "→ LOOKUP_RESCHEDULE directly",
-                            _cp_source,
-                        )
+                    else:
+                        self.session["state"]      = "CONFIRM_BOOKING"
+                        self.session["flow_state"] = "CONFIRM_BOOKING"
+                        self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
+                    logger.info(
+                        "[ms_flow] HARD GATE CONFIRM_PHONE: %s + phone resolved (src=%s) "
+                        "→ %s phone=...%s",
+                        _cp_kind, _cp_source,
+                        self.session.get("state"),
+                        _cp_confirmed[-4:],
+                    )
                 else:
-                    self.session["state"]      = "CONFIRM_BOOKING"
-                    self.session["flow_state"] = "CONFIRM_BOOKING"
-                    self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
-                logger.info(
-                    "[ms_flow] HARD GATE CONFIRM_PHONE: %s → %s phone=...%s (src=%s)",
-                    "semantic_yes" if _semantic_yes and not _hg_yes else "explicit_yes",
-                    self.session.get("state"),
-                    (_cp_confirmed or "")[-4:],
-                    _cp_source,
-                )
+                    # ── COLLECT PATH: truly no phone anywhere — route to collection ──
+                    # phone_confirmed stays FALSE so the COLLECT_PHONE skip guard at
+                    # ask_current_question() never fires as an accidental recovery.
+                    self.session["phone_confirmed"] = False
+                    if self._active_flow is RESCHEDULE_FLOW:
+                        self.session["flow_step"]  = _RESCHEDULE_COLLECT_PHONE_INDEX
+                        self.session["state"]      = "COLLECT_PHONE"
+                        self.session["flow_state"] = "COLLECT_PHONE"
+                    else:
+                        self.session["flow_step"]  = _COLLECT_PHONE_INDEX
+                        self.session["state"]      = "COLLECT_PHONE"
+                        self.session["flow_state"] = "COLLECT_PHONE"
+                    logger.warning(
+                        "[ms_flow] HARD GATE CONFIRM_PHONE: %s but no phone found "
+                        "anywhere — routing to COLLECT_PHONE",
+                        _cp_kind,
+                    )
+
                 self.session["_last_handled_by"]   = "confirm_phone_yes"
                 self.session["_last_yes_detected"] = True
                 self.session["_last_no_detected"]  = False
