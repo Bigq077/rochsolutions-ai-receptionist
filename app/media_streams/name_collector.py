@@ -10,10 +10,9 @@ PHILOSOPHY
 ----------
 • Normal-first: collect first name then surname conversationally.
 • Field-level confirmation: every field is read back once for the caller to
-  confirm.  Denial of a confirmation triggers exactly ONE normal re-ask, then
-  the best-effort value is stored and the flow moves on unconditionally.
-• No spelling mode in the live call flow.  If a name is imperfect after one
-  re-ask the caller can correct it via the post-call confirmation SMS.
+  confirm.
+• Surname recovery ladder: normal → reask (one clean retry) → spelling fallback.
+  Spelling-confirmed surnames are trusted regardless of prior retry count.
 • Deterministic only: no LLM anywhere in this module.
 • No dead ends: the flow always advances, never traps the caller.
 
@@ -24,11 +23,12 @@ SUBSTATES  (stored in session["_nc"]["substate"])
   fn_reask     — one normal re-ask after first-name denial; stores best effort
   sn_normal    — collecting surname (entered after first name is confirmed/stored)
   sn_confirm   — surname candidate awaiting confirmation
-  sn_reask     — one normal re-ask after surname denial; stores best effort
+  sn_reask     — clean surname retry: routes to sn_confirm on success, sn_spelling
+                  on failure (replaces old blind best-effort accept)
+  sn_spelling  — letter-by-letter spelling fallback; on success → sn_confirm
   done         — full name accepted (transient — consumed immediately by flow.py)
 
-  fn_spelling / sn_spelling — kept as constants for code stability; NEVER
-  entered from any live booking path.
+  fn_spelling — kept as constant for code stability; NOT entered in live flow.
 
 CONFIRMATION CONTRACT
 ---------------------
@@ -41,13 +41,16 @@ CONFIRMATION CONTRACT
                   the call, and if the name needs correcting you can reply there.
                   And what's your surname?"
 
-  SURNAME
+  SURNAME (recovery ladder)
     sn_normal → sn_confirm ("I've got Roch — is that right?")
-      YES           → accept (sn_confirmed=True)
-      NO / any deny → sn_reask ("Sorry, I didn't quite catch that — please say: my surname is...")
-    sn_reask  → store best effort (sn_confirmed=False) → accept
-      Before accepting: session["_nc_accept_preamble"] is set so flow.py can
-      play "Okay, noted — ..." before advancing to the next step.
+      YES              → accept (sn_confirmed=True if sn_retries==0)
+      inline fix       → sn_confirm with corrected candidate (sn_denials not incremented)
+      NO (1st denial)  → sn_reask  ("Sorry about that — what's your surname?")
+      NO (2nd denial)  → sn_spelling
+    sn_reask → caller says name → sn_confirm (not blind accept)
+             → no usable token  → sn_spelling
+    sn_spelling → parsed/spoken → sn_confirm (sn_from_spelling=True → always trusted)
+               → can't parse    → graceful best-effort accept
 
 RETURN PROTOCOL  (from NameCollector.handle())
 --------------
@@ -92,8 +95,8 @@ NC_FN_REASK    = "fn_reask"      # one normal re-ask after first-name denial
 NC_FN_SPELLING = "fn_spelling"   # kept for code stability — NOT entered in live flow
 NC_SN_NORMAL   = "sn_normal"
 NC_SN_CONFIRM  = "sn_confirm"    # surname candidate awaiting confirmation
-NC_SN_REASK    = "sn_reask"      # one normal re-ask after surname denial
-NC_SN_SPELLING = "sn_spelling"   # kept for code stability — NOT entered in live flow
+NC_SN_REASK    = "sn_reask"      # one clean retry after surname denial → sn_confirm or sn_spelling
+NC_SN_SPELLING = "sn_spelling"   # letter-by-letter spelling fallback → sn_confirm
 NC_DONE        = "done"
 
 # ── Name-label prefixes to strip (longest first to avoid prefix overlap) ────────
@@ -533,9 +536,11 @@ class NameCollector:
             "surname_candidate": None,
             "sn_confirmed":      False,  # True when caller said YES
             "pending_surname":   None,   # pre-queued sn token from 2-token fn_normal
-            # Retry counters
+            # Retry / denial counters
             "fn_retries":        0,
             "sn_retries":        0,
+            "sn_denials":        0,          # times sn_confirm returned a plain denial
+            "sn_from_spelling":  False,      # True when candidate came from sn_spelling
         }
 
     def reset(self) -> None:
@@ -550,12 +555,15 @@ class NameCollector:
             "pending_surname":   None,
             "fn_retries":        0,
             "sn_retries":        0,
+            "sn_denials":        0,
+            "sn_from_spelling":  False,
         }
         self._s.pop("name_fragment", None)
         self._s.pop("spelling_confirm_surname", None)
         self._s.pop("full_name", None)
         self._s.pop("_nc_accept_preamble", None)
         self._s.pop("needs_name_correction_sms", None)
+        self._s.pop("_nc_sn_trusted", None)
         col = self._s.get("collected", {})
         col.pop("full_name", None)
         col.pop("name", None)
@@ -573,11 +581,14 @@ class NameCollector:
             "pending_surname":   None,
             "fn_retries":        nc.get("fn_retries", 0),
             "sn_retries":        0,
+            "sn_denials":        0,
+            "sn_from_spelling":  False,
         }
         self._s.pop("spelling_confirm_surname", None)
         self._s.pop("full_name", None)
         self._s.pop("_nc_accept_preamble", None)
         self._s.pop("needs_name_correction_sms", None)
+        self._s.pop("_nc_sn_trusted", None)
         col = self._s.get("collected", {})
         col.pop("full_name", None)
         col.pop("name", None)
@@ -616,8 +627,8 @@ class NameCollector:
             return f"I've got {cand} — is that right?" if cand else "And what's your surname?"
         if ss == NC_SN_REASK:
             return "Sorry, I didn't quite catch that — please say: my surname is..."
-        if ss in (NC_SN_SPELLING,):
-            return "And what's your surname?"
+        if ss == NC_SN_SPELLING:
+            return "Could you spell your surname for me, one letter at a time?"
         return "What's your first name please?"
 
     # ── Main entry point ─────────────────────────────────────────────────────
@@ -657,8 +668,10 @@ class NameCollector:
             return self._sn_confirm(text, raw)
         if ss == NC_SN_REASK:
             return self._sn_reask(text, raw)
+        if ss == NC_SN_SPELLING:
+            return self._sn_spelling(text, raw)
 
-        # Unknown substate (incl. legacy spelling states) — defensive reset
+        # Unknown substate (incl. legacy fn_spelling) — defensive reset
         logger.warning("[NameCollector] unknown/legacy substate %r — resetting", ss)
         self._init_state()
         return ("ask", self._question())
@@ -938,13 +951,20 @@ class NameCollector:
         Confirm a surname candidate.
         Question: "I've got Roch — is that right?"
 
-        YES              → accept (sn_confirmed=True).
-        NO / deny signal → sn_reask (one normal re-ask, no spelling mode).
-        Clean correction → update candidate, re-confirm.
+        YES              → accept (sn_confirmed=True if clean path).
+        inline fix       → re-confirm with corrected candidate.
+        NO (1st denial)  → sn_reask (one clean retry).
+        NO (2nd denial)  → sn_spelling (escalation).
         Meta / ambiguous → re-ask yes/no (stay in sn_confirm).
         """
         cand = self._nc.get("surname_candidate") or ""
         fn   = self.first_name or ""
+
+        # Scaffold in confirm state — caller is restarting their answer.
+        # Hold silently; the completing token will arrive in the next turn.
+        if _is_incomplete_scaffold(text):
+            logger.info("[NameCollector] sn_confirm: scaffold %r — scaffold_continue", text)
+            return ("scaffold_continue", self._question())
 
         has_yes = any(p in text for p in _CONFIRM_YES)
         has_no  = any(p in text for p in _CONFIRM_NO)
@@ -954,31 +974,33 @@ class NameCollector:
             has_yes = False
 
         # YES — accept
-        # Trust check: if sn_retries > 0 the candidate arrived after at least one
-        # failed extraction, making it less reliable than a clean first-attempt
-        # capture.  Accept for flow continuity but mark as unreliable so that
-        # _accept() sets needs_name_correction_sms and the outgoing SMS includes
-        # the correction instruction.
+        # Spelling-path candidates are always trusted (caller spelled & confirmed).
+        # Acoustic candidates are degraded when sn_retries > 0 (extraction failures).
         if has_yes and not has_no:
             full = f"{fn} {cand}".strip().title() if fn else cand.title()
-            _sn_degraded = self._nc.get("sn_retries", 0) > 0
+            _sn_degraded = (
+                self._nc.get("sn_retries", 0) > 0
+                and not self._nc.get("sn_from_spelling")
+            )
             self._nc["sn_confirmed"] = not _sn_degraded
             if _sn_degraded:
-                # Signal flow.py to play the "noted" acknowledgement
                 self._s["_nc_accept_preamble"] = _BEST_EFFORT_ACK
                 self._s["needs_name_correction_sms"] = True
                 logger.info(
-                    "[NameCollector] sn_confirm: YES after %d sn_retries — "
-                    "sn_confirmed=False, preamble set, needs_name_correction_sms=True",
+                    "[NameCollector] sn_confirm: YES after %d sn_retries (degraded) — "
+                    "sn_confirmed=False",
                     self._nc["sn_retries"],
                 )
             self._accept(full)
             return ("accept", full)
 
-        # NO / spelling offer — one normal re-ask, no spelling mode
+        # NO / spelling offer — recovery ladder:
+        #   first denial  → sn_reask (one clean retry)
+        #   second denial → sn_spelling
         is_denial = (has_no and not has_yes) or _is_spelling_offer(text)
         if is_denial:
             # Inline correction: "no, it's Roch" / "no Roch" / "no my surname is Roch"
+            # Does NOT increment sn_denials — it's a correction, not a plain denial.
             _tail = _DENIAL_PREFIX_RE.sub("", text).strip()
             if _tail:
                 _corr_tokens = _tokenise(_strip_filler_prefix(_tail))
@@ -988,10 +1010,18 @@ class NameCollector:
                         _corr_tokens[0],
                     )
                     return self._enter_sn_confirm(_corr_tokens[0].title())
-            # Plain denial — one normal re-ask
+            # Plain denial — count it
+            self._nc["sn_denials"] = self._nc.get("sn_denials", 0) + 1
+            if self._nc["sn_denials"] >= 2:
+                logger.info(
+                    "[NameCollector] sn_confirm: %d denials — escalating to sn_spelling",
+                    self._nc["sn_denials"],
+                )
+                return self._enter_sn_spelling()
+            # First denial — one clean re-ask
             self._nc["substate"] = NC_SN_REASK
             self._nc["surname_candidate"] = cand   # keep as fallback
-            logger.info("[NameCollector] sn_confirm: denial — entering sn_reask")
+            logger.info("[NameCollector] sn_confirm: denial 1 — entering sn_reask")
             return ("ask", "Sorry about that — what's your surname?")
 
         # Both yes+no without strong denial — ambiguous
@@ -1025,16 +1055,19 @@ class NameCollector:
 
     def _sn_reask(self, text: str, raw: str) -> Tuple[str, str]:
         """
-        One normal re-ask after surname confirmation denial.
-        Question played: "Sorry, I didn't quite catch that — please say: my surname is..."
+        Clean surname retry after the first confirmation denial.
+        Question played: "Sorry about that — what's your surname?"
 
-        Whatever the caller says next is stored as best effort.
-        Sets session["_nc_accept_preamble"] so flow.py can play the
-        "Okay, noted…" acknowledgement before advancing to the next step.
-        Returns ("accept", full_name) immediately.
+        If the caller supplies a usable token: route to sn_confirm (let them
+        verify it — no blind accept).
+        If nothing usable arrives: escalate to sn_spelling.
         """
+        # Scaffold — hold for the name to arrive
+        if _is_incomplete_scaffold(text):
+            logger.info("[NameCollector] sn_reask: scaffold %r — scaffold_continue", text)
+            return ("scaffold_continue", "Sorry about that — what's your surname?")
+
         cleaned = _strip_filler_prefix(text)
-        fn = self.first_name or ""
 
         best: Optional[str] = None
         if not _is_spelling_offer(text) and not _has_meta_language(cleaned):
@@ -1042,28 +1075,69 @@ class NameCollector:
             if tokens:
                 best = tokens[0].title()
 
-        if not best:
-            best = self._nc.get("surname_candidate") or ""
-            if not best:
-                best = "Unknown"
+        if best:
+            logger.info("[NameCollector] sn_reask: got token %r → sn_confirm", best)
+            return self._enter_sn_confirm(best)
 
+        # Nothing usable — escalate to spelling
+        logger.info("[NameCollector] sn_reask: no usable token — escalating to sn_spelling")
+        return self._enter_sn_spelling()
+
+    # ── Spelling fallback ────────────────────────────────────────────────────
+
+    def _enter_sn_spelling(self) -> Tuple[str, str]:
+        """Enter sn_spelling substate and ask the caller to spell their surname."""
+        self._nc["substate"]        = NC_SN_SPELLING
+        self._nc["sn_from_spelling"] = True
+        logger.info("[NameCollector] entering sn_spelling")
+        return ("ask", "Could you spell your surname for me, one letter at a time?")
+
+    def _sn_spelling(self, text: str, raw: str) -> Tuple[str, str]:
+        """
+        Surname spelling fallback.
+
+        Parses letter-by-letter input (individual letters or NATO phonetics)
+        into a surname candidate, then routes to sn_confirm so the caller can
+        verify it.  If parsing fails, falls back to normal token extraction, then
+        to graceful best-effort accept.  Flagged sn_from_spelling=True means
+        sn_confirm will mark the result as trusted regardless of sn_retries.
+        """
+        # Scaffold — hold for the spelling to arrive
+        if _is_incomplete_scaffold(text):
+            logger.info("[NameCollector] sn_spelling: scaffold %r — scaffold_continue", text)
+            return ("scaffold_continue", "Could you spell your surname for me, one letter at a time?")
+
+        cleaned = text.strip()
+
+        # Primary: parse as spelled letters / NATO phonetics
+        result = (
+            _parse_spelled_letters_tolerant(cleaned)
+            or _parse_spelled_letters(cleaned)
+        )
+        if result and _is_valid_name_token(result):
+            logger.info("[NameCollector] sn_spelling: parsed spelling → %r", result)
+            return self._enter_sn_confirm(result)
+
+        # Fallback: caller may have just said the name again rather than spelling it
+        tokens = _tokenise(_strip_filler_prefix(cleaned))
+        if tokens:
+            logger.info("[NameCollector] sn_spelling: name token %r → sn_confirm", tokens[0])
+            return self._enter_sn_confirm(tokens[0].title())
+
+        # Nothing usable — graceful best-effort accept with last known candidate
+        fn   = self.first_name or ""
+        best = self._nc.get("surname_candidate") or "Unknown"
         full = f"{fn} {best}".strip().title() if fn else best.title()
         self._nc["sn_confirmed"] = False
-        self._accept(full)
-
-        # FIX 5: do NOT set _nc_accept_preamble — no mid-flow SMS explanation.
-        # Flags are set silently; flow advances directly to the next question.
-        # SMS correction must fire — sn_reask is always a degraded capture path.
         self._s["needs_name_correction_sms"] = True
-
+        self._accept(full)
         logger.info(
-            "[NameCollector] sn_reask: best-effort surname=%r → full=%r "
-            "needs_name_correction_sms=True (correction SMS flagged silently)",
-            best, full,
+            "[NameCollector] sn_spelling: could not parse — best-effort accept %r",
+            full,
         )
         return ("accept", full)
 
-    # ── Retry helpers (no spelling escalation) ────────────────────────────────
+    # ── Retry helpers ─────────────────────────────────────────────────────────
 
     def _fn_fail(self, re_ask: str) -> Tuple[str, str]:
         """
@@ -1091,8 +1165,8 @@ class NameCollector:
         Increment surname retry counter.
 
         One retry only: on the very first genuine failure (sn_retries == 1)
-        escalate immediately to NC_SN_REASK so the next turn runs _sn_reask()
-        which accepts best-effort input and sets needs_name_correction_sms=True.
+        escalate immediately to NC_SN_REASK so the next turn runs _sn_reask(),
+        which routes to sn_confirm if a token is found, or sn_spelling if not.
 
         Scaffold fragments ("my surname is", "it's", "my") are handled upstream
         in _sn_normal and never reach here.
@@ -1151,6 +1225,12 @@ class NameCollector:
         """
         self._nc["substate"]          = NC_DONE
         self._nc["surname_candidate"] = None
+        # Surname trust signal: True only when caller said YES after a clean
+        # first-attempt capture (sn_confirmed=True ↔ sn_retries==0 at accept time).
+        # False on every degraded path (reask, retries, best-effort).
+        # Checked by flow.py before LOOKUP_RESCHEDULE / LOOKUP_CANCEL to block
+        # unreliable surnames from poisoning the appointment lookup.
+        self._s["_nc_sn_trusted"] = bool(self._nc.get("sn_confirmed", False))
         # Legacy session vars
         self._s["full_name"] = full
         col = self._s.setdefault("collected", {})
@@ -1158,4 +1238,7 @@ class NameCollector:
         col["name"]      = full
         self._s.pop("name_fragment", None)
         self._s.pop("spelling_confirm_surname", None)
-        logger.info("[NameCollector] accepted full_name=%r", full)
+        logger.info(
+            "[NameCollector] accepted full_name=%r sn_trusted=%s",
+            full, self._s["_nc_sn_trusted"],
+        )

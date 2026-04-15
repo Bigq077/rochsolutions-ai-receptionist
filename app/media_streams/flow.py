@@ -2740,7 +2740,92 @@ class FlowEngine:
                         _col = self.session.get("collected", {})
                         _col.pop("full_name", None)
                         self.session["collected"] = _col
+                        # Reset NC state so next turn starts at fn_normal,
+                        # not at the stale NC_DONE left by the failed accept.
+                        # Also clear the repair flag — garbage name means fresh start.
+                        from app.media_streams.name_collector import NameCollector as _NameCollBug13
+                        _NameCollBug13(self.session).reset()
+                        self.session.pop("_nc_trust_repair_attempted", None)
                     return
+                # ── Name-trust preflight gate ────────────────────────────────
+                # Blocks lookup when surname was captured via a degraded path.
+                # Only fires when _nc_sn_trusted is explicitly False (set by
+                # NameCollector._accept on every non-clean path).  Absent = a
+                # non-NC path (Twilio compat etc.) → let through unchanged.
+                #
+                # Loop guard: _nc_trust_repair_attempted is set on the first
+                # repair attempt.  If the repair itself produced another degraded
+                # surname (e.g. spelling timed out → best-effort accept), the
+                # gate would otherwise fire indefinitely.  On the second fire we
+                # let lookup proceed and flag for SMS correction instead.
+                #
+                # Repair routing (first attempt):
+                #   fn_confirmed=True  → reset_to_surname + sn_spelling directly
+                #   fn_confirmed=False → full reset, re-collect both names
+                #                        (also clears the repair flag so one
+                #                         further attempt is allowed after a
+                #                         full re-collection)
+                if self.session.get("_nc_sn_trusted") is False:
+                    if self.session.get("_nc_trust_repair_attempted"):
+                        # Already repaired once; still degraded — let through
+                        # with correction SMS rather than looping.
+                        logger.warning(
+                            "[ms_flow] name_trust preflight: repair already attempted, "
+                            "still sn_trusted=False full=%r — letting through with correction SMS",
+                            _lu_full,
+                        )
+                        self.session["needs_name_correction_sms"] = True
+                        # Fall through to lookup — no return here.
+                    else:
+                        # First attempt: route to repair.
+                        from app.media_streams.name_collector import (
+                            NameCollector as _NameCollTrust,
+                            NC_SN_SPELLING,
+                        )
+                        _nc_pf_inst   = _NameCollTrust(self.session)
+                        _fn_confirmed = self.session.get("_nc", {}).get("fn_confirmed", False)
+                        _cn_trust_state = "COLLECT_NAME_RESCHEDULE"
+                        _cn_trust_idx   = next(
+                            (i for i, s in enumerate(self._active_flow)
+                             if s["state"] == _cn_trust_state),
+                            None,
+                        )
+                        self.session["_nc_trust_repair_attempted"] = True
+                        if _fn_confirmed:
+                            # First name confirmed — keep it, go straight to spelling
+                            _nc_pf_inst.reset_to_surname()
+                            self.session["_nc"]["substate"]         = NC_SN_SPELLING
+                            self.session["_nc"]["sn_from_spelling"] = True
+                            _lu_trust_reask = (
+                                "Sorry — I need to double-check your surname. "
+                                "Could you spell it for me, one letter at a time?"
+                            )
+                            logger.warning(
+                                "[ms_flow] name_trust preflight: lookup blocked "
+                                "sn_trusted=False fn_confirmed=True full=%r → sn_spelling",
+                                _lu_full,
+                            )
+                        else:
+                            # First name also uncertain — full reset.
+                            # Clear repair flag so one further attempt is allowed
+                            # after the caller re-provides both names cleanly.
+                            _nc_pf_inst.reset()
+                            self.session.pop("_nc_trust_repair_attempted", None)
+                            _lu_trust_reask = (
+                                "Sorry — could I take your first name and surname again, "
+                                "to make sure I have the right booking?"
+                            )
+                            logger.warning(
+                                "[ms_flow] name_trust preflight: lookup blocked "
+                                "sn_trusted=False fn_confirmed=False full=%r → full reset",
+                                _lu_full,
+                            )
+                        if _cn_trust_idx is not None:
+                            self.session["flow_step"] = _cn_trust_idx
+                            self.session["state"]     = _cn_trust_state
+                        await self._tts.put(_lu_trust_reask)
+                        self.session["last_question"] = _lu_trust_reask
+                        return
             # If the step has an immediate phrase (e.g. "Let me check…"), say it first
             if step["question"]:
                 await self._tts.put(step["question"])
