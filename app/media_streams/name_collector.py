@@ -167,6 +167,14 @@ _NOISE_FRAGMENTS = frozenset({
     "ic", "ck", "ng", "nk", "uh", "um", "er", "ah", "hm", "mm", "eh",
 })
 
+# ── First-name context noise (applied ONLY in _fn_normal, not globally) ───────
+# STT mishearings that appear in "my first NAME is …" patterns when the
+# label word is garbled.  Not added to the global blacklists so that
+# unrelated surname / other contexts are unaffected.
+_FN_CONTEXT_NOISE = frozenset({
+    "theme",   # mishear of "name"  (e.g. "my first theme is quentin")
+})
+
 # ── Phrases that are meta-language / control utterances ──────────────────────
 _META_LANGUAGE: tuple = (
     "do you need", "need help", "help spelling", "help me spell",
@@ -360,6 +368,27 @@ def _extract_leading_token(text: str, stop_phrases: tuple) -> Optional[str]:
     if len(tokens) == 1:
         return tokens[0].title()
     return None
+
+
+_NAME_AFTER_IS_RE = re.compile(r'\bis\s+([a-zA-Z\'-]{2,})\s*$', re.IGNORECASE)
+
+
+def _extract_name_after_is(text: str) -> Optional[str]:
+    """
+    Extract the token immediately after ' is ' at the end of text.
+
+    Handles STT label-word mishearings where prefix stripping does not
+    fire because the label was garbled, e.g.:
+        "my first theme is quentin"  →  "quentin"   (theme≈name)
+        "my surname was roch"        →  (no match — 'was' not 'is')
+
+    Returns title-cased token if it passes _is_valid_name_token(), else None.
+    """
+    m = _NAME_AFTER_IS_RE.search(text)
+    if not m:
+        return None
+    token = m.group(1).strip()
+    return token.title() if _is_valid_name_token(token) else None
 
 
 def _parse_spelled_letters(text: str) -> Optional[str]:
@@ -678,6 +707,21 @@ class NameCollector:
             )
 
         tokens = _tokenise(cleaned)
+        # Remove context-specific noise tokens (STT label-word mishearings).
+        tokens = [t for t in tokens if t.lower() not in _FN_CONTEXT_NOISE]
+
+        # "name-after-is" rule (FIX 1/2/3): when prefix stripping left label
+        # noise in the cleaned text (e.g. "my first theme is quentin"), the
+        # token right after "is" is the actual name.  This overrides the
+        # two-token "FirstName Surname" heuristic and drops the noise token.
+        if len(tokens) >= 2 and " is " in cleaned.lower():
+            _ais = _extract_name_after_is(cleaned)
+            if _ais:
+                logger.info(
+                    "[NameCollector] fn_normal: name-after-is → %r (dropped prefix noise)",
+                    _ais,
+                )
+                return self._enter_fn_confirm(_ais)
 
         # Two valid tokens → treat as "FirstName Surname"
         if len(tokens) == 2:
@@ -818,14 +862,12 @@ class NameCollector:
         self._s["needs_name_correction_sms"] = True
         logger.info(
             "[NameCollector] fn_reask: best-effort first_name=%r → "
-            "needs_name_correction_sms=True",
+            "needs_name_correction_sms=True (correction SMS flagged silently)",
             best,
         )
-
-        return (
-            "ask",
-            f"{_BEST_EFFORT_ACK} And what's your surname?",
-        )
+        # FIX 5: do NOT speak the SMS explanation mid-flow.  Flags are set
+        # silently; the correction link arrives via the post-call SMS.
+        return ("ask", "And what's your surname?")
 
     # ── Substate: sn_normal ──────────────────────────────────────────────────
 
@@ -859,6 +901,17 @@ class NameCollector:
         cleaned = _strip_filler_prefix(text)
         tokens = _tokenise(cleaned)
         tokens = [t for t in tokens if t.lower() not in _DATE_TOKENS]
+
+        # "name-after-is" rule: handles STT label-word mishearings for surnames
+        # e.g. "my surname word is roch" → extract "roch", drop noise.
+        if len(tokens) >= 2 and " is " in cleaned.lower():
+            _ais = _extract_name_after_is(cleaned)
+            if _ais:
+                logger.info(
+                    "[NameCollector] sn_normal: name-after-is → %r (dropped prefix noise)",
+                    _ais,
+                )
+                return self._enter_sn_confirm(_ais)
 
         if len(tokens) == 1:
             return self._enter_sn_confirm(tokens[0].title())
@@ -998,14 +1051,14 @@ class NameCollector:
         self._nc["sn_confirmed"] = False
         self._accept(full)
 
-        # Signal flow.py to play the acknowledgement before advancing
-        self._s["_nc_accept_preamble"] = _BEST_EFFORT_ACK
-        # SMS correction must fire — sn_reask is always a degraded capture path
+        # FIX 5: do NOT set _nc_accept_preamble — no mid-flow SMS explanation.
+        # Flags are set silently; flow advances directly to the next question.
+        # SMS correction must fire — sn_reask is always a degraded capture path.
         self._s["needs_name_correction_sms"] = True
 
         logger.info(
             "[NameCollector] sn_reask: best-effort surname=%r → full=%r "
-            "needs_name_correction_sms=True",
+            "needs_name_correction_sms=True (correction SMS flagged silently)",
             best, full,
         )
         return ("accept", full)

@@ -242,8 +242,8 @@ SILENCE_RESPONSES: dict = {
     "ask_phone":     "Sorry, I didn't quite catch that — please say the phone number slowly.",
     "confirm_phone": "Sorry, I didn't quite catch that — please say yes if I can use this number, or no if you'd like to use a different one.",
     # NC-managed name collection (COLLECT_NAME*): W1 overrides this in
-    # connection.py with a substate-aware scaffold prompt; this entry is the
-    # W2 fallback only.
+    # connection.py with a substate-aware scaffold prompt (first-name vs surname).
+    # This entry is only the W2 fallback (fires ~20 s after W1).
     "collect_name_nc":    "Sorry, I didn't quite catch that — could you say your name again?",
     "ask_name":           "Take your time.",
     # BUG 1 fix: state-aware name sub-categories
@@ -284,10 +284,11 @@ SILENCE_THRESHOLDS: dict = {
     "ask_phone":          3.0,
     "confirm_phone":      3.0,
     "ask_name":           26.0,
-    # NC-managed name collection (COLLECT_NAME*): fast 3 s auto-recovery so
-    # a missed short name auto-prompts with the scaffold "please say: my first
-    # name is..." rather than waiting the generic 26 s.
-    "collect_name_nc":    3.0,
+    # NC-managed name collection (COLLECT_NAME*): 5 s gives callers enough
+    # time to collect their thoughts without long dead air.  Below 4 s the
+    # watchdog fires mid-sentence if the caller pauses briefly before their
+    # name.  W1 still uses the substate-aware scaffold prompt via connection.py.
+    "collect_name_nc":    5.0,
     "ask_day":            30.0,   # caller may check calendar / diary
     "ask_time":           28.0,
     "ask_reason":         32.0,   # describing symptoms takes time
