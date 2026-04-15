@@ -1801,7 +1801,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 5,
         "state": "PRESENT_DAYS_RESCHEDULE",
-        "question": "Just a moment while I check which days and times we have available for you...",
+        "question": "Just a moment while I check what's available...",
         "answer_field": "chosen_day",
         "use_llm": True,
         "allow_tools": True,
@@ -1812,11 +1812,13 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "do NOT present times, do NOT say anything else. "
             "The system will announce the available days automatically. "
             "Stop as soon as the tool call completes.\n"
-            "EXCEPTION — only speak if the tool returned an error:\n"
-            "  error='lead_time_limited': say 'Today looks quite full — "
-            "let me take your details and the team will call you to sort out a new time.'\n"
-            "  error='no_availability' or any other error: say 'I\\'m not seeing "
-            "clear availability at the moment — let me take your details and have the team call you back.'"
+            "ONLY speak if the tool returned an error:\n"
+            "  error='lead_time_limited': re-call check_availability once with the same "
+            "parameters. If still limited, say exactly: "
+            "'We\\'re a little limited right now — the team will call you to confirm a time.'\n"
+            "  error='no_availability' or any other error: say exactly: "
+            "'I\\'m not seeing clear availability right now — let me take your details "
+            "and the team will call you back.'"
         ),
     },
     {
@@ -1844,8 +1846,8 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
             "   2–3 times: 'On [day] I've got [t1] or [t2] — which suits you?'\n"
             "   1 time:  'The earliest I have on [day] is [t1] — does that work?'\n"
             "   Convert slot_times to natural spoken form: "
-            "'09:00' → 'nine o'clock', '14:30' → 'half past two'. "
-            "Add 'in the morning' / 'in the afternoon' where helpful. Never say AM/PM.\n"
+            "'09:00' → 'nine o'clock', '14:30' → 'half past two', '16:00' → 'four o'clock'. "
+            "Add 'in the morning' / 'in the afternoon' where helpful. Never say AM/PM or raw digits.\n"
             "2. If none of those times work — refer to other initially offered days: "
             "'Not to worry — what about [other day 1][, or [other day 2]]?'\n"
             "3. If all initial days rejected — present next 3 days from data (entries 4–6). "
@@ -3362,15 +3364,23 @@ class FlowEngine:
                     "back to the question", "back to name",
                 )
                 if any(p in text for p in _CP_NAME_BACK):
-                    # Determine which COLLECT_NAME state this flow uses
-                    _cn_target = (
-                        "COLLECT_NAME_RETURNING"
-                        if _repair_state == "CONFIRM_PHONE_RETURNING"
-                        else "COLLECT_NAME"
-                    )
+                    # Determine which COLLECT_NAME state this flow uses — must
+                    # search the active flow rather than hardcoding "COLLECT_NAME"
+                    # because RESCHEDULE_FLOW uses "COLLECT_NAME_RESCHEDULE" and
+                    # CANCEL_FLOW = RESCHEDULE_FLOW.
+                    _CN_NB_STATES = {
+                        "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                        "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                    }
                     _cn_idx = next(
-                        (i for i, s in enumerate(self._active_flow) if s["state"] == _cn_target),
+                        (i for i, s in enumerate(self._active_flow)
+                         if s["state"] in _CN_NB_STATES),
                         None,
+                    )
+                    _cn_target = (
+                        self._active_flow[_cn_idx]["state"]
+                        if _cn_idx is not None
+                        else "COLLECT_NAME"
                     )
                     if _cn_idx is not None:
                         self.session.pop("name_fragment", None)
