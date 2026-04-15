@@ -1718,6 +1718,15 @@ async def _lookup_appointment_acuity(
             min_date=now.date(), max_date=end, calendar_id=cal_id
         )
 
+        logger.info(
+            "_lookup_appointment_acuity: raw Acuity response — %d appointment(s) "
+            "(cal_id=%r, location=%r, date_range=%s..%s)",
+            len(appointments), cal_id, location,
+            now.date().isoformat(), end.isoformat(),
+        )
+
+        import difflib as _dl
+
         future_matches = []
         _near_match_used = False
         for appt in appointments:
@@ -1738,26 +1747,59 @@ async def _lookup_appointment_acuity(
             appt_phone_d = "".join(c for c in (appt.get("phone") or "") if c.isdigit())
 
             # Both first AND last name must match (substring, either direction)
-            name_match = (
-                bool(first_name) and bool(appt_first) and
-                (first_name in appt_first or appt_first in first_name)
-            ) and (
-                bool(last_name) and bool(appt_last) and
-                (last_name in appt_last or appt_last in last_name)
+            fn_sub = bool(first_name) and bool(appt_first) and (
+                first_name in appt_first or appt_first in first_name
+            )
+            ln_sub = bool(last_name) and bool(appt_last) and (
+                last_name in appt_last or appt_last in last_name
+            )
+            name_match = fn_sub and ln_sub
+
+            # ── FIX 1: phone gate must fire even when Acuity has NO phone stored.
+            # Previously, no-phone records bypassed the gate entirely on name alone,
+            # which let other patients' appointments into the candidate pool.
+            # Now: if the caller provided a phone, an Acuity record with no phone
+            # is treated as an uncertain match and rejected on the strict pass.
+            # (The near-match pass below uses a lower bar — see comment there.)
+            phone_ok_strict: bool
+            if appt_phone_d:
+                phone_ok_strict = bool(phone_digits) and (
+                    phone_digits[-10:] == appt_phone_d[-10:]
+                )
+            else:
+                # No phone in Acuity: reject on strict pass when caller gave a phone.
+                # This prevents name-only ghosts from polluting future_matches.
+                phone_ok_strict = not bool(phone_digits)
+
+            fn_ratio = _dl.SequenceMatcher(None, first_name, appt_first).ratio()
+            ln_ratio = _dl.SequenceMatcher(None, last_name,  appt_last).ratio()
+
+            logger.info(
+                "_lookup_appt STRICT candidate: id=%s dt=%s cal=%r "
+                "appt_name=%r %r appt_phone=%r | "
+                "fn_sub=%s ln_sub=%s name_match=%s | "
+                "caller_phone_last10=%s appt_phone_last10=%s phone_ok=%s | "
+                "fn_ratio=%.2f ln_ratio=%.2f | verdict=%s",
+                appt.get("id"), dt.strftime("%Y-%m-%d %H:%M"),
+                appt.get("calendar", appt.get("calendarID", "?")),
+                appt.get("firstName"), appt.get("lastName"),
+                appt.get("phone", "(none)"),
+                fn_sub, ln_sub, name_match,
+                phone_digits[-10:] if phone_digits else "(none)",
+                appt_phone_d[-10:] if appt_phone_d else "(none)",
+                phone_ok_strict,
+                fn_ratio, ln_ratio,
+                "ACCEPTED" if (name_match and phone_ok_strict) else "rejected",
             )
 
             if not name_match:
                 continue
-
-            # Strict phone gate: if Acuity has a phone on record it MUST match last 10 digits
-            if appt_phone_d:
-                if not (phone_digits and phone_digits[-10:] == appt_phone_d[-10:]):
-                    continue   # name matched but phone didn't — reject
+            if not phone_ok_strict:
+                continue
 
             future_matches.append((dt, appt))
 
         if not future_matches:
-            import difflib as _dl
             _near: list = []
             for appt in appointments:
                 dt_str = appt.get("datetime", "")
@@ -1774,13 +1816,41 @@ async def _lookup_appointment_acuity(
                 appt_first   = (appt.get("firstName") or "").strip().lower()
                 appt_last    = (appt.get("lastName")  or "").strip().lower()
                 appt_phone_d = "".join(c for c in (appt.get("phone") or "") if c.isdigit())
-                # Phone must still match exactly on near-match pass
-                if appt_phone_d and not (phone_digits and phone_digits[-10:] == appt_phone_d[-10:]):
-                    continue
+
+                # Near-match phone gate: same strict check on phone when Acuity
+                # has one stored; if Acuity has no phone, only allow if the caller
+                # ALSO provided no phone (prevents name-only ghosts here too).
+                if appt_phone_d:
+                    phone_ok_near = bool(phone_digits) and (
+                        phone_digits[-10:] == appt_phone_d[-10:]
+                    )
+                else:
+                    phone_ok_near = not bool(phone_digits)
+
                 fn_ratio = _dl.SequenceMatcher(None, first_name, appt_first).ratio()
                 ln_ratio = _dl.SequenceMatcher(None, last_name,  appt_last).ratio()
+                combined  = fn_ratio + ln_ratio   # used for ranking (FIX 2)
+
+                logger.info(
+                    "_lookup_appt NEAR candidate: id=%s dt=%s cal=%r "
+                    "appt_name=%r %r appt_phone=%r | "
+                    "fn_ratio=%.2f ln_ratio=%.2f combined=%.2f | "
+                    "phone_ok=%s | verdict=%s",
+                    appt.get("id"), dt.strftime("%Y-%m-%d %H:%M"),
+                    appt.get("calendar", appt.get("calendarID", "?")),
+                    appt.get("firstName"), appt.get("lastName"),
+                    appt.get("phone", "(none)"),
+                    fn_ratio, ln_ratio, combined,
+                    phone_ok_near,
+                    "ACCEPTED" if (fn_ratio >= 0.65 and ln_ratio >= 0.65 and phone_ok_near)
+                    else "rejected",
+                )
+
+                if not phone_ok_near:
+                    continue
                 if fn_ratio >= 0.65 and ln_ratio >= 0.65:
-                    _near.append((dt, appt))
+                    # FIX 2: store combined score alongside (dt, appt) for ranking
+                    _near.append((combined, dt, appt))
 
             if not _near:
                 logger.info(
@@ -1791,13 +1861,13 @@ async def _lookup_appointment_acuity(
                 return {"found": False, "error": "No future appointment found under those details."}
 
             if len(_near) >= 2:
-                _near.sort(key=lambda x: x[0])
+                _near.sort(key=lambda x: (-x[0], x[1]))  # FIX 2: best score first, nearest date as tiebreaker
                 # Pick the nearest future appointment as the best candidate and
                 # commit it to session NOW — same path as the single-match case.
                 # This ensures rc_stage is set to "lookup_done" so the
                 # deterministic YES gate in handle_transcript fires on the
                 # caller's confirmation instead of re-running lookup.
-                best_dt, best_appt = _near[0]
+                _combined, best_dt, best_appt = _near[0]
                 raw_type_id = best_appt.get("typeID")
                 if raw_type_id:
                     session["reschedule_original_type_id"] = f"acuity_{raw_type_id}"
@@ -1815,7 +1885,7 @@ async def _lookup_appointment_acuity(
                         "time_label": d.strftime("%H:%M"),
                         "type":       a.get("type", "appointment"),
                     }
-                    for d, a in _near[1:3]
+                    for _, d, a in _near[1:3]
                 ]
                 session["reschedule_appt_alternatives"] = _alts
                 day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
@@ -1836,8 +1906,8 @@ async def _lookup_appointment_acuity(
                     "near_match":       True,
                 }
 
-            # Exactly one near-match
-            future_matches = _near
+            # Exactly one near-match — convert back to (dt, appt) 2-tuples
+            future_matches = [(dt, appt) for _, dt, appt in _near]
             _near_match_used = True
             logger.info(
                 "_lookup_appointment_acuity: near-match found for %r %r", first_name, last_name
