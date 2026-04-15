@@ -5226,7 +5226,13 @@ class FlowEngine:
         # getting a nonsensical LLM response ("my name is Susie").
         _stored_name = self.session.get("full_name", "")
         if _stored_name:
-            if self.session.get("_name_correction_just_applied"):
+            # PART 4: block global name correction entirely during lookup states.
+            # "under what name was that" must NEVER overwrite full_name to "That".
+            # Lookup states have their own deterministic meta-question intercept below.
+            _nc_current_state = step["state"] if step else ""
+            if _nc_current_state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+                pass  # skip all name correction logic in lookup states — handled deterministically
+            elif self.session.get("_name_correction_just_applied"):
                 # One-turn cooldown — clear flag and treat fragment as confirmation
                 self.session["_name_correction_just_applied"] = False
                 logger.info("[ms_flow] name correction cooldown — ignoring fragment %r", transcript[:40])
@@ -9165,6 +9171,87 @@ class FlowEngine:
         # _extract("none") returns True which would silently advance to the next step
         # without the LLM ever calling confirm_appointment_found.
         if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            # ── PART 2: deterministic disambiguation for ambiguous STRONG candidates ──
+            # Fires when tool returned ambiguous=True (two tied STRONG matches) and
+            # stored lookup_candidates in session without setting rc_stage.
+            # Try to bind the caller's utterance to one specific candidate.
+            import re as _re_lu
+            _lu_cands = self.session.get("lookup_candidates", [])
+            if _lu_cands and not self.session.get("rc_stage"):
+                _lc_bind = text.strip().lower()
+                _lu_ordinals = ("first", "second", "third")
+                _bound_cand = None
+                for _idx, _cand in enumerate(_lu_cands):
+                    # Ordinal: "the first one", "the second"
+                    if _idx < len(_lu_ordinals) and _lu_ordinals[_idx] in _lc_bind:
+                        _bound_cand = _cand
+                        break
+                    # Month name: "the May one", "the April one"
+                    try:
+                        _cdt = datetime.fromisoformat(_cand["datetime"].replace("Z", "+00:00"))
+                        _c_month = _cdt.strftime("%B").lower()
+                        _c_day   = _cdt.day
+                        _c_h24   = _cdt.hour
+                        _c_h12   = _c_h24 if _c_h24 <= 12 else _c_h24 - 12
+                        _c_tl    = _cand.get("time_label", "")
+                    except Exception:
+                        continue
+                    if _c_month and _c_month in _lc_bind:
+                        _bound_cand = _cand
+                        break
+                    # Day number with word boundary: "the 6th", "22nd"
+                    if _re_lu.search(rf'\b{_c_day}\b', _lc_bind):
+                        _bound_cand = _cand
+                        break
+                    # Time label direct or 12h with am/pm
+                    if _c_tl and _c_tl in _lc_bind:
+                        _bound_cand = _cand
+                        break
+                    if _re_lu.search(rf'\b{_c_h12}\s*(?:am|pm|o\'?clock)\b', _lc_bind):
+                        _bound_cand = _cand
+                        break
+
+                if _bound_cand:
+                    # Commit the chosen candidate to session
+                    self.session["reschedule_appt_id"]       = _bound_cand["id"]
+                    self.session["reschedule_appt_datetime"]  = _bound_cand["datetime"]
+                    self.session["reschedule_appt_type"]      = _bound_cand.get("type", "appointment")
+                    self.session["lookup_appt_first_name"]    = _bound_cand.get("first_name", "")
+                    self.session["lookup_appt_last_name"]     = _bound_cand.get("last_name", "")
+                    self.session["rc_stage"] = "lookup_done"
+                    # Remaining candidates become alternatives for NO-path advancement
+                    _leftover = [c for c in _lu_cands if c["id"] != _bound_cand["id"]]
+                    if _leftover:
+                        self.session["reschedule_appt_alternatives"] = _leftover
+                    self.session.pop("lookup_candidates", None)
+                    _confirm_q = (
+                        f"Got it — I found your appointment on {_bound_cand['day_label']} "
+                        f"at {_bound_cand['time_label']}. Is that the one?"
+                    )
+                    await self._tts.put(_confirm_q)
+                    self.session["last_question"] = _confirm_q
+                    logger.info(
+                        "[ms_flow] LOOKUP disambiguation: bound to candidate id=%s from %r",
+                        _bound_cand["id"], text[:60],
+                    )
+                    return
+                else:
+                    # Can't resolve from utterance — re-ask the disambiguation question
+                    if len(_lu_cands) >= 2:
+                        _dc0, _dc1 = _lu_cands[0], _lu_cands[1]
+                        _disambig_q = (
+                            f"I found two appointments that could be yours — "
+                            f"was it {_dc0['day_label']} at {_dc0['time_label']}, "
+                            f"or {_dc1['day_label']} at {_dc1['time_label']}?"
+                        )
+                        await self._tts.put(_disambig_q)
+                        self.session["last_question"] = _disambig_q
+                        logger.info(
+                            "[ms_flow] LOOKUP disambiguation: re-asking — could not bind from %r",
+                            text[:60],
+                        )
+                    return
+
             # Deterministic name correction pre-check — runs before LLM re-fire.
             # Active only when lookup_correction_mode is set (i.e. a previous lookup failed).
             if self.session.get("lookup_correction_mode"):
@@ -9234,6 +9321,44 @@ class FlowEngine:
             # and repeating the "I'm looking for your appointment now" status line).
             if self.session.get("rc_stage") == "lookup_done":
                 _lc_t = text.strip().lower()
+
+                # ── PART 4: intercept lookup meta-questions before YES/NO or name edit ──
+                # "under what name was that", "what name do you have", "what date was that"
+                # must NEVER trigger name-correction or loop the LLM — answer from session.
+                _LOOKUP_META = (
+                    "under what name", "what name", "which name", "what's the name",
+                    "name was that", "name was it", "name is that",
+                    "what date was", "what time was", "which appointment",
+                    "which one do you mean", "what appointment",
+                )
+                if any(p in _lc_t for p in _LOOKUP_META):
+                    _lm_first = self.session.get("lookup_appt_first_name", "")
+                    _lm_last  = self.session.get("lookup_appt_last_name", "")
+                    _lm_cands = self.session.get("lookup_candidates", [])
+                    if _lm_cands:
+                        _nm_parts = " and one under ".join(
+                            f"{c.get('first_name','')} {c.get('last_name','')}".strip()
+                            for c in _lm_cands[:2]
+                        )
+                        _meta_resp = (
+                            f"I've found two possible appointments — one under {_nm_parts}. "
+                            "Which one did you mean?"
+                        )
+                    elif _lm_first or _lm_last:
+                        _meta_resp = f"I've got it under {_lm_first} {_lm_last}.".strip() + "."
+                    else:
+                        _meta_resp = (
+                            "Let me check — could you confirm the name "
+                            "the appointment was booked under?"
+                        )
+                    logger.info(
+                        "[ms_flow] LOOKUP meta-question intercepted — answering from session: %r",
+                        text[:60],
+                    )
+                    await self._tts.put(_meta_resp)
+                    self.session["last_question"] = _meta_resp
+                    return
+
                 _LU_YES = (
                     "yes", "yeah", "yep", "yup", "correct", "that's right",
                     "thats right", "that's correct", "thats correct",
@@ -9270,7 +9395,59 @@ class FlowEngine:
                     self.session["question_asked_this_turn"] = False
                     await self.ask_current_question()
                     return
-                # NO or ambiguous — fall through to LLM (handles alternatives / transfer)
+
+                # ── PART 3: deterministic NO handling — advance to next candidate ──
+                # "no that's the wrong appointment" / "no it's a different one"
+                # must NOT loop the same candidate.  Mark it rejected and advance.
+                if _is_lu_no and not _is_lu_yes:
+                    _rej_id = self.session.get("reschedule_appt_id", "")
+                    _rej_list = self.session.setdefault("lookup_rejected_ids", [])
+                    if _rej_id and _rej_id not in _rej_list:
+                        _rej_list.append(_rej_id)
+                        self.session["lookup_rejected_ids"] = _rej_list
+                    # Clear current binding so we don't stay on the rejected candidate
+                    self.session.pop("rc_stage", None)
+                    logger.info(
+                        "[ms_flow] LOOKUP: candidate %r rejected by caller — advancing",
+                        _rej_id,
+                    )
+                    # Find next non-rejected candidate from stored alternatives
+                    _next_alts = [
+                        a for a in self.session.get("reschedule_appt_alternatives", [])
+                        if a.get("id") not in _rej_list
+                    ]
+                    if _next_alts:
+                        _nxt = _next_alts[0]
+                        self.session["reschedule_appt_id"]       = _nxt["id"]
+                        self.session["reschedule_appt_datetime"]  = _nxt["datetime"]
+                        self.session["reschedule_appt_type"]      = _nxt.get("type", "appointment")
+                        self.session["lookup_appt_first_name"]    = _nxt.get("first_name", "")
+                        self.session["lookup_appt_last_name"]     = _nxt.get("last_name", "")
+                        self.session["rc_stage"] = "lookup_done"
+                        # Remaining become the new alternatives list
+                        self.session["reschedule_appt_alternatives"] = _next_alts[1:]
+                        _nxt_q = (
+                            f"Let me try the other one — "
+                            f"was it {_nxt['day_label']} at {_nxt['time_label']}?"
+                        )
+                        await self._tts.put(_nxt_q)
+                        self.session["last_question"] = _nxt_q
+                        logger.info(
+                            "[ms_flow] LOOKUP: advanced to next candidate id=%s", _nxt["id"]
+                        )
+                    else:
+                        # No more candidates — enter name correction mode so caller
+                        # can provide a corrected name/phone for a fresh lookup
+                        _no_more_q = (
+                            "I'm sorry — I can't find another appointment matching those details. "
+                            "Could you tell me the name and number the booking was made under?"
+                        )
+                        self.session["lookup_correction_mode"] = True
+                        await self._tts.put(_no_more_q)
+                        self.session["last_question"] = _no_more_q
+                        logger.info("[ms_flow] LOOKUP: no more candidates — entering correction mode")
+                    return
+                # Ambiguous YES/NO — fall through to LLM
 
             # BUG 4: caller may abandon reschedule/cancel and ask to book new instead.
             # Intercept positive booking intent BEFORE re-firing LLM so the call

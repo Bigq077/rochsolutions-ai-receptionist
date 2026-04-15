@@ -1860,13 +1860,108 @@ async def _lookup_appointment_acuity(
                 session["rc_lookup_failed"] = True
                 return {"found": False, "error": "No future appointment found under those details."}
 
+            # ── PART 1: STRONG candidate tier ────────────────────────────────────
+            # When phone is exact AND first name is very strong (≥0.90) AND surname
+            # is close enough for STT/spelling drift (≥0.70), treat as STRONG.
+            # This catches Rock/Rook/Roch variants with exact phone + exact first name
+            # without broadly loosening matching for everyone.
+            _strong_list: list = []
+            for _sc, _sdt, _sappt in _near:
+                _sf = (_sappt.get("firstName") or "").strip().lower()
+                _sl = (_sappt.get("lastName")  or "").strip().lower()
+                _sfn = _dl.SequenceMatcher(None, first_name, _sf).ratio()
+                _sln = _dl.SequenceMatcher(None, last_name,  _sl).ratio()
+                if _sfn >= 0.90 and _sln >= 0.70:
+                    _strong_list.append((_sc, _sfn, _sln, _sdt, _sappt))
+                    logger.info(
+                        "_lookup_appt STRONG candidate: id=%s dt=%s fn_ratio=%.2f ln_ratio=%.2f "
+                        "combined=%.2f — qualifies for strong tier",
+                        _sappt.get("id"), _sdt.strftime("%Y-%m-%d %H:%M"), _sfn, _sln, _sc,
+                    )
+
+            if _strong_list:
+                _strong_list.sort(key=lambda x: (-x[0], x[3]))  # combined desc, nearest date as tiebreaker
+                _top_score = _strong_list[0][0]
+                _sec_score = _strong_list[1][0] if len(_strong_list) >= 2 else -1.0
+
+                if len(_strong_list) >= 2 and (_top_score - _sec_score) < 0.05:
+                    # ── Genuinely tied STRONG candidates: preserve ambiguity ────
+                    # Do NOT commit a "best" guess — return structured ambiguity so
+                    # the flow can ask a deterministic disambiguation question.
+                    _cands = [
+                        {
+                            "id":         str(a["id"]),
+                            "datetime":   d.isoformat(),
+                            "day_label":  f"{d.strftime('%A')} {_ordinal(d.day)} {d.strftime('%B')}",
+                            "time_label": d.strftime("%H:%M"),
+                            "first_name": a.get("firstName", ""),
+                            "last_name":  a.get("lastName", ""),
+                            "type":       a.get("type", "appointment"),
+                        }
+                        for _, _, _, d, a in _strong_list[:3]
+                    ]
+                    session["lookup_candidates"] = _cands
+                    session.pop("rc_stage", None)
+                    session.pop("rc_lookup_failed", None)
+                    logger.info(
+                        "_lookup_appointment_acuity: STRONG ambiguous — %d tied candidates "
+                        "(scores %.2f / %.2f) — returning ambiguous for deterministic disambiguation",
+                        len(_cands), _top_score, _sec_score,
+                    )
+                    return {
+                        "found":             True,
+                        "ambiguous":         True,
+                        "lookup_candidates": _cands,
+                        "near_match":        True,
+                    }
+                else:
+                    # ── Single clear STRONG winner ────────────────────────────────
+                    _, _, _, best_dt, best_appt = _strong_list[0]
+                    raw_type_id = best_appt.get("typeID")
+                    if raw_type_id:
+                        session["reschedule_original_type_id"] = f"acuity_{raw_type_id}"
+                    session["reschedule_appt_id"]       = str(best_appt["id"])
+                    session["reschedule_appt_datetime"] = best_dt.isoformat()
+                    session["reschedule_appt_type"]     = best_appt.get("type", "appointment")
+                    session["lookup_appt_first_name"]   = best_appt.get("firstName", "")
+                    session["lookup_appt_last_name"]    = best_appt.get("lastName", "")
+                    session["rc_stage"]                 = "lookup_done"
+                    session.pop("rc_appointment_confirmed", None)
+                    session.pop("rc_lookup_failed", None)
+                    _alts = [
+                        {
+                            "id":         str(a["id"]),
+                            "datetime":   d.isoformat(),
+                            "day_label":  f"{d.strftime('%A')} {_ordinal(d.day)} {d.strftime('%B')}",
+                            "time_label": d.strftime("%H:%M"),
+                            "first_name": a.get("firstName", ""),
+                            "last_name":  a.get("lastName", ""),
+                            "type":       a.get("type", "appointment"),
+                        }
+                        for _, _, _, d, a in _strong_list[1:3]
+                    ]
+                    if _alts:
+                        session["reschedule_appt_alternatives"] = _alts
+                    _day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
+                    _time_label = best_dt.strftime("%H:%M")
+                    logger.info(
+                        "_lookup_appointment_acuity: STRONG single winner — id=%s at %s",
+                        best_appt["id"], best_dt.isoformat(),
+                    )
+                    return {
+                        "found":            True,
+                        "appointment_id":   str(best_appt["id"]),
+                        "day_label":        _day_label,
+                        "time_label":       _time_label,
+                        "appointment_type": best_appt.get("type", "appointment"),
+                        "multiple_found":   False,
+                        "alternatives":     _alts,
+                        "near_match":       True,
+                    }
+
+            # No STRONG candidates — fall through to existing near-multi/single logic
             if len(_near) >= 2:
-                _near.sort(key=lambda x: (-x[0], x[1]))  # FIX 2: best score first, nearest date as tiebreaker
-                # Pick the nearest future appointment as the best candidate and
-                # commit it to session NOW — same path as the single-match case.
-                # This ensures rc_stage is set to "lookup_done" so the
-                # deterministic YES gate in handle_transcript fires on the
-                # caller's confirmation instead of re-running lookup.
+                _near.sort(key=lambda x: (-x[0], x[1]))  # best score first, nearest date as tiebreaker
                 _combined, best_dt, best_appt = _near[0]
                 raw_type_id = best_appt.get("typeID")
                 if raw_type_id:
@@ -1874,6 +1969,8 @@ async def _lookup_appointment_acuity(
                 session["reschedule_appt_id"]       = str(best_appt["id"])
                 session["reschedule_appt_datetime"] = best_dt.isoformat()
                 session["reschedule_appt_type"]     = best_appt.get("type", "appointment")
+                session["lookup_appt_first_name"]   = best_appt.get("firstName", "")
+                session["lookup_appt_last_name"]    = best_appt.get("lastName", "")
                 session["rc_stage"]                 = "lookup_done"
                 session.pop("rc_appointment_confirmed", None)
                 session.pop("rc_lookup_failed", None)
@@ -1883,6 +1980,8 @@ async def _lookup_appointment_acuity(
                         "datetime":   d.isoformat(),
                         "day_label":  f"{d.strftime('%A')} {_ordinal(d.day)} {d.strftime('%B')}",
                         "time_label": d.strftime("%H:%M"),
+                        "first_name": a.get("firstName", ""),
+                        "last_name":  a.get("lastName", ""),
                         "type":       a.get("type", "appointment"),
                     }
                     for _, d, a in _near[1:3]
@@ -1926,6 +2025,8 @@ async def _lookup_appointment_acuity(
         session["reschedule_appt_id"]       = str(best_appt["id"])
         session["reschedule_appt_datetime"] = best_dt.isoformat()
         session["reschedule_appt_type"]     = best_appt.get("type", "appointment")
+        session["lookup_appt_first_name"]   = best_appt.get("firstName", "")
+        session["lookup_appt_last_name"]    = best_appt.get("lastName", "")
         session["rc_stage"]                 = "lookup_done"
         # Clear any leftover confirmed/failure flags from a previous lookup in this session
         session.pop("rc_appointment_confirmed", None)
@@ -1942,6 +2043,8 @@ async def _lookup_appointment_acuity(
                 "datetime":   alt_dt.isoformat(),
                 "day_label":  f"{alt_dt.strftime('%A')} {_ordinal(alt_dt.day)} {alt_dt.strftime('%B')}",
                 "time_label": alt_dt.strftime("%H:%M"),
+                "first_name": alt_appt.get("firstName", ""),
+                "last_name":  alt_appt.get("lastName", ""),
                 "type":       alt_appt.get("type", "appointment"),
             })
         if alternatives:
