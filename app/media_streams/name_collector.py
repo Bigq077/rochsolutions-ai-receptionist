@@ -906,10 +906,9 @@ class NameCollector:
             token = _extract_leading_token(cleaned_for_salvage, _triggers)
             if token and _is_valid_name_token(token):
                 return self._enter_sn_confirm(token)
-            # Pure meta or spelling offer with no leading name — re-ask
-            return self._sn_fail(
-                "Sorry, I didn't catch that — could you say your surname again?"
-            )
+            # Pure meta or spelling offer with no leading name — re-ask WITHOUT
+            # inflating sn_retries (may be TTS self-echo; treat as no-op).
+            return ("ask", "Sorry, I didn't catch that — could you say your surname again?")
 
         cleaned = _strip_filler_prefix(text)
         tokens = _tokenise(cleaned)
@@ -1164,9 +1163,15 @@ class NameCollector:
         """
         Increment surname retry counter.
 
-        One retry only: on the very first genuine failure (sn_retries == 1)
-        escalate immediately to NC_SN_REASK so the next turn runs _sn_reask(),
-        which routes to sn_confirm if a token is found, or sn_spelling if not.
+        Two genuine failures required before escalating (sn_retries >= 2) so
+        that a single TTS self-echo or STT glitch does not immediately corrupt
+        the substate.  On escalation, transitions to NC_SN_REASK so the next
+        turn runs _sn_reask(), which routes to sn_confirm if a token is found,
+        or sn_spelling if not.
+
+        Pure meta-language / no-token paths in _sn_normal return a plain re-ask
+        directly and MUST NOT call _sn_fail — they do not represent a real
+        extraction failure and must not inflate sn_retries.
 
         Scaffold fragments ("my surname is", "it's", "my") are handled upstream
         in _sn_normal and never reach here.
@@ -1174,7 +1179,7 @@ class NameCollector:
         self._nc["sn_retries"] = self._nc.get("sn_retries", 0) + 1
         retries = self._nc["sn_retries"]
         logger.info("[NameCollector] sn_fail: retry #%d", retries)
-        if retries >= 1:
+        if retries >= 2:
             self._nc["substate"] = NC_SN_REASK
             logger.info("[NameCollector] sn_fail: escalating to NC_SN_REASK after %d retries", retries)
             return ("ask", "Sorry, I didn't quite catch that — please say: my surname is...")
