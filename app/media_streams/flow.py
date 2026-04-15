@@ -4482,6 +4482,9 @@ class FlowEngine:
                 "use this number", "yes use this number",
                 "use my number", "yes use my number",
                 "same number", "use my current number",
+                # PART 2: additional strong affirmatives from live calls
+                "correct number",        # "correct number" / "yes correct number"
+                "yes please", "yeah please",
                 # Partial / scaffold-like affirmatives where STT finalises before
                 # the caller finishes the sentence — treat as YES immediately.
                 "you can use this", "can use this", "use this",
@@ -4511,6 +4514,7 @@ class FlowEngine:
             _SEMANTIC_YES_PHRASES = (
                 "that's the best number", "thats the best number",
                 "that's the right number", "thats the right number",
+                "that is the right number",              # PART 2: "that is" vs "that's"
                 "this is the best number", "this is the right number",
                 "that's the one", "thats the one",
                 "you can use this one", "you can use this number",
@@ -4529,37 +4533,57 @@ class FlowEngine:
                 self.session["phone_confirm_armed"]    = False  # disarm — gate consumed
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = True
-                # Commit confirmed phone to collected — deferred from capture time
+                # Commit confirmed phone to collected — deferred from capture time.
+                # PART 1 FIX: include twilio_from_local / twilio_from so that
+                # "yes" when the number came from Twilio caller-ID resolves correctly
+                # and never bounces through COLLECT_PHONE before skipping it again.
                 _cp_confirmed = (
                     self.session.get("phone_candidate")
                     or self.session.get("phone_number")
                     or self.session.get("phone")
+                    or self.session.get("twilio_from_local")
+                    or self.session.get("twilio_from")
+                )
+                _cp_source = (
+                    "phone_candidate" if self.session.get("phone_candidate") else
+                    "phone_number"    if self.session.get("phone_number")    else
+                    "phone"           if self.session.get("phone")           else
+                    "twilio_from_local" if self.session.get("twilio_from_local") else
+                    "twilio_from"       if self.session.get("twilio_from")       else
+                    "none"
                 )
                 if _cp_confirmed:
                     self.session.setdefault("collected", {})["phone"] = _cp_confirmed
                 self.session.pop("phone_candidate", None)
                 if self._active_flow is RESCHEDULE_FLOW:
                     if not _cp_confirmed:
-                        # Phone still missing — collect before lookup (phone is required by Acuity)
+                        # Truly no phone anywhere — collect before lookup
                         self.session["flow_step"]  = _RESCHEDULE_COLLECT_PHONE_INDEX
                         self.session["state"]      = "COLLECT_PHONE_RESCHEDULE"
                         self.session["flow_state"] = "COLLECT_PHONE_RESCHEDULE"
                         logger.warning(
-                            "[ms_flow] CONFIRM_PHONE yes but no phone resolved — routing to COLLECT_PHONE_RESCHEDULE"
+                            "[ms_flow] CONFIRM_PHONE yes but truly no phone resolved "
+                            "(source=none) — routing to COLLECT_PHONE_RESCHEDULE"
                         )
                     else:
                         self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
                         self.session["state"]      = "LOOKUP_RESCHEDULE"
                         self.session["flow_state"] = "LOOKUP_RESCHEDULE"
+                        logger.info(
+                            "[ms_flow] CONFIRM_PHONE yes + resolved phone (source=%s) "
+                            "→ LOOKUP_RESCHEDULE directly",
+                            _cp_source,
+                        )
                 else:
                     self.session["state"]      = "CONFIRM_BOOKING"
                     self.session["flow_state"] = "CONFIRM_BOOKING"
                     self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
                 logger.info(
-                    "[ms_flow] HARD GATE CONFIRM_PHONE: %s → %s phone=...%s",
+                    "[ms_flow] HARD GATE CONFIRM_PHONE: %s → %s phone=...%s (src=%s)",
                     "semantic_yes" if _semantic_yes and not _hg_yes else "explicit_yes",
                     self.session.get("state"),
-                    (self.session.get("phone_number") or self.session.get("phone") or "")[-4:],
+                    (_cp_confirmed or "")[-4:],
+                    _cp_source,
                 )
                 self.session["_last_handled_by"]   = "confirm_phone_yes"
                 self.session["_last_yes_detected"] = True
@@ -4601,14 +4625,8 @@ class FlowEngine:
                 self.session["_last_handled_by"]   = "confirm_phone_no"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = True
-                # BUG 8 fix: reschedule/cancel context — anchor to booking number explicitly
-                if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
-                    _bridge = (
-                        "No problem — please type the number your booking was made under "
-                        "on your keypad now."
-                    )
-                else:
-                    _bridge = "No problem — please type the best number to reach you on using your keypad now."
+                # PART 3: unified keypad bridge — clear, direct, no "best number to reach you on"
+                _bridge = "No problem — please type the correct number using your keypad."
                 await self._tts.put(_bridge)
                 self.session["last_question"] = _bridge
                 self.session.setdefault("conversation_history", []).append(
