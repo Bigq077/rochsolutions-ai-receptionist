@@ -49,8 +49,7 @@ logger = logging.getLogger(__name__)
 _FAQ_SERVICES_FAST = (
     "We mainly offer physiotherapy assessments and follow-ups, plus services like "
     "acupuncture, shockwave and laser therapy. "
-    "Was there one in particular you wanted to ask about, "
-    "or do you want me to give you the full list of services we offer?"
+    "If you'd like details on any of those, just ask."
 )
 _FAQ_SERVICES_FULL = (
     "Our full range of services includes: physiotherapy assessments and follow-up appointments, "
@@ -9140,9 +9139,9 @@ class FlowEngine:
                     _last_faq_intent_corr, _corr_clinic, _last_sub,
                 )
                 await self._handle_mid_flow_interrupt(_last_faq_intent_corr, _synth_tx)
-                _fbo_corr_ans = self.session.get("last_faq_answer")
-                if _fbo_corr_ans:
-                    self.session["last_question"] = _fbo_corr_ans
+                # last_question already updated inside _handle_mid_flow_interrupt for
+                # offer states (Fix C). Explicit overwrite here for defence-in-depth.
+                self.session["last_question"] = "Anything else you'd like to ask?"
                 return
 
             _fbo_intent = self._detect_intent(text)
@@ -9172,10 +9171,11 @@ class FlowEngine:
                     _fbo_intent, _fbo_count + 1,
                 )
                 await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
-                # Update last_question so silence/repeat replays the latest answer
-                _fbo_last_ans = self.session.get("last_faq_answer")
-                if _fbo_last_ans:
-                    self.session["last_question"] = _fbo_last_ans
+                # Store a fresh neutral follow-up — not the answer body.
+                # Storing the answer in last_question would cause the silence handler
+                # to re-read the full FAQ answer aloud on the next silence event,
+                # and the NEXT turn's re-anchor would replay it as stale content.
+                self.session["last_question"] = "Anything else you'd like to ask?"
                 return
 
             # Reset follow-up count on any non-FAQ answer
@@ -9231,9 +9231,7 @@ class FlowEngine:
                 "faq_location", "faq_insurance", "faq_capability",
             }:
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
-                _gbo_last_ans = self.session.get("last_faq_answer")
-                if _gbo_last_ans:
-                    self.session["last_question"] = _gbo_last_ans
+                self.session["last_question"] = "Anything else you'd like to ask?"
                 return
             # general_query only fires for genuine questions (contains a question signal).
             # Without a signal, "okay" / "okay that's fine" etc. reach here and must not
@@ -9245,9 +9243,7 @@ class FlowEngine:
             )
             if _gbo_intent == "general_query" and any(s in text for s in _GBO_QUESTION_SIGNALS):
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
-                _gbo_last_ans = self.session.get("last_faq_answer")
-                if _gbo_last_ans:
-                    self.session["last_question"] = _gbo_last_ans
+                self.session["last_question"] = "Anything else you'd like to ask?"
                 return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
@@ -11481,12 +11477,14 @@ class FlowEngine:
             ):
                 _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
             elif _int_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
-                # These states sit after an FAQ answer; the caller responds freely.
-                # Normally no explicit re-anchor is needed — the FAQ answer ends
-                # naturally and the silence handler will re-ask if needed.
-                # Exception: if the FAQ answer itself was empty (LLM failed), we
-                # must still produce something or the turn is completely silent.
-                _int_anchor = self.session.get("last_question", "") or "Would you like to go ahead and book?"
+                # Multi-question FAQ floor: always use a fresh neutral follow-up.
+                # Do NOT read last_question here — it may contain an old FAQ answer
+                # body or a stale entry prompt from a prior turn, which would be
+                # re-spoken as the re-anchor and break conversation coherence.
+                # (The mid-flow interrupt path returns at line ~9070, bypassing the
+                # last_question update in the FAQ_BOOKING_OFFER handler, so the only
+                # reliable way to break the stale-anchor chain is here.)
+                _int_anchor = "Anything else you'd like to ask?"
             else:
                 _int_anchor = self.session.get("last_question", "")
 
@@ -11535,6 +11533,14 @@ class FlowEngine:
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _anchor_spoken}
             )
+            # For FAQ offer states, immediately write the fresh neutral follow-up
+            # into last_question.  The mid-flow interrupt path returns at ~line 9070
+            # without passing through the FAQ_BOOKING_OFFER handler's last_question
+            # update (lines ~9176-9178), so this is the only reliable place to
+            # ensure the silence handler re-asks "Anything else?" rather than
+            # replaying stale answer text from a prior FAQ turn.
+            if _int_state in _offer_states:
+                self.session["last_question"] = _anchor_spoken
             logger.info(
                 "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
                 _int_state, _anchor_spoken[:80],
