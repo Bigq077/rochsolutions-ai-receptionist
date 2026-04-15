@@ -3612,7 +3612,19 @@ class FlowEngine:
             "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
             "LOOKUP_RESCHEDULE", "LOOKUP_CANCEL",
         }
-        _is_frag_bypass_state = step is not None and step["state"] in _FRAG_BYPASS_STATES
+        # ASK_LOCATION fix: when the caller is answering a clinic-selection question
+        # ("Alcester", "Redditch", "red", "al") the fragment suppression must never
+        # fire regardless of which flow is active.  Without this, BOOKING_FLOW at
+        # ASK_LOCATION suppresses short clinic names because step["state"] =
+        # "COLLECT_REASON" is not in _NAME_COLLECTION_STATES — the scoring/forced-
+        # confirm/DTMF cascade never fires and the call goes silent.
+        # RESCHEDULE_FLOW is already immune (step["state"] = "COLLECT_NAME_RESCHEDULE"
+        # is in _NAME_COLLECTION_STATES), but this makes the bypass explicit and
+        # symmetric for both flows.
+        _is_frag_bypass_state = (
+            (step is not None and step["state"] in _FRAG_BYPASS_STATES)
+            or bool(self.session.get("needs_location"))
+        )
         # If a partial reason is pending (COLLECT_REASON completeness gate stored it),
         # the very next utterance — however short — must reach the join block at
         # COLLECT_REASON so it can be merged before suppression runs.
