@@ -3815,6 +3815,37 @@ class FlowEngine:
                     self.session["last_question"] = _dtmf_re
                 return
 
+            # ── Non-location corrective escape ────────────────────────────────
+            # "I said I had a few questions first" / "I was asking about parking"
+            # arriving inside the ASK_LOCATION block — caller is correcting the
+            # routing, not giving a location answer.  Route to general_query and
+            # clear the location gate so the flow doesn't circle back.
+            _LOC_NON_LOCATION_ESCAPE = (
+                "a few questions",
+                "few questions",
+                "some questions",
+                "questions first",
+                "questions before",
+                "had a question",
+                "have a question",
+                "just had a question",
+                "just have a question",
+                "i was asking about",
+                "i'm asking about",
+                "im asking about",
+            )
+            if any(p in text for p in _LOC_NON_LOCATION_ESCAPE):
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: non-location escape %r → general_query",
+                    text[:60],
+                )
+                self.session.pop("location_retry_count", None)
+                self.session.pop("location_pending_guess", None)
+                self.session["needs_location"] = False
+                self._switch_flow("general_query")
+                await self.ask_current_question()
+                return
+
             # ── FAQ-first gate: detect question intent BEFORE extracting location ──
             # "is there parking at alcester?" / "first is there any parking at your
             # alcester clinic" → must answer the FAQ, NOT extract "alcester" and advance.
@@ -3906,6 +3937,27 @@ class FlowEngine:
                     or _fc_first in ("re", "r")
                 )
                 _pending = "redditch" if _has_red_open else "alcester"
+                # ── Location-like guard ───────────────────────────────────────
+                # Only use forced-confirm when the opening token looks like it
+                # could plausibly be a clinic name (starts with "al…" or "re…/r").
+                # Completely non-location speech (e.g. "I said I had a few
+                # questions") must not trigger a false clinic guess — route to a
+                # neutral re-ask instead.
+                _has_alc_open = any(
+                    _fc_first.startswith(p) for p in ("alc", "alk", "als", "al")
+                )
+                if not _has_red_open and not _has_alc_open:
+                    _neutral_q = "Sorry — which clinic did you mean? Alcester or Redditch?"
+                    await self._tts.put(_neutral_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _neutral_q}
+                    )
+                    self.session["last_question"] = _neutral_q
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: no location hint in %r → neutral re-ask",
+                        text[:40],
+                    )
+                    return
                 self.session["location_pending_guess"] = _pending
                 _confirm_q = (
                     "Just to confirm \u2014 was that Redditch?"
@@ -10905,6 +10957,30 @@ class FlowEngine:
             "human please", "person please",
         )
         if any(p in text for p in transfer_p): return "transfer"
+
+        # ── FAQ-before-booking intercept ──────────────────────────────────────
+        # "I have a few questions before booking" / "I had a question first" —
+        # STT can mangle "before booking" → "rebook" which would trigger reschedule_p.
+        # Catching FAQ-led phrasing here, before reschedule_p, ensures these callers
+        # reach general_query (LLM FAQ path) rather than an unwanted flow switch.
+        _FAQ_FIRST_PHRASES = (
+            "a few questions",
+            "few questions",
+            "some questions",
+            "questions before",
+            "questions first",
+            "questions about",
+            "had a question",
+            "have a question",
+            "just had a question",
+            "just have a question",
+        )
+        if any(p in text for p in _FAQ_FIRST_PHRASES):
+            logger.info(
+                "[ms_flow] DETECT_INTENT faq-first intercept: %r → general_query",
+                text[:60],
+            )
+            return "general_query"
 
         reschedule_p = (
             "reschedule", "re-schedule", "re schedule",  # BUG 3: hyphenated/spaced STT variants
