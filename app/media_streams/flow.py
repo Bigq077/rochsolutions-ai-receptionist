@@ -3857,6 +3857,38 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+            # ── Intent-reroute gate: MUST run BEFORE extraction and FAQ gate ────
+            # Explicit workflow-switch language ("i want to reschedule", "never
+            # mind, i need to cancel") must reroute immediately — before the
+            # location resolver ever sees the utterance.  Without this, discourse
+            # words like "actually" trigger prefix_fallback:alcester even when the
+            # caller is abandoning the booking entirely.
+            _LOC_REROUTE_SIGNALS = (
+                "reschedule", "re-schedule", "rebook", "re-book",
+                "cancel my appointment", "cancel the appointment",
+                "change my appointment", "move my appointment",
+                "i want to cancel", "i want to reschedule",
+                "want to reschedule", "want to cancel",
+                "looking to reschedule", "looking to cancel",
+                "never mind", "never mind i", "actually never mind",
+                "meant to say", "i meant", "sorry i meant",
+                "actually i need", "what i meant", "my mistake",
+                "meant to book", "instead",
+            )
+            if any(p in text for p in _LOC_REROUTE_SIGNALS):
+                _reroute_intent = self._detect_intent(text)
+                if _reroute_intent in ("reschedule", "cancel", "booking"):
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: intent reroute BEFORE extraction %r → %s",
+                        text[:60], _reroute_intent,
+                    )
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    self.session["needs_location"] = False
+                    self._switch_flow(_reroute_intent)
+                    await self.ask_current_question()
+                    return
+
             # ── FAQ-first gate: detect question intent BEFORE extracting location ──
             # "is there parking at alcester?" / "first is there any parking at your
             # alcester clinic" → must answer the FAQ, NOT extract "alcester" and advance.
@@ -3884,30 +3916,11 @@ class FlowEngine:
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
-                # ── Intent-pivot intercept ────────────────────────────────────
-                # "meant to say rebook" / "could i reschedule instead" are
-                # corrections to the original routing, NOT failed location answers.
-                # Check BEFORE entering the fallback ladder so no slot is burned.
-                _LOC_PIVOT_SIGNALS = (
-                    "reschedule", "re-schedule", "rebook", "re-book",
-                    "cancel", "instead", "meant to say", "i meant",
-                    "actually i need", "what i meant", "my mistake",
-                    "sorry i meant", "meant to book",
-                )
-                if any(p in text for p in _LOC_PIVOT_SIGNALS):
-                    _pivot_intent = self._detect_intent(text)
-                    if _pivot_intent in ("reschedule", "cancel", "booking"):
-                        logger.info(
-                            "[ms_flow] ASK_LOCATION: intent pivot %r → %s (no retry consumed)",
-                            text[:60], _pivot_intent,
-                        )
-                        self.session.pop("location_retry_count", None)
-                        self._switch_flow(_pivot_intent)
-                        await self.ask_current_question()
-                        return
-
                 # ── FAQ interrupt — check before entering fallback ladder ──────
                 # general_query excluded: vague phrases must not fire the LLM here.
+                # Note: explicit workflow-switch signals were already handled above
+                # (intent-reroute gate); what remains here is ambiguous text that
+                # the resolver could not resolve AND that did not match a reroute signal.
                 _loc_faq_intents = {
                     "faq_prices", "faq_insurance", "faq_hours",
                     "faq_location", "faq_services", "faq_capability",
@@ -5581,6 +5594,73 @@ class FlowEngine:
                 # Do NOT update last_question — the real question remains intact
                 logger.info("[ms_flow] CONFIRM_ASSESSMENT: inquiry intercept fired (post-FAQ)")
                 return
+            # ── Priority 1d: workflow-switch reroute ─────────────────────────
+            # "sorry i was saying i want to reschedule an appointment" must
+            # NEVER reach the classifier where "was saying" would match the
+            # _ADDITIVE list and advance the booking.  Check for explicit
+            # intent-switch language before any classification.
+            _CA_REROUTE_SIGNALS = (
+                "reschedule", "re-schedule", "rebook", "re-book",
+                "cancel my appointment", "cancel the appointment",
+                "change my appointment", "move my appointment",
+                "i want to reschedule", "i want to cancel",
+                "want to reschedule", "want to cancel",
+                "looking to reschedule", "looking to cancel",
+                "need to reschedule", "need to cancel",
+            )
+            if any(p in text for p in _CA_REROUTE_SIGNALS):
+                _ca_reroute_intent = self._detect_intent(text)
+                if _ca_reroute_intent in ("reschedule", "cancel"):
+                    logger.info(
+                        "[ms_flow] CONFIRM_ASSESSMENT: workflow-switch reroute %r → %s",
+                        transcript[:60], _ca_reroute_intent,
+                    )
+                    self._switch_flow(_ca_reroute_intent)
+                    await self.ask_current_question()
+                    return
+
+            # ── Priority 1e: repair fragment guard ───────────────────────────
+            # Pure repair speech with no clinical content must not classify as
+            # additive_detail and advance the booking.  E.g. "sorry i was saying"
+            # alone would match _ADDITIVE["was saying"] → yes-advance is wrong.
+            # If the utterance is just repair filler with no clinical content and
+            # no explicit intent, fall through to the unknown / re-ask path.
+            _CA_REPAIR_STARTERS = (
+                "sorry i was saying",
+                "sorry i would say",
+                "sorry i was going to say",
+                "sorry i was just",
+                "sorry i want to say",
+                "no sorry",
+                "hold on",
+                "hang on",
+                "never mind",
+            )
+            _CA_CLINICAL_CONTENT = (
+                "pain", "ache", "hurt", "sore", "stiff", "swollen",
+                "ankle", "knee", "back", "neck", "shoulder", "hip",
+                "wrist", "elbow", "leg", "arm", "physio", "assessment",
+                "injury", "condition", "problem",
+            )
+            if any(text.startswith(p) or text == p for p in _CA_REPAIR_STARTERS):
+                if not any(c in text for c in _CA_CLINICAL_CONTENT):
+                    # Re-ask — do not classify, do not advance
+                    logger.info(
+                        "[ms_flow] CONFIRM_ASSESSMENT: repair fragment %r — re-asking",
+                        transcript[:60],
+                    )
+                    while not self._tts.empty():
+                        try:
+                            self._tts.get_nowait()
+                        except Exception:
+                            break
+                    _ca_repair_reask = "Does that sound okay?"
+                    await self._tts.put(_ca_repair_reask)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _ca_repair_reask}
+                    )
+                    return
+
             # ── Priority 2–5: classifier-based branching ─────────────────────
             _ca_class = _classify_confirm_assessment(text)
             logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
@@ -10073,7 +10153,39 @@ class FlowEngine:
             )
             _reason_lower = answer.strip().lower()
             _has_content  = any(w in _reason_lower for w in _REASON_FLOOR_WORDS)
-            if not _has_content and len(_reason_lower.split()) < 3:
+
+            # ── Repair / restart fragment guard ──────────────────────────────
+            # Utterances that are nothing but correction speech with no clinical
+            # content — e.g. "sorry i would say" / "sorry i was saying" — must
+            # not be stored as a booking reason.  These arrive when the caller
+            # restarts their sentence mid-utterance and the STT finalises the
+            # correction prefix as a standalone transcript.
+            # Only fires when there is no clinical content word so "sorry my
+            # back is in pain" (repair opener + real content) still passes.
+            _REASON_REPAIR_FRAGMENTS = (
+                "sorry i was saying",
+                "sorry i would say",
+                "sorry i was going to say",
+                "sorry i was just",
+                "sorry i want to say",
+                "no sorry",
+                "sorry sorry",
+                "hold on",
+                "wait a moment",
+                "hang on",
+                "never mind that",
+            )
+            if not _has_content and any(
+                _reason_lower.startswith(p) or _reason_lower == p
+                for p in _REASON_REPAIR_FRAGMENTS
+            ):
+                logger.info(
+                    "[ms_flow] COLLECT_REASON: repair fragment %r rejected — re-asking",
+                    answer[:60],
+                )
+                answer = None
+
+            if answer is not None and not _has_content and len(_reason_lower.split()) < 3:
                 logger.info(
                     "[ms_flow] COLLECT_REASON: fragment %r rejected (no content / too short) — re-asking",
                     answer[:50],

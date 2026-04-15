@@ -136,6 +136,26 @@ _NEVER_BIND: frozenset = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Prefix-fallback blocklist
+# Common English words whose first letter/syllable starts with a clinic-
+# identifying prefix but which are NEVER location references.
+# The prefix_fallback section skips candidates whose first word is in this
+# set so that discourse words like "actually" cannot produce a false
+# Alcester resolution (prefix "a" = 8 pts → fallback:alcester:actually).
+# ---------------------------------------------------------------------------
+_PREFIX_FALLBACK_BLOCKLIST: frozenset = frozenset({
+    # "a…" prefix — would false-match Alcester
+    "actually", "anyway", "already", "again", "also", "always",
+    "after", "although", "another", "around", "and", "are", "as",
+    "at", "about", "above", "across", "ago",
+    # "re…" / "r…" prefix — would false-match Redditch
+    "right", "really", "rather", "regarding", "right", "recently",
+    "ready", "reason", "repeat", "remember", "reply", "request",
+    # Single-letter / common openers that are purely discourse
+    "i", "so", "well", "no", "yes", "wait", "never", "sorry",
+})
+
+# ---------------------------------------------------------------------------
 # Similarity reference targets
 # A small, discriminating set of reference forms for each clinic.
 # Spaces are stripped before comparison so STT-inserted gaps don't penalise.
@@ -481,14 +501,18 @@ def resolve_clinic_location(
     # one-turn correction window so the caller can immediately override.
     if context == "ask_location":
         _first = candidate.split()[0]
-        _alc_pfx = any(_first.startswith(p) for p, _ in _PREFIX_ALC)
-        _red_pfx = any(_first.startswith(p) for p, _ in _PREFIX_RED)
-        if _alc_pfx and not _red_pfx and red_score < 40:
-            debug["prefix_hit"] = f"fallback:alcester:{_first}"
-            return _resolve("resolved", "alcester", 0.55, "prefix_fallback")
-        if _red_pfx and not _alc_pfx and alc_score < 40:
-            debug["prefix_hit"] = f"fallback:redditch:{_first}"
-            return _resolve("resolved", "redditch", 0.55, "prefix_fallback")
+        # Skip prefix_fallback entirely for discourse/filler words — these
+        # share an opener letter with a clinic prefix but are never location
+        # references.  Without this guard "actually" → fallback:alcester.
+        if _first not in _PREFIX_FALLBACK_BLOCKLIST:
+            _alc_pfx = any(_first.startswith(p) for p, _ in _PREFIX_ALC)
+            _red_pfx = any(_first.startswith(p) for p, _ in _PREFIX_RED)
+            if _alc_pfx and not _red_pfx and red_score < 40:
+                debug["prefix_hit"] = f"fallback:alcester:{_first}"
+                return _resolve("resolved", "alcester", 0.55, "prefix_fallback")
+            if _red_pfx and not _alc_pfx and alc_score < 40:
+                debug["prefix_hit"] = f"fallback:redditch:{_first}"
+                return _resolve("resolved", "redditch", 0.55, "prefix_fallback")
 
     if winner_score >= 40 and margin >= 15:
         # Some signal but not enough to auto-resolve — ask for clarification
