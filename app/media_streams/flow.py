@@ -2763,6 +2763,18 @@ class FlowEngine:
                     or (format_args.get("collected") or {}).get("phone")
                     or "the number you called from"
                 )
+            # Same fallback for LOOKUP_RESCHEDULE / LOOKUP_CANCEL — instruction
+            # also uses {phone_number} and callers who confirmed Twilio caller-ID
+            # never go through COLLECT_PHONE so phone_number may be unset.
+            if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL") and not format_args.get("phone_number"):
+                format_args["phone_number"] = (
+                    _to_e164_uk(format_args.get("twilio_from_local") or "")
+                    or _to_e164_uk(format_args.get("twilio_from") or "")
+                    or (format_args.get("collected") or {}).get("phone")
+                    or format_args.get("twilio_from_local")
+                    or format_args.get("twilio_from")
+                    or ""
+                )
             # Inject available_days_json for PRESENT_TIMES steps so the LLM
             # has the slot data directly in the instruction rather than relying
             # on conversation history (tool results are not persisted there).
@@ -4541,6 +4553,12 @@ class FlowEngine:
                 # the caller finishes the sentence — treat as YES immediately.
                 "you can use this", "can use this", "use this",
                 "go ahead", "that's the one", "thats the one",
+                # Implicit/contextual affirmatives: in response to "Is this the number
+                # on your booking?" these mean YES without the word 'yes'.
+                # Only safe here because phone_confirm_armed = True gates the context.
+                "it is", "yes it is", "yeah it is",
+                "you should", "yes you should", "yeah you should",
+                "it should", "it should be", "should be",
             )
             _HG_NO_PHRASES = (
                 "nope", "nah",
@@ -4614,8 +4632,13 @@ class FlowEngine:
                     # ── CLEAN PATH: phone found — mark confirmed, advance directly ──
                     # phone_confirmed is set TRUE only here; COLLECT_PHONE skip
                     # at ask_current_question() can never fire as accidental recovery.
+                    _cp_normalised = _to_e164_uk(_cp_confirmed) or _cp_confirmed
                     self.session["phone_confirmed"] = True
-                    self.session.setdefault("collected", {})["phone"] = _cp_confirmed
+                    # Set phone_number explicitly — LOOKUP_RESCHEDULE instruction
+                    # uses {phone_number} in its format string; without this the
+                    # lookup would render phone='None' and fail to find the booking.
+                    self.session["phone_number"] = _cp_normalised
+                    self.session.setdefault("collected", {})["phone"] = _cp_normalised
                     if self._active_flow is RESCHEDULE_FLOW:
                         self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
                         self.session["state"]      = "LOOKUP_RESCHEDULE"
