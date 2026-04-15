@@ -10743,6 +10743,24 @@ class FlowEngine:
         if "tell me more about" in text and any(k in text for k in _FAQ_PRICES_SERVICE_KEYWORDS):
             return "faq_services"
         if any(p in text for p in services_p):   return "faq_services"
+
+        # Booking rescue: by this point reschedule_p and cancel_p have already
+        # been checked and did not match.  If "appointment" (or its derivatives)
+        # is present the caller intends to book — STT noise around the verb
+        # ("took", "need", "want") should not push a real booking to general_query.
+        # Block question-form queries ("what time is my appointment", "when is my
+        # appointment") so informational follow-ups still reach the LLM.
+        _APPT_INFO_QUERIES = (
+            "what time", "what's the time", "when is my", "when's my",
+            "do i have", "have i got", "how long is my",
+        )
+        if "appoint" in text and not any(q in text for q in _APPT_INFO_QUERIES):
+            logger.info(
+                "[ms_flow] DETECT_INTENT booking-rescue: transcript=%r → booking",
+                text[:60],
+            )
+            return "booking"
+
         return "general_query"  # unknown question — LLM handles it freely
 
     def _switch_flow(self, intent: str) -> None:
