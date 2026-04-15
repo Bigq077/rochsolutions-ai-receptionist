@@ -137,21 +137,18 @@ _NEVER_BIND: frozenset = frozenset({
 
 # ---------------------------------------------------------------------------
 # Prefix-fallback blocklist
-# Common English words whose first letter/syllable starts with a clinic-
-# identifying prefix but which are NEVER location references.
-# The prefix_fallback section skips candidates whose first word is in this
-# set so that discourse words like "actually" cannot produce a false
-# Alcester resolution (prefix "a" = 8 pts → fallback:alcester:actually).
+# Common English discourse words whose opening letter/syllable matches a
+# clinic-identifying prefix but which are never location references.
+# Only include words that are UNAMBIGUOUSLY non-clinic; do NOT include any
+# word that could plausibly be an STT variant of a clinic name (e.g. "ready"
+# could be part of "ready itch" → Redditch, so it must not be blocked).
 # ---------------------------------------------------------------------------
 _PREFIX_FALLBACK_BLOCKLIST: frozenset = frozenset({
-    # "a…" prefix — would false-match Alcester
+    # "a…" — discourse starters, phonetically nothing like Alcester
     "actually", "anyway", "already", "again", "also", "always",
-    "after", "although", "another", "around", "and", "are", "as",
-    "at", "about", "above", "across", "ago",
-    # "re…" / "r…" prefix — would false-match Redditch
-    "right", "really", "rather", "regarding", "right", "recently",
-    "ready", "reason", "repeat", "remember", "reply", "request",
-    # Single-letter / common openers that are purely discourse
+    # "re…" / "r…" — discourse starters, phonetically nothing like Redditch
+    "right", "really", "rather", "recently",
+    # Pure discourse openers (no clinic-prefix ambiguity)
     "i", "so", "well", "no", "yes", "wait", "never", "sorry",
 })
 
