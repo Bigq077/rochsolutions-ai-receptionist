@@ -3909,7 +3909,7 @@ class FlowEngine:
         # Does NOT fire when phone_readback_pending — that is handled by
         # the CONFIRM gate immediately below.
         # ════════════════════════════════════════════════════════════════════
-        if current_state == "COLLECT_PHONE" and not self.session.get("phone_readback_pending"):
+        if current_state in ("COLLECT_PHONE", "COLLECT_PHONE_RESCHEDULE") and not self.session.get("phone_readback_pending"):
             # ── NAME-REPAIR: step back to COLLECT_NAME from COLLECT_PHONE ───────
             # Must run before digit extraction so repair intents are not trapped
             # as failed digit entries and silently re-asked.
@@ -10100,7 +10100,7 @@ class FlowEngine:
                 # at COLLECT_PHONE / COLLECT_PHONE_RETURNING is almost always a partial
                 # number, background noise, or a filler ("hold on", "hang on").
                 # Haiku would say something confusing here; just replay the question.
-                _COLLECT_PHONE_STATES_FG = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING"}
+                _COLLECT_PHONE_STATES_FG = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"}
                 if step["state"] in _COLLECT_PHONE_STATES_FG:
                     _ph_replay = self.session.get("last_question", "And the best number to reach you on?")
                     await self._tts.put(_ph_replay)
