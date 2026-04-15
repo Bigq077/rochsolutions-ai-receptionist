@@ -9593,12 +9593,18 @@ class FlowEngine:
                 "another day", "another slot", "different time", "different day",
                 "rearrange", "move the appointment", "change my appointment",
                 "book another", "new time", "different slot", "move to",
+                # Natural phrasing variants from live calls
+                "change it", "i'd like to change", "id like to change",
+                "can we move", "move the time", "pick another", "find another",
             )
             _ROC_CANCEL = (
                 "cancel", "cancel it", "cancel altogether", "just cancel",
                 "remove it", "delete it", "don't want it", "dont want it",
                 "cancel the appointment", "no longer need", "not going",
                 "want to cancel", "like to cancel",
+                # Natural phrasing variants from live calls
+                "cancel please", "go ahead and cancel", "please cancel",
+                "i want to cancel", "i'd like to cancel", "id like to cancel",
             )
             _roc_is_reschedule = any(p in _roc_text for p in _ROC_RESCHEDULE)
             _roc_is_cancel     = any(p in _roc_text for p in _ROC_CANCEL)
@@ -9634,14 +9640,53 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
-            # Ambiguous (yes/no/okay/maybe etc.) — re-ask, never drift forward
+            # ── Confirmation bleed-through: caller is still answering the prior ──
+            # lookup-confirmation question ("yes that's the right appointment",
+            # "yes it was", "that's correct").  Bare yes/no and appointment-confirm
+            # phrases land here.  Give a warm targeted redirect — not a cold sorry.
+            # Pattern: utterance contains a confirmation signal but zero action words.
+            _ROC_BLEED_SIGNALS = (
+                "that's the right", "thats the right",
+                "that's my appointment", "thats my appointment",
+                "that's correct", "thats correct",
+                "that's right", "thats right",
+                "that's it", "thats it",
+                "yes it was", "yeah it was",
+                "it was", "it is",
+                "hello yes", "hi yes",
+                "yes that's", "yeah that's",
+                "yes thats", "yeah thats",
+                "correct", "right",
+            )
+            _roc_is_bleed = any(p in _roc_text for p in _ROC_BLEED_SIGNALS)
+
+            if _roc_is_bleed:
+                _roc_bleed_reask = (
+                    "Thanks — would you like to reschedule it, "
+                    "or cancel it altogether?"
+                )
+                await self._tts.put(_roc_bleed_reask)
+                self.session["last_question"] = _roc_bleed_reask
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _roc_bleed_reask}
+                )
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: confirmation bleed-through %r — redirecting",
+                    _roc_text[:60],
+                )
+                return
+
+            # Truly ambiguous (bare yes/no/okay/maybe with no action phrase)
             _roc_reask = "Sorry — would you like to reschedule it, or cancel it altogether?"
             await self._tts.put(_roc_reask)
             self.session["last_question"] = _roc_reask
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _roc_reask}
             )
-            logger.info("[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: ambiguous — re-asking")
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL: ambiguous %r — re-asking",
+                _roc_text[:60],
+            )
             return
 
         # ── CONFIRM_BOOKING: strong-confirm-only gate ──────────────────────────
