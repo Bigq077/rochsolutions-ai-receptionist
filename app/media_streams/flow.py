@@ -4069,12 +4069,9 @@ class FlowEngine:
                     return
                 self.session["location_pending_guess"] = _pending
                 _confirm_q = (
-                    "I'm not fully sure — I think you may have said Redditch. "
-                    "Did you say Redditch or Alcester?"
+                    "Did you say the Redditch clinic?"
                     if _pending == "redditch"
-                    else
-                    "I'm not fully sure — I think you may have said Alcester. "
-                    "Did you say Alcester or Redditch?"
+                    else "Did you say the Alcester clinic?"
                 )
                 await self._tts.put(_confirm_q)
                 self.session.setdefault("conversation_history", []).append(
@@ -4082,7 +4079,7 @@ class FlowEngine:
                 )
                 self.session["last_question"] = _confirm_q
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → leaning confirm (guess=%s) for %r",
+                    "[ms_flow] ASK_LOCATION: resolver None → lean confirm (guess=%s) for %r",
                     _pending, text[:40],
                 )
             return
