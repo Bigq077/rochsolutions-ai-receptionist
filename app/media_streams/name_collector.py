@@ -471,6 +471,12 @@ def _is_incomplete_scaffold(text: str) -> bool:
     event).  They must NOT count as failed name-capture attempts or the retry
     counter gets inflated, causing the system to treat a subsequently clean
     name as degraded and wrongly fire the correction-SMS flag.
+
+    Also catches filler-prefixed scaffolds such as "no my surname is" or
+    "yeah it's" — these are denial-or-acknowledgement words prepended to a
+    bare scaffold by the caller (or STT) before the name token arrives.
+    Without this check they fall into the denial handler and inflate sn_denials
+    prematurely.
     """
     lowered = text.lower().strip()
     if not lowered:
@@ -485,6 +491,16 @@ def _is_incomplete_scaffold(text: str) -> bool:
         p_core = p.strip()  # e.g. "my surname is"
         if lowered == p_core:
             return True
+    # One level of leading-filler stripping — catches "no my surname is",
+    # "yeah it's", "sorry my name is", etc.  _LEADING_FILLERS_RE includes
+    # "no", "yeah", "sorry", "okay", "right", "well", and common hesitations.
+    after_filler = _LEADING_FILLERS_RE.sub("", lowered).strip()
+    if after_filler and after_filler != lowered:
+        if after_filler in {"my", "it's", "its", "i'm", "im"}:
+            return True
+        for p in _PREFIXES:
+            if after_filler == p.strip():
+                return True
     return False
 
 
@@ -1016,11 +1032,18 @@ class NameCollector:
                     "[NameCollector] sn_confirm: %d denials — escalating to sn_spelling",
                     self._nc["sn_denials"],
                 )
+                # Candidate was explicitly rejected twice — clear it now so the
+                # sn_spelling best-effort path cannot fall back to a denied name.
+                self._nc["surname_candidate"] = None
+                self._s.pop("spelling_confirm_surname", None)
                 return self._enter_sn_spelling()
-            # First denial — one clean re-ask
+            # First denial — one clean re-ask.
+            # Clear the rejected candidate: it was explicitly denied and must not
+            # resurface as a best-effort fallback in sn_spelling or sn_reask.
             self._nc["substate"] = NC_SN_REASK
-            self._nc["surname_candidate"] = cand   # keep as fallback
-            logger.info("[NameCollector] sn_confirm: denial 1 — entering sn_reask")
+            self._nc["surname_candidate"] = None
+            self._s.pop("spelling_confirm_surname", None)
+            logger.info("[NameCollector] sn_confirm: denial 1 — entering sn_reask (candidate cleared)")
             return ("ask", "Sorry about that — what's your surname?")
 
         # Both yes+no without strong denial — ambiguous
