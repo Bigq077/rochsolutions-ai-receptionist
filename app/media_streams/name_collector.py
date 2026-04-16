@@ -988,10 +988,37 @@ class NameCollector:
         if has_yes and has_no and any(p in text for p in _STRONG_NO):
             has_yes = False
 
-        # YES — accept
+        # YES — accept (or correction-while-confirming)
         # Spelling-path candidates are always trusted (caller spelled & confirmed).
         # Acoustic candidates are degraded when sn_retries > 0 (extraction failures).
         if has_yes and not has_no:
+            # Edge case: "yes it's Roch" when candidate is "Rock" — the caller is
+            # confirming intent but also STATING the correct name via an explicit
+            # bridge phrase.  Without this check the YES path short-circuits and
+            # the embedded correction is silently ignored, locking in the wrong name.
+            #
+            # Bridge phrases we recognise: "it's X", "it is X", "my name is X",
+            # "my surname is X".  "yes it's right" does NOT match because "right"
+            # is a function word and fails _is_valid_name_token.
+            _SN_BRIDGE_RE = re.compile(
+                r"\b(?:it'?s|it is|my (?:name|surname) is)\s+([a-zA-Z'\-]{2,})\b",
+                re.IGNORECASE,
+            )
+            _bm = _SN_BRIDGE_RE.search(text)
+            if _bm:
+                _embedded = _bm.group(1).strip().title()
+                if (
+                    _is_valid_name_token(_embedded)
+                    and cand
+                    and _embedded.lower() != cand.lower()
+                ):
+                    logger.info(
+                        "[NameCollector] sn_confirm: YES with embedded correction "
+                        "%r → re-confirm (prev cand=%r)",
+                        _embedded, cand,
+                    )
+                    return self._enter_sn_confirm(_embedded)
+            # Plain YES (or embedded name matches current candidate) — accept.
             full = f"{fn} {cand}".strip().title() if fn else cand.title()
             _sn_degraded = (
                 self._nc.get("sn_retries", 0) > 0
