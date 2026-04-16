@@ -799,13 +799,12 @@ class NameCollector:
                     "fn_confirmed=False, needs_name_correction_sms=True",
                     self._nc["fn_retries"],
                 )
-            pending_sn = self._nc.get("pending_surname")
+            # Surname is collected via SMS — accept first name only.
+            self._nc["pending_surname"] = None
             self._store_first_name(cand, confirmed=not _fn_degraded)
-            if pending_sn:
-                self._nc["pending_surname"] = None
-                logger.info("[NameCollector] fn_confirm: YES — sn_confirm for pending %r", pending_sn)
-                return self._enter_sn_confirm(pending_sn)
-            return ("ask", "And what's your surname?")
+            self._accept(cand)
+            logger.info("[NameCollector] fn_confirm: YES — first-name-only accept %r", cand)
+            return ("accept", cand)
 
         # NO / spelling offer / strong denial — one normal re-ask, no spelling
         # Spelling offers ("shall I spell it?") are treated as a denial: the
@@ -894,9 +893,10 @@ class NameCollector:
             "needs_name_correction_sms=True (correction SMS flagged silently)",
             best,
         )
-        # FIX 5: do NOT speak the SMS explanation mid-flow.  Flags are set
-        # silently; the correction link arrives via the post-call SMS.
-        return ("ask", "And what's your surname?")
+        # Surname is collected via SMS — accept first name only.
+        self._accept(best)
+        logger.info("[NameCollector] fn_reask: first-name-only best-effort accept %r", best)
+        return ("accept", best)
 
     # ── Substate: sn_normal ──────────────────────────────────────────────────
 
