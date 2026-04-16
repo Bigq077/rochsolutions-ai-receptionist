@@ -3188,11 +3188,22 @@ class FlowEngine:
                         except asyncio.QueueEmpty:
                             break
                     self.session.pop("rc_recovery_step", None)
-                    self.session["flow_step"] = step["step"] + 1
+                    _adv_next = step["step"] + 1
+                    # Reschedule: skip CONFIRM_RESCHEDULE_OR_CANCEL — go straight to PRESENT_DAYS.
+                    # Cancel: keep CONFIRM_RESCHEDULE_OR_CANCEL so caller is asked to choose.
+                    if (self.session.get("intent") == "reschedule"
+                            and _adv_next < len(self._active_flow)
+                            and self._active_flow[_adv_next]["state"] == "CONFIRM_RESCHEDULE_OR_CANCEL"):
+                        _adv_next += 1
+                        logger.info(
+                            "[ms_flow] LOOKUP_RESCHEDULE: reschedule — "
+                            "skipping CONFIRM_RESCHEDULE_OR_CANCEL → step %d", _adv_next,
+                        )
+                    self.session["flow_step"] = _adv_next
                     self.session["question_asked_this_turn"] = False
                     logger.info(
                         "[ms_flow] %s confirmed — advancing to step %d (TTS drained)",
-                        step["state"], step["step"] + 1,
+                        step["state"], _adv_next,
                     )
                     await self.ask_current_question()
                 return
@@ -9936,12 +9947,20 @@ class FlowEngine:
                     self.session["rc_stage"] = "confirmed"
                     _flow_label = step["state"]
                     _next_step = step["step"] + 1
+                    # Reschedule: skip CONFIRM_RESCHEDULE_OR_CANCEL — go straight to PRESENT_DAYS.
+                    # Cancel: keep CONFIRM_RESCHEDULE_OR_CANCEL so caller is asked to choose.
+                    if (self.session.get("intent") == "reschedule"
+                            and _next_step < len(self._active_flow)
+                            and self._active_flow[_next_step]["state"] == "CONFIRM_RESCHEDULE_OR_CANCEL"):
+                        _next_step += 1
+                        logger.info(
+                            "[ms_flow] %s: reschedule — skipping CONFIRM_RESCHEDULE_OR_CANCEL → step %d",
+                            _flow_label, _next_step,
+                        )
                     logger.info(
                         "[ms_flow] %s: deterministic YES confirmed — advancing to step %d",
                         _flow_label, _next_step,
                     )
-                    # Both flows now advance to CONFIRM_RESCHEDULE_OR_CANCEL which speaks
-                    # the binary choice question — no bridge message needed here.
                     # Advance flow_step BEFORE ask_current_question so we never
                     # re-fire the LLM on the lookup step (Bugs 1 and 6).
                     self.session["flow_step"] = _next_step
@@ -11641,10 +11660,11 @@ class FlowEngine:
             self._active_flow = BOOKING_FLOW
         # Track the most-recent intent so infer_call_outcome sees mid-call switches
         self.session["intent"] = intent
-        # Reschedule: phone-first architecture — start at CONFIRM_PHONE (step 1),
-        # skipping COLLECT_NAME_RESCHEDULE.  Cancel keeps step 0 (name-first) since
-        # CANCEL_FLOW is the same object as RESCHEDULE_FLOW and cancel behavior is unchanged.
-        self.session["flow_step"] = 1 if intent == "reschedule" else 0
+        # Both reschedule and cancel use phone-first architecture — start at
+        # CONFIRM_PHONE (step 1), skipping COLLECT_NAME_RESCHEDULE.
+        # Cancel keeps CONFIRM_RESCHEDULE_OR_CANCEL (step 4) so caller is asked
+        # "reschedule or cancel?".  Reschedule skips step 4 (handled at advance time).
+        self.session["flow_step"] = 1 if intent in ("reschedule", "cancel") else 0
         # Multi-location clinics (theorem_v2): ask caller which clinic before starting flow.
         # Single-location clinics: hardcode alcester as before — zero behaviour change.
         #
