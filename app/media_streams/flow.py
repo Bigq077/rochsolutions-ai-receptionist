@@ -1763,23 +1763,19 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "extract": "none",
         "llm_instruction": (
             "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
-            "TURN 1 — Phone-first lookup:\n"
+            "TURN 1 — Lookup:\n"
             "  Say: 'Bear with me one moment.'\n"
-            "  Call lookup_appointment(first_name='', last_name='', "
+            "  If '{full_name}' is NOT blank: parse it into first_name / last_name "
+            "(split on the first space) and call lookup_appointment(first_name=<first>, last_name=<last>, "
+            "phone='{phone_number}', location='{selected_location}').\n"
+            "  If '{full_name}' IS blank (phone-first path, no name collected yet): call "
+            "lookup_appointment(first_name='', last_name='', "
             "phone='{phone_number}', location='{selected_location}').\n"
             "  If found=true: say 'I can see an appointment on [day_label] at [time_label] — "
             "is that the one you\\'d like to reschedule?'\n"
-            "  If found=false: say 'I\\'m having a little trouble finding that booking. "
-            "Could I take your name please?' — then wait for the caller to give their name.\n\n"
-            "TURN 1b — Name fallback (only if phone-only lookup failed):\n"
-            "  Caller gives first_name and last_name → re-call lookup_appointment "
-            "with first_name=<first>, last_name=<last>, phone='{phone_number}', "
-            "location='{selected_location}'.\n"
-            "  If found=true: say 'I can see an appointment on [day_label] at [time_label] — "
-            "is that the one you\\'d like to reschedule?'\n"
-            "  If still found=false: say 'I\\'m sorry — I still can\\'t find that booking. "
-            "Could you call the clinic directly and they\\'ll sort it out for you?' "
-            "Then call log_call_outcome(outcome='transferred').\n\n"
+            "  If found=false: say NOTHING — stay completely silent. "
+            "Do NOT invent a name. Do NOT say 'I have the booking under...'. "
+            "The system handles the recovery message automatically.\n\n"
             "TURN 2+ — Confirm:\n"
             "  Caller says YES → call confirm_appointment_found(). "
             "Then say NOTHING. Do NOT speak after calling confirm_appointment_found() — the system will handle it automatically.\n"
@@ -2726,37 +2722,48 @@ class FlowEngine:
                 _lu_first = _lu_parts[0] if _lu_parts else ""
                 _lu_last  = _lu_parts[-1] if len(_lu_parts) > 1 else ""
                 if not _is_valid_name_token(_lu_first) or not _is_valid_name_token(_lu_last):
-                    logger.warning(
-                        "[ms_flow] BUG13: lookup blocked — invalid name tokens: first=%r last=%r full=%r",
-                        _lu_first, _lu_last, _lu_full,
-                    )
-                    _lu_reask = (
-                        "Sorry — I didn't quite catch that name. "
-                        "Could you give me the first name and surname the booking was made under?"
-                    )
-                    await self._tts.put(_lu_reask)
-                    self.session["last_question"] = _lu_reask
-                    # Step back to COLLECT_NAME_RESCHEDULE
-                    _cn_state = "COLLECT_NAME_RESCHEDULE"
-                    _cn_idx = next(
-                        (i for i, s in enumerate(self._active_flow) if s["state"] == _cn_state),
-                        None,
-                    )
-                    if _cn_idx is not None:
-                        self.session["flow_step"] = _cn_idx
-                        self.session["state"] = _cn_state
-                        self.session.pop("name_fragment", None)
-                        _col = self.session.get("collected", {})
-                        _col.pop("full_name", None)
-                        self.session["collected"] = _col
-                        # Reset NC state so next turn starts at fn_normal,
-                        # not at the stale NC_DONE left by the failed accept.
-                        # Also clear the repair flag — garbage name means fresh start.
-                        from app.media_streams.name_collector import NameCollector as _NameCollBug13
-                        _NameCollBug13(self.session).reset()
-                        self.session.pop("_nc_trust_repair_attempted", None)
-                        self.session.pop("rc_recovery_step", None)
-                    return
+                    # Phone-first exception: when rc_phone_first is set the name was
+                    # intentionally not collected yet.  Let the LLM proceed to the
+                    # phone-only lookup — failure is handled deterministically via
+                    # rc_lookup_failed below.  Only bypass when full_name is truly
+                    # absent (never collected), not when it's present but garbage.
+                    if self.session.get("rc_phone_first") and not _lu_full:
+                        logger.info(
+                            "[ms_flow] BUG13 bypassed for phone-first mode (no name yet)"
+                        )
+                        # fall through to LLM — phone-only lookup will fire
+                    else:
+                        logger.warning(
+                            "[ms_flow] BUG13: lookup blocked — invalid name tokens: first=%r last=%r full=%r",
+                            _lu_first, _lu_last, _lu_full,
+                        )
+                        _lu_reask = (
+                            "Sorry — I didn't quite catch that name. "
+                            "Could you give me the first name and surname the booking was made under?"
+                        )
+                        await self._tts.put(_lu_reask)
+                        self.session["last_question"] = _lu_reask
+                        # Step back to COLLECT_NAME_RESCHEDULE
+                        _cn_state = "COLLECT_NAME_RESCHEDULE"
+                        _cn_idx = next(
+                            (i for i, s in enumerate(self._active_flow) if s["state"] == _cn_state),
+                            None,
+                        )
+                        if _cn_idx is not None:
+                            self.session["flow_step"] = _cn_idx
+                            self.session["state"] = _cn_state
+                            self.session.pop("name_fragment", None)
+                            _col = self.session.get("collected", {})
+                            _col.pop("full_name", None)
+                            self.session["collected"] = _col
+                            # Reset NC state so next turn starts at fn_normal,
+                            # not at the stale NC_DONE left by the failed accept.
+                            # Also clear the repair flag — garbage name means fresh start.
+                            from app.media_streams.name_collector import NameCollector as _NameCollBug13
+                            _NameCollBug13(self.session).reset()
+                            self.session.pop("_nc_trust_repair_attempted", None)
+                            self.session.pop("rc_recovery_step", None)
+                        return
                 # ── Name-trust preflight gate ────────────────────────────────
                 # Blocks lookup when surname was captured via a degraded path.
                 # Only fires when _nc_sn_trusted is explicitly False (set by
@@ -2869,6 +2876,10 @@ class FlowEngine:
                     or format_args.get("twilio_from")
                     or ""
                 )
+            # Ensure {full_name} always resolves in the LLM instruction — in phone-first
+            # mode no name has been collected yet so the key may be absent from session.
+            if step["state"] in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+                format_args.setdefault("full_name", "")
             # Inject available_days_json for PRESENT_TIMES steps so the LLM
             # has the slot data directly in the instruction rather than relying
             # on conversation history (tool results are not persisted there).
@@ -3072,6 +3083,12 @@ class FlowEngine:
                             _fail_msg = (
                                 f"I'm afraid I couldn't find that booking. "
                                 f"Could I just double-check — is the surname {_fail_last}?"
+                            )
+                        elif self.session.get("rc_phone_first"):
+                            # Phone-first mode: no name was ever collected — ask cleanly.
+                            _fail_msg = (
+                                "I couldn't find a booking on that number. "
+                                "What name was the booking made under?"
                             )
                         else:
                             _fail_msg = (
@@ -4783,6 +4800,14 @@ class FlowEngine:
                         self.session["flow_step"]  = _RESCHEDULE_LOOKUP_INDEX
                         self.session["state"]      = "LOOKUP_RESCHEDULE"
                         self.session["flow_state"] = "LOOKUP_RESCHEDULE"
+                        # Phone-first flag: signals that we entered LOOKUP_RESCHEDULE
+                        # without collecting a name.  BUG13 pre-LLM guard skips its
+                        # "route to name collection" path when this flag is set so the
+                        # LLM can do a phone-only lookup on the first attempt.
+                        if not self.session.get("full_name") and not (
+                            self.session.get("collected") or {}
+                        ).get("full_name"):
+                            self.session["rc_phone_first"] = True
                     else:
                         self.session["state"]      = "CONFIRM_BOOKING"
                         self.session["flow_state"] = "CONFIRM_BOOKING"
@@ -9630,6 +9655,9 @@ class FlowEngine:
                             )
                         self.session.pop("lookup_correction_mode", None)
                         self.session.pop("rc_recovery_step", None)
+                        # Clear phone-first flag — next LLM turn must use the
+                        # collected name in the lookup, not phone-only mode.
+                        self.session.pop("rc_phone_first", None)
                         _flush_tts()
                         await self.ask_current_question()
                         return
@@ -9680,15 +9708,22 @@ class FlowEngine:
                         return
 
                 # ── phone step / generic fallback ─────────────────────────────
-                # Bug 6: caller confirms the name is already correct — retry lookup unchanged
+                # If caller confirms the phone is the same, retrying lookup would
+                # produce the exact same failed result — exit gracefully instead.
                 if _is_confirmed:
                     self.session.pop("lookup_correction_mode", None)
                     self.session.pop("rc_recovery_step", None)
+                    self.session.pop("rc_phone_first", None)
                     logger.info(
-                        "[ms_flow] correction_mode: caller confirmed — retrying lookup"
+                        "[ms_flow] correction_mode: phone confirmed unchanged — graceful exit"
                     )
                     _flush_tts()
-                    await self.ask_current_question()
+                    _pf_exit_msg = (
+                        "I'm really sorry — I still can't locate that booking. "
+                        "Could you call the clinic directly and they'll sort it out for you?"
+                    )
+                    await self._tts.put(_pf_exit_msg)
+                    self.session["last_question"] = _pf_exit_msg
                     return
 
                 _correction = _parse_lookup_name_correction(text)
@@ -9714,6 +9749,9 @@ class FlowEngine:
                         )
                     self.session.pop("lookup_correction_mode", None)
                     self.session.pop("rc_recovery_step", None)
+                    # Clear phone-first flag — next LLM turn must use the
+                    # collected name in the lookup, not phone-only mode.
+                    self.session.pop("rc_phone_first", None)
                     logger.info("[ms_flow] correction applied — re-firing LLM for retry lookup")
                     _flush_tts()
                     await self.ask_current_question()
