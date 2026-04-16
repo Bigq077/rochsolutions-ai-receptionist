@@ -11548,18 +11548,12 @@ class FlowEngine:
                     "biomechanics": "biomechanical assessments",
                 }
                 if any(t in _svc_text for t in _SVC_AVAIL_TRIGGERS):
-                    if _specific_key == "sports_massage":
-                        # Clarify sport vs spa so the caller isn't confused.
-                        _svc_answer = (
-                            "Yes, we do \u2014 sports massage, which is a targeted "
-                            "deep-tissue treatment to support recovery and movement, "
-                            "rather than a spa-style relaxation massage."
-                        )
-                    else:
-                        _display = _SVC_DISPLAY_NAMES.get(
-                            _specific_key, _specific_key.replace("_", " ")
-                        )
-                        _svc_answer = f"Yes, we do offer {_display}. " + _svc_answer
+                    # Availability question — one short confirmation, no description.
+                    # Caller only wants to know if we offer it; detail is not asked for.
+                    _display = _SVC_DISPLAY_NAMES.get(
+                        _specific_key, _specific_key.replace("_", " ")
+                    )
+                    _svc_answer = f"Yes, we do offer {_display}."
                     logger.info(
                         "[ms_flow] _handle_mid_flow_interrupt: services availability-first %s",
                         _specific_key,
@@ -11658,12 +11652,15 @@ class FlowEngine:
             elif _mfi_alce and not _mfi_redd:
                 _mfi_loc_id = "alcester"
             else:
-                # No explicit clinic in utterance — prefer the last FAQ clinic
-                # context so "and can I park in the area?" inherits Redditch when
-                # the caller was just asking about the Redditch clinic.
-                _mfi_loc_id = (
-                    self.session.get("last_faq_loc_id")
-                    or (self.session.get("selected_location") or "").lower()
+                # No explicit clinic in utterance — use last FAQ clinic context
+                # (carry-over: "and can I park?" inherits the clinic just discussed).
+                # For multi-location clinics do NOT fall back to selected_location —
+                # that field defaults to "alcester" in the greeting phase even when
+                # the caller never named a clinic, which would silently give wrong data.
+                # For single-location clinics the fallback is harmless.
+                _mfi_loc_id = self.session.get("last_faq_loc_id") or (
+                    (self.session.get("selected_location") or "").lower()
+                    if len(_locs_mfi) == 1 else ""
                 )
             _mfi_loc = _locs_mfi.get(_mfi_loc_id) or (
                 # Single-location clinic — use the only location
@@ -11859,6 +11856,7 @@ class FlowEngine:
             # was already appended directly to the fast-path answer above (one TTS turn).
             # Only emit the separate re-anchor for non-offer states (mid-booking interrupts).
             _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
+            _anchor_spoken = ""  # always defined — prevents UnboundLocalError in logger below
             if _int_state in _offer_states:
                 # Re-anchor already baked into the fast-path answer; just update
                 # last_question so the silence handler replays the right prompt.
@@ -12870,6 +12868,8 @@ class FlowEngine:
                 "that's all", "thats all", "nothing else",
                 "thanks", "thank you", "bye", "goodbye", "no thank",
                 "cheers", "brilliant", "lovely", "perfect",
+                "call back", "i'll call", "i will call",
+                "sorted", "all sorted", "that's great", "thats great",
             )
             # Single-word yes ("yes" alone) → booking; embedded in longer correction → repair
             _words_set = set(text.split())
