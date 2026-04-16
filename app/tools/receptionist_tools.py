@@ -1698,15 +1698,19 @@ async def _lookup_appointment_acuity(
             phone_digits[-10:] if phone_digits else "(none)",
         )
 
-        # Code-level guard: all three identity fields must be present before searching
-        if not first_name or not last_name or not phone_digits:
+        # Code-level guard: phone number is always required.
+        # Name fields are optional — when both are empty the lookup runs in
+        # phone-only mode (reschedule phone-first path).
+        if not phone_digits:
             return {
                 "found": False,
                 "error": (
-                    "First name, surname, and phone number are all required. "
-                    "Collect any missing fields before calling this tool."
+                    "Phone number is required. "
+                    "Collect the caller's phone number before calling this tool."
                 ),
             }
+        # Phone-only mode: both name fields empty → skip name matching entirely.
+        _phone_only_mode = not first_name and not last_name
 
         now = datetime.now(LONDON_TZ)
         end = (now + timedelta(days=365)).date()
@@ -1746,14 +1750,16 @@ async def _lookup_appointment_acuity(
             appt_last    = (appt.get("lastName")  or "").strip().lower()
             appt_phone_d = "".join(c for c in (appt.get("phone") or "") if c.isdigit())
 
-            # Both first AND last name must match (substring, either direction)
+            # Both first AND last name must match (substring, either direction).
+            # In phone-only mode (both name fields empty) name_match is unconditionally
+            # True — the phone gate below is the sole discriminator.
             fn_sub = bool(first_name) and bool(appt_first) and (
                 first_name in appt_first or appt_first in first_name
             )
             ln_sub = bool(last_name) and bool(appt_last) and (
                 last_name in appt_last or appt_last in last_name
             )
-            name_match = fn_sub and ln_sub
+            name_match = _phone_only_mode or (fn_sub and ln_sub)
 
             # ── FIX 1: phone gate must fire even when Acuity has NO phone stored.
             # Previously, no-phone records bypassed the gate entirely on name alone,

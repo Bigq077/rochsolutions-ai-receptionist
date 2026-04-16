@@ -1738,7 +1738,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 1,
         "state": "CONFIRM_PHONE",
-        "question": "And was the number associated with your booking the one you're calling on right now?",
+        "question": "Is the phone number you're calling on the one linked to your booking?",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -1763,14 +1763,23 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "extract": "none",
         "llm_instruction": (
             "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
-            "Parse full_name='{full_name}' into first_name / last_name (split on the first space).\n\n"
-            "TURN 1 — Lookup:\n"
+            "TURN 1 — Phone-first lookup:\n"
             "  Say: 'Bear with me one moment.'\n"
-            "  Call lookup_appointment(first_name=<first>, last_name=<last>, "
+            "  Call lookup_appointment(first_name='', last_name='', "
             "phone='{phone_number}', location='{selected_location}').\n"
-            "  If found=true: say 'I've found your appointment — was it on [day_label] at [time_label]?'\n"
-            "  If found=false: say NOTHING — stay completely silent. "
-            "The system will handle the failure message automatically.\n\n"
+            "  If found=true: say 'I can see an appointment on [day_label] at [time_label] — "
+            "is that the one you\\'d like to reschedule?'\n"
+            "  If found=false: say 'I\\'m having a little trouble finding that booking. "
+            "Could I take your name please?' — then wait for the caller to give their name.\n\n"
+            "TURN 1b — Name fallback (only if phone-only lookup failed):\n"
+            "  Caller gives first_name and last_name → re-call lookup_appointment "
+            "with first_name=<first>, last_name=<last>, phone='{phone_number}', "
+            "location='{selected_location}'.\n"
+            "  If found=true: say 'I can see an appointment on [day_label] at [time_label] — "
+            "is that the one you\\'d like to reschedule?'\n"
+            "  If still found=false: say 'I\\'m sorry — I still can\\'t find that booking. "
+            "Could you call the clinic directly and they\\'ll sort it out for you?' "
+            "Then call log_call_outcome(outcome='transferred').\n\n"
             "TURN 2+ — Confirm:\n"
             "  Caller says YES → call confirm_appointment_found(). "
             "Then say NOTHING. Do NOT speak after calling confirm_appointment_found() — the system will handle it automatically.\n"
@@ -11494,7 +11503,10 @@ class FlowEngine:
             self._active_flow = BOOKING_FLOW
         # Track the most-recent intent so infer_call_outcome sees mid-call switches
         self.session["intent"] = intent
-        self.session["flow_step"] = 0
+        # Reschedule: phone-first architecture — start at CONFIRM_PHONE (step 1),
+        # skipping COLLECT_NAME_RESCHEDULE.  Cancel keeps step 0 (name-first) since
+        # CANCEL_FLOW is the same object as RESCHEDULE_FLOW and cancel behavior is unchanged.
+        self.session["flow_step"] = 1 if intent == "reschedule" else 0
         # Multi-location clinics (theorem_v2): ask caller which clinic before starting flow.
         # Single-location clinics: hardcode alcester as before — zero behaviour change.
         #
