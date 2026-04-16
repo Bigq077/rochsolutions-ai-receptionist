@@ -2746,6 +2746,7 @@ class FlowEngine:
                         from app.media_streams.name_collector import NameCollector as _NameCollBug13
                         _NameCollBug13(self.session).reset()
                         self.session.pop("_nc_trust_repair_attempted", None)
+                        self.session.pop("rc_recovery_step", None)
                     return
                 # ── Name-trust preflight gate ────────────────────────────────
                 # Blocks lookup when surname was captured via a degraded path.
@@ -3044,22 +3045,54 @@ class FlowEngine:
                         or ""
                     ).strip()
                     _fail_parts = _fail_full.split()
-                    _fail_first = _fail_parts[0] if _fail_parts else ""
-                    _fail_last  = _fail_parts[-1] if len(_fail_parts) > 1 else ""
-                    # BUG 14 fix: format as confirmation question using extracted name tokens
-                    if _fail_first and _fail_last:
-                        _fail_msg = (
-                            f"I have the booking under {_fail_first} {_fail_last} — is that correct?"
-                        )
-                    elif _fail_full:
-                        _fail_msg = (
-                            f"I have the booking under {_fail_full} — is that correct?"
-                        )
+                    _fail_last  = _fail_parts[-1] if _fail_parts else ""
+
+                    # Recovery ladder: surname → location → phone
+                    _RC_LADDER = ("surname", "location", "phone")
+                    _prev_step = self.session.get("rc_recovery_step")
+                    if _prev_step in _RC_LADDER:
+                        _prev_idx = _RC_LADDER.index(_prev_step)
+                        _next_idx = min(_prev_idx + 1, len(_RC_LADDER) - 1)
                     else:
+                        _next_idx = 0
+                    _rc_step = _RC_LADDER[_next_idx]
+                    self.session["rc_recovery_step"] = _rc_step
+
+                    if _rc_step == "surname":
+                        if _fail_last:
+                            _fail_msg = (
+                                f"I'm afraid I couldn't find that booking. "
+                                f"Could I just double-check — is the surname {_fail_last}?"
+                            )
+                        else:
+                            _fail_msg = (
+                                "I'm afraid I couldn't find that booking. "
+                                "Could you confirm the surname the booking was made under?"
+                            )
+                    elif _rc_step == "location":
+                        _loc = self.session.get("selected_location", "")
+                        if _loc == "alcester":
+                            _other = "Redditch"
+                        elif _loc == "redditch":
+                            _other = "Alcester"
+                        else:
+                            _other = None
+                        if _other:
+                            _fail_msg = (
+                                f"I still can't find it at {_loc.title()}. "
+                                f"Could the booking be at {_other} instead?"
+                            )
+                        else:
+                            _fail_msg = (
+                                "I still can't find that booking. "
+                                "Is it at the Alcester or Redditch clinic?"
+                            )
+                    else:  # phone
                         _fail_msg = (
-                            "Sorry — I couldn't find that appointment. "
-                            "Could you give me the first name and surname the booking was made under?"
+                            "I'm still not finding it. "
+                            "Could you confirm the phone number on the booking?"
                         )
+
                     # Drain any LLM output already queued to TTS
                     while not self._tts.empty():
                         try:
@@ -3078,6 +3111,7 @@ class FlowEngine:
                             self._tts.get_nowait()
                         except asyncio.QueueEmpty:
                             break
+                    self.session.pop("rc_recovery_step", None)
                     self.session["flow_step"] = step["step"] + 1
                     self.session["question_asked_this_turn"] = False
                     logger.info(
@@ -9522,22 +9556,129 @@ class FlowEngine:
             # Deterministic name correction pre-check — runs before LLM re-fire.
             # Active only when lookup_correction_mode is set (i.e. a previous lookup failed).
             if self.session.get("lookup_correction_mode"):
-                # Bug 6: caller confirms the name is already correct — retry lookup unchanged
                 _lc_corr = text.strip().lower()
                 _CORR_CONFIRM = (
                     "yes", "yeah", "yep", "correct", "that's right", "thats right",
                     "it's right", "it is right", "yes it is", "that's correct",
                     "yes it's", "yes that's",
                 )
-                if any(p in _lc_corr for p in _CORR_CONFIRM):
-                    self.session.pop("lookup_correction_mode", None)
-                    logger.info(
-                        "[ms_flow] correction_mode: caller confirmed name unchanged — retrying lookup"
-                    )
-                    # BUG 15 fix: flush any stale prompts before re-firing LLM
+                _is_confirmed = any(p in _lc_corr for p in _CORR_CONFIRM)
+                _rc_step = self.session.get("rc_recovery_step", "surname")
+
+                def _flush_tts():
                     while not self._tts.empty():
                         try: self._tts.get_nowait()
                         except Exception: break
+
+                # ── Step-specific branches ─────────────────────────────────────
+                if _rc_step == "surname":
+                    if _is_confirmed:
+                        # Surname confirmed unchanged — don't retry the same lookup.
+                        # Advance to location challenge.
+                        self.session["rc_recovery_step"] = "location"
+                        _loc = self.session.get("selected_location", "")
+                        if _loc == "alcester":
+                            _other = "Redditch"
+                        elif _loc == "redditch":
+                            _other = "Alcester"
+                        else:
+                            _other = None
+                        if _other:
+                            _loc_q = (
+                                f"Could the booking be at {_other} rather than {_loc.title()}?"
+                            )
+                        else:
+                            _loc_q = "Is the booking at the Alcester or Redditch clinic?"
+                        _flush_tts()
+                        await self._tts.put(_loc_q)
+                        self.session["last_question"] = _loc_q
+                        logger.info(
+                            "[ms_flow] recovery surname=confirmed → advancing to location challenge"
+                        )
+                        return
+
+                    # Surname correction supplied — update name and retry lookup
+                    _correction = _parse_lookup_name_correction(text)
+                    if _correction:
+                        col = self.session.setdefault("collected", {})
+                        if _correction.startswith("__SURNAME__"):
+                            _new_surname = _correction[len("__SURNAME__"):]
+                            _existing_full = (col.get("full_name") or "").strip()
+                            _first = _existing_full.split()[0] if _existing_full else ""
+                            _combined = f"{_first} {_new_surname}".strip() if _first else _new_surname
+                            col["full_name"] = _combined
+                            self.session["full_name"] = _combined
+                            logger.info(
+                                "[ms_flow] recovery/surname correction: %r → full_name=%r",
+                                text[:50], _combined,
+                            )
+                        else:
+                            col["full_name"] = _correction
+                            self.session["full_name"] = _correction
+                            logger.info(
+                                "[ms_flow] recovery/surname full-name correction: %r → full_name=%r",
+                                text[:50], _correction,
+                            )
+                        self.session.pop("lookup_correction_mode", None)
+                        self.session.pop("rc_recovery_step", None)
+                        _flush_tts()
+                        await self.ask_current_question()
+                        return
+                    else:
+                        _reask = (
+                            "Sorry — I didn't quite catch that. "
+                            "Could you give me the surname the booking was made under?"
+                        )
+                        _flush_tts()
+                        await self._tts.put(_reask)
+                        self.session["last_question"] = _reask
+                        return
+
+                elif _rc_step == "location":
+                    if _is_confirmed:
+                        # Location confirmed unchanged — advance to phone challenge
+                        self.session["rc_recovery_step"] = "phone"
+                        _phone_q = (
+                            "I'm still not finding it. "
+                            "Could you confirm the phone number on the booking?"
+                        )
+                        _flush_tts()
+                        await self._tts.put(_phone_q)
+                        self.session["last_question"] = _phone_q
+                        logger.info(
+                            "[ms_flow] recovery location=confirmed → advancing to phone challenge"
+                        )
+                        return
+
+                    # Try to resolve a new clinic from the utterance
+                    _loc_result = _resolve_clinic(_lc_corr, context="ask_location")
+                    if _loc_result["status"] == "resolved":
+                        self.session["selected_location"] = _loc_result["location"]
+                        logger.info(
+                            "[ms_flow] recovery/location: resolved %r → %r",
+                            text[:50], _loc_result["location"],
+                        )
+                        self.session.pop("lookup_correction_mode", None)
+                        self.session.pop("rc_recovery_step", None)
+                        _flush_tts()
+                        await self.ask_current_question()
+                        return
+                    else:
+                        _reask = "Is the booking at the Alcester or Redditch clinic?"
+                        _flush_tts()
+                        await self._tts.put(_reask)
+                        self.session["last_question"] = _reask
+                        return
+
+                # ── phone step / generic fallback ─────────────────────────────
+                # Bug 6: caller confirms the name is already correct — retry lookup unchanged
+                if _is_confirmed:
+                    self.session.pop("lookup_correction_mode", None)
+                    self.session.pop("rc_recovery_step", None)
+                    logger.info(
+                        "[ms_flow] correction_mode: caller confirmed — retrying lookup"
+                    )
+                    _flush_tts()
                     await self.ask_current_question()
                     return
 
@@ -9563,12 +9704,9 @@ class FlowEngine:
                             text[:50], _correction,
                         )
                     self.session.pop("lookup_correction_mode", None)
-                    # Re-fire the LLM with the updated name so it retries lookup_appointment
+                    self.session.pop("rc_recovery_step", None)
                     logger.info("[ms_flow] correction applied — re-firing LLM for retry lookup")
-                    # BUG 15 fix: flush stale prompts from previous invalid state
-                    while not self._tts.empty():
-                        try: self._tts.get_nowait()
-                        except Exception: break
+                    _flush_tts()
                     await self.ask_current_question()
                     return
                 else:
@@ -9577,6 +9715,7 @@ class FlowEngine:
                         "Sorry — I didn't quite catch that. "
                         "Could you give me the first name and surname the booking was made under?"
                     )
+                    _flush_tts()
                     await self._tts.put(_corr_reask)
                     self.session["last_question"] = _corr_reask
                     return
