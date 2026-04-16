@@ -635,15 +635,52 @@ class LLMStream:
 
             await save_session(call_sid, session)
 
-            # ── Deterministic failure: suppress post-tool LLM speech ─────
-            # If a lookup tool set rc_lookup_failed=True, the post-LLM block
-            # in flow.py will speak a deterministic failure message.  Break now
-            # so the loop does NOT start another LLM call that would stream a
-            # second failure message to TTS before the drain can run.
+            # ── Deterministic post-tool speech gates ─────────────────────
+            # flow.py owns the single spoken output for each of these states.
+            # Breaking here prevents the LLM's iteration-2 text from reaching
+            # tts_text_queue before flow.py's drain/deterministic-prompt runs.
+            # Without this break, chunks streamed during iteration 2 are
+            # consumed by the TTS coroutine before the drain executes, making
+            # the drain a no-op and causing duplicate speech.
+
             if session.get("rc_lookup_failed"):
+                # flow.py rc_lookup_failed handler emits the recovery prompt.
                 logger.info(
-                    "[ms_llm] rc_lookup_failed detected after tool — "
-                    "suppressing post-tool LLM response to avoid duplicate TTS"
+                    "[ms_llm] rc_lookup_failed after tool — "
+                    "suppressing post-tool LLM response"
+                )
+                break
+
+            if session.get("rc_lookup_just_succeeded"):
+                # flow.py rc_lookup_just_succeeded handler (ask_current_question)
+                # will drain TTS and emit a single deterministic confirmation.
+                logger.info(
+                    "[ms_llm] rc_lookup_just_succeeded after tool — "
+                    "suppressing post-tool LLM response"
+                )
+                break
+
+            if session.get("rc_appointment_confirmed"):
+                # flow.py rc_appointment_confirmed handler advances the flow and
+                # asks CONFIRM_RESCHEDULE_OR_CANCEL — no LLM speech needed.
+                logger.info(
+                    "[ms_llm] rc_appointment_confirmed after tool — "
+                    "suppressing post-tool LLM response"
+                )
+                break
+
+            # PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE: the deterministic path in
+            # ask_current_question() always emits the day phrase — LLM must be
+            # silent after check_availability returns.  The instruction says
+            # "say NOTHING further" but is not always honoured; enforce it here.
+            _pd_suppress_states = {"PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE"}
+            if (
+                session.get("state") in _pd_suppress_states
+                or session.get("flow_state") in _pd_suppress_states
+            ):
+                logger.info(
+                    "[ms_llm] PRESENT_DAYS state after tool — "
+                    "suppressing post-tool LLM response"
                 )
                 break
 

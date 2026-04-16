@@ -2026,6 +2026,33 @@ async def _lookup_appointment_acuity(
                 "_lookup_appointment_acuity: near-match found for %r %r", first_name, last_name
             )
 
+        # Phone-only mode: when caller provided no name, all phone-matching
+        # appointments pass the name gate unconditionally.  Filter out obvious
+        # placeholder rows ("That That", "Test Test", single-token junk) so a
+        # real booking always wins over a junk row with an earlier date.
+        if _phone_only_mode and len(future_matches) > 1:
+            _JUNK_WORDS = {"test", "that", "unknown", "none", "na", "tbd", "xxx", "dummy"}
+
+            def _is_junk(appt: dict) -> bool:
+                _af = (appt.get("firstName") or "").strip().lower()
+                _al = (appt.get("lastName")  or "").strip().lower()
+                if not _af and not _al:
+                    return True   # completely blank name record
+                if _af == _al and _af:
+                    return True   # same word repeated: "That That", "Test Test"
+                if _af in _JUNK_WORDS or _al in _JUNK_WORDS:
+                    return True
+                return False
+
+            _legit = [(dt, a) for dt, a in future_matches if not _is_junk(a)]
+            if _legit:
+                _before = len(future_matches)
+                future_matches = _legit
+                logger.info(
+                    "_lookup_appt phone-only: junk filter reduced %d matches → %d legitimate",
+                    _before, len(_legit),
+                )
+
         # Nearest first
         future_matches.sort(key=lambda x: x[0])
         best_dt, best_appt = future_matches[0]
