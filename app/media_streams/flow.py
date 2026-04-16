@@ -9445,6 +9445,59 @@ class FlowEngine:
 
         # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
         if step["state"] == "FAQ_BOOKING_OFFER":
+            # ── Pending location clarification: caller is responding to
+            #    "Sure — is that for our Alcester or Redditch clinic?" ──────
+            _fbo_pending_loc = self.session.get("_faq_loc_pending_intent")
+            if _fbo_pending_loc:
+                _fbo_pend_text = text.strip().lower()
+                _fbo_pend_redd = any(p in _fbo_pend_text for p in (
+                    "redditch", "reditch", "reddish", "reddit",
+                    "red itch", "red ditch", "red-ditch", "bromsgrove",
+                ))
+                _fbo_pend_alce = any(p in _fbo_pend_text for p in (
+                    "alcester", "greig", "kinwarton",
+                ))
+                if _fbo_pend_redd and not _fbo_pend_alce:
+                    _fbo_pend_clinic = "redditch"
+                elif _fbo_pend_alce and not _fbo_pend_redd:
+                    _fbo_pend_clinic = "alcester"
+                else:
+                    _fbo_pend_clinic = None
+                if _fbo_pend_clinic:
+                    # Caller named a clinic — resolve and answer
+                    self.session["last_faq_loc_id"] = _fbo_pend_clinic
+                    _fbo_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
+                    self.session.pop("_faq_loc_pending_intent", None)
+                    _fbo_synth_tx = (
+                        f"{_fbo_pend_sub} {_fbo_pend_clinic}".strip()
+                        if _fbo_pend_sub else _fbo_pend_clinic
+                    )
+                    self.session["_faq_ans_intent"] = _fbo_pending_loc
+                    self.session["_faq_ans_at"]     = time.time()
+                    await self._handle_mid_flow_interrupt(_fbo_pending_loc, _fbo_synth_tx)
+                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: pending location resolved → %s for %s",
+                        _fbo_pending_loc, _fbo_pend_clinic,
+                    )
+                    return
+                elif len(text.strip().split()) <= 3:
+                    # Short utterance, no clinic detected — re-ask once
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: location pending, no clinic in %r — re-asking",
+                        text[:40],
+                    )
+                    await self._tts.put("Sorry — did you say Alcester or Redditch?")
+                    return
+                else:
+                    # Long response — caller has moved on; clear pending and continue
+                    self.session.pop("_faq_loc_pending_intent", None)
+                    self.session.pop("_faq_loc_pending_sub", None)
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: location pending cleared (long response)"
+                    )
+                    # fall through to normal FAQ_BOOKING_OFFER handling
+
             # Weak acknowledgements alone ("yeah", "okay", "understood" etc.) must NOT
             # route to LLM — the caller is still processing the FAQ answer.
             # Inert: hold state and let the silence handler re-prompt if needed.
@@ -9542,11 +9595,15 @@ class FlowEngine:
                 self.session["_faq_ans_intent"] = _fbo_intent
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
-                # Store a fresh neutral follow-up — not the answer body.
-                # Storing the answer in last_question would cause the silence handler
-                # to re-read the full FAQ answer aloud on the next silence event,
-                # and the NEXT turn's re-anchor would replay it as stale content.
-                self.session["last_question"] = "Anything else you'd like to ask?"
+                # If a location clarification was emitted, last_question is already
+                # the clarification text ("Alcester or Redditch?") — don't overwrite.
+                if not self.session.get("_faq_loc_pending_intent"):
+                    # Store a fresh neutral follow-up — not the answer body.
+                    # Storing the answer in last_question would cause the silence
+                    # handler to re-read the full FAQ answer aloud on the next
+                    # silence event, and the NEXT turn's re-anchor would replay
+                    # it as stale content.
+                    self.session["last_question"] = "Anything else you'd like to ask?"
                 return
 
             # Reset follow-up count on any non-FAQ answer
@@ -9572,6 +9629,56 @@ class FlowEngine:
 
         # ── GENERAL_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────
         if step["state"] == "GENERAL_BOOKING_OFFER":
+            # ── Pending location clarification: caller is responding to
+            #    "Sure — is that for our Alcester or Redditch clinic?" ──────
+            _gbo_pending_loc = self.session.get("_faq_loc_pending_intent")
+            if _gbo_pending_loc:
+                _gbo_pend_text = text.strip().lower()
+                _gbo_pend_redd = any(p in _gbo_pend_text for p in (
+                    "redditch", "reditch", "reddish", "reddit",
+                    "red itch", "red ditch", "red-ditch", "bromsgrove",
+                ))
+                _gbo_pend_alce = any(p in _gbo_pend_text for p in (
+                    "alcester", "greig", "kinwarton",
+                ))
+                if _gbo_pend_redd and not _gbo_pend_alce:
+                    _gbo_pend_clinic = "redditch"
+                elif _gbo_pend_alce and not _gbo_pend_redd:
+                    _gbo_pend_clinic = "alcester"
+                else:
+                    _gbo_pend_clinic = None
+                if _gbo_pend_clinic:
+                    self.session["last_faq_loc_id"] = _gbo_pend_clinic
+                    _gbo_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
+                    self.session.pop("_faq_loc_pending_intent", None)
+                    _gbo_synth_tx = (
+                        f"{_gbo_pend_sub} {_gbo_pend_clinic}".strip()
+                        if _gbo_pend_sub else _gbo_pend_clinic
+                    )
+                    self.session["_faq_ans_intent"] = _gbo_pending_loc
+                    self.session["_faq_ans_at"]     = time.time()
+                    await self._handle_mid_flow_interrupt(_gbo_pending_loc, _gbo_synth_tx)
+                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    logger.info(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: pending location resolved → %s for %s",
+                        _gbo_pending_loc, _gbo_pend_clinic,
+                    )
+                    return
+                elif len(text.strip().split()) <= 3:
+                    logger.info(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: location pending, no clinic in %r — re-asking",
+                        text[:40],
+                    )
+                    await self._tts.put("Sorry — did you say Alcester or Redditch?")
+                    return
+                else:
+                    self.session.pop("_faq_loc_pending_intent", None)
+                    self.session.pop("_faq_loc_pending_sub", None)
+                    logger.info(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: location pending cleared (long response)"
+                    )
+                    # fall through to normal GENERAL_BOOKING_OFFER handling
+
             # Pure acknowledgements ("okay", "okay perfect", "alright", "that's understood")
             # are inert — the caller is processing the answer, not asking a new question.
             # Do nothing: silence handler will re-ask if needed.
@@ -9622,7 +9729,10 @@ class FlowEngine:
                 self.session["_faq_ans_intent"] = _gbo_intent
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
-                self.session["last_question"] = "Anything else you'd like to ask?"
+                # If a location clarification was emitted, last_question already
+                # holds the clarification text — don't overwrite with "Anything else?"
+                if not self.session.get("_faq_loc_pending_intent"):
+                    self.session["last_question"] = "Anything else you'd like to ask?"
                 return
             # general_query only fires for genuine questions (contains a question signal).
             # Without a signal, "okay" / "okay that's fine" etc. reach here and must not
@@ -9644,7 +9754,8 @@ class FlowEngine:
                 self.session["_faq_ans_intent"] = _gbo_intent
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
-                self.session["last_question"] = "Anything else you'd like to ask?"
+                if not self.session.get("_faq_loc_pending_intent"):
+                    self.session["last_question"] = "Anything else you'd like to ask?"
                 return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
@@ -11806,9 +11917,45 @@ class FlowEngine:
             )
             if _specific_key:
                 _svc_answer = _SPECIFIC_SERVICE_ANSWERS[_specific_key]
-                logger.info(
-                    "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
+                # ── Availability-first: if the caller asked whether we offer
+                # the service (not just for a description), lead with a direct
+                # yes-confirmation before any explanatory detail.
+                # Applies to every specific service uniformly.
+                _SVC_AVAIL_TRIGGERS = (
+                    "do you do", "do you offer", "do you have", "do you provide",
+                    "can i get", "can you do", "can you offer", "is it available",
+                    "do you run", "do you carry out", "is that a service",
+                    "is that something", "can i book a", "do you see",
                 )
+                _SVC_DISPLAY_NAMES = {
+                    "shockwave":    "shockwave therapy",
+                    "acupuncture":  "acupuncture",
+                    "laser":        "laser therapy",
+                    "sports_massage": "sports massage",
+                    "pilates":      "Pilates classes",
+                    "biomechanics": "biomechanical assessments",
+                }
+                if any(t in _svc_text for t in _SVC_AVAIL_TRIGGERS):
+                    if _specific_key == "sports_massage":
+                        # Clarify sport vs spa so the caller isn't confused.
+                        _svc_answer = (
+                            "Yes, we do \u2014 sports massage, which is a targeted "
+                            "deep-tissue treatment to support recovery and movement, "
+                            "rather than a spa-style relaxation massage."
+                        )
+                    else:
+                        _display = _SVC_DISPLAY_NAMES.get(
+                            _specific_key, _specific_key.replace("_", " ")
+                        )
+                        _svc_answer = f"Yes, we do offer {_display}. " + _svc_answer
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: services availability-first %s",
+                        _specific_key,
+                    )
+                else:
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
+                    )
             else:
                 # Generic overview: full list if explicitly requested, short summary otherwise.
                 _FULL_LIST_PHRASES = (
@@ -11943,14 +12090,25 @@ class FlowEngine:
                         _mfi_ans = _fa.split(".")[0].strip() + ("." if _fa else "")
                         self.session["last_faq_sub"] = "address"
                 else:
-                    # Two clinics — give short address for each
-                    _mfi_parts = []
-                    for _ld in _locs_mfi.values():
-                        _fa = _ld.get("address", "")
-                        if _fa:
-                            _mfi_parts.append(_fa.split(".")[0].strip() + ".")
-                    _mfi_ans = "  ".join(_mfi_parts)
+                    # No clinic established + multi-location clinic: asking for
+                    # parking, transport, or address for an unspecified clinic
+                    # cannot be answered accurately.  Ask which clinic the caller
+                    # means instead of guessing or combining both answers.
+                    _loc_clar = "Sure — is that for our Alcester or Redditch clinic?"
+                    await self._tts.put(_loc_clar)
+                    self.session["_faq_loc_pending_intent"] = intent
+                    self.session["_faq_loc_pending_sub"] = (
+                        "parking" if _parking_q else
+                        "transport" if _transport_q else
+                        "address"
+                    )
+                    self.session["last_question"] = _loc_clar
                     self.session["last_faq_sub"] = "address"
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: faq_location — "
+                        "no clinic established, clarification emitted"
+                    )
+                    return  # skip standard re-anchor; clarification IS the re-anchor
             if _mfi_ans:
                 # Persist clinic + intent for carry-over and correction recovery
                 # (BUG 1: follow-up inherits clinic; BUG 2: correction reruns intent)

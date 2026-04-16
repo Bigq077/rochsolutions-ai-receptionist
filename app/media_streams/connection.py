@@ -848,6 +848,17 @@ class SilenceHandler:
         _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
         if _wait <= 0:
             return
+        # Relax watchdog patience in FAQ offer states.  After the AI finishes
+        # speaking a FAQ answer + re-anchor, the caller naturally pauses to
+        # process the information before deciding to ask another question or
+        # proceed to booking.  A 3-second deadline fires too quickly here and
+        # produces a spurious "Sorry, I didn't catch that" on top of the silence.
+        # 8 seconds matches the extra-slow PRESENT_DAYS/TIMES threshold and gives
+        # the caller comfortable thinking time without feeling abandoned.
+        _sess_faq_w = self._get_session() if self._get_session else {}
+        if (_sess_faq_w or {}).get("state") in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
+            _wait = max(_wait, 8.0)
+            logger.info("[ms_watchdog] FAQ offer state — extended wait to %.1fs", _wait)
 
         # Ownership check: yield once so any pending cancellation of a superseded
         # task is delivered before we log WATCHDOG_START.  If a newer watchdog task
