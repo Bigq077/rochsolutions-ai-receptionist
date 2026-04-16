@@ -3148,20 +3148,31 @@ class FlowEngine:
                             return f"{_h12}:{_m:02d} {_per}" if _m else f"{_h12} {_per}"
                         except Exception:
                             return t
-                    _jss_time_s = _spoken_time(_jss_time) if _jss_time else ""
-                    _jss_loc_s  = f" in {_jss_loc}" if _jss_loc else ""
+                    _jss_time_s  = _spoken_time(_jss_time) if _jss_time else ""
+                    _jss_loc_s   = f" in {_jss_loc}" if _jss_loc else ""
+                    _jss_is_cancel = self.session.get("intent") == "cancel"
                     if _jss_day and _jss_time_s:
-                        _jss_q = (
-                            f"I found an appointment for {_jss_day} at {_jss_time_s}"
-                            f"{_jss_loc_s} — is that the one you'd like to reschedule?"
-                        )
-                        _jss_short = (
-                            f"Sure — {_jss_day} at {_jss_time_s}{_jss_loc_s}. "
-                            f"Is that the appointment you'd like to reschedule?"
-                        )
+                        if _jss_is_cancel:
+                            _jss_q = (
+                                f"I found an appointment for {_jss_day} at {_jss_time_s}"
+                                f"{_jss_loc_s} — is that the right one?"
+                            )
+                            _jss_short = (
+                                f"Sure — {_jss_day} at {_jss_time_s}{_jss_loc_s}. "
+                                f"Is that the right appointment?"
+                            )
+                        else:
+                            _jss_q = (
+                                f"I found an appointment for {_jss_day} at {_jss_time_s}"
+                                f"{_jss_loc_s} — is that the one you'd like to reschedule?"
+                            )
+                            _jss_short = (
+                                f"Sure — {_jss_day} at {_jss_time_s}{_jss_loc_s}. "
+                                f"Is that the appointment you'd like to reschedule?"
+                            )
                     else:
-                        _jss_q     = "I found your appointment — is that the one you'd like to reschedule?"
-                        _jss_short = "Is that the appointment you'd like to reschedule?"
+                        _jss_q     = "I found your appointment — is that the right one?"
+                        _jss_short = "Is that the right appointment?"
                     # Drain anything the LLM may have queued (might say wrong name/date).
                     while not self._tts.empty():
                         try:
@@ -3887,6 +3898,32 @@ class FlowEngine:
             "[ms_flow] handle_transcript entry: flow_step=%d state=%s transcript=%r",
             self.session.get("flow_step", 0), current_state, transcript[:60],
         )
+
+        # ── MID-FLOW PATH SWITCH ─────────────────────────────────────────────────
+        # Caller can switch between reschedule and cancel at any point mid-flow.
+        # Reschedule → cancel: detected here for PRESENT_DAYS/TIMES/CONFIRM_RESCHEDULE.
+        # Cancel → reschedule: already handled by CONFIRM_RESCHEDULE_OR_CANCEL handler.
+        _MID_CANCEL_STATES = {
+            "PRESENT_DAYS_RESCHEDULE", "PRESENT_TIMES_RESCHEDULE", "CONFIRM_RESCHEDULE",
+        }
+        if current_state in _MID_CANCEL_STATES:
+            _MID_CANCEL_PHRASES = (
+                "cancel", "cancel it", "cancel the appointment", "cancel my appointment",
+                "want to cancel", "i'd like to cancel", "id like to cancel",
+                "actually cancel", "just cancel", "please cancel",
+                "don't want to reschedule", "dont want to reschedule",
+                "not reschedule", "no reschedule", "no longer reschedule",
+            )
+            if any(p in text for p in _MID_CANCEL_PHRASES):
+                self.session["intent"] = "cancel"
+                self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
+                self.session["question_asked_this_turn"] = False
+                logger.info(
+                    "[ms_flow] mid-flow cancel switch from %s → CONFIRM_CANCEL (idx=%d)",
+                    current_state, _CONFIRM_CANCEL_INDEX,
+                )
+                await self.ask_current_question()
+                return
 
         # ── CALLER CLASSIFICATION (first substantive utterance only) ──────────
         # Runs before any state-machine logic so professional callers are routed
