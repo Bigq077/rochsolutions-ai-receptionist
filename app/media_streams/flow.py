@@ -3346,6 +3346,12 @@ class FlowEngine:
                 self.session["phone_confirm_armed"] = True
             else:
                 question_text = step["question"]
+            # Always arm the YES/NO gate for CONFIRM_PHONE states, regardless of
+            # whether phone_from_twilio is set.  The elif branch above only arms
+            # when Twilio caller-ID is present; without this fallback arm the gate
+            # stays False and every caller response re-asks indefinitely.
+            if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+                self.session["phone_confirm_armed"] = True
             # Post-name-recovery: fold any deferred transition prefix into the
             # question so both are spoken as ONE utterance.  This eliminates the
             # three-item stack (preamble / bridge / question) that occurs after
@@ -4797,13 +4803,20 @@ class FlowEngine:
             _HG_YES = (
                 "yes", "yeah", "yep", "yup", "yeh", "ya",
                 "that's right", "thats right",
+                "that is right",                    # "that is" variant of "that's right"
                 "that's correct", "thats correct",
+                "that is correct",                  # "that is" variant of "that's correct"
                 "that's fine", "thats fine", "that's ok", "thats ok",
                 "use this number", "yes use this number",
                 "use my number", "yes use my number",
                 "same number", "use my current number",
+                "this number", "this one",          # bare "this number" / "this one"
+                "the number i'm calling on",        # literal restatement of the question
+                "number i'm calling on",
+                "the number i am calling on",
                 # PART 2: additional strong affirmatives from live calls
-                "correct number",        # "correct number" / "yes correct number"
+                "correct",                          # standalone "correct" (safe: gate is armed)
+                "correct number",
                 "yes please", "yeah please",
                 # Partial / scaffold-like affirmatives where STT finalises before
                 # the caller finishes the sentence — treat as YES immediately.
@@ -12890,15 +12903,33 @@ class FlowEngine:
             return None
 
         # ----- phone_confirm: yes/no to using the Twilio caller-ID number --
+        # Keep in sync with _HG_YES / _HG_NO_PHRASES in the CONFIRM_PHONE
+        # hard-gate handler so CONFIRM_PHONE_RETURNING has the same coverage.
         if method == "phone_confirm":
             yes_p = (
-                "yes", "yes use this number", "use this number", "same number",
-                "that's fine", "thats fine", "correct", "yep", "yeah",
+                "yes", "yeah", "yep", "yup", "yeh", "ya",
+                "yes use this number", "use this number", "same number",
+                "use my number", "use my current number",
+                "this number", "this one",
+                "the number i'm calling on", "number i'm calling on",
+                "the number i am calling on",
+                "that's fine", "thats fine", "that's ok", "thats ok",
+                "that's right", "thats right", "that is right",
+                "that's correct", "thats correct", "that is correct",
+                "correct", "correct number",
+                "it is", "yes it is", "yeah it is",
+                "go ahead", "use this", "can use this",
+                "yes please", "yeah please",
+                "it should", "should be",
+                "that's the one", "thats the one",
             )
             no_p = (
-                "no", "no use a different number", "different number",
+                "no", "nope", "nah",
+                "no use a different number", "different number",
                 "another number", "no i'll give you another one",
                 "no i'll give you another", "use a different number",
+                "wrong number", "not the right number",
+                "not the best number", "different phone",
             )
             for p in yes_p:
                 if p in text:
