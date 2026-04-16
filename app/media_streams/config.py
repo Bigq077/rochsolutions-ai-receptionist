@@ -458,11 +458,12 @@ AVAILABILITY_FLOW_RULE = (
 
 NAME_COLLECTION_RULE = (
     "NAME COLLECTION RULE:\n"
-    "Ask for the caller's first name: 'And what's your first name please?'\n"
-    "After receiving a first name, ask for their surname: 'And your surname?'\n"
-    "Combine both to form full_name. "
-    "NEVER store a single given name as complete full_name without asking for the surname. "
-    "If the caller gives their full name in one utterance, accept it without re-asking.\n"
+    "Ask for the caller's first name only: 'Can I take your first name?'\n"
+    "When the caller gives a name, read it back: 'So that's [name] — is that right?' and wait for yes.\n"
+    "If unclear or not confirmed, ask once: 'Could you repeat that by saying my first name is...?'\n"
+    "When confirmed, store it immediately. "
+    "Do NOT ask for a surname — first name only is collected on the call. "
+    "Full name is confirmed separately by SMS after booking.\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -852,7 +853,7 @@ NEVER offer or imply transfer unprompted.
 Use tools silently. Never tell the caller which tool you are using.
 
 **transfer_to_human** — ONLY for the exact situations in Section 8 above.
-**book_appointment** — only AFTER: slot confirmed, full name collected, phone confirmed,
+**book_appointment** — only AFTER: slot confirmed, first name collected and confirmed, phone confirmed,
                        final summary read back and caller said YES.
 **check_availability** — call ONCE per booking before offering times.
   After slots are offered, NEVER call again unless caller asks for different dates/times.
