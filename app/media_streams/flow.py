@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from app.phrases import RETRY_PHRASES
@@ -3137,19 +3138,30 @@ class FlowEngine:
                         self.session.get("rc_stage") == "lookup_done":
                     _jss_day  = self.session.get("reschedule_appt_day_label", "")
                     _jss_time = self.session.get("reschedule_appt_time_label", "")
-                    _jss_type = self.session.get("reschedule_appt_type", "appointment")
                     _jss_loc  = (self.session.get("selected_location") or "").title()
-                    if _jss_day and _jss_time:
+                    # Convert "17:00" → "5 PM", "09:30" → "9:30 AM" for natural speech
+                    def _spoken_time(t: str) -> str:
+                        try:
+                            _h, _m = map(int, t.split(":"))
+                            _per = "AM" if _h < 12 else "PM"
+                            _h12 = _h % 12 or 12
+                            return f"{_h12}:{_m:02d} {_per}" if _m else f"{_h12} {_per}"
+                        except Exception:
+                            return t
+                    _jss_time_s = _spoken_time(_jss_time) if _jss_time else ""
+                    _jss_loc_s  = f" in {_jss_loc}" if _jss_loc else ""
+                    if _jss_day and _jss_time_s:
                         _jss_q = (
-                            f"I found your {_jss_type} for {_jss_day} at {_jss_time}"
-                            + (f" at {_jss_loc}" if _jss_loc else "")
-                            + " — is that the one you'd like to reschedule?"
+                            f"I found an appointment for {_jss_day} at {_jss_time_s}"
+                            f"{_jss_loc_s} — is that the one you'd like to reschedule?"
+                        )
+                        _jss_short = (
+                            f"Sure — {_jss_day} at {_jss_time_s}{_jss_loc_s}. "
+                            f"Is that the appointment you'd like to reschedule?"
                         )
                     else:
-                        _jss_q = (
-                            "I found your appointment — "
-                            "is that the one you'd like to reschedule?"
-                        )
+                        _jss_q     = "I found your appointment — is that the one you'd like to reschedule?"
+                        _jss_short = "Is that the appointment you'd like to reschedule?"
                     # Drain anything the LLM may have queued (might say wrong name/date).
                     while not self._tts.empty():
                         try:
@@ -3157,7 +3169,8 @@ class FlowEngine:
                         except asyncio.QueueEmpty:
                             break
                     await self._tts.put(_jss_q)
-                    self.session["last_question"] = _jss_q
+                    self.session["last_question"]          = _jss_q
+                    self.session["rc_lookup_confirm_short"] = _jss_short
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _jss_q}
                     )
@@ -3652,6 +3665,29 @@ class FlowEngine:
             self.session["last_question"] = _repair_q
             self.session["repair_requested"] = True
             logger.info("[ms_flow] global repair intercept (state=%s): %r", _repair_state, transcript[:60])
+            return
+
+        # ── LOOKUP_RESCHEDULE repeat intercept ───────────────────────────────────
+        # If the caller asks to repeat after the confirm fires, speak the short
+        # version directly rather than replaying the full "I found an appointment..."
+        # sentence through the generic repeat_requested path.
+        if (step and step.get("state") == "LOOKUP_RESCHEDULE"
+                and any(p in text for p in _GLOBAL_REPEAT_PHRASES)
+                and self.session.get("rc_lookup_confirm_short")):
+            _rc_short = self.session["rc_lookup_confirm_short"]
+            while not self._tts.empty():
+                try:
+                    self._tts.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            await self._tts.put(_rc_short)
+            self.session["last_question"] = _rc_short
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _rc_short}
+            )
+            logger.info(
+                "[ms_flow] LOOKUP_RESCHEDULE: repeat → short confirm %r", _rc_short[:70]
+            )
             return
 
         # ── GLOBAL REPEAT INTERCEPT ──────────────────────────────────────────────
@@ -9413,11 +9449,30 @@ class FlowEngine:
             if _fbo_intent in {"faq_services", "faq_prices", "faq_hours",
                                "faq_location", "faq_insurance", "faq_capability",
                                "general_query"}:
+                # Duplicate suppression: trailing STT partials or echo fragments
+                # (e.g. "insurance" arriving 0.5 s after the full answer was queued)
+                # must not trigger a second identical answer.  Suppress the same
+                # intent within 8 s of the most recent answer for this state.
+                _fbo_last_intent = self.session.get("_faq_ans_intent")
+                _fbo_last_at     = self.session.get("_faq_ans_at", 0.0)
+                if (
+                    _fbo_intent == _fbo_last_intent
+                    and (time.time() - _fbo_last_at) < 8.0
+                ):
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",
+                        _fbo_intent, time.time() - _fbo_last_at,
+                    )
+                    return
                 self.session["faq_follow_up_count"] = _fbo_count + 1
                 logger.info(
                     "[ms_flow] FAQ_BOOKING_OFFER: follow-up %s (count=%d) — answering",
                     _fbo_intent, _fbo_count + 1,
                 )
+                # Stamp before the await so any re-entrant transcript for the same
+                # intent is already blocked by the time we resume.
+                self.session["_faq_ans_intent"] = _fbo_intent
+                self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_fbo_intent, transcript)
                 # Store a fresh neutral follow-up — not the answer body.
                 # Storing the answer in last_question would cause the silence handler
@@ -9474,10 +9529,30 @@ class FlowEngine:
                     await self.ask_current_question()
                 return
             # Specific FAQ intent — answer and re-anchor.
+            # Duplicate suppression shared between the two FAQ sub-blocks below:
+            # a trailing STT partial for the same topic (e.g. "insurance" arriving
+            # 0.5 s after the full insurance answer was queued) must not fire a
+            # second identical answer.  Suppress within an 8-second window.
+            _gbo_last_intent = self.session.get("_faq_ans_intent")
+            _gbo_last_at     = self.session.get("_faq_ans_at", 0.0)
+            _GBO_DEDUP_SEC   = 8.0
             if _gbo_intent in {
                 "faq_services", "faq_prices", "faq_hours",
                 "faq_location", "faq_insurance", "faq_capability",
             }:
+                if (
+                    _gbo_intent == _gbo_last_intent
+                    and (time.time() - _gbo_last_at) < _GBO_DEDUP_SEC
+                ):
+                    logger.info(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",
+                        _gbo_intent, time.time() - _gbo_last_at,
+                    )
+                    return
+                # Stamp before the await so any re-entrant transcript for the same
+                # intent is already blocked by the time we resume.
+                self.session["_faq_ans_intent"] = _gbo_intent
+                self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
                 self.session["last_question"] = "Anything else you'd like to ask?"
                 return
@@ -9490,6 +9565,16 @@ class FlowEngine:
                 "explain", "describe",
             )
             if _gbo_intent == "general_query" and any(s in text for s in _GBO_QUESTION_SIGNALS):
+                if (
+                    _gbo_intent == _gbo_last_intent
+                    and (time.time() - _gbo_last_at) < _GBO_DEDUP_SEC
+                ):
+                    logger.info(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: dedup general_query — suppressed",
+                    )
+                    return
+                self.session["_faq_ans_intent"] = _gbo_intent
+                self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
                 self.session["last_question"] = "Anything else you'd like to ask?"
                 return
