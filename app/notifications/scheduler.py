@@ -26,16 +26,15 @@ redis_client = None
 
 try:
     from app.storage.redis_store import redis_client as _redis_client
-    
-    # Test Redis connection
+
+    # redis_client is an async (redis.asyncio) client — can't ping synchronously.
+    # Presence of the object is sufficient; connection errors surface at first await.
     if _redis_client:
-        try:
-            _redis_client.ping()
-            redis_client = _redis_client
-            REDIS_AVAILABLE = True
-            logger.info("✅ Redis connected - scheduler enabled")
-        except Exception as e:
-            logger.warning(f"⚠️ Redis not available - scheduler disabled: {e}")
+        redis_client = _redis_client
+        REDIS_AVAILABLE = True
+        logger.info("✅ Redis client available - scheduler enabled")
+    else:
+        logger.warning("⚠️ Redis client is None - scheduler disabled")
 except ImportError:
     logger.warning("⚠️ Redis module not available - scheduler disabled")
 
@@ -177,17 +176,17 @@ async def _schedule_reminder(
         "created_at": datetime.utcnow().isoformat(),
     }
     
-    redis_client.setex(
+    await redis_client.setex(
         name=reminder_id,
         time=60 * 60 * 24 * 7,
         value=json.dumps(reminder_data),
     )
-    
-    redis_client.zadd(
+
+    await redis_client.zadd(
         PENDING_REMINDERS_SET,
         {reminder_id: reminder_time.timestamp()}
     )
-    
+
     return reminder_id
 
 
@@ -206,13 +205,13 @@ async def cancel_appointment_reminders(
     
     try:
         pattern = f"reminder:{patient_phone}:{appointment_time.isoformat()}:*"
-        keys = redis_client.keys(pattern)
-        
+        keys = await redis_client.keys(pattern)
+
         if not keys:
             return 0
-        
-        redis_client.delete(*keys)
-        redis_client.zrem(PENDING_REMINDERS_SET, *keys)
+
+        await redis_client.delete(*keys)
+        await redis_client.zrem(PENDING_REMINDERS_SET, *keys)
         
         logger.info(f"Cancelled {len(keys)} reminders for {patient_phone}")
         return len(keys)
@@ -235,37 +234,37 @@ async def process_due_reminders() -> int:
         now = datetime.utcnow()
         now_timestamp = now.timestamp()
         
-        due_reminder_ids = redis_client.zrangebyscore(
+        due_reminder_ids = await redis_client.zrangebyscore(
             PENDING_REMINDERS_SET,
             min=0,
             max=now_timestamp,
         )
-        
+
         if not due_reminder_ids:
             return 0
-        
+
         processed = 0
-        
+
         for reminder_id in due_reminder_ids:
             try:
-                reminder_data_json = redis_client.get(reminder_id)
-                
+                reminder_data_json = await redis_client.get(reminder_id)
+
                 if not reminder_data_json:
-                    redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
+                    await redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
                     continue
-                
+
                 reminder_data = json.loads(reminder_data_json)
                 await _send_reminder(reminder_data)
-                
+
                 reminder_data["status"] = "sent"
                 reminder_data["sent_at"] = datetime.utcnow().isoformat()
-                redis_client.setex(
+                await redis_client.setex(
                     name=reminder_id,
                     time=60 * 60 * 24 * 7,
                     value=json.dumps(reminder_data),
                 )
-                
-                redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
+
+                await redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
                 processed += 1
                 
             except Exception as e:
@@ -444,7 +443,7 @@ async def get_pending_reminders_count() -> int:
     """Get count of pending reminders."""
     if not REDIS_AVAILABLE or not redis_client:
         return 0
-    return redis_client.zcard(PENDING_REMINDERS_SET)
+    return await redis_client.zcard(PENDING_REMINDERS_SET)
 
 
 async def get_upcoming_reminders(limit: int = 10) -> list:
@@ -453,10 +452,10 @@ async def get_upcoming_reminders(limit: int = 10) -> list:
         return []
     
     try:
-        reminder_ids = redis_client.zrange(PENDING_REMINDERS_SET, 0, limit - 1)
+        reminder_ids = await redis_client.zrange(PENDING_REMINDERS_SET, 0, limit - 1)
         reminders = []
         for reminder_id in reminder_ids:
-            reminder_data_json = redis_client.get(reminder_id)
+            reminder_data_json = await redis_client.get(reminder_id)
             if reminder_data_json:
                 reminders.append(json.loads(reminder_data_json))
         return reminders
