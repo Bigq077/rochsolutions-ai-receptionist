@@ -1909,6 +1909,7 @@ async def _lookup_appointment_acuity(
                     session["lookup_candidates"] = _cands
                     session.pop("rc_stage", None)
                     session.pop("rc_lookup_failed", None)
+                    session.pop("rc_lookup_just_succeeded", None)  # not a clean single match
                     logger.info(
                         "_lookup_appointment_acuity: STRONG ambiguous — %d tied candidates "
                         "(scores %.2f / %.2f) — returning ambiguous for deterministic disambiguation",
@@ -1950,6 +1951,10 @@ async def _lookup_appointment_acuity(
                         session["reschedule_appt_alternatives"] = _alts
                     _day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
                     _time_label = best_dt.strftime("%H:%M")
+                    # Store for deterministic post-LLM confirmation in flow.py
+                    session["reschedule_appt_day_label"]  = _day_label
+                    session["reschedule_appt_time_label"] = _time_label
+                    session["rc_lookup_just_succeeded"]   = True
                     logger.info(
                         "_lookup_appointment_acuity: STRONG single winner — id=%s at %s",
                         best_appt["id"], best_dt.isoformat(),
@@ -1995,6 +2000,9 @@ async def _lookup_appointment_acuity(
                 session["reschedule_appt_alternatives"] = _alts
                 day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
                 time_label = best_dt.strftime("%H:%M")
+                session["reschedule_appt_day_label"]  = day_label
+                session["reschedule_appt_time_label"] = time_label
+                session["rc_lookup_just_succeeded"]   = True
                 logger.info(
                     "_lookup_appointment_acuity: multiple near-matches, best id=%s at %s "
                     "(rc_stage=lookup_done set, %d alternatives stored)",
@@ -2040,6 +2048,9 @@ async def _lookup_appointment_acuity(
 
         day_label  = f"{best_dt.strftime('%A')} {_ordinal(best_dt.day)} {best_dt.strftime('%B')}"
         time_label = best_dt.strftime("%H:%M")
+        session["reschedule_appt_day_label"]  = day_label
+        session["reschedule_appt_time_label"] = time_label
+        session["rc_lookup_just_succeeded"]   = True
 
         # Up to 2 alternatives for disambiguation
         alternatives = []

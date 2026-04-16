@@ -3129,6 +3129,45 @@ class FlowEngine:
                     self.session["last_question"] = _fail_msg
                     self.session["lookup_correction_mode"] = True   # deterministic repair mode
                     return
+                # ── Deterministic success confirmation ────────────────────────────────
+                # Fires exactly once, on the LLM turn where lookup_appointment succeeded.
+                # Drains any free-form LLM speech and replaces with a single fixed sentence
+                # derived purely from session data — no LLM text, no name invention,
+                # no stale last_question.  Also populates reschedule_appt_day/time_label
+                # for the "LOOKUP ALREADY DONE" guard on any subsequent LLM re-fire.
+                if self.session.pop("rc_lookup_just_succeeded", False) and \
+                        self.session.get("rc_stage") == "lookup_done":
+                    _jss_day  = self.session.get("reschedule_appt_day_label", "")
+                    _jss_time = self.session.get("reschedule_appt_time_label", "")
+                    _jss_type = self.session.get("reschedule_appt_type", "appointment")
+                    _jss_loc  = (self.session.get("selected_location") or "").title()
+                    if _jss_day and _jss_time:
+                        _jss_q = (
+                            f"I found your {_jss_type} for {_jss_day} at {_jss_time}"
+                            + (f" at {_jss_loc}" if _jss_loc else "")
+                            + " — is that the one you'd like to reschedule?"
+                        )
+                    else:
+                        _jss_q = (
+                            "I found your appointment — "
+                            "is that the one you'd like to reschedule?"
+                        )
+                    # Drain anything the LLM may have queued (might say wrong name/date).
+                    while not self._tts.empty():
+                        try:
+                            self._tts.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    await self._tts.put(_jss_q)
+                    self.session["last_question"] = _jss_q
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _jss_q}
+                    )
+                    logger.info(
+                        "[ms_flow] %s: deterministic confirm after success: %r",
+                        step["state"], _jss_q,
+                    )
+                    return
                 if self.session.get("rc_appointment_confirmed"):
                     # Drain any LLM-queued speech before advancing — prevents
                     # "Perfect — let me find new times" overlapping with PRESENT_DAYS_RESCHEDULE question.
