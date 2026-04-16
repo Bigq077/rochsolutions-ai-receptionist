@@ -1591,6 +1591,26 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         session["acuity_booking_id"] = booking.provider_booking_id
         session["calendar_status"] = "created"
 
+        # Stage 2: create pending name-confirmation record (non-fatal)
+        try:
+            from app.storage.redis_store import create_pending_name_confirmation
+            from app.flows.triage_legacy import normalize_phone
+            norm_phone = normalize_phone(phone)
+            first = patient_name.split()[0] if patient_name else ""
+            await create_pending_name_confirmation(
+                phone=norm_phone,
+                first_name=first,
+                appointment_id=booking.provider_booking_id,
+                location=location,
+            )
+            logger.info(
+                "[PENDING_NAME] record created: phone=%r appt_id=%r",
+                norm_phone,
+                booking.provider_booking_id,
+            )
+        except Exception as _pn_err:
+            logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
+
         # Confirmation SMS — non-fatal.
         # Suppressed when called as part of a reschedule (caller gets a reschedule
         # confirmation instead, sent by _reschedule_appointment_acuity).

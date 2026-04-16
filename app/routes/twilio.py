@@ -1196,3 +1196,31 @@ async def test_sms_endpoint(phone: str = "+447870166861"):
             "error": str(e),
             "message": "Check Render logs for details"
         }
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: Inbound SMS webhook
+# ---------------------------------------------------------------------------
+
+@router.post("/sms/inbound")
+async def sms_inbound(request: Request) -> PlainTextResponse:
+    """
+    Receive inbound SMS messages from Twilio.
+
+    Twilio POSTs form fields: From, Body, MessageSid (plus many optional fields).
+    We log sender/body/SID and return 200 immediately.
+    Stage 3 (name extraction + Acuity update) will be wired here later.
+    """
+    form = await request.form()
+    sender = form.get("From") or "unknown"
+    body = (form.get("Body") or "").strip()
+    message_sid = form.get("MessageSid") or ""
+
+    logger.info(
+        "[SMS_INBOUND] from=%r sid=%r body=%r",
+        sender,
+        message_sid,
+        body,
+    )
+
+    return PlainTextResponse("ok")

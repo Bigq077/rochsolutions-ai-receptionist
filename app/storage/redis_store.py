@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 import copy
+import uuid
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
 from app.config import REDIS_URL, SESSION_SECRET
@@ -240,6 +242,87 @@ async def redis_ping() -> bool:
         return bool(await redis_client.ping())
     except Exception:
         return False
+
+
+# ============================
+# Pending name-confirmation helpers (Stage 2)
+# ============================
+
+_PENDING_NAME_TTL = 60 * 60 * 24  # 24 hours
+
+
+def _pending_name_key(normalized_phone: str) -> str:
+    return f"pending_name:{normalized_phone}"
+
+
+async def create_pending_name_confirmation(
+    phone: str,
+    first_name: str,
+    appointment_id: str,
+    location: str,
+) -> None:
+    """
+    Store a pending-name-confirmation record keyed by normalized phone.
+    Non-blocking: safe no-op if Redis is unavailable.
+    """
+    if not redis_client:
+        return
+    record = {
+        "pending_id": str(uuid.uuid4()),
+        "phone": phone,
+        "first_name": first_name,
+        "appointment_id": appointment_id,
+        "location": location,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "sms_reply_received": False,
+    }
+    await redis_client.set(
+        _pending_name_key(phone),
+        json.dumps(record),
+        ex=_PENDING_NAME_TTL,
+    )
+
+
+async def get_pending_name_confirmation(normalized_phone: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a pending-name-confirmation record by normalized phone.
+    Returns None if not found or Redis unavailable.
+    """
+    if not redis_client:
+        return None
+    raw = await redis_client.get(_pending_name_key(normalized_phone))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+async def complete_pending_name_confirmation(normalized_phone: str) -> None:
+    """
+    Mark a pending-name-confirmation record as completed.
+    Safe no-op if the record does not exist or Redis is unavailable.
+    """
+    if not redis_client:
+        return
+    key = _pending_name_key(normalized_phone)
+    raw = await redis_client.get(key)
+    if not raw:
+        return
+    try:
+        record = json.loads(raw)
+        if isinstance(record, dict):
+            record["status"] = "completed"
+            record["sms_reply_received"] = True
+            # Preserve remaining TTL — fetch it first
+            ttl = await redis_client.ttl(key)
+            ex = ttl if ttl and ttl > 0 else _PENDING_NAME_TTL
+            await redis_client.set(key, json.dumps(record), ex=ex)
+    except Exception:
+        pass
 
 
 async def acquire_once_lock(key: str, ttl_seconds: int = 300) -> bool:
