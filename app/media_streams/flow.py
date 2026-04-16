@@ -1765,7 +1765,8 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": (
             "RC1–RC2: locate the caller's existing appointment then get verbal confirmation.\n\n"
             "TURN 1 — Lookup:\n"
-            "  Say: 'Bear with me one moment.'\n"
+            "  Say NOTHING before calling the tool — a holding message is already\n"
+            "  spoken by the system. Call the tool immediately.\n"
             "  If '{full_name}' is NOT blank: parse it into first_name / last_name "
             "(split on the first space) and call lookup_appointment(first_name=<first>, last_name=<last>, "
             "phone='{phone_number}', location='{selected_location}').\n"
@@ -4953,6 +4954,12 @@ class FlowEngine:
                 self.session["_last_handled_by"]   = "confirm_phone_yes"
                 self.session["_last_yes_detected"] = True
                 self.session["_last_no_detected"]  = False
+                # Reschedule/cancel: emit a short holding message before the LLM
+                # fires the lookup so the caller hears something immediately.
+                if self._active_flow is RESCHEDULE_FLOW:
+                    await self._tts.put(
+                        "One second please — I'm just looking for your booking."
+                    )
                 await self.ask_current_question()
                 return
 
