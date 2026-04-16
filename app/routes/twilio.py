@@ -1202,14 +1202,24 @@ async def test_sms_endpoint(phone: str = "+447870166861"):
 # Stage 1: Inbound SMS webhook
 # ---------------------------------------------------------------------------
 
+_NAME_JUNK = {
+    "yes", "no", "ok", "okay", "thanks", "thank you", "test",
+    "hi", "hello", "yep", "nope", "sure", "great",
+}
+
+
 @router.post("/sms/inbound")
 async def sms_inbound(request: Request) -> PlainTextResponse:
     """
-    Receive inbound SMS messages from Twilio.
+    Receive inbound SMS from Twilio and process pending name confirmations.
 
-    Twilio POSTs form fields: From, Body, MessageSid (plus many optional fields).
-    We log sender/body/SID and return 200 immediately.
-    Stage 3 (name extraction + Acuity update) will be wired here later.
+    Flow:
+      1. Log sender / body / SID.
+      2. Normalize phone and fetch pending_name record.
+      3. Validate the reply as a full name (≥2 words, not junk).
+      4. On valid name: PUT to Acuity, mark record complete.
+      5. On invalid name: send clarification SMS.
+      Always returns 200.
     """
     form = await request.form()
     sender = form.get("From") or "unknown"
@@ -1222,5 +1232,95 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         message_sid,
         body,
     )
+
+    try:
+        from app.flows.triage_legacy import normalize_phone
+        from app.storage.redis_store import (
+            get_pending_name_confirmation,
+            complete_pending_name_confirmation,
+        )
+        from app.notifications.sms import send_sms
+
+        norm_phone = normalize_phone(sender)
+        pending = await get_pending_name_confirmation(norm_phone)
+
+        if not pending:
+            logger.info(
+                "[SMS_INBOUND] no pending record for phone=%r — ignoring",
+                norm_phone,
+            )
+            return PlainTextResponse("ok")
+
+        # ── Name validation ──────────────────────────────────────────────
+        words = body.split()
+        is_junk = body.lower() in _NAME_JUNK
+        if len(words) < 2 or is_junk or len(body) < 4:
+            logger.info(
+                "[SMS_INBOUND] invalid name reply=%r phone=%r — sending clarification",
+                body,
+                norm_phone,
+            )
+            try:
+                await send_sms(
+                    to=norm_phone,
+                    message=(
+                        "Sorry, we need your full name (first name and surname) "
+                        "to confirm your appointment. Please reply with your full name."
+                    ),
+                )
+            except Exception as _ce:
+                logger.warning(
+                    "[SMS_INBOUND] clarification SMS failed (non-fatal): %r", _ce
+                )
+            return PlainTextResponse("ok")
+
+        # ── Valid full name — update Acuity ──────────────────────────────
+        full_name = body
+        first_name = words[0]
+        last_name = " ".join(words[1:])
+        appointment_id = pending.get("appointment_id", "")
+
+        logger.info(
+            "[SMS_INBOUND] valid name=%r appt_id=%r phone=%r — updating Acuity",
+            full_name,
+            appointment_id,
+            norm_phone,
+        )
+
+        try:
+            from app.tools.receptionist_tools import _get_acuity_adapter
+            adapter = _get_acuity_adapter()
+            if adapter and appointment_id:
+                await adapter._request_with_retry(
+                    "PUT",
+                    f"/appointments/{appointment_id}",
+                    json={"firstName": first_name, "lastName": last_name},
+                    allow_retry=False,
+                )
+                logger.info(
+                    "[SMS_INBOUND] Acuity updated: appt_id=%r name=%r",
+                    appointment_id,
+                    full_name,
+                )
+                await complete_pending_name_confirmation(norm_phone)
+                logger.info(
+                    "[SMS_INBOUND] pending record completed: phone=%r",
+                    norm_phone,
+                )
+            else:
+                logger.warning(
+                    "[SMS_INBOUND] skipping Acuity update: adapter=%r appt_id=%r",
+                    adapter,
+                    appointment_id,
+                )
+        except Exception as _ae:
+            logger.error(
+                "[SMS_INBOUND] Acuity update failed (non-fatal): appt_id=%r err=%r",
+                appointment_id,
+                _ae,
+            )
+
+    except Exception as _outer:
+        logger.error("[SMS_INBOUND] processing error (non-fatal): %r", _outer)
 
     return PlainTextResponse("ok")

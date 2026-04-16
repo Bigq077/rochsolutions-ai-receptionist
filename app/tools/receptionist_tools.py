@@ -1608,6 +1608,19 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                 norm_phone,
                 booking.provider_booking_id,
             )
+            # Outbound name-request SMS (non-fatal)
+            try:
+                from app.notifications.sms import send_sms
+                await send_sms(
+                    to=norm_phone,
+                    message=(
+                        f"Hi {first}, your appointment is provisionally booked. "
+                        "Please reply with your full name to confirm."
+                    ),
+                )
+                logger.info("[PENDING_NAME] name-request SMS sent: phone=%r", norm_phone)
+            except Exception as _sms_err:
+                logger.warning("[PENDING_NAME] name-request SMS failed (non-fatal): %r", _sms_err)
         except Exception as _pn_err:
             logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
 
