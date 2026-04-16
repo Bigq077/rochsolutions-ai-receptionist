@@ -46,6 +46,7 @@ except ImportError:
 
 REMINDERS_KEY_PREFIX = "reminder:"
 PENDING_REMINDERS_SET = "pending_reminders"
+PENDING_NAME_REMINDERS_SET = "pending_name_reminders"
 
 
 # ============================================================================
@@ -330,6 +331,89 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
 # BACKGROUND WORKER (OPTIONAL)
 # ============================================================================
 
+# ============================================================================
+# NAME-CONFIRMATION REMINDER (30-minute nudge)
+# Uses async Redis directly — independent of the legacy sync scheduler above.
+# ============================================================================
+
+async def schedule_name_confirm_reminder(
+    phone: str,
+    first_name: str,
+    delay_minutes: int = 30,
+) -> None:
+    """
+    Schedule a name-confirmation nudge SMS to be sent delay_minutes from now.
+    Stores phone+first_name in a Redis sorted set scored by send-at timestamp.
+    Safe no-op if Redis is unavailable.
+    """
+    from app.storage.redis_store import redis_client as _ar
+    if not _ar:
+        logger.warning("[NAME_REMINDER] Redis unavailable — cannot schedule nudge for %r", phone)
+        return
+    try:
+        send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
+        payload = json.dumps({"phone": phone, "first_name": first_name})
+        await _ar.zadd(PENDING_NAME_REMINDERS_SET, {payload: send_at})
+        logger.info(
+            "[NAME_REMINDER] scheduled: phone=%r delay=%dmin send_at=%s",
+            phone, delay_minutes, datetime.utcfromtimestamp(send_at).isoformat(),
+        )
+    except Exception as _e:
+        logger.error("[NAME_REMINDER] schedule failed (non-fatal): %r", _e)
+
+
+async def process_name_confirm_reminders() -> int:
+    """
+    Send any name-confirmation nudge SMSes whose send-at time has passed.
+    Only sends if the pending_name record still has status='pending'.
+    Called by the background worker every interval.
+    """
+    from app.storage.redis_store import redis_client as _ar
+    if not _ar:
+        return 0
+    try:
+        now_ts = datetime.utcnow().timestamp()
+        due: list = await _ar.zrangebyscore(PENDING_NAME_REMINDERS_SET, 0, now_ts)
+        if not due:
+            return 0
+
+        from app.storage.redis_store import get_pending_name_confirmation
+        from app.notifications.sms import send_sms
+
+        sent = 0
+        for payload_str in due:
+            try:
+                data = json.loads(payload_str)
+                phone = data.get("phone", "")
+                first_name = data.get("first_name") or "there"
+
+                pending = await get_pending_name_confirmation(phone)
+                if pending and pending.get("status") == "pending":
+                    await send_sms(
+                        to=phone,
+                        message=(
+                            f"Hi {first_name}, just a reminder — please reply to this "
+                            "message with your full first name and surname to confirm "
+                            "your appointment with us."
+                        ),
+                    )
+                    logger.info("[NAME_REMINDER] nudge sent: phone=%r", phone)
+                else:
+                    logger.info(
+                        "[NAME_REMINDER] skipped (already completed or expired): phone=%r", phone
+                    )
+
+                await _ar.zrem(PENDING_NAME_REMINDERS_SET, payload_str)
+                sent += 1
+            except Exception as _e:
+                logger.error("[NAME_REMINDER] error for payload=%r: %r", payload_str, _e)
+
+        return sent
+    except Exception as _e:
+        logger.error("[NAME_REMINDER] process_name_confirm_reminders failed: %r", _e)
+        return 0
+
+
 async def start_reminder_worker(interval_seconds: int = 300):
     """Start background worker - only if Redis is available."""
     if not REDIS_AVAILABLE:
@@ -343,9 +427,12 @@ async def start_reminder_worker(interval_seconds: int = 300):
             processed = await process_due_reminders()
             if processed > 0:
                 logger.info(f"Reminder worker processed {processed} reminders")
+            name_nudges = await process_name_confirm_reminders()
+            if name_nudges > 0:
+                logger.info("Reminder worker sent %d name-confirm nudge(s)", name_nudges)
         except Exception as e:
             logger.error(f"Reminder worker error: {e}", exc_info=True)
-        
+
         await asyncio.sleep(interval_seconds)
 
 

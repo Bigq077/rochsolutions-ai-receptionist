@@ -356,10 +356,8 @@ async def startup():
     # ------------------------------------------------------------------ #
     _validate_clinic_config()
 
-    # Start reminder worker only if:
-    # 1. Not on Render (Render doesn't have Redis on free tier)
-    # 2. Redis is available
-    if not os.getenv("RENDER") and redis_available:
+    # Start reminder worker whenever Redis is available (Render + local).
+    if redis_available:
         try:
             import asyncio
             from app.notifications.scheduler import start_reminder_worker
@@ -369,10 +367,7 @@ async def startup():
         except Exception as e:
             logger.warning(f"⚠️  SMS reminder worker not started: {e}")
     else:
-        if os.getenv("RENDER"):
-            logger.info("ℹ️  Running on Render - reminder worker disabled (no Redis)")
-        else:
-            logger.info("ℹ️  Reminder worker disabled (Redis not available)")
+        logger.info("ℹ️  Reminder worker disabled (Redis not available)")
 
     logger.info("=" * 60)
     logger.info("✅ Startup complete - ready to accept requests")

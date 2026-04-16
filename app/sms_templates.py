@@ -24,12 +24,11 @@ RETURNING_VISIT_NOTE = ""
 BOOKING_CONFIRMATION_SMS = (
     "Hi {patient_name} 👋\n\n"
     "Your appointment at {clinic_name} is confirmed:\n\n"
-    "{name_line}"
     "📅 {appointment_date}\n"
     "⏰ {appointment_time}\n"
     "📍 {clinic_address}\n\n"
     "{first_visit_note}"
-    "{name_correction}"
+    "To confirm your booking, please reply with your full name.\n\n"
     "Maps: {maps_link}\n\n"
     "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
@@ -117,24 +116,6 @@ def build_sms(session: dict) -> str:
     first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
     note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
 
-    # Name display + correction invite
-    # name_line    — shown for new patients only (👤 full name)
-    # name_correction — shown for new patients OR when name capture was unreliable
-    #   (needs_name_correction_sms=True is set by NameCollector._accept() when
-    #    fn_confirmed=False or sn_confirmed=False after a degraded/retry path)
-    full_name_raw = (collected.get("full_name") or collected.get("name") or "").strip()
-    _needs_name_fix = session.get("needs_name_correction_sms", False)
-
-    name_line = f"👤 {full_name_raw}\n" if (first_visit and full_name_raw) else ""
-
-    if (first_visit and full_name_raw) or _needs_name_fix:
-        name_correction = (
-            "If we got your name wrong, just text back the correct spelling "
-            "and we'll update it for you.\n\n"
-        )
-    else:
-        name_correction = ""
-
     # Clinic-level values — address resolved from selected_location for
     # two-clinic setups (theorem_v2); falls back to CLINIC_ADDRESS env var
     # for single-clinic deployments.
@@ -155,8 +136,6 @@ def build_sms(session: dict) -> str:
         appointment_time = appointment_time,
         clinic_address   = clinic_address,
         first_visit_note = note,
-        name_line        = name_line,
-        name_correction  = name_correction,
         maps_link        = maps_link,
         clinic_phone     = clinic_phone,
     )
