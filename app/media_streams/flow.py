@@ -4121,16 +4121,15 @@ class FlowEngine:
                 # ── Forced confirm guess: resolver returned None ───────────────
                 # Detect R/RE/RED opening signal to guess Redditch; otherwise
                 # default to Alcester.  Fires immediately — no vague open re-ask.
-                # Fragment suppression is intentionally removed: even short noisy
-                # inputs get a deterministic forced-confirm rather than a silent
-                # re-anchor that restarts the open loop.
+                # Every input that wasn't caught by FAQ/reroute gates above gets
+                # a deterministic forced-confirm so the caller can correct via yes/no.
                 #
                 # Strip leading filler words before inspecting the opening token
                 # so that "your red ditch clinic" → "red" (not "your").
                 _fc_words = text.strip().lower().split()
                 _FC_FILLERS = {
                     "the", "our", "your", "a", "an", "at", "for",
-                    "that", "this", "clinic", "is", "it", "to",
+                    "that", "this", "clinic", "is", "it",
                 }
                 _fc_meaningful = [w for w in _fc_words if w not in _FC_FILLERS]
                 _fc_first = (
@@ -4145,35 +4144,11 @@ class FlowEngine:
                     or _fc_first in ("re", "r")
                 )
                 _pending = "redditch" if _has_red_open else "alcester"
-                # ── Location-like guard ───────────────────────────────────────
-                # Only use forced-confirm when the opening token looks like it
-                # could plausibly be a clinic name (starts with "al…" or "re…/r").
-                # "an" prefix catches "ancestor"/"ancester" STT variants of Alcester.
-                # Completely non-location speech (e.g. "I said I had a few
-                # questions") must not trigger a false clinic guess — route to a
-                # neutral re-ask instead.
-                _has_alc_open = any(
-                    _fc_first.startswith(p) for p in ("alc", "alk", "als", "al", "an")
-                )
-                if not _has_red_open and not _has_alc_open:
-                    _neutral_q = "Sorry — which clinic did you mean? Alcester or Redditch?"
-                    await self._tts.put(_neutral_q)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _neutral_q}
-                    )
-                    self.session["last_question"] = _neutral_q
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION: no location hint in %r → neutral re-ask",
-                        text[:40],
-                    )
-                    return
                 self.session["location_pending_guess"] = _pending
                 _confirm_q = (
-                    "I'm not fully sure — I think you may have said Redditch. "
-                    "Did you say Alcester or Redditch?"
+                    "Just to confirm \u2014 was that Redditch?"
                     if _pending == "redditch"
-                    else "I'm not fully sure — I think you may have said Alcester. "
-                         "Did you say Alcester or Redditch?"
+                    else "Just to confirm \u2014 was that Alcester?"
                 )
                 await self._tts.put(_confirm_q)
                 self.session.setdefault("conversation_history", []).append(
@@ -4181,7 +4156,7 @@ class FlowEngine:
                 )
                 self.session["last_question"] = _confirm_q
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → lean confirm (guess=%s) for %r",
+                    "[ms_flow] ASK_LOCATION: resolver None → forced confirm (guess=%s) for %r",
                     _pending, text[:40],
                 )
             return
