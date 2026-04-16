@@ -78,8 +78,8 @@ _SPECIFIC_SERVICE_ANSWERS: dict = {
         "It\u2019s pain-free and typically used for soft-tissue injuries and joint pain."
     ),
     "sports_massage": (
-        "Sports massage targets muscle tension and soft tissue to improve movement and aid recovery. "
-        "Pressure is adapted to your comfort and needs."
+        "Sports massage targets muscle tension to improve movement and aid recovery — "
+        "pressure is tailored to your comfort."
     ),
     "pilates": (
         "Our Pilates classes focus on core strength and controlled movement, "
@@ -107,16 +107,14 @@ _SERVICE_KEYWORD_MAP = (
 # ── FAQ prices: deterministic from-price gate ───────────────────────────────
 # When NO specific service is named, always return this — never a full list.
 _FAQ_PRICES_NO_SERVICE = (
-    "Prices vary depending on the service. "
-    "If you let me know which treatment you have in mind, "
-    "I can give you the exact price and appointment length."
+    "Prices vary by service — if you let me know which treatment you're interested in, "
+    "I can give you the exact cost."
 )
 
 # ── FAQ insurance: deterministic self-pay / Bupa / claim-back answer ────────
 _FAQ_INSURANCE_ANSWER = (
-    "We\u2019re a self-pay clinic, so we don\u2019t bill insurers directly \u2014 "
-    "you\u2019d pay the clinic directly and claim back from your insurer if your policy allows it. "
-    "Just let us know your provider when you book and we\u2019ll make a note of it."
+    "We\u2019re a self-pay clinic \u2014 you\u2019d pay us directly "
+    "and can claim back from your insurer if your policy covers it."
 )
 
 # ── FAQ capability: deterministic "what can you help me with" answer ─────────
@@ -277,14 +275,6 @@ _FRAGMENT_BLOCKLIST = frozenset({
     "so if", "so if i", "if i", "clinic",
     "thank you", "thanks",
 })
-
-# Spoken when Claude API fails during CONFIRM_ASSESSMENT — gives a useful
-# recommendation instead of a generic "blip" error phrase.
-_CONFIRM_ASSESSMENT_API_FALLBACK = (
-    "I'm sorry to hear that — that sounds quite painful. "
-    "I would probably recommend a physiotherapy assessment as the best starting point. "
-    "Does that sound okay?"
-)
 
 if not _RAPIDFUZZ_AVAILABLE:
     logger.warning(
@@ -1056,35 +1046,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "any",
         "llm_instruction": None,
     },
-    {
-        "step": 7,
-        "state": "CONFIRM_ASSESSMENT",
-        "question": None,
-        "answer_field": "assessment_confirmed",
-        "use_llm": True,
-        "allow_tools": False,
-        "llm_instruction": (
-            "CRITICAL — DO NOT CALL ANY TOOLS. DO NOT call get_clinic_info.\n"
-            "The caller wants to book an appointment. Their reason is: {reason}\n"
-            "Your response MUST have exactly TWO parts:\n"
-            "PART 1: One short sentence of genuine empathy about their specific condition.\n"
-            "PART 2: Use EXACTLY this structure: '— I would probably recommend a physiotherapy "
-            "assessment as the best starting point.'\n"
-            "EXAMPLE: 'Sorry to hear that — back pain can be really debilitating. "
-            "I would probably recommend a physiotherapy assessment as the best starting point.'\n"
-            "MAXIMUM: 2 sentences then the confirmation question.\n"
-            "ABSOLUTELY DO NOT ask 'how long have you had that?' or any duration question. "
-            "DO NOT ask if they have been with us before.\n"
-            "DO NOT mention location, pricing, or any other topic.\n"
-            "End EVERY response with exactly: 'Does that sound okay?'"
-        ),
-        "extract": "yes_no",
-    },
-    # ── Returning non-plan name+phone (steps 8-10) ───────────────────────
+    # ── Returning non-plan name+phone (steps 7-9) ───────────────────────
     # Used when returning patient is recent but NOT on an active plan,
     # or was a long-time-ago patient.  Skipped for new patients and on-plan.
     {
-        "step": 8,
+        "step": 7,
         "state": "COLLECT_NAME_RETURNING",
         "question": "Could I take your first name please?",
         "answer_field": "full_name",
@@ -1093,7 +1059,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 9,
+        "step": 8,
         "state": "CONFIRM_PHONE_RETURNING",
         "question": "And is this the same number we'd normally have for you?",
         "answer_field": "phone_confirmed",
@@ -1102,7 +1068,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 10,
+        "step": 9,
         "state": "COLLECT_PHONE_RETURNING",
         "question": "And the best number to contact you on?",
         "answer_field": "phone_number",
@@ -1110,10 +1076,10 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "phone",
         "llm_instruction": None,
     },
-    # ── New-patient name+phone (steps 11-13) ─────────────────────────────
+    # ── New-patient name+phone (steps 10-12) ─────────────────────────────
     # Skipped for all returning patients.
     {
-        "step": 11,
+        "step": 10,
         "state": "COLLECT_NAME",
         "question": "And what's your first name please?",
         "answer_field": "full_name",
@@ -1122,7 +1088,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 12,
+        "step": 11,
         "state": "CONFIRM_PHONE",
         "question": (
             "Just to confirm — shall I use the number "
@@ -1134,7 +1100,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 13,
+        "step": 12,
         "state": "COLLECT_PHONE",
         "question": "And the best number to reach you on?",
         "answer_field": "phone_number",
@@ -1144,7 +1110,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     },
     # ── Main booking steps ────────────────────────────────────────────────
     {
-        "step": 14,
+        "step": 13,
         "state": "PRESENT_DAYS",
         # BUG 2 fix: the deterministic greeting is emitted by this question field
         # BEFORE the LLM is called, so the LLM never needs to speak on success.
@@ -1168,7 +1134,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 15,
+        "step": 14,
         "state": "PRESENT_TIMES",
         "question": None,   # LLM responds to the caller's day choice
         "answer_field": "selected_slot",
@@ -1212,7 +1178,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 16,
+        "step": 15,
         "state": "CONFIRM_BOOKING",
         "question": None,   # built deterministically in ask_current_question
         "answer_field": "booking_confirmed",
@@ -1242,10 +1208,6 @@ _COLLECT_PHONE_INDEX: int = next(
 # Used as the flow_step marker while awaiting phone readback confirmation.
 _CONFIRM_PHONE_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_PHONE"
-)
-
-_CONFIRM_ASSESSMENT_INDEX: int = next(
-    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_ASSESSMENT"
 )
 
 
@@ -1280,242 +1242,18 @@ _CA_FAST_MAP = (
     (("physio", "physiotherapy", "assessment", "pain"),
      "Sorry to hear you're having some trouble — that can really affect your day-to-day."),
 )
-_CA_FAST_SUFFIX = (
-    " — I would probably recommend a physiotherapy assessment "
-    "as the best starting point. Does that sound okay?"
-)
 
+def _fast_empathy_line(reason: str) -> str:
+    """Return a short non-gating empathy acknowledgement for the caller's reason.
 
-def _fast_assessment_response(reason: str) -> Optional[str]:
-    """Return a deterministic assessment recommendation for common conditions.
-
-    Returns the full response string (empathy + recommendation + sign-off) if
-    the reason matches a known condition, otherwise None (caller falls through
-    to the LLM path).
+    Always returns something — falls back to a generic line if no match.
+    Used inline at COLLECT_REASON completion (no LLM, no yes/no gate).
     """
     _r = reason.lower()
     for keywords, empathy in _CA_FAST_MAP:
         if any(k in _r for k in keywords):
-            return empathy + _CA_FAST_SUFFIX
-    return None
-
-
-def _classify_confirm_assessment(text: str) -> str:
-    """
-    Deterministically classify an utterance at CONFIRM_ASSESSMENT.
-
-    Priority order (highest first):
-        0. correction    — caller is correcting a STT mishear
-        1. yes           — explicit affirmative, advance immediately
-        2. no            — explicit rejection, graceful close
-        3. frustration   — caller is objecting to being asked again
-        4. clarification — caller is asking us to repeat / explain
-        5. additive_detail — caller is adding more clinical context
-        6. unknown       — fall through to normal interrupt handling
-
-    Returns one of:
-        "correction" | "yes" | "no" | "frustration" |
-        "additive_detail" | "clarification" | "unknown"
-    """
-    # 0 ── Correction intent (caller correcting a STT mishear) ──────────────
-    # Must run before NO so "no that's wrong" routes here, not to graceful close.
-    _CORRECTION = (
-        "you misheard", "misheard me", "heard that wrong",
-        "didn't hear that right", "you heard wrong",
-        "i said my", "i said it", "i said it's", "i said it was",
-        "that's wrong", "that is wrong", "that's not right",
-        "that's not what i said", "not what i said",
-        "got that wrong", "you got that wrong",
-        "actually it's my", "actually it is my",
-        "no it's my", "no it is my", "no, it's my",
-        "not my",
-        # Barge-in / noisy correction fragments — must sit before the NO check
-        # so "no no i didn't see my ankle" is routed here, not to graceful close.
-        "no no i", "no i didn't", "no i said",
-        "i didn't say", "i didn't see",
-        "didn't see my", "didn't say my",
-        "i never said", "i said it was my",
-        # BUG 1: explicit self-correction markers that must outrank the "no" path.
-        # "no actually I made an error", "no sorry I meant", "I was meant to say X"
-        # all contain "no " but are corrections, not booking refusals.
-        "no actually", "no sorry",
-        "i made a mistake", "i made an error",
-        "i was meant to say", "i meant to say",
-        "i meant my", "actually i meant",
-        "sorry it's my", "sorry, it's my",
-    )
-    if any(p in text for p in _CORRECTION):
-        return "correction"
-
-    # 0.5 ── Interrogative forms that contain YES-like substrings but are questions ──
-    # "what sounds okay" contains "sounds okay" (YES list) — must be caught first.
-    _QUESTION_GUARD = (
-        "what sounds", "what sounds okay", "what sounds good", "what sounds fine",
-        "what does that mean", "what does that", "which sounds",
-        # Repeat / replay requests — must outrank _YES ("please" is in _YES)
-        "repeat that", "could you repeat", "say that again",
-        "what was that", "what did you say", "sorry what",
-        "can you repeat", "say it again",
-    )
-    if any(p in text for p in _QUESTION_GUARD):
-        return "clarification"
-
-    # 1 ── Explicit yes ──────────────────────────────────────────────────────
-    _YES = (
-        "yes", "yeah", "yeh", "ya", "yep", "yup",
-        "ok", "okay", "sure", "fine", "alright",
-        "sounds good", "that sounds good", "that sounds fine", "sounds fine",
-        "that sounds okay", "yeah that sounds", "sounds okay",
-        "go for it", "go ahead", "sure why not", "why not",
-        "absolutely", "definitely", "of course", "please",
-        "that works", "right okay", "right then", "alright then",
-        "champion", "sound", "sorted", "mint", "aye", "go on then",
-        "no bother", "that'll do", "perfect",
-        "obviously", "yes obviously", "yeah obviously", "clearly",
-        "of course yeah", "course", "course yeah",
-        # Implicit yes — caller re-affirming a condition they already stated.
-        # "I have back pain as I mentioned" = yes + detail restatement.
-        # These phrases confirm the assessment without using a bare affirmative.
-        "as i mentioned", "as i said", "like i said", "like i mentioned",
-        "i already said", "i already mentioned", "i already told you",
-        "i just said", "i just mentioned", "i told you",
-        "that's what i said", "that's what i mentioned",
-        "that's why i'm calling", "that is why i'm calling",
-        "that's my", "that is my",
-    )
-    if any(p in text for p in _YES):
-        # Guard 1: negation before/around a YES keyword classifies as NO, not YES.
-        # "no that doesn't sound okay" → contains "sounds okay" but leading negation wins.
-        _NEGATION_GUARD = (
-            "no ", "not ", "doesn't ", "don't ", "won't ", "isn't ", "can't ",
-            "that doesn't", "that's not", "that is not", "doesn't sound",
-            "not okay", "not fine", "not good", "not right",
-        )
-        if any(n in text for n in _NEGATION_GUARD):
-            return "no"
-        # Guard 2: don't classify as yes if the sentence expresses frustration/objection
-        _FRUSTRATION_GUARD = (
-            "not going to repeat", "not gonna repeat",
-            "already said", "said it already", "said that already",
-            "told you", "just told you",
-            "third time", "how many times", "keep asking",
-            "not repeating", "won't repeat",
-        )
-        if not any(f in text for f in _FRUSTRATION_GUARD):
-            return "yes"
-
-    # 2 ── Explicit no ───────────────────────────────────────────────────────
-    # "no " is intentionally absent from the main tuple — it is handled below
-    # with a co-occurrence guard to stop noisy barge-in speech like
-    # "no no i didn't see my ankle no no" from triggering graceful close.
-    _NO = (
-        "nope", "nah", "not really", "don't think so", "dont think so",
-        "not sure about that", "rather not", "prefer not", "not for me",
-        "something else", "different option",
-    )
-    if any(p in text for p in _NO):
-        return "no"
-    # "no " / bare "no": only a clean rejection when nothing else explains the turn.
-    # If the utterance also contains a body-part word or a repair phrase it is
-    # far more likely to be a correction than a booking refusal.
-    if "no " in text or text == "no":
-        _NO_GUARD = (
-            "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
-            "elbow", "leg", "arm", "foot", "heel", "spine", "head",
-            "i didn't", "didn't say", "didn't see", "didn't mean",
-            "i said", "not my",
-            # correction-preceding words that must not trigger graceful close
-            "actually", "wait", "hang on", "hold on",
-            "wrong", "mistake", "meant", "no my",
-        )
-        if any(g in text for g in _NO_GUARD):
-            logger.info(
-                "[ms_flow] CONFIRM_ASSESSMENT: 'no' co-occurs with repair/body-part "
-                "context — reclassifying to additive_detail (graceful close suppressed)",
-            )
-            return "additive_detail"
-        return "no"
-
-    # 3 ── Frustration / objection ────────────────────────────────────────────
-    # Caller is expressing frustration at being asked to repeat themselves.
-    # Must be checked BEFORE additive_detail to avoid routing objections as context.
-    _FRUSTRATION = (
-        "not going to repeat", "not gonna repeat",
-        "already said", "said it already", "said that already",
-        "told you", "just told you",
-        "third time", "how many times", "keep asking",
-        "not repeating", "won't repeat",
-        "i'm not going to", "im not going to",
-        "why do you keep", "stop asking",
-        "said this before", "i said this",
-    )
-    if any(p in text for p in _FRUSTRATION):
-        return "frustration"
-
-    # 4 ── Clarification / repeat request ────────────────────────────────────
-    _CLARIFICATION = (
-        "did you not catch", "didn't catch", "catch that",
-        "what do you mean", "what did you say", "what was that",
-        "sorry?", "pardon", "come again", "say that again",
-        "can you repeat", "repeat that", "say again",
-        "are you there", "still there", "hello",
-        "hi there",
-    )
-    if any(p in text for p in _CLARIFICATION):
-        return "clarification"
-
-    # 5 ── Additive clinical detail (more context about the same condition) ──
-    # Caller is not answering yes/no; they are elaborating on their reason.
-    # Do NOT route this as a general_query — it would generate an unrelated
-    # LLM answer and leave flow_step stuck at CONFIRM_ASSESSMENT.
-    _ADDITIVE = (
-        # Temporal / onset descriptors
-        "it happened", "it started", "it's been", "its been",
-        "been going on", "been like this", "been sore", "been hurting",
-        "just went", "went to get", "get checked", "went to check",
-        "after a", "because of", "due to", "following",
-        "a few weeks", "a few days", "a few months",
-        "a while now", "for a while", "for weeks", "for months",
-        "since i", "since the", "after the",
-        # Activities / mechanisms
-        "cycling", "running", "football", "sport", "gym",
-        "accident", "car crash", "crash", "fall", "twisted", "pulled", "strained",
-        # Clinical severity
-        "getting worse", "not getting better", "still sore",
-        "pretty bad", "quite bad", "really bad", "really hurting",
-        "hurt", "hurting", "in pain", "painful",
-        # Body parts
-        "neck", "back", "shoulder", "knee", "ankle", "hip",
-        "wrist", "elbow", "head", "spine", "leg", "arm",
-        # Conversational continuations
-        "bit more", "more detail", "also",
-        "just saying", "was saying", "i was just",
-        "i had a", "i've had", "ive had",
-        "thought he wanted", "thought you wanted",
-        "wanted to know", "wanted to mention",
-    )
-    if any(p in text for p in _ADDITIVE):
-        return "additive_detail"
-
-    # Interrogative starters — questions must NEVER confirm the assessment.
-    # Checked before the word-count fallback so long questions don't get
-    # misrouted as "additive_detail".
-    if text.startswith((
-        "what ", "what's", "how ", "is it", "is that", "is the",
-        "does it", "does that", "do you", "will it", "will that",
-        "would it", "can you", "could you", "tell me",
-        "how much", "how long", "how many", "how painful",
-        "why ", "when ", "where ",
-    )):
-        return "clarification"
-
-    # Word-count fallback: long unparsed sentence almost certainly clinical detail
-    # Short noise/garble stays as unknown
-    words = text.split()
-    if len(words) >= 8:
-        return "additive_detail"
-
-    return "unknown"
+            return empathy
+    return "Sorry to hear you're having some trouble — we'll make sure to get you the right help."
 
 
 def _phrase_key_for_step(step: Dict[str, Any]) -> str:
@@ -1588,7 +1326,6 @@ import random as _random
 # Short acknowledgement phrases spoken *before* the next hardcoded question.
 # Keyed by the state that was JUST completed.
 _BRIDGE_POOL: Dict[str, list] = {
-    "CONFIRM_ASSESSMENT":              ["Great.", "Perfect.", "Lovely."],
     "RETURNING_RECENCY":               ["Got it.", "Right.", "Got that."],
     "RETURNING_TREATMENT_PLAN":        ["Perfect.", "Great."],
     "RETURNING_PLAN_CONFIRM_PHONE":    ["Perfect.", "Brilliant."],
@@ -1974,6 +1711,9 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "Answer DIRECTLY from the clinic information in your system prompt. "
             "STRICT LENGTH: 1–2 sentences maximum — no bullet points, no lists, no markdown. "
             "Speak naturally as if on a phone call.\n"
+            "Do NOT use any preamble, filler, or transitional phrases before answering "
+            "(e.g. do NOT say 'Give me just a second', 'Great question', 'Of course', "
+            "'Let me look that up', 'Sure thing' — start the answer immediately).\n"
             "If {faq_topic} is 'prices' or 'faq_prices': "
             "check if the caller's most recent message named a specific service. "
             "If yes, give ONLY that service's price and duration in one sentence. "
@@ -2544,11 +2284,15 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # ── COLLECT_REASON / CONFIRM_ASSESSMENT: skip for on-plan returning patients ──
-        # They already know the treatment type from the lookup.
-        if step["state"] in ("COLLECT_REASON", "CONFIRM_ASSESSMENT") and self.session.get("on_treatment_plan"):
+        # ── COLLECT_REASON: skip for on-plan returning patients (treatment type already known)
+        # OR when reason was already captured from the caller's first utterance.
+        if step["state"] == "COLLECT_REASON" and (
+            self.session.get("on_treatment_plan") or self.session.get("reason")
+        ):
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] skipping %s — on-plan returning patient", step["state"])
+            logger.info("[ms_flow] skipping COLLECT_REASON — %s",
+                        "on-plan returning patient" if self.session.get("on_treatment_plan")
+                        else "reason already captured from first utterance")
             await self.ask_current_question()
             return
 
@@ -3033,14 +2777,7 @@ class FlowEngine:
                 ) + instruction
             self.session["question_asked_this_turn"] = True
             _allow_tools = step.get("allow_tools", True)
-            # CONFIRM_ASSESSMENT: deterministic fast path for common conditions.
-            # Skips the LLM call (and its retry/fallback latency) when the reason
-            # matches a known condition category.
-            _fast_r = (
-                _fast_assessment_response(format_args.get("reason", ""))
-                if step["state"] == "CONFIRM_ASSESSMENT"
-                else None
-            )
+            _fast_r = None
             # ANSWER_FAQ/services: full-list detection takes priority over short summary.
             # If the caller explicitly asked for the full list ("what services do you offer",
             # "all services" etc.) respond with _FAQ_SERVICES_FULL; otherwise short summary.
@@ -3110,13 +2847,7 @@ class FlowEngine:
                 )
                 if not _named_svc:
                     _fast_r = _FAQ_PRICES_NO_SERVICE
-            if step["state"] == "CONFIRM_ASSESSMENT" and not _fast_r:
-                response = await self._llm(
-                    instruction,
-                    allow_tools=False,
-                    error_phrase=_CONFIRM_ASSESSMENT_API_FALLBACK,
-                )
-            elif _fast_r:
+            if _fast_r:
                 # Fast-path: speak the deterministic answer directly to TTS.
                 # The LLM path handles TTS internally via streaming; fast-path must
                 # do it explicitly — without this the answer is built but never spoken.
@@ -3124,9 +2855,6 @@ class FlowEngine:
                 response = _fast_r
             else:
                 response = await self._llm(instruction, allow_tools=_allow_tools)
-            # Store full CONFIRM_ASSESSMENT phrase for clarification replay
-            if step["state"] == "CONFIRM_ASSESSMENT" and response:
-                self.session["confirm_assessment_phrase"] = response
             # Extract only the question sentence from the LLM response so the
             # SilenceHandler re-asks a clean question, not the full paragraph.
             _q = _extract_question_sentence(response or "") or (step["question"] or "")
@@ -5504,8 +5232,8 @@ class FlowEngine:
             self._switch_flow(intent)
 
             # If caller mentioned a medical condition in their first utterance,
-            # treat it as the reason for booking — store it and skip COLLECT_REASON
-            # (jump straight to CONFIRM_ASSESSMENT, step 1).
+            # treat it as the reason for booking — store it so COLLECT_REASON
+            # is skipped, and emit the empathy acknowledgement immediately.
             # This matches caller behaviour: "I have back pain" is BOTH the booking
             # intent AND the reason — asking "what brings you in today?" would be
             # redundant and confusing.
@@ -5528,12 +5256,19 @@ class FlowEngine:
                     "been suffering", "not been well", "been struggling",
                 )
                 if any(sig in text for sig in _condition_signals):
-                    self.session["reason"] = transcript.strip()
-                    self.session["flow_step"] = 1   # skip COLLECT_REASON
+                    _di_reason = transcript.strip()
+                    self.session["reason"] = _di_reason
+                    # Emit non-gating empathy line immediately — COLLECT_REASON will be
+                    # skipped by ask_current_question when it finds reason already set.
+                    _di_empathy = _fast_empathy_line(_di_reason)
+                    await self._tts.put(_di_empathy)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _di_empathy}
+                    )
                     logger.info(
                         "[ms_flow] DETECT_INTENT: condition in first utterance %r "
-                        "→ reason stored, skipping COLLECT_REASON",
-                        transcript.strip()[:60],
+                        "→ reason stored, empathy emitted, COLLECT_REASON will be skipped",
+                        _di_reason[:60],
                     )
 
             # Transfer intent: bypass LLM — send phrase immediately, mark complete.
@@ -5832,275 +5567,6 @@ class FlowEngine:
                         await self._tts.put(lq)
                     logger.info("[ms_flow] self-referential transcript — re-anchoring (BUG 6): %r", transcript[:60])
                     return
-
-        # ── CONFIRM_ASSESSMENT: tight yes/no gate (runs BEFORE interrupt check) ──
-        # Must run first because _detect_intent() returns "general_query" for
-        # plain affirmatives like "yeah that sounds fine" — which would incorrectly
-        # fire a mid-flow interrupt and leave flow_step frozen at CONFIRM_ASSESSMENT.
-        if step["state"] == "CONFIRM_ASSESSMENT":
-            # ── BUG 3 safety net: stale-reason continuation ──────────────────
-            # If the stored reason ends with a dangling linking verb AND the
-            # incoming text looks like a symptom continuation (no yes/no/confirm
-            # tokens), merge it into the reason and re-ask confirmation.
-            import re as _re_ca_dangle
-            _ca_stored_reason = self.session.get("reason", "")
-            _CA_DANGLE_RE = _re_ca_dangle.compile(
-                r'\b(?:is|are|was|were|has|have|had|feels?|felt|seems?)\s*$',
-                _re_ca_dangle.IGNORECASE,
-            )
-            _CA_YES_TOKENS = frozenset({
-                "yes", "yeah", "yep", "yup", "ok", "okay", "sure",
-                "fine", "alright", "no", "nope", "nah",
-            })
-            _CA_BODY_PARTS = frozenset({
-                "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
-                "elbow", "leg", "arm", "foot", "heel", "spine", "head",
-            })
-            _CA_SYMPTOM_WORDS = frozenset({
-                "pain", "ache", "hurt", "hurting", "sore", "stiff", "swollen",
-                "bit", "quite", "lot", "much", "severe", "bad", "worse",
-            })
-            _ca_text_words = frozenset(text.split())
-            _ca_has_yn     = bool(_ca_text_words & _CA_YES_TOKENS)
-            _ca_has_body   = bool(_ca_text_words & _CA_BODY_PARTS)
-            _ca_has_sym    = bool(_ca_text_words & _CA_SYMPTOM_WORDS)
-            if (
-                _ca_stored_reason
-                and _CA_DANGLE_RE.search(_ca_stored_reason.lower())
-                and not _ca_has_yn
-                and (_ca_has_body or _ca_has_sym)
-            ):
-                _ca_merged_reason = _ca_stored_reason.rstrip() + " " + transcript.strip()
-                self.session["reason"] = _ca_merged_reason
-                logger.info(
-                    "[ms_flow] CONFIRM_ASSESSMENT: BUG3 continuation merged → %r",
-                    _ca_merged_reason[:80],
-                )
-                # Drain stale TTS before re-asking
-                while not self._tts.empty():
-                    try:
-                        self._tts.get_nowait()
-                    except Exception:
-                        break
-                # Re-run confirmation with updated reason (re-ask only anchor)
-                _ca_anchor = "Does that sound okay?"
-                _ca_full   = self.session.get("confirm_assessment_phrase", "")
-                if _ca_full:
-                    # Re-speak full phrase (includes new reason context) + anchor
-                    await self._tts.put(_ca_full)
-                await self._tts.put(_ca_anchor)
-                self.session["last_question"] = _ca_anchor
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _ca_anchor}
-                )
-                return
-
-            # ── Priority 1a: general FAQ intercept ───────────────────────────
-            # MUST run before assessment-inquiry.  "what's the physiotherapy
-            # assessment price and length" contains "what" + "physiotherapy", so
-            # the old inquiry catch-all fired instead of pricing.  Specific FAQ
-            # signals (price, insurance, hours, location, services) must outrank
-            # the generic "what ... assessment" keyword match.
-            _ca_faq_intent = self._detect_intent(text)
-            _ca_faq_allowed = {
-                "faq_prices", "faq_insurance", "faq_hours",
-                "faq_location", "faq_services", "faq_capability",
-            }
-            if _ca_faq_intent in _ca_faq_allowed:
-                logger.info(
-                    "[ms_flow] CONFIRM_ASSESSMENT: FAQ intercept (pre-inquiry) — intent=%s",
-                    _ca_faq_intent,
-                )
-                await self._handle_mid_flow_interrupt(_ca_faq_intent, transcript)
-                return
-
-            # ── Priority 1b: duration / appointment-length questions ──────────
-            # "how long does the physiotherapy assessment last" → general_query in
-            # _detect_intent (journey_p matches "how long"), but in CONFIRM_ASSESSMENT
-            # context it is an appointment-length question.  Route to faq_prices so
-            # _handle_mid_flow_interrupt returns price + duration info.
-            _CA_DURATION_SIGNALS = (
-                "how long", "how many minutes", "how many hours",
-                "how long is the", "how long does", "how long will",
-                "how long for", "long does it take", "long will it take",
-                "duration", "appointment length", "length of the appoint",
-                "length of the assess",
-            )
-            if any(p in text for p in _CA_DURATION_SIGNALS):
-                logger.info(
-                    "[ms_flow] CONFIRM_ASSESSMENT: duration question → faq_prices"
-                )
-                await self._handle_mid_flow_interrupt("faq_prices", transcript)
-                return
-
-            # ── Priority 1c: assessment inquiry ──────────────────────────────
-            # Only reached when NOT a price/insurance/location/duration FAQ.
-            # Safe to explain "what is a physiotherapy assessment" now without
-            # risk of catching price/duration questions in the "what...assessment"
-            # keyword fallback.
-            _CA_INQUIRY_PHRASES = (
-                "what happens",
-                "what exactly happens",
-                "what does that involve",
-                "what is that assessment",
-                "what will happen",
-                "what's involved",
-                "what does the assessment",
-                "tell me more about",
-                "what do you do in",
-                "what do they do in",
-                "what goes on",
-                "what exactly is",
-                "what is a physio",
-                "what is an assess",
-                "what is the assess",
-                "what does it involve",
-                "what does it entail",
-                "what will it involve",
-                "what's the assessment",
-                "what is the appointment",
-                "what is a physiotherapy",
-                "what happens in",
-                "what happens at",
-            )
-            # Keyword-based fallback for "what … assessment/physio" forms.
-            # Now safe to use because price/duration/insurance/location FAQs
-            # were already caught by Priority 1a/1b above.
-            _ca_is_inquiry = (
-                any(_p in text for _p in _CA_INQUIRY_PHRASES)
-                or (
-                    "what" in text
-                    and any(w in text for w in (
-                        "assessment", "assess", "physio", "physiotherapy",
-                    ))
-                )
-            )
-            if _ca_is_inquiry:
-                _ca_info = (
-                    "It's an initial appointment where the clinician talks through what's been "
-                    "going on, assesses the issue, and recommends the best next step from there."
-                )
-                _ca_recap = "Does that sound okay?"
-                await self._tts.put(_ca_info)
-                await self._tts.put(_ca_recap)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _ca_info}
-                )
-                # Do NOT update last_question — the real question remains intact
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: inquiry intercept fired (post-FAQ)")
-                return
-            # ── Priority 1d: workflow-switch reroute ─────────────────────────
-            # "sorry i was saying i want to reschedule an appointment" must
-            # NEVER reach the classifier where "was saying" would match the
-            # _ADDITIVE list and advance the booking.  Check for explicit
-            # intent-switch language before any classification.
-            _CA_REROUTE_SIGNALS = (
-                "reschedule", "re-schedule", "rebook", "re-book",
-                "cancel my appointment", "cancel the appointment",
-                "change my appointment", "move my appointment",
-                "i want to reschedule", "i want to cancel",
-                "want to reschedule", "want to cancel",
-                "looking to reschedule", "looking to cancel",
-                "need to reschedule", "need to cancel",
-            )
-            if any(p in text for p in _CA_REROUTE_SIGNALS):
-                _ca_reroute_intent = self._detect_intent(text)
-                if _ca_reroute_intent in ("reschedule", "cancel"):
-                    logger.info(
-                        "[ms_flow] CONFIRM_ASSESSMENT: workflow-switch reroute %r → %s",
-                        transcript[:60], _ca_reroute_intent,
-                    )
-                    self._switch_flow(_ca_reroute_intent)
-                    await self.ask_current_question()
-                    return
-
-            # ── Priority 1e: repair fragment guard ───────────────────────────
-            # Pure repair speech with no clinical content must not classify as
-            # additive_detail and advance the booking.  E.g. "sorry i was saying"
-            # alone would match _ADDITIVE["was saying"] → yes-advance is wrong.
-            # If the utterance is just repair filler with no clinical content and
-            # no explicit intent, fall through to the unknown / re-ask path.
-            _CA_REPAIR_STARTERS = (
-                "sorry i was saying",
-                "sorry i would say",
-                "sorry i was going to say",
-                "sorry i was just",
-                "sorry i want to say",
-                "no sorry",
-                "hold on",
-                "hang on",
-                "never mind",
-            )
-            _CA_CLINICAL_CONTENT = (
-                "pain", "ache", "hurt", "sore", "stiff", "swollen",
-                "ankle", "knee", "back", "neck", "shoulder", "hip",
-                "wrist", "elbow", "leg", "arm", "physio", "assessment",
-                "injury", "condition", "problem",
-            )
-            if any(text.startswith(p) or text == p for p in _CA_REPAIR_STARTERS):
-                if not any(c in text for c in _CA_CLINICAL_CONTENT):
-                    # Re-ask — do not classify, do not advance
-                    logger.info(
-                        "[ms_flow] CONFIRM_ASSESSMENT: repair fragment %r — re-asking",
-                        transcript[:60],
-                    )
-                    while not self._tts.empty():
-                        try:
-                            self._tts.get_nowait()
-                        except Exception:
-                            break
-                    _ca_repair_reask = "Does that sound okay?"
-                    await self._tts.put(_ca_repair_reask)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _ca_repair_reask}
-                    )
-                    return
-
-            # ── Priority 2–5: classifier-based branching ─────────────────────
-            _ca_class = _classify_confirm_assessment(text)
-            logger.info("[ms_flow] CONFIRM_ASSESSMENT: class=%r transcript=%r", _ca_class, transcript[:60])
-            if _ca_class in ("yes", "additive_detail"):
-                self.session["assessment_confirmed"] = True
-                self.session["flow_step"]            = step["step"] + 1
-                logger.info("[ms_flow] CONFIRM_ASSESSMENT: confirmed → step %d", step["step"] + 1)
-                await self.ask_current_question()
-                return
-            if _ca_class == "no":
-                # Caller wants something different — re-ask what brings them in
-                _ca_no = "No problem — could you tell me a bit more about what's brought you in?"
-                await self._tts.put(_ca_no)
-                self.session["last_question"] = _ca_no
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _ca_no}
-                )
-                self.session["flow_step"] = 0  # back to COLLECT_REASON
-                self.session["state"] = "COLLECT_REASON"
-                return
-            if _ca_class == "correction":
-                # STT mishear — re-ask COLLECT_REASON cleanly
-                _ca_corr = "Sorry about that — what is it you'd like to come in for?"
-                await self._tts.put(_ca_corr)
-                self.session["last_question"] = _ca_corr
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _ca_corr}
-                )
-                self.session["flow_step"] = 0
-                self.session["state"] = "COLLECT_REASON"
-                return
-            # BUG 4: clarification / frustration / unknown — drain stale TTS first,
-            # then replay ONLY the short anchor question, NOT the full recommendation
-            # bundle (which would cause a duplicate/stale replay).
-            while not self._tts.empty():
-                try:
-                    self._tts.get_nowait()
-                except Exception:
-                    break
-            _ca_retry = "Does that sound okay?"
-            await self._tts.put(_ca_retry)
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": _ca_retry}
-            )
-            return
 
         # ── NEW_OR_RETURNING: deterministic extraction BEFORE interrupt check ──────
         # Direct answers like "it's my first time" or "i have never been with you before"
@@ -9435,7 +8901,7 @@ class FlowEngine:
         # Answer it warmly and end the turn — do NOT re-ask the current step.
         # The next caller utterance re-enters handle_transcript at the same flow_step.
         _interruptable_states = {
-            "CONFIRM_ASSESSMENT", "NEW_OR_RETURNING",
+            "NEW_OR_RETURNING",
             "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
             "RETURNING_PLAN_CONFIRM_PHONE", "RETURNING_PLAN_COLLECT_PHONE",
             "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING",
@@ -9465,12 +8931,6 @@ class FlowEngine:
                 # COLLECT_REASON: open-ended "what brings you in?". Fragment guard
                 # (BUG 1/2) rejects partial answers; we must not also fire LLM.
                 "COLLECT_REASON",
-                # CONFIRM_ASSESSMENT is a tight yes/no gate — all real cases are
-                # handled by the priority block above; any "unknown" utterance
-                # that reaches here must be treated as ambiguous input, not a
-                # general chat question.  Only genuine FAQs (prices, hours, etc.)
-                # should still interrupt.
-                "CONFIRM_ASSESSMENT",
                 # NEW_OR_RETURNING is a binary closed question — deterministic
                 # extraction runs in the priority block above.  Any utterance
                 # that reaches here failed extraction; treat it as a garbled
@@ -9747,6 +9207,7 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
             elif answer == "done":
+                self.session["call_outcome_logged"] = "faq_only"
                 await self._tts.put(
                     "Thanks for calling Theorem Health. Have a great day!"
                 )
@@ -9895,6 +9356,7 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
             elif answer == "done":
+                self.session["call_outcome_logged"] = "faq_only"
                 await self._tts.put(
                     "Thanks for calling Theorem Health. Have a great day!"
                 )
@@ -11534,6 +10996,16 @@ class FlowEngine:
         logger.info("[ms_flow] advance: step→%d matched_state=%s next_state=%s",
                     step["step"] + 1, step["state"], self.session["state"])
 
+        # ── COLLECT_REASON: inline empathy acknowledgement (replaces CONFIRM_ASSESSMENT) ──
+        # Non-gating — spoken once, no reply expected. Flow advances immediately.
+        if step["state"] == "COLLECT_REASON":
+            _cr_empathy = _fast_empathy_line(answer or "")
+            await self._tts.put(_cr_empathy)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _cr_empathy}
+            )
+            logger.info("[ms_flow] COLLECT_REASON: empathy emitted — %r", _cr_empathy[:80])
+
         # Emit a short conversational bridge before the next question.
         # Skip if the next step uses LLM — it writes its own opener.
         _next_step = self.current_step()
@@ -12031,6 +11503,14 @@ class FlowEngine:
         the caller knows where we are in the booking.
         Does NOT change flow_step or _active_flow.
         """
+        # Precompute whether we're currently at an FAQ/general offer state so
+        # fast-path answers can be combined with the re-anchor into ONE TTS turn.
+        _mfi_cur_step  = self.current_step()
+        _mfi_cur_state = _mfi_cur_step["state"] if _mfi_cur_step else None
+        _mfi_in_offer  = _mfi_cur_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER")
+        # Suffix appended to fast-path answers when already in an offer state so
+        # the answer + follow-up land as a single spoken utterance.
+        _re_anchor_sfx = " Anything else you'd like to ask?" if _mfi_in_offer else ""
         _FAQ_TOPICS = {
             "faq_prices":    "prices",
             "faq_insurance": "insurance",
@@ -12100,11 +11580,11 @@ class FlowEngine:
                     else _FAQ_SERVICES_FAST
                 )
                 logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
-            await self._tts.put(_svc_answer)
+            await self._tts.put(_svc_answer + _re_anchor_sfx)
             self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
             logger.info("[ms_flow] _handle_mid_flow_interrupt: capability fast path")
-            await self._tts.put(_CAPABILITY_ANSWER)
+            await self._tts.put(_CAPABILITY_ANSWER + _re_anchor_sfx)
             self.session["last_faq_answer"] = _CAPABILITY_ANSWER
         elif intent == "faq_insurance":
             # Insurer-specific response: Bupa rejection, named-insurer self-pay, or generic.
@@ -12134,7 +11614,7 @@ class FlowEngine:
                 else:
                     _ins_ans = _FAQ_INSURANCE_ANSWER
             logger.info("[ms_flow] _handle_mid_flow_interrupt: insurance fast path")
-            await self._tts.put(_ins_ans)
+            await self._tts.put(_ins_ans + _re_anchor_sfx)
             self.session["last_faq_answer"] = _ins_ans
         elif intent == "faq_prices":
             # Prices: if no specific service named → deterministic from-price gate.
@@ -12143,7 +11623,7 @@ class FlowEngine:
             _named_svc = any(k in _pr_text for k in _FAQ_PRICES_SERVICE_KEYWORDS)
             if not _named_svc:
                 logger.info("[ms_flow] _handle_mid_flow_interrupt: prices no-service fast path")
-                await self._tts.put(_FAQ_PRICES_NO_SERVICE)
+                await self._tts.put(_FAQ_PRICES_NO_SERVICE + _re_anchor_sfx)
                 self.session["last_faq_answer"] = _FAQ_PRICES_NO_SERVICE
             else:
                 instruction = (
@@ -12250,7 +11730,7 @@ class FlowEngine:
                     "[ms_flow] _handle_mid_flow_interrupt: %s deterministic (loc=%s)",
                     intent, _mfi_loc_id,
                 )
-                await self._tts.put(_mfi_ans)
+                await self._tts.put(_mfi_ans + _re_anchor_sfx)
                 self.session["last_faq_answer"] = _mfi_ans
             else:
                 # Config data missing — fall back to LLM
@@ -12345,7 +11825,6 @@ class FlowEngine:
             # so the caller is NEVER left in dead air after a mid-flow interrupt.
             if not _int_anchor:
                 _ANCHOR_DEFAULTS: "Dict[str, str]" = {
-                    "CONFIRM_ASSESSMENT":          "Does that sound okay?",
                     "NEW_OR_RETURNING":            "Have you been with us before, or is this your first time?",
                     "RETURNING_RECENCY":           "And was that recently, or a little while ago?",
                     "RETURNING_TREATMENT_PLAN":    "Are you still on a current treatment plan with us?",
@@ -12376,24 +11855,29 @@ class FlowEngine:
                     _int_state,
                 )
 
-            # Always emit re-anchor (non-empty guaranteed by the safety net above).
+            # Emit re-anchor — but for FAQ/general offer states the re-anchor suffix
+            # was already appended directly to the fast-path answer above (one TTS turn).
+            # Only emit the separate re-anchor for non-offer states (mid-booking interrupts).
             _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
-            _anchor_spoken = (
-                _int_anchor if _int_state in _offer_states
-                else f"Coming back to that \u2014 {_int_anchor}"
-            )
-            await self._tts.put(_anchor_spoken)
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": _anchor_spoken}
-            )
-            # For FAQ offer states, immediately write the fresh neutral follow-up
-            # into last_question.  The mid-flow interrupt path returns at ~line 9070
-            # without passing through the FAQ_BOOKING_OFFER handler's last_question
-            # update (lines ~9176-9178), so this is the only reliable place to
-            # ensure the silence handler re-asks "Anything else?" rather than
-            # replaying stale answer text from a prior FAQ turn.
             if _int_state in _offer_states:
-                self.session["last_question"] = _anchor_spoken
+                # Re-anchor already baked into the fast-path answer; just update
+                # last_question so the silence handler replays the right prompt.
+                if _mfi_in_offer:
+                    self.session["last_question"] = "Anything else you'd like to ask?"
+                else:
+                    # LLM path (streaming) — still need a separate re-anchor put.
+                    _anchor_spoken = _int_anchor  # "Anything else you'd like to ask?"
+                    await self._tts.put(_anchor_spoken)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _anchor_spoken}
+                    )
+                    self.session["last_question"] = _anchor_spoken
+            else:
+                _anchor_spoken = f"Coming back to that \u2014 {_int_anchor}"
+                await self._tts.put(_anchor_spoken)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _anchor_spoken}
+                )
             logger.info(
                 "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
                 _int_state, _anchor_spoken[:80],
