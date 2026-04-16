@@ -1210,6 +1210,17 @@ _CONFIRM_PHONE_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_PHONE"
 )
 
+# On-plan returning-patient phone collection / lookup indices.
+# RETURNING_PLAN_COLLECT_PHONE is the phone-entry step for on-plan returning patients;
+# RETURNING_PLAN_LOOKUP is the immediate next step that must run after phone confirmation
+# (looks up the 90-day treatment plan before booking).  Both are BOOKING_FLOW only.
+_RETURNING_PLAN_COLLECT_PHONE_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "RETURNING_PLAN_COLLECT_PHONE"
+)
+_RETURNING_PLAN_LOOKUP_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "RETURNING_PLAN_LOOKUP"
+)
+
 
 # ── CONFIRM_ASSESSMENT: deterministic fast-path empathy map ──────────────────
 # Covers the vast majority of real booking reasons — avoids LLM call and the
@@ -3479,7 +3490,7 @@ class FlowEngine:
                         _repair_q = "Of course — could I take your first name again please?"
                     else:
                         _repair_q = self.session.get("last_question", "Could you say that number again?")
-                elif _repair_state in ("COLLECT_PHONE", "COLLECT_PHONE_RESCHEDULE"):
+                elif _repair_state in ("COLLECT_PHONE", "COLLECT_PHONE_RESCHEDULE", "RETURNING_PLAN_COLLECT_PHONE"):
                     # LOCAL phone-entry reset: clear ALL digit state so the next
                     # DTMF entry starts from an empty buffer.  Do NOT treat this as
                     # a global "what was your inquiry?" reset — the caller is still
@@ -4109,7 +4120,7 @@ class FlowEngine:
         # Does NOT fire when phone_readback_pending — that is handled by
         # the CONFIRM gate immediately below.
         # ════════════════════════════════════════════════════════════════════
-        if current_state in ("COLLECT_PHONE", "COLLECT_PHONE_RESCHEDULE") and not self.session.get("phone_readback_pending"):
+        if current_state in ("COLLECT_PHONE", "COLLECT_PHONE_RESCHEDULE", "RETURNING_PLAN_COLLECT_PHONE") and not self.session.get("phone_readback_pending"):
             # ── NAME-REPAIR: step back to COLLECT_NAME from COLLECT_PHONE ───────
             # Must run before digit extraction so repair intents are not trapped
             # as failed digit entries and silently re-asked.
@@ -4375,6 +4386,11 @@ class FlowEngine:
                 self.session["_last_yes_detected"]       = False
                 self.session["_last_no_detected"]        = False
                 self.session["_last_assistant_response"] = _hg_rb
+                # Flag so CONFIRM_PHONE YES/NO handlers know to route back into the
+                # on-plan path (RETURNING_PLAN_LOOKUP on YES, RETURNING_PLAN_COLLECT_PHONE
+                # on NO) instead of the default CONFIRM_BOOKING / COLLECT_PHONE targets.
+                if current_state == "RETURNING_PLAN_COLLECT_PHONE":
+                    self.session["_phone_returning_plan"] = True
                 await self._tts.put(_hg_rb)
                 return
 
@@ -4524,7 +4540,9 @@ class FlowEngine:
                 # everyone else → COLLECT_PHONE.  Fall back to whichever state exists
                 # in the active flow if the primary target isn't found.
                 _primary_phone_state = (
-                    "COLLECT_PHONE_RETURNING"
+                    "RETURNING_PLAN_COLLECT_PHONE"
+                    if self.session.pop("_phone_returning_plan", False)
+                    else "COLLECT_PHONE_RETURNING"
                     if self.session.get("on_treatment_plan")
                     else "COLLECT_PHONE"
                 )
@@ -4537,7 +4555,8 @@ class FlowEngine:
                     # Fallback: accept either state if the primary wasn't found
                     _cp_idx_early = next(
                         (i for i, s in enumerate(self._active_flow)
-                         if s["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")),
+                         if s["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+                                           "RETURNING_PLAN_COLLECT_PHONE")),
                         None,
                     )
                 if _cp_idx_early is not None:
@@ -4772,6 +4791,13 @@ class FlowEngine:
                             self.session.get("collected") or {}
                         ).get("full_name"):
                             self.session["rc_phone_first"] = True
+                    elif self.session.pop("_phone_returning_plan", False):
+                        # On-plan returning patient confirmed their number — proceed to
+                        # treatment-plan lookup (skipping steps 6-12 which are irrelevant
+                        # for on-plan patients).
+                        self.session["flow_step"]  = _RETURNING_PLAN_LOOKUP_INDEX
+                        self.session["state"]      = "RETURNING_PLAN_LOOKUP"
+                        self.session["flow_state"] = "RETURNING_PLAN_LOOKUP"
                     else:
                         self.session["state"]      = "CONFIRM_BOOKING"
                         self.session["flow_state"] = "CONFIRM_BOOKING"
@@ -4832,13 +4858,17 @@ class FlowEngine:
                 self.session["phone_readback_pending"] = False
                 self.session["phone_confirmed"]        = False
                 self.session.pop("phone_candidate", None)
-                self.session["state"]                  = "COLLECT_PHONE"
-                self.session["flow_state"]             = "COLLECT_PHONE"
+                _is_rp_no = self.session.pop("_phone_returning_plan", False)
+                _no_state = "RETURNING_PLAN_COLLECT_PHONE" if _is_rp_no else "COLLECT_PHONE"
+                self.session["state"]                  = _no_state
+                self.session["flow_state"]             = _no_state
                 self.session["flow_step"]              = (
                     _RESCHEDULE_COLLECT_PHONE_INDEX
                     if self._active_flow is RESCHEDULE_FLOW
                     else _CANCEL_COLLECT_PHONE_INDEX
                     if self._active_flow is CANCEL_FLOW
+                    else _RETURNING_PLAN_COLLECT_PHONE_INDEX
+                    if _is_rp_no
                     else _COLLECT_PHONE_INDEX
                 )
                 self.session.setdefault("collected", {}).pop("phone", None)
@@ -10459,7 +10489,7 @@ class FlowEngine:
         # After Fix 1 (garbage filter), digit-only chunks now reach the flow.
         # Each chunk individually fails the 10-digit minimum.  Accumulate them in
         # session until we have a complete number, then proceed normally.
-        if answer is None and step["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+        if answer is None and step["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "RETURNING_PLAN_COLLECT_PHONE"):
             _new_digits = "".join(c for c in transcript if c.isdigit())
             if _new_digits:
                 _buffer = self.session.get("phone_digits_buffer", "") + _new_digits
@@ -10574,7 +10604,7 @@ class FlowEngine:
             # ── Keypad-entry status phrases: phone states ─────────────────────
             # Caller says "typing it in" / "one second" etc. at a phone-collection
             # step — acknowledge and wait; do NOT increment retry counter.
-            _PHONE_KEYPAD_STATES = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING"}
+            _PHONE_KEYPAD_STATES = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "RETURNING_PLAN_COLLECT_PHONE"}
             if step["state"] in _PHONE_KEYPAD_STATES:
                 _KEYPAD_PHRASES = (
                     "typing it in", "entering it", "on the keypad", "on the keyboard",
@@ -10710,7 +10740,7 @@ class FlowEngine:
                 # at COLLECT_PHONE / COLLECT_PHONE_RETURNING is almost always a partial
                 # number, background noise, or a filler ("hold on", "hang on").
                 # Haiku would say something confusing here; just replay the question.
-                _COLLECT_PHONE_STATES_FG = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"}
+                _COLLECT_PHONE_STATES_FG = {"COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE", "RETURNING_PLAN_COLLECT_PHONE"}
                 if step["state"] in _COLLECT_PHONE_STATES_FG:
                     _ph_replay = self.session.get("last_question", "And the best number to reach you on?")
                     await self._tts.put(_ph_replay)
