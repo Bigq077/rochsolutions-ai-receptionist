@@ -2370,9 +2370,7 @@ class FlowEngine:
             _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
             _name_part  = f"{_name_cb}, " if _name_cb else ""
             _cb_prompt = (
-                f"Just to confirm — {_name_part}I'm booking you in for "
-                f"{_slot_cb} at our {_clinic_name} clinic. "
-                "Shall I go ahead?"
+                f"So that's {_name_part}{_slot_cb} at {_clinic_name} — shall I go ahead?"
             )
             logger.info(
                 "[ms_flow] ASK CONFIRM_BOOKING text=%r name=%r slot=%r",

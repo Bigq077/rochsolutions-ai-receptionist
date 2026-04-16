@@ -2698,6 +2698,22 @@ class WebSocketCallHandler:
         if self._barge_in_pending and self._barge_in_ts > 0:
             self._barge_in_duration = time.monotonic() - self._barge_in_ts
         self._clearing = False  # always reset — even garbage finals end the barge-in window
+
+        # Fix: if a watchdog repair phrase was queued/in-flight, kill it before
+        # on_transcript_received() resets currently_reasking — otherwise the stale
+        # TTS keeps playing over the caller's valid answer.
+        if self._silence_handler.currently_reasking:
+            # Cancel in-flight synthesis task
+            if self._tts_task and not self._tts_task.done():
+                self._tts_task.cancel()
+                logger.info("[ms_conn] stale watchdog TTS cancelled (valid transcript arrived)")
+            # Drain any queued repair phrases
+            while not self._tts_text_queue.empty():
+                try:
+                    self._tts_text_queue.get_nowait()
+                except Exception:
+                    break
+
         self._silence_handler.on_transcript_received(text)
 
     # ========================================================================
