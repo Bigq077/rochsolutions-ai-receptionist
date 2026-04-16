@@ -674,6 +674,32 @@ TOOL_LOG_CALL_OUTCOME = {
     },
 }
 
+TOOL_LOOKUP_RECENT_APPOINTMENT = {
+    "name": "lookup_recent_appointment",
+    "description": (
+        "Phone-only lookup of a returning patient's most recent appointment within "
+        "a 90-day window. Use this at the start of a new booking when the caller "
+        "says they are on an active treatment plan — before collecting their name. "
+        "Returns the canonical name and treatment type stored in the system so the "
+        "booking can proceed without asking for name again."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "phone": {
+                "type": "string",
+                "description": "Caller's phone number (as dialled or confirmed).",
+            },
+            "location": {
+                "type": "string",
+                "enum": ["alcester", "redditch"],
+                "description": "Clinic location the caller is booking at.",
+            },
+        },
+        "required": ["phone", "location"],
+    },
+}
+
 TOOL_GET_PATIENT_HISTORY = {
     "name": "get_patient_history",
     "description": (
@@ -774,6 +800,7 @@ TOOL_SCHEMAS = [
     TOOL_LOOKUP_APPOINTMENT,
     TOOL_CONFIRM_APPOINTMENT_FOUND,
     TOOL_GET_CLINIC_INFO,
+    TOOL_LOOKUP_RECENT_APPOINTMENT,
     TOOL_COLLECT_AND_STORE,
     TOOL_TRANSFER_TO_HUMAN,
     TOOL_SEND_FOLLOWUP_SMS,
@@ -3309,6 +3336,121 @@ async def _exec_get_patient_history(args: Dict[str, Any], session: Dict[str, Any
     }
 
 
+async def _exec_lookup_recent_appointment(
+    args: Dict[str, Any], session: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Phone-only lookup of a patient's most recent appointment within 90 days.
+
+    Used by the RETURNING_PLAN_LOOKUP booking step to retrieve the canonical
+    name and treatment type before asking any further questions.
+
+    Returns:
+        found=True  → first_name, last_name, full_name, last_appointment_type, phone
+        found=False → message explaining why
+    """
+    if _resolve_clinic_id(session) not in ("theorem", "theorem_v2"):
+        return {"found": False, "message": "Recent appointment lookup only available for Theorem clinic"}
+
+    adapter = _get_acuity_adapter()
+    if not adapter:
+        return {"found": False, "message": "Scheduling system not configured"}
+
+    phone_raw    = (args.get("phone") or "").strip()
+    phone_digits = "".join(c for c in phone_raw if c.isdigit())
+    if not phone_digits:
+        return {"found": False, "message": "Phone number is required"}
+    phone_last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+
+    location = _normalize_location(
+        args.get("location") or session.get("selected_location", "")
+    )
+
+    today    = datetime.now(LONDON_TZ).date()
+    min_date = today - timedelta(days=90)
+    max_date = today
+
+    from app.clinic_config import THEOREM_LOCATIONS as _TL
+    cal_id = _TL.get(location, {}).get("acuity_calendar_id") if location else None
+
+    try:
+        appointments = await adapter.list_appointments(
+            min_date=min_date, max_date=max_date, calendar_id=cal_id
+        )
+    except Exception as exc:
+        logger.warning("_exec_lookup_recent_appointment: list_appointments failed: %r", exc)
+        return {"found": False, "message": "Could not retrieve recent appointments"}
+
+    logger.info(
+        "_exec_lookup_recent_appointment: %d appointment(s) in past 90 days "
+        "(loc=%r cal_id=%r range=%s..%s)",
+        len(appointments), location, cal_id,
+        min_date.isoformat(), max_date.isoformat(),
+    )
+
+    # Match strictly by phone (last 10 digits)
+    matches = []
+    for appt in appointments:
+        appt_phone_d = "".join(
+            c for c in (appt.get("phone") or appt.get("smsReminderNumber") or "") if c.isdigit()
+        )
+        if not appt_phone_d:
+            continue
+        if appt_phone_d[-10:] == phone_last10:
+            matches.append(appt)
+
+    if not matches:
+        logger.info(
+            "_exec_lookup_recent_appointment: no match for phone ***%s", phone_last10[-4:]
+        )
+        return {"found": False, "message": "No recent appointment found for this number"}
+
+    # Sort most-recent first
+    def _appt_dt(a: dict) -> datetime:
+        try:
+            raw = a.get("datetime") or a.get("time") or ""
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.min.replace(tzinfo=pytz.utc)
+
+    matches.sort(key=_appt_dt, reverse=True)
+    most_recent = matches[0]
+
+    first_name = (most_recent.get("firstName") or "").strip()
+    last_name  = (most_recent.get("lastName")  or "").strip()
+    full_name  = f"{first_name} {last_name}".strip()
+    appt_type  = (most_recent.get("type") or "physiotherapy").strip()
+
+    # Collect all unique types from the last 5 appointments for richer context
+    seen_types: list = []
+    for a in matches[:5]:
+        t = (a.get("type") or "").strip()
+        if t and t not in seen_types:
+            seen_types.append(t)
+    most_recent_type = seen_types[0] if seen_types else appt_type
+
+    # Store in session so the booking step can use canonical values without
+    # asking the caller for their name or phone again.
+    session["full_name"]     = full_name
+    session["phone_number"]  = phone_raw
+    session["returning_plan_lookup_name"] = full_name
+    session["returning_plan_lookup_type"] = most_recent_type
+    session.setdefault("collected", {})["full_name"] = full_name
+    session.setdefault("collected", {})["phone"]     = phone_raw
+
+    logger.info(
+        "_exec_lookup_recent_appointment: found %r type=%r (phone ***%s)",
+        full_name, most_recent_type, phone_last10[-4:],
+    )
+    return {
+        "found":               True,
+        "first_name":          first_name,
+        "last_name":           last_name,
+        "full_name":           full_name,
+        "last_appointment_type": most_recent_type,
+        "phone":               phone_raw,
+    }
+
+
 async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     """Add a caller to the clinic waitlist in Redis."""
     patient_name = (args.get("patient_name") or "").strip()
@@ -3369,6 +3511,7 @@ TOOL_EXECUTORS: Dict[str, Any] = {
     "transfer_to_human":        _exec_transfer_to_human,
     "send_followup_sms":        _exec_send_followup_sms,
     "log_call_outcome":         _exec_log_call_outcome,
-    "get_patient_history":      _exec_get_patient_history,
-    "add_to_waitlist":          _exec_add_to_waitlist,
+    "get_patient_history":           _exec_get_patient_history,
+    "lookup_recent_appointment":     _exec_lookup_recent_appointment,
+    "add_to_waitlist":               _exec_add_to_waitlist,
 }

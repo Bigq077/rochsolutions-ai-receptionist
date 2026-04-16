@@ -979,8 +979,76 @@ DETECT_INTENT_FLOW: List[Dict[str, Any]] = [
 # ---------- Booking flow (new appointment) --------------------------------
 
 BOOKING_FLOW: List[Dict[str, Any]] = [
+    # ── Step 0: New-or-returning — asked immediately after clinic selection ──
+    # Moved to the front so we know the patient type before asking anything else.
+    # Skip logic in ask_current_question() jumps over the appropriate sub-paths.
     {
         "step": 0,
+        "state": "NEW_OR_RETURNING",
+        "question": "Have you been with us before, or is this your first time?",
+        "answer_field": "new_or_returning",
+        "use_llm": False,
+        "extract": "new_or_returning",
+        "llm_instruction": None,
+    },
+    # ── Returning-patient qualification (steps 1-2) ───────────────────────
+    {
+        "step": 1,
+        "state": "RETURNING_RECENCY",
+        "question": "Was that recently, or has it been a little while?",
+        "answer_field": "returning_recency",
+        "use_llm": False,
+        "extract": "recency",
+        "llm_instruction": None,
+    },
+    {
+        "step": 2,
+        "state": "RETURNING_TREATMENT_PLAN",
+        "question": "And are you still coming in regularly for that, or is this more of a new episode?",
+        "answer_field": "on_treatment_plan",
+        "use_llm": False,
+        "extract": "yes_no_explicit",
+        "llm_instruction": None,
+    },
+    # ── Returning-on-plan fast path (steps 3-5) ───────────────────────────
+    # Skipped unless on_treatment_plan=True.
+    # Mirrors the reschedule phone-first lookup pattern:
+    #   confirm caller-ID → collect if needed → Acuity 90-day lookup by phone
+    # The lookup stores canonical name+phone in session so all later name/phone
+    # collection steps are also skipped.
+    {
+        "step": 3,
+        "state": "RETURNING_PLAN_CONFIRM_PHONE",
+        "question": (
+            "Is the number you're calling from the one linked to your appointments with us?"
+        ),
+        "answer_field": "phone_confirmed",
+        "use_llm": False,
+        "extract": "phone_confirm",
+        "llm_instruction": None,
+    },
+    {
+        "step": 4,
+        "state": "RETURNING_PLAN_COLLECT_PHONE",
+        "question": "Could you say the number linked to your appointments?",
+        "answer_field": "phone_number",
+        "use_llm": False,
+        "extract": "phone",
+        "llm_instruction": None,
+    },
+    {
+        "step": 5,
+        "state": "RETURNING_PLAN_LOOKUP",
+        "question": None,   # filler TTS emitted directly in ask_current_question
+        "answer_field": "returning_plan_looked_up",
+        "use_llm": False,
+        "extract": "none",
+        "llm_instruction": None,
+    },
+    # ── Reason + assessment (steps 6-7) ──────────────────────────────────
+    # Skipped for on-plan returning patients (treatment type already known).
+    {
+        "step": 6,
         "state": "COLLECT_REASON",
         "question": "What brings you in today?",
         "answer_field": "reason",
@@ -989,7 +1057,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 1,
+        "step": 7,
         "state": "CONFIRM_ASSESSMENT",
         "question": None,
         "answer_field": "assessment_confirmed",
@@ -1012,38 +1080,11 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
         "extract": "yes_no",
     },
+    # ── Returning non-plan name+phone (steps 8-10) ───────────────────────
+    # Used when returning patient is recent but NOT on an active plan,
+    # or was a long-time-ago patient.  Skipped for new patients and on-plan.
     {
-        "step": 2,
-        "state": "NEW_OR_RETURNING",
-        "question": "Have you been with us before, or is this your first time?",
-        "answer_field": "new_or_returning",
-        "use_llm": False,
-        "extract": "new_or_returning",
-        "llm_instruction": None,
-    },
-    # ── Returning-patient branch (steps 4-9) ──────────────────────────────
-    # All six steps are skipped for new patients or patients not on a
-    # treatment plan.  Skip logic lives in ask_current_question().
-    {
-        "step": 3,
-        "state": "RETURNING_RECENCY",
-        "question": "Was that recently, or has it been a little while?",
-        "answer_field": "returning_recency",
-        "use_llm": False,
-        "extract": "recency",
-        "llm_instruction": None,
-    },
-    {
-        "step": 4,
-        "state": "RETURNING_TREATMENT_PLAN",
-        "question": "And are you still coming in regularly for that, or is this more of a new episode?",
-        "answer_field": "on_treatment_plan",
-        "use_llm": False,
-        "extract": "yes_no_explicit",
-        "llm_instruction": None,
-    },
-    {
-        "step": 5,
+        "step": 8,
         "state": "COLLECT_NAME_RETURNING",
         "question": "Could I take your first name please?",
         "answer_field": "full_name",
@@ -1052,7 +1093,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 6,
+        "step": 9,
         "state": "CONFIRM_PHONE_RETURNING",
         "question": "And is this the same number we'd normally have for you?",
         "answer_field": "phone_confirmed",
@@ -1061,7 +1102,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "llm_instruction": None,
     },
     {
-        "step": 7,
+        "step": 10,
         "state": "COLLECT_PHONE_RETURNING",
         "question": "And the best number to contact you on?",
         "answer_field": "phone_number",
@@ -1069,30 +1110,41 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "extract": "phone",
         "llm_instruction": None,
     },
+    # ── New-patient name+phone (steps 11-13) ─────────────────────────────
+    # Skipped for all returning patients.
     {
-        "step": 8,
-        "state": "LOOKUP_TREATMENT_PLAN",
-        "question": None,
-        "answer_field": "treatment_plan_looked_up",
-        "use_llm": True,
-        "llm_instruction": (
-            "Call get_patient_history with patient_name='{full_name}', phone='{phone_number}'.\n"
-            "After the tool responds:\n"
-            "CASE 1 — found=True (single match): say warmly in one natural sentence, e.g. "
-            "'I can see you\\'ve been coming in for your [most_recent_type] — "
-            "let\\'s get your next session booked in.'\n"
-            "CASE 2 — found='multiple': the tool returned a list of matches with different "
-            "phone numbers. Say: 'I found a couple of patients with that name — could you "
-            "confirm which number ends in [last4 of first match] or [last4 of second match]?' "
-            "Wait for the caller to confirm their last 4 digits, then proceed.\n"
-            "CASE 3 — found=False or any error: say 'No problem — let\\'s get you booked in.'\n"
-            "One warm sentence only. Do not ask about availability or time preferences here."
+        "step": 11,
+        "state": "COLLECT_NAME",
+        "question": "And what's your first name please?",
+        "answer_field": "full_name",
+        "use_llm": False,
+        "extract": "name",
+        "llm_instruction": None,
+    },
+    {
+        "step": 12,
+        "state": "CONFIRM_PHONE",
+        "question": (
+            "Just to confirm — shall I use the number "
+            "you're calling from for the booking?"
         ),
-        "extract": "none",
+        "answer_field": "phone_confirmed",
+        "use_llm": False,
+        "extract": "phone_confirm",
+        "llm_instruction": None,
+    },
+    {
+        "step": 13,
+        "state": "COLLECT_PHONE",
+        "question": "And the best number to reach you on?",
+        "answer_field": "phone_number",
+        "use_llm": False,
+        "extract": "phone",
+        "llm_instruction": None,
     },
     # ── Main booking steps ────────────────────────────────────────────────
     {
-        "step": 9,
+        "step": 14,
         "state": "PRESENT_DAYS",
         # BUG 2 fix: the deterministic greeting is emitted by this question field
         # BEFORE the LLM is called, so the LLM never needs to speak on success.
@@ -1116,7 +1168,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 10,
+        "step": 15,
         "state": "PRESENT_TIMES",
         "question": None,   # LLM responds to the caller's day choice
         "answer_field": "selected_slot",
@@ -1160,37 +1212,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         ),
     },
     {
-        "step": 11,
-        "state": "COLLECT_NAME",
-        "question": "And what's your first name please?",
-        "answer_field": "full_name",
-        "use_llm": False,
-        "extract": "name",
-        "llm_instruction": None,
-    },
-    {
-        "step": 12,
-        "state": "CONFIRM_PHONE",
-        "question": (
-            "Just to confirm — shall I use the number "
-            "you're calling from for the booking?"
-        ),
-        "answer_field": "phone_confirmed",
-        "use_llm": False,
-        "extract": "phone_confirm",
-        "llm_instruction": None,
-    },
-    {
-        "step": 13,
-        "state": "COLLECT_PHONE",
-        "question": "And the best number to reach you on?",
-        "answer_field": "phone_number",
-        "use_llm": False,
-        "extract": "phone",
-        "llm_instruction": None,
-    },
-    {
-        "step": 14,
+        "step": 16,
         "state": "CONFIRM_BOOKING",
         "question": None,   # built deterministically in ask_current_question
         "answer_field": "booking_confirmed",
@@ -1566,13 +1588,15 @@ import random as _random
 # Short acknowledgement phrases spoken *before* the next hardcoded question.
 # Keyed by the state that was JUST completed.
 _BRIDGE_POOL: Dict[str, list] = {
-    "CONFIRM_ASSESSMENT":         ["Great.", "Perfect.", "Lovely."],
-    "RETURNING_RECENCY":          ["Got it.", "Right.", "Got that."],
-    "RETURNING_TREATMENT_PLAN":   ["Perfect.", "Great."],
-    "CONFIRM_PHONE_RETURNING":    ["Perfect.", "Brilliant."],
-    "COLLECT_PHONE_RETURNING":    ["Got that.", "Perfect."],
-    "CONFIRM_PHONE":              ["Perfect.", "Brilliant."],
-    "COLLECT_PHONE":              ["Got that.", "Perfect."],
+    "CONFIRM_ASSESSMENT":              ["Great.", "Perfect.", "Lovely."],
+    "RETURNING_RECENCY":               ["Got it.", "Right.", "Got that."],
+    "RETURNING_TREATMENT_PLAN":        ["Perfect.", "Great."],
+    "RETURNING_PLAN_CONFIRM_PHONE":    ["Perfect.", "Brilliant."],
+    "RETURNING_PLAN_COLLECT_PHONE":    ["Got that.", "Perfect."],
+    "CONFIRM_PHONE_RETURNING":         ["Perfect.", "Brilliant."],
+    "COLLECT_PHONE_RETURNING":         ["Got that.", "Perfect."],
+    "CONFIRM_PHONE":                   ["Perfect.", "Brilliant."],
+    "COLLECT_PHONE":                   ["Got that.", "Perfect."],
 }
 
 
@@ -2412,7 +2436,7 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # RETURNING_RECENCY: skip entirely for new patients
+        # RETURNING_RECENCY: skip for new patients
         if step["state"] == "RETURNING_RECENCY" and self.session.get("new_or_returning") == "new":
             self.session["flow_step"] = step["step"] + 1
             logger.info("[ms_flow] new patient — skipping RETURNING_RECENCY")
@@ -2429,14 +2453,116 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # Treatment-plan sub-flow (name/phone/lookup): skip unless on_treatment_plan=True
-        _tp_states = {
-            "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING",
-            "COLLECT_PHONE_RETURNING", "LOOKUP_TREATMENT_PLAN",
-        }
-        if step["state"] in _tp_states and not self.session.get("on_treatment_plan"):
+        # ── On-plan fast-path skip logic (steps 3-5) ────────────────────────
+        # RETURNING_PLAN_CONFIRM_PHONE: skip unless on_treatment_plan=True
+        if step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
+            if not self.session.get("on_treatment_plan"):
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] skipping RETURNING_PLAN_CONFIRM_PHONE — not on plan")
+                await self.ask_current_question()
+                return
+            # No Twilio caller-ID → skip confirm, go straight to collect
+            if not self.session.get("phone_from_twilio"):
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] RETURNING_PLAN_CONFIRM_PHONE — no Twilio number, skip to collect")
+                await self.ask_current_question()
+                return
+
+        # RETURNING_PLAN_COLLECT_PHONE: skip if not on plan OR phone already confirmed
+        if step["state"] == "RETURNING_PLAN_COLLECT_PHONE":
+            if not self.session.get("on_treatment_plan"):
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] skipping RETURNING_PLAN_COLLECT_PHONE — not on plan")
+                await self.ask_current_question()
+                return
+            if self.session.get("phone_confirmed"):
+                _rpc_phone = (
+                    self.session.get("phone_number")
+                    or self.session.get("collected", {}).get("phone")
+                    or self.session.get("twilio_from", "")
+                )
+                self.session["phone_number"] = _rpc_phone
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] RETURNING_PLAN_COLLECT_PHONE — phone confirmed, skipping")
+                await self.ask_current_question()
+                return
+
+        # RETURNING_PLAN_LOOKUP: skip if not on plan; otherwise run directly here
+        if step["state"] == "RETURNING_PLAN_LOOKUP":
+            if not self.session.get("on_treatment_plan"):
+                self.session["flow_step"] = step["step"] + 1
+                logger.info("[ms_flow] skipping RETURNING_PLAN_LOOKUP — not on plan")
+                await self.ask_current_question()
+                return
+            # ── Execute lookup inline — no LLM round-trip ───────────────────
+            _rpl_phone = (
+                self.session.get("phone_number")
+                or self.session.get("collected", {}).get("phone")
+                or self.session.get("twilio_from", "")
+            )
+            _rpl_loc = (self.session.get("selected_location") or "alcester").lower()
+            # Filler while Acuity query runs
+            _rpl_filler = "One second — I'm just looking at your recent appointments to find yours."
+            await self._tts.put(_rpl_filler)
+            self.session["question_asked_this_turn"] = True
+            # Direct tool call (no LLM)
+            try:
+                from app.tools.receptionist_tools import _exec_lookup_recent_appointment as _do_rpl
+                _rpl_result = await _do_rpl(
+                    {"phone": _rpl_phone, "location": _rpl_loc},
+                    self.session,
+                )
+            except Exception as _rpl_exc:
+                logger.warning("[ms_flow] RETURNING_PLAN_LOOKUP: tool error %r", _rpl_exc)
+                _rpl_result = {"found": False}
+            if _rpl_result.get("found"):
+                _rpl_name = _rpl_result.get("full_name", "")
+                _rpl_type = _rpl_result.get("last_appointment_type", "physiotherapy")
+                _rpl_greeting = (
+                    f"Welcome back{', ' + _rpl_name.split()[0] if _rpl_name else ''}! "
+                    f"I can see you've been coming in for {_rpl_type} — "
+                    "let me find your next available slot."
+                )
+                self.session["returning_plan"] = True
+            else:
+                _rpl_greeting = (
+                    "Sorry, I couldn't find a recent appointment — "
+                    "but let me find the next available slots for your new appointment."
+                )
+                self.session["returning_plan"] = False
+            await self._tts.put(_rpl_greeting)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _rpl_filler + " " + _rpl_greeting}
+            )
+            logger.info(
+                "[ms_flow] RETURNING_PLAN_LOOKUP: found=%s name=%r type=%r",
+                _rpl_result.get("found"),
+                _rpl_result.get("full_name", ""),
+                _rpl_result.get("last_appointment_type", ""),
+            )
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] skipping %s — not on treatment plan", step["state"])
+            await self.ask_current_question()
+            return
+
+        # ── COLLECT_REASON / CONFIRM_ASSESSMENT: skip for on-plan returning patients ──
+        # They already know the treatment type from the lookup.
+        if step["state"] in ("COLLECT_REASON", "CONFIRM_ASSESSMENT") and self.session.get("on_treatment_plan"):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] skipping %s — on-plan returning patient", step["state"])
+            await self.ask_current_question()
+            return
+
+        # ── Returning non-plan name+phone (steps 8-10): skip conditions ─────
+        # Skip for new patients OR on-plan returning (on-plan gets name from lookup).
+        _non_plan_ret_states = {
+            "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING",
+        }
+        if step["state"] in _non_plan_ret_states and (
+            self.session.get("new_or_returning") == "new"
+            or self.session.get("on_treatment_plan")
+        ):
+            self.session["flow_step"] = step["step"] + 1
+            logger.info("[ms_flow] skipping %s — new patient or on-plan", step["state"])
             await self.ask_current_question()
             return
 
@@ -2460,16 +2586,12 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # COLLECT_NAME / CONFIRM_PHONE: skip if name+phone collected in treatment plan sub-flow
-        if step["state"] == "COLLECT_NAME" and self.session.get("on_treatment_plan"):
+        # ── New-patient name+phone (steps 11-13): skip for returning patients ──
+        if step["state"] in ("COLLECT_NAME", "CONFIRM_PHONE", "COLLECT_PHONE") and (
+            self.session.get("new_or_returning") == "returning"
+        ):
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] name already collected — skipping COLLECT_NAME")
-            await self.ask_current_question()
-            return
-
-        if step["state"] == "CONFIRM_PHONE" and self.session.get("on_treatment_plan"):
-            self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] phone already collected — skipping CONFIRM_PHONE")
+            logger.info("[ms_flow] skipping %s — returning patient", step["state"])
             await self.ask_current_question()
             return
 
@@ -3587,6 +3709,7 @@ class FlowEngine:
                     _repair_q = self.session.get("last_question", "Could you say your name again?")
             elif _repair_state in (
                 "COLLECT_PHONE", "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+                "RETURNING_PLAN_CONFIRM_PHONE", "RETURNING_PLAN_COLLECT_PHONE",
                 "COLLECT_PHONE_RESCHEDULE",
             ):
                 # Detect explicit name/question backtrack — caller wants to step back,
@@ -5435,7 +5558,7 @@ class FlowEngine:
             return
 
         # ── PHONE READBACK CONFIRMATION: awaiting yes/no on number we read back ──
-        _PHONE_COLLECT_STATES = ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")
+        _PHONE_COLLECT_STATES = ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "RETURNING_PLAN_COLLECT_PHONE")
         if step["state"] in _PHONE_COLLECT_STATES and self.session.get("phone_readback_pending"):
             await self._handle_phone_readback_confirmation(text, transcript, step)
             self.session["_last_handled_by"] = "phone_readback_confirmation"
@@ -9166,11 +9289,11 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
-        # ── CONFIRM_PHONE / CONFIRM_PHONE_RETURNING: deterministic YES/NO ──────
+        # ── CONFIRM_PHONE / CONFIRM_PHONE_RETURNING / RETURNING_PLAN_CONFIRM_PHONE ──
         # FIRST-CHECK: match YES/NO before any fallback or clarification logic.
         # Without this gate "yes use my number" can match general_query intent
         # in _detect_intent and be routed to the LLM interrupt path.
-        if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
+        if step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING", "RETURNING_PLAN_CONFIRM_PHONE"):
             logger.info(
                 "[ms_flow] CONFIRM_PHONE state=%s input=%r phone_accept=%s",
                 step["state"], text[:60], _is_phone_accept(text),
@@ -9251,12 +9374,17 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                     self.session["state"]     = "LOOKUP_RESCHEDULE"
+                elif step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
+                    # On-plan returning: advance to next step (RETURNING_PLAN_LOOKUP,
+                    # skipping RETURNING_PLAN_COLLECT_PHONE which is now redundant).
+                    self.session["flow_step"] = step["step"] + 1
+                    # ask_current_question will skip COLLECT_PHONE because phone_confirmed=True
                 else:
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
                 logger.info(
                     "[ms_flow] phone_confirm matched YES → phone=%r next_state=%s",
-                    (_cp_phone[-4:] if _cp_phone else ""), self.session["state"],
+                    (_cp_phone[-4:] if _cp_phone else ""), self.session.get("state"),
                 )
                 await self.ask_current_question()
                 return
@@ -9309,6 +9437,7 @@ class FlowEngine:
         _interruptable_states = {
             "CONFIRM_ASSESSMENT", "NEW_OR_RETURNING",
             "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
+            "RETURNING_PLAN_CONFIRM_PHONE", "RETURNING_PLAN_COLLECT_PHONE",
             "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING",
             "COLLECT_NAME", "CONFIRM_PHONE", "COLLECT_PHONE",
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
@@ -9369,11 +9498,14 @@ class FlowEngine:
                 # must not fire — the caller is trying to pick a slot.
                 "PRESENT_TIMES",
                 "PRESENT_TIMES_RESCHEDULE",
-                # CONFIRM_PHONE / CONFIRM_PHONE_RETURNING — YES/NO gate runs above.
-                # Any utterance that reaches here is ambiguous input, not a
-                # general chat question.  Block general_query interrupts.
+                # CONFIRM_PHONE / CONFIRM_PHONE_RETURNING / RETURNING_PLAN_CONFIRM_PHONE
+                # — YES/NO gate runs above. Any utterance that reaches here is
+                # ambiguous input, not a general chat question.
                 "CONFIRM_PHONE",
                 "CONFIRM_PHONE_RETURNING",
+                "RETURNING_PLAN_CONFIRM_PHONE",
+                # RETURNING_PLAN_COLLECT_PHONE — collecting phone number for plan lookup.
+                "RETURNING_PLAN_COLLECT_PHONE",
                 # GENERAL_BOOKING_OFFER / FAQ_BOOKING_OFFER — these are explicit
                 # yes/no gates after answering a general/FAQ query.  Treat any
                 # utterance here as an answer to the booking offer, not a new

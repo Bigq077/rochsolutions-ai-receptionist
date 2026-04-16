@@ -19,6 +19,8 @@ FIRST_VISIT_NOTE = (
     "As it's your first visit, please arrive 5 mins early and bring any "
     "relevant medical records or scan results.\n\n"
 )
+# Returning-on-plan patients: warm welcome-back, no arrival-time fuss
+RETURNING_PLAN_NOTE = "Great to have you back — see you at your appointment! 🙌\n\n"
 RETURNING_VISIT_NOTE = ""
 
 BOOKING_CONFIRMATION_SMS = (
@@ -109,12 +111,15 @@ def build_sms(session: dict) -> str:
     if not appointment_time:
         appointment_time = "—"
 
-    # First-visit note
-    # TODO: wire up first_visit detection — no is_first_visit field exists in
-    # session; using patient_type="NEW" as proxy.
-    _pt         = (collected.get("patient_type") or "").upper()
-    first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
-    note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
+    # First-visit / returning-plan note selection.
+    # Priority: returning_plan flag (set by RETURNING_PLAN_LOOKUP) → patient_type
+    # field → safe default of FIRST_VISIT_NOTE for unknown callers.
+    if session.get("returning_plan"):
+        note = RETURNING_PLAN_NOTE
+    else:
+        _pt         = (collected.get("patient_type") or "").upper()
+        first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
+        note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
 
     # Clinic-level values — address resolved from selected_location for
     # two-clinic setups (theorem_v2); falls back to CLINIC_ADDRESS env var
