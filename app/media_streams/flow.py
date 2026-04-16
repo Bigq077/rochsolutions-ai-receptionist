@@ -4130,7 +4130,7 @@ class FlowEngine:
                 _fc_words = text.strip().lower().split()
                 _FC_FILLERS = {
                     "the", "our", "your", "a", "an", "at", "for",
-                    "that", "this", "clinic", "is", "it",
+                    "that", "this", "clinic", "is", "it", "to",
                 }
                 _fc_meaningful = [w for w in _fc_words if w not in _FC_FILLERS]
                 _fc_first = (
@@ -4148,11 +4148,12 @@ class FlowEngine:
                 # ── Location-like guard ───────────────────────────────────────
                 # Only use forced-confirm when the opening token looks like it
                 # could plausibly be a clinic name (starts with "al…" or "re…/r").
+                # "an" prefix catches "ancestor"/"ancester" STT variants of Alcester.
                 # Completely non-location speech (e.g. "I said I had a few
                 # questions") must not trigger a false clinic guess — route to a
                 # neutral re-ask instead.
                 _has_alc_open = any(
-                    _fc_first.startswith(p) for p in ("alc", "alk", "als", "al")
+                    _fc_first.startswith(p) for p in ("alc", "alk", "als", "al", "an")
                 )
                 if not _has_red_open and not _has_alc_open:
                     _neutral_q = "Sorry — which clinic did you mean? Alcester or Redditch?"
@@ -4168,9 +4169,11 @@ class FlowEngine:
                     return
                 self.session["location_pending_guess"] = _pending
                 _confirm_q = (
-                    "Did you say the Redditch clinic?"
+                    "I'm not fully sure — I think you may have said Redditch. "
+                    "Did you say Alcester or Redditch?"
                     if _pending == "redditch"
-                    else "Did you say the Alcester clinic?"
+                    else "I'm not fully sure — I think you may have said Alcester. "
+                         "Did you say Alcester or Redditch?"
                 )
                 await self._tts.put(_confirm_q)
                 self.session.setdefault("conversation_history", []).append(

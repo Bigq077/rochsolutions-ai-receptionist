@@ -74,7 +74,7 @@ _HARD_ALC: frozenset = frozenset({
     "alchester", "alkester", "alsester", "asester",
     "alcestr", "allcester", "alster", "alca", "alces",
     # STT confirmed variants
-    "ancester",             # strong phonetic — safe in explicit context
+    "ancester", "ancestor", # strong phonetic — safe in explicit context
     "alceister", "alcesster", "arlcester", "alcaster",
     # Spaced/hyphenated forms
     "al sester", "al-sester",
