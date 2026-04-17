@@ -2253,10 +2253,23 @@ class FlowEngine:
 
         # RETURNING_PLAN_LOOKUP: skip if new / not on plan; otherwise run directly here
         if step["state"] == "RETURNING_PLAN_LOOKUP":
-            if _is_new_patient or not self.session.get("on_treatment_plan"):
+            # Prompt 4B fix (Bug 2): require ALL three conditions to be explicitly true.
+            # Stale flags (returning_plan_looked_up, on_treatment_plan) from a prior
+            # branch must never trigger the lookup.  new_or_returning must be the
+            # authoritative "returning" value set in this session's NEW_OR_RETURNING step.
+            _rpl_may_run = (
+                not _is_new_patient
+                and self.session.get("on_treatment_plan") is True
+                and self.session.get("new_or_returning") == "returning"
+            )
+            if not _rpl_may_run:
                 self.session["flow_step"] = step["step"] + 1
-                logger.info("[ms_flow] skipping RETURNING_PLAN_LOOKUP — %s",
-                            "new patient" if _is_new_patient else "not on plan")
+                logger.info(
+                    "[ms_flow] skipping RETURNING_PLAN_LOOKUP — %s",
+                    "new patient" if _is_new_patient else
+                    "not on plan" if not self.session.get("on_treatment_plan") else
+                    "new_or_returning not returning",
+                )
                 await self.ask_current_question()
                 return
             # ── Execute lookup inline — no LLM round-trip ───────────────────
@@ -5828,14 +5841,24 @@ class FlowEngine:
                         self.session.pop(_nf, None)
                     self.session.setdefault("collected", {}).pop("on_treatment_plan", None)
                     logger.info("[ms_flow] NEW_OR_RETURNING: new patient — returning-plan flags cleared")
-                self.session["flow_step"] = step["step"] + 1
+                    # Prompt 4B fix (Bug 1): direct jump past ALL returning-plan states.
+                    # Never traverse RETURNING_RECENCY / RETURNING_TREATMENT_PLAN /
+                    # RETURNING_PLAN_CONFIRM_PHONE / RETURNING_PLAN_COLLECT_PHONE /
+                    # RETURNING_PLAN_LOOKUP via skip-chain; jump straight to COLLECT_REASON.
+                    self.session["flow_step"] = _RETURNING_PLAN_LOOKUP_INDEX + 1
+                else:
+                    self.session["flow_step"] = step["step"] + 1
+                _nor_next_step = (
+                    _RETURNING_PLAN_LOOKUP_INDEX + 1
+                    if _nor_answer == "new"
+                    else step["step"] + 1
+                )
                 logger.info(
                     "[ms_flow] NEW_OR_RETURNING: %r → step advanced to %d (interrupt bypassed)",
-                    _nor_answer, step["step"] + 1,
+                    _nor_answer, _nor_next_step,
                 )
                 # Emit the bridge ("No problem — let's get you sorted." / "Of course…")
-                # before cascading into the next step.  The next immediate step is
-                # RETURNING_RECENCY (use_llm=False), so _get_bridge will return a phrase.
+                # before cascading into the next step.
                 _nor_next = self.current_step()
                 _nor_next_llm = _nor_next["use_llm"] if _nor_next else False
                 _nor_bridge = _get_bridge("NEW_OR_RETURNING", _nor_answer, self.session, _nor_next_llm)
