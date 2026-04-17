@@ -11694,7 +11694,7 @@ class FlowEngine:
                     _display = _SVC_DISPLAY_NAMES.get(
                         _specific_key, _specific_key.replace("_", " ")
                     )
-                    _svc_answer = f"Yes, we do offer {_display}."
+                    _svc_answer = f"Yes, absolutely — we do offer {_display}."
                     logger.info(
                         "[ms_flow] _handle_mid_flow_interrupt: services availability-first %s",
                         _specific_key,
@@ -11731,9 +11731,9 @@ class FlowEngine:
             }
             if "bupa" in _ins_text:
                 _ins_ans = (
-                    "I\u2019m afraid we don\u2019t accept Bupa directly. "
+                    "I\u2019m sorry about that \u2014 we don\u2019t accept Bupa directly. "
                     "You\u2019re welcome to self-pay and claim back if your policy allows, "
-                    "but Bupa direct billing isn\u2019t something we offer."
+                    "but Bupa direct billing isn\u2019t something we currently offer."
                 )
             else:
                 _named = next(
@@ -11741,10 +11741,10 @@ class FlowEngine:
                 )
                 if _named:
                     _ins_ans = (
-                        f"For {_named}, the same framework applies \u2014 we\u2019re self-pay, "
-                        f"so you\u2019d pay the clinic directly and then submit a claim to {_named} "
+                        f"Of course \u2014 for {_named}, we\u2019re a self-pay clinic, "
+                        f"so you\u2019d pay us directly and then submit a claim to {_named} "
                         "if your policy covers physiotherapy. "
-                        "Cover would need to be confirmed with them and the clinic beforehand."
+                        "It\u2019s worth confirming the cover with them and the clinic beforehand."
                     )
                 else:
                     _ins_ans = _FAQ_INSURANCE_ANSWER
@@ -11809,7 +11809,7 @@ class FlowEngine:
             )
             if intent == "faq_hours":
                 if _mfi_loc:
-                    _mfi_ans = _mfi_loc.get("hours_summary", "")
+                    _mfi_ans = "Of course — " + _mfi_loc.get("hours_summary", "")
                 else:
                     # Two clinics, location ambiguous — give both
                     _mfi_parts = [
@@ -11817,7 +11817,7 @@ class FlowEngine:
                         for _ld in _locs_mfi.values()
                         if _ld.get("hours_summary")
                     ]
-                    _mfi_ans = "  ".join(_mfi_parts)
+                    _mfi_ans = "Of course — " + "  ".join(_mfi_parts)
                 self.session["last_faq_sub"] = "hours"  # for correction recovery (BUG 2)
             else:  # faq_location
                 _parking_q = any(p in _mfi_text for p in (
@@ -11829,15 +11829,15 @@ class FlowEngine:
                 ))
                 if _mfi_loc:
                     if _parking_q:
-                        _mfi_ans = _mfi_loc.get("parking", "")
+                        _mfi_ans = "Of course — " + _mfi_loc.get("parking", "")
                         self.session["last_faq_sub"] = "parking"
                     elif _transport_q:
-                        _mfi_ans = _mfi_loc.get("transport", "")
+                        _mfi_ans = "Of course — " + _mfi_loc.get("transport", "")
                         self.session["last_faq_sub"] = "transport"
                     else:
                         # First sentence of address only — voice-friendly length
                         _fa = _mfi_loc.get("address", "")
-                        _mfi_ans = _fa.split(".")[0].strip() + ("." if _fa else "")
+                        _mfi_ans = "Of course — " + _fa.split(".")[0].strip() + ("." if _fa else "")
                         self.session["last_faq_sub"] = "address"
                 else:
                     # No clinic established + multi-location clinic: asking for
@@ -12020,7 +12020,13 @@ class FlowEngine:
                         "[ms_flow] faq_reanchor_empty_guard_hit: state=%s anchor=%r",
                         _int_state, _int_anchor,
                     )
-                _anchor_spoken = f"Coming back to that \u2014 {_int_anchor}"
+                _RE_ANCHOR_OPENERS = [
+                    "Anyway \u2014 ",
+                    "So \u2014 ",
+                    "Right \u2014 ",
+                    "Coming back to that \u2014 ",
+                ]
+                _anchor_spoken = _random.choice(_RE_ANCHOR_OPENERS) + _int_anchor
                 await self._tts.put(_anchor_spoken)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _anchor_spoken}
