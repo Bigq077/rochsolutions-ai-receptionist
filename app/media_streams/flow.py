@@ -1737,7 +1737,9 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "'Our sessions start from £75 for a physiotherapy assessment. "
             "Was there a particular service you wanted the price for?'\n"
             "Do NOT end with 'Is there anything else I can help you with?' — "
-            "the system handles follow-up automatically."
+            "the system handles follow-up automatically.\n"
+            "Do NOT offer to book an appointment, suggest booking, or ask whether "
+            "the caller wants to book — just answer the question and stop."
         ),
         "extract": "none",
     },
@@ -9444,6 +9446,28 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 return
             else:
+                # Bug 5 fix: detect continuation phrases — caller is restating or
+                # clarifying their question, not responding to a booking offer.
+                # Route to general_query LLM so the question gets answered rather
+                # than falling into a dead "didn't catch that" loop.
+                _FAQ_CONTINUATION = (
+                    "my question was", "i was asking about", "i was asking",
+                    "what i wanted to ask", "i meant to ask", "i meant",
+                    "i was wondering about", "i wanted to know about",
+                    "i wanted to ask", "the question was", "what i asked",
+                    "going back to my question", "about my question",
+                )
+                if any(p in _txt_lower_fbo for p in _FAQ_CONTINUATION):
+                    logger.info(
+                        "[ms_flow] faq_followup: continuation phrase %r → general_query",
+                        text[:50],
+                    )
+                    self.session["_faq_ans_intent"] = "general_query"
+                    self.session["_faq_ans_at"]     = time.time()
+                    await self._handle_mid_flow_interrupt("general_query", transcript)
+                    if not self.session.get("_faq_loc_pending_intent"):
+                        self.session["last_question"] = "Anything else you'd like to ask?"
+                    return
                 logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
                 await self._tts.put(
                     "Sorry, I didn't quite catch that — "
@@ -9629,6 +9653,27 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 return
             else:
+                # Bug 5 fix: detect continuation phrases — caller is restating or
+                # clarifying their question, not responding to a booking offer.
+                _txt_lower_gbo = text.strip().lower()
+                _FAQ_CONTINUATION_GBO = (
+                    "my question was", "i was asking about", "i was asking",
+                    "what i wanted to ask", "i meant to ask", "i meant",
+                    "i was wondering about", "i wanted to know about",
+                    "i wanted to ask", "the question was", "what i asked",
+                    "going back to my question", "about my question",
+                )
+                if any(p in _txt_lower_gbo for p in _FAQ_CONTINUATION_GBO):
+                    logger.info(
+                        "[ms_flow] faq_followup: continuation phrase %r → general_query",
+                        text[:50],
+                    )
+                    self.session["_faq_ans_intent"] = "general_query"
+                    self.session["_faq_ans_at"]     = time.time()
+                    await self._handle_mid_flow_interrupt("general_query", transcript)
+                    if not self.session.get("_faq_loc_pending_intent"):
+                        self.session["last_question"] = "Anything else you'd like to ask?"
+                    return
                 logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
                 await self._tts.put(
                     "Sorry, I didn't quite catch that — "
@@ -11572,6 +11617,8 @@ class FlowEngine:
             "a few questions",
             "few questions",
             "some questions",
+            "a couple of questions",
+            "couple of questions",
             "questions before",
             "questions first",
             "questions about",
@@ -11579,6 +11626,11 @@ class FlowEngine:
             "have a question",
             "just had a question",
             "just have a question",
+            "a quick question",
+            "quick question",
+            "got a question",
+            "i've got a question",
+            "i have got a question",
         )
         if any(p in text for p in _FAQ_FIRST_PHRASES):
             logger.info(
@@ -11775,9 +11827,11 @@ class FlowEngine:
         _mfi_cur_step  = self.current_step()
         _mfi_cur_state = _mfi_cur_step["state"] if _mfi_cur_step else None
         _mfi_in_offer  = _mfi_cur_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER")
-        # Suffix appended to fast-path answers when already in an offer state so
-        # the answer + follow-up land as a single spoken utterance.
-        _re_anchor_sfx = " Anything else you'd like to ask?" if _mfi_in_offer else ""
+        # Bug 1 fix: never bake "Anything else?" into the fast-path TTS answer.
+        # last_question is set to "Anything else you'd like to ask?" in the
+        # re-anchor block below so the silence handler asks it only after real
+        # silence — not immediately after every answer (over-aggressive).
+        _re_anchor_sfx = ""
         _FAQ_TOPICS = {
             "faq_prices":    "prices",
             "faq_insurance": "insurance",
@@ -12119,27 +12173,17 @@ class FlowEngine:
                     _int_state,
                 )
 
-            # Emit re-anchor.  For FAQ offer states the fast-path TTS already has
-            # " Anything else you'd like to ask?" baked in via _re_anchor_sfx.
-            # Exception: when LLM path was taken (not _skip_llm), the suffix was
-            # NOT baked in — emit it separately to avoid dead air.
+            # Re-anchor.  For FAQ/GENERAL offer states we set last_question so the
+            # silence handler asks "Anything else?" only after genuine silence — we
+            # never speak it immediately after the answer (Bug 1 fix).
             _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
             _anchor_spoken = ""  # always defined — prevents UnboundLocalError in logger below
             if _int_state in _offer_states:
                 _faq_reanchor_text = "Anything else you'd like to ask?"
                 self.session["last_question"] = _faq_reanchor_text
-                if _mfi_in_offer and _skip_llm:
-                    # Fast-path: re-anchor suffix already baked into TTS output.
-                    # No separate emit needed — silence handler uses last_question above.
-                    logger.info("[ms_flow] faq_reanchor: (baked into fast-path answer)")
-                else:
-                    # LLM path or non-offer entry: re-anchor was NOT baked in — emit now.
-                    _anchor_spoken = _faq_reanchor_text
-                    await self._tts.put(_anchor_spoken)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _anchor_spoken}
-                    )
-                    logger.info("[ms_flow] faq_reanchor: %r", _anchor_spoken)
+                # Do NOT emit aloud — the silence handler replays last_question after
+                # real silence.  Speaking it right after the answer felt over-aggressive.
+                logger.info("[ms_flow] faq_reanchor: (deferred to silence handler)")
             else:
                 if not _int_anchor.strip():
                     logger.warning(
