@@ -13,8 +13,9 @@ CLINIC_NAME: str = os.getenv("CLINIC_NAME", "the clinic")
 
 # ---------------------------------------------------------------------------
 # Master phrase dictionary — every key maps to a TTS-ready string.
-# No "Could I take your...", no "Please hold", no "I'm sorry, I didn't catch
-# that", no "Certainly/Absolutely/Of course" filler.
+# No "Could I take your...", no "Please hold".
+# Short warm openers ("Of course", "Certainly", "Of course!") are encouraged
+# at the start of FAQ and informational answers to avoid sounding robotic.
 # ---------------------------------------------------------------------------
 
 P: dict = {
@@ -29,7 +30,7 @@ P: dict = {
     "ready_when_you_are":       "Of course. When you're ready, just let me know what you'd like to do.",
     "start_over":               "Brilliant — starting fresh. What would you like to do?",
     "lost_place_recovery":      (
-        "Sorry — I lost my place there. "
+        "Apologies for that — let me pick back up. "
         "I can help you book an appointment, reschedule, or answer any questions. "
         "What would you like to do?"
     ),
@@ -59,7 +60,7 @@ P: dict = {
 
     # ── Transfer / human ───────────────────────────────────────────────────
     "transfer_now":             "Of course — let me put you straight through to the team.",
-    "transfer_hold":            "Bear with me — putting you through to the team now.",
+    "transfer_hold":            "Of course — just bear with me a moment and I'll put you through.",
     "transfer_silence":         (
         "I'm having a little trouble hearing you — "
         "let me transfer you to someone who can help."
@@ -87,7 +88,7 @@ P: dict = {
 
     # ── Reason / condition ─────────────────────────────────────────────────
     "ask_reason":               "What's the appointment for?",
-    "ask_reason_full":          "What's been bringing you in?",
+    "ask_reason_full":          "And what's been bringing you in?",
     "ask_reason_reschedule":    "Of course. What's the problem you'd like to be seen for?",
     "book_reason_no_problem":   "No problem. What would you like to book instead? For example, you can say physiotherapy, sports massage, or rehabilitation.",
 
@@ -114,7 +115,7 @@ P: dict = {
     # ── Slot picking ───────────────────────────────────────────────────────
     "ask_slot_choice":          "Please say 1 for the first option, 2 for the second, or 3 for the third.",
     "slot_choice_already_have": "You've chosen {label}. Shall I go ahead and book that for you? Say yes to confirm or no to cancel.",
-    "slot_no_availability":     "I can't see clear availability right now. What's your name and I'll log a request?",
+    "slot_no_availability":     "I'm not seeing clear availability right now — not to worry. Could I take your name and I'll make sure the team gets back to you?",
 
     # ── Confirmation ───────────────────────────────────────────────────────
     "booking_confirmed":        "Brilliant — you're all booked in for {label}. We look forward to seeing you.",
@@ -147,7 +148,7 @@ P: dict = {
     # ── Reschedule / cancel ────────────────────────────────────────────────
     "resch_or_cancel":          "No problem — would you like to reschedule or cancel an appointment?",
     "cancel_or_rebook_prompt":  "Would you like to cancel the appointment, or would you prefer a new slot instead? Say cancel or new slot.",
-    "resch_book_back":          "Great. Is it for the same problem as before, or something different?",
+    "resch_book_back":          "Great — is it for the same problem as before, or something new?",
     "resch_same_problem":       "Sure — is it for the same problem as before, or something different?",
     "resch_no_book_back":       "No problem — we'll leave it there for now.",
     "resch_error_legacy":       "Sorry — let me just take your phone number to find your booking.",
@@ -259,8 +260,8 @@ SILENCE_RESPONSES: dict = {
     # Long list / long explanation states — encourage patient thinking
     "present_days":       "No rush — take your time picking a day.",
     "present_times":      "No rush — take your time picking a time.",
-    "confirm_assessment": "Take your time.",
-    "default":            "I didn't quite catch that — could you say that again?",
+
+    "default":            "Sorry about that — could you say that again for me?",
     "default_retry":      "Sorry about that — could you say that again?",
 }
 
@@ -316,6 +317,6 @@ RETRY_PHRASES: dict = {
         "default":    "Sorry, I didn't quite catch that — could you say it again?",
     },
     "second_retry": {
-        "default": "Bear with me — could you say that one more time, slowly?",
+        "default": "Not to worry — could you say that once more for me?",
     },
 }

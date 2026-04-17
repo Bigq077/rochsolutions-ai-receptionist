@@ -48,15 +48,15 @@ logger = logging.getLogger(__name__)
 # ── FAQ fast-path for services (Bug 1) ─────────────────────────────────────
 # Spoken deterministically instead of calling the LLM — avoids long service lists.
 _FAQ_SERVICES_FAST = (
-    "We mainly offer physiotherapy assessments and follow-ups, plus services like "
-    "acupuncture, shockwave and laser therapy. "
-    "If you'd like details on any of those, just ask."
+    "Of course — we offer physiotherapy assessments and follow-ups, "
+    "plus treatments like acupuncture, shockwave therapy, and laser therapy. "
+    "Is there one in particular you'd like to know more about?"
 )
 _FAQ_SERVICES_FULL = (
-    "Our full range of services includes: physiotherapy assessments and follow-up appointments, "
+    "Of course! Our full range includes physiotherapy assessments and follow-ups, "
     "acupuncture, shockwave therapy, laser therapy, biomechanical assessments, "
     "sports massage, and Pilates classes. "
-    "If you\u2019d like to know more about any of those, just let me know."
+    "Just let me know if you\u2019d like more detail on any of those."
 )
 
 # ── Specific-service drill-down answers — max 1–2 sentences each ────────────
@@ -64,30 +64,33 @@ _FAQ_SERVICES_FULL = (
 # Checked BEFORE the generic overview so callers get the specific answer they asked for.
 _SPECIFIC_SERVICE_ANSWERS: dict = {
     "shockwave": (
-        "Shockwave therapy uses sound waves to stimulate healing in stubborn tendon or heel pain, "
-        "like plantar fasciitis or Achilles issues. "
-        "Your clinician will confirm whether it\u2019s right for your condition."
+        "Certainly — shockwave therapy uses sound waves to stimulate healing, "
+        "particularly for stubborn tendon or heel pain like plantar fasciitis or Achilles issues. "
+        "Your clinician will confirm whether it\u2019s the right option for you."
     ),
     "acupuncture": (
-        "Acupuncture uses very fine needles at specific points to help reduce pain and support "
-        "the body\u2019s natural healing. "
+        "Of course — acupuncture uses very fine needles at specific points to help reduce pain "
+        "and support the body\u2019s natural healing. "
         "It\u2019s often used alongside physiotherapy for musculoskeletal conditions."
     ),
     "laser": (
-        "Laser therapy uses low-level light energy to reduce inflammation and support tissue repair. "
-        "It\u2019s pain-free and typically used for soft-tissue injuries and joint pain."
+        "Certainly — laser therapy uses low-level light energy to reduce inflammation "
+        "and support tissue repair. "
+        "It\u2019s completely pain-free and is typically used for soft-tissue injuries and joint pain."
     ),
     "sports_massage": (
-        "Sports massage targets muscle tension to improve movement and aid recovery — "
-        "pressure is tailored to your comfort."
+        "Yes, of course — sports massage focuses on targeting muscle tension "
+        "to improve movement and aid recovery. "
+        "The pressure is always tailored to your comfort."
     ),
     "pilates": (
-        "Our Pilates classes focus on core strength and controlled movement, "
-        "often recommended as part of a rehabilitation programme."
+        "Absolutely — our Pilates classes focus on core strength and controlled movement, "
+        "and they\u2019re often recommended as part of a rehabilitation programme."
     ),
     "biomechanics": (
-        "A biomechanical assessment looks at how your body moves \u2014 particularly feet and gait \u2014 "
-        "to identify imbalances that may be causing pain or injury."
+        "Of course — a biomechanical assessment looks at how your body moves, "
+        "particularly your feet and gait, "
+        "to identify any imbalances that might be contributing to pain or injury."
     ),
 }
 
@@ -107,21 +110,23 @@ _SERVICE_KEYWORD_MAP = (
 # ── FAQ prices: deterministic from-price gate ───────────────────────────────
 # When NO specific service is named, always return this — never a full list.
 _FAQ_PRICES_NO_SERVICE = (
-    "Prices vary by service — if you let me know which treatment you're interested in, "
-    "I can give you the exact cost."
+    "Of course — prices do vary depending on the treatment. "
+    "Was there a particular service you had in mind? "
+    "I can give you the exact figure."
 )
 
 # ── FAQ insurance: deterministic self-pay / Bupa / claim-back answer ────────
 _FAQ_INSURANCE_ANSWER = (
-    "We\u2019re a self-pay clinic \u2014 you\u2019d pay us directly "
-    "and can claim back from your insurer if your policy covers it."
+    "Of course \u2014 we\u2019re a self-pay clinic, so you\u2019d pay us directly. "
+    "If your insurance policy covers physiotherapy, "
+    "you can usually claim it back from your insurer afterwards."
 )
 
 # ── FAQ capability: deterministic "what can you help me with" answer ─────────
 _CAPABILITY_ANSWER = (
-    "I can help you book an appointment, reschedule or cancel an existing appointment, "
-    "and answer general questions about the clinic such as prices, insurance, locations, "
-    "opening hours, and the services we offer."
+    "Of course — I can help you book an appointment, reschedule or cancel an existing one, "
+    "and answer questions about prices, insurance, opening hours, locations, "
+    "and the services we offer. What would you like to do?"
 )
 _CAPABILITY_PHRASES = (
     "what can you help me with", "what can you help with",
@@ -1227,29 +1232,29 @@ _RETURNING_PLAN_LOOKUP_INDEX: int = next(
 # associated latency (retries / GPT-fallback) for common conditions.
 _CA_FAST_MAP = (
     (("back pain", "back ache", "backache", "lower back", "back injury", "lumbar", "spine", "my back"),
-     "Sorry to hear you're dealing with back pain — that can really get in the way of daily life."),
+     "I'm sorry to hear about your back — that can really get in the way of daily life."),
     (("knee pain", "knee injury", "knee problem", "my knee", "knee ache"),
-     "Sorry to hear about your knee — that kind of pain can really limit your mobility."),
+     "Oh, that sounds tough — knee pain can really limit your mobility."),
     (("shoulder pain", "shoulder injury", "my shoulder", "rotator"),
-     "Sorry to hear about your shoulder — that can be quite uncomfortable to live with."),
+     "I'm sorry to hear that — shoulder trouble can be really uncomfortable to live with."),
     (("neck pain", "neck injury", "my neck", "stiff neck", "cervical"),
-     "Sorry to hear you're having neck trouble — that can really affect daily life."),
+     "Sorry to hear you're having neck trouble — that can really affect your day-to-day."),
     (("hip pain", "hip injury", "my hip", "hip replacement"),
-     "Sorry to hear about your hip — that can make a lot of everyday movement harder."),
+     "Sorry to hear about your hip — that can make a lot of everyday movement quite difficult."),
     (("ankle pain", "ankle injury", "my ankle", "ankle sprain", "sprained ankle"),
-     "Sorry to hear about your ankle — that can really slow you down."),
+     "Oh, that sounds painful — ankle injuries can really slow you down."),
     (("foot pain", "heel pain", "my foot", "my heel", "plantar"),
-     "Sorry to hear about your foot — that can be really limiting."),
+     "I'm sorry to hear that — foot pain can be really limiting."),
     (("wrist pain", "wrist injury", "my wrist", "wrist strain"),
-     "Sorry to hear about your wrist — that can make a lot of daily tasks tricky."),
+     "Sorry to hear about your wrist — that can make so many daily tasks quite tricky."),
     (("elbow pain", "tennis elbow", "golfer's elbow", "my elbow"),
-     "Sorry to hear about your elbow — that can be quite debilitating."),
+     "I'm sorry to hear that — elbow pain can be quite debilitating."),
     (("leg pain", "calf pain", "shin pain", "hamstring", "my leg", "quad"),
      "Sorry to hear about your leg — that can really impact getting around."),
     (("sports injury", "running injury", "football injury", "cycling", "gym injury"),
-     "Sorry to hear about your sports injury — those can be really frustrating."),
+     "Oh, that sounds frustrating — sports injuries can be such a setback."),
     (("headache", "migraine", "head pain"),
-     "Sorry to hear you're dealing with headaches — those can really take over."),
+     "I'm sorry to hear that — headaches and migraines can really take over."),
     (("physio", "physiotherapy", "assessment", "pain"),
      "Sorry to hear you're having some trouble — that can really affect your day-to-day."),
 )
@@ -1264,7 +1269,7 @@ def _fast_empathy_line(reason: str) -> str:
     for keywords, empathy in _CA_FAST_MAP:
         if any(k in _r for k in keywords):
             return empathy
-    return "Sorry to hear you're having some trouble — we'll make sure to get you the right help."
+    return "I'm sorry to hear that — let's get you seen as soon as we can."
 
 
 def _phrase_key_for_step(step: Dict[str, Any]) -> str:
@@ -2119,7 +2124,7 @@ class FlowEngine:
             # CONFIRM_BOOKING, so booking_confirmed must be set immediately.
             # Speak the done phrase and return — no need to ask "shall I confirm?".
             if self.session.get("direct_ws_test") or self.session.get("test_mode"):
-                _done_phrase = "Perfect — you're all booked in. We'll send a confirmation text shortly. Have a great day!"
+                _done_phrase = "Brilliant — you're all booked in! We'll send a confirmation text shortly. Have a lovely day!"
                 await self._tts.put(_done_phrase)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _done_phrase}
@@ -2253,7 +2258,7 @@ class FlowEngine:
             )
             _rpl_loc = (self.session.get("selected_location") or "alcester").lower()
             # Filler while Acuity query runs
-            _rpl_filler = "One second — I'm just looking at your recent appointments to find yours."
+            _rpl_filler = "Bear with me one second — I'm just pulling up your recent appointments."
             await self._tts.put(_rpl_filler)
             self.session["question_asked_this_turn"] = True
             # Direct tool call (no LLM)
@@ -3676,8 +3681,7 @@ class FlowEngine:
                     # Generic wrapper stored as last_question — give a clean re-engagement
                     # instead of replaying the hollow offer.
                     _re_fallback = (
-                        "Of course \u2014 was there anything else I could help with, "
-                        "or would you like to go ahead and book an appointment?"
+                        "Of course \u2014 was there something else you'd like to ask?"
                     )
                     logger.info("[ms_flow] re-engagement %r — stale wrapper, neutral re-engage", _re_text)
                     await self._tts.put(_re_fallback)
@@ -3686,6 +3690,42 @@ class FlowEngine:
                     await self._tts.put(_lq)
                 return
             # No last_question yet (very start of call) — fall through to normal handling
+
+        # ── GLOBAL PENDING FAQ CLARIFICATION ────────────────────────────────────
+        # When the system asked "Alcester or Redditch?" during a mid-flow FAQ interrupt
+        # and the pending clinic answer arrives while in a non-FAQ-offer state (e.g.
+        # COLLECT_NAME), consume it here before the active state handler runs.
+        # In FAQ offer states this also fires first and clears the flag so the handler's
+        # own pending check never double-triggers.
+        _gp_pending_loc = self.session.get("_faq_loc_pending_intent")
+        if _gp_pending_loc and step:
+            _gp_redd = any(p in text for p in (
+                "redditch", "reditch", "reddish", "reddit",
+                "red itch", "red ditch", "red-ditch", "bromsgrove",
+            ))
+            _gp_alce = any(p in text for p in ("alcester", "greig", "kinwarton"))
+            if _gp_redd and not _gp_alce:
+                _gp_clinic = "redditch"
+            elif _gp_alce and not _gp_redd:
+                _gp_clinic = "alcester"
+            else:
+                _gp_clinic = None
+            if _gp_clinic:
+                self.session["last_faq_loc_id"] = _gp_clinic
+                _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
+                self.session.pop("_faq_loc_pending_intent", None)
+                _gp_synth_tx = (
+                    f"{_gp_pend_sub} {_gp_clinic}".strip() if _gp_pend_sub else _gp_clinic
+                )
+                logger.info(
+                    "[ms_flow] faq_pending_resolved: topic=%s clinic=%s",
+                    _gp_pend_sub or _gp_pending_loc, _gp_clinic,
+                )
+                self.session["_faq_ans_intent"] = _gp_pending_loc
+                self.session["_faq_ans_at"]     = time.time()
+                await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
+                self.session["last_question"] = "Anything else you'd like to ask?"
+                return
 
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
         # Very short / noisy transcripts must not drive a full response.
@@ -9171,6 +9211,40 @@ class FlowEngine:
                 self.session["last_question"] = "Anything else you'd like to ask?"
                 return
 
+            # ── FAQ follow-up phrase buckets ────────────────────────────────────
+            # Guard before _detect_intent so multi-word acks and continuation
+            # phrases never fall into the booking-push else branch.
+            _txt_lower_fbo = text.strip().lower()
+
+            # Multi-word acknowledgements — caller satisfied, prompt for next question
+            _FAQ_MULTIWORD_ACKS_FBO = (
+                "okay that's noted", "ok that's noted", "okay thats noted",
+                "okay that helps", "ok that helps", "that's helpful", "thats helpful",
+                "that is helpful", "that makes sense", "okay that makes sense",
+                "i see", "yeah that's fine", "yeah thats fine",
+                "yeah okay", "yeah ok", "yeah alright",
+                "right okay", "right ok", "alright then",
+                "mmhm", "mm-hm", "uh-huh", "uh huh",
+            )
+            if any(p in _txt_lower_fbo for p in _FAQ_MULTIWORD_ACKS_FBO):
+                logger.info("[ms_flow] faq_followup: acknowledgement %r", text[:40])
+                await self._tts.put("Of course — anything else you'd like to ask?")
+                return
+
+            # Bare continuation phrases — caller signals another question is coming.
+            # Keep this list tight: phrases that carry embedded FAQ intent (e.g.
+            # "i was asking about parking") must fall through to _detect_intent so
+            # the actual topic gets answered, not just the intent to continue.
+            _FAQ_CONTINUE_FBO = (
+                "other question", "another question", "one more question",
+                "few more questions", "yeah another", "yes another",
+                "yeah one more", "yes one more",
+            )
+            if any(p in _txt_lower_fbo for p in _FAQ_CONTINUE_FBO):
+                logger.info("[ms_flow] faq_followup: continue %r", text[:40])
+                await self._tts.put("Of course — what would you like to know?")
+                return
+
             _fbo_intent = self._detect_intent(text)
 
             # Bug 8: reschedule/cancel must hard-route immediately — never fall
@@ -9233,10 +9307,12 @@ class FlowEngine:
 
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
+                logger.info("[ms_flow] faq_followup: explicit_intent_switch=booking")
                 self._switch_flow("booking")
                 await self.ask_current_question()
                 return
             elif answer == "done":
+                logger.info("[ms_flow] faq_followup: exit (done)")
                 self.session["call_outcome_logged"] = "faq_only"
                 await self._tts.put(
                     "Thanks for calling Theorem Health. Have a great day!"
@@ -9244,9 +9320,10 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 return
             else:
+                logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
                 await self._tts.put(
                     "Sorry, I didn't quite catch that — "
-                    "would you like to book an appointment?"
+                    "was there something else you wanted to ask?"
                 )
                 return
 
@@ -9314,6 +9391,37 @@ class FlowEngine:
             if _gbo_words and _gbo_words <= _GBO_ACK_WORDS:
                 logger.info("[ms_flow] GENERAL_BOOKING_OFFER: ack-only %r — inert", text[:40])
                 return
+
+            # ── FAQ follow-up phrase buckets ────────────────────────────────────
+            _txt_lower_gbo = text.strip().lower()
+
+            # Multi-word acknowledgements — caller satisfied, prompt for next question
+            _FAQ_MULTIWORD_ACKS_GBO = (
+                "okay that's noted", "ok that's noted", "okay thats noted",
+                "okay that helps", "ok that helps", "that's helpful", "thats helpful",
+                "that is helpful", "that makes sense", "okay that makes sense",
+                "i see", "yeah that's fine", "yeah thats fine",
+                "yeah okay", "yeah ok", "yeah alright",
+                "right okay", "right ok", "alright then",
+                "mmhm", "mm-hm", "uh-huh", "uh huh",
+            )
+            if any(p in _txt_lower_gbo for p in _FAQ_MULTIWORD_ACKS_GBO):
+                logger.info("[ms_flow] faq_followup: acknowledgement %r", text[:40])
+                await self._tts.put("Of course — anything else you'd like to ask?")
+                return
+
+            # Bare continuation phrases only — phrases carrying embedded FAQ intent
+            # must fall through to _detect_intent so the topic gets answered directly.
+            _FAQ_CONTINUE_GBO = (
+                "other question", "another question", "one more question",
+                "few more questions", "yeah another", "yes another",
+                "yeah one more", "yes one more",
+            )
+            if any(p in _txt_lower_gbo for p in _FAQ_CONTINUE_GBO):
+                logger.info("[ms_flow] faq_followup: continue %r", text[:40])
+                await self._tts.put("Of course — what would you like to know?")
+                return
+
             _gbo_intent = self._detect_intent(text)
             # Reschedule/cancel: hard-route immediately.
             if _gbo_intent == "reschedule":
@@ -9382,10 +9490,12 @@ class FlowEngine:
                 return
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
+                logger.info("[ms_flow] faq_followup: explicit_intent_switch=booking")
                 self._switch_flow("booking")
                 await self.ask_current_question()
                 return
             elif answer == "done":
+                logger.info("[ms_flow] faq_followup: exit (done)")
                 self.session["call_outcome_logged"] = "faq_only"
                 await self._tts.put(
                     "Thanks for calling Theorem Health. Have a great day!"
@@ -9393,9 +9503,10 @@ class FlowEngine:
                 self.session["flow_step"] = len(self._active_flow)
                 return
             else:
+                logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
                 await self._tts.put(
                     "Sorry, I didn't quite catch that — "
-                    "would you like to book an appointment?"
+                    "was there something else you wanted to ask?"
                 )
                 return
 
@@ -10928,8 +11039,8 @@ class FlowEngine:
                 if step["state"] in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
                     _spaced = _format_phone_readback(answer)
                     _rb_phrase = (
-                        f"Just to confirm — I have your number as {_spaced}. "
-                        "Is that right?"
+                        f"Perfect, got that — just to confirm, I have your number down as {_spaced}. "
+                        "Is that correct?"
                     )
                     await self._tts.put(_rb_phrase)
                     self.session["last_question"] = _rb_phrase
@@ -11867,8 +11978,8 @@ class FlowEngine:
                     "PRESENT_TIMES":               "Which time would suit you?",
                     "PRESENT_TIMES_RESCHEDULE":    "Which time would suit you?",
                     "CONFIRM_BOOKING":             "Does that all sound right?",
-                    "FAQ_BOOKING_OFFER":           "Would you like to go ahead and book?",
-                    "GENERAL_BOOKING_OFFER":       "Would you like to go ahead and book?",
+                    "FAQ_BOOKING_OFFER":           "Anything else you'd like to ask?",
+                    "GENERAL_BOOKING_OFFER":       "Anything else you'd like to ask?",
                     "COLLECT_REASON":              "What is it that's bringing you in?",
                     "CONFIRM_PHONE":               "Is that number correct?",
                     "CONFIRM_PHONE_RETURNING":     "Is that number correct?",
@@ -11882,25 +11993,33 @@ class FlowEngine:
                     _int_state,
                 )
 
-            # Emit re-anchor — but for FAQ/general offer states the re-anchor suffix
-            # was already appended directly to the fast-path answer above (one TTS turn).
-            # Only emit the separate re-anchor for non-offer states (mid-booking interrupts).
+            # Emit re-anchor.  For FAQ offer states the fast-path TTS already has
+            # " Anything else you'd like to ask?" baked in via _re_anchor_sfx.
+            # Exception: when LLM path was taken (not _skip_llm), the suffix was
+            # NOT baked in — emit it separately to avoid dead air.
             _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
             _anchor_spoken = ""  # always defined — prevents UnboundLocalError in logger below
             if _int_state in _offer_states:
-                # Re-anchor already baked into the fast-path answer; just update
-                # last_question so the silence handler replays the right prompt.
-                if _mfi_in_offer:
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                _faq_reanchor_text = "Anything else you'd like to ask?"
+                self.session["last_question"] = _faq_reanchor_text
+                if _mfi_in_offer and _skip_llm:
+                    # Fast-path: re-anchor suffix already baked into TTS output.
+                    # No separate emit needed — silence handler uses last_question above.
+                    logger.info("[ms_flow] faq_reanchor: (baked into fast-path answer)")
                 else:
-                    # LLM path (streaming) — still need a separate re-anchor put.
-                    _anchor_spoken = _int_anchor  # "Anything else you'd like to ask?"
+                    # LLM path or non-offer entry: re-anchor was NOT baked in — emit now.
+                    _anchor_spoken = _faq_reanchor_text
                     await self._tts.put(_anchor_spoken)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _anchor_spoken}
                     )
-                    self.session["last_question"] = _anchor_spoken
+                    logger.info("[ms_flow] faq_reanchor: %r", _anchor_spoken)
             else:
+                if not _int_anchor.strip():
+                    logger.warning(
+                        "[ms_flow] faq_reanchor_empty_guard_hit: state=%s anchor=%r",
+                        _int_state, _int_anchor,
+                    )
                 _anchor_spoken = f"Coming back to that \u2014 {_int_anchor}"
                 await self._tts.put(_anchor_spoken)
                 self.session.setdefault("conversation_history", []).append(
@@ -11908,7 +12027,7 @@ class FlowEngine:
                 )
             logger.info(
                 "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
-                _int_state, _anchor_spoken[:80],
+                _int_state, (_anchor_spoken or "(baked)")[:80],
             )
         else:
             logger.info("[ms_flow] mid-flow interrupt: flow complete — no re-anchor")
