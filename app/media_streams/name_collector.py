@@ -712,11 +712,13 @@ class NameCollector:
 
         cleaned = _strip_filler_prefix(text)
 
-        # Confidence gate: tokens ≥4 chars are accepted directly (no blocking
-        # confirmation loop); shorter names go through fn_confirm as before.
-        # This eliminates "I've got Quentin — is that right?" for clearly
-        # spoken names while keeping explicit confirmation for short/ambiguous ones.
-        _FN_STRONG_LEN = 4
+        # Quality gate for first-name capture:
+        #   ≥5 chars → route to fn_confirm ("I've got Quentin — is that right?")
+        #   2-4 chars → treat as weak/partial capture; route to repair prompt via
+        #               _fn_fail (do NOT echo the token — caller must try again)
+        # This prevents STT fragments like "Ting" (from "Quentin") being confirmed
+        # or accepted.  Direct-accept without confirmation has been removed entirely.
+        _FN_STRONG_LEN = 5
 
         # Negation: "I'm not Sarah, it's Emma" → extract corrected name
         if any(text.startswith(p) or (" " + p) in text for p in _NEGATION):
@@ -729,14 +731,19 @@ class NameCollector:
                 token = m.group(1).strip().title()
                 if _is_valid_name_token(token):
                     if len(token) >= _FN_STRONG_LEN:
-                        self._store_first_name(token, confirmed=True)
-                        self._accept(token)
                         logger.info(
-                            "[NameCollector] fn_normal: negation strong token %r → direct accept",
+                            "[NameCollector] fn_normal: negation strong token %r → fn_confirm",
                             token,
                         )
-                        return ("accept", token)
-                    return self._enter_fn_confirm(token)
+                        return self._enter_fn_confirm(token)
+                    # Weak token (2-4 chars) — treat as no capture; don't echo
+                    logger.info(
+                        "[NameCollector] fn_normal: negation weak token %r (len=%d) → repair",
+                        token, len(token),
+                    )
+                    return self._fn_fail(
+                        "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
+                    )
             self._nc["fn_retries"] = 0
             return ("ask", "No problem — what's your first name please?")
 
@@ -745,14 +752,16 @@ class NameCollector:
             token = _extract_leading_token(cleaned, _META_LANGUAGE)
             if token and _is_valid_name_token(token):
                 if len(token) >= _FN_STRONG_LEN:
-                    self._store_first_name(token, confirmed=True)
-                    self._accept(token)
                     logger.info(
-                        "[NameCollector] fn_normal: meta-language strong token %r → direct accept",
+                        "[NameCollector] fn_normal: meta-language strong token %r → fn_confirm",
                         token,
                     )
-                    return ("accept", token)
-                return self._enter_fn_confirm(token)
+                    return self._enter_fn_confirm(token)
+                # Weak token — treat as no capture
+                logger.info(
+                    "[NameCollector] fn_normal: meta-language weak token %r (len=%d) → repair",
+                    token, len(token),
+                )
             return self._fn_fail(
                 "Sorry, I didn't quite catch that — what's your first name?"
             )
@@ -773,42 +782,56 @@ class NameCollector:
                     _ais,
                 )
                 if len(_ais) >= _FN_STRONG_LEN:
-                    self._store_first_name(_ais, confirmed=True)
-                    self._accept(_ais)
                     logger.info(
-                        "[NameCollector] fn_normal: name-after-is strong %r → direct accept",
+                        "[NameCollector] fn_normal: name-after-is strong %r → fn_confirm",
                         _ais,
                     )
-                    return ("accept", _ais)
-                return self._enter_fn_confirm(_ais)
+                    return self._enter_fn_confirm(_ais)
+                # Weak — treat as no capture
+                logger.info(
+                    "[NameCollector] fn_normal: name-after-is weak %r (len=%d) → repair",
+                    _ais, len(_ais),
+                )
+                return self._fn_fail(
+                    "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
+                )
 
-        # One valid token → accept directly if strong (≥4 chars); confirm if short.
+        # One token → strong (≥5 chars) → fn_confirm; weak (2-4 chars) → repair
         if len(tokens) == 1:
             _tok = tokens[0].title()
             if len(_tok) >= _FN_STRONG_LEN:
-                self._store_first_name(_tok, confirmed=True)
-                self._accept(_tok)
                 logger.info(
-                    "[NameCollector] fn_normal: strong single token %r (len=%d) → direct accept",
+                    "[NameCollector] fn_normal: strong single token %r (len=%d) → fn_confirm",
                     _tok, len(_tok),
                 )
-                return ("accept", _tok)
-            return self._enter_fn_confirm(_tok)
+                return self._enter_fn_confirm(_tok)
+            logger.info(
+                "[NameCollector] fn_normal: weak single token %r (len=%d) → repair",
+                _tok, len(_tok),
+            )
+            return self._fn_fail(
+                "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
+            )
 
-        # Two valid tokens → treat as "FirstName Surname"; strong first → direct accept
+        # Two tokens → treat as "FirstName Surname"; strong first → fn_confirm;
+        # weak first → repair (don't echo either token)
         if len(tokens) == 2:
             fn_tok = tokens[0].title()
             sn_tok = tokens[1].title()
-            self._nc["pending_surname"] = sn_tok
             if len(fn_tok) >= _FN_STRONG_LEN:
-                self._store_first_name(fn_tok, confirmed=True)
-                self._accept(fn_tok)
+                self._nc["pending_surname"] = sn_tok
                 logger.info(
-                    "[NameCollector] fn_normal: strong 2-token first=%r → direct accept "
+                    "[NameCollector] fn_normal: strong 2-token first=%r → fn_confirm "
                     "(pending_surname=%r)", fn_tok, sn_tok,
                 )
-                return ("accept", fn_tok)
-            return self._enter_fn_confirm(fn_tok)
+                return self._enter_fn_confirm(fn_tok)
+            logger.info(
+                "[NameCollector] fn_normal: weak 2-token first=%r (len=%d) → repair",
+                fn_tok, len(fn_tok),
+            )
+            return self._fn_fail(
+                "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
+            )
 
         # Nothing usable (includes spelling offers — treated as garbled)
         return self._fn_fail(
@@ -907,46 +930,57 @@ class NameCollector:
 
     def _fn_reask(self, text: str, raw: str) -> Tuple[str, str]:
         """
-        Final retry after first-name confirmation denial.
-        Question played: "Sorry, I didn't quite catch that — could you say 'my name is'..."
+        Two-stage retry after the repair prompt ("could you say 'my name is'…").
 
-        Retry policy:
-          • Usable token found → accept best-effort (fn_confirmed=False,
-            needs_name_correction_sms=True).
-          • No usable token → return ("sms_fallback", ...) so flow.py speaks
-            the fallback phrase, sets needs_name_correction_sms=True, and
-            advances past COLLECT_NAME.  The SMS is sent at CONFIRM_BOOKING.
+        fn_reask_count tracks how many times this handler has been called:
+
+          Stage 1 (fn_reask_count == 0, first response to repair prompt):
+            • Strong token (≥4 chars) → fn_confirm ("I've got X — is that right?")
+            • Weak / none           → one final retry question (count becomes 1)
+
+          Stage 2 (fn_reask_count >= 1, response to final retry question):
+            • Strong token (≥4 chars) → fn_confirm
+            • Weak / none            → SMS fallback
+
+        The ≥4-char threshold here is intentionally lower than fn_normal's ≥5,
+        because the caller was explicitly asked to say "my name is …", giving
+        extra context confidence for shorter names.
         """
+        # Track how many times we've been called
+        fn_reask_count = self._nc.get("fn_reask_count", 0)
+        self._nc["fn_reask_count"] = fn_reask_count + 1
+
         cleaned = _strip_filler_prefix(text)
 
-        # Try to extract a valid name token from the response
+        # Extract best candidate — ignore spelling offers and pure meta-language
         best: Optional[str] = None
-
-        # Ignore spelling offers — treat as "no name given"
         if not _is_spelling_offer(text) and not _has_meta_language(cleaned):
             tokens = _tokenise(cleaned)
             if tokens:
-                best = tokens[0].title()
+                candidate = tokens[0].title()
+                if len(candidate) >= 4:  # Lower threshold: repair-prompt scaffold gives confidence
+                    best = candidate
 
         if best:
-            # Got something usable on the final retry — accept best-effort.
-            self._store_first_name(best, confirmed=False)
-            self._s["needs_name_correction_sms"] = True
             logger.info(
-                "[NameCollector] fn_reask: final-retry name=%r → best-effort accept "
-                "(needs_name_correction_sms=True)",
-                best,
+                "[NameCollector] fn_reask: stage=%d strong token %r → fn_confirm",
+                fn_reask_count, best,
             )
-            self._accept(best)
-            logger.info("[NameCollector] fn_reask: first-name-only best-effort accept %r", best)
-            return ("accept", best)
+            return self._enter_fn_confirm(best)
 
-        # No usable token after final retry — trigger SMS fallback.
-        # Store placeholder so downstream code (CONFIRM_BOOKING etc.) has a name field.
+        # No strong token
+        if fn_reask_count == 0:
+            # Stage 1: give the caller one more chance with a plain retry
+            logger.info(
+                "[NameCollector] fn_reask: stage=0 weak/none → final retry question",
+            )
+            return ("ask", "Sorry, I didn't quite catch that — could you repeat your first name once more?")
+
+        # Stage 2 (fn_reask_count >= 1): still nothing usable → SMS fallback
         placeholder = self._nc.get("fn_candidate") or "Unknown"
         logger.info(
-            "[NameCollector] fn_reask: no usable token → sms_fallback (placeholder=%r)",
-            placeholder,
+            "[NameCollector] fn_reask: stage=%d no usable token → sms_fallback (placeholder=%r)",
+            fn_reask_count, placeholder,
         )
         self._store_first_name(placeholder, confirmed=False)
         self._s["needs_name_correction_sms"] = True
