@@ -2138,6 +2138,31 @@ class FlowEngine:
                 logger.info("[ms_flow] CONFIRM_BOOKING: direct_ws_test auto-confirm → booking_confirmed=True state=DONE")
                 return
 
+            # ── SLOT GATE: require a real ISO slot before asking "shall I go ahead?" ──
+            # If selected_slot is empty the booking call will fail with
+            # "Invalid slot datetime: ''" — catch this upstream, before the caller
+            # hears any confirmation text, and route back to time selection.
+            _cb_gate_slot = self.session.get("selected_slot") or ""
+            if not _cb_gate_slot.strip():
+                _cb_pt_idx = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")),
+                    None,
+                )
+                logger.warning(
+                    "[ms_flow] CONFIRM_BOOKING gate: selected_slot empty — "
+                    "rerouting to %s (idx=%s)",
+                    "PRESENT_TIMES" if _cb_pt_idx is not None else "UNKNOWN",
+                    _cb_pt_idx,
+                )
+                if _cb_pt_idx is not None:
+                    self.session["flow_step"] = _cb_pt_idx
+                    self.session["state"]     = self._active_flow[_cb_pt_idx]["state"]
+                    await self.ask_current_question()
+                    return
+                # Fallback if PRESENT_TIMES not found (shouldn't happen in normal flow)
+                logger.error("[ms_flow] CONFIRM_BOOKING gate: PRESENT_TIMES not in active flow — cannot reroute")
+
             _slot_cb = (
                 self.session.get("selected_slot_speech")
                 or self.session.get("selected_slot")
@@ -10394,6 +10419,26 @@ class FlowEngine:
             _is_yes = any(p in text for p in _CB_YES)
 
             # ── Decision tree — fail closed ──────────────────────────────────
+            # Secondary slot guard (belt-and-suspenders): ask_current_question should
+            # have blocked entry without a valid slot, but if slot somehow empty here,
+            # abort before the booking call and re-route to time selection.
+            if _is_yes and not _is_q and not _is_no and not _is_correction:
+                _cb_ys_slot = self.session.get("selected_slot") or ""
+                if not _cb_ys_slot.strip():
+                    logger.error(
+                        "[ms_flow] CONFIRM_BOOKING YES: secondary guard — selected_slot empty, "
+                        "re-routing to PRESENT_TIMES"
+                    )
+                    _cb_ys_pt = next(
+                        (i for i, s in enumerate(self._active_flow)
+                         if s["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")),
+                        None,
+                    )
+                    if _cb_ys_pt is not None:
+                        self.session["flow_step"] = _cb_ys_pt
+                        self.session["state"]     = self._active_flow[_cb_ys_pt]["state"]
+                        await self.ask_current_question()
+                    return
             if _is_yes and not _is_q and not _is_no and not _is_correction:
                 # Strong explicit confirm — execute booking
                 from app.tools.receptionist_tools import _exec_book_appointment as _do_book

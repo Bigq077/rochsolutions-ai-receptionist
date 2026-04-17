@@ -867,14 +867,14 @@ class SilenceHandler:
           Attempt 3+ — graceful exit phrase → _transfer()
         """
         import os as _os_w
-        _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+        _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "4.5"))
         if _wait <= 0:
             return
         # Relax watchdog patience in FAQ offer states.  After the AI finishes
         # speaking a FAQ answer + re-anchor, the caller naturally pauses to
         # process the information before deciding to ask another question or
-        # proceed to booking.  A 3-second deadline fires too quickly here and
-        # produces a spurious "Sorry, I didn't catch that" on top of the silence.
+        # proceed to booking.  A 4.5-second deadline gives callers a more natural
+        # response window without feeling rushed.
         # 8 seconds matches the extra-slow PRESENT_DAYS/TIMES threshold and gives
         # the caller comfortable thinking time without feeling abandoned.
         _sess_faq_w = self._get_session() if self._get_session else {}
@@ -1168,7 +1168,7 @@ class SilenceHandler:
         # If the existing watchdog belongs to a stale q_gen, cancel and replace it.
         # Set NO_INPUT_WATCHDOG_SEC=0 to disable (e.g. automated test harness).
         import os as _os_w
-        _wdg_wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.0"))
+        _wdg_wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "4.5"))
         if _wdg_wait > 0:
             _live = (
                 self._no_input_watchdog_task is not None
