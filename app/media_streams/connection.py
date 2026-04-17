@@ -2736,7 +2736,43 @@ class WebSocketCallHandler:
         dur = self._barge_in_duration
 
         if dur < _BARGE_IN_THRESHOLD_S:
-            # ── False trigger: speech too short to be intentional ─────────
+            # ── Bug 1/3 fix: before treating as a false trigger, check if the
+            # utterance carries real content.  STT timing measurement starts from
+            # the first partial, which may lag slightly behind actual speech onset —
+            # a 2-word utterance like "no quentin" can register as < 300 ms even
+            # when the caller spoke intentionally.  Don't discard it.
+            # Rule: ≥ 2 non-noise words → always process regardless of state.
+            # In structured confirmation/correction states even 1 non-noise word
+            # matters (e.g. bare "no" at CONFIRM_PHONE must not be dropped).
+            _ft_noise = frozenset({
+                "uh", "um", "hmm", "ah", "er", "oh", "erm", "ehm", "hm",
+                "mm", "mhm", "ugh", "huh",
+            })
+            _ft_words = [
+                w for w in (utterance or "").strip().lower().split()
+                if w not in _ft_noise
+            ]
+            _STRUCT_CORR_STATES = frozenset({
+                "COLLECT_NAME", "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+                "CONFIRM_BOOKING", "CONFIRM_RESCHEDULE", "CONFIRM_CANCEL",
+                "COLLECT_REASON",
+            })
+            _cur_state_ft = self.session.get("state", "")
+            _ft_meaningful = (
+                len(_ft_words) >= 2
+                or (_cur_state_ft in _STRUCT_CORR_STATES and len(_ft_words) >= 1)
+            )
+            if _ft_meaningful:
+                # Real content in a short-duration window — process it, skip TTS resume.
+                self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
+                logger.info(
+                    "[ms_conn] barge-in short-dur meaningful (%.0fms) %r state=%s "
+                    "— processing instead of false-triggering",
+                    dur * 1000, (utterance or "")[:60], _cur_state_ft,
+                )
+                return False  # process utterance — do NOT resume interrupted TTS
+            # Genuine false trigger (noise/empty): resume interrupted TTS as before.
             interrupted = self.session.get("interrupted_tts_text", "")
             if interrupted:
                 await self.tts_text_queue.put(interrupted)

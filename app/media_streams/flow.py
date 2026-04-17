@@ -3638,9 +3638,32 @@ class FlowEngine:
         # Drains stale TTS (via repeat_requested flag) then replays in _llm_loop.
         _is_repeat = any(p in text for p in _GLOBAL_REPEAT_PHRASES)
         if _is_repeat:
-            self.session["repeat_requested"] = True
-            logger.info("[ms_flow] global repeat intercept: %r", transcript[:60])
-            return
+            # Bug 2/4 fix: don't steal mixed utterances that contain a repeat phrase
+            # AND substantial new content ("could you repeat … my name is quentin").
+            # Only fire when the utterance is a pure or near-pure repeat request.
+            _REPEAT_BYPASS_SIGNALS = (
+                "my name is", "i am ", "it's ", "its ",
+                "actually ", "sorry my ", "the name is",
+                "i meant ", "i said ", "not that",
+            )
+            _rpt_bypass = any(p in text for p in _REPEAT_BYPASS_SIGNALS)
+            if not _rpt_bypass:
+                # Also bypass if enough non-repeat content remains after stripping
+                # all repeat phrases from the text (≥ 3 words of ≥ 3 chars).
+                _rpt_rem = text
+                for _rp in _GLOBAL_REPEAT_PHRASES:
+                    _rpt_rem = _rpt_rem.replace(_rp, " ")
+                _rpt_bypass = len([w for w in _rpt_rem.split() if len(w) >= 3]) >= 3
+            if _rpt_bypass:
+                logger.info(
+                    "[ms_flow] global repeat: bypassed (mixed utterance) %r",
+                    transcript[:60],
+                )
+                # Fall through to active state handler below
+            else:
+                self.session["repeat_requested"] = True
+                logger.info("[ms_flow] global repeat intercept: %r", transcript[:60])
+                return
 
         # ── BUG 25 / BUG 7: GLOBAL "WHAT DID YOU CATCH/HEAR" INTERCEPT ─────────
         # Caller wants to know what Susie captured — answer based on last collected
