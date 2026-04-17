@@ -2354,11 +2354,21 @@ class WebSocketCallHandler:
                                 break
                         logger.info("[ms_conn] repeat_requested: TTS queue drained")
                         _cur_state = self.session.get("state", "")
-                        _replay = (
-                            self.session.get("last_faq_answer", "")
-                            if _cur_state == "FAQ_BOOKING_OFFER"
-                            else ""
-                        ) or self.session.get("last_question", "")
+                        _lq  = self.session.get("last_question", "")
+                        _lfa = self.session.get("last_faq_answer", "")
+                        # Prompt 8 Bug 2 fix: last_question wins when it holds a
+                        # specific active prompt (e.g. a clinic clarification like
+                        # "Sure — is that Alcester or Redditch?").  Only fall back to
+                        # last_faq_answer (the FAQ body) when last_question is the
+                        # generic deferred placeholder or empty — meaning no distinct
+                        # question is waiting for an answer.
+                        _FAQ_OFFER_STATES = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
+                        _GENERIC_LQ = {"Anything else you'd like to ask?", ""}
+                        _use_faq_body = (
+                            _cur_state in _FAQ_OFFER_STATES
+                            and _lq in _GENERIC_LQ
+                        )
+                        _replay = (_lfa if _use_faq_body else "") or _lq
                         # Guard: always emit something — never let repeat leave the
                         # caller in silence when last_question/last_faq_answer are empty.
                         if not _replay:

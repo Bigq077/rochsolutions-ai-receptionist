@@ -9381,15 +9381,44 @@ class FlowEngine:
                 return
 
             # Bare continuation phrases — caller signals another question is coming.
-            # Keep this list tight: phrases that carry embedded FAQ intent (e.g.
-            # "i was asking about parking") must fall through to _detect_intent so
-            # the actual topic gets answered, not just the intent to continue.
+            # Prompt 8 Bug 3/4 fix: strip the continuation prefix and check whether
+            # the remainder already contains a concrete FAQ question.  If so, answer
+            # it immediately — never discard an embedded question with a generic opener.
             _FAQ_CONTINUE_FBO = (
                 "other question", "another question", "one more question",
                 "few more questions", "yeah another", "yes another",
                 "yeah one more", "yes one more",
             )
             if any(p in _txt_lower_fbo for p in _FAQ_CONTINUE_FBO):
+                _fbo_cont_remainder = _txt_lower_fbo
+                for _fbo_cp in sorted(_FAQ_CONTINUE_FBO, key=len, reverse=True):
+                    if _fbo_cp in _fbo_cont_remainder:
+                        _fbo_cp_idx = _fbo_cont_remainder.index(_fbo_cp) + len(_fbo_cp)
+                        _fbo_cont_remainder = _fbo_cont_remainder[_fbo_cp_idx:].strip(" .,\u2014-")
+                        break
+                _FAQ_ANSWER_INTENTS = {
+                    "faq_services", "faq_prices", "faq_hours",
+                    "faq_location", "faq_insurance", "faq_capability",
+                }
+                if _fbo_cont_remainder:
+                    _fbo_cont_intent = self._detect_intent(_fbo_cont_remainder)
+                    if _fbo_cont_intent in _FAQ_ANSWER_INTENTS or (
+                        _fbo_cont_intent == "general_query"
+                        and any(s in _fbo_cont_remainder for s in (
+                            "?", "what", "how", "can you", "do you",
+                            "is there", "are you", "where", "when",
+                        ))
+                    ):
+                        logger.info(
+                            "[ms_flow] faq_followup: continue+embedded %s %r → answering directly",
+                            _fbo_cont_intent, _fbo_cont_remainder[:50],
+                        )
+                        self.session["_faq_ans_intent"] = _fbo_cont_intent
+                        self.session["_faq_ans_at"]     = time.time()
+                        await self._handle_mid_flow_interrupt(_fbo_cont_intent, transcript)
+                        if not self.session.get("_faq_loc_pending_intent"):
+                            self.session["last_question"] = "Anything else you'd like to ask?"
+                        return
                 logger.info("[ms_flow] faq_followup: continue %r", text[:40])
                 await self._tts.put("Of course — what would you like to know?")
                 return
@@ -9585,12 +9614,42 @@ class FlowEngine:
 
             # Bare continuation phrases only — phrases carrying embedded FAQ intent
             # must fall through to _detect_intent so the topic gets answered directly.
+            # Prompt 8 Bug 3/4 fix: strip prefix and check for embedded FAQ intent.
             _FAQ_CONTINUE_GBO = (
                 "other question", "another question", "one more question",
                 "few more questions", "yeah another", "yes another",
                 "yeah one more", "yes one more",
             )
             if any(p in _txt_lower_gbo for p in _FAQ_CONTINUE_GBO):
+                _gbo_cont_remainder = _txt_lower_gbo
+                for _gbo_cp in sorted(_FAQ_CONTINUE_GBO, key=len, reverse=True):
+                    if _gbo_cp in _gbo_cont_remainder:
+                        _gbo_cp_idx = _gbo_cont_remainder.index(_gbo_cp) + len(_gbo_cp)
+                        _gbo_cont_remainder = _gbo_cont_remainder[_gbo_cp_idx:].strip(" .,\u2014-")
+                        break
+                _FAQ_ANSWER_INTENTS_GBO = {
+                    "faq_services", "faq_prices", "faq_hours",
+                    "faq_location", "faq_insurance", "faq_capability",
+                }
+                if _gbo_cont_remainder:
+                    _gbo_cont_intent = self._detect_intent(_gbo_cont_remainder)
+                    if _gbo_cont_intent in _FAQ_ANSWER_INTENTS_GBO or (
+                        _gbo_cont_intent == "general_query"
+                        and any(s in _gbo_cont_remainder for s in (
+                            "?", "what", "how", "can you", "do you",
+                            "is there", "are you", "where", "when",
+                        ))
+                    ):
+                        logger.info(
+                            "[ms_flow] faq_followup: continue+embedded %s %r → answering directly",
+                            _gbo_cont_intent, _gbo_cont_remainder[:50],
+                        )
+                        self.session["_faq_ans_intent"] = _gbo_cont_intent
+                        self.session["_faq_ans_at"]     = time.time()
+                        await self._handle_mid_flow_interrupt(_gbo_cont_intent, transcript)
+                        if not self.session.get("_faq_loc_pending_intent"):
+                            self.session["last_question"] = "Anything else you'd like to ask?"
+                        return
                 logger.info("[ms_flow] faq_followup: continue %r", text[:40])
                 await self._tts.put("Of course — what would you like to know?")
                 return
@@ -12203,7 +12262,14 @@ class FlowEngine:
             _anchor_spoken = ""  # always defined — prevents UnboundLocalError in logger below
             if _int_state in _offer_states:
                 _faq_reanchor_text = "Anything else you'd like to ask?"
-                self.session["last_question"] = _faq_reanchor_text
+                # Prompt 8 Bug 1 fix: only store the deferred prompt when last_question
+                # is empty or is already the generic placeholder.  Never overwrite an
+                # active specific prompt (e.g. "Sure — is that Alcester or Redditch?"
+                # or a forced-confirm question) — those must remain the repeat target.
+                _curr_lq = self.session.get("last_question", "")
+                _GENERIC_FAQ_LQ = {"Anything else you'd like to ask?", ""}
+                if _curr_lq in _GENERIC_FAQ_LQ:
+                    self.session["last_question"] = _faq_reanchor_text
                 # Do NOT emit aloud — the silence handler replays last_question after
                 # real silence.  Speaking it right after the answer felt over-aggressive.
                 logger.info("[ms_flow] faq_reanchor: (deferred to silence handler)")
