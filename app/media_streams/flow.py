@@ -3700,24 +3700,76 @@ class FlowEngine:
 
         # ── GLOBAL PENDING FAQ CLARIFICATION ────────────────────────────────────
         # When the system asked "Alcester or Redditch?" during a mid-flow FAQ interrupt
-        # and the pending clinic answer arrives while in a non-FAQ-offer state (e.g.
-        # COLLECT_NAME), consume it here before the active state handler runs.
-        # In FAQ offer states this also fires first and clears the flag so the handler's
-        # own pending check never double-triggers.
+        # and the pending clinic answer arrives, consume it here before any state handler.
+        # Uses the same _resolve_clinic machinery as booking ASK_LOCATION.
+        # Always returns — never falls through while pending is set.
         _gp_pending_loc = self.session.get("_faq_loc_pending_intent")
         if _gp_pending_loc and step:
-            _gp_redd = any(p in text for p in (
-                "redditch", "reditch", "reddish", "reddit",
-                "red itch", "red ditch", "red-ditch", "bromsgrove",
-            ))
-            _gp_alce = any(p in text for p in ("alcester", "greig", "kinwarton"))
-            if _gp_redd and not _gp_alce:
-                _gp_clinic = "redditch"
-            elif _gp_alce and not _gp_redd:
-                _gp_clinic = "alcester"
-            else:
-                _gp_clinic = None
-            if _gp_clinic:
+            _gp_pending_guess = self.session.get("_faq_loc_pending_guess")
+            if _gp_pending_guess:
+                # ── Confirm sub-block: waiting for yes/no on our guessed clinic ──
+                _gp_fc_t = text.lower()
+                _GP_FC_YES = (
+                    "yes", "yeah", "yep", "yup", "correct",
+                    "that's right", "thats right", "that's it", "thats it",
+                    "absolutely", "definitely", "sure", "confirmed",
+                )
+                _GP_FC_NO = (
+                    "no", "nope", "nah", "not that", "not right",
+                    "wrong", "other one", "other clinic", "different",
+                )
+                _gp_is_yes = any(sig in _gp_fc_t for sig in _GP_FC_YES)
+                _gp_is_no  = any(sig in _gp_fc_t for sig in _GP_FC_NO)
+                if _gp_is_yes and not _gp_is_no:
+                    _gp_clinic = _gp_pending_guess
+                    logger.info("[ms_flow] faq_pending_confirm: yes → %s", _gp_clinic)
+                elif _gp_is_no and not _gp_is_yes:
+                    _gp_clinic = "redditch" if _gp_pending_guess == "alcester" else "alcester"
+                    logger.info("[ms_flow] faq_pending_confirm: no → opposite %s", _gp_clinic)
+                else:
+                    # Not a plain yes/no — try resolver in case caller named the clinic
+                    _gp_confirm_result = _resolve_clinic(text, context="ask_location")
+                    if _gp_confirm_result["status"] == "resolved":
+                        _gp_clinic = _gp_confirm_result["location"]
+                        logger.info(
+                            "[ms_flow] faq_pending_confirm: resolver override → %s", _gp_clinic,
+                        )
+                    else:
+                        # Still unclear — re-ask confirm without losing pending state
+                        _gp_reconfirm = (
+                            "Just to confirm \u2014 was that Redditch?"
+                            if _gp_pending_guess == "redditch"
+                            else "Just to confirm \u2014 was that Alcester?"
+                        )
+                        await self._tts.put(_gp_reconfirm)
+                        self.session["last_question"] = _gp_reconfirm
+                        logger.info(
+                            "[ms_flow] faq_pending_confirm: still unclear → re-confirm %s",
+                            _gp_pending_guess,
+                        )
+                        return
+                # Confirmed — answer the original pending FAQ question
+                self.session.pop("_faq_loc_pending_guess", None)
+                self.session["last_faq_loc_id"] = _gp_clinic
+                _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
+                self.session.pop("_faq_loc_pending_intent", None)
+                _gp_synth_tx = (
+                    f"{_gp_pend_sub} {_gp_clinic}".strip() if _gp_pend_sub else _gp_clinic
+                )
+                logger.info(
+                    "[ms_flow] faq_pending_resolved (confirm): topic=%s clinic=%s",
+                    _gp_pend_sub or _gp_pending_loc, _gp_clinic,
+                )
+                self.session["_faq_ans_intent"] = _gp_pending_loc
+                self.session["_faq_ans_at"]     = time.time()
+                await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
+                self.session["last_question"] = "Anything else you'd like to ask?"
+                return
+
+            # ── First attempt: use the proven ASK_LOCATION clinic resolver ──────
+            _gp_loc_result = _resolve_clinic(text, context="ask_location")
+            if _gp_loc_result["status"] == "resolved":
+                _gp_clinic = _gp_loc_result["location"]
                 self.session["last_faq_loc_id"] = _gp_clinic
                 _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
                 self.session.pop("_faq_loc_pending_intent", None)
@@ -3732,6 +3784,48 @@ class FlowEngine:
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
                 self.session["last_question"] = "Anything else you'd like to ask?"
+                return
+            elif _gp_loc_result["status"] == "ambiguous":
+                # Conflict / never-bind — re-ask plainly, keep pending intact
+                _gp_reask = "Sorry \u2014 did you mean Alcester or Redditch?"
+                await self._tts.put(_gp_reask)
+                self.session["last_question"] = _gp_reask
+                logger.info(
+                    "[ms_flow] faq_pending: ambiguous → re-asking clinic, pending preserved",
+                )
+                return
+            else:
+                # Unknown / low signal — pick a guess from debug scores and ask confirm
+                _gp_debug = _gp_loc_result.get("debug", {})
+                _gp_alc_s = _gp_debug.get("alcester_score", 0)
+                _gp_red_s = _gp_debug.get("redditch_score", 0)
+                if _gp_alc_s > _gp_red_s and _gp_alc_s >= 15:
+                    _gp_guess = "alcester"
+                elif _gp_red_s > _gp_alc_s and _gp_red_s >= 15:
+                    _gp_guess = "redditch"
+                else:
+                    # No meaningful signal — re-ask plainly, keep pending intact
+                    _gp_reask = "Sorry \u2014 was that for Alcester or Redditch?"
+                    await self._tts.put(_gp_reask)
+                    self.session["last_question"] = _gp_reask
+                    logger.info(
+                        "[ms_flow] faq_pending: no signal in %r → re-asking, pending preserved",
+                        text[:40],
+                    )
+                    return
+                # Weak lean — set pending guess and ask confirm, keep original intent
+                self.session["_faq_loc_pending_guess"] = _gp_guess
+                _gp_confirm = (
+                    "Just to confirm \u2014 was that Redditch?"
+                    if _gp_guess == "redditch"
+                    else "Just to confirm \u2014 was that Alcester?"
+                )
+                await self._tts.put(_gp_confirm)
+                self.session["last_question"] = _gp_confirm
+                logger.info(
+                    "[ms_flow] faq_pending: uncertain (guess=%s) → forced confirm for %r",
+                    _gp_guess, text[:40],
+                )
                 return
 
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
@@ -9180,13 +9274,15 @@ class FlowEngine:
                     await self._tts.put("Sorry — did you say Alcester or Redditch?")
                     return
                 else:
-                    # Long response — caller has moved on; clear pending and continue
-                    self.session.pop("_faq_loc_pending_intent", None)
-                    self.session.pop("_faq_loc_pending_sub", None)
-                    logger.info(
-                        "[ms_flow] FAQ_BOOKING_OFFER: location pending cleared (long response)"
+                    # Global block handles all pending FAQ clarification before reaching
+                    # this state handler; if we arrive here the pending was not consumed.
+                    # Log and re-ask rather than silently clearing the original intent.
+                    logger.warning(
+                        "[ms_flow] FAQ_BOOKING_OFFER: pending loc not consumed by global block %r",
+                        text[:40],
                     )
-                    # fall through to normal FAQ_BOOKING_OFFER handling
+                    await self._tts.put("Sorry \u2014 was that for Alcester or Redditch?")
+                    return
 
             # Weak acknowledgements alone ("yeah", "okay", "understood" etc.) must NOT
             # route to LLM — the caller is still processing the FAQ answer.
@@ -9400,12 +9496,14 @@ class FlowEngine:
                     await self._tts.put("Sorry — did you say Alcester or Redditch?")
                     return
                 else:
-                    self.session.pop("_faq_loc_pending_intent", None)
-                    self.session.pop("_faq_loc_pending_sub", None)
-                    logger.info(
-                        "[ms_flow] GENERAL_BOOKING_OFFER: location pending cleared (long response)"
+                    # Global block handles all pending FAQ clarification before reaching
+                    # this state handler; if we arrive here the pending was not consumed.
+                    logger.warning(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: pending loc not consumed by global block %r",
+                        text[:40],
                     )
-                    # fall through to normal GENERAL_BOOKING_OFFER handling
+                    await self._tts.put("Sorry \u2014 was that for Alcester or Redditch?")
+                    return
 
             # Pure acknowledgements ("okay", "okay perfect", "alright", "that's understood")
             # are inert — the caller is processing the answer, not asking a new question.
