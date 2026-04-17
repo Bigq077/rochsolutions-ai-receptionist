@@ -2210,11 +2210,16 @@ class FlowEngine:
             return
 
         # ── On-plan fast-path skip logic (steps 3-5) ────────────────────────
-        # RETURNING_PLAN_CONFIRM_PHONE: skip unless on_treatment_plan=True
+        # Bug 1/2: new patients must NEVER enter these states regardless of any
+        # other flags — check new_or_returning first as a hard override.
+        _is_new_patient = self.session.get("new_or_returning") == "new"
+
+        # RETURNING_PLAN_CONFIRM_PHONE: skip unless on_treatment_plan=True AND not new
         if step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
-            if not self.session.get("on_treatment_plan"):
+            if _is_new_patient or not self.session.get("on_treatment_plan"):
                 self.session["flow_step"] = step["step"] + 1
-                logger.info("[ms_flow] skipping RETURNING_PLAN_CONFIRM_PHONE — not on plan")
+                logger.info("[ms_flow] skipping RETURNING_PLAN_CONFIRM_PHONE — %s",
+                            "new patient" if _is_new_patient else "not on plan")
                 await self.ask_current_question()
                 return
             # No Twilio caller-ID → skip confirm, go straight to collect
@@ -2224,11 +2229,12 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
-        # RETURNING_PLAN_COLLECT_PHONE: skip if not on plan OR phone already confirmed
+        # RETURNING_PLAN_COLLECT_PHONE: skip if new / not on plan / phone already confirmed
         if step["state"] == "RETURNING_PLAN_COLLECT_PHONE":
-            if not self.session.get("on_treatment_plan"):
+            if _is_new_patient or not self.session.get("on_treatment_plan"):
                 self.session["flow_step"] = step["step"] + 1
-                logger.info("[ms_flow] skipping RETURNING_PLAN_COLLECT_PHONE — not on plan")
+                logger.info("[ms_flow] skipping RETURNING_PLAN_COLLECT_PHONE — %s",
+                            "new patient" if _is_new_patient else "not on plan")
                 await self.ask_current_question()
                 return
             if self.session.get("phone_confirmed"):
@@ -2243,11 +2249,12 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
-        # RETURNING_PLAN_LOOKUP: skip if not on plan; otherwise run directly here
+        # RETURNING_PLAN_LOOKUP: skip if new / not on plan; otherwise run directly here
         if step["state"] == "RETURNING_PLAN_LOOKUP":
-            if not self.session.get("on_treatment_plan"):
+            if _is_new_patient or not self.session.get("on_treatment_plan"):
                 self.session["flow_step"] = step["step"] + 1
-                logger.info("[ms_flow] skipping RETURNING_PLAN_LOOKUP — not on plan")
+                logger.info("[ms_flow] skipping RETURNING_PLAN_LOOKUP — %s",
+                            "new patient" if _is_new_patient else "not on plan")
                 await self.ask_current_question()
                 return
             # ── Execute lookup inline — no LLM round-trip ───────────────────
@@ -3906,18 +3913,9 @@ class FlowEngine:
                 if _fc_intent in _fc_faq_intents:
                     await self._handle_mid_flow_interrupt(_fc_intent, transcript)
                     return
-                loc = self._extract("location_selection", text, transcript)
-                if loc:
-                    self.session["selected_location"] = loc
-                    self.session["needs_location"] = False
-                    self.session.pop("location_retry_count", None)
-                    self.session.pop("location_pending_guess", None)
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION forced-confirm: direct extraction — %s", loc
-                    )
-                    await self.ask_current_question()
-                    return
-                # Yes/No detection — narrow, explicit confirmation signals only
+                # Bug 3 fix: yes/no must be checked BEFORE the generic location
+                # extractor so plain "yes"/"no" is handled as a confirmation, not
+                # sent through the resolver where it can produce wrong bindings.
                 _fc_t = text.lower()
                 _FC_YES = (
                     "yes", "yeah", "yep", "yup", "correct",
@@ -3953,7 +3951,20 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
-                # Neither yes nor no → final DTMF fallback
+                # Not a plain yes/no — try the generic extractor as a fallback
+                # (catches "actually it's Alcester" / "Redditch please" in confirm mode)
+                loc = self._extract("location_selection", text, transcript)
+                if loc:
+                    self.session["selected_location"] = loc
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION forced-confirm: explicit clinic override — %s", loc
+                    )
+                    await self.ask_current_question()
+                    return
+                # Neither yes/no nor explicit clinic name → final DTMF fallback
                 self.session.pop("location_pending_guess", None)
                 self.session["location_awaiting_dtmf"] = True
                 _fc_dtmf = "Just to make sure, press 1 for Alcester or 2 for Redditch."
@@ -5710,6 +5721,17 @@ class FlowEngine:
                 self.session["new_or_returning"] = _nor_answer
                 col = self.session.setdefault("collected", {})
                 col["patient_type"] = _nor_answer
+                # Bug 1/2 fix: when caller is new, hard-clear all returning-plan flags so
+                # stale state can never route a new patient into returning-plan states.
+                if _nor_answer == "new":
+                    for _nf in (
+                        "on_treatment_plan", "returning_recency",
+                        "returning_plan_looked_up", "returning_plan",
+                        "returning_plan_lookup_name", "returning_plan_lookup_type",
+                    ):
+                        self.session.pop(_nf, None)
+                    self.session.setdefault("collected", {}).pop("on_treatment_plan", None)
+                    logger.info("[ms_flow] NEW_OR_RETURNING: new patient — returning-plan flags cleared")
                 self.session["flow_step"] = step["step"] + 1
                 logger.info(
                     "[ms_flow] NEW_OR_RETURNING: %r → step advanced to %d (interrupt bypassed)",
@@ -5726,6 +5748,12 @@ class FlowEngine:
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _nor_bridge}
                     )
+                # Bug 4 fix: clear stale last_question now that the flow has moved on.
+                # The bridge is not a question — if silence fires during the skip
+                # cascade, we must not replay the old NEW_OR_RETURNING question.
+                # The next real question (COLLECT_REASON / COLLECT_NAME) will
+                # populate last_question correctly when it is actually emitted.
+                self.session["last_question"] = ""
                 await self.ask_current_question()
                 return
             # No deterministic match — fall through, but _DATA_COLLECTION_STATES
