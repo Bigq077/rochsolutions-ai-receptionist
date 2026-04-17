@@ -35,6 +35,14 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from app.phrases import RETRY_PHRASES
 from app.media_streams.location_resolver import resolve_clinic_location as _resolve_clinic
+from app.media_streams.utterance_router import (
+    is_repair_utterance       as _is_repair_utt,
+    analyze_utterance_for_flow_control as _router_analyze,
+    get_bridge_text           as _router_bridge_text,
+    ANSWER_SERVICE_FIT_THEN_ASK_PENDING as _R_SVC_FIT,
+    BRIDGE_THEN_ASK_PENDING   as _R_BRIDGE,
+    DO_NOT_ADVANCE_REPAIR     as _R_REPAIR,
+)
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -4016,6 +4024,33 @@ class FlowEngine:
             self.session.get("flow_step", 0), current_state, transcript[:60],
         )
 
+        # ── GLOBAL REPAIR / CONFUSION GUARD ──────────────────────────────────────
+        # Catches confusion / repair / meta-conversation utterances in question-
+        # sensitive states BEFORE the state machine can bind them as slot answers.
+        # ASK_LOCATION is excluded here — it has its own targeted repair guard
+        # lower in the block that runs after the non-location escape and reroute
+        # checks (both of which share some repair-like language).
+        # Purely deterministic — no LLM call.
+        _REPAIR_GUARD_STATES = frozenset({
+            "NEW_OR_RETURNING", "COLLECT_REASON", "RETURNING_RECENCY",
+        })
+        if current_state in _REPAIR_GUARD_STATES and _is_repair_utt(text):
+            _rg_last_q = self.session.get("last_question", "")
+            _rg_msg = (
+                _rg_last_q
+                if _rg_last_q
+                else _router_bridge_text(_R_REPAIR, current_state)
+            )
+            await self._tts.put(_rg_msg)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _rg_msg}
+            )
+            logger.info(
+                "[ms_flow] global_repair_guard: state=%s text=%r → re-asking",
+                current_state, text[:40],
+            )
+            return
+
         # ── Cross-state phone-reject (Prompt 14) ─────────────────────────────────
         # When phone was auto-confirmed via caller-ID and the caller says they want
         # a different number, clear the auto-confirm and redirect to COLLECT_PHONE.
@@ -4178,6 +4213,29 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
+                # Repair / confusion in forced-confirm → re-ask the yes/no question.
+                # Without this, "I was just asking if you could help" reaches the
+                # generic extractor and then the DTMF fallback unnecessarily.
+                if _is_repair_utt(text):
+                    _fc_clinic = (
+                        "Redditch" if _loc_pending_guess == "redditch" else "Alcester"
+                    )
+                    _fc_repair_q = (
+                        f"Sorry \u2014 I was just checking whether you meant our "
+                        f"{_fc_clinic} clinic \u2014 is that right?"
+                    )
+                    await self._tts.put(_fc_repair_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _fc_repair_q}
+                    )
+                    self.session["last_question"] = _fc_repair_q
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION forced-confirm: repair_guard %r "
+                        "→ re-asking confirm Q (guess=%s)",
+                        text[:40], _loc_pending_guess,
+                    )
+                    return
+
                 # Not a plain yes/no — try the generic extractor as a fallback
                 # (catches "actually it's Alcester" / "Redditch please" in confirm mode)
                 loc = self._extract("location_selection", text, transcript)
@@ -4320,6 +4378,25 @@ class FlowEngine:
                 )
                 await self._handle_mid_flow_interrupt(_loc_pre_intent, transcript)
                 return
+            # ── Repair / confusion guard ─────────────────────────────────────────
+            # Must run BEFORE the location extractor: repair utterances like
+            # "sorry that's unclear" / "what were you asking?" would otherwise
+            # pass to the resolver where prefix_fallback can produce a false match.
+            if _is_repair_utt(text):
+                _loc_reask = (
+                    self.session.get("last_question")
+                    or "Which clinic would you prefer \u2014 "
+                       "our Alcester or Redditch practice?"
+                )
+                await self._tts.put(_loc_reask)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _loc_reask}
+                )
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: repair_guard %r → re-asking", text[:40]
+                )
+                return
+
             loc = self._extract("location_selection", text, transcript)
             if loc:
                 self.session["selected_location"] = loc
@@ -5538,6 +5615,79 @@ class FlowEngine:
                     "holding state, no flow switch", text[:40],
                 )
                 return
+
+            # ── UTTERANCE ROUTER: mixed / service-fit first utterances ────────────
+            # Called only when the utterance is rich enough that deterministic
+            # intent detection alone would flatten or ignore embedded signals.
+            # For service-fit questions ("can you help with my ankle?") and mixed
+            # booking+context utterances, the router returns a structured result
+            # that allows a brief bridge before booking flow begins.
+            # Gate ensures short / digit-heavy / clear utterances never reach here.
+            _di_router = await _router_analyze(
+                text, "DETECT_INTENT", self.session,
+                pending_question=self.session.get("last_question", ""),
+                recent_context="",
+            )
+            if _di_router is not None:
+                _di_action = _di_router["action"]
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: router action=%s intent=%s "
+                    "confidence=%.2f source=%s",
+                    _di_action, _di_router["primary_intent"],
+                    _di_router["confidence"], _di_router.get("source", "?"),
+                )
+                if _di_action in (_R_SVC_FIT, _R_BRIDGE):
+                    # Capture reason if the router extracted one (LLM path).
+                    # Deterministic path sets has_reason=True but reason_text=None;
+                    # flow.py's own condition-signal check below will pick up
+                    # reason_text from the raw transcript for the deterministic case.
+                    if _di_router.get("has_reason") and _di_router.get("reason_text"):
+                        if not self.session.get("reason"):
+                            self.session["reason"] = _di_router["reason_text"]
+                            logger.info(
+                                "[ms_flow] DETECT_INTENT: router stored reason=%r",
+                                _di_router["reason_text"][:60],
+                            )
+                    # Emit the short bridge, then route to booking.
+                    # ask_current_question() will speak the first booking question
+                    # (ASK_LOCATION) immediately after, so the bridge must NOT
+                    # include the pending question.
+                    _di_bridge = _router_bridge_text(_di_action, "DETECT_INTENT")
+                    await self._tts.put(_di_bridge)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _di_bridge}
+                    )
+                    self.session["intent"] = "booking"
+                    self._switch_flow("booking")
+                    self.session["_last_handled_by"] = "detect_intent_router"
+                    # If the transcript contains a condition signal, store it as the
+                    # reason now so COLLECT_REASON is skipped (mirrors the logic
+                    # that runs below in the deterministic booking path).
+                    if not self.session.get("reason"):
+                        _di_cond_signals = (
+                            "pain", "ache", "hurt", "injury", "injured", "sore",
+                            "stiff", "swollen", "sprain", "strain", "fracture",
+                            "knee", "shoulder", "back", "neck", "hip", "ankle",
+                            "wrist", "elbow", "foot", "leg", "arm", "muscle",
+                            "joint", "sports", "physio", "problem", "condition",
+                        )
+                        if any(sig in text for sig in _di_cond_signals):
+                            self.session["reason"] = transcript.strip()
+                            logger.info(
+                                "[ms_flow] DETECT_INTENT: router bridge path — "
+                                "reason stored from condition signal %r",
+                                transcript.strip()[:60],
+                            )
+                    await self.ask_current_question()
+                    return
+                # All other router actions (INTENT_SWITCH_TO_*, etc.) → fall
+                # through to the standard _detect_intent path below which handles
+                # them correctly.
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: router action=%s not intercepted "
+                    "— falling through to _detect_intent",
+                    _di_action,
+                )
 
             intent = self._detect_intent(text)
             self.session["intent"] = intent
