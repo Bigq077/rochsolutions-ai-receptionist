@@ -511,6 +511,25 @@ def resolve_clinic_location(
                 debug["prefix_hit"] = f"fallback:redditch:{_first}"
                 return _resolve("resolved", "redditch", 0.55, "prefix_fallback")
 
+    # ── 5b. ASK_LOCATION lean-accept tier ────────────────────────────────────
+    # Fires when the full threshold was not met but there is still a clear
+    # positive signal (prefix OR soft alias) and a comfortable margin.
+    # Prevents "you'll access the clinic" (alcester_score=63, margin=40) from
+    # being kicked back as ambiguous when the caller's intent is obvious.
+    # Thresholds kept conservative: score ≥ 55, margin ≥ 30.
+    if context == "ask_location" and (has_prefix or has_soft):
+        if winner_score >= 55 and margin >= 30:
+            logger.info(
+                "[location_resolver] ASK_LOCATION: lean-accept → %s "
+                "(score=%d margin=%d reason=%s)",
+                winner, winner_score, margin, reason,
+            )
+            return _resolve(
+                "resolved", winner,
+                round(min(winner_score, 75) / 100, 2),
+                reason + "+lean",
+            )
+
     if winner_score >= 40 and margin >= 15:
         # Some signal but not enough to auto-resolve — ask for clarification
         return _resolve("ambiguous", None, confidence, reason)

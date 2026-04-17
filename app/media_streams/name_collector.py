@@ -859,21 +859,24 @@ class NameCollector:
         if has_yes and has_no and any(p in text for p in _STRONG_NO):
             has_yes = False
 
-        # YES — store first name as confirmed (or degraded if retries occurred)
+        # YES — store first name as confirmed.
+        # An explicit YES is always a clean confirmation regardless of fn_retries.
+        # The degraded/SMS-fallback path only applies in _fn_reask stage 2
+        # (where we accept without a confirmation turn).  Here the caller just
+        # said "yes", so we clear any prior repair-uncertainty flags.
         if has_yes and not has_no:
-            _fn_degraded = self._nc.get("fn_retries", 0) > 0
-            if _fn_degraded:
-                self._s["needs_name_correction_sms"] = True
-                logger.info(
-                    "[NameCollector] fn_confirm: YES after %d fn_retries — "
-                    "fn_confirmed=False, needs_name_correction_sms=True",
-                    self._nc["fn_retries"],
-                )
+            _prior_retries = self._nc.get("fn_retries", 0)
+            # Clear any SMS-correction flag set during the failed-capture phase.
+            self._s.pop("needs_name_correction_sms", None)
             # Surname is collected via SMS — accept first name only.
             self._nc["pending_surname"] = None
-            self._store_first_name(cand, confirmed=not _fn_degraded)
+            self._store_first_name(cand, confirmed=True)
             self._accept(cand)
-            logger.info("[NameCollector] fn_confirm: YES — first-name-only accept %r", cand)
+            logger.info(
+                "[NameCollector] fn_confirm: YES — fn_confirmed=True fn_retries=%d "
+                "(repair flags cleared on explicit confirm) cand=%r",
+                _prior_retries, cand,
+            )
             return ("accept", cand)
 
         # NO / spelling offer / strong denial — one normal re-ask, no spelling
