@@ -10558,6 +10558,32 @@ class FlowEngine:
 
                 if _book_success:
                     self.session["booking_confirmed"] = True
+                    # ── Name-correction SMS (Prompt 13) ──────────────────────
+                    # If voice first-name capture failed and we promised an SMS,
+                    # send the name-request SMS now that we have the phone number.
+                    # create_pending_name_confirmation was already called inside
+                    # _exec_book_appointment, so the Redis record exists.
+                    if self.session.pop("needs_name_correction_sms", False):
+                        _ncorr_phone = _book_args.get("phone") or ""
+                        if _ncorr_phone:
+                            _ncorr_body = (
+                                "Hi, this is Susie from Theorem Health. "
+                                "I didn't quite catch your first name on the call. "
+                                "Please reply with your first name so I can complete "
+                                "your booking details."
+                            )
+                            try:
+                                from app.notifications.sms import send_sms as _ncorr_sms
+                                await _ncorr_sms(_ncorr_phone, _ncorr_body)
+                                logger.info(
+                                    "[ms_flow] CONFIRM_BOOKING: name-correction SMS sent to %r",
+                                    _ncorr_phone,
+                                )
+                            except Exception as _ncorr_err:
+                                logger.warning(
+                                    "[ms_flow] CONFIRM_BOOKING: name-correction SMS failed "
+                                    "(non-fatal): %r", _ncorr_err,
+                                )
                     _cb_done = (
                         f"Brilliant — you're all booked in for {_slot_cb} "
                         f"at our {_clinic_name} clinic. "
@@ -10710,6 +10736,29 @@ class FlowEngine:
                 # structured scaffold recovery prompt after 3 s if nothing arrives.
                 self.session["last_question"] = _nc_payload
                 self.session["_nc_scaffold_hold"] = True
+                return
+            if _nc_action == "sms_fallback":
+                # Voice name capture failed after final retry.
+                # Speak the fallback phrase, flag for name-correction SMS at
+                # CONFIRM_BOOKING, then advance the flow past COLLECT_NAME.
+                await self._tts.put(_nc_payload)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _nc_payload}
+                )
+                self.session["needs_name_correction_sms"] = True
+                _sms_fb_next = step["step"] + 1
+                _sms_fb_next_state = (
+                    self._active_flow[_sms_fb_next]["state"]
+                    if _sms_fb_next < len(self._active_flow) else "DONE"
+                )
+                self.session["flow_step"]  = _sms_fb_next
+                self.session["state"]      = _sms_fb_next_state
+                self.session["flow_state"] = _sms_fb_next_state
+                logger.info(
+                    "[ms_flow] COLLECT_NAME sms_fallback: advanced to step %d (%s)",
+                    _sms_fb_next, _sms_fb_next_state,
+                )
+                await self.ask_current_question()
                 return
             if _nc_action != "accept":
                 await self._tts.put(_nc_payload)

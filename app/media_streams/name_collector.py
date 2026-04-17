@@ -633,7 +633,7 @@ class NameCollector:
             cand = self._nc.get("fn_candidate") or ""
             return f"I've got {cand} — is that right?" if cand else "What's your first name please?"
         if ss == NC_FN_REASK:
-            return "Sorry, I didn't quite catch that — please say: my first name is..."
+            return "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
         if ss in (NC_FN_SPELLING,):
             return "What's your first name please?"
         if ss == NC_SN_NORMAL:
@@ -822,13 +822,13 @@ class NameCollector:
                         _corr_tokens[0],
                     )
                     return self._enter_fn_confirm(_corr_tokens[0].title())
-            # Plain denial — one normal re-ask
+            # Plain denial — enter fn_reask for one final retry with repair prompt
             self._nc["substate"] = NC_FN_REASK
             self._nc["fn_candidate"] = cand   # keep candidate as fallback
             # Clear pending_surname — full name was apparently wrong
             self._nc["pending_surname"] = None
             logger.info("[NameCollector] fn_confirm: denial — entering fn_reask")
-            return ("ask", "Sorry about that — what's your first name?")
+            return ("ask", "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?")
 
         # Both yes+no without strong denial — ambiguous; re-ask cleanly
         if has_yes and has_no:
@@ -860,14 +860,15 @@ class NameCollector:
 
     def _fn_reask(self, text: str, raw: str) -> Tuple[str, str]:
         """
-        One normal re-ask after first-name confirmation denial.
-        Question played: "Sorry, I didn't quite catch that — please say: my first name is..."
+        Final retry after first-name confirmation denial.
+        Question played: "Sorry, I didn't quite catch that — could you say 'my name is'..."
 
-        Whatever the caller says next is stored as best effort and the flow
-        moves on unconditionally.  No second confirmation loop, no spelling.
-
-        Returns a combined phrase that acknowledges the best-effort store AND
-        asks for the surname in a single turn, so there is no dead air.
+        Retry policy:
+          • Usable token found → accept best-effort (fn_confirmed=False,
+            needs_name_correction_sms=True).
+          • No usable token → return ("sms_fallback", ...) so flow.py speaks
+            the fallback phrase, sets needs_name_correction_sms=True, and
+            advances past COLLECT_NAME.  The SMS is sent at CONFIRM_BOOKING.
         """
         cleaned = _strip_filler_prefix(text)
 
@@ -880,23 +881,30 @@ class NameCollector:
             if tokens:
                 best = tokens[0].title()
 
-        # Fallback: use the previous fn_candidate if we got nothing useful
-        if not best:
-            best = self._nc.get("fn_candidate") or ""
-            if not best:
-                best = "Unknown"
+        if best:
+            # Got something usable on the final retry — accept best-effort.
+            self._store_first_name(best, confirmed=False)
+            self._s["needs_name_correction_sms"] = True
+            logger.info(
+                "[NameCollector] fn_reask: final-retry name=%r → best-effort accept "
+                "(needs_name_correction_sms=True)",
+                best,
+            )
+            self._accept(best)
+            logger.info("[NameCollector] fn_reask: first-name-only best-effort accept %r", best)
+            return ("accept", best)
 
-        self._store_first_name(best, confirmed=False)
-        self._s["needs_name_correction_sms"] = True
+        # No usable token after final retry — trigger SMS fallback.
+        # Store placeholder so downstream code (CONFIRM_BOOKING etc.) has a name field.
+        placeholder = self._nc.get("fn_candidate") or "Unknown"
         logger.info(
-            "[NameCollector] fn_reask: best-effort first_name=%r → "
-            "needs_name_correction_sms=True (correction SMS flagged silently)",
-            best,
+            "[NameCollector] fn_reask: no usable token → sms_fallback (placeholder=%r)",
+            placeholder,
         )
-        # Surname is collected via SMS — accept first name only.
-        self._accept(best)
-        logger.info("[NameCollector] fn_reask: first-name-only best-effort accept %r", best)
-        return ("accept", best)
+        self._store_first_name(placeholder, confirmed=False)
+        self._s["needs_name_correction_sms"] = True
+        self._accept(placeholder)
+        return ("sms_fallback", "Okay, that's noted — I'll send you an SMS.")
 
     # ── Substate: sn_normal ──────────────────────────────────────────────────
 
@@ -1206,7 +1214,7 @@ class NameCollector:
         if retries >= 1:
             self._nc["substate"] = NC_FN_REASK
             logger.info("[NameCollector] fn_fail: escalating to NC_FN_REASK after %d retries", retries)
-            return ("ask", "Sorry, I didn't quite catch that — please say: my first name is...")
+            return ("ask", "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?")
         return ("ask", re_ask)
 
     def _sn_fail(self, re_ask: str) -> Tuple[str, str]:

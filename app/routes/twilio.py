@@ -1252,9 +1252,12 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
             return PlainTextResponse("ok")
 
         # ── Name validation ──────────────────────────────────────────────
+        # Accept single-word replies for first-name-only SMS requests
+        # (e.g. when voice capture failed and we asked "reply with your first name").
+        # Minimum: 1 word, 2+ characters, not a known junk word.
         words = body.split()
         is_junk = body.lower() in _NAME_JUNK
-        if len(words) < 2 or is_junk or len(body) < 4:
+        if len(words) < 1 or is_junk or len(body) < 2:
             logger.info(
                 "[SMS_INBOUND] invalid name reply=%r phone=%r — sending clarification",
                 body,
@@ -1264,8 +1267,8 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
                 await send_sms(
                     to=norm_phone,
                     message=(
-                        "Sorry, we need your full name (first name and surname) "
-                        "to confirm your appointment. Please reply with your full name."
+                        "Sorry, we didn't catch that. "
+                        "Please reply with your first name (and surname if you'd like to include it)."
                     ),
                 )
             except Exception as _ce:
@@ -1274,18 +1277,26 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
                 )
             return PlainTextResponse("ok")
 
-        # ── Valid full name — update Acuity ──────────────────────────────
+        # ── Valid name reply — update Acuity ─────────────────────────────
+        # Single-word reply: first name only — update firstName, leave surname intact.
+        # Multi-word reply: treat as "FirstName Surname(s)".
         full_name = body
         first_name = words[0]
         last_name = " ".join(words[1:])
         appointment_id = pending.get("appointment_id", "")
 
         logger.info(
-            "[SMS_INBOUND] valid name=%r appt_id=%r phone=%r — updating Acuity",
+            "[SMS_INBOUND] valid name=%r (words=%d) appt_id=%r phone=%r — updating Acuity",
             full_name,
+            len(words),
             appointment_id,
             norm_phone,
         )
+
+        # Build Acuity payload: only include lastName when explicitly provided
+        _acuity_name_payload: dict = {"firstName": first_name}
+        if last_name:
+            _acuity_name_payload["lastName"] = last_name
 
         try:
             from app.tools.receptionist_tools import _get_acuity_adapter
@@ -1294,7 +1305,7 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
                 await adapter._request_with_retry(
                     "PUT",
                     f"/appointments/{appointment_id}",
-                    json={"firstName": first_name, "lastName": last_name},
+                    json=_acuity_name_payload,
                     allow_retry=False,
                 )
                 logger.info(
