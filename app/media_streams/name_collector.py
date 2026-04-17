@@ -712,6 +712,12 @@ class NameCollector:
 
         cleaned = _strip_filler_prefix(text)
 
+        # Confidence gate: tokens ≥4 chars are accepted directly (no blocking
+        # confirmation loop); shorter names go through fn_confirm as before.
+        # This eliminates "I've got Quentin — is that right?" for clearly
+        # spoken names while keeping explicit confirmation for short/ambiguous ones.
+        _FN_STRONG_LEN = 4
+
         # Negation: "I'm not Sarah, it's Emma" → extract corrected name
         if any(text.startswith(p) or (" " + p) in text for p in _NEGATION):
             m = re.search(
@@ -722,6 +728,14 @@ class NameCollector:
             if m:
                 token = m.group(1).strip().title()
                 if _is_valid_name_token(token):
+                    if len(token) >= _FN_STRONG_LEN:
+                        self._store_first_name(token, confirmed=True)
+                        self._accept(token)
+                        logger.info(
+                            "[NameCollector] fn_normal: negation strong token %r → direct accept",
+                            token,
+                        )
+                        return ("accept", token)
                     return self._enter_fn_confirm(token)
             self._nc["fn_retries"] = 0
             return ("ask", "No problem — what's your first name please?")
@@ -730,6 +744,14 @@ class NameCollector:
         if _has_meta_language(cleaned):
             token = _extract_leading_token(cleaned, _META_LANGUAGE)
             if token and _is_valid_name_token(token):
+                if len(token) >= _FN_STRONG_LEN:
+                    self._store_first_name(token, confirmed=True)
+                    self._accept(token)
+                    logger.info(
+                        "[NameCollector] fn_normal: meta-language strong token %r → direct accept",
+                        token,
+                    )
+                    return ("accept", token)
                 return self._enter_fn_confirm(token)
             return self._fn_fail(
                 "Sorry, I didn't quite catch that — what's your first name?"
@@ -750,18 +772,43 @@ class NameCollector:
                     "[NameCollector] fn_normal: name-after-is → %r (dropped prefix noise)",
                     _ais,
                 )
+                if len(_ais) >= _FN_STRONG_LEN:
+                    self._store_first_name(_ais, confirmed=True)
+                    self._accept(_ais)
+                    logger.info(
+                        "[NameCollector] fn_normal: name-after-is strong %r → direct accept",
+                        _ais,
+                    )
+                    return ("accept", _ais)
                 return self._enter_fn_confirm(_ais)
 
-        # Two valid tokens → treat as "FirstName Surname"
+        # One valid token → accept directly if strong (≥4 chars); confirm if short.
+        if len(tokens) == 1:
+            _tok = tokens[0].title()
+            if len(_tok) >= _FN_STRONG_LEN:
+                self._store_first_name(_tok, confirmed=True)
+                self._accept(_tok)
+                logger.info(
+                    "[NameCollector] fn_normal: strong single token %r (len=%d) → direct accept",
+                    _tok, len(_tok),
+                )
+                return ("accept", _tok)
+            return self._enter_fn_confirm(_tok)
+
+        # Two valid tokens → treat as "FirstName Surname"; strong first → direct accept
         if len(tokens) == 2:
             fn_tok = tokens[0].title()
             sn_tok = tokens[1].title()
             self._nc["pending_surname"] = sn_tok
+            if len(fn_tok) >= _FN_STRONG_LEN:
+                self._store_first_name(fn_tok, confirmed=True)
+                self._accept(fn_tok)
+                logger.info(
+                    "[NameCollector] fn_normal: strong 2-token first=%r → direct accept "
+                    "(pending_surname=%r)", fn_tok, sn_tok,
+                )
+                return ("accept", fn_tok)
             return self._enter_fn_confirm(fn_tok)
-
-        # One valid token → confirm it
-        if len(tokens) == 1:
-            return self._enter_fn_confirm(tokens[0].title())
 
         # Nothing usable (includes spelling offers — treated as garbled)
         return self._fn_fail(

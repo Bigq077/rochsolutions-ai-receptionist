@@ -2425,18 +2425,39 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # CONFIRM_PHONE: only skip when there is no Twilio caller-ID.
-        # When a Twilio number IS available, ask the question and wait for YES/NO
-        # before advancing to CONFIRM_BOOKING — gives the caller a chance to
-        # correct the number before committing.
-        # When there is no Twilio number, skip straight to COLLECT_PHONE.
-        if step["state"] == "CONFIRM_PHONE" and not self.session.get("phone_from_twilio"):
-            logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE to COLLECT_PHONE")
-            self.session["flow_step"] = step["step"] + 1
-            await self.ask_current_question()
-            return
+        # CONFIRM_PHONE: auto-accept Twilio caller-ID — no blocking confirmation step.
+        # When caller-ID is available, bind it immediately and skip the confirm question.
+        # Caller can still say "use a different number" cross-state (caught below).
+        # When absent, skip directly to COLLECT_PHONE for manual entry.
+        if step["state"] == "CONFIRM_PHONE":
+            if self.session.get("phone_from_twilio"):
+                _acp_phone = (
+                    self.session.get("phone_number")
+                    or self.session.get("twilio_from", "")
+                )
+                self.session["phone_confirmed"] = True
+                if _acp_phone:
+                    self.session["phone_number"] = _acp_phone
+                    self.session[step["answer_field"]] = _acp_phone
+                self.session["flow_step"] = step["step"] + 1
+                logger.info(
+                    "[ms_flow] CONFIRM_PHONE: auto-confirmed caller-ID=%r — skipping confirm step",
+                    _acp_phone,
+                )
+                # Inline acknowledgement — folded with subsequent PRESENT_DAYS preamble
+                await self._tts.put("I'll use the number you're calling from.")
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": "I'll use the number you're calling from."}
+                )
+                await self.ask_current_question()
+                return
+            else:
+                logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE to COLLECT_PHONE")
+                self.session["flow_step"] = step["step"] + 1
+                await self.ask_current_question()
+                return
 
-        # COLLECT_PHONE: skip if Twilio number was confirmed in CONFIRM_PHONE
+        # COLLECT_PHONE: skip if phone already confirmed (auto or manual)
         if step["state"] == "COLLECT_PHONE" and self.session.get("phone_confirmed"):
             phone = (
                 self.session.get("phone_number")
@@ -2445,7 +2466,7 @@ class FlowEngine:
             )
             self.session[step["answer_field"]] = phone
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] phone confirmed from Twilio — skipping COLLECT_PHONE")
+            logger.info("[ms_flow] phone confirmed — skipping COLLECT_PHONE")
             await self.ask_current_question()
             return
 
@@ -3995,6 +4016,32 @@ class FlowEngine:
             self.session.get("flow_step", 0), current_state, transcript[:60],
         )
 
+        # ── Cross-state phone-reject (Prompt 14) ─────────────────────────────────
+        # When phone was auto-confirmed via caller-ID and the caller says they want
+        # a different number, clear the auto-confirm and redirect to COLLECT_PHONE.
+        # Fires before the main state machine so no state-specific handler is needed.
+        _PHONE_REJECT_INTERCEPT_STATES = frozenset({
+            "COLLECT_REASON", "NEW_OR_RETURNING", "RETURNING_RECENCY",
+            "PRESENT_DAYS", "PRESENT_TIMES",
+        })
+        if (
+            self.session.get("phone_confirmed")
+            and current_state in _PHONE_REJECT_INTERCEPT_STATES
+            and _is_phone_reject(text)
+        ):
+            logger.info(
+                "[ms_flow] cross-state phone-reject at %s — clearing phone_confirmed, "
+                "redirecting to COLLECT_PHONE", current_state,
+            )
+            self.session["phone_confirmed"] = False
+            self.session["phone_number"] = None
+            self.session["phone_digits_buffer"] = ""
+            self.session.setdefault("collected", {}).pop("phone", None)
+            self.session["flow_step"] = _COLLECT_PHONE_INDEX
+            self.session["state"] = "COLLECT_PHONE"
+            await self.ask_current_question()
+            return
+
         # ── MID-FLOW PATH SWITCH ─────────────────────────────────────────────────
         # Caller can switch between reschedule and cancel at any point mid-flow.
         # Reschedule → cancel: detected here for PRESENT_DAYS/TIMES/CONFIRM_RESCHEDULE.
@@ -4328,9 +4375,9 @@ class FlowEngine:
                 _pending = "redditch" if _has_red_open else "alcester"
                 self.session["location_pending_guess"] = _pending
                 _confirm_q = (
-                    "Just to confirm \u2014 was that Redditch?"
+                    "Sorry — did you mean our Redditch clinic?"
                     if _pending == "redditch"
-                    else "Just to confirm \u2014 was that Alcester?"
+                    else "Sorry — did you mean our Alcester clinic?"
                 )
                 await self._tts.put(_confirm_q)
                 self.session.setdefault("conversation_history", []).append(
@@ -4338,7 +4385,7 @@ class FlowEngine:
                 )
                 self.session["last_question"] = _confirm_q
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → forced confirm (guess=%s) for %r",
+                    "[ms_flow] ASK_LOCATION: resolver None → confirm (guess=%s) for %r",
                     _pending, text[:40],
                 )
             return
