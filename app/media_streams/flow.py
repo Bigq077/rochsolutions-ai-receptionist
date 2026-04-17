@@ -1203,6 +1203,13 @@ _CONFIRM_BOOKING_INDEX: int = next(
     i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "CONFIRM_BOOKING"
 )
 
+# Array index of PRESENT_DAYS in BOOKING_FLOW.
+# Phone-confirmation handlers route here (not directly to CONFIRM_BOOKING) so
+# availability check + day/time selection always precede final confirmation.
+_PRESENT_DAYS_INDEX: int = next(
+    i for i, s in enumerate(BOOKING_FLOW) if s["state"] == "PRESENT_DAYS"
+)
+
 # Array index of COLLECT_PHONE in BOOKING_FLOW.
 # Used by phone-reject handler to jump directly to phone collection.
 _COLLECT_PHONE_INDEX: int = next(
@@ -2141,27 +2148,43 @@ class FlowEngine:
             # ── SLOT GATE: require a real ISO slot before asking "shall I go ahead?" ──
             # If selected_slot is empty the booking call will fail with
             # "Invalid slot datetime: ''" — catch this upstream, before the caller
-            # hears any confirmation text, and route back to time selection.
+            # hears any confirmation text.
+            # Route to the EARLIEST missing step (Required fix 3):
+            #   • no available_days → PRESENT_DAYS (fetch availability + ask day)
+            #   • no chosen_day    → PRESENT_DAYS (re-ask day selection)
+            #   • day known, no slot → PRESENT_TIMES (ask time selection)
             _cb_gate_slot = self.session.get("selected_slot") or ""
             if not _cb_gate_slot.strip():
-                _cb_pt_idx = next(
-                    (i for i, s in enumerate(self._active_flow)
-                     if s["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")),
-                    None,
-                )
+                _cb_avail = self.session.get("available_days") or []
+                _cb_day   = self.session.get("chosen_day") or ""
+                if not _cb_avail or not _cb_day:
+                    # Need day selection — find PRESENT_DAYS (or PRESENT_DAYS_RESCHEDULE)
+                    _cb_reroute_idx = next(
+                        (i for i, s in enumerate(self._active_flow)
+                         if s["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")),
+                        None,
+                    )
+                    _cb_reroute_label = "PRESENT_DAYS"
+                else:
+                    # Day known but no time — find PRESENT_TIMES
+                    _cb_reroute_idx = next(
+                        (i for i, s in enumerate(self._active_flow)
+                         if s["state"] in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")),
+                        None,
+                    )
+                    _cb_reroute_label = "PRESENT_TIMES"
                 logger.warning(
                     "[ms_flow] CONFIRM_BOOKING gate: selected_slot empty — "
                     "rerouting to %s (idx=%s)",
-                    "PRESENT_TIMES" if _cb_pt_idx is not None else "UNKNOWN",
-                    _cb_pt_idx,
+                    _cb_reroute_label if _cb_reroute_idx is not None else "UNKNOWN",
+                    _cb_reroute_idx,
                 )
-                if _cb_pt_idx is not None:
-                    self.session["flow_step"] = _cb_pt_idx
-                    self.session["state"]     = self._active_flow[_cb_pt_idx]["state"]
+                if _cb_reroute_idx is not None:
+                    self.session["flow_step"] = _cb_reroute_idx
+                    self.session["state"]     = self._active_flow[_cb_reroute_idx]["state"]
                     await self.ask_current_question()
                     return
-                # Fallback if PRESENT_TIMES not found (shouldn't happen in normal flow)
-                logger.error("[ms_flow] CONFIRM_BOOKING gate: PRESENT_TIMES not in active flow — cannot reroute")
+                logger.error("[ms_flow] CONFIRM_BOOKING gate: reroute target not found in active flow")
 
             _slot_cb = (
                 self.session.get("selected_slot_speech")
@@ -5007,9 +5030,17 @@ class FlowEngine:
                         self.session["state"]      = "RETURNING_PLAN_LOOKUP"
                         self.session["flow_state"] = "RETURNING_PLAN_LOOKUP"
                     else:
-                        self.session["state"]      = "CONFIRM_BOOKING"
-                        self.session["flow_state"] = "CONFIRM_BOOKING"
-                        self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
+                        # Route to PRESENT_DAYS for availability+day+time selection unless
+                        # a real slot was already chosen (e.g. caller re-confirmed after
+                        # an earlier selection).  Never jump straight to CONFIRM_BOOKING.
+                        if self.session.get("selected_slot"):
+                            self.session["state"]      = "CONFIRM_BOOKING"
+                            self.session["flow_state"] = "CONFIRM_BOOKING"
+                            self.session["flow_step"]  = _CONFIRM_BOOKING_INDEX
+                        else:
+                            self.session["state"]      = "PRESENT_DAYS"
+                            self.session["flow_state"] = "PRESENT_DAYS"
+                            self.session["flow_step"]  = _PRESENT_DAYS_INDEX
                     logger.info(
                         "[ms_flow] HARD GATE CONFIRM_PHONE: %s + phone resolved (src=%s) "
                         "→ %s phone=...%s",
@@ -5616,9 +5647,12 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                     self.session["state"]     = "LOOKUP_RESCHEDULE"
-                else:
+                elif self.session.get("selected_slot"):
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
+                else:
+                    self.session["flow_step"] = _PRESENT_DAYS_INDEX
+                    self.session["state"]     = "PRESENT_DAYS"
                 logger.info("[ms_flow] compat_phone_accept (name_readback) -> %s", self.session["state"])
                 self.session["_last_handled_by"]   = "name_readback_phone_accept_compat"
                 self.session["_last_yes_detected"] = True
@@ -9008,9 +9042,12 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW:
                     self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                     self.session["state"]     = "LOOKUP_RESCHEDULE"
-                else:
+                elif self.session.get("selected_slot"):
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
+                else:
+                    self.session["flow_step"] = _PRESENT_DAYS_INDEX
+                    self.session["state"]     = "PRESENT_DAYS"
                 self.session.pop("phone_readback_pending", None)
                 self.session.pop("phone_readback_retry", None)
                 self.session.pop("slot_pending_confirmation", None)
@@ -9110,9 +9147,12 @@ class FlowEngine:
                     # skipping RETURNING_PLAN_COLLECT_PHONE which is now redundant).
                     self.session["flow_step"] = step["step"] + 1
                     # ask_current_question will skip COLLECT_PHONE because phone_confirmed=True
-                else:
+                elif self.session.get("selected_slot"):
                     self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                     self.session["state"]     = "CONFIRM_BOOKING"
+                else:
+                    self.session["flow_step"] = _PRESENT_DAYS_INDEX
+                    self.session["state"]     = "PRESENT_DAYS"
                 logger.info(
                     "[ms_flow] phone_confirm matched YES → phone=%r next_state=%s",
                     (_cp_phone[-4:] if _cp_phone else ""), self.session.get("state"),
@@ -12403,9 +12443,12 @@ class FlowEngine:
             if self._active_flow is RESCHEDULE_FLOW:
                 self.session["flow_step"] = _RESCHEDULE_LOOKUP_INDEX
                 self.session["state"]     = "LOOKUP_RESCHEDULE"
-            else:
+            elif self.session.get("selected_slot"):
                 self.session["flow_step"] = _CONFIRM_BOOKING_INDEX
                 self.session["state"]     = "CONFIRM_BOOKING"
+            else:
+                self.session["flow_step"] = _PRESENT_DAYS_INDEX
+                self.session["state"]     = "PRESENT_DAYS"
             logger.info("[ms_flow] compat_phone_accept -> %s", self.session["state"])
             await self.ask_current_question()
             return
