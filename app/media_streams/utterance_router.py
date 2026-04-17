@@ -119,16 +119,17 @@ REPAIR_PHRASES: tuple[str, ...] = (
     "i was just asking",
     "i was just wondering",
     "i was only asking",
-    "i only wanted to know",
-    "i just wanted to know",
     "just asking if",
     "just asking whether",
-    "just wanted to ask",
     "i'm just asking",
     "im just asking",
     "only asking if",
     "only asking whether",
 )
+# Removed from above (too broad — fire on legitimate service-fit questions):
+#   "i only wanted to know"  → "I only wanted to know what you could do" is service-fit
+#   "i just wanted to know"  → "I just wanted to know what exactly could you do" is service-fit
+#   "just wanted to ask"     → "I just wanted to ask what physio could do" is service-fit
 
 # Service-fit / eligibility question phrases.
 SERVICE_FIT_PHRASES: tuple[str, ...] = (
@@ -169,6 +170,22 @@ SERVICE_FIT_PHRASES: tuple[str, ...] = (
     "appropriate for",
     "suitable for",
     "the right thing",
+    # "What could/would you do" family — caller asking about clinic capability/process
+    "what could you do",
+    "what exactly could",
+    "what can the clinic",
+    "what do you do for",
+    "what would you do",
+    "what would the clinic",
+    "what does physio",
+    "what does physiotherapy",
+    "what would physio",
+    "what would physiotherapy",
+    # Third-person help phrases — "could you help him/her"
+    "could you help him",
+    "could you help her",
+    "help him out",
+    "help her out",
 )
 
 # Injury / context / reason phrases.

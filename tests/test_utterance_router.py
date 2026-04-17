@@ -83,8 +83,13 @@ class TestIsRepairUtterance:
     def test_dont_understand(self):
         assert is_repair_utterance("I don't understand what you're asking")
 
-    def test_i_just_wanted_to_know(self):
-        assert is_repair_utterance("I just wanted to know if you could help")
+    def test_i_just_wanted_to_know_is_NOT_repair(self):
+        # "i just wanted to know" removed from REPAIR_PHRASES — it is too broad
+        # and fires on legitimate service-fit questions like
+        # "I just wanted to know what exactly could you do at the clinic".
+        # These are now handled by the service-fit interrupt instead.
+        assert not is_repair_utterance("I just wanted to know if you could help")
+        assert not is_repair_utterance("I just wanted to know what exactly could you do")
 
     def test_pardon(self):
         assert is_repair_utterance("Pardon?")
@@ -652,3 +657,159 @@ class TestIntentCrossover:
         """Single word yes must never reach the router (too short)."""
         result = await analyze_utterance_for_flow_control("Yes", "NEW_OR_RETURNING", _session())
         assert result is None  # gate: too_short
+
+
+# ---------------------------------------------------------------------------
+# Live call regression: the exact utterance sequence that failed
+# ---------------------------------------------------------------------------
+
+class TestLiveCallRegression:
+    """
+    Regression for the live failure:
+      Turn 1: "hi there mate"
+      Turn 2: "i brought my son to football yesterday and his ankle's in quite a bit of pain"
+      Turn 3: "i just wanted to know what exactly could you do at the clinic to help him out"
+
+    Bad behaviour: Turn 3 hit the ASK_LOCATION repair guard → re-asked location.
+    Fixed behaviour: Turn 3 must hit the service-fit interrupt → triage answer.
+    """
+
+    # ── Turn 1 ───────────────────────────────────────────────────────────────
+
+    def test_hi_there_mate_is_not_repair(self):
+        assert not is_repair_utterance("hi there mate")
+
+    def test_hi_there_mate_is_not_service_fit(self):
+        assert not has_service_fit_question("hi there mate")
+
+    def test_hi_there_mate_is_not_context_reason(self):
+        assert not has_context_reason("hi there mate")
+
+    # ── Turn 2 ───────────────────────────────────────────────────────────────
+
+    def test_ankle_pain_context_has_reason(self):
+        assert has_context_reason(
+            "i brought my son to football yesterday and his ankle's in quite a bit of pain"
+        )
+
+    def test_ankle_pain_context_is_not_repair(self):
+        assert not is_repair_utterance(
+            "i brought my son to football yesterday and his ankle's in quite a bit of pain"
+        )
+
+    def test_ankle_pain_context_is_not_service_fit(self):
+        # No capability question in this utterance — just context
+        assert not has_service_fit_question(
+            "i brought my son to football yesterday and his ankle's in quite a bit of pain"
+        )
+
+    # ── Turn 3 (the primary regression) ──────────────────────────────────────
+
+    def test_failing_utterance_is_service_fit(self):
+        """The previously failing utterance must now be detected as service-fit."""
+        assert has_service_fit_question(
+            "i just wanted to know what exactly could you do at the clinic to help him out"
+        )
+
+    def test_failing_utterance_is_NOT_repair(self):
+        """The previously failing utterance must NOT be detected as repair."""
+        assert not is_repair_utterance(
+            "i just wanted to know what exactly could you do at the clinic to help him out"
+        )
+
+    def test_failing_utterance_removed_phrases_not_repair(self):
+        """Individual removed phrases must no longer classify as repair."""
+        # These were too broad — they fire on legitimate service-fit questions
+        assert not is_repair_utterance("I just wanted to know what you could do")
+        assert not is_repair_utterance("I only wanted to know if physio could help")
+        assert not is_repair_utterance("I just wanted to ask what the clinic does")
+
+    # ── Service-fit phrase expansion coverage ─────────────────────────────────
+
+    def test_what_exactly_could_is_service_fit(self):
+        assert has_service_fit_question("what exactly could you do for an ankle injury")
+
+    def test_what_could_you_do_is_service_fit(self):
+        assert has_service_fit_question("what could you do for something like this?")
+
+    def test_what_do_you_do_for_is_service_fit(self):
+        assert has_service_fit_question("what do you do for sports injuries?")
+
+    def test_what_would_the_clinic_is_service_fit(self):
+        assert has_service_fit_question("what would the clinic do for a muscle strain?")
+
+    def test_could_you_help_him_is_service_fit(self):
+        assert has_service_fit_question("could you help him with his ankle?")
+
+    def test_help_him_out_is_service_fit(self):
+        assert has_service_fit_question("can the clinic help him out?")
+
+    # ── Genuine repair phrases must still work ────────────────────────────────
+
+    def test_sorry_what_was_the_question_is_repair(self):
+        assert is_repair_utterance("sorry what was the question?")
+
+    def test_could_you_repeat_that_is_repair(self):
+        assert is_repair_utterance("could you repeat that please?")
+
+    def test_what_do_you_mean_is_repair(self):
+        assert is_repair_utterance("sorry, what do you mean by that?")
+
+    def test_pardon_is_repair(self):
+        assert is_repair_utterance("Pardon?")
+
+    def test_i_dont_understand_is_repair(self):
+        assert is_repair_utterance("I don't understand what you're asking me")
+
+    # ── Real location answers must NOT be mis-classified ─────────────────────
+
+    def test_alcester_not_service_fit(self):
+        assert not has_service_fit_question("Alcester please")
+
+    def test_redditch_not_service_fit(self):
+        assert not has_service_fit_question("I'd prefer the Redditch clinic")
+
+    def test_alcester_not_repair(self):
+        assert not is_repair_utterance("The Alcester one would be better for us")
+
+    def test_redditch_not_repair(self):
+        assert not is_repair_utterance("Redditch please")
+
+
+# ---------------------------------------------------------------------------
+# Service-fit phrase family — expanded set
+# ---------------------------------------------------------------------------
+
+class TestServiceFitExpanded:
+    """Coverage for the newly-added SERVICE_FIT_PHRASES entries."""
+
+    def test_what_does_physio(self):
+        assert has_service_fit_question("what does physio actually do for ankle injuries?")
+
+    def test_what_would_physiotherapy(self):
+        assert has_service_fit_question("what would physiotherapy involve for this?")
+
+    def test_what_does_physiotherapy(self):
+        assert has_service_fit_question("what does physiotherapy do for sports injuries?")
+
+    def test_what_can_the_clinic(self):
+        assert has_service_fit_question("what can the clinic offer for my son?")
+
+    def test_what_would_physio(self):
+        assert has_service_fit_question("what would physio do for a sprained ankle?")
+
+    def test_help_her_out(self):
+        assert has_service_fit_question("is there anything that can help her out?")
+
+    # Ensure day/time/name/phone answers don't accidentally trigger service-fit
+    def test_monday_not_service_fit(self):
+        assert not has_service_fit_question("Monday would be best")
+
+    def test_phone_number_not_service_fit(self):
+        assert not has_service_fit_question("My number is zero seven seven zero nine")
+
+    def test_new_patient_not_service_fit(self):
+        assert not has_service_fit_question("I'm a new patient")
+
+    def test_returning_patient_not_service_fit(self):
+        assert not has_service_fit_question("I've been before, I'm a returning patient")

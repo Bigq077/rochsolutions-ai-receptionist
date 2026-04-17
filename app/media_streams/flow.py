@@ -37,6 +37,7 @@ from app.phrases import RETRY_PHRASES
 from app.media_streams.location_resolver import resolve_clinic_location as _resolve_clinic
 from app.media_streams.utterance_router import (
     is_repair_utterance       as _is_repair_utt,
+    has_service_fit_question  as _is_sfit_utt,
     analyze_utterance_for_flow_control as _router_analyze,
     get_bridge_text           as _router_bridge_text,
     ANSWER_SERVICE_FIT_THEN_ASK_PENDING as _R_SVC_FIT,
@@ -4213,6 +4214,31 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
+                # Service-fit in forced-confirm → answer + re-ask the confirm Q.
+                # "What would the clinic do for his ankle?" while we have a pending
+                # clinic guess should get a triage answer, not a DTMF prompt.
+                if _is_sfit_utt(text):
+                    _fc_sfit_clinic = (
+                        "Redditch" if _loc_pending_guess == "redditch" else "Alcester"
+                    )
+                    _fc_sfit_ans = (
+                        "For something like that, the clinic would usually start with "
+                        "a physiotherapy assessment to look at what\u2019s going on "
+                        "and advise on the best next steps. "
+                        f"Was that at our {_fc_sfit_clinic} clinic?"
+                    )
+                    await self._tts.put(_fc_sfit_ans)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _fc_sfit_ans}
+                    )
+                    self.session["last_question"] = _fc_sfit_ans
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION forced-confirm: service_fit_interrupt %r "
+                        "(guess=%s)",
+                        text[:40], _loc_pending_guess,
+                    )
+                    return
+
                 # Repair / confusion in forced-confirm → re-ask the yes/no question.
                 # Without this, "I was just asking if you could help" reaches the
                 # generic extractor and then the DTMF fallback unnecessarily.
@@ -4378,6 +4404,35 @@ class FlowEngine:
                 )
                 await self._handle_mid_flow_interrupt(_loc_pre_intent, transcript)
                 return
+            # ── Service-fit / capability question interrupt ──────────────────────
+            # The caller is asking what the clinic can do for their injury —
+            # NOT naming a location.  Must intercept BEFORE the repair guard and
+            # BEFORE the resolver to prevent false matches.
+            # Example: "what exactly could you do at the clinic to help him out"
+            #          "could you help him with his ankle?"
+            # Response: safe deterministic triage answer + re-ask location.
+            if _is_sfit_utt(text):
+                _sfit_loc_ans = (
+                    "For something like that, the clinic would usually start with "
+                    "a physiotherapy assessment \u2014 they\u2019ll look at what\u2019s "
+                    "going on and advise on the best next steps. "
+                    "If you\u2019d like to get that booked in, would that be at "
+                    "our Alcester or Redditch clinic?"
+                )
+                await self._tts.put(_sfit_loc_ans)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _sfit_loc_ans}
+                )
+                self.session["last_question"] = (
+                    "Would that be at our Alcester or Redditch clinic?"
+                )
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: service_fit_interrupt %r "
+                    "\u2192 answered + re-asked location",
+                    text[:40],
+                )
+                return
+
             # ── Repair / confusion guard ─────────────────────────────────────────
             # Must run BEFORE the location extractor: repair utterances like
             # "sorry that's unclear" / "what were you asking?" would otherwise
@@ -4393,7 +4448,7 @@ class FlowEngine:
                     {"role": "assistant", "content": _loc_reask}
                 )
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: repair_guard %r → re-asking", text[:40]
+                    "[ms_flow] ASK_LOCATION: repair_guard %r \u2192 re-asking", text[:40]
                 )
                 return
 
@@ -5613,6 +5668,33 @@ class FlowEngine:
                 logger.info(
                     "[ms_flow] DETECT_INTENT: greeting pause %r — "
                     "holding state, no flow switch", text[:40],
+                )
+                return
+
+            # ── Multi-word greeting guard ─────────────────────────────────────────
+            # "hi there mate", "good morning", "hello there" must NOT lock the
+            # flow into general_query before the caller states their intent.
+            # Only fires when: ≤ 5 words AND matches a greeting sequence AND
+            # contains no intent signal.  The single-word filler guard above
+            # already handles bare "hi" / "hello" / "hey".
+            _MULTI_GREETING_SEQS = (
+                "hi there", "hello there", "hey there",
+                "hi mate", "hello mate", "hey mate",
+                "good morning", "good afternoon", "good evening",
+            )
+            _GREETING_INTENT_SIGS = (
+                "book", "appointment", "physio", "pain", "hurt", "injury",
+                "cancel", "reschedule", "question", "help", "problem",
+                "price", "parking", "insurance", "hours",
+            )
+            if (
+                len(_ft_words) <= 5
+                and any(g in text for g in _MULTI_GREETING_SEQS)
+                and not any(s in text for s in _GREETING_INTENT_SIGS)
+            ):
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: greeting-only %r — "
+                    "holding for real intent", text[:30],
                 )
                 return
 
