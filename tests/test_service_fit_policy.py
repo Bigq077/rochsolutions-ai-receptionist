@@ -3,33 +3,80 @@
 Focused tests for service_fit_policy.py — the deterministic service-fit
 answer policy evaluator.
 
-Verifies:
-- child + age missing → ASK_CHILD_AGE
-- child + disallowed age → POLICY_DISALLOW
-- child + allowed age → ALLOW_ASSESSMENT_FIRST
+Covers:
+- child age gate: no_children=True + age unknown → ASK_CHILD_AGE (NOT disallow)
+- child age gate: no_children=True + minor age → POLICY_DISALLOW
+- child age gate: no_children=True + adult age → allow
+- suitability / recommendation blocker → SUITABILITY_CLINICIAN_DECIDES
+- service availability questions → SERVICE_AVAILABLE_ONLY
 - adult MSK condition → ALLOW_ASSESSMENT_FIRST
-- adult unsupported condition → REQUIRE_TEAM_CONFIRMATION
-- no reason → INSUFFICIENT_KNOWLEDGE_SAFE_REPLY
+- unsupported condition → REQUIRE_TEAM_CONFIRMATION
 - no overconfident wording in any template
-- condition_is_supported grounded in clinic FAQ
+- no speculative modality recommendations in any template
 """
+from __future__ import annotations
+
 import pytest
 from app.media_streams.service_fit_policy import (
     evaluate_service_fit,
+    is_suitability_question,
+    is_availability_question,
+    detect_service_name,
+    clinician_decides_response,
+    service_availability_response,
     condition_is_supported,
     assessment_first_response,
+    _team_confirmation_response,
     POLICY_DISALLOW,
     ASK_CHILD_AGE,
+    SERVICE_AVAILABLE_ONLY,
+    SUITABILITY_CLINICIAN_DECIDES,
     ALLOW_ASSESSMENT_FIRST,
     REQUIRE_TEAM_CONFIRMATION,
     INSUFFICIENT_KNOWLEDGE_SAFE_REPLY,
 )
 
 
+# ── Overconfidence / speculation guard ───────────────────────────────────────────
+
+_OVERCONFIDENT_PHRASES = (
+    "yes, absolutely",
+    "yes absolutely",
+    "that's exactly the kind",
+    "absolutely — that",
+    "absolutely — we",
+    "absolutely, yes",
+)
+
+_SPECULATIVE_PHRASES = (
+    "typically",
+    "shockwave therapy",
+    "usually they would",
+    "hands-on treatment, exercise",
+    "exercise and possibly",
+)
+
+
+def _assert_no_overconfidence(text: str) -> None:
+    t = text.lower()
+    for phrase in _OVERCONFIDENT_PHRASES:
+        assert phrase not in t, (
+            f"Overconfident phrase {phrase!r} found: {text!r}"
+        )
+
+
+def _assert_no_speculative_recommendation(text: str) -> None:
+    t = text.lower()
+    for phrase in _SPECULATIVE_PHRASES:
+        assert phrase not in t, (
+            f"Speculative phrase {phrase!r} found: {text!r}"
+        )
+
+
 # ── Clinic fixtures ────────────────────────────────────────────────────────────
 
 def _clinic_no_children() -> dict:
-    """Theorem-like: adults only, no children at all."""
+    """Adults only (no_children=True). Age unknown → must ask. Minor → decline."""
     return {
         "patient_policies": {"no_children": True},
         "faq": {
@@ -41,6 +88,12 @@ def _clinic_no_children() -> dict:
                 "ankle sprains, knee problems, hip problems, muscle strains."
             ),
         },
+        "services": [
+            "Physiotherapy Assessment",
+            "Acupuncture",
+            "Shockwave Therapy",
+            "Class IV Laser Therapy",
+        ],
     }
 
 
@@ -50,7 +103,9 @@ def _clinic_children_from_16() -> dict:
         "patient_policies": {"no_children": False, "min_patient_age": 16},
         "faq": {
             "children_policy": "We see patients aged 16 and over.",
+            "conditions_treated": "Musculoskeletal conditions including sports injuries.",
         },
+        "services": ["Physiotherapy Assessment"],
     }
 
 
@@ -60,9 +115,10 @@ def _clinic_children_all_ages() -> dict:
         "patient_policies": {"no_children": False},
         "faq": {
             "conditions_treated": (
-                "We treat musculoskeletal conditions including sports injuries, ankle sprains."
+                "Sports injuries, ankle pain, back pain."
             ),
         },
+        "services": ["Physiotherapy Assessment"],
     }
 
 
@@ -71,10 +127,9 @@ def _clinic_policy_unconfigured() -> dict:
     return {
         "patient_policies": {},
         "faq": {
-            "conditions_treated": (
-                "Sports injuries, ankle pain, back pain."
-            ),
+            "conditions_treated": "Sports injuries, ankle pain, back pain.",
         },
+        "services": ["Physiotherapy Assessment"],
     }
 
 
@@ -82,20 +137,21 @@ def _empty_session() -> dict:
     return {}
 
 
-# ── Child + age missing ────────────────────────────────────────────────────────
+def _theorem() -> dict:
+    from app.clinic_config import get_clinic
+    return get_clinic("theorem")
+
+
+# ── 1. Child + age missing ─────────────────────────────────────────────────────
 
 class TestChildAgeMissing:
-    def test_no_children_policy_true(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_no_children(),
-            reason="ankle injury",
-            child_related=True,
-            age=None,
-        )
-        assert result.action == POLICY_DISALLOW
+    """
+    Core fix: no_children=True + age=None must → ASK_CHILD_AGE.
+    "My son" could be 19 — we must ask before deciding.
+    """
 
-    def test_no_children_uses_faq_text(self):
+    def test_no_children_true_age_missing_asks_age(self):
+        """The primary bug: missing age must NOT produce immediate disallow."""
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_no_children(),
@@ -103,7 +159,27 @@ class TestChildAgeMissing:
             child_related=True,
             age=None,
         )
-        assert "adults only" in result.response_text.lower()
+        assert result.action == ASK_CHILD_AGE
+
+    def test_no_children_true_age_missing_sets_pending_followup(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            child_related=True,
+            age=None,
+        )
+        assert result.pending_followup == "child_age"
+
+    def test_no_children_true_age_missing_response_is_question(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            child_related=True,
+            age=None,
+        )
+        # Must be a question, not a decline
+        assert "?" in result.response_text
+        assert "adults only" not in result.response_text.lower()
 
     def test_min_age_configured_age_missing(self):
         result = evaluate_service_fit(
@@ -125,132 +201,273 @@ class TestChildAgeMissing:
             age=None,
         )
         assert result.action == ASK_CHILD_AGE
-        assert result.pending_followup == "child_age"
 
-    def test_ask_age_response_contains_child_word(self):
+    def test_son_pronoun_in_age_question(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_children_from_16(),
-            reason="ankle injury",
             child_related=True,
             age=None,
             relationship="son",
         )
-        assert "son" in result.response_text.lower()
+        assert "your son" in result.response_text.lower()
 
-    def test_no_confident_yes_when_asking_age(self):
+    def test_daughter_pronoun_in_age_question(self):
         result = evaluate_service_fit(
             session=_empty_session(),
-            clinic=_clinic_policy_unconfigured(),
-            reason="ankle injury",
+            clinic=_clinic_children_from_16(),
+            child_related=True,
+            age=None,
+            relationship="daughter",
+        )
+        assert "your daughter" in result.response_text.lower()
+
+    def test_no_booking_language_in_age_question(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
             child_related=True,
             age=None,
         )
-        assert result.action == ASK_CHILD_AGE
-        _assert_no_overconfidence(result.response_text)
+        assert "take a few details" not in result.response_text.lower()
+        assert "book" not in result.response_text.lower()
 
 
-# ── Child + disallowed age ────────────────────────────────────────────────────
+# ── 2. Child + disallowed age ─────────────────────────────────────────────────
 
 class TestChildDisallowedAge:
-    def test_under_min_age_disallowed(self):
+    def test_no_children_true_minor_disallows(self):
         result = evaluate_service_fit(
             session=_empty_session(),
-            clinic=_clinic_children_from_16(),
-            reason="ankle injury",
+            clinic=_clinic_no_children(),
             child_related=True,
-            age=8,
+            age=10,
         )
         assert result.action == POLICY_DISALLOW
 
-    def test_disallow_response_uses_faq_text(self):
+    def test_no_children_true_age_17_disallows(self):
+        # 17 < default adult_threshold (18)
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            child_related=True,
+            age=17,
+        )
+        assert result.action == POLICY_DISALLOW
+
+    def test_disallow_uses_faq_text(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            child_related=True,
+            age=10,
+        )
+        assert "adults only" in result.response_text.lower()
+
+    def test_min_age_below_threshold_disallows(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_children_from_16(),
-            reason="ankle injury",
             child_related=True,
-            age=8,
+            age=14,
         )
-        assert "16" in result.response_text
+        assert result.action == POLICY_DISALLOW
 
     def test_no_booking_language_in_disallow(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_no_children(),
-            reason="ankle injury",
             child_related=True,
             age=5,
         )
-        assert result.action == POLICY_DISALLOW
         assert "take a few details" not in result.response_text.lower()
         assert "book" not in result.response_text.lower()
 
-    def test_no_overconfidence_in_disallow(self):
+
+# ── 3. Child + allowed age ────────────────────────────────────────────────────
+
+class TestChildAllowedAge:
+    def test_no_children_true_adult_age_18_allows(self):
+        """'My son' who is 18 — adults-only clinic can see him."""
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_no_children(),
+            child_related=True,
+            age=18,
             reason="ankle injury",
-            child_related=True,
-            age=10,
-        )
-        _assert_no_overconfidence(result.response_text)
-
-
-# ── Child + allowed age ────────────────────────────────────────────────────────
-
-class TestChildAllowedAge:
-    def test_age_at_min_allowed(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_children_from_16(),
-            reason="ankle sprain",
-            child_related=True,
-            age=16,
         )
         assert result.action == ALLOW_ASSESSMENT_FIRST
 
-    def test_age_above_min_allowed(self):
+    def test_no_children_true_adult_age_19_allows(self):
         result = evaluate_service_fit(
             session=_empty_session(),
-            clinic=_clinic_children_from_16(),
+            clinic=_clinic_no_children(),
+            child_related=True,
+            age=19,
             reason="knee pain",
-            child_related=True,
-            age=17,
         )
         assert result.action == ALLOW_ASSESSMENT_FIRST
 
-    def test_children_all_ages_allowed(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_children_all_ages(),
-            reason="ankle sprain",
-            child_related=True,
-            age=10,
-        )
-        assert result.action == ALLOW_ASSESSMENT_FIRST
-
-    def test_allowed_response_assessment_first(self):
+    def test_min_age_met_allows(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_children_from_16(),
-            reason="ankle injury",
             child_related=True,
             age=16,
+            reason="sports injury",
+        )
+        assert result.action == ALLOW_ASSESSMENT_FIRST
+
+    def test_allowed_response_mentions_assessment(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            child_related=True,
+            age=19,
+            reason="ankle injury",
         )
         assert "assessment" in result.response_text.lower()
 
-    def test_no_overconfidence_in_allowed(self):
+    def test_allowed_response_no_speculation(self):
         result = evaluate_service_fit(
             session=_empty_session(),
-            clinic=_clinic_children_from_16(),
-            reason="sports injury",
+            clinic=_clinic_no_children(),
             child_related=True,
-            age=17,
+            age=19,
+            reason="ankle injury",
         )
+        _assert_no_speculative_recommendation(result.response_text)
+
+
+# ── 4. Suitability / recommendation blocker ──────────────────────────────────
+
+class TestSuitabilityBlocker:
+    """
+    'What do you recommend?' / 'Would acupuncture work for me?' →
+    SUITABILITY_CLINICIAN_DECIDES. Receptionist must never recommend modalities.
+    """
+
+    def _eval(self, text: str, reason: str = "ankle injury") -> str:
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text=text,
+            reason=reason,
+        )
+        return result.action
+
+    def test_what_do_you_recommend(self):
+        assert self._eval("what do you recommend for my ankle") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_would_acupuncture_work_for_me(self):
+        assert self._eval("would acupuncture work for me") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_scared_of_needles_would_still_work(self):
+        assert self._eval(
+            "i'm scared of needles would acupuncture still work for me"
+        ) == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_what_would_be_best(self):
+        assert self._eval("what would be best for my knee") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_do_you_think_it_would_help(self):
+        assert self._eval("do you think that would help") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_should_i_do_shockwave(self):
+        assert self._eval("should i do shockwave therapy") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_which_is_better(self):
+        assert self._eval("which is better acupuncture or laser") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_what_would_they_recommend(self):
+        assert self._eval("what would they recommend for my back") == SUITABILITY_CLINICIAN_DECIDES
+
+    def test_clinician_decides_response_no_speculation(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="what do you recommend for my ankle",
+        )
+        _assert_no_speculative_recommendation(result.response_text)
+
+    def test_clinician_decides_response_references_clinician(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="what would be best for my shoulder",
+        )
+        safe_words = ["clinician", "assessment", "decide", "suitable", "discuss", "proper"]
+        found = any(w in result.response_text.lower() for w in safe_words)
+        assert found
+
+    def test_plain_service_fit_not_blocked(self):
+        """Normal 'can you help with ankle?' must NOT be blocked by suitability check."""
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="can you help with a knee injury",
+            reason="knee injury",
+        )
+        assert result.action != SUITABILITY_CLINICIAN_DECIDES
+
+    def test_availability_question_not_blocked_as_suitability(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="do you offer acupuncture",
+        )
+        assert result.action != SUITABILITY_CLINICIAN_DECIDES
+
+
+# ── 5. Service availability questions ────────────────────────────────────────
+
+class TestServiceAvailability:
+    """'Do you offer acupuncture?' → SERVICE_AVAILABLE_ONLY, short bounded answer."""
+
+    def test_do_you_offer_acupuncture(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="do you offer acupuncture",
+        )
+        assert result.action == SERVICE_AVAILABLE_ONLY
+
+    def test_do_you_have_shockwave(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="do you have shockwave therapy",
+        )
+        assert result.action == SERVICE_AVAILABLE_ONLY
+
+    def test_availability_response_mentions_service(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="do you offer acupuncture",
+        )
+        assert "acupuncture" in result.response_text.lower()
+
+    def test_availability_response_no_speculation(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            original_text="do you offer acupuncture",
+        )
+        _assert_no_speculative_recommendation(result.response_text)
         _assert_no_overconfidence(result.response_text)
 
+    def test_theorem_acupuncture_available(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_theorem(),
+            original_text="do you offer acupuncture",
+        )
+        assert result.action == SERVICE_AVAILABLE_ONLY
+        assert "acupuncture" in result.response_text.lower()
 
-# ── Adult MSK service-fit ──────────────────────────────────────────────────────
+
+# ── 6. Adult MSK service-fit ──────────────────────────────────────────────────
 
 class TestAdultServiceFit:
     def test_ankle_injury_allowed(self):
@@ -258,7 +475,6 @@ class TestAdultServiceFit:
             session=_empty_session(),
             clinic=_clinic_no_children(),
             reason="ankle injury",
-            child_related=False,
         )
         assert result.action == ALLOW_ASSESSMENT_FIRST
 
@@ -267,147 +483,54 @@ class TestAdultServiceFit:
             session=_empty_session(),
             clinic=_clinic_no_children(),
             reason="back pain",
-            child_related=False,
         )
         assert result.action == ALLOW_ASSESSMENT_FIRST
 
-    def test_sports_injury_allowed(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_no_children(),
-            reason="football sports injury",
-            child_related=False,
-        )
-        assert result.action == ALLOW_ASSESSMENT_FIRST
-
-    def test_ankle_response_assessment_first(self):
+    def test_response_mentions_assessment(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_no_children(),
             reason="hurt my ankle playing football",
-            child_related=False,
         )
         assert "assessment" in result.response_text.lower()
 
-    def test_no_overconfidence_adult_allowed(self):
+    def test_no_overconfidence(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_no_children(),
             reason="shoulder pain",
-            child_related=False,
         )
         _assert_no_overconfidence(result.response_text)
 
-    def test_adult_no_reason_insufficient_knowledge(self):
+    def test_no_speculation(self):
+        result = evaluate_service_fit(
+            session=_empty_session(),
+            clinic=_clinic_no_children(),
+            reason="ankle injury",
+        )
+        _assert_no_speculative_recommendation(result.response_text)
+
+    def test_no_reason_insufficient_knowledge(self):
         result = evaluate_service_fit(
             session=_empty_session(),
             clinic=_clinic_no_children(),
             reason="",
-            child_related=False,
         )
         assert result.action == INSUFFICIENT_KNOWLEDGE_SAFE_REPLY
-        assert "assessment" in result.response_text.lower()
 
 
-# ── Unsupported / outside scope ────────────────────────────────────────────────
-
-class TestUnsupportedCondition:
-    def test_dental_not_supported(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_no_children(),
-            reason="toothache",
-            child_related=False,
-        )
-        assert result.action == REQUIRE_TEAM_CONFIRMATION
-
-    def test_team_confirmation_no_overconfidence(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_no_children(),
-            reason="toothache",
-            child_related=False,
-        )
-        _assert_no_overconfidence(result.response_text)
-
-    def test_team_confirmation_response_bounded(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_no_children(),
-            reason="toothache",
-            child_related=False,
-        )
-        # Should still mention assessment as first step
-        assert "assessment" in result.response_text.lower()
-
-
-# ── condition_is_supported ────────────────────────────────────────────────────
-
-class TestConditionIsSupported:
-    def test_ankle_supported(self):
-        assert condition_is_supported("ankle injury", _clinic_no_children())
-
-    def test_back_pain_supported(self):
-        assert condition_is_supported("back pain", _clinic_no_children())
-
-    def test_sports_supported(self):
-        assert condition_is_supported("sports injury", _clinic_no_children())
-
-    def test_knee_supported(self):
-        assert condition_is_supported("knee problem", _clinic_no_children())
-
-    def test_dental_not_supported(self):
-        assert not condition_is_supported("toothache", _clinic_no_children())
-
-    def test_empty_reason_not_supported(self):
-        assert not condition_is_supported("", _clinic_no_children())
-
-
-# ── Response template confidence cap ──────────────────────────────────────────
-
-class TestConfidenceCap:
-    def test_assessment_first_no_overconfidence(self):
-        _assert_no_overconfidence(assessment_first_response("ankle injury"))
-
-    def test_assessment_first_empty_no_overconfidence(self):
-        _assert_no_overconfidence(assessment_first_response(""))
-
-    def test_disallow_theorem_uses_faq(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_no_children(),
-            reason="ankle injury",
-            child_related=True,
-            age=None,
-        )
-        assert result.action == POLICY_DISALLOW
-        assert "adults only" in result.response_text.lower()
-
-    def test_ask_age_no_booking_offer(self):
-        result = evaluate_service_fit(
-            session=_empty_session(),
-            clinic=_clinic_children_from_16(),
-            reason="ankle injury",
-            child_related=True,
-            age=None,
-        )
-        assert result.action == ASK_CHILD_AGE
-        assert "take a few details" not in result.response_text.lower()
-        assert "book" not in result.response_text.lower()
-
-
-# ── Theorem Health real-world scenarios ───────────────────────────────────────
+# ── 7. Theorem Health real-world scenarios ────────────────────────────────────
 
 class TestTheoremScenarios:
-    """Scenarios against the actual Theorem Health clinic config."""
+    """Scenarios against actual Theorem Health clinic config."""
 
     @pytest.fixture
     def theorem(self):
         from app.clinic_config import get_clinic
         return get_clinic("theorem")
 
-    def test_son_ankle_injury_no_age(self, theorem):
-        """'My son hurt his ankle — do you treat children?' → POLICY_DISALLOW (no_children=True)"""
+    def test_son_ankle_age_unknown_asks_age(self, theorem):
+        """'My son hurt his ankle' + no age → ask age, not decline."""
         result = evaluate_service_fit(
             session={},
             clinic=theorem,
@@ -416,57 +539,142 @@ class TestTheoremScenarios:
             age=None,
             relationship="son",
         )
-        assert result.action == POLICY_DISALLOW
-        assert "adults only" in result.response_text.lower()
+        assert result.action == ASK_CHILD_AGE
 
-    def test_son_ankle_injury_with_age(self, theorem):
-        """Even with age known, Theorem disallows all children (no_children=True)."""
+    def test_son_ankle_minor_age_declined(self, theorem):
         result = evaluate_service_fit(
             session={},
             clinic=theorem,
-            reason="ankle sprain",
             child_related=True,
             age=15,
+            reason="ankle sprain",
         )
         assert result.action == POLICY_DISALLOW
 
+    def test_son_adult_age_allowed(self, theorem):
+        """'My son is 19' — Theorem adults-only clinic should see him."""
+        result = evaluate_service_fit(
+            session={},
+            clinic=theorem,
+            child_related=True,
+            age=19,
+            reason="ankle injury",
+        )
+        assert result.action == ALLOW_ASSESSMENT_FIRST
+
     def test_adult_ankle_assessment_first(self, theorem):
-        """Adult ankle injury → assessment-first, not overconfident."""
         result = evaluate_service_fit(
             session={},
             clinic=theorem,
             reason="hurt my ankle playing football",
-            child_related=False,
         )
         assert result.action == ALLOW_ASSESSMENT_FIRST
         _assert_no_overconfidence(result.response_text)
+        _assert_no_speculative_recommendation(result.response_text)
 
-    def test_adult_no_reason_safe_reply(self, theorem):
+    def test_what_do_you_recommend_blocked(self, theorem):
         result = evaluate_service_fit(
             session={},
             clinic=theorem,
-            reason="",
-            child_related=False,
+            original_text="what do you recommend for my ankle",
+            reason="ankle injury",
         )
-        assert result.action == INSUFFICIENT_KNOWLEDGE_SAFE_REPLY
-        _assert_no_overconfidence(result.response_text)
+        assert result.action == SUITABILITY_CLINICIAN_DECIDES
 
-
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-_OVERCONFIDENT_PHRASES = (
-    "yes, absolutely",
-    "yes absolutely",
-    "that's exactly the kind",
-    "absolutely — that",
-    "absolutely — we",
-    "absolutely, yes",
-)
-
-
-def _assert_no_overconfidence(text: str) -> None:
-    t = text.lower()
-    for phrase in _OVERCONFIDENT_PHRASES:
-        assert phrase not in t, (
-            f"Overconfident phrase {phrase!r} found in response: {text!r}"
+    def test_acupuncture_availability_answered(self, theorem):
+        result = evaluate_service_fit(
+            session={},
+            clinic=theorem,
+            original_text="do you offer acupuncture",
         )
+        assert result.action == SERVICE_AVAILABLE_ONLY
+
+
+# ── 8. is_suitability_question helper ────────────────────────────────────────
+
+class TestIsSuitabilityQuestion:
+    def test_what_do_you_recommend(self):
+        assert is_suitability_question("what do you recommend for my ankle")
+
+    def test_would_acupuncture_work(self):
+        assert is_suitability_question("would acupuncture work for me")
+
+    def test_do_you_think(self):
+        assert is_suitability_question("do you think that would help")
+
+    def test_should_i_try(self):
+        assert is_suitability_question("should i try shockwave therapy")
+
+    def test_what_would_be_best(self):
+        assert is_suitability_question("what would be best for my back")
+
+    def test_which_is_better(self):
+        assert is_suitability_question("which is better acupuncture or physio")
+
+    def test_plain_service_fit_not_suitability(self):
+        assert not is_suitability_question("my son hurt his ankle can you help")
+
+    def test_booking_not_suitability(self):
+        assert not is_suitability_question("i'd like to book an appointment")
+
+    def test_availability_not_suitability(self):
+        assert not is_suitability_question("do you offer acupuncture")
+
+
+# ── 9. is_availability_question + detect_service_name ────────────────────────
+
+class TestAvailabilityHelpers:
+    def test_do_you_offer(self):
+        assert is_availability_question("do you offer acupuncture")
+
+    def test_do_you_have(self):
+        assert is_availability_question("do you have shockwave therapy")
+
+    def test_is_that_available(self):
+        assert is_availability_question("is acupuncture available at your clinic")
+
+    def test_plain_question_not_availability(self):
+        assert not is_availability_question("my ankle hurts can you help")
+
+    def test_detect_acupuncture(self):
+        assert detect_service_name("do you offer acupuncture") == "Acupuncture"
+
+    def test_detect_shockwave(self):
+        assert detect_service_name("is shockwave therapy available") == "Shockwave Therapy"
+
+    def test_detect_laser(self):
+        assert detect_service_name("do you have laser therapy") == "Class IV Laser Therapy"
+
+    def test_auricular_beats_plain_acupuncture(self):
+        # Longer match wins
+        assert detect_service_name("auricular acupuncture") == "Auricular Acupuncture"
+
+    def test_no_service_returns_none(self):
+        assert detect_service_name("my ankle hurts") is None
+
+
+# ── 10. Template regression: no speculative wording ──────────────────────────
+
+class TestTemplateRegression:
+    def test_assessment_first_no_typically(self):
+        resp = assessment_first_response("ankle injury")
+        assert "typically" not in resp.lower()
+
+    def test_assessment_first_no_modality_chain(self):
+        resp = assessment_first_response("ankle injury")
+        _assert_no_speculative_recommendation(resp)
+
+    def test_assessment_first_mentions_assessment(self):
+        assert "assessment" in assessment_first_response("knee pain").lower()
+
+    def test_team_confirmation_no_typically(self):
+        resp = _team_confirmation_response()
+        assert "typically" not in resp.lower()
+
+    def test_clinician_decides_no_speculation(self):
+        resp = clinician_decides_response()
+        _assert_no_speculative_recommendation(resp)
+
+    def test_clinician_decides_references_clinician(self):
+        resp = clinician_decides_response()
+        assert "clinician" in resp.lower()

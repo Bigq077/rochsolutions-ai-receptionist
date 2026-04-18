@@ -6021,6 +6021,7 @@ class FlowEngine:
                         relationship=self.session.get(
                             "first_turn_patient_relationship", "child"
                         ),
+                        original_text=text,
                     )
                     logger.info(
                         "service_fit_policy: child=%s age=%s reason=%r -> %s",
@@ -6135,11 +6136,21 @@ class FlowEngine:
                 logger.info(
                     "pending_followup: general_query guard fired → svc_fit fallback"
                 )
-                _gq_guard_resp = (
-                    "They\u2019d typically start with a physiotherapy assessment "
-                    "to understand what\u2019s going on and put together a plan from there. "
-                    "If you\u2019d like to get that arranged, I can take a few details."
+                # Suitability/recommendation questions get a clinician-decides
+                # response; everything else gets the bounded assessment-first reply.
+                from app.media_streams.service_fit_policy import (
+                    is_suitability_question as _gq_is_suitability,
+                    clinician_decides_response as _gq_clinician_decides,
+                    assessment_first_response as _gq_assessment_first,
                 )
+                if _gq_is_suitability(text):
+                    _gq_guard_resp = _gq_clinician_decides()
+                    logger.info(
+                        "service_fit_policy: suitability_question -> CLINICIAN_DECIDES "
+                        "(gq guard path); recommendation_blocker applied"
+                    )
+                else:
+                    _gq_guard_resp = _gq_assessment_first(self.session.get("reason", ""))
                 await self._tts.put(_gq_guard_resp)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _gq_guard_resp}

@@ -82,14 +82,28 @@ def evaluate_policy_gate(
     no_children = policies.get("no_children")   # True | False | None
     relationship = session.get("first_turn_patient_relationship", "child")
 
-    # ── Clinic explicitly disallows all child patients ────────────────────────
+    # ── Clinic does not treat minor patients (no_children=True) ─────────────
+    # "adults only" does NOT mean "disallow immediately" when age is unknown.
+    # "My son" could be 19 years old.  Ask age first; disallow only when the
+    # age is confirmed to be below the adult threshold.
     if no_children is True:
-        _default_decline = (
-            "I\u2019m sorry \u2014 the clinic sees adults only and doesn\u2019t "
-            "currently offer paediatric physiotherapy."
-        )
-        response = clinic.get("faq", {}).get("children_policy", _default_decline)
-        return PolicyGateResult(action=SERVICE_FIT_DISALLOW, response_text=response)
+        adult_threshold: int = policies.get("adult_age_threshold", 18)
+        if age is None:
+            q = _age_question(relationship)
+            return PolicyGateResult(
+                action=ASK_CHILD_AGE,
+                response_text=q,
+                pending_followup="child_age",
+            )
+        if age < adult_threshold:
+            _default_decline = (
+                "I\u2019m sorry \u2014 the clinic sees adults only and doesn\u2019t "
+                "currently offer paediatric physiotherapy."
+            )
+            response = clinic.get("faq", {}).get("children_policy", _default_decline)
+            return PolicyGateResult(action=SERVICE_FIT_DISALLOW, response_text=response)
+        # age >= adult_threshold: the "son/daughter" is an adult patient → allow
+        return PolicyGateResult(action=SERVICE_FIT_ALLOW)
 
     # ── Clinic accepts children (no_children=False) ───────────────────────────
     if no_children is False:
