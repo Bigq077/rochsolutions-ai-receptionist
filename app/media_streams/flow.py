@@ -5747,6 +5747,13 @@ class FlowEngine:
                 )
                 return
 
+            # ── First-turn signal extraction (deterministic, pure read+store) ──────
+            if not self.session.get("_first_turn_extracted"):
+                from app.media_streams.first_turn_extractor import (
+                    extract_first_turn_signals, apply_first_turn_signals,
+                )
+                apply_first_turn_signals(extract_first_turn_signals(transcript), self.session)
+
             # ── UTTERANCE ROUTER: mixed / service-fit first utterances ────────────
             # Called only when the utterance is rich enough that deterministic
             # intent detection alone would flatten or ignore embedded signals.
