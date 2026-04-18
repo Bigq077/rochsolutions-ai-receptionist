@@ -5626,6 +5626,41 @@ class FlowEngine:
 
         # ── DETECT_INTENT: route to correct flow on first utterance ───────────
         if step["state"] == "DETECT_INTENT":
+            # ── Service-fit continuation: caller responding to capability answer ──
+            # Set when a service_fit question was answered last turn without entering
+            # booking. Accept explicit confirmation words as a booking signal; anything
+            # else falls through to normal DETECT_INTENT routing.
+            if self.session.get("_service_fit_answered"):
+                self.session.pop("_service_fit_answered", None)
+                _sfa_tokens = set(text.strip().lower().split())
+                _SFA_YES = {"yes", "yeah", "yep", "yup", "please", "ok", "okay",
+                            "sure", "great", "lovely", "perfect", "absolutely",
+                            "definitely", "do", "go"}
+                _sfa_confirmed = bool(_sfa_tokens & _SFA_YES) or any(
+                    p in text.lower() for p in (
+                        "go ahead", "that would", "i'd like", "id like",
+                        "i would like", "let's do", "lets do", "sounds good",
+                        "book me", "book an", "arrange that", "get that",
+                    )
+                )
+                if _sfa_confirmed:
+                    logger.info(
+                        "[ms_flow] DETECT_INTENT: service_fit booking confirmed (%r)"
+                        " → entering booking flow",
+                        text[:40],
+                    )
+                    self.session["intent"] = "booking"
+                    self._switch_flow("booking")
+                    self.session["_last_handled_by"] = "service_fit_confirmed"
+                    await self.ask_current_question()
+                    return
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: service_fit not confirmed (%r)"
+                    " → normal routing",
+                    text[:40],
+                )
+                # Fall through — let standard routing handle non-confirmation
+
             # Professional caller with high confidence — bypass booking flow entirely
             if (
                 self.session.get("caller_type") == "professional"
@@ -5718,11 +5753,52 @@ class FlowEngine:
                     _di_action, _di_router["primary_intent"],
                     _di_router["confidence"], _di_router.get("source", "?"),
                 )
-                if _di_action in (_R_SVC_FIT, _R_BRIDGE):
-                    # Capture reason if the router extracted one (LLM path).
-                    # Deterministic path sets has_reason=True but reason_text=None;
-                    # flow.py's own condition-signal check below will pick up
-                    # reason_text from the raw transcript for the deterministic case.
+                if _di_action == _R_SVC_FIT:
+                    # ── Service-fit priority: answer capability, DEFER booking ──
+                    # The caller is evaluating fit/capability, not yet committing to
+                    # booking. Answer briefly, offer booking, and wait for confirmation.
+                    # Do NOT call _switch_flow here — stay at DETECT_INTENT.
+                    _di_cond_sigs = (
+                        "pain", "ache", "hurt", "injury", "injured", "sore",
+                        "stiff", "swollen", "sprain", "strain", "fracture",
+                        "knee", "shoulder", "back", "neck", "hip", "ankle",
+                        "wrist", "elbow", "foot", "leg", "arm", "muscle",
+                        "joint", "sports", "physio", "problem", "condition",
+                    )
+                    if _di_router.get("has_reason") and _di_router.get("reason_text"):
+                        if not self.session.get("reason"):
+                            self.session["reason"] = _di_router["reason_text"]
+                    if not self.session.get("reason"):
+                        if any(sig in text for sig in _di_cond_sigs):
+                            self.session["reason"] = transcript.strip()
+                    _sfit_response = (
+                        "Yes, absolutely \u2014 that\u2019s exactly the kind of thing "
+                        "we help with. The clinic would typically start with a "
+                        "physiotherapy assessment to understand what\u2019s going on "
+                        "and work out the best plan from there. "
+                        "If you\u2019d like to get that arranged, I can take a few details."
+                    )
+                    await self._tts.put(_sfit_response)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _sfit_response}
+                    )
+                    self.session["_service_fit_answered"] = True
+                    self.session["_last_handled_by"] = "detect_intent_service_fit_defer"
+                    logger.info(
+                        "[ms_flow] DETECT_INTENT: strong service_fit detected in first "
+                        "utterance → handling before booking; "
+                        "service_fit: location inferred=%s stored for later; "
+                        "service_fit: reason captured from first utterance (%r); "
+                        "service_fit answered; booking not yet entered",
+                        self.session.get("selected_location"),
+                        self.session.get("reason", "")[:40],
+                    )
+                    return
+
+                if _di_action == _R_BRIDGE:
+                    # ── Context/reason bridge: acknowledge, then enter booking ──
+                    # Caller described a reason without a service-fit question —
+                    # they are already heading toward booking; bridge into it.
                     if _di_router.get("has_reason") and _di_router.get("reason_text"):
                         if not self.session.get("reason"):
                             self.session["reason"] = _di_router["reason_text"]
@@ -5730,11 +5806,7 @@ class FlowEngine:
                                 "[ms_flow] DETECT_INTENT: router stored reason=%r",
                                 _di_router["reason_text"][:60],
                             )
-                    # Emit the short bridge, then route to booking.
-                    # ask_current_question() will speak the first booking question
-                    # (ASK_LOCATION) immediately after, so the bridge must NOT
-                    # include the pending question.
-                    _di_bridge = _router_bridge_text(_di_action, "DETECT_INTENT")
+                    _di_bridge = _router_bridge_text(_R_BRIDGE, "DETECT_INTENT")
                     await self._tts.put(_di_bridge)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _di_bridge}
@@ -5742,9 +5814,6 @@ class FlowEngine:
                     self.session["intent"] = "booking"
                     self._switch_flow("booking")
                     self.session["_last_handled_by"] = "detect_intent_router"
-                    # If the transcript contains a condition signal, store it as the
-                    # reason now so COLLECT_REASON is skipped (mirrors the logic
-                    # that runs below in the deterministic booking path).
                     if not self.session.get("reason"):
                         _di_cond_signals = (
                             "pain", "ache", "hurt", "injury", "injured", "sore",
@@ -5762,6 +5831,7 @@ class FlowEngine:
                             )
                     await self.ask_current_question()
                     return
+
                 # All other router actions (INTENT_SWITCH_TO_*, etc.) → fall
                 # through to the standard _detect_intent path below which handles
                 # them correctly.

@@ -186,6 +186,14 @@ SERVICE_FIT_PHRASES: tuple[str, ...] = (
     "could you help her",
     "help him out",
     "help her out",
+    # Treatment capability — "could you treat", "can you treat"
+    "could you treat",
+    "can you treat",
+    "would you be able to treat",
+    "could you help my",
+    "can you help my",
+    "could you see my",
+    "can you see my",
 )
 
 # Injury / context / reason phrases.
@@ -408,6 +416,12 @@ def _should_call_router(
     # Rich first utterance at DETECT_INTENT with service-fit but no booking signal.
     if state == "DETECT_INTENT" and _has_svc_fit and word_count >= 8:
         return True, "detect_intent_service_fit"
+
+    # Safety net: context-rich utterance at DETECT_INTENT with injury/reason context
+    # but no booking signal — the caller may be asking a service-fit question using
+    # phrasing not yet covered by SERVICE_FIT_PHRASES; route through LLM to check.
+    if state == "DETECT_INTENT" and _has_reason and not _has_booking and word_count >= 12:
+        return True, "detect_intent_context_no_booking"
 
     # Long utterance at question-sensitive state that doesn't obviously answer it.
     if state in _QUESTION_SENSITIVE_STATES and word_count >= 12 and not _has_booking:
