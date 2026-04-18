@@ -5672,12 +5672,16 @@ class FlowEngine:
                         )
                         return
 
-                    # Policy allows — give bounded service-fit response + booking offer
-                    _pg_allow_resp = (
-                        "Great \u2014 yes, that\u2019s certainly something they can help with. "
-                        "They\u2019d start with a physiotherapy assessment to understand "
-                        "what\u2019s going on and put a plan together from there. "
-                        "If you\u2019d like to get that booked in, I can take a few details."
+                    # Policy allows — give bounded service-fit response + booking offer.
+                    # Use policy-grounded assessment-first text; no overconfident "yes absolutely".
+                    from app.media_streams.service_fit_policy import (
+                        assessment_first_response as _sfp_allow_text,
+                    )
+                    _pg_allow_resp = _sfp_allow_text(self.session.get("reason", ""))
+                    logger.info(
+                        "service_fit_policy: age=%s clinic_policy=allow "
+                        "-> ALLOW_ASSESSMENT_FIRST response_template=assessment_first",
+                        _fu_age,
                     )
                     await self._tts.put(_pg_allow_resp)
                     self.session.setdefault("conversation_history", []).append(
@@ -5974,107 +5978,102 @@ class FlowEngine:
                     _di_router["confidence"], _di_router.get("source", "?"),
                 )
                 if _di_action == _R_SVC_FIT:
-                    # ── Child / minor policy gate ──────────────────────────────────
-                    # Must run BEFORE any capability answer. Check clinic policy and
-                    # respond appropriately rather than giving a blanket "yes".
-                    if _has_minor_ref(text):
-                        logger.info("[ms_flow] service_fit: child_reference detected")
-                        from app.clinic_config import get_clinic as _gc_sfit
-                        _sfit_clinic = _gc_sfit(
-                            self.session.get("clinic_id") or "demo"
-                        )
-                        _sfit_no_children = (
-                            _sfit_clinic.get("patient_policies", {})
-                            .get("no_children")
-                        )
-                        if _sfit_no_children is True:
-                            # Policy explicit: adults only — use the configured FAQ text.
-                            _sfit_child_resp = _sfit_clinic.get("faq", {}).get(
-                                "children_policy",
-                                (
-                                    "I\u2019m sorry \u2014 the clinic sees adults only "
-                                    "and doesn\u2019t currently offer paediatric "
-                                    "physiotherapy."
-                                ),
-                            )
-                            await self._tts.put(_sfit_child_resp)
-                            self.session.setdefault(
-                                "conversation_history", []
-                            ).append(
-                                {"role": "assistant", "content": _sfit_child_resp}
-                            )
-                            self.session["_last_handled_by"] = (
-                                "service_fit_child_policy_declined"
-                            )
-                            logger.info(
-                                "[ms_flow] service_fit: clinic child policy requires "
-                                "age clarification; "
-                                "service_fit: age unknown → declining (no_children=True)"
-                            )
-                            return
-                        elif _sfit_no_children is None:
-                            # Policy not configured — ask age before claiming capability.
-                            _sfit_age_q = (
-                                "That may depend on how old they are \u2014 "
-                                "could I ask how old your child is?"
-                            )
-                            await self._tts.put(_sfit_age_q)
-                            self.session.setdefault(
-                                "conversation_history", []
-                            ).append(
-                                {"role": "assistant", "content": _sfit_age_q}
-                            )
-                            self.session["_last_handled_by"] = (
-                                "service_fit_child_age_gate"
-                            )
-                            logger.info(
-                                "[ms_flow] service_fit: clinic child policy unknown → "
-                                "service_fit: age unknown → asking child age before "
-                                "capability answer"
-                            )
-                            return
-                        # no_children is False → children accepted; fall through to
-                        # standard capability answer below.
+                    # ── Deterministic service-fit policy evaluator ─────────────────
+                    # Routes through service_fit_policy.py which checks:
+                    #   child/minor eligibility (patient_policies.no_children)
+                    #   condition support (conditions_treated FAQ + keyword set)
+                    # Returns a confidence-capped response grounded in clinic config.
+                    # No "Yes, absolutely" unless policy explicitly allows it.
+                    from app.media_streams.service_fit_policy import (
+                        evaluate_service_fit  as _sfp_eval,
+                        POLICY_DISALLOW       as _SFP_DISALLOW,
+                        ASK_CHILD_AGE         as _SFP_ASK_AGE,
+                    )
+                    from app.clinic_config import get_clinic as _sfp_gc
+                    _sfp_clinic = _sfp_gc(self.session.get("clinic_id") or "demo")
 
-                    # ── Standard adult service-fit: answer capability, DEFER booking ─
-                    # The caller is evaluating fit/capability, not yet committing to
-                    # booking. Answer briefly, offer booking, and wait for confirmation.
-                    # Do NOT call _switch_flow here — stay at DETECT_INTENT.
-                    _di_cond_sigs = (
-                        "pain", "ache", "hurt", "injury", "injured", "sore",
-                        "stiff", "swollen", "sprain", "strain", "fracture",
-                        "knee", "shoulder", "back", "neck", "hip", "ankle",
-                        "wrist", "elbow", "foot", "leg", "arm", "muscle",
-                        "joint", "sports", "physio", "problem", "condition",
-                    )
+                    # Resolve reason: router extraction > session > condition signals
+                    _sfp_reason = self.session.get("reason", "") or ""
                     if _di_router.get("has_reason") and _di_router.get("reason_text"):
-                        if not self.session.get("reason"):
-                            self.session["reason"] = _di_router["reason_text"]
-                    if not self.session.get("reason"):
-                        if any(sig in text for sig in _di_cond_sigs):
-                            self.session["reason"] = transcript.strip()
-                    _sfit_response = (
-                        "Yes, that\u2019s certainly something the clinic can help with. "
-                        "They\u2019d typically start with a physiotherapy assessment "
-                        "to understand what\u2019s going on and work out the best plan "
-                        "from there. "
-                        "If you\u2019d like to get that arranged, I can take a few details."
+                        if not _sfp_reason:
+                            _sfp_reason = _di_router["reason_text"]
+                    if not _sfp_reason:
+                        _sfp_cond_sigs = (
+                            "pain", "ache", "hurt", "injury", "injured", "sore",
+                            "stiff", "swollen", "sprain", "strain", "fracture",
+                            "knee", "shoulder", "back", "neck", "hip", "ankle",
+                            "wrist", "elbow", "foot", "leg", "arm", "muscle",
+                            "joint", "sports", "physio", "problem", "condition",
+                        )
+                        if any(sig in text for sig in _sfp_cond_sigs):
+                            _sfp_reason = transcript.strip()
+
+                    _sfp_child = (
+                        _has_minor_ref(text)
+                        or bool(self.session.get("first_turn_child_related"))
                     )
-                    await self._tts.put(_sfit_response)
+                    _sfp_result = _sfp_eval(
+                        session=self.session,
+                        clinic=_sfp_clinic,
+                        reason=_sfp_reason,
+                        child_related=_sfp_child,
+                        age=self.session.get("first_turn_age"),
+                        relationship=self.session.get(
+                            "first_turn_patient_relationship", "child"
+                        ),
+                    )
+                    logger.info(
+                        "service_fit_policy: child=%s age=%s reason=%r -> %s",
+                        _sfp_child,
+                        self.session.get("first_turn_age"),
+                        _sfp_reason[:40],
+                        _sfp_result.action,
+                    )
+
+                    if _sfp_result.action == _SFP_DISALLOW:
+                        await self._tts.put(_sfp_result.response_text)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sfp_result.response_text}
+                        )
+                        self.session["_last_handled_by"] = "service_fit_policy_disallow"
+                        logger.info(
+                            "service_fit_policy: response_template=policy_disallow "
+                            "child=%s age=%s",
+                            _sfp_child, self.session.get("first_turn_age"),
+                        )
+                        return
+
+                    if _sfp_result.action == _SFP_ASK_AGE:
+                        await self._tts.put(_sfp_result.response_text)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sfp_result.response_text}
+                        )
+                        self.session["pending_first_turn_followup"] = "child_age"
+                        self.session["_last_handled_by"] = "service_fit_policy_ask_age"
+                        logger.info(
+                            "service_fit_policy: child_detected age_missing -> ASK_CHILD_AGE"
+                        )
+                        return
+
+                    # ALLOW_ASSESSMENT_FIRST / REQUIRE_TEAM_CONFIRMATION /
+                    # INSUFFICIENT_KNOWLEDGE_SAFE_REPLY — all give assessment-first reply
+                    if _sfp_reason and not self.session.get("reason"):
+                        self.session["reason"] = _sfp_reason
+                    await self._tts.put(_sfp_result.response_text)
                     self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _sfit_response}
+                        {"role": "assistant", "content": _sfp_result.response_text}
                     )
                     self.session["_pending_svc_fit"] = "service_fit_pending"
                     self.session.pop("_pending_svc_fit_turns", None)
-                    self.session["_last_handled_by"] = "detect_intent_service_fit_defer"
-                    logger.info("pending_followup:set kind=service_fit_pending")
+                    self.session["_last_handled_by"] = (
+                        f"service_fit_policy_{_sfp_result.action.lower()}"
+                    )
                     logger.info(
-                        "[ms_flow] DETECT_INTENT: strong service_fit detected in first "
-                        "utterance → handling before booking; "
-                        "service_fit: location inferred=%s stored for later; "
-                        "service_fit: reason captured from first utterance (%r); "
-                        "service_fit bridge: pending booking offer armed; "
-                        "service_fit answered; booking not yet entered",
+                        "service_fit_policy: response_template=%s "
+                        "confidence_cap applied; "
+                        "service_fit: location=%s reason=%r; "
+                        "pending_followup:set kind=service_fit_pending",
+                        _sfp_result.action,
                         self.session.get("selected_location"),
                         self.session.get("reason", "")[:40],
                     )
