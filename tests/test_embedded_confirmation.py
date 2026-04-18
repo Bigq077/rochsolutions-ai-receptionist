@@ -393,8 +393,8 @@ class TestNamePrefixInPhoneQuestion:
 # ════════════════════════════════════════════════════════════════════════════
 
 _PHONE_EXACT = (
-    "If you'd like me to use the number you're calling from "
-    "for the booking, please say yes please."
+    "If the number you are calling on is the one associated with your booking, "
+    "say yes please."
 )
 
 

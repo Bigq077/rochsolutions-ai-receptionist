@@ -1025,7 +1025,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 3,
         "state": "RETURNING_PLAN_CONFIRM_PHONE",
         "question": (
-            "Is the number you're calling from the one linked to your appointments with us?"
+            "If the number you are calling on is the one associated with your booking, "
+            "say yes please."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -1106,8 +1107,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 11,
         "state": "CONFIRM_PHONE",
         "question": (
-            "Just to confirm — shall I use the number "
-            "you're calling from for the booking?"
+            "If the number you are calling on is the one associated with your booking, "
+            "say yes please."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -1533,7 +1534,10 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 1,
         "state": "CONFIRM_PHONE",
-        "question": "Is the phone number you're calling on the one linked to your booking?",
+        "question": (
+            "If the number you are calling on is the one associated with your booking, "
+            "say yes please."
+        ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -3286,17 +3290,44 @@ class FlowEngine:
             # NOTE: elif — must not run (and must not override question_text) when
             # we are already at CONFIRM_BOOKING above.
             elif step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
-                # Reschedule/cancel: anchor to the booking number, not a generic contact number
+                # Reschedule/cancel: anchor to the booking, prefixed with resolved location if known
                 if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
-                    question_text = "Is the phone number you're calling on the one associated with your booking?"
+                    _cp_dyn_loc = self.session.get("selected_location")
+                    if _cp_dyn_loc:
+                        _cp_dyn_loc_name = "Redditch" if "redditch" in _cp_dyn_loc else "Alcester"
+                        question_text = (
+                            f"For your {_cp_dyn_loc_name} booking, "
+                            "if the number you are calling on is the one associated with your booking, "
+                            "say yes please."
+                        )
+                    else:
+                        question_text = (
+                            "If the number you are calling on is the one associated with your booking, "
+                            "say yes please."
+                        )
                 else:
                     # Booking: explicit ask — caller must confirm, never assumed silently
                     question_text = (
-                        "If you'd like me to use the number you're calling from "
-                        "for the booking, please say yes please."
+                        "If the number you are calling on is the one associated with your booking, "
+                        "say yes please."
                     )
                 # Arm the YES/NO gate so only this specific question's response is accepted
                 self.session["phone_confirm_armed"] = True
+            elif step["state"] == "NEW_OR_RETURNING":
+                # Embed resolved clinic location into the new-or-returning question
+                _nor_dyn_loc = self.session.get("selected_location")
+                if _nor_dyn_loc:
+                    _nor_dyn_loc_name = "Redditch" if "redditch" in _nor_dyn_loc else "Alcester"
+                    question_text = (
+                        f"At our {_nor_dyn_loc_name} clinic, "
+                        "have you been with us before, or is this your first time?"
+                    )
+                    logger.info(
+                        "[ms_flow] embedded_location_bind flow=booking state=NEW_OR_RETURNING location=%s",
+                        _nor_dyn_loc_name,
+                    )
+                else:
+                    question_text = step["question"]
             elif step["state"] == "COLLECT_REASON":
                 # Embed resolved clinic location into the reason question
                 _cr_loc = self.session.get("selected_location")
@@ -11992,6 +12023,43 @@ class FlowEngine:
                         {"role": "assistant", "content": _ph_replay}
                     )
                     logger.info("[ms_flow] COLLECT_PHONE: Haiku bypassed — replaying last_question")
+                    return
+                # Bypass Haiku for CONFIRM_PHONE states — any unrecognised utterance
+                # (not YES, not NO, not a FAQ) is a failed phone gate response.
+                # Replay with a gentle watchdog so the caller can try again.
+                _CONFIRM_PHONE_STATES_FG = frozenset({
+                    "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+                    "RETURNING_PLAN_CONFIRM_PHONE",
+                })
+                if step["state"] in _CONFIRM_PHONE_STATES_FG:
+                    _cph_loc = self.session.get("selected_location")
+                    _cph_loc_name = (
+                        ("Redditch" if "redditch" in _cph_loc else "Alcester")
+                        if _cph_loc else None
+                    )
+                    if (
+                        (self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW)
+                        and _cph_loc_name
+                    ):
+                        _cph_retry_q = (
+                            f"Sorry, I didn\u2019t catch that \u2014 "
+                            f"for your {_cph_loc_name} booking, "
+                            "if the number you are calling on is the one associated "
+                            "with your booking, say yes please. Otherwise say no."
+                        )
+                    else:
+                        _cph_retry_q = (
+                            "Sorry, I didn\u2019t catch that \u2014 "
+                            "if the number you are calling on is the one associated "
+                            "with your booking, say yes please. Otherwise say no."
+                        )
+                    await self._tts.put(_cph_retry_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _cph_retry_q}
+                    )
+                    self.session["last_question"] = _cph_retry_q
+                    self.session["phone_confirm_armed"] = True
+                    logger.info("[ms_flow] CONFIRM_PHONE: Haiku bypassed — watchdog retry")
                     return
                 # Bypass Haiku for PRESENT_DAYS states when utterance is a short cut-off
                 # fragment with no unambiguous day/time content. "that's why i" etc. are
