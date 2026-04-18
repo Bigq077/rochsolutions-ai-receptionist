@@ -5683,10 +5683,12 @@ class FlowEngine:
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _pg_allow_resp}
                     )
-                    self.session["_service_fit_answered"] = True
+                    self.session["_pending_svc_fit"] = "service_fit_pending"
+                    self.session.pop("_pending_svc_fit_turns", None)
                     self.session["_last_handled_by"] = (
                         "first_turn_policy_gate_allow_after_age"
                     )
+                    logger.info("pending_followup:set kind=service_fit_pending (after age gate allow)")
                     logger.info(
                         "[ms_flow] first_turn_policy_gate: age=%s clinic_policy=allow "
                         "-> SERVICE_FIT_ALLOW",
@@ -5710,39 +5712,34 @@ class FlowEngine:
                 self.session["_last_handled_by"] = "first_turn_policy_gate_reask_age"
                 return
 
-            # ── Service-fit continuation: caller responding to capability answer ──
-            # Set when a service_fit question was answered last turn without entering
-            # booking. Accept explicit confirmation words as a booking signal; anything
-            # else falls through to normal DETECT_INTENT routing.
-            if self.session.get("_service_fit_answered"):
-                self.session.pop("_service_fit_answered", None)
-                _sfa_tokens = set(text.strip().lower().split())
-                _SFA_YES = {"yes", "yeah", "yep", "yup", "please", "ok", "okay",
-                            "sure", "great", "lovely", "perfect", "absolutely",
-                            "definitely", "brilliant", "wonderful", "alright",
-                            "right"}
-                _sfa_confirmed = bool(_sfa_tokens & _SFA_YES) or any(
-                    p in text.lower() for p in (
-                        "go ahead", "go on then",
-                        "that would", "i'd like", "id like",
-                        "i would like", "let's do", "lets do", "sounds good",
-                        "book me", "book an", "arrange that", "get that",
-                        # Echo-of-bridge phrases — caller parrots what assistant said
-                        "take a few", "few details", "take some details",
-                        "please do", "can we do that", "let's arrange",
-                        "lets arrange", "get booked",
-                    )
-                ) or (
-                    # Short utterance (≤ 4 words) containing a booking verb
-                    len(_sfa_tokens) <= 4
-                    and bool(_sfa_tokens & {"book", "booked", "arrange", "arranged"})
+            # ── Pending follow-up contract: post-service-fit / post-age-gate ────────
+            # Set when a service-fit answer was given but booking was not yet entered.
+            # Checked BEFORE generic routing so natural follow-up turns stay coherent
+            # instead of falling into ANSWER_GENERAL / general_query.
+            if self.session.get("_pending_svc_fit") == "service_fit_pending":
+                from app.media_streams.followup_contract import (
+                    resolve_service_fit_followup as _sfc_resolve,
+                    RESOLVE_PROCEED as _SFC_PROCEED,
+                    RESOLVE_INFO    as _SFC_INFO,
+                    RESOLVE_DECLINE as _SFC_DECLINE,
                 )
-                if _sfa_confirmed:
+                _sfc_result = _sfc_resolve(text)
+                logger.info(
+                    "pending_followup:matched result=%s text=%r",
+                    _sfc_result, text[:40],
+                )
+
+                if _sfc_result == _SFC_PROCEED:
+                    self.session.pop("_pending_svc_fit", None)
+                    self.session.pop("_pending_svc_fit_turns", None)
+                    self.session.pop("_svc_fit_gq_guard", None)
                     logger.info(
-                        "[ms_flow] service_fit bridge accept: %r → entering booking flow; "
-                        "service_fit bridge accept: reusing stored reason/location: "
-                        "reason=%r location=%s",
+                        "pending_followup:matched proceed_intent text=%r",
                         text[:40],
+                    )
+                    logger.info(
+                        "pending_followup:resolved -> booking_entry "
+                        "reason=%r location=%s",
                         self.session.get("reason", "")[:40],
                         self.session.get("selected_location"),
                     )
@@ -5751,12 +5748,67 @@ class FlowEngine:
                     self.session["_last_handled_by"] = "service_fit_confirmed"
                     await self.ask_current_question()
                     return
+
+                if _sfc_result == _SFC_INFO:
+                    _sfc_turns = self.session.get("_pending_svc_fit_turns", 0) + 1
+                    self.session["_pending_svc_fit_turns"] = _sfc_turns
+                    logger.info(
+                        "pending_followup:resolved -> service_fit_info_reply (turn %d)",
+                        _sfc_turns,
+                    )
+                    _info_resp = (
+                        "They\u2019d typically start with a full physiotherapy "
+                        "assessment \u2014 a hands-on examination to understand "
+                        "what\u2019s going on, followed by a tailored treatment plan. "
+                        "If you\u2019d like to go ahead, I can take a few details."
+                    )
+                    await self._tts.put(_info_resp)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _info_resp}
+                    )
+                    if _sfc_turns < 2:
+                        self.session["_pending_svc_fit"] = "service_fit_pending"
+                    else:
+                        self.session.pop("_pending_svc_fit", None)
+                        self.session.pop("_pending_svc_fit_turns", None)
+                        logger.info("pending_followup:cleared (max info turns reached)")
+                    self.session["_last_handled_by"] = "service_fit_info_followup"
+                    return
+
+                if _sfc_result == _SFC_DECLINE:
+                    self.session.pop("_pending_svc_fit", None)
+                    self.session.pop("_pending_svc_fit_turns", None)
+                    self.session.pop("_svc_fit_gq_guard", None)
+                    logger.info("pending_followup:resolved -> decline")
+                    _decline_resp = (
+                        "No problem at all \u2014 if you\u2019d like to get in "
+                        "touch another time, don\u2019t hesitate to call us back."
+                    )
+                    await self._tts.put(_decline_resp)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _decline_resp}
+                    )
+                    self.session["_last_handled_by"] = "service_fit_declined"
+                    return
+
+                # RESOLVE_UNKNOWN — clear pending, arm general_query guard, fall through
+                # to router.  If router/detect_intent lands on general_query, the guard
+                # below redirects to a bounded service-fit fallback instead of ANSWER_GENERAL.
+                _sfc_unk_turns = self.session.get("_pending_svc_fit_turns", 0) + 1
+                self.session["_pending_svc_fit_turns"] = _sfc_unk_turns
+                self.session.pop("_pending_svc_fit", None)
+                if _sfc_unk_turns <= 2:
+                    self.session["_svc_fit_gq_guard"] = True
+                else:
+                    self.session.pop("_pending_svc_fit_turns", None)
+                    self.session.pop("_svc_fit_gq_guard", None)
                 logger.info(
-                    "[ms_flow] DETECT_INTENT: service_fit not confirmed (%r)"
-                    " → normal routing",
-                    text[:40],
+                    "pending_followup: unknown %r → router fallthrough "
+                    "(turn %d, gq_guard=%s)",
+                    text[:40], _sfc_unk_turns,
+                    self.session.get("_svc_fit_gq_guard"),
                 )
-                # Fall through — let standard routing handle non-confirmation
+                # Fall through to router
 
             # Professional caller with high confidence — bypass booking flow entirely
             if (
@@ -6012,8 +6064,10 @@ class FlowEngine:
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _sfit_response}
                     )
-                    self.session["_service_fit_answered"] = True
+                    self.session["_pending_svc_fit"] = "service_fit_pending"
+                    self.session.pop("_pending_svc_fit_turns", None)
                     self.session["_last_handled_by"] = "detect_intent_service_fit_defer"
+                    logger.info("pending_followup:set kind=service_fit_pending")
                     logger.info(
                         "[ms_flow] DETECT_INTENT: strong service_fit detected in first "
                         "utterance → handling before booking; "
@@ -6073,6 +6127,30 @@ class FlowEngine:
                 )
 
             intent = self._detect_intent(text)
+            # Guard: if caller was in a post-service-fit context (RESOLVE_UNKNOWN fell
+            # through) and _detect_intent lands on general_query, redirect to a bounded
+            # service-fit fallback instead of routing to ANSWER_GENERAL.
+            if intent == "general_query" and self.session.pop("_svc_fit_gq_guard", False):
+                self.session.pop("_pending_svc_fit", None)
+                self.session.pop("_pending_svc_fit_turns", None)
+                logger.info(
+                    "pending_followup: general_query guard fired → svc_fit fallback"
+                )
+                _gq_guard_resp = (
+                    "They\u2019d typically start with a physiotherapy assessment "
+                    "to understand what\u2019s going on and put together a plan from there. "
+                    "If you\u2019d like to get that arranged, I can take a few details."
+                )
+                await self._tts.put(_gq_guard_resp)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _gq_guard_resp}
+                )
+                self.session["_pending_svc_fit"] = "service_fit_pending"
+                self.session["_last_handled_by"] = "service_fit_general_query_guard"
+                logger.info("pending_followup:set kind=service_fit_pending (gq guard re-arm)")
+                return
+            # Clear guard if intent was not general_query
+            self.session.pop("_svc_fit_gq_guard", None)
             self.session["intent"] = intent
             # For general queries, store the original transcript so the LLM
             # instruction can reference exactly what the caller asked.
