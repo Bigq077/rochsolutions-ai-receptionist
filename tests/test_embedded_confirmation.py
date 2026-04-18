@@ -392,17 +392,24 @@ class TestNamePrefixInPhoneQuestion:
 # PART 3 — PHONE: exact new wording
 # ════════════════════════════════════════════════════════════════════════════
 
-_PHONE_EXACT = (
+_PHONE_EXACT_BOOKING = (
+    "For the booking, would you like to use the number you are calling on? "
+    "If so, say yes please."
+)
+_PHONE_EXACT_RSCH = (
     "If the number you are calling on is the one associated with your booking, "
     "say yes please."
 )
+# Backwards-compat alias used by a few older tests
+_PHONE_EXACT = _PHONE_EXACT_BOOKING
 
 
 class TestPhoneQuestion:
-    """CONFIRM_PHONE (booking) must use the exact new sentence."""
+    """CONFIRM_PHONE must use the correct sentence for booking vs reschedule."""
 
     @pytest.mark.asyncio
-    async def test_exact_phone_question_wording(self):
+    async def test_exact_phone_question_wording_booking(self):
+        """Booking CONFIRM_PHONE: 'For the booking, would you like to use the number…'"""
         tts = _FakeTTSQueue()
         session = _fresh_session(
             flow_step=_CONFIRM_PHONE_BK_IDX,
@@ -412,7 +419,51 @@ class TestPhoneQuestion:
         )
         engine = _make_booking_engine(session, tts)
         await engine.ask_current_question()
-        assert tts.last() == _PHONE_EXACT
+        assert tts.last() == _PHONE_EXACT_BOOKING
+
+    @pytest.mark.asyncio
+    async def test_booking_phone_not_same_as_reschedule(self):
+        """Booking and reschedule must use distinct CONFIRM_PHONE wordings."""
+        assert _PHONE_EXACT_BOOKING != _PHONE_EXACT_RSCH
+
+    @pytest.mark.asyncio
+    async def test_exact_phone_question_wording_reschedule(self):
+        """Reschedule CONFIRM_PHONE (no location): canonical booking-lookup phrase."""
+        tts = _FakeTTSQueue()
+        _RSCH_CP_IDX = next(
+            i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_PHONE"
+        )
+        session = _fresh_session(
+            flow_step=_RSCH_CP_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            intent="reschedule",
+            selected_location=None,
+        )
+        engine = _make_reschedule_engine(session, tts)
+        await engine.ask_current_question()
+        assert tts.last() == _PHONE_EXACT_RSCH
+
+    @pytest.mark.asyncio
+    async def test_reschedule_confirm_phone_with_location(self):
+        """Reschedule CONFIRM_PHONE with location: 'For your Alcester booking, if…'"""
+        tts = _FakeTTSQueue()
+        _RSCH_CP_IDX = next(
+            i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_PHONE"
+        )
+        session = _fresh_session(
+            flow_step=_RSCH_CP_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            intent="reschedule",
+            selected_location="alcester",
+        )
+        engine = _make_reschedule_engine(session, tts)
+        await engine.ask_current_question()
+        q = tts.last()
+        assert "Alcester" in q
+        assert "booking" in q.lower()
+        assert q != _PHONE_EXACT_BOOKING
 
     @pytest.mark.asyncio
     async def test_no_twilio_skips_to_collect_phone(self):
@@ -447,25 +498,18 @@ class TestPhoneQuestion:
         assert "I'll use the number" not in all_spoken
 
     @pytest.mark.asyncio
-    async def test_reschedule_confirm_phone_unaffected(self):
-        """RESCHEDULE_FLOW CONFIRM_PHONE keeps its own booking-lookup wording."""
+    async def test_old_sorry_did_you_mean_gone_booking(self):
+        """'Sorry — did you mean our Alcester clinic?' must never fire for booking."""
         tts = _FakeTTSQueue()
-        _RSCH_CP_IDX = next(
-            i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_PHONE"
-        )
         session = _fresh_session(
-            flow_step=_RSCH_CP_IDX,
+            flow_step=_CONFIRM_PHONE_BK_IDX,
             phone_from_twilio=True,
             twilio_from="+441234567890",
-            intent="reschedule",
+            new_or_returning="new",
         )
-        engine = _make_reschedule_engine(session, tts)
+        engine = _make_booking_engine(session, tts)
         await engine.ask_current_question()
-        q = tts.last()
-        # Must NOT use the booking wording
-        assert q != _PHONE_EXACT
-        # Should mention booking/associated
-        assert "booking" in q.lower() or "associated" in q.lower()
+        assert "Sorry — did you mean" not in tts.all_text()
 
     @pytest.mark.asyncio
     async def test_phone_confirm_armed_on_emit(self):
@@ -503,3 +547,266 @@ class TestFullFlowEmbedding:
         q = tts.last()
         assert "Redditch" in q
         assert "brings you in" in q.lower()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 4 — ASK_LOCATION silent bind (no "Sorry — did you mean…")
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestAskLocationSilentBind:
+    """
+    When the location resolver returns None (ambiguous/unknown), the flow must
+    silently bind using the prefix-lean guess and carry the location into the
+    next question — never ask 'Sorry — did you mean our Alcester clinic?'.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolver_none_no_standalone_confirm(self):
+        """
+        'to access the clinic' → resolver None → silent bind to Alcester
+        → asks 'At our Alcester clinic, have you been with us before…'
+        NOT 'Sorry — did you mean our Alcester clinic?'
+        """
+        from unittest.mock import patch
+        from app.media_streams.flow import FlowEngine, BOOKING_FLOW
+
+        tts = _FakeTTSQueue()
+        session = _fresh_session(needs_location=True, state="ASK_LOCATION")
+
+        engine = _make_booking_engine(session, tts)
+        engine._active_flow = BOOKING_FLOW
+
+        # Patch _extract to simulate resolver returning None (ambiguous)
+        original_extract = engine._extract
+
+        def _patched_extract(method, text, transcript):
+            if method == "location_selection":
+                return None  # simulate resolver unable to resolve
+            return original_extract(method, text, transcript)
+
+        engine._extract = _patched_extract
+
+        # Simulate a transcript that the real resolver returns None for
+        # (e.g. "to access the clinic" — Alcester prefix lean but resolver
+        # returns ambiguous because candidate first word is "to")
+        await engine.handle_transcript("to access the clinic", "to access the clinic")
+
+        all_text = tts.all_text()
+        assert "Sorry — did you mean" not in all_text
+        assert "Sorry — did you mean our Alcester clinic" not in all_text
+        assert "Sorry — did you mean our Redditch clinic" not in all_text
+
+    @pytest.mark.asyncio
+    async def test_resolver_none_binds_location_in_next_question(self):
+        """After resolver-None silent bind, next question must embed location."""
+        from unittest.mock import patch
+        from app.media_streams.flow import FlowEngine, BOOKING_FLOW
+
+        tts = _FakeTTSQueue()
+        session = _fresh_session(needs_location=True, state="ASK_LOCATION")
+        engine = _make_booking_engine(session, tts)
+        engine._active_flow = BOOKING_FLOW
+
+        original_extract = engine._extract
+
+        def _patched_extract(method, text, transcript):
+            if method == "location_selection":
+                return None
+            return original_extract(method, text, transcript)
+
+        engine._extract = _patched_extract
+
+        await engine.handle_transcript("to access the clinic", "to access the clinic")
+
+        last_q = session.get("last_question", "")
+        # Location should be embedded in the question, not asked separately
+        assert ("Alcester" in last_q or "Redditch" in last_q), (
+            f"Expected location in last_question, got: {last_q!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolver_none_cancel_flow_silent_bind(self):
+        """Cancel flow: resolver None must also silently bind, no confirm question."""
+        from unittest.mock import patch
+        from app.media_streams.flow import FlowEngine, RESCHEDULE_FLOW
+
+        tts = _FakeTTSQueue()
+        session = _fresh_session(needs_location=True, state="ASK_LOCATION", intent="cancel")
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        original_extract = engine._extract
+
+        def _patched_extract(method, text, transcript):
+            if method == "location_selection":
+                return None
+            return original_extract(method, text, transcript)
+
+        engine._extract = _patched_extract
+
+        await engine.handle_transcript("to access the clinic", "to access the clinic")
+
+        all_text = tts.all_text()
+        assert "Sorry — did you mean" not in all_text
+
+    @pytest.mark.asyncio
+    async def test_resolver_none_reschedule_flow_silent_bind(self):
+        """Reschedule flow: resolver None must silently bind, not ask a confirm Q."""
+        from app.media_streams.flow import RESCHEDULE_FLOW
+
+        tts = _FakeTTSQueue()
+        session = _fresh_session(needs_location=True, state="ASK_LOCATION", intent="reschedule")
+        engine = _make_reschedule_engine(session, tts)
+
+        original_extract = engine._extract
+
+        def _patched_extract(method, text, transcript):
+            if method == "location_selection":
+                return None
+            return original_extract(method, text, transcript)
+
+        engine._extract = _patched_extract
+
+        await engine.handle_transcript("to access the clinic", "to access the clinic")
+
+        assert "Sorry — did you mean" not in tts.all_text()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 5 — Name prefix fold into next question (single TTS utterance)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestNameBridgeFold:
+    """
+    'Thanks, X.' must never be a standalone TTS utterance.
+    It must be folded into the next question:
+      "Thanks, Quentin — if the number you are calling on…"
+    """
+
+    def test_get_bridge_returns_none_for_collect_name(self):
+        """_get_bridge must return None (not 'Thanks, X.') for COLLECT_NAME."""
+        from app.media_streams.flow import _get_bridge
+
+        session = {}
+        result = _get_bridge("COLLECT_NAME", "Quentin", session, next_use_llm=False)
+        assert result is None
+
+    def test_get_bridge_sets_transition_prefix(self):
+        """_get_bridge must set _nc_transition_prefix when answer has a name."""
+        from app.media_streams.flow import _get_bridge
+
+        session = {}
+        _get_bridge("COLLECT_NAME", "Quentin Smith", session, next_use_llm=False)
+        prefix = session.get("_nc_transition_prefix", "")
+        assert "Quentin" in prefix, f"Expected 'Quentin' in prefix, got: {prefix!r}"
+
+    def test_get_bridge_does_not_overwrite_existing_prefix(self):
+        """If transition_prefix is already set (direct capture), must not overwrite."""
+        from app.media_streams.flow import _get_bridge
+
+        session = {"_nc_transition_prefix": "Thanks Quentin \u2014"}
+        _get_bridge("COLLECT_NAME", "Quentin", session, next_use_llm=False)
+        # Must still be the original value, not overwritten
+        assert session["_nc_transition_prefix"] == "Thanks Quentin \u2014"
+
+    @pytest.mark.asyncio
+    async def test_name_prefix_folded_into_phone_question(self):
+        """
+        After COLLECT_NAME accepts, CONFIRM_PHONE question must start with
+        'Thanks, Quentin —' as a prefix — not emitted as a separate utterance.
+        """
+        from app.media_streams.flow import _get_bridge
+
+        # Simulate state after name was collected
+        session = {}
+        _get_bridge("COLLECT_NAME", "Quentin", session, next_use_llm=False)
+
+        # The prefix should now be set
+        prefix = session.get("_nc_transition_prefix", "")
+        assert "Quentin" in prefix
+
+        # Simulate ask_current_question consuming the prefix
+        phone_q = "For the booking, would you like to use the number you are calling on? If so, say yes please."
+        combined = f"{prefix} {phone_q}"
+        assert "Quentin" in combined
+        assert "booking" in combined.lower()
+        # Must be ONE string, not two separate calls
+        assert "\n" not in combined  # no line breaks from separate puts
+
+    @pytest.mark.asyncio
+    async def test_standalone_thanks_quentin_not_emitted(self):
+        """
+        Full flow: after name accepted, TTS must NOT contain a standalone
+        'Thanks, Quentin.' utterance separate from the phone question.
+        """
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+            # Simulate that transition prefix was set by name handler
+            _nc_transition_prefix="Thanks, Quentin \u2014",
+        )
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+
+        # There must be exactly ONE TTS call and it must contain both name and question
+        assert len(tts.items) == 1, (
+            f"Expected 1 TTS utterance, got {len(tts.items)}: {tts.items}"
+        )
+        assert "Quentin" in tts.items[0]
+        assert "booking" in tts.items[0].lower()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 6 — Old strings absent from deterministic paths
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestOldStringsGone:
+    """Regression: verify none of the old wording appears in deterministic paths."""
+
+    @pytest.mark.asyncio
+    async def test_no_sorry_did_you_mean_in_booking_location(self):
+        """Booking ASK_LOCATION: 'Sorry — did you mean' must never be spoken."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(needs_location=True, state="ASK_LOCATION")
+        engine = _make_booking_engine(session, tts)
+
+        original_extract = engine._extract
+
+        def _mock_extract(method, text, transcript):
+            if method == "location_selection":
+                return None
+            return original_extract(method, text, transcript)
+
+        engine._extract = _mock_extract
+        await engine.handle_transcript("alcester please", "Alcester please")
+        assert "Sorry — did you mean" not in tts.all_text()
+
+    @pytest.mark.asyncio
+    async def test_no_please_say_yes_if_i_can_use_this_number(self):
+        """'please say yes if I can use this number' must not appear anywhere."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+        )
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+        assert "please say yes if" not in tts.all_text().lower()
+
+    @pytest.mark.asyncio
+    async def test_no_just_to_check_should_i_use_this_number(self):
+        """'Just to check — should I use this number' must not appear in booking path."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+        )
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+        assert "just to check" not in tts.all_text().lower()

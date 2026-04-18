@@ -1107,8 +1107,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 11,
         "state": "CONFIRM_PHONE",
         "question": (
-            "If the number you are calling on is the one associated with your booking, "
-            "say yes please."
+            "For the booking, would you like to use the number you are calling on? "
+            "If so, say yes please."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -1386,20 +1386,22 @@ def _get_bridge(
 
     tone = session.get("caller_tone", "warm")  # "brief" or "warm"
 
-    # Name states — acknowledge with first name for a personal touch.
-    # Suppressed when a recovery transition prefix is already queued so that
-    # the prefix + next-question compose into one utterance without a gratitude
-    # line sandwiched between them.
+    # Name states — fold acknowledgement into the next question's transition
+    # prefix so "Thanks, X." and the next question are ONE TTS utterance:
+    #   "Thanks, Quentin — if the number you are calling on…"
+    # Never emitted as a standalone utterance.
     if state in (
         "COLLECT_NAME", "COLLECT_NAME_RETURNING",
         "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
     ):
-        if session.pop("_nc_suppress_bridge", False):
-            return None
+        session.pop("_nc_suppress_bridge", False)  # consume flag regardless
         first = str(answer).split()[0].capitalize() if answer else ""
-        if first:
-            return f"Thanks, {first}."
-        return "Thanks."
+        if first and not session.get("_nc_transition_prefix"):
+            # Direct/normal capture: transition_prefix not yet set — set it here.
+            # Direct-capture path (fn_confirm skipped) already sets it at the
+            # COLLECT_NAME handler; this covers the fn_confirm-used path.
+            session["_nc_transition_prefix"] = f"Thanks, {first} \u2014"
+        return None  # never a standalone bridge utterance
 
     # NEW_OR_RETURNING — vary warmth based on answer
     if state == "NEW_OR_RETURNING":
@@ -3306,10 +3308,10 @@ class FlowEngine:
                             "say yes please."
                         )
                 else:
-                    # Booking: explicit ask — caller must confirm, never assumed silently
+                    # Booking: ask whether to use the caller-ID as the booking number
                     question_text = (
-                        "If the number you are calling on is the one associated with your booking, "
-                        "say yes please."
+                        "For the booking, would you like to use the number you are calling on? "
+                        "If so, say yes please."
                     )
                 # Arm the YES/NO gate so only this specific question's response is accepted
                 self.session["phone_confirm_armed"] = True
@@ -4582,21 +4584,19 @@ class FlowEngine:
                     or _fc_first in ("re", "r")
                 )
                 _pending = "redditch" if _has_red_open else "alcester"
-                self.session["location_pending_guess"] = _pending
-                _confirm_q = (
-                    "Sorry — did you mean our Redditch clinic?"
-                    if _pending == "redditch"
-                    else "Sorry — did you mean our Alcester clinic?"
-                )
-                await self._tts.put(_confirm_q)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _confirm_q}
-                )
-                self.session["last_question"] = _confirm_q
+                # Silent operational bind — carry location into next question.
+                # The caller hears which clinic was picked via the embedded question
+                # text (e.g. "At our Alcester clinic, have you been with us before…")
+                # and can correct mid-flow via the global location correction handler.
+                # Never emit a standalone "Sorry — did you mean…" confirmation.
+                self.session["selected_location"] = _pending
+                self.session["needs_location"] = False
+                self.session.pop("location_retry_count", None)
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → confirm (guess=%s) for %r",
+                    "[ms_flow] ASK_LOCATION: resolver None → silent bind (guess=%s) for %r",
                     _pending, text[:40],
                 )
+                await self.ask_current_question()
             return
 
         # ════════════════════════════════════════════════════════════════════
@@ -5460,8 +5460,16 @@ class FlowEngine:
                     )
                     self.session["last_info_answer"] = _cp_priv2
                     return
-                # Not an inquiry — tight re-ask rather than replaying the full readback
-                _ambiguous_reask = "Just to check — should I use this number, yes or no?"
+                # Not an inquiry — tight re-ask with canonical phone-confirm wording
+                _ambiguous_reask = (
+                    self.session.get("last_question", "")
+                    if self.session.get("phone_readback_pending")
+                    else (
+                        "Sorry, I didn\u2019t catch that \u2014 "
+                        "if the number you are calling on is the one associated "
+                        "with your booking, say yes please. Otherwise say no."
+                    )
+                )
                 logger.info(
                     "[ms_flow] HARD GATE CONFIRM_PHONE: ambiguous %r — tight re-ask",
                     text[:60],
