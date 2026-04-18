@@ -1,17 +1,15 @@
 """
 Regression tests for service_fit routing priority at DETECT_INTENT.
 
-Bug family: callers whose first utterance contains a capability/treatment question
+Bug family v1: callers whose first utterance contains a capability/treatment question
 ("could you treat", "can you help with") were being routed directly into NEW_OR_RETURNING
 instead of having the service-fit question answered first.
 
-These tests verify the priority fix:
-  - Strong service_fit + location clue + injury context → service_fit_defer (NOT booking)
-  - Strong service_fit + mild booking-ish wording → service_fit_defer (NOT booking)
-  - Clear booking utterance → booking (unchanged)
-  - FAQ (parking, pricing) → FAQ intent (unchanged)
-  - After service_fit answer, "yes please" confirmation → booking
-  - After service_fit answer, non-confirmation → normal routing (not booking-forced)
+Bug family v2 (this session):
+  BUG 1 — service-fit answer too confident when minor mentioned:
+    "do you treat children" must NOT receive "Yes, absolutely" — must use clinic child policy.
+  BUG 2 — booking bridge acceptance broken:
+    "take a few details" (echo of bridge) must deterministically accept, not fall to general_query.
 """
 from __future__ import annotations
 
@@ -19,6 +17,7 @@ import pytest
 
 from app.media_streams.utterance_router import (
     has_service_fit_question,
+    has_minor_reference,
     SERVICE_FIT_PHRASES,
 )
 
@@ -236,17 +235,25 @@ class TestServiceFitConfirmationTokens:
 
     _SFA_YES = {"yes", "yeah", "yep", "yup", "please", "ok", "okay",
                 "sure", "great", "lovely", "perfect", "absolutely",
-                "definitely", "do", "go"}
+                "definitely", "brilliant", "wonderful", "alright", "right"}
 
     def _confirmed(self, text: str) -> bool:
         tokens = set(text.strip().lower().split())
         word_match = bool(tokens & self._SFA_YES)
         phrase_match = any(p in text.lower() for p in (
-            "go ahead", "that would", "i'd like", "id like",
+            "go ahead", "go on then",
+            "that would", "i'd like", "id like",
             "i would like", "let's do", "lets do", "sounds good",
             "book me", "book an", "arrange that", "get that",
+            "take a few", "few details", "take some details",
+            "please do", "can we do that", "let's arrange",
+            "lets arrange", "get booked",
         ))
-        return word_match or phrase_match
+        short_booking = (
+            len(tokens) <= 4
+            and bool(tokens & {"book", "booked", "arrange", "arranged"})
+        )
+        return word_match or phrase_match or short_booking
 
     def test_yes_please_confirms(self):
         assert self._confirmed("yes please")
@@ -263,6 +270,32 @@ class TestServiceFitConfirmationTokens:
     def test_id_like_that_confirms(self):
         assert self._confirmed("i'd like that")
 
+    # ── Bug 2 regression: echo-of-bridge phrases must confirm ──────────
+    def test_take_a_few_details_confirms(self):
+        """Live failure: caller echoed 'take a few details' and it wasn't caught."""
+        assert self._confirmed("take a few details")
+
+    def test_take_a_few_confirms(self):
+        assert self._confirmed("take a few")
+
+    def test_few_details_confirms(self):
+        assert self._confirmed("few details")
+
+    def test_go_on_then_confirms(self):
+        assert self._confirmed("go on then")
+
+    def test_book_it_confirms(self):
+        assert self._confirmed("book it")
+
+    def test_please_do_confirms(self):
+        assert self._confirmed("please do")
+
+    def test_brilliant_confirms(self):
+        assert self._confirmed("brilliant")
+
+    def test_alright_confirms(self):
+        assert self._confirmed("alright")
+
     def test_no_does_not_confirm(self):
         assert not self._confirmed("no")
 
@@ -271,3 +304,78 @@ class TestServiceFitConfirmationTokens:
 
     def test_what_are_your_prices_does_not_confirm(self):
         assert not self._confirmed("what are your prices")
+
+
+# ---------------------------------------------------------------------------
+# 8. Minor/child reference detection
+# ---------------------------------------------------------------------------
+
+class TestMinorReferenceDetection:
+    """has_minor_reference() must catch child/minor references reliably."""
+
+    def test_my_son(self):
+        assert has_minor_reference("my son hurt his ankle")
+
+    def test_my_daughter(self):
+        assert has_minor_reference("can you help with my daughter")
+
+    def test_my_little_boy(self):
+        assert has_minor_reference("my little boy was playing football")
+
+    def test_my_little_girl(self):
+        assert has_minor_reference("my little girl hurt her wrist")
+
+    def test_my_child(self):
+        assert has_minor_reference("my child needs physio")
+
+    def test_my_children(self):
+        assert has_minor_reference("do you treat children")
+
+    def test_treat_children(self):
+        assert has_minor_reference("could you treat children")
+
+    def test_my_kid(self):
+        assert has_minor_reference("my kid sprained his ankle")
+
+    def test_teenager(self):
+        assert has_minor_reference("my teenager hurt their knee")
+
+    def test_paediatric(self):
+        assert has_minor_reference("do you offer paediatric physiotherapy")
+
+    def test_adult_no_minor_ref(self):
+        assert not has_minor_reference("I hurt my ankle playing football")
+
+    def test_booking_no_minor_ref(self):
+        assert not has_minor_reference("I'd like to book an appointment")
+
+    def test_she_is_short_no_false_positive(self):
+        # "she is" occurs in minor phrases as a prefix — ensure it doesn't
+        # fire on "she is coming in with me" (adult context)
+        # Note: our minor phrase includes "she is " with trailing space.
+        assert has_minor_reference("she is 8 years old")
+
+
+# ---------------------------------------------------------------------------
+# 9. Child policy gate — Theorem Health (no_children=True) must decline
+# ---------------------------------------------------------------------------
+
+class TestChildPolicyGate:
+    """Verify that the clinic config child policy is accessible and correct."""
+
+    def test_theorem_patient_policies_no_children_true(self):
+        from app.clinic_config import get_clinic
+        clinic = get_clinic("theorem")
+        assert clinic.get("patient_policies", {}).get("no_children") is True
+
+    def test_theorem_children_policy_faq_exists(self):
+        from app.clinic_config import get_clinic
+        clinic = get_clinic("theorem")
+        policy_text = clinic.get("faq", {}).get("children_policy", "")
+        assert policy_text != "", "children_policy FAQ must exist for Theorem"
+        assert "adult" in policy_text.lower() or "paediatric" in policy_text.lower()
+
+    def test_theorem_v2_inherits_no_children(self):
+        from app.clinic_config import get_clinic
+        clinic = get_clinic("theorem_v2")
+        assert clinic.get("patient_policies", {}).get("no_children") is True

@@ -362,6 +362,34 @@ def has_context_reason(text: str) -> bool:
     return any(p in t for p in CONTEXT_REASON_PHRASES)
 
 
+# ── Child / minor reference detection ─────────────────────────────────────────
+
+MINOR_PHRASES: tuple[str, ...] = (
+    "my son", "my daughter", "my child", "my children",
+    "my little boy", "my little girl",
+    "my kid", "my kids",
+    "my teenager", "my teen",
+    "my baby", "my toddler",
+    "little boy", "little girl",
+    "young boy", "young girl", "young person",
+    "son's", "daughter's",
+    "for my son", "for my daughter", "for my child",
+    "do you treat children", "do you see children",
+    "can you treat children", "can you see children",
+    "treat children", "treat kids", "see children",
+    "paediatric", "pediatric",
+    "child physio", "children physio", "kids physio",
+    "he is ", "she is ",       # "he is 8 years old" / "she is 12"
+    "how old", "years old",    # age-related follow-up
+)
+
+
+def has_minor_reference(text: str) -> bool:
+    """True when the utterance references a child, minor, or paediatric patient."""
+    t = text.strip().lower()
+    return any(p in t for p in MINOR_PHRASES)
+
+
 # ── Deterministic gate ─────────────────────────────────────────────────────────
 
 _BOOKING_SIGS: tuple[str, ...] = (

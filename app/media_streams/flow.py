@@ -38,6 +38,7 @@ from app.media_streams.location_resolver import resolve_clinic_location as _reso
 from app.media_streams.utterance_router import (
     is_repair_utterance       as _is_repair_utt,
     has_service_fit_question  as _is_sfit_utt,
+    has_minor_reference       as _has_minor_ref,
     analyze_utterance_for_flow_control as _router_analyze,
     get_bridge_text           as _router_bridge_text,
     ANSWER_SERVICE_FIT_THEN_ASK_PENDING as _R_SVC_FIT,
@@ -5635,19 +5636,32 @@ class FlowEngine:
                 _sfa_tokens = set(text.strip().lower().split())
                 _SFA_YES = {"yes", "yeah", "yep", "yup", "please", "ok", "okay",
                             "sure", "great", "lovely", "perfect", "absolutely",
-                            "definitely", "do", "go"}
+                            "definitely", "brilliant", "wonderful", "alright",
+                            "right"}
                 _sfa_confirmed = bool(_sfa_tokens & _SFA_YES) or any(
                     p in text.lower() for p in (
-                        "go ahead", "that would", "i'd like", "id like",
+                        "go ahead", "go on then",
+                        "that would", "i'd like", "id like",
                         "i would like", "let's do", "lets do", "sounds good",
                         "book me", "book an", "arrange that", "get that",
+                        # Echo-of-bridge phrases — caller parrots what assistant said
+                        "take a few", "few details", "take some details",
+                        "please do", "can we do that", "let's arrange",
+                        "lets arrange", "get booked",
                     )
+                ) or (
+                    # Short utterance (≤ 4 words) containing a booking verb
+                    len(_sfa_tokens) <= 4
+                    and bool(_sfa_tokens & {"book", "booked", "arrange", "arranged"})
                 )
                 if _sfa_confirmed:
                     logger.info(
-                        "[ms_flow] DETECT_INTENT: service_fit booking confirmed (%r)"
-                        " → entering booking flow",
+                        "[ms_flow] service_fit bridge accept: %r → entering booking flow; "
+                        "service_fit bridge accept: reusing stored reason/location: "
+                        "reason=%r location=%s",
                         text[:40],
+                        self.session.get("reason", "")[:40],
+                        self.session.get("selected_location"),
                     )
                     self.session["intent"] = "booking"
                     self._switch_flow("booking")
@@ -5754,7 +5768,69 @@ class FlowEngine:
                     _di_router["confidence"], _di_router.get("source", "?"),
                 )
                 if _di_action == _R_SVC_FIT:
-                    # ── Service-fit priority: answer capability, DEFER booking ──
+                    # ── Child / minor policy gate ──────────────────────────────────
+                    # Must run BEFORE any capability answer. Check clinic policy and
+                    # respond appropriately rather than giving a blanket "yes".
+                    if _has_minor_ref(text):
+                        logger.info("[ms_flow] service_fit: child_reference detected")
+                        from app.clinic_config import get_clinic as _gc_sfit
+                        _sfit_clinic = _gc_sfit(
+                            self.session.get("clinic_id") or "demo"
+                        )
+                        _sfit_no_children = (
+                            _sfit_clinic.get("patient_policies", {})
+                            .get("no_children")
+                        )
+                        if _sfit_no_children is True:
+                            # Policy explicit: adults only — use the configured FAQ text.
+                            _sfit_child_resp = _sfit_clinic.get("faq", {}).get(
+                                "children_policy",
+                                (
+                                    "I\u2019m sorry \u2014 the clinic sees adults only "
+                                    "and doesn\u2019t currently offer paediatric "
+                                    "physiotherapy."
+                                ),
+                            )
+                            await self._tts.put(_sfit_child_resp)
+                            self.session.setdefault(
+                                "conversation_history", []
+                            ).append(
+                                {"role": "assistant", "content": _sfit_child_resp}
+                            )
+                            self.session["_last_handled_by"] = (
+                                "service_fit_child_policy_declined"
+                            )
+                            logger.info(
+                                "[ms_flow] service_fit: clinic child policy requires "
+                                "age clarification; "
+                                "service_fit: age unknown → declining (no_children=True)"
+                            )
+                            return
+                        elif _sfit_no_children is None:
+                            # Policy not configured — ask age before claiming capability.
+                            _sfit_age_q = (
+                                "That may depend on how old they are \u2014 "
+                                "could I ask how old your child is?"
+                            )
+                            await self._tts.put(_sfit_age_q)
+                            self.session.setdefault(
+                                "conversation_history", []
+                            ).append(
+                                {"role": "assistant", "content": _sfit_age_q}
+                            )
+                            self.session["_last_handled_by"] = (
+                                "service_fit_child_age_gate"
+                            )
+                            logger.info(
+                                "[ms_flow] service_fit: clinic child policy unknown → "
+                                "service_fit: age unknown → asking child age before "
+                                "capability answer"
+                            )
+                            return
+                        # no_children is False → children accepted; fall through to
+                        # standard capability answer below.
+
+                    # ── Standard adult service-fit: answer capability, DEFER booking ─
                     # The caller is evaluating fit/capability, not yet committing to
                     # booking. Answer briefly, offer booking, and wait for confirmation.
                     # Do NOT call _switch_flow here — stay at DETECT_INTENT.
@@ -5772,10 +5848,10 @@ class FlowEngine:
                         if any(sig in text for sig in _di_cond_sigs):
                             self.session["reason"] = transcript.strip()
                     _sfit_response = (
-                        "Yes, absolutely \u2014 that\u2019s exactly the kind of thing "
-                        "we help with. The clinic would typically start with a "
-                        "physiotherapy assessment to understand what\u2019s going on "
-                        "and work out the best plan from there. "
+                        "Yes, that\u2019s certainly something the clinic can help with. "
+                        "They\u2019d typically start with a physiotherapy assessment "
+                        "to understand what\u2019s going on and work out the best plan "
+                        "from there. "
                         "If you\u2019d like to get that arranged, I can take a few details."
                     )
                     await self._tts.put(_sfit_response)
@@ -5789,6 +5865,7 @@ class FlowEngine:
                         "utterance → handling before booking; "
                         "service_fit: location inferred=%s stored for later; "
                         "service_fit: reason captured from first utterance (%r); "
+                        "service_fit bridge: pending booking offer armed; "
                         "service_fit answered; booking not yet entered",
                         self.session.get("selected_location"),
                         self.session.get("reason", "")[:40],
