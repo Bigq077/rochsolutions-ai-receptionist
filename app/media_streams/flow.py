@@ -5627,6 +5627,89 @@ class FlowEngine:
 
         # ── DETECT_INTENT: route to correct flow on first utterance ───────────
         if step["state"] == "DETECT_INTENT":
+            # ── Pending follow-up: child age answer (from policy gate) ───────────
+            # Set by the policy gate when it asked "how old is your son/daughter?"
+            # and the caller is now responding with the age.
+            if self.session.get("pending_first_turn_followup") == "child_age":
+                import re as _re_age_fu
+                _age_fu_m = _re_age_fu.search(r'\b(\d{1,2})\b', text)
+                _fu_age: Optional[int] = None
+                if _age_fu_m:
+                    _fu_raw = int(_age_fu_m.group(1))
+                    if 0 < _fu_raw < 100:
+                        _fu_age = _fu_raw
+                logger.info(
+                    "[ms_flow] service_fit_followup: consumed age answer %r -> age=%s -> re-evaluating",
+                    text[:40], _fu_age,
+                )
+                self.session.pop("pending_first_turn_followup", None)
+
+                if _fu_age is not None:
+                    self.session["first_turn_age"] = _fu_age
+                    # Re-run gate with now-known age (shallow copy keeps session clean)
+                    from app.media_streams.policy_gate import (
+                        evaluate_policy_gate as _pg_reeval,
+                        SERVICE_FIT_DISALLOW as _PG_DISALLOW_RE,
+                    )
+                    from app.clinic_config import get_clinic as _pg_re_gc
+                    _pg_re_clinic  = _pg_re_gc(self.session.get("clinic_id") or "demo")
+                    _pg_re_session = {**self.session, "_first_turn_policy_gate_done": None}
+                    _pg_re_result  = _pg_reeval(_pg_re_session, _pg_re_clinic)
+                    self.session["_first_turn_policy_gate_done"] = True
+
+                    if _pg_re_result.action == _PG_DISALLOW_RE:
+                        await self._tts.put(_pg_re_result.response_text)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _pg_re_result.response_text}
+                        )
+                        self.session["_last_handled_by"] = (
+                            "first_turn_policy_gate_disallow_after_age"
+                        )
+                        logger.info(
+                            "[ms_flow] first_turn_policy_gate: age=%s "
+                            "clinic_policy=disallow_children -> SERVICE_FIT_DISALLOW",
+                            _fu_age,
+                        )
+                        return
+
+                    # Policy allows — give bounded service-fit response + booking offer
+                    _pg_allow_resp = (
+                        "Great \u2014 yes, that\u2019s certainly something they can help with. "
+                        "They\u2019d start with a physiotherapy assessment to understand "
+                        "what\u2019s going on and put a plan together from there. "
+                        "If you\u2019d like to get that booked in, I can take a few details."
+                    )
+                    await self._tts.put(_pg_allow_resp)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _pg_allow_resp}
+                    )
+                    self.session["_service_fit_answered"] = True
+                    self.session["_last_handled_by"] = (
+                        "first_turn_policy_gate_allow_after_age"
+                    )
+                    logger.info(
+                        "[ms_flow] first_turn_policy_gate: age=%s clinic_policy=allow "
+                        "-> SERVICE_FIT_ALLOW",
+                        _fu_age,
+                    )
+                    return
+
+                # Age not parseable — re-ask once
+                _rel_pg   = self.session.get("first_turn_patient_relationship", "child")
+                _pron_map = {
+                    "son": "your son", "daughter": "your daughter",
+                    "teenager": "your teenager",
+                }
+                _pron_pg  = _pron_map.get(_rel_pg, "your child")
+                _reask_pg = f"Sorry, I didn\u2019t quite catch that \u2014 how old is {_pron_pg}?"
+                await self._tts.put(_reask_pg)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _reask_pg}
+                )
+                self.session["pending_first_turn_followup"] = "child_age"
+                self.session["_last_handled_by"] = "first_turn_policy_gate_reask_age"
+                return
+
             # ── Service-fit continuation: caller responding to capability answer ──
             # Set when a service_fit question was answered last turn without entering
             # booking. Accept explicit confirmation words as a booking signal; anything
@@ -5753,6 +5836,70 @@ class FlowEngine:
                     extract_first_turn_signals, apply_first_turn_signals,
                 )
                 apply_first_turn_signals(extract_first_turn_signals(transcript), self.session)
+
+            # ── First-turn policy gate (child/minor age & eligibility) ───────────
+            # Runs once per call, immediately after extraction.  Intercepts
+            # child-related utterances before the utterance router so that
+            # policy decisions (decline / ask-age / allow) are never bypassed
+            # by the bridge path or other router actions.
+            if (
+                self.session.get("_first_turn_extracted")
+                and not self.session.get("_first_turn_policy_gate_done")
+            ):
+                from app.media_streams.policy_gate import (
+                    evaluate_policy_gate    as _pg_eval_ft,
+                    ASK_CHILD_AGE           as _PG_ASK_AGE_FT,
+                    SERVICE_FIT_DISALLOW    as _PG_DISALLOW_FT,
+                    SERVICE_FIT_ALLOW       as _PG_ALLOW_FT,
+                )
+                from app.clinic_config import get_clinic as _pg_ft_gc
+                _pg_ft_clinic = _pg_ft_gc(self.session.get("clinic_id") or "demo")
+                _pg_ft_result = _pg_eval_ft(self.session, _pg_ft_clinic)
+                self.session["_first_turn_policy_gate_done"] = True
+                logger.info(
+                    "[ms_flow] first_turn_policy_gate: child_related=%s service_fit=%s "
+                    "booking=%s age=%s -> %s",
+                    self.session.get("first_turn_child_related"),
+                    self.session.get("first_turn_service_fit"),
+                    self.session.get("first_turn_booking_signal"),
+                    self.session.get("first_turn_age"),
+                    _pg_ft_result.action,
+                )
+                if _pg_ft_result.action == _PG_DISALLOW_FT:
+                    await self._tts.put(_pg_ft_result.response_text)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _pg_ft_result.response_text}
+                    )
+                    self.session["_last_handled_by"] = "first_turn_policy_gate_disallow"
+                    logger.info(
+                        "[ms_flow] first_turn_policy_gate: age=%s "
+                        "clinic_policy=disallow_children -> SERVICE_FIT_DISALLOW",
+                        self.session.get("first_turn_age"),
+                    )
+                    return
+                if _pg_ft_result.action == _PG_ASK_AGE_FT:
+                    await self._tts.put(_pg_ft_result.response_text)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _pg_ft_result.response_text}
+                    )
+                    self.session["pending_first_turn_followup"] = (
+                        _pg_ft_result.pending_followup
+                    )
+                    self.session["_last_handled_by"] = (
+                        "first_turn_policy_gate_ask_age"
+                    )
+                    logger.info(
+                        "[ms_flow] first_turn_policy_gate: child_related service_fit "
+                        "age_missing -> ASK_CHILD_AGE",
+                    )
+                    return
+                if _pg_ft_result.action == _PG_ALLOW_FT:
+                    logger.info(
+                        "[ms_flow] first_turn_policy_gate: age=%s "
+                        "clinic_policy=allow -> SERVICE_FIT_ALLOW",
+                        self.session.get("first_turn_age"),
+                    )
+                    # Fall through to utterance router
 
             # ── UTTERANCE ROUTER: mixed / service-fit first utterances ────────────
             # Called only when the utterance is rich enough that deterministic
