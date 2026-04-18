@@ -170,6 +170,10 @@ _NOISE_FRAGMENTS = frozenset({
     "ic", "ck", "ng", "nk", "uh", "um", "er", "ah", "hm", "mm", "eh",
 })
 
+# Minimum token length (chars) considered "strong" for direct-accept without
+# a confirmation turn.  Applies in fn_normal and fn_reask.
+_FN_STRONG_LEN: int = 5
+
 # ── First-name context noise (applied ONLY in _fn_normal, not globally) ───────
 # STT mishearings that appear in "my first NAME is …" patterns when the
 # label word is garbled.  Not added to the global blacklists so that
@@ -713,12 +717,9 @@ class NameCollector:
         cleaned = _strip_filler_prefix(text)
 
         # Quality gate for first-name capture:
-        #   ≥5 chars → route to fn_confirm ("I've got Quentin — is that right?")
-        #   2-4 chars → treat as weak/partial capture; route to repair prompt via
-        #               _fn_fail (do NOT echo the token — caller must try again)
-        # This prevents STT fragments like "Ting" (from "Quentin") being confirmed
-        # or accepted.  Direct-accept without confirmation has been removed entirely.
-        _FN_STRONG_LEN = 5
+        #   ≥5 chars → strong → skip fn_confirm (direct store via _store_fn_direct)
+        #   2-4 chars → weak/partial → repair prompt via _fn_fail
+        # This prevents STT fragments like "Ting" (from "Quentin") being confirmed.
 
         # Negation: "I'm not Sarah, it's Emma" → extract corrected name
         if any(text.startswith(p) or (" " + p) in text for p in _NEGATION):
@@ -966,9 +967,20 @@ class NameCollector:
                     best = candidate
 
         if best:
+            if len(best) >= _FN_STRONG_LEN:
+                # Caller in repair mode gave a strong, unambiguous name (≥5 chars).
+                # Skip fn_confirm entirely — direct store triggers the
+                # "Thanks {name} —" prefix on the next question.
+                logger.info(
+                    "[NameCollector] fn_reask: stage=%d strong token %r "
+                    "(len≥%d) → direct store (skip fn_confirm)",
+                    fn_reask_count, best, _FN_STRONG_LEN,
+                )
+                return self._store_fn_direct(best)
+            # Shorter name (4 chars, e.g. "Ryan") — still confirm once
             logger.info(
-                "[NameCollector] fn_reask: stage=%d strong token %r → fn_confirm",
-                fn_reask_count, best,
+                "[NameCollector] fn_reask: stage=%d shorter token %r (len=%d) → fn_confirm",
+                fn_reask_count, best, len(best),
             )
             return self._enter_fn_confirm(best)
 
