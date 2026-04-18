@@ -1025,8 +1025,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 3,
         "state": "RETURNING_PLAN_CONFIRM_PHONE",
         "question": (
-            "If the number you are calling on is the one associated with your booking, "
-            "say yes please."
+            "If the number you're calling on is the one associated with your booking, "
+            "say: use this number."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -1107,8 +1107,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 11,
         "state": "CONFIRM_PHONE",
         "question": (
-            "For the booking, would you like to use the number you are calling on? "
-            "If so, say yes please."
+            "If you'd like me to use the number you're calling on for the booking, "
+            "say: use this number."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -1429,6 +1429,7 @@ def _is_phone_accept(text: str) -> bool:
     """
     _PHONE_ACCEPT = (
         "yes use this number", "use this number",
+        "yeah use this number", "you can use this number",
         "same number", "use my current number",
         "yes that's fine", "yes thats fine",
         "yes use my number", "use my number",
@@ -1537,8 +1538,8 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
         "step": 1,
         "state": "CONFIRM_PHONE",
         "question": (
-            "If the number you are calling on is the one associated with your booking, "
-            "say yes please."
+            "If the number you're calling on is the one associated with your booking, "
+            "say: use this number."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -3291,27 +3292,29 @@ class FlowEngine:
             # number_confirmed_verbally passes in the evaluator.
             # NOTE: elif — must not run (and must not override question_text) when
             # we are already at CONFIRM_BOOKING above.
-            elif step["state"] in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING") and self.session.get("phone_from_twilio"):
-                # Reschedule/cancel: anchor to the booking, prefixed with resolved location if known
+            elif step["state"] in (
+                "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING", "RETURNING_PLAN_CONFIRM_PHONE"
+            ) and self.session.get("phone_from_twilio"):
+                # Reschedule/cancel: anchor to the booking, embed location if known
                 if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
                     _cp_dyn_loc = self.session.get("selected_location")
                     if _cp_dyn_loc:
                         _cp_dyn_loc_name = "Redditch" if "redditch" in _cp_dyn_loc else "Alcester"
                         question_text = (
                             f"For your {_cp_dyn_loc_name} booking, "
-                            "if the number you are calling on is the one associated with your booking, "
-                            "say yes please."
+                            "if the number you're calling on is the one associated with your booking, "
+                            "say: use this number."
                         )
                     else:
                         question_text = (
-                            "If the number you are calling on is the one associated with your booking, "
-                            "say yes please."
+                            "If the number you're calling on is the one associated with your booking, "
+                            "say: use this number."
                         )
                 else:
-                    # Booking: ask whether to use the caller-ID as the booking number
+                    # Booking/returning-plan: ask whether to use the caller-ID
                     question_text = (
-                        "For the booking, would you like to use the number you are calling on? "
-                        "If so, say yes please."
+                        "If you'd like me to use the number you're calling on for the booking, "
+                        "say: use this number."
                     )
                 # Arm the YES/NO gate so only this specific question's response is accepted
                 self.session["phone_confirm_armed"] = True
@@ -5165,7 +5168,7 @@ class FlowEngine:
                 "that's correct", "thats correct",
                 "that is correct",                  # "that is" variant of "that's correct"
                 "that's fine", "thats fine", "that's ok", "thats ok",
-                "use this number", "yes use this number",
+                "use this number", "yes use this number", "yeah use this number",
                 "use my number", "yes use my number",
                 "same number", "use my current number",
                 "this number", "this one",          # bare "this number" / "this one"
@@ -5466,8 +5469,8 @@ class FlowEngine:
                     if self.session.get("phone_readback_pending")
                     else (
                         "Sorry, I didn\u2019t catch that \u2014 "
-                        "if the number you are calling on is the one associated "
-                        "with your booking, say yes please. Otherwise say no."
+                        "if you'd like me to use the number you're calling on, "
+                        "say: use this number. Otherwise, say: different number."
                     )
                 )
                 logger.info(
@@ -12052,14 +12055,14 @@ class FlowEngine:
                         _cph_retry_q = (
                             f"Sorry, I didn\u2019t catch that \u2014 "
                             f"for your {_cph_loc_name} booking, "
-                            "if the number you are calling on is the one associated "
-                            "with your booking, say yes please. Otherwise say no."
+                            "if the number you're calling on is the one associated with your booking, "
+                            "say: use this number. Otherwise, say: different number."
                         )
                     else:
                         _cph_retry_q = (
                             "Sorry, I didn\u2019t catch that \u2014 "
-                            "if the number you are calling on is the one associated "
-                            "with your booking, say yes please. Otherwise say no."
+                            "if you'd like me to use the number you're calling on, "
+                            "say: use this number. Otherwise, say: different number."
                         )
                     await self._tts.put(_cph_retry_q)
                     self.session.setdefault("conversation_history", []).append(

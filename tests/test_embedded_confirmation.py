@@ -393,23 +393,23 @@ class TestNamePrefixInPhoneQuestion:
 # ════════════════════════════════════════════════════════════════════════════
 
 _PHONE_EXACT_BOOKING = (
-    "For the booking, would you like to use the number you are calling on? "
-    "If so, say yes please."
+    "If you'd like me to use the number you're calling on for the booking, "
+    "say: use this number."
 )
 _PHONE_EXACT_RSCH = (
-    "If the number you are calling on is the one associated with your booking, "
-    "say yes please."
+    "If the number you're calling on is the one associated with your booking, "
+    "say: use this number."
 )
 # Backwards-compat alias used by a few older tests
 _PHONE_EXACT = _PHONE_EXACT_BOOKING
 
 
 class TestPhoneQuestion:
-    """CONFIRM_PHONE must use the correct sentence for booking vs reschedule."""
+    """CONFIRM_PHONE must use the 'say: use this number' contract throughout."""
 
     @pytest.mark.asyncio
     async def test_exact_phone_question_wording_booking(self):
-        """Booking CONFIRM_PHONE: 'For the booking, would you like to use the number…'"""
+        """Booking CONFIRM_PHONE: 'If you'd like me to use the number… say: use this number.'"""
         tts = _FakeTTSQueue()
         session = _fresh_session(
             flow_step=_CONFIRM_PHONE_BK_IDX,
@@ -725,7 +725,7 @@ class TestNameBridgeFold:
         assert "Quentin" in prefix
 
         # Simulate ask_current_question consuming the prefix
-        phone_q = "For the booking, would you like to use the number you are calling on? If so, say yes please."
+        phone_q = "If you'd like me to use the number you're calling on for the booking, say: use this number."
         combined = f"{prefix} {phone_q}"
         assert "Quentin" in combined
         assert "booking" in combined.lower()
@@ -810,3 +810,193 @@ class TestOldStringsGone:
         engine = _make_booking_engine(session, tts)
         await engine.ask_current_question()
         assert "just to check" not in tts.all_text().lower()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 7 — "use this number" contract: prompt content + accept/reject logic
+# ════════════════════════════════════════════════════════════════════════════
+
+from app.media_streams.flow import _is_phone_accept
+
+
+class TestUseThisNumberContract:
+    """Verify 'say: use this number' wording and accept/reject logic."""
+
+    # ── Prompt string tests ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_booking_prompt_contains_use_this_number(self):
+        """Booking CONFIRM_PHONE prompt must contain 'say: use this number'."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+        )
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+        q = tts.last().lower()
+        assert "say: use this number" in q
+
+    @pytest.mark.asyncio
+    async def test_booking_prompt_does_not_contain_yes_please(self):
+        """Booking CONFIRM_PHONE prompt must NOT contain 'yes please'."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+        )
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+        assert "yes please" not in tts.last().lower()
+
+    @pytest.mark.asyncio
+    async def test_reschedule_prompt_contains_use_this_number(self):
+        """Reschedule CONFIRM_PHONE prompt must contain 'say: use this number'."""
+        tts = _FakeTTSQueue()
+        _RSCH_CP_IDX = next(
+            i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_PHONE"
+        )
+        session = _fresh_session(
+            flow_step=_RSCH_CP_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            intent="reschedule",
+            selected_location=None,
+        )
+        engine = _make_reschedule_engine(session, tts)
+        await engine.ask_current_question()
+        assert "say: use this number" in tts.last().lower()
+
+    @pytest.mark.asyncio
+    async def test_reschedule_prompt_does_not_contain_yes_please(self):
+        """Reschedule CONFIRM_PHONE prompt must NOT contain 'yes please'."""
+        tts = _FakeTTSQueue()
+        _RSCH_CP_IDX = next(
+            i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_PHONE"
+        )
+        session = _fresh_session(
+            flow_step=_RSCH_CP_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            intent="reschedule",
+        )
+        engine = _make_reschedule_engine(session, tts)
+        await engine.ask_current_question()
+        assert "yes please" not in tts.last().lower()
+
+    # ── Retry / watchdog tests ────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_reask_contains_use_this_number(self):
+        """
+        When CONFIRM_PHONE receives an ambiguous utterance (not yes, not no,
+        not a digit correction), the re-ask must contain 'say: use this number'.
+        """
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+            phone_confirm_armed=True,
+            phone_from_twilio_number="+441234567890",
+        )
+        # Seed last_question so the fallback path references it, but we want
+        # to test the non-readback-pending re-ask branch.
+        session.pop("phone_readback_pending", None)
+        engine = _make_booking_engine(session, tts)
+        # Prime the state — emit the question so armed=True
+        await engine.ask_current_question()
+        tts.items.clear()
+        # Send an ambiguous token that is neither yes nor no nor digits
+        await engine.handle_transcript("hmm", "hmm")
+        spoken = tts.all_text().lower()
+        assert "say: use this number" in spoken
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_reask_contains_different_number(self):
+        """Ambiguous re-ask must also contain 'say: different number'."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+        )
+        session.pop("phone_readback_pending", None)
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+        tts.items.clear()
+        await engine.handle_transcript("hmm", "hmm")
+        spoken = tts.all_text().lower()
+        assert "different number" in spoken
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_reask_does_not_contain_yes_please(self):
+        """Ambiguous re-ask must NOT contain 'yes please'."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_BK_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            new_or_returning="new",
+        )
+        session.pop("phone_readback_pending", None)
+        engine = _make_booking_engine(session, tts)
+        await engine.ask_current_question()
+        tts.items.clear()
+        await engine.handle_transcript("hmm", "hmm")
+        assert "yes please" not in tts.all_text().lower()
+
+    # ── Accept / reject logic tests (deterministic, no flow engine needed) ────
+
+    def test_accept_use_this_number(self):
+        """`_is_phone_accept('use this number')` must return True."""
+        assert _is_phone_accept("use this number") is True
+
+    def test_accept_yes_use_this_number(self):
+        """`_is_phone_accept('yes use this number')` must return True."""
+        assert _is_phone_accept("yes use this number") is True
+
+    def test_accept_yeah_use_this_number(self):
+        """`_is_phone_accept('yeah use this number')` must return True."""
+        assert _is_phone_accept("yeah use this number") is True
+
+    def test_accept_you_can_use_this_number(self):
+        """`_is_phone_accept('you can use this number')` must return True."""
+        assert _is_phone_accept("you can use this number") is True
+
+    def test_reject_bare_please(self):
+        """`_is_phone_accept('please')` must return False (weak fragment)."""
+        assert _is_phone_accept("please") is False
+
+    def test_reject_empty(self):
+        """`_is_phone_accept('')` must return False."""
+        assert _is_phone_accept("") is False
+
+    def test_reject_just_yes(self):
+        """
+        `_is_phone_accept('yes')` must return False — 'yes' alone is NOT in
+        _is_phone_accept (it only covers explicit phrase-level accepts).
+        The bare 'yes' is handled by _HG_YES inside the armed gate, not here.
+        """
+        assert _is_phone_accept("yes") is False
+
+    # ── No old strings anywhere in flow.py ────────────────────────────────────
+
+    def test_flow_module_has_no_say_yes_please_phone_prompts(self):
+        """
+        flow.py must contain zero deterministic CONFIRM_PHONE prompt strings
+        containing 'say yes please', 'please say yes if', or 'yes if i can use'.
+        """
+        import pathlib
+        src = pathlib.Path(__file__).parent.parent / "app" / "media_streams" / "flow.py"
+        text = src.read_text(encoding="utf-8").lower()
+        # These old phrases must be gone from all question/prompt strings
+        assert "say yes please" not in text, "Found 'say yes please' in flow.py"
+        assert "please say yes if" not in text, "Found 'please say yes if' in flow.py"
+        assert "yes if i can use" not in text, "Found 'yes if i can use' in flow.py"
