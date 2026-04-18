@@ -796,15 +796,16 @@ class NameCollector:
                     "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
                 )
 
-        # One token → strong (≥5 chars) → fn_confirm; weak (2-4 chars) → repair
+        # One token → strong (≥5 chars) → store directly, skip fn_confirm;
+        # weak (2-4 chars) → repair.
         if len(tokens) == 1:
             _tok = tokens[0].title()
             if len(_tok) >= _FN_STRONG_LEN:
                 logger.info(
-                    "[NameCollector] fn_normal: strong single token %r (len=%d) → fn_confirm",
+                    "[NameCollector] fn_normal: strong single token %r (len=%d) → sn_normal (skip confirm)",
                     _tok, len(_tok),
                 )
-                return self._enter_fn_confirm(_tok)
+                return self._store_fn_direct(_tok)
             logger.info(
                 "[NameCollector] fn_normal: weak single token %r (len=%d) → repair",
                 _tok, len(_tok),
@@ -813,18 +814,18 @@ class NameCollector:
                 "Sorry, I didn't quite catch that — could you say 'my name is' and then your first name?"
             )
 
-        # Two tokens → treat as "FirstName Surname"; strong first → fn_confirm;
-        # weak first → repair (don't echo either token)
+        # Two tokens → treat as "FirstName Surname"; strong first → store directly,
+        # skip fn_confirm; weak first → repair (don't echo either token)
         if len(tokens) == 2:
             fn_tok = tokens[0].title()
             sn_tok = tokens[1].title()
             if len(fn_tok) >= _FN_STRONG_LEN:
                 self._nc["pending_surname"] = sn_tok
                 logger.info(
-                    "[NameCollector] fn_normal: strong 2-token first=%r → fn_confirm "
+                    "[NameCollector] fn_normal: strong 2-token first=%r → sn_confirm (skip fn_confirm) "
                     "(pending_surname=%r)", fn_tok, sn_tok,
                 )
-                return self._enter_fn_confirm(fn_tok)
+                return self._store_fn_direct(fn_tok)
             logger.info(
                 "[NameCollector] fn_normal: weak 2-token first=%r (len=%d) → repair",
                 fn_tok, len(fn_tok),
@@ -1341,6 +1342,28 @@ class NameCollector:
             fn, confirmed,
         )
 
+    def _store_fn_direct(self, fn: str) -> Tuple[str, str]:
+        """
+        Store first name directly without asking for confirmation (strong-token path).
+
+        Sets ``_fn_direct_stored=True`` so that ``_accept()`` can signal flow.py to
+        prepend "Thanks {name} —" to the next question.  If a pending_surname was
+        pre-queued (2-token input like "quentin roch"), consume it immediately and
+        enter sn_confirm; otherwise advance to sn_normal and ask for the surname.
+        """
+        self._nc["_fn_direct_stored"] = True
+        self._store_first_name(fn, confirmed=True)
+        pending = self._nc.get("pending_surname")
+        if pending:
+            self._nc["pending_surname"] = None
+            logger.info(
+                "[NameCollector] _store_fn_direct: %r → sn_confirm (pending_surname=%r)",
+                fn, pending,
+            )
+            return self._enter_sn_confirm(pending)
+        logger.info("[NameCollector] _store_fn_direct: %r → sn_normal", fn)
+        return ("ask", "And what's your surname?")
+
     def _enter_fn_confirm(self, candidate: str, spelled: bool = False) -> Tuple[str, str]:
         """Enter fn_confirm substate with the given first-name candidate.
         ``spelled`` parameter accepted for API compatibility but ignored —
@@ -1378,6 +1401,12 @@ class NameCollector:
         # Checked by flow.py before LOOKUP_RESCHEDULE / LOOKUP_CANCEL to block
         # unreliable surnames from poisoning the appointment lookup.
         self._s["_nc_sn_trusted"] = bool(self._nc.get("sn_confirmed", False))
+        # If first name was stored directly (no fn_confirm asked), set a prefix key
+        # so flow.py can prepend "Thanks {first_name} —" to the next question.
+        if self._nc.get("_fn_direct_stored"):
+            _fn_val = self._nc.get("first_name", "")
+            if _fn_val:
+                self._s["_nc_fn_name_prefix"] = _fn_val
         # Legacy session vars
         self._s["full_name"] = full
         col = self._s.setdefault("collected", {})

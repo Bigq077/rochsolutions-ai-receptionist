@@ -2435,37 +2435,18 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
-        # CONFIRM_PHONE: auto-accept Twilio caller-ID — no blocking confirmation step.
-        # When caller-ID is available, bind it immediately and skip the confirm question.
-        # Caller can still say "use a different number" cross-state (caught below).
-        # When absent, skip directly to COLLECT_PHONE for manual entry.
-        if step["state"] == "CONFIRM_PHONE":
-            if self.session.get("phone_from_twilio"):
-                _acp_phone = (
-                    self.session.get("phone_number")
-                    or self.session.get("twilio_from", "")
-                )
-                self.session["phone_confirmed"] = True
-                if _acp_phone:
-                    self.session["phone_number"] = _acp_phone
-                    self.session[step["answer_field"]] = _acp_phone
-                self.session["flow_step"] = step["step"] + 1
-                logger.info(
-                    "[ms_flow] CONFIRM_PHONE: auto-confirmed caller-ID=%r — skipping confirm step",
-                    _acp_phone,
-                )
-                # Inline acknowledgement — folded with subsequent PRESENT_DAYS preamble
-                await self._tts.put("I'll use the number you're calling from.")
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": "I'll use the number you're calling from."}
-                )
-                await self.ask_current_question()
-                return
-            else:
-                logger.info("[ms_flow] no Twilio number — skipping CONFIRM_PHONE to COLLECT_PHONE")
+        # CONFIRM_PHONE (BOOKING_FLOW): never auto-accept silently.
+        # Ask the caller explicitly so the UX feels natural, not robotic.
+        # If no Twilio caller-ID is available: skip to COLLECT_PHONE for manual entry.
+        # If Twilio is present: fall through to question emit (new wording below).
+        # RESCHEDULE/CANCEL flows retain their own confirm question via the elif below.
+        if step["state"] == "CONFIRM_PHONE" and self._active_flow is BOOKING_FLOW:
+            if not self.session.get("phone_from_twilio"):
+                logger.info("[ms_flow] CONFIRM_PHONE: no Twilio number — skipping to COLLECT_PHONE")
                 self.session["flow_step"] = step["step"] + 1
                 await self.ask_current_question()
                 return
+            # Twilio present → fall through to question emit with explicit ask wording
 
         # COLLECT_PHONE: skip if phone already confirmed (auto or manual)
         if step["state"] == "COLLECT_PHONE" and self.session.get("phone_confirmed"):
@@ -3309,9 +3290,46 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
                     question_text = "Is the phone number you're calling on the one associated with your booking?"
                 else:
-                    question_text = "And the best number to reach you on — is that the number you're calling from?"
+                    # Booking: explicit ask — caller must confirm, never assumed silently
+                    question_text = (
+                        "If you'd like me to use the number you're calling from "
+                        "for the booking, please say yes please."
+                    )
                 # Arm the YES/NO gate so only this specific question's response is accepted
                 self.session["phone_confirm_armed"] = True
+            elif step["state"] == "COLLECT_REASON":
+                # Embed resolved clinic location into the reason question
+                _cr_loc = self.session.get("selected_location")
+                if _cr_loc:
+                    _cr_loc_name = "Redditch" if "redditch" in _cr_loc else "Alcester"
+                    question_text = f"What brings you in today at our {_cr_loc_name} clinic?"
+                    logger.info(
+                        "[ms_flow] embedded_location_bind flow=booking location=%s", _cr_loc_name
+                    )
+                else:
+                    question_text = step["question"]
+            elif step["state"] == "COLLECT_NAME_RESCHEDULE":
+                # Embed resolved clinic location into the first reschedule/cancel question
+                _cnr_loc = self.session.get("selected_location")
+                if _cnr_loc:
+                    _cnr_loc_name = "Redditch" if "redditch" in _cnr_loc else "Alcester"
+                    _cnr_intent = self.session.get("intent", "reschedule")
+                    if _cnr_intent == "cancel":
+                        question_text = (
+                            f"Okay — I'll help cancel the appointment at our "
+                            f"{_cnr_loc_name} clinic. What's your first name?"
+                        )
+                    else:
+                        question_text = (
+                            f"Okay — let's look at your appointment at our "
+                            f"{_cnr_loc_name} clinic. What's your first name?"
+                        )
+                    logger.info(
+                        "[ms_flow] embedded_location_bind flow=%s location=%s",
+                        _cnr_intent, _cnr_loc_name,
+                    )
+                else:
+                    question_text = step["question"]
             else:
                 question_text = step["question"]
             # Always arm the YES/NO gate for CONFIRM_PHONE states, regardless of
@@ -3468,6 +3486,33 @@ class FlowEngine:
                 await self._tts.put(f"Got it — {_pf_name}.")
                 await self.ask_current_question()
                 return
+
+        # ── Global location-correction handler ────────────────────────────────────
+        # Allows mid-flow correction of the already-bound clinic
+        # ("actually Redditch", "no Redditch", "Redditch — under this number").
+        # Fires only on short utterances with a clearly resolved location that
+        # differs from the current binding.  Silent overwrite — no confirmation step,
+        # no flow reset.  The current step handler sees the updated location.
+        _glc_cur = self.session.get("selected_location")
+        if (
+            _glc_cur
+            and not self.session.get("needs_location")
+            and step and step["state"] not in {"DETECT_INTENT", "ASK_LOCATION"}
+            and len(text.split()) <= 8
+        ):
+            from app.media_streams.location_resolver import resolve_clinic_location as _glc_resolve
+            _glc_result = _glc_resolve(text, context="ask_location")
+            if (
+                _glc_result["status"] == "resolved"
+                and _glc_result.get("reason") != "prefix_fallback"
+            ):
+                _glc_new = _glc_result["location"]
+                if _glc_new and _glc_new != _glc_cur:
+                    self.session["selected_location"] = _glc_new
+                    logger.info(
+                        "[ms_flow] embedded_location_corrected from=%s to=%s via %r",
+                        _glc_cur, _glc_new, text[:60],
+                    )
 
         # ── GLOBAL REPAIR INTERCEPT (Bug 4 — HARD REQUIREMENT) ──────────────────
         # Runs before ALL state machine logic.
@@ -11451,6 +11496,16 @@ class FlowEngine:
                     "No problem — I'll include a correction option in the "
                     "confirmation message."
                 )
+            else:
+                # Direct first-name capture (fn_confirm was skipped): prepend
+                # "Thanks {name} —" to the next question (phone / PRESENT_DAYS).
+                _nc_fn_prefix_name = self.session.pop("_nc_fn_name_prefix", None)
+                if _nc_fn_prefix_name:
+                    self.session["_nc_transition_prefix"] = f"Thanks {_nc_fn_prefix_name} —"
+                    logger.info(
+                        "[ms_flow] COLLECT_NAME: direct fn capture — prefix=Thanks %s —",
+                        _nc_fn_prefix_name,
+                    )
             answer = _nc_payload
         else:
             answer = self._extract(step["extract"], text, transcript)
