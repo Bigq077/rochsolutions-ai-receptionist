@@ -2989,20 +2989,40 @@ class FlowEngine:
                 elif _locs_aq:
                     _fast_r = "  ".join(l.get("hours_summary", "") for l in _locs_aq.values() if l.get("hours_summary"))
             # ANSWER_FAQ/location: deterministic address from config.
+            # Accessibility sub-check runs first: "step-free access" questions
+            # share the faq_location route (accessibility_p returns faq_location in
+            # _detect_intent) but must answer accessibility, not address.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("address", "faq_location") and not _fast_r:
-                from app.clinic_config import get_clinic as _gc_aq2
-                _cli_aq2 = _gc_aq2(self.session.get("clinic_id") or "demo")
-                _locs_aq2 = {loc["id"]: loc for loc in _cli_aq2.get("locations", [])}
-                _aq2_sel = (self.session.get("selected_location") or "").lower()
-                _aq2_loc = _locs_aq2.get(_aq2_sel) or (list(_locs_aq2.values())[0] if len(_locs_aq2) == 1 else None)
-                if _aq2_loc:
-                    _fa2 = _aq2_loc.get("address", "")
-                    _fast_r = _fa2.split(".")[0].strip() + ("." if _fa2 else "")
-                elif _locs_aq2:
-                    _fast_r = "  ".join(
-                        l.get("address", "").split(".")[0].strip() + "."
-                        for l in _locs_aq2.values() if l.get("address")
-                    )
+                _aq2_last_msg = (
+                    (self.session.get("conversation_history") or [{}])[-1]
+                    .get("content", "")
+                    .lower()
+                )
+                _AQ2_ACCESS_P = (
+                    "step free", "step-free", "step three",
+                    "wheelchair", "disabled access", "disability",
+                    "accessible", "accessibility",
+                )
+                if any(p in _aq2_last_msg for p in _AQ2_ACCESS_P):
+                    from app.clinic_config import get_clinic as _gc_acc
+                    _cli_acc = _gc_acc(self.session.get("clinic_id") or "demo")
+                    _acc_ans = _cli_acc.get("faq", {}).get("accessibility") or ""
+                    _fast_r = ("Of course \u2014 " + _acc_ans) if _acc_ans else _FAQ_ACCESSIBILITY_FALLBACK
+                    logger.info("[ms_flow] ask_current_question: ANSWER_FAQ accessibility intercept (faq_location route)")
+                else:
+                    from app.clinic_config import get_clinic as _gc_aq2
+                    _cli_aq2 = _gc_aq2(self.session.get("clinic_id") or "demo")
+                    _locs_aq2 = {loc["id"]: loc for loc in _cli_aq2.get("locations", [])}
+                    _aq2_sel = (self.session.get("selected_location") or "").lower()
+                    _aq2_loc = _locs_aq2.get(_aq2_sel) or (list(_locs_aq2.values())[0] if len(_locs_aq2) == 1 else None)
+                    if _aq2_loc:
+                        _fa2 = _aq2_loc.get("address", "")
+                        _fast_r = _fa2.split(".")[0].strip() + ("." if _fa2 else "")
+                    elif _locs_aq2:
+                        _fast_r = "  ".join(
+                            l.get("address", "").split(".")[0].strip() + "."
+                            for l in _locs_aq2.values() if l.get("address")
+                        )
             # ANSWER_FAQ/prices: deterministic from-price gate.
             # If no specific service was named, always return the from-price line —
             # never a full price list.  If a service was named, let the LLM answer
@@ -13404,6 +13424,19 @@ class FlowEngine:
             "how long", "how far", "journey time", "travel time",
             "how many minutes", "how many miles",
         )
+        # Accessibility signals checked at highest priority so they are never
+        # swallowed by location_p (which would return the address) or child_p
+        # (which would return the child-treatment answer).  Both of those are
+        # wrong responses to "does the clinic have step-free access for my son".
+        # Still returns faq_location so _handle_mid_flow_interrupt / ANSWER_FAQ
+        # can serve the right sub-answer via their own accessibility intercepts.
+        accessibility_p = (
+            "step free", "step-free", "step three",
+            "wheelchair",
+            "disabled access", "disability access",
+        )
+        if any(p in text for p in accessibility_p): return "faq_location"
+
         location_p = (
             "where are you", "where is your", "where exactly is", "where is the",
             "address", "parking", "directions", "how do i get",
@@ -13413,9 +13446,6 @@ class FlowEngine:
             # BUG 2: parking questions that don't contain the word "parking"
             "can i park", "where to park", "where can i park", "car park",
             "park in the", "park near", "park there",
-            # Accessibility / step-free / wheelchair signals
-            "step free", "step-free", "step three", "wheelchair",
-            "disabled access", "disability access",
         )
         services_p = (
             "services", "service", "treatments", "what do you offer",
@@ -13448,13 +13478,25 @@ class FlowEngine:
         # Checked AFTER booking_priority_p so "my child's knee injury" (body+symptom)
         # still routes to booking.  These are purely informational FAQ forms.
         child_p = (
+            # Direct treatment-eligibility questions — keep these
             "do you see children", "do you treat children", "treat children",
             "see children", "accept children",
+            # "can my <relation>" — eligibility-specific; the verb "can" signals
+            # a capability/booking question, not a building-access question
             "can my son", "can my daughter", "can my child", "can my kid",
-            "for a child", "for children", "for my son", "for my daughter",
+            # Generic child-focus phrases — safe because accessibility_p fires
+            # BEFORE child_p in _detect_intent, so "step-free access for a child"
+            # is already captured by accessibility_p and never reaches here.
+            "for a child", "for children",
+            # Expressions of need — also eligibility-specific
             "my son needs", "my daughter needs", "my child needs", "my kid needs",
+            # Clinical terminology — unambiguous paediatric context
             "paediatric", "pediatric", "child physio", "children physio",
             "little boy", "little girl", "young child",
+            # NOTE: "for my son", "for my daughter" deliberately removed — bare
+            # possessives that appear in accessibility questions ("step-free access
+            # for my son") when STT noise prevents accessibility_p from matching.
+            # "can my son" / "can my daughter" (with the eligibility verb) are kept.
         )
         if any(p in text for p in child_p): return "faq_child_policy"
 
