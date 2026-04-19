@@ -1813,7 +1813,11 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "Do NOT end with 'Is there anything else I can help you with?' — "
             "the system handles follow-up automatically.\n"
             "Do NOT offer to book an appointment, suggest booking, or ask whether "
-            "the caller wants to book — just answer the question and stop."
+            "the caller wants to book — just answer the question and stop.\n"
+            "Do NOT defer to the clinician or say things like 'that's one for the "
+            "physiotherapist' or 'best to ask at your appointment' — answer practical "
+            "clinic questions (parking, opening hours, pricing, what to expect, "
+            "accessibility, cancellation) directly and confidently."
         ),
         "extract": "none",
     },
@@ -10414,6 +10418,15 @@ class FlowEngine:
                 self.session["fragment_suppressed"] = True
                 return
 
+            # Bare affirmatives ("yes", "please") after "Anything else?" mean the
+            # caller has another question but hasn't stated it yet.  Emit a clean
+            # continuation prompt instead of triggering topic carry-forward.
+            _FBO_BARE_YES = frozenset({"yes", "please"})
+            if _fbo_words and _fbo_words <= _FBO_BARE_YES:
+                logger.info("[ms_flow] FAQ_BOOKING_OFFER: bare affirmative %r", text[:40])
+                await self._tts.put("Of course — what would you like to know?")
+                return
+
             # ── Clinic correction intercept (BUG 2) ───────────────────────────
             # "no it was for the redditch clinic" / "i meant alcester" — the caller
             # is correcting the clinic for the PREVIOUS FAQ answer, not asking a new
@@ -10585,6 +10598,17 @@ class FlowEngine:
 
             # Reset follow-up count on any non-FAQ answer
             self.session["faq_follow_up_count"] = 0
+
+            # Bare negatives ("no", "nope", "nah") — caller has no more questions.
+            # len<3 for "no"/"nah" means these fall through the substantive check;
+            # catch them here before _extract so we close cleanly.
+            _fbo_neg_words = set(_txt_lower_fbo.split())
+            if _fbo_neg_words and _fbo_neg_words <= frozenset({"no", "nope", "nah"}):
+                logger.info("[ms_flow] FAQ_BOOKING_OFFER: bare negative — closing call")
+                self.session["call_outcome_logged"] = "faq_only"
+                await self._tts.put("Thanks for calling Theorem Health. Have a great day!")
+                self.session["flow_step"] = len(self._active_flow)
+                return
 
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
@@ -10792,6 +10816,14 @@ class FlowEngine:
                 self.session["fragment_suppressed"] = True
                 return
 
+            # Bare affirmatives ("yes", "please") — caller has another question
+            # but hasn't stated it yet.  Prompt cleanly instead of carry-forward.
+            _GBO_BARE_YES = frozenset({"yes", "please"})
+            if _gbo_words and _gbo_words <= _GBO_BARE_YES:
+                logger.info("[ms_flow] GENERAL_BOOKING_OFFER: bare affirmative %r", text[:40])
+                await self._tts.put("Of course — what would you like to know?")
+                return
+
             # ── FAQ follow-up phrase buckets ────────────────────────────────────
             _txt_lower_gbo = text.strip().lower()
 
@@ -10927,6 +10959,16 @@ class FlowEngine:
                 if not self.session.get("_faq_loc_pending_intent"):
                     self.session["last_question"] = "Anything else you'd like to ask?"
                 return
+
+            # Bare negatives ("no", "nope", "nah") — caller has no more questions.
+            _gbo_neg_words = set(_txt_lower_gbo.split())
+            if _gbo_neg_words and _gbo_neg_words <= frozenset({"no", "nope", "nah"}):
+                logger.info("[ms_flow] GENERAL_BOOKING_OFFER: bare negative — closing call")
+                self.session["call_outcome_logged"] = "faq_only"
+                await self._tts.put("Thanks for calling Theorem Health. Have a great day!")
+                self.session["flow_step"] = len(self._active_flow)
+                return
+
             answer = self._extract("faq_booking", text, transcript)
             if answer == "book":
                 logger.info("[ms_flow] faq_followup: explicit_intent_switch=booking")
@@ -10994,17 +11036,45 @@ class FlowEngine:
                     if len(w) >= 3 and w not in _GBO_FILLERS
                 ]
                 if _gbo_substantive:
-                    _gbo_active_svc = self.session.get("_faq_active_service")
+                    _gbo_active_svc   = self.session.get("_faq_active_service")
+                    _gbo_active_topic = self.session.get("_faq_active_topic")
+                    _gbo_fw           = self.session.get("_faq_followup_window", 0)
+                    _FOLLOWUP_STARTERS_GBO = (
+                        "and ", "what about", "in terms of", "would that",
+                        "is it ", "does it ", "how does", "do you ", "what should",
+                        "to go to", "is there ", "how long", "would that be",
+                        "so if", "okay but", "right but", "and if", "then what",
+                        "and in",
+                    )
+                    _gbo_is_continuation = any(
+                        _txt_lower_gbo.startswith(p) or p in _txt_lower_gbo
+                        for p in _FOLLOWUP_STARTERS_GBO
+                    )
                     if (
                         _gbo_active_svc
-                        and len(_gbo_substantive) <= 5
+                        and len(_gbo_substantive) <= 10
                         and _gbo_intent == "general_query"
                     ):
                         _gbo_eff_intent = "faq_services"
                         _gbo_eff_tx     = f"{_gbo_active_svc} {transcript}"
+                        self.session["_faq_followup_window"] = max(0, _gbo_fw - 1)
                         logger.info(
                             "[ms_flow] faq_followup: service topic carry-forward %s for %r",
                             _gbo_active_svc, text[:40],
+                        )
+                    elif (
+                        _gbo_active_topic
+                        and _gbo_fw > 0
+                        and _gbo_intent == "general_query"
+                        and (_gbo_is_continuation or len(_gbo_substantive) <= 4)
+                    ):
+                        # Non-service topic carry-forward (location, insurance, hours, etc.)
+                        _gbo_eff_intent = _gbo_active_topic
+                        _gbo_eff_tx     = transcript
+                        self.session["_faq_followup_window"] = max(0, _gbo_fw - 1)
+                        logger.info(
+                            "[ms_flow] faq_followup: topic carry-forward %s (window=%d) for %r",
+                            _gbo_active_topic, _gbo_fw, text[:40],
                         )
                     else:
                         _gbo_eff_intent = "general_query"
@@ -13600,7 +13670,9 @@ class FlowEngine:
                 ))
                 if _mfi_loc:
                     if _parking_q:
-                        _mfi_ans = "Of course — " + _mfi_loc.get("parking", "")
+                        _mfi_parking_raw = _mfi_loc.get("parking", "")
+                        _mfi_parking_first = (_mfi_parking_raw.split(".")[0].strip() + ".") if "." in _mfi_parking_raw else _mfi_parking_raw
+                        _mfi_ans = "Of course — " + _mfi_parking_first
                         self.session["last_faq_sub"] = "parking"
                     elif _transport_q:
                         _mfi_ans = "Of course — " + _mfi_loc.get("transport", "")
@@ -13676,7 +13748,7 @@ class FlowEngine:
                 "what happens", "what to expect", "what should i expect",
                 "how long is the first",
             )):
-                _bl_ans = _bl_faq.get("first_visit") or _FAQ_FIRST_APPT_ANSWER
+                _bl_ans = _FAQ_FIRST_APPT_ANSWER
             elif any(s in _bl_tx for s in (
                 "what do i bring", "do i need to bring", "what to bring",
                 "what should i bring", "what do i wear", "what should i wear",
