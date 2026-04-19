@@ -78,7 +78,12 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
         },
         "patient": {
             "name": collected.get("name"),
-            "phone": collected.get("phone") or session.get("caller_phone"),
+            # Only include a phone here if it was explicitly collected/confirmed
+            # in this call.  The Twilio caller-ID (session.caller_phone) is
+            # available via meta.from and must not masquerade as collected phone —
+            # doing so makes FAQ-only summary rows appear as if phone collection
+            # occurred when it did not.
+            "phone": collected.get("phone") or None,
             "new_or_returning": collected.get("patient_type"),
         },
         "appointment": {
@@ -225,19 +230,27 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     High-level outcome label for dashboards and SMS routing.
 
     Possible values:
-      booked           — calendar event created (new booking)
-      rescheduled      — calendar event updated
-      human_requested  — caller explicitly asked for a human / live transfer
-      out_of_hours     — call received outside clinic opening hours
-      manual_followup  — booking attempted but needs manual intervention
-      faq_only         — caller only asked questions, no booking attempt
-      abandoned        — caller showed interest but didn't complete booking
-      failed           — technical failure
+      booked            — calendar event created (new booking)
+      rescheduled       — calendar event updated
+      human_requested   — caller explicitly asked for a human / live transfer
+      out_of_hours      — call received outside clinic opening hours
+      manual_followup   — booking attempted but needs manual intervention
+      faq_only          — caller only asked questions, no booking attempt
+      abandoned         — caller showed interest but didn't complete booking
+      failed            — technical failure
+      cancelled         — successful cancellation
+      reschedule_failed — reschedule reached transaction stage but backend failed
     """
+    # Deterministic guard: reschedule reached transaction stage but backend explicitly failed.
+    # Must precede LLM-logged check — prevents LLM "abandoned" from overriding a genuine
+    # system-side failure that the caller was already informed of verbally.
+    if session.get("reschedule_confirmed") and session.get("reschedule_execution_succeeded") == False:  # noqa: E712
+        return "reschedule_failed"
+
     # Phase 3: the LLM explicitly logs the outcome via log_call_outcome tool.
     # Trust that first — it's more accurate than our heuristics.
     _logged = str(session.get("call_outcome_logged") or "").lower().strip()
-    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred"):
+    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred", "reschedule_failed"):
         return _logged
 
     cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
@@ -264,17 +277,35 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     if handoff_needed:
         return "manual_followup"
 
-    # FAQ-only heuristics
-    if str(session.get("intent") or "").upper().startswith("FAQ"):
+    # FAQ-only heuristics: both the narrow "faq_*" intent path AND the
+    # "general_query" path (GENERAL_QUERY_FLOW → GENERAL_BOOKING_OFFER).
+    # Any of these signals indicates a real informational interaction that
+    # must not be labelled "abandoned":
+    #   • intent starts with "faq" — explicit FAQ_FLOW caller
+    #   • intent == "general_query" — caller routed through GENERAL_QUERY_FLOW
+    #   • faq_follow_up_count ≥ 1 — follow-up questions answered in FAQ_BOOKING_OFFER
+    #   • faq_turns non-empty — FAQ turns logged
+    #   • flow ended inside an FAQ-anchor state — direct evidence of engagement
+    #   • _faq_ans_at set — at least one FAQ answer was emitted this call
+    _intent_lower  = str(session.get("intent") or "").lower()
+    _final_state   = str((summary.get("meta", {}) or {}).get("flow_state_final") or "")
+    _faq_engaged   = (
+        _intent_lower.startswith("faq")
+        or _intent_lower == "general_query"
+        or int(session.get("faq_follow_up_count") or 0) >= 1
+        or bool(session.get("faq_turns") or [])
+        or _final_state in {
+            "FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER",
+            "ANSWER_FAQ", "ANSWER_GENERAL",
+        }
+        or bool(session.get("_faq_ans_at"))
+    )
+    if _faq_engaged:
         return "faq_only"
 
     # Successful cancellation — must take precedence over abandoned fallthrough
     if session.get("cancel_confirmed"):
         return "cancelled"
-
-    # Reschedule reached the transaction stage but backend failed — never "abandoned"
-    if session.get("reschedule_confirmed") and not session.get("reschedule_execution_succeeded"):
-        return "reschedule_failed"
 
     # Call completed but no booking/reschedule → abandoned
     if (summary.get("meta", {}) or {}).get("call_status") == "completed":

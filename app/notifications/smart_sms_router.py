@@ -237,6 +237,33 @@ async def send_smart_followup_sms(
         logger.info(f"⏱️  Call too short ({duration}s) — skipping SMS")
         return False
 
+    # Defense-in-depth: if the outcome is "abandoned" but session evidence shows
+    # a genuine FAQ-engagement interaction (not a dropped booking attempt), treat
+    # the call as faq_only so the abandoned template is never sent.
+    # Primary fix is in infer_call_outcome() — this guard catches any case where
+    # the summary outcome wasn't recalculated before the SMS path was reached.
+    if outcome == "abandoned":
+        _faq_intent = str(session.get("intent") or "").lower()
+        _faq_state  = str(session.get("state") or session.get("flow_state") or "").upper()
+        _is_faq_engaged = (
+            _faq_intent.startswith("faq")
+            or _faq_intent == "general_query"
+            or int(session.get("faq_follow_up_count") or 0) >= 1
+            or bool(session.get("faq_turns") or [])
+            or _faq_state in {
+                "FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER",
+                "ANSWER_FAQ", "ANSWER_GENERAL",
+            }
+            or bool(session.get("_faq_ans_at"))
+        )
+        if _is_faq_engaged:
+            logger.info(
+                "🛡️  outcome=abandoned but engaged FAQ call detected "
+                "(intent=%r state=%r faq_count=%s) — overriding to faq_only for SMS",
+                _faq_intent, _faq_state, session.get("faq_follow_up_count"),
+            )
+            outcome = "faq_only"
+
     # Booked — handled separately (booking confirmation SMS is already sent)
     if outcome == "booked":
         logger.info("✅ Booked — booking confirmation SMS already sent")
