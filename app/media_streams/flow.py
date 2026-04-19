@@ -3453,7 +3453,6 @@ class FlowEngine:
                 text = transcript.strip().lower()
                 yes_patterns = ("yes", "yeah", "yep", "go ahead", "sure", "ok", "okay", "please", "correct")
                 if any(p in text for p in yes_patterns):
-                    logger.info("[ms_flow] CONFIRM_RESCHEDULE safety-net — executing reschedule for %r", transcript[:40])
                     from app.tools.receptionist_tools import _exec_reschedule_appointment
                     phone_val = _to_e164_uk(
                         self.session.get("phone_number")
@@ -3467,10 +3466,24 @@ class FlowEngine:
                         "new_slot_iso":    self.session.get("selected_slot", ""),
                         "duration_minutes": 50,
                     }
+                    logger.info(
+                        "[ms_flow] CONFIRM_RESCHEDULE safety-net — calling _exec_reschedule_appointment "
+                        "name=%r slot=%r location=%r",
+                        reschedule_args["patient_name"],
+                        reschedule_args["new_slot_iso"],
+                        reschedule_args["location"],
+                    )
                     # Patient confirmed intent — record regardless of Acuity execution result
                     self.session["reschedule_confirmed"] = True
                     reschedule_result = await _exec_reschedule_appointment(reschedule_args, self.session)
-                    if reschedule_result.get("success"):
+                    exec_succeeded = bool(reschedule_result.get("success"))
+                    self.session["reschedule_execution_succeeded"] = exec_succeeded
+                    logger.info(
+                        "[ms_flow] CONFIRM_RESCHEDULE safety-net exec result: success=%s error=%r",
+                        exec_succeeded,
+                        reschedule_result.get("error"),
+                    )
+                    if exec_succeeded:
                         slot_speech = self.session.get("selected_slot_speech", "the new time")
                         response = (
                             f"Done — I've moved you to {slot_speech}. "
@@ -3487,8 +3500,12 @@ class FlowEngine:
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": response}
                     )
-                    logger.info("[ms_flow] CONFIRM_RESCHEDULE safety-net complete — reschedule_confirmed=%s",
-                                self.session["reschedule_confirmed"])
+                    logger.info(
+                        "[ms_flow] CONFIRM_RESCHEDULE safety-net complete — "
+                        "reschedule_confirmed=%s execution_succeeded=%s",
+                        self.session["reschedule_confirmed"],
+                        self.session["reschedule_execution_succeeded"],
+                    )
                     return
             logger.info("[ms_flow] flow complete — ignoring transcript: %r", transcript[:60])
             return
@@ -5947,6 +5964,27 @@ class FlowEngine:
                     "[ms_flow] DETECT_INTENT: first-turn filler %r — waiting for real request",
                     text[:20],
                 )
+                return
+
+            # Short multi-word FAQ opener: "yeah a couple", "a few questions" etc.
+            # Caller signals they have questions without stating one yet.
+            # Emit a natural opener and hold in DETECT_INTENT so the real question
+            # arrives next turn — avoids routing "yeah a couple" to ANSWER_GENERAL LLM.
+            _FAQ_MULTI_OPENER_SIGNALS = (
+                "a couple", "a few", "couple more", "few more", "couple questions",
+            )
+            if (
+                len(_ft_words) <= 5
+                and any(p in text for p in _FAQ_MULTI_OPENER_SIGNALS)
+                and not any(s in text for s in (
+                    "book", "appoint", "reschedule", "cancel", "price", "insurance",
+                ))
+            ):
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: FAQ multi-opener %r — holding for question",
+                    text[:40],
+                )
+                await self._tts.put("Of course — what would you like to ask?")
                 return
 
             # BUG 7 fix: multi-word pause / hold phrases at DETECT_INTENT.
@@ -10318,6 +10356,7 @@ class FlowEngine:
             _fbo_words = set(text.strip().split())
             if _fbo_words and _fbo_words <= _FBO_ACK_WORDS:
                 logger.info("[ms_flow] FAQ_BOOKING_OFFER: ack-only %r — inert", text[:40])
+                self.session["fragment_suppressed"] = True
                 return
 
             # ── Clinic correction intercept (BUG 2) ───────────────────────────
@@ -10386,6 +10425,7 @@ class FlowEngine:
                 "other question", "another question", "one more question",
                 "few more questions", "yeah another", "yes another",
                 "yeah one more", "yes one more",
+                "a couple", "couple more", "a few more", "few more",
             )
             if any(p in _txt_lower_fbo for p in _FAQ_CONTINUE_FBO):
                 _fbo_cont_remainder = _txt_lower_fbo
@@ -10528,24 +10568,63 @@ class FlowEngine:
                     if not self.session.get("_faq_loc_pending_intent"):
                         self.session["last_question"] = "Anything else you'd like to ask?"
                     return
+                # Dangling-fragment guard: connector-start + open-end word = incomplete clause.
+                # "to go to your", "and is the approach kind of slowly based or" etc.
+                # Hold without answering so the caller can finish the thought.
+                _DFG_STARTERS = frozenset({
+                    "and", "to", "of", "but", "so", "or", "because", "with", "for", "from",
+                })
+                _DFG_ENDERS = frozenset({
+                    "or", "and", "to", "for", "the", "a", "an", "your", "their",
+                    "our", "its", "in", "on", "at", "by", "of", "about",
+                })
+                _dfg_ws = _txt_lower_fbo.split()
+                if (
+                    len(_dfg_ws) >= 2
+                    and _dfg_ws[0] in _DFG_STARTERS
+                    and _dfg_ws[-1] in _DFG_ENDERS
+                ):
+                    logger.info(
+                        "[ms_flow] FAQ_BOOKING_OFFER: dangling fragment %r — holding", text[:40]
+                    )
+                    self.session["fragment_suppressed"] = True
+                    return
                 # Semantic content guard: any utterance with a substantive word
-                # (length ≥ 3, not a pure filler) is a question-in-progress —
-                # route to general_query.  Only truly empty/noise input triggers repair.
+                # (length ≥ 3, not a pure filler) is a question-in-progress.
+                # Topic carry-forward: if a specific service topic was active (e.g.
+                # acupuncture), keep the follow-up in that context rather than drifting
+                # to generic LLM output that may cite the wrong service.
                 _FBO_FILLERS = frozenset({"uh", "um", "er", "hmm", "hm", "ah", "eh"})
                 _fbo_substantive = [
                     w for w in _txt_lower_fbo.split()
                     if len(w) >= 3 and w not in _FBO_FILLERS
                 ]
                 if _fbo_substantive:
-                    logger.info(
-                        "[ms_flow] faq_followup: semantic guard %r → general_query",
-                        text[:50],
-                    )
-                    self.session["_faq_ans_intent"]   = "general_query"
+                    _fbo_active_svc = self.session.get("_faq_active_service")
+                    if (
+                        _fbo_active_svc
+                        and len(_fbo_substantive) <= 5
+                        and _fbo_intent == "general_query"
+                    ):
+                        _fbo_eff_intent = "faq_services"
+                        _fbo_eff_tx     = f"{_fbo_active_svc} {transcript}"
+                        logger.info(
+                            "[ms_flow] faq_followup: service topic carry-forward %s for %r",
+                            _fbo_active_svc, text[:40],
+                        )
+                    else:
+                        _fbo_eff_intent = "general_query"
+                        _fbo_eff_tx     = transcript
+                        logger.info(
+                            "[ms_flow] faq_followup: semantic guard %r → general_query",
+                            text[:50],
+                        )
+                    self.session["_faq_ans_intent"]   = _fbo_eff_intent
                     self.session["_faq_ans_at"]       = time.time()
-                    self.session["_faq_ctx_fragment"] = transcript.strip()
+                    if _fbo_eff_intent == "general_query":
+                        self.session["_faq_ctx_fragment"] = transcript.strip()
                     self.session["_faq_repair_count"] = 0
-                    await self._handle_mid_flow_interrupt("general_query", transcript)
+                    await self._handle_mid_flow_interrupt(_fbo_eff_intent, _fbo_eff_tx)
                     if not self.session.get("_faq_loc_pending_intent"):
                         self.session["last_question"] = "Anything else you'd like to ask?"
                     return
@@ -10624,6 +10703,7 @@ class FlowEngine:
             _gbo_words = set(text.strip().split())
             if _gbo_words and _gbo_words <= _GBO_ACK_WORDS:
                 logger.info("[ms_flow] GENERAL_BOOKING_OFFER: ack-only %r — inert", text[:40])
+                self.session["fragment_suppressed"] = True
                 return
 
             # ── FAQ follow-up phrase buckets ────────────────────────────────────
@@ -10651,6 +10731,7 @@ class FlowEngine:
                 "other question", "another question", "one more question",
                 "few more questions", "yeah another", "yes another",
                 "yeah one more", "yes one more",
+                "a couple", "couple more", "a few more", "few more",
             )
             if any(p in _txt_lower_gbo for p in _FAQ_CONTINUE_GBO):
                 _gbo_cont_remainder = _txt_lower_gbo
@@ -10796,24 +10877,62 @@ class FlowEngine:
                     if not self.session.get("_faq_loc_pending_intent"):
                         self.session["last_question"] = "Anything else you'd like to ask?"
                     return
+                # Dangling-fragment guard: connector-start + open-end word = incomplete clause.
+                # Hold without answering so the caller can finish the thought.
+                _DFG_STARTERS_GBO = frozenset({
+                    "and", "to", "of", "but", "so", "or", "because", "with", "for", "from",
+                })
+                _DFG_ENDERS_GBO = frozenset({
+                    "or", "and", "to", "for", "the", "a", "an", "your", "their",
+                    "our", "its", "in", "on", "at", "by", "of", "about",
+                })
+                _dfg_ws_gbo = _txt_lower_gbo.split()
+                if (
+                    len(_dfg_ws_gbo) >= 2
+                    and _dfg_ws_gbo[0] in _DFG_STARTERS_GBO
+                    and _dfg_ws_gbo[-1] in _DFG_ENDERS_GBO
+                ):
+                    logger.info(
+                        "[ms_flow] GENERAL_BOOKING_OFFER: dangling fragment %r — holding", text[:40]
+                    )
+                    self.session["fragment_suppressed"] = True
+                    return
                 # Semantic content guard: any utterance with a substantive word
-                # (length ≥ 3, not a pure filler) is a question-in-progress —
-                # route to general_query.  Only truly empty/noise input triggers repair.
+                # (length ≥ 3, not a pure filler) is a question-in-progress.
+                # Topic carry-forward: if a specific service topic was active (e.g.
+                # acupuncture), keep the follow-up in that context rather than drifting
+                # to generic LLM output that may cite the wrong service.
                 _GBO_FILLERS = frozenset({"uh", "um", "er", "hmm", "hm", "ah", "eh"})
                 _gbo_substantive = [
                     w for w in _txt_lower_gbo.split()
                     if len(w) >= 3 and w not in _GBO_FILLERS
                 ]
                 if _gbo_substantive:
-                    logger.info(
-                        "[ms_flow] faq_followup: semantic guard %r → general_query",
-                        text[:50],
-                    )
-                    self.session["_faq_ans_intent"]   = "general_query"
+                    _gbo_active_svc = self.session.get("_faq_active_service")
+                    if (
+                        _gbo_active_svc
+                        and len(_gbo_substantive) <= 5
+                        and _gbo_intent == "general_query"
+                    ):
+                        _gbo_eff_intent = "faq_services"
+                        _gbo_eff_tx     = f"{_gbo_active_svc} {transcript}"
+                        logger.info(
+                            "[ms_flow] faq_followup: service topic carry-forward %s for %r",
+                            _gbo_active_svc, text[:40],
+                        )
+                    else:
+                        _gbo_eff_intent = "general_query"
+                        _gbo_eff_tx     = transcript
+                        logger.info(
+                            "[ms_flow] faq_followup: semantic guard %r → general_query",
+                            text[:50],
+                        )
+                    self.session["_faq_ans_intent"]   = _gbo_eff_intent
                     self.session["_faq_ans_at"]       = time.time()
-                    self.session["_faq_ctx_fragment"] = transcript.strip()
+                    if _gbo_eff_intent == "general_query":
+                        self.session["_faq_ctx_fragment"] = transcript.strip()
                     self.session["_faq_repair_count"] = 0
-                    await self._handle_mid_flow_interrupt("general_query", transcript)
+                    await self._handle_mid_flow_interrupt(_gbo_eff_intent, _gbo_eff_tx)
                     if not self.session.get("_faq_loc_pending_intent"):
                         self.session["last_question"] = "Anything else you'd like to ask?"
                     return
@@ -13146,6 +13265,10 @@ class FlowEngine:
         # re-anchor block below so the silence handler asks it only after real
         # silence — not immediately after every answer (over-aggressive).
         _re_anchor_sfx = ""
+        # Clear active service topic when a non-service FAQ is answered.
+        # Prevents stale acupuncture context leaking into hours/location/etc. answers.
+        if intent != "faq_services":
+            self.session.pop("_faq_active_service", None)
         # Pop accumulated context fragment; deterministic paths discard it,
         # general_query uses it to combine multi-turn fragmented questions.
         _ctx_frag = self.session.pop("_faq_ctx_fragment", "")
@@ -13200,6 +13323,8 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
                     )
+                # Store active service for topic carry-forward on follow-up fragments.
+                self.session["_faq_active_service"] = _specific_key
             else:
                 # Generic overview: full list if explicitly requested, short summary otherwise.
                 _FULL_LIST_PHRASES = (
@@ -13212,6 +13337,8 @@ class FlowEngine:
                     else _FAQ_SERVICES_FAST
                 )
                 logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
+                # Generic overview clears any specific-service topic context.
+                self.session.pop("_faq_active_service", None)
             await self._tts.put(_svc_answer + _re_anchor_sfx)
             self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
