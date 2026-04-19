@@ -4082,6 +4082,36 @@ class FlowEngine:
                 self.session["last_question"] = "Anything else you'd like to ask?"
                 return
 
+            # ── New sub-question intercept ────────────────────────────────────────
+            # Caller responded to "Alcester or Redditch?" with a NEW location
+            # sub-question (parking, transport, access) rather than a clinic name.
+            # Update the pending sub-topic and re-ask which clinic — don't try
+            # to resolve this as a clinic-name response.
+            _gp_sub_detect = text.strip().lower()
+            _gp_new_sub_sigs = (
+                "parking", "park",
+                "bus", "train", "transport", "get there", "travel", "journey",
+                "wheelchair", "accessible", "accessibility", "step free", "step-free",
+                "disabled",
+            )
+            if any(p in _gp_sub_detect for p in _gp_new_sub_sigs):
+                _gp_detected_sub = (
+                    "parking"   if any(p in _gp_sub_detect for p in ("parking", "park")) else
+                    "transport" if any(p in _gp_sub_detect for p in (
+                        "bus", "train", "transport", "get there", "travel",
+                    )) else
+                    "accessibility"
+                )
+                self.session["_faq_loc_pending_sub"] = _gp_detected_sub
+                _gp_sub_reask = "Of course — is that for our Alcester or Redditch clinic?"
+                await self._tts.put(_gp_sub_reask)
+                self.session["last_question"] = _gp_sub_reask
+                logger.info(
+                    "[ms_flow] faq_pending: new sub-question (%s) in %r → re-asking clinic",
+                    _gp_detected_sub, text[:40],
+                )
+                return
+
             # ── First attempt: use the proven ASK_LOCATION clinic resolver ──────
             _gp_loc_result = _resolve_clinic(text, context="ask_location")
             if _gp_loc_result["status"] == "resolved":
@@ -10592,11 +10622,27 @@ class FlowEngine:
                 # (e.g. "insurance" arriving 0.5 s after the full answer was queued)
                 # must not trigger a second identical answer.  Suppress the same
                 # intent within 8 s of the most recent answer for this state.
+                #
+                # Clarification bypass: if the caller just received a location answer
+                # (accessibility, directions, etc.) and is now asking WHERE exactly /
+                # which clinic / what the address is, that is a DIFFERENT sub-question
+                # not a trailing echo — skip dedup and answer again.
                 _fbo_last_intent = self.session.get("_faq_ans_intent")
                 _fbo_last_at     = self.session.get("_faq_ans_at", 0.0)
+                _FBO_LOC_CLARIFY_SIGS = (
+                    "where", "address", "which clinic", "which one",
+                    "exactly", "where is", "where are", "directions",
+                    "how do i get", "how to get", "postcode", "road",
+                )
+                _fbo_is_loc_clarification = (
+                    _fbo_intent == "faq_location"
+                    and _fbo_last_intent == "faq_location"
+                    and any(p in transcript.lower() for p in _FBO_LOC_CLARIFY_SIGS)
+                )
                 if (
                     _fbo_intent == _fbo_last_intent
                     and (time.time() - _fbo_last_at) < 8.0
+                    and not _fbo_is_loc_clarification
                 ):
                     logger.info(
                         "[ms_flow] FAQ_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",
@@ -10938,9 +10984,23 @@ class FlowEngine:
             # a trailing STT partial for the same topic (e.g. "insurance" arriving
             # 0.5 s after the full insurance answer was queued) must not fire a
             # second identical answer.  Suppress within an 8-second window.
+            #
+            # Clarification bypass: if the caller just received a location answer
+            # and is now asking WHERE / which clinic / address, that is a distinct
+            # sub-question — let it through rather than suppressing as a duplicate.
             _gbo_last_intent = self.session.get("_faq_ans_intent")
             _gbo_last_at     = self.session.get("_faq_ans_at", 0.0)
             _GBO_DEDUP_SEC   = 8.0
+            _GBO_LOC_CLARIFY_SIGS = (
+                "where", "address", "which clinic", "which one",
+                "exactly", "where is", "where are", "directions",
+                "how do i get", "how to get", "postcode", "road",
+            )
+            _gbo_is_loc_clarification = (
+                _gbo_intent == "faq_location"
+                and _gbo_last_intent == "faq_location"
+                and any(p in transcript.lower() for p in _GBO_LOC_CLARIFY_SIGS)
+            )
             if _gbo_intent in {
                 "faq_services", "faq_prices", "faq_hours",
                 "faq_location", "faq_insurance", "faq_capability",
@@ -10949,6 +11009,7 @@ class FlowEngine:
                 if (
                     _gbo_intent == _gbo_last_intent
                     and (time.time() - _gbo_last_at) < _GBO_DEDUP_SEC
+                    and not _gbo_is_loc_clarification
                 ):
                     logger.info(
                         "[ms_flow] GENERAL_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",

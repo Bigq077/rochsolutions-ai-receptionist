@@ -144,8 +144,18 @@ _NEVER_BIND: frozenset = frozenset({
 # could be part of "ready itch" → Redditch, so it must not be blocked).
 # ---------------------------------------------------------------------------
 _PREFIX_FALLBACK_BLOCKLIST: frozenset = frozenset({
-    # "a…" — discourse starters, phonetically nothing like Alcester
+    # "a…" — discourse starters / common English words, phonetically nothing like Alcester
     "actually", "anyway", "already", "again", "also", "always",
+    # Additional "a…" discourse words not previously listed:
+    #   "and"     → starts with "an" (score 15!) — very common sentence-joiner
+    #   "any"     → starts with "an" — "any parking?" is NOT a clinic name
+    #   "another" → starts with "an"
+    #   "are"     → starts with "a" — "are you open?" is NOT a clinic name
+    #   "as"      → starts with "a"
+    #   "about"   → starts with "a" — "about the parking" is NOT a clinic name
+    #   "after"   → starts with "a"
+    #   "at"      → starts with "a" — "at the clinic" extracted fragment
+    "and", "any", "another", "are", "as", "about", "after", "at",
     # "re…" / "r…" — discourse starters, phonetically nothing like Redditch
     "right", "really", "rather", "recently",
     # Pure discourse openers (no clinic-prefix ambiguity)
