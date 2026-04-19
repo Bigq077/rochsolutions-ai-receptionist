@@ -247,6 +247,25 @@ def _is_valid_name_token(s: str) -> bool:
     return len(real) >= 1
 
 
+_SPEECH_JUNK_NAMES: frozenset = frozenset({
+    "none", "unknown", "null", "n/a", "na", "undefined", "test", "that",
+    "this", "tbd", "xxx", "dummy", "user", "patient", "booking",
+})
+
+
+def _is_plausible_speech_name(first_name: str) -> bool:
+    """Return True only when first_name is safe to say aloud (e.g. 'Thanks {name}').
+
+    Rejects blank, single-char, junk words, and duplicated placeholder names.
+    """
+    fn = (first_name or "").strip().lower()
+    if not fn or len(fn) < 2:
+        return False
+    if fn in _SPEECH_JUNK_NAMES:
+        return False
+    return True
+
+
 # ── Global repair-intent phrases (Bug 4) ────────────────────────────────────
 # Checked at the top of handle_transcript before ALL other logic.
 _GLOBAL_REPAIR_PHRASES = (
@@ -3115,12 +3134,19 @@ class FlowEngine:
                     _jss_time_s  = _spoken_time(_jss_time) if _jss_time else ""
                     _jss_loc_s   = f" in {_jss_loc}" if _jss_loc else ""
                     _jss_is_cancel = self.session.get("intent") == "cancel"
-                    # Include the booked name when safely available from the appointment record
+                    # Include the booked name only when plausibly human (avoids "Thanks That")
+                    _jss_name_unreliable = bool(self.session.get("lookup_appt_name_unreliable"))
                     _jss_fn   = (self.session.get("lookup_appt_first_name") or "").strip()
                     _jss_ln   = (self.session.get("lookup_appt_last_name") or "").strip()
                     _jss_full = f"{_jss_fn} {_jss_ln}".strip()
-                    _jss_name_clause = f" under {_jss_full}" if _jss_full else ""
-                    _jss_thanks_prefix = f"Thanks {_jss_fn} — " if _jss_fn else ""
+                    _jss_fn_ok = (not _jss_name_unreliable) and _is_plausible_speech_name(_jss_fn)
+                    _jss_ln_ok = (not _jss_name_unreliable) and _is_plausible_speech_name(_jss_ln)
+                    _jss_name_clause = (
+                        f" under {_jss_full}"
+                        if (_jss_fn_ok and _jss_ln_ok and _jss_full)
+                        else ""
+                    )
+                    _jss_thanks_prefix = f"Thanks {_jss_fn} — " if _jss_fn_ok else ""
                     if _jss_day and _jss_time_s:
                         if _jss_is_cancel:
                             _jss_q = (
@@ -3459,8 +3485,13 @@ class FlowEngine:
                         or self.session.get("twilio_from_local")
                         or self.session.get("twilio_from", "")
                     )
+                    _sn_name = (self.session.get("full_name") or "").strip()
+                    if not _sn_name:
+                        _sn_fn   = (self.session.get("lookup_appt_first_name") or "").strip()
+                        _sn_ln   = (self.session.get("lookup_appt_last_name") or "").strip()
+                        _sn_name = f"{_sn_fn} {_sn_ln}".strip()
                     reschedule_args = {
-                        "patient_name":    self.session.get("full_name", ""),
+                        "patient_name":    _sn_name,
                         "phone":           phone_val,
                         "location":        self.session.get("selected_location", "alcester"),
                         "new_slot_iso":    self.session.get("selected_slot", ""),
@@ -4626,19 +4657,25 @@ class FlowEngine:
                     or _fc_first in ("re", "r")
                 )
                 _pending = "redditch" if _has_red_open else "alcester"
-                # Silent operational bind — carry location into next question.
-                # The caller hears which clinic was picked via the embedded question
-                # text (e.g. "At our Alcester clinic, have you been with us before…")
-                # and can correct mid-flow via the global location correction handler.
-                # Never emit a standalone "Sorry — did you mean…" confirmation.
-                self.session["selected_location"] = _pending
-                self.session["needs_location"] = False
-                self.session.pop("location_retry_count", None)
+                # Never silently bind on unresolved/ambiguous input — use forced-confirm
+                # so the caller explicitly says yes/no before location is committed.
+                _fc_named = "Redditch" if _pending == "redditch" else "Alcester"
+                _fc_other = "Alcester" if _pending == "redditch" else "Redditch"
+                _fc_reask = (
+                    f"Sorry — was that our {_fc_named} clinic, "
+                    f"or our {_fc_other} clinic?"
+                )
+                self.session["location_pending_guess"] = _pending
+                await self._tts.put(_fc_reask)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _fc_reask}
+                )
+                self.session["last_question"] = _fc_reask
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → silent bind (guess=%s) for %r",
+                    "[ms_flow] ASK_LOCATION: resolver None → forced-confirm re-ask "
+                    "(guess=%s) for %r",
                     _pending, text[:40],
                 )
-                await self.ask_current_question()
             return
 
         # ════════════════════════════════════════════════════════════════════
@@ -12632,8 +12669,15 @@ class FlowEngine:
                 or self.session.get("twilio_from_local")
                 or self.session.get("twilio_from", "")
             )
+            # Use booking-derived identity when conversational full_name is absent
+            # (phone-first flows never collect a name separately).
+            _cr_name = (self.session.get("full_name") or "").strip()
+            if not _cr_name:
+                _cr_lb_fn = (self.session.get("lookup_appt_first_name") or "").strip()
+                _cr_lb_ln = (self.session.get("lookup_appt_last_name") or "").strip()
+                _cr_name  = f"{_cr_lb_fn} {_cr_lb_ln}".strip()
             reschedule_args = {
-                "patient_name":    self.session.get("full_name", ""),
+                "patient_name":    _cr_name,
                 "phone":           phone_val,
                 "location":        self.session.get("selected_location", "alcester"),
                 "new_slot_iso":    self.session.get("selected_slot", ""),

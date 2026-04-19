@@ -2083,8 +2083,11 @@ async def _lookup_appointment_acuity(
         # appointments pass the name gate unconditionally.  Filter out obvious
         # placeholder rows ("That That", "Test Test", single-token junk) so a
         # real booking always wins over a junk row with an earlier date.
-        if _phone_only_mode and len(future_matches) > 1:
-            _JUNK_WORDS = {"test", "that", "unknown", "none", "na", "tbd", "xxx", "dummy"}
+        if _phone_only_mode:
+            _JUNK_WORDS = {
+                "test", "that", "this", "unknown", "none", "na", "tbd",
+                "xxx", "dummy", "user", "patient", "booking",
+            }
 
             def _is_junk(appt: dict) -> bool:
                 _af = (appt.get("firstName") or "").strip().lower()
@@ -2095,6 +2098,9 @@ async def _lookup_appointment_acuity(
                     return True   # same word repeated: "That That", "Test Test"
                 if _af in _JUNK_WORDS or _al in _JUNK_WORDS:
                     return True
+                # Single-character names are likely placeholders
+                if len(_af) <= 1 or len(_al) <= 1:
+                    return True
                 return False
 
             _legit = [(dt, a) for dt, a in future_matches if not _is_junk(a)]
@@ -2104,6 +2110,39 @@ async def _lookup_appointment_acuity(
                 logger.info(
                     "_lookup_appt phone-only: junk filter reduced %d matches → %d legitimate",
                     _before, len(_legit),
+                )
+            else:
+                # All matches are junk names — keep them (might be a real patient
+                # with a badly-entered name) but flag so confirmation avoids the name.
+                session["lookup_appt_name_unreliable"] = True
+                logger.info(
+                    "_lookup_appt phone-only: all %d matches have junk names — "
+                    "keeping nearest, marking name unreliable",
+                    len(future_matches),
+                )
+
+            # When multiple legitimate matches remain after junk filter, check
+            # if they are genuinely different appointments or the same person with
+            # multiple bookings.  In both cases pick nearest (the correct target for
+            # reschedule), but store candidates so disambiguation can ask if needed.
+            if len(future_matches) > 1:
+                _lu_cands_po = [
+                    {
+                        "id":         str(a["id"]),
+                        "datetime":   d.isoformat(),
+                        "day_label":  f"{d.strftime('%A')} {_ordinal(d.day)} {d.strftime('%B')}",
+                        "time_label": d.strftime("%H:%M"),
+                        "first_name": a.get("firstName", ""),
+                        "last_name":  a.get("lastName", ""),
+                        "type":       a.get("type", "appointment"),
+                    }
+                    for d, a in future_matches[:3]
+                ]
+                session["lookup_phone_only_candidates"] = _lu_cands_po
+                logger.info(
+                    "_lookup_appt phone-only: %d matches after junk filter — "
+                    "candidates stored for possible disambiguation",
+                    len(future_matches),
                 )
 
         # Nearest first
@@ -2168,6 +2207,34 @@ async def _lookup_appointment_acuity(
 
 
 # ---------------------------------------------------------------------------
+# Name sanitisation helper (used by cancel + reschedule SMS paths)
+# ---------------------------------------------------------------------------
+
+_JUNK_NAMES = {
+    "none", "unknown", "null", "n/a", "na", "undefined", "test",
+    "that", "this", "tbd", "xxx", "dummy", "user", "patient", "booking",
+}
+
+
+def _safe_first_name(session: Dict[str, Any], fallback: str = "") -> str:
+    """
+    Derive a safe displayable first name for SMS/speech use.
+    Priority: lookup_appt_first_name (from Acuity) → fallback (first token of full_name).
+    Returns "" when no valid name can be found — callers should use "there" as fallback.
+    Also returns "" when the name is flagged as unreliable (e.g. all-junk phone-only lookup).
+    """
+    if session.get("lookup_appt_name_unreliable"):
+        return ""
+    for raw in (session.get("lookup_appt_first_name"), fallback):
+        if not raw:
+            continue
+        token = str(raw).strip().split()[0]
+        if token and token.lower() not in _JUNK_NAMES and len(token) >= 2:
+            return token
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Acuity executor: cancel_appointment
 # ---------------------------------------------------------------------------
 
@@ -2224,7 +2291,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                         dt = datetime.fromisoformat(appt_time_str)
                         await send_cancellation_confirmation(
                             patient_phone=args.get("phone", ""),
-                            patient_name=args.get("patient_name", ""),
+                            patient_name=_safe_first_name(session, args.get("patient_name") or ""),
                             appointment_time=dt,
                         )
                 except Exception as e:
@@ -2278,7 +2345,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                     dt = datetime.fromisoformat(appt_time_str.replace("Z", "+00:00"))
                     await send_cancellation_confirmation(
                         patient_phone=args.get("phone", ""),
-                        patient_name=args.get("patient_name", ""),
+                        patient_name=_safe_first_name(session, args.get("patient_name") or ""),
                         appointment_time=dt,
                     )
             except Exception as e:
@@ -2378,7 +2445,7 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
             old_time = datetime.fromisoformat(old_time_str.replace("Z", "+00:00"))
             await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=args.get("patient_name", ""),
+                patient_name=_safe_first_name(session, args.get("patient_name") or ""),
                 old_time=old_time,
                 new_time=new_time,
                 location=location.title(),
@@ -2873,7 +2940,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
             await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=args.get("patient_name", ""),
+                patient_name=_safe_first_name(session, args.get("patient_name") or ""),
                 old_time=old_time,
                 new_time=new_start,
                 location=location.title(),
