@@ -132,6 +132,24 @@ def get_location_label(session: Dict[str, Any]) -> str:
     return "Alcester" if loc == "alcester" else "Redditch"
 
 
+def get_location_accessibility_text(session: Dict[str, Any]) -> str:
+    loc = session.get("selected_location")
+    if loc == "alcester":
+        return (
+            "Yes — the Alcester clinic is step-free and wheelchair accessible, "
+            "with disabled bays right outside the entrance."
+        )
+    if loc == "redditch":
+        return (
+            "Yes — the Redditch clinic is step-free and wheelchair accessible. "
+            "There's street parking nearby on Bromsgrove Road."
+        )
+    return (
+        "Yes — both our clinics are step-free and wheelchair accessible. "
+        "Alcester has disabled bays right by the entrance."
+    )
+
+
 # ============================================================================
 # IMPROVEMENT 4: CONDITION → TREATMENT KNOWLEDGE BASE (50+ conditions)
 # ============================================================================
@@ -1656,6 +1674,10 @@ def detect_intent(text: str) -> str:
         return "FAQ_PRICES"
     if _contains_any(t, ["hours", "opening hours", "open", "close", "when are you open", "weekend"]):
         return "FAQ_HOURS"
+    if _contains_any(t, ["disabled", "disability", "wheelchair", "step free", "step-free",
+                          "step access", "accessible", "accessibility", "getting in",
+                          "entrance", "access"]):
+        return "FAQ_ACCESSIBILITY"
     if _contains_any(t, ["address", "location", "where are you", "parking", "directions"]):
         return "FAQ_LOCATION"
     if _contains_any(t, ["insurance", "insured", "covered", "claim", "receipt",
@@ -1712,6 +1734,9 @@ def _partial_faq_signal(text: str) -> Optional[str]:
         return "FAQ_LOCATION"
     if _contains_any(t, ["insurance", "insur", "bupa", "axa", "vitality", "aviva", "wpa", "covered", "claim"]):
         return "FAQ_INSURANCE"
+    if _contains_any(t, ["disabled", "disability", "wheelchair", "step free", "step-free",
+                          "accessible", "accessibility"]):
+        return "FAQ_ACCESSIBILITY"
     if detect_service_topic(t):
         return "FAQ_SERVICE_EXPLAIN"
     if _contains_any(t, ["service", "treatment", "physio", "shockwave", "massage", "needle", "rehab", "therapy"]):
@@ -1776,6 +1801,9 @@ def faq_answer(intent: str, clinic: Dict[str, Any], session: Optional[Dict[str, 
 
     if intent == "FAQ_PRIVACY":
         return "Your information is treated as confidential and handled in line with UK data protection rules."
+
+    if intent == "FAQ_ACCESSIBILITY":
+        return get_location_accessibility_text(session or {})
 
     return "How can I help?"
 
@@ -2569,7 +2597,18 @@ async def triage_turn(
             return _say(SERVICES_PROMPT, session, tone="none")
 
         # ── Handle all other FAQ intents inline (no state transition) ───────
-        if intent in ("FAQ_PRICES", "FAQ_HOURS", "FAQ_LOCATION",
+        if intent == "FAQ_PRICES":
+            session["faq_last_topic"] = "FAQ_PRICES"
+            session[f"fallback_count_{FAQ_DETOUR}"] = 0
+            t_norm = _norm(user_said)
+            if _contains_any(t_norm, ["physiotherapy assessment", "physio assessment", "initial assessment"]):
+                ans = "A physiotherapy assessment is £75 for 50 minutes."
+            else:
+                ans = faq_answer("FAQ_PRICES", clinic, session)
+            _say(ans, session, tone="none")
+            return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
+
+        if intent in ("FAQ_HOURS", "FAQ_LOCATION", "FAQ_ACCESSIBILITY",
                       "FAQ_POLICIES", "FAQ_FIRST_VISIT", "FAQ_PRIVACY"):
             session["faq_last_topic"] = intent
             session[f"fallback_count_{FAQ_DETOUR}"] = 0
@@ -2917,6 +2956,17 @@ async def triage_turn(
         if intent == "FAQ_LOCATION":
             session["faq_last_topic"] = "FAQ_LOCATION"
             return _say(faq_answer("FAQ_LOCATION", clinic, session), session, tone="none")
+
+        if intent == "FAQ_ACCESSIBILITY":
+            session["faq_last_topic"] = "FAQ_ACCESSIBILITY"
+            return _say(faq_answer("FAQ_ACCESSIBILITY", clinic, session), session, tone="none")
+
+        if intent == "FAQ_PRICES":
+            session["faq_last_topic"] = "FAQ_PRICES"
+            t_norm = _norm(user_said)
+            if _contains_any(t_norm, ["physiotherapy assessment", "physio assessment", "initial assessment"]):
+                return _say("A physiotherapy assessment is £75 for 50 minutes.", session, tone="none")
+            return _say(faq_answer("FAQ_PRICES", clinic, session), session, tone="none")
 
         # ── FAQ continuation check (pre-LLM) ─────────────────────────────────
         # If caller is following up from a previous FAQ answer and the current
