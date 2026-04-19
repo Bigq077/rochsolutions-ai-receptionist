@@ -79,9 +79,10 @@ _SPECIFIC_SERVICE_ANSWERS: dict = {
         "Your clinician will confirm whether it\u2019s the right option for you."
     ),
     "acupuncture": (
-        "Of course — acupuncture uses very fine needles at specific points to help reduce pain "
-        "and support the body\u2019s natural healing. "
-        "It\u2019s often used alongside physiotherapy for musculoskeletal conditions."
+        "Acupuncture uses very fine needles \u2014 much finer than injection needles \u2014 "
+        "placed at specific points to help with pain relief and muscle tension. "
+        "Most people find it much gentler than they expect, "
+        "and it\u2019s often used alongside physiotherapy as part of treatment."
     ),
     "laser": (
         "Certainly — laser therapy uses low-level light energy to reduce inflammation "
@@ -158,6 +159,29 @@ _FAQ_PRICES_SERVICE_KEYWORDS = (
     "physio", "physiotherapy", "assessment", "follow", "follow-up", "followup",
     "acupuncture", "shockwave", "laser", "biomechanical", "biomechanics",
     "sports", "massage", "pilates", "class",
+)
+
+# ── FAQ: acupuncture fear / needle anxiety — reassurance-first answer ────────
+_FAQ_ACUPUNCTURE_FEAR_ANSWER = (
+    "Most people find acupuncture much gentler than they expect \u2014 the needles are very fine, "
+    "and many people feel little or no discomfort. "
+    "The practitioner would talk you through everything before starting, "
+    "and they\u2019d go at your pace if you were nervous."
+)
+
+# ── FAQ: first appointment / what to expect — deterministic fallback ─────────
+_FAQ_FIRST_APPT_ANSWER = (
+    "Your first appointment usually starts with a chat about your symptoms and what\u2019s been going on, "
+    "followed by a physical assessment. "
+    "The clinician will then talk you through what they\u2019ve found and the best next steps \u2014 "
+    "and in most cases they\u2019ll begin hands-on treatment in that same session."
+)
+
+# ── FAQ: accessibility / step-free / wheelchair — fallback if config absent ──
+_FAQ_ACCESSIBILITY_FALLBACK = (
+    "Yes \u2014 both our clinics are step-free and wheelchair accessible. "
+    "If there\u2019s anything specific you\u2019d need, just let us know when booking "
+    "and we can make sure the team is aware."
 )
 
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
@@ -10631,17 +10655,48 @@ class FlowEngine:
                     if len(w) >= 3 and w not in _FBO_FILLERS
                 ]
                 if _fbo_substantive:
-                    _fbo_active_svc = self.session.get("_faq_active_service")
+                    _fbo_active_svc   = self.session.get("_faq_active_service")
+                    _fbo_active_topic = self.session.get("_faq_active_topic")
+                    _fbo_fw           = self.session.get("_faq_followup_window", 0)
+                    # Continuation phrase detection: utterances starting with or
+                    # containing these signals are treated as follow-ups by default.
+                    _FOLLOWUP_STARTERS = (
+                        "and ", "what about", "in terms of", "would that",
+                        "is it ", "does it ", "how does", "do you ", "what should",
+                        "to go to", "is there ", "how long", "would that be",
+                        "so if", "okay but", "right but", "and if", "then what",
+                        "and in",
+                    )
+                    _fbo_is_continuation = any(
+                        _txt_lower_fbo.startswith(p) or p in _txt_lower_fbo
+                        for p in _FOLLOWUP_STARTERS
+                    )
                     if (
                         _fbo_active_svc
-                        and len(_fbo_substantive) <= 5
+                        and len(_fbo_substantive) <= 10  # raised from 5
                         and _fbo_intent == "general_query"
                     ):
+                        # Service topic carry-forward
                         _fbo_eff_intent = "faq_services"
                         _fbo_eff_tx     = f"{_fbo_active_svc} {transcript}"
+                        self.session["_faq_followup_window"] = max(0, _fbo_fw - 1)
                         logger.info(
                             "[ms_flow] faq_followup: service topic carry-forward %s for %r",
                             _fbo_active_svc, text[:40],
+                        )
+                    elif (
+                        _fbo_active_topic
+                        and _fbo_fw > 0
+                        and _fbo_intent == "general_query"
+                        and (_fbo_is_continuation or len(_fbo_substantive) <= 4)
+                    ):
+                        # Non-service topic carry-forward (location, insurance, hours, etc.)
+                        _fbo_eff_intent = _fbo_active_topic
+                        _fbo_eff_tx     = transcript
+                        self.session["_faq_followup_window"] = max(0, _fbo_fw - 1)
+                        logger.info(
+                            "[ms_flow] faq_followup: topic carry-forward %s (window=%d) for %r",
+                            _fbo_active_topic, _fbo_fw, text[:40],
                         )
                     else:
                         _fbo_eff_intent = "general_query"
@@ -13178,6 +13233,20 @@ class FlowEngine:
         )
         if any(p in text for p in referral_p): return "faq_booking_logistics"
 
+        # First-appointment / what-to-expect info questions — these contain
+        # "appointment" or "session" but are informational, not booking intent.
+        # Must be checked BEFORE the booking rescue below so they don't get
+        # swallowed as booking requests.
+        _first_appt_signals = (
+            "what happens at", "what to expect", "what should i expect",
+            "first appointment", "first visit", "first session",
+            "how long is the first", "do i need to bring", "what do i bring",
+            "what do i wear", "what should i wear", "what do i need to wear",
+            "coming for the first time",
+        )
+        if any(p in text for p in _first_appt_signals):
+            return "faq_booking_logistics"
+
         # Booking rescue: by this point reschedule_p and cancel_p have already
         # been checked and did not match.  If "appointment" (or its derivatives)
         # is present the caller intends to book — STT noise around the verb
@@ -13305,8 +13374,13 @@ class FlowEngine:
         _re_anchor_sfx = ""
         # Clear active service topic when a non-service FAQ is answered.
         # Prevents stale acupuncture context leaking into hours/location/etc. answers.
+        # Exception: when routing a general_query follow-up within an open follow-up
+        # window, preserve the active service — the caller is continuing the same topic.
         if intent != "faq_services":
-            self.session.pop("_faq_active_service", None)
+            _faq_fw = self.session.get("_faq_followup_window", 0)
+            if not (intent == "general_query" and _faq_fw > 0
+                    and self.session.get("_faq_active_service")):
+                self.session.pop("_faq_active_service", None)
         # Pop accumulated context fragment; deterministic paths discard it,
         # general_query uses it to combine multi-turn fragmented questions.
         _ctx_frag = self.session.pop("_faq_ctx_fragment", "")
@@ -13319,64 +13393,77 @@ class FlowEngine:
         }
         if intent == "faq_services":
             _svc_text = transcript.strip().lower()
-            # ── Specific-modality drill-down: checked BEFORE generic overview ──
-            # "shockwave therapy please" / "tell me about acupuncture" etc. must
-            # produce the specific answer, not the generic services summary.
-            _specific_key = next(
-                (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _svc_text),
-                None,
+            # ── Needle-fear / anxiety: reassurance-first — checked before service detection ──
+            # "I'm scared of needles", "does it hurt", etc. need a different answer
+            # than a generic acupuncture service description.
+            _NEEDLE_FEAR_SIGNALS = (
+                "scared", "afraid", "nervous", "anxious", "anxiety", "phobia",
+                "does it hurt", "will it hurt", "is it painful",
+                "hate needles", "don't like needles", "not keen on needles",
             )
-            if _specific_key:
-                _svc_answer = _SPECIFIC_SERVICE_ANSWERS[_specific_key]
-                # ── Availability-first: if the caller asked whether we offer
-                # the service (not just for a description), lead with a direct
-                # yes-confirmation before any explanatory detail.
-                # Applies to every specific service uniformly.
-                _SVC_AVAIL_TRIGGERS = (
-                    "do you do", "do you offer", "do you have", "do you provide",
-                    "can i get", "can you do", "can you offer", "is it available",
-                    "do you run", "do you carry out", "is that a service",
-                    "is that something", "can i book a", "do you see",
-                )
-                _SVC_DISPLAY_NAMES = {
-                    "shockwave":    "shockwave therapy",
-                    "acupuncture":  "acupuncture",
-                    "laser":        "laser therapy",
-                    "sports_massage": "sports massage",
-                    "pilates":      "Pilates classes",
-                    "biomechanics": "biomechanical assessments",
-                }
-                if any(t in _svc_text for t in _SVC_AVAIL_TRIGGERS):
-                    # Availability question — one short confirmation, no description.
-                    # Caller only wants to know if we offer it; detail is not asked for.
-                    _display = _SVC_DISPLAY_NAMES.get(
-                        _specific_key, _specific_key.replace("_", " ")
-                    )
-                    _svc_answer = f"Yes, absolutely — we do offer {_display}."
-                    logger.info(
-                        "[ms_flow] _handle_mid_flow_interrupt: services availability-first %s",
-                        _specific_key,
-                    )
-                else:
-                    logger.info(
-                        "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
-                    )
-                # Store active service for topic carry-forward on follow-up fragments.
-                self.session["_faq_active_service"] = _specific_key
+            if "acupuncture" in _svc_text and any(p in _svc_text for p in _NEEDLE_FEAR_SIGNALS):
+                _svc_answer = _FAQ_ACUPUNCTURE_FEAR_ANSWER
+                self.session["_faq_active_service"] = "acupuncture"
+                logger.info("[ms_flow] _handle_mid_flow_interrupt: acupuncture fear fast path")
             else:
-                # Generic overview: full list if explicitly requested, short summary otherwise.
-                _FULL_LIST_PHRASES = (
-                    "full list", "all of them", "all services",
-                    "list them", "the whole list", "everything",
+                # ── Specific-modality drill-down: checked BEFORE generic overview ──
+                # "shockwave therapy please" / "tell me about acupuncture" etc. must
+                # produce the specific answer, not the generic services summary.
+                _specific_key = next(
+                    (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _svc_text),
+                    None,
                 )
-                _svc_answer = (
-                    _FAQ_SERVICES_FULL
-                    if any(p in _svc_text for p in _FULL_LIST_PHRASES)
-                    else _FAQ_SERVICES_FAST
-                )
-                logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
-                # Generic overview clears any specific-service topic context.
-                self.session.pop("_faq_active_service", None)
+                if _specific_key:
+                    _svc_answer = _SPECIFIC_SERVICE_ANSWERS[_specific_key]
+                    # ── Availability-first: if the caller asked whether we offer
+                    # the service (not just for a description), lead with a direct
+                    # yes-confirmation before any explanatory detail.
+                    # Applies to every specific service uniformly.
+                    _SVC_AVAIL_TRIGGERS = (
+                        "do you do", "do you offer", "do you have", "do you provide",
+                        "can i get", "can you do", "can you offer", "is it available",
+                        "do you run", "do you carry out", "is that a service",
+                        "is that something", "can i book a", "do you see",
+                    )
+                    _SVC_DISPLAY_NAMES = {
+                        "shockwave":    "shockwave therapy",
+                        "acupuncture":  "acupuncture",
+                        "laser":        "laser therapy",
+                        "sports_massage": "sports massage",
+                        "pilates":      "Pilates classes",
+                        "biomechanics": "biomechanical assessments",
+                    }
+                    if any(t in _svc_text for t in _SVC_AVAIL_TRIGGERS):
+                        # Availability question — one short confirmation, no description.
+                        # Caller only wants to know if we offer it; detail is not asked for.
+                        _display = _SVC_DISPLAY_NAMES.get(
+                            _specific_key, _specific_key.replace("_", " ")
+                        )
+                        _svc_answer = f"Yes, absolutely — we do offer {_display}."
+                        logger.info(
+                            "[ms_flow] _handle_mid_flow_interrupt: services availability-first %s",
+                            _specific_key,
+                        )
+                    else:
+                        logger.info(
+                            "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
+                        )
+                    # Store active service for topic carry-forward on follow-up fragments.
+                    self.session["_faq_active_service"] = _specific_key
+                else:
+                    # Generic overview: full list if explicitly requested, short summary otherwise.
+                    _FULL_LIST_PHRASES = (
+                        "full list", "all of them", "all services",
+                        "list them", "the whole list", "everything",
+                    )
+                    _svc_answer = (
+                        _FAQ_SERVICES_FULL
+                        if any(p in _svc_text for p in _FULL_LIST_PHRASES)
+                        else _FAQ_SERVICES_FAST
+                    )
+                    logger.info("[ms_flow] _handle_mid_flow_interrupt: services fast path")
+                    # Generic overview clears any specific-service topic context.
+                    self.session.pop("_faq_active_service", None)
             await self._tts.put(_svc_answer + _re_anchor_sfx)
             self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
@@ -13490,17 +13577,20 @@ class FlowEngine:
                 ))
                 if _access_q:
                     _acc_faq = _cli_mfi.get("faq", {}).get("accessibility")
-                    if _acc_faq:
-                        _mfi_ans = "Of course \u2014 " + _acc_faq
-                        self.session["last_faq_sub"] = "accessibility"
-                        logger.info(
-                            "[ms_flow] _handle_mid_flow_interrupt: faq_location accessibility fast path"
-                        )
-                        await self._tts.put(_mfi_ans + _re_anchor_sfx)
-                        self.session["last_faq_answer"] = _mfi_ans
-                        self.session["last_faq_loc_id"] = _mfi_loc_id
-                        self.session["last_faq_intent"] = intent
-                        return
+                    _mfi_ans = ("Of course \u2014 " + _acc_faq) if _acc_faq else _FAQ_ACCESSIBILITY_FALLBACK
+                    self.session["last_faq_sub"] = "accessibility"
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: faq_location accessibility fast path"
+                    )
+                    await self._tts.put(_mfi_ans + _re_anchor_sfx)
+                    self.session["last_faq_answer"] = _mfi_ans
+                    self.session["last_faq_loc_id"] = _mfi_loc_id
+                    self.session["last_faq_intent"] = intent
+                    # Stamp topic memory before early return
+                    self.session["_faq_active_topic"]       = intent
+                    self.session["_faq_followup_window"]    = 3
+                    self.session["_faq_last_user_question"] = transcript
+                    return
                 _parking_q = _access_q or any(p in _mfi_text for p in (
                     "parking", "park", "disabled", "accessible", "accessibility",
                 ))
@@ -13581,6 +13671,26 @@ class FlowEngine:
                 _bl_ans = _bl_faq.get("online_booking") or "You can book by phone or online at our website."
             elif any(s in _bl_tx for s in ("pay", "payment", "how do i pay", "how can i pay")):
                 _bl_ans = _bl_faq.get("payment_methods") or "We accept cash and card — payment is due at or after your session."
+            elif any(s in _bl_tx for s in (
+                "first visit", "first appointment", "first session", "first time",
+                "what happens", "what to expect", "what should i expect",
+                "how long is the first",
+            )):
+                _bl_ans = _bl_faq.get("first_visit") or _FAQ_FIRST_APPT_ANSWER
+            elif any(s in _bl_tx for s in (
+                "what do i bring", "do i need to bring", "what to bring",
+                "what should i bring", "what do i wear", "what should i wear",
+                "what do i need to wear",
+            )):
+                _bl_ans = (
+                    _bl_faq.get("what_to_bring")
+                    or _cli_bl.get("what_to_bring")
+                    or (
+                        "Just wear comfortable, loose clothing if you can. "
+                        "If you have any scans, reports, or a referral letter, bring those too \u2014 "
+                        "but don\u2019t worry if you haven\u2019t, just come as you are."
+                    )
+                )
             else:
                 _bl_ans = None
             if _bl_ans:
@@ -13632,6 +13742,13 @@ class FlowEngine:
         )
         if not _skip_llm:
             await self._llm(instruction, allow_tools=False)
+        # Stamp active FAQ topic and refresh follow-up window after any FAQ answer.
+        # general_query is excluded — it must not overwrite the active topic when
+        # this call was itself a carry-forward of an existing topic.
+        if intent != "general_query":
+            self.session["_faq_active_topic"]       = intent
+            self.session["_faq_followup_window"]    = 3
+            self.session["_faq_last_user_question"] = transcript
         # After the aside, re-anchor the caller to the exact step they were in.
         # This is step-specific so the caller is never left with an open floor.
         _int_step = self.current_step()
