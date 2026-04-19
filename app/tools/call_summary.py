@@ -266,6 +266,10 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     if str(session.get("intent") or "").upper().startswith("FAQ"):
         return "faq_only"
 
+    # Successful cancellation — must take precedence over abandoned fallthrough
+    if session.get("cancel_confirmed"):
+        return "cancelled"
+
     # Call completed but no booking/reschedule → abandoned
     if (summary.get("meta", {}) or {}).get("call_status") == "completed":
         return "abandoned"

@@ -397,7 +397,7 @@ _PHONE_EXACT_BOOKING = (
     "say: use this number."
 )
 _PHONE_EXACT_RSCH = (
-    "If the number you're calling on is the one associated with your booking, "
+    "If the number you're calling on is the one associated with your appointment, "
     "say: use this number."
 )
 # Backwards-compat alias used by a few older tests
@@ -462,7 +462,8 @@ class TestPhoneQuestion:
         await engine.ask_current_question()
         q = tts.last()
         assert "Alcester" in q
-        assert "booking" in q.lower()
+        assert "appointment" in q.lower()
+        assert "booking" not in q.lower()
         assert q != _PHONE_EXACT_BOOKING
 
     @pytest.mark.asyncio
@@ -525,6 +526,256 @@ class TestPhoneQuestion:
         await engine.ask_current_question()
         assert session.get("phone_confirm_armed") is True
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 4 — CANCELLATION CALL REGRESSION SUITE (5-bug family)
+# ════════════════════════════════════════════════════════════════════════════
+
+from app.tools.call_summary import infer_call_outcome
+
+_LU_IDX = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "LOOKUP_RESCHEDULE"
+)
+_CONFIRM_PHONE_RC_IDX = next(
+    i for i, s in enumerate(RESCHEDULE_FLOW) if s["state"] == "CONFIRM_PHONE"
+)
+
+
+def _cancel_session(**overrides) -> Dict[str, Any]:
+    """Base session for cancel flow tests with appointment found."""
+    s = _fresh_session(
+        flow_step=_LU_IDX,
+        selected_location="alcester",
+        intent="cancel",
+        rc_stage="lookup_done",
+        reschedule_appt_id="appt-xyz",
+        reschedule_appt_day_label="Thursday 7th May",
+        reschedule_appt_time_label="10:10",
+        lookup_appt_first_name="Quentin",
+        lookup_appt_last_name="Roch",
+        full_name="Quentin Roch",
+    )
+    s.update(overrides)
+    return s
+
+
+# ─── Bug 1: generic YES must not mutate location when rc_stage=lookup_done ───
+
+class TestLocationGuardDuringLookupConfirm:
+
+    @pytest.mark.asyncio
+    async def test_yes_that_right_one_does_not_change_location(self):
+        """'yes that's the right one' must not mutate selected_location."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session()
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        with patch.object(engine, "ask_current_question", new=AsyncMock()):
+            with patch.object(engine, "_detect_intent", return_value="other"):
+                await engine.handle_transcript("yes that's the right one")
+
+        assert session["selected_location"] == "alcester"
+
+    @pytest.mark.asyncio
+    async def test_appointment_confirmed_after_yes(self):
+        """YES confirmation still sets rc_appointment_confirmed despite location guard."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session()
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        with patch.object(engine, "ask_current_question", new=AsyncMock()):
+            with patch.object(engine, "_detect_intent", return_value="other"):
+                await engine.handle_transcript("yes that's the right one")
+
+        assert session.get("rc_appointment_confirmed") is True
+
+    @pytest.mark.asyncio
+    async def test_location_mutation_still_works_outside_lookup_done(self):
+        """Mid-flow location correction still fires when rc_stage is NOT lookup_done."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CNR_IDX,
+            selected_location="alcester",
+            intent="cancel",
+        )
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        with patch.object(engine, "_detect_intent", return_value="other"):
+            await engine.handle_transcript("actually redditch")
+
+        assert session["selected_location"] == "redditch"
+
+
+# ─── Bug 2: lookup confirmation prompt includes appointment name ──────────────
+
+class TestLookupConfirmIncludesName:
+
+    @pytest.mark.asyncio
+    async def test_confirm_prompt_includes_full_name(self):
+        """Deterministic confirmation after lookup must include first + last name."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session(rc_lookup_just_succeeded=True)
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        await engine.ask_current_question()
+
+        last = tts.last()
+        assert "Quentin" in last
+        assert "Roch" in last
+
+    @pytest.mark.asyncio
+    async def test_confirm_prompt_includes_thanks_prefix(self):
+        """Deterministic confirmation must start with 'Thanks [first name]'."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session(rc_lookup_just_succeeded=True)
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        await engine.ask_current_question()
+
+        assert "Thanks Quentin" in tts.last()
+
+    @pytest.mark.asyncio
+    async def test_confirm_prompt_no_name_when_absent(self):
+        """When no name in session, confirmation must not crash or emit 'None'."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session(
+            rc_lookup_just_succeeded=True,
+            lookup_appt_first_name="",
+            lookup_appt_last_name="",
+        )
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        await engine.ask_current_question()
+
+        last = tts.last()
+        assert last  # something is spoken
+        assert "None" not in last
+
+
+# ─── Bug 3: Thanks [name] prefix set in next deterministic step ───────────────
+
+class TestThanksNamePrefixAfterConfirm:
+
+    @pytest.mark.asyncio
+    async def test_nc_transition_prefix_set_after_yes(self):
+        """_nc_transition_prefix must be 'Thanks Quentin —' after YES confirmation."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session()
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        with patch.object(engine, "ask_current_question", new=AsyncMock()):
+            with patch.object(engine, "_detect_intent", return_value="other"):
+                await engine.handle_transcript("yes that's the right one")
+
+        assert session.get("_nc_transition_prefix") == "Thanks Quentin —"
+
+    @pytest.mark.asyncio
+    async def test_nc_transition_prefix_absent_when_no_name(self):
+        """_nc_transition_prefix must not be set when lookup produced no first name."""
+        tts = _FakeTTSQueue()
+        session = _cancel_session(lookup_appt_first_name="")
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        with patch.object(engine, "ask_current_question", new=AsyncMock()):
+            with patch.object(engine, "_detect_intent", return_value="other"):
+                await engine.handle_transcript("yes that's the right one")
+
+        assert not session.get("_nc_transition_prefix")
+
+
+# ─── Bug 4: successful cancellation outcome classification ────────────────────
+
+class TestCancellationOutcomeClassification:
+
+    def test_cancel_confirmed_returns_cancelled(self):
+        """cancel_confirmed=True must produce 'cancelled', not 'abandoned'."""
+        session = {"cancel_confirmed": True}
+        summary = {"meta": {"call_status": "completed"}}
+        assert infer_call_outcome(session, summary) == "cancelled"
+
+    def test_cancel_confirmed_not_abandoned(self):
+        """Completed call with cancel_confirmed must never be 'abandoned'."""
+        session = {"cancel_confirmed": True}
+        summary = {"meta": {"call_status": "completed"}}
+        assert infer_call_outcome(session, summary) != "abandoned"
+
+    def test_completed_call_without_cancel_is_still_abandoned(self):
+        """Completed call with no cancel/booking flags stays 'abandoned'."""
+        session = {}
+        summary = {"meta": {"call_status": "completed"}}
+        assert infer_call_outcome(session, summary) == "abandoned"
+
+    def test_logged_outcome_takes_precedence_over_cancel_confirmed(self):
+        """Explicit call_outcome_logged always wins over cancel_confirmed heuristic."""
+        session = {
+            "cancel_confirmed": True,
+            "call_outcome_logged": "transferred",
+        }
+        summary = {"meta": {"call_status": "completed"}}
+        assert infer_call_outcome(session, summary) == "transferred"
+
+
+# ─── Bug 5: cancel/reschedule phone-confirm uses appointment wording ──────────
+
+class TestPhoneConfirmFlowAwareWording:
+
+    @pytest.mark.asyncio
+    async def test_cancel_phone_confirm_uses_appointment_not_booking(self):
+        """Cancel flow CONFIRM_PHONE must say 'appointment', not 'booking'."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_RC_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            selected_location="alcester",
+            intent="cancel",
+        )
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        await engine.ask_current_question()
+
+        q = tts.last()
+        assert "appointment" in q.lower()
+        assert "booking" not in q.lower()
+        assert "use this number" in q.lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_phone_confirm_embeds_location(self):
+        """Cancel flow CONFIRM_PHONE with location embeds clinic name."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_RC_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            selected_location="redditch",
+            intent="cancel",
+        )
+        engine = _make_reschedule_engine(session, tts, intent="cancel")
+
+        await engine.ask_current_question()
+
+        q = tts.last()
+        assert "Redditch" in q
+        assert "appointment" in q.lower()
+
+    @pytest.mark.asyncio
+    async def test_reschedule_phone_confirm_no_location_uses_appointment(self):
+        """Reschedule CONFIRM_PHONE without location uses appointment wording."""
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_CONFIRM_PHONE_RC_IDX,
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+            selected_location=None,
+            intent="reschedule",
+        )
+        engine = _make_reschedule_engine(session, tts)
+
+        await engine.ask_current_question()
+
+        q = tts.last()
+        assert "appointment" in q.lower()
+        assert "use this number" in q.lower()
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART 1 EXTRA — Combined flow scenario

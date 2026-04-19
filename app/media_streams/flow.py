@@ -3107,10 +3107,17 @@ class FlowEngine:
                     _jss_time_s  = _spoken_time(_jss_time) if _jss_time else ""
                     _jss_loc_s   = f" in {_jss_loc}" if _jss_loc else ""
                     _jss_is_cancel = self.session.get("intent") == "cancel"
+                    # Include the booked name when safely available from the appointment record
+                    _jss_fn   = (self.session.get("lookup_appt_first_name") or "").strip()
+                    _jss_ln   = (self.session.get("lookup_appt_last_name") or "").strip()
+                    _jss_full = f"{_jss_fn} {_jss_ln}".strip()
+                    _jss_name_clause = f" under {_jss_full}" if _jss_full else ""
+                    _jss_thanks_prefix = f"Thanks {_jss_fn} — " if _jss_fn else ""
                     if _jss_day and _jss_time_s:
                         if _jss_is_cancel:
                             _jss_q = (
-                                f"I found an appointment for {_jss_day} at {_jss_time_s}"
+                                f"{_jss_thanks_prefix}I found an appointment{_jss_name_clause} "
+                                f"for {_jss_day} at {_jss_time_s}"
                                 f"{_jss_loc_s} — is that the right one?"
                             )
                             _jss_short = (
@@ -3119,7 +3126,8 @@ class FlowEngine:
                             )
                         else:
                             _jss_q = (
-                                f"I found an appointment for {_jss_day} at {_jss_time_s}"
+                                f"{_jss_thanks_prefix}I found an appointment{_jss_name_clause} "
+                                f"for {_jss_day} at {_jss_time_s}"
                                 f"{_jss_loc_s} — is that the one you'd like to reschedule?"
                             )
                             _jss_short = (
@@ -3172,6 +3180,9 @@ class FlowEngine:
                         "[ms_flow] %s confirmed — advancing to step %d (TTS drained)",
                         step["state"], _adv_next,
                     )
+                    _rc_conf_fn = (self.session.get("lookup_appt_first_name") or "").strip()
+                    if _rc_conf_fn:
+                        self.session["_nc_transition_prefix"] = f"Thanks {_rc_conf_fn} —"
                     await self.ask_current_question()
                 return
             # After check_availability runs (inside _llm), save slots_offered so
@@ -3300,13 +3311,13 @@ class FlowEngine:
                     if _cp_dyn_loc:
                         _cp_dyn_loc_name = "Redditch" if "redditch" in _cp_dyn_loc else "Alcester"
                         question_text = (
-                            f"For your {_cp_dyn_loc_name} booking, "
-                            "if the number you're calling on is the one associated with your booking, "
+                            f"For your {_cp_dyn_loc_name} appointment, "
+                            "if the number you're calling on is the one associated with it, "
                             "say: use this number."
                         )
                     else:
                         question_text = (
-                            "If the number you're calling on is the one associated with your booking, "
+                            "If the number you're calling on is the one associated with your appointment, "
                             "say: use this number."
                         )
                 else:
@@ -3534,6 +3545,10 @@ class FlowEngine:
             and not self.session.get("needs_location")
             and step and step["state"] not in {"DETECT_INTENT", "ASK_LOCATION"}
             and len(text.split()) <= 8
+            # Never mutate location when an appointment has been presented and we are
+            # waiting for a YES/NO confirmation — generic confirmation utterances
+            # ("yes that's the right one") must not be interpreted as clinic evidence.
+            and self.session.get("rc_stage") != "lookup_done"
         ):
             from app.media_streams.location_resolver import resolve_clinic_location as _glc_resolve
             _glc_result = _glc_resolve(text, context="ask_location")
@@ -11030,6 +11045,10 @@ class FlowEngine:
                     # re-fire the LLM on the lookup step (Bugs 1 and 6).
                     self.session["flow_step"] = _next_step
                     self.session["question_asked_this_turn"] = False
+                    # Fold the caller's first name naturally into the next prompt.
+                    _lu_yes_fn = (self.session.get("lookup_appt_first_name") or "").strip()
+                    if _lu_yes_fn:
+                        self.session["_nc_transition_prefix"] = f"Thanks {_lu_yes_fn} —"
                     await self.ask_current_question()
                     return
 
