@@ -49,6 +49,7 @@ _STATE_TO_KEY: dict[str, str] = {
     # Post-explanation confirmations — follow long TTS utterances
     "CONFIRM_ASSESSMENT":        "confirm_assessment",
     "FAQ_BOOKING_OFFER":         "confirm_assessment",
+    "GENERAL_BOOKING_OFFER":     "faq_offer",
     # Booking confirmations
     "CONFIRM_BOOKING":           "confirm_read_back",
     "LOOKUP_RESCHEDULE":         "confirm_read_back",

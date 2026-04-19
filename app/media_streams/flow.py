@@ -145,6 +145,13 @@ _CAPABILITY_PHRASES = (
     "what are you able to help", "what can you do for me",
     "what can you assist with",
 )
+
+# ── FAQ child policy: deterministic fallback if clinic config faq entry absent ──
+_FAQ_CHILD_POLICY_ANSWER = (
+    "We see adults only \u2014 we don\u2019t currently offer paediatric physiotherapy. "
+    "If you\u2019re looking for physiotherapy for a child, your GP can refer to an NHS "
+    "paediatric service, or you could search for a private paediatric physio clinic in your area."
+)
 # Named-service keywords — if any of these appear in the transcript, let the LLM
 # answer with just that service's price.  Otherwise use _FAQ_PRICES_NO_SERVICE.
 _FAQ_PRICES_SERVICE_KEYWORDS = (
@@ -1795,8 +1802,9 @@ GENERAL_QUERY_FLOW: List[Dict[str, Any]] = [
             "If it is a travel or directions question (e.g. how long to drive from a place): "
             "say you don't have live journey times but give the clinic address and suggest "
             "they use Google Maps or a sat nav for an accurate estimate. "
-            "If it is something you genuinely cannot answer, say so honestly — "
-            "do not guess or make things up. "
+            "If it is something you genuinely cannot answer, give a brief general helpful answer "
+            "and offer to assist further — do not guess facts or make things up. "
+            "Do NOT mention line quality, connection issues, or ask the caller to repeat themselves. "
             "One or two sentences only. "
             "Do NOT end with 'Is there anything else I can help you with?' or any generic offer — "
             "just answer the question directly and stop."
@@ -10238,8 +10246,8 @@ class FlowEngine:
             # Inert: hold state and let the silence handler re-prompt if needed.
             _FBO_ACK_WORDS = frozenset({
                 "okay", "ok", "alright", "right", "sure", "yeah", "yep", "yup",
-                "great", "good", "got it", "understood", "perfect", "brilliant",
-                "lovely", "cool", "noted",
+                "great", "good", "got", "it", "understood", "perfect", "brilliant",
+                "lovely", "cool", "noted", "absolutely", "certainly", "exactly",
             })
             _fbo_words = set(text.strip().split())
             if _fbo_words and _fbo_words <= _FBO_ACK_WORDS:
@@ -10347,7 +10355,16 @@ class FlowEngine:
                 await self._tts.put("Of course — what would you like to know?")
                 return
 
-            _fbo_intent = self._detect_intent(text)
+            # Pre-flight: informational cancel questions ("can I cancel by phone?",
+            # "what's your cancellation policy?") must NOT trigger CANCEL_FLOW.
+            # They are FAQ questions about the process, not actual cancel requests.
+            _fbo_info_cancel = any(s in _txt_lower_fbo for s in (
+                "can i cancel", "how do i cancel", "cancel by phone",
+                "cancel by email", "cancel online", "how to cancel",
+                "cancellation policy", "how much notice", "notice to cancel",
+                "late cancellation", "cancel an appointment",
+            ))
+            _fbo_intent = "faq_booking_logistics" if _fbo_info_cancel else self._detect_intent(text)
 
             # Bug 8: reschedule/cancel must hard-route immediately — never fall
             # through to booking logic or FAQ follow-up answering.
@@ -10367,6 +10384,7 @@ class FlowEngine:
             _fbo_count = self.session.get("faq_follow_up_count", 0)
             if _fbo_intent in {"faq_services", "faq_prices", "faq_hours",
                                "faq_location", "faq_insurance", "faq_capability",
+                               "faq_child_policy", "faq_booking_logistics",
                                "general_query"}:
                 # Duplicate suppression: trailing STT partials or echo fragments
                 # (e.g. "insurance" arriving 0.5 s after the full answer was queued)
@@ -10444,11 +10462,35 @@ class FlowEngine:
                     if not self.session.get("_faq_loc_pending_intent"):
                         self.session["last_question"] = "Anything else you'd like to ask?"
                     return
+                # Semantic content guard: any utterance with a substantive word
+                # (length ≥ 3, not a pure filler) is a question-in-progress —
+                # route to general_query.  Only truly empty/noise input triggers repair.
+                _FBO_FILLERS = frozenset({"uh", "um", "er", "hmm", "hm", "ah", "eh"})
+                _fbo_substantive = [
+                    w for w in _txt_lower_fbo.split()
+                    if len(w) >= 3 and w not in _FBO_FILLERS
+                ]
+                if _fbo_substantive:
+                    logger.info(
+                        "[ms_flow] faq_followup: semantic guard %r → general_query",
+                        text[:50],
+                    )
+                    self.session["_faq_ans_intent"]   = "general_query"
+                    self.session["_faq_ans_at"]       = time.time()
+                    self.session["_faq_ctx_fragment"] = transcript.strip()
+                    self.session["_faq_repair_count"] = 0
+                    await self._handle_mid_flow_interrupt("general_query", transcript)
+                    if not self.session.get("_faq_loc_pending_intent"):
+                        self.session["last_question"] = "Anything else you'd like to ask?"
+                    return
                 logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
-                await self._tts.put(
-                    "Sorry, I didn't quite catch that — "
-                    "was there something else you wanted to ask?"
-                )
+                _faq_rc = self.session.get("_faq_repair_count", 0) + 1
+                self.session["_faq_repair_count"] = _faq_rc
+                if _faq_rc <= 1:
+                    await self._tts.put(
+                        "Sorry, I didn't quite catch that — "
+                        "was there something else you wanted to ask?"
+                    )
                 return
 
         # ── GENERAL_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────
@@ -10510,8 +10552,8 @@ class FlowEngine:
             # Do nothing: silence handler will re-ask if needed.
             _GBO_ACK_WORDS = frozenset({
                 "okay", "ok", "alright", "right", "sure", "yeah", "yep", "yup",
-                "great", "good", "got it", "understood", "perfect", "brilliant",
-                "lovely", "cool", "noted",
+                "great", "good", "got", "it", "understood", "perfect", "brilliant",
+                "lovely", "cool", "noted", "absolutely", "certainly", "exactly",
             })
             _gbo_words = set(text.strip().split())
             if _gbo_words and _gbo_words <= _GBO_ACK_WORDS:
@@ -10578,7 +10620,14 @@ class FlowEngine:
                 await self._tts.put("Of course — what would you like to know?")
                 return
 
-            _gbo_intent = self._detect_intent(text)
+            # Pre-flight: informational cancel questions must NOT trigger CANCEL_FLOW.
+            _gbo_info_cancel = any(s in _txt_lower_gbo for s in (
+                "can i cancel", "how do i cancel", "cancel by phone",
+                "cancel by email", "cancel online", "how to cancel",
+                "cancellation policy", "how much notice", "notice to cancel",
+                "late cancellation", "cancel an appointment",
+            ))
+            _gbo_intent = "faq_booking_logistics" if _gbo_info_cancel else self._detect_intent(text)
             # Reschedule/cancel: hard-route immediately.
             if _gbo_intent == "reschedule":
                 if self._active_flow is not RESCHEDULE_FLOW:
@@ -10601,6 +10650,7 @@ class FlowEngine:
             if _gbo_intent in {
                 "faq_services", "faq_prices", "faq_hours",
                 "faq_location", "faq_insurance", "faq_capability",
+                "faq_child_policy", "faq_booking_logistics",
             }:
                 if (
                     _gbo_intent == _gbo_last_intent
@@ -10680,11 +10730,35 @@ class FlowEngine:
                     if not self.session.get("_faq_loc_pending_intent"):
                         self.session["last_question"] = "Anything else you'd like to ask?"
                     return
+                # Semantic content guard: any utterance with a substantive word
+                # (length ≥ 3, not a pure filler) is a question-in-progress —
+                # route to general_query.  Only truly empty/noise input triggers repair.
+                _GBO_FILLERS = frozenset({"uh", "um", "er", "hmm", "hm", "ah", "eh"})
+                _gbo_substantive = [
+                    w for w in _txt_lower_gbo.split()
+                    if len(w) >= 3 and w not in _GBO_FILLERS
+                ]
+                if _gbo_substantive:
+                    logger.info(
+                        "[ms_flow] faq_followup: semantic guard %r → general_query",
+                        text[:50],
+                    )
+                    self.session["_faq_ans_intent"]   = "general_query"
+                    self.session["_faq_ans_at"]       = time.time()
+                    self.session["_faq_ctx_fragment"] = transcript.strip()
+                    self.session["_faq_repair_count"] = 0
+                    await self._handle_mid_flow_interrupt("general_query", transcript)
+                    if not self.session.get("_faq_loc_pending_intent"):
+                        self.session["last_question"] = "Anything else you'd like to ask?"
+                    return
                 logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
-                await self._tts.put(
-                    "Sorry, I didn't quite catch that — "
-                    "was there something else you wanted to ask?"
-                )
+                _faq_rc = self.session.get("_faq_repair_count", 0) + 1
+                self.session["_faq_repair_count"] = _faq_rc
+                if _faq_rc <= 1:
+                    await self._tts.put(
+                        "Sorry, I didn't quite catch that — "
+                        "was there something else you wanted to ask?"
+                    )
                 return
 
         # ── LOOKUP_RESCHEDULE / LOOKUP_CANCEL: re-fire LLM on every caller turn ──
@@ -12805,6 +12879,9 @@ class FlowEngine:
             # BUG 2: parking questions that don't contain the word "parking"
             "can i park", "where to park", "where can i park", "car park",
             "park in the", "park near", "park there",
+            # Accessibility / step-free / wheelchair signals
+            "step free", "step-free", "step three", "wheelchair",
+            "disabled access", "disability access",
         )
         services_p = (
             "services", "service", "treatments", "what do you offer",
@@ -12832,6 +12909,31 @@ class FlowEngine:
         if "tell me more about" in text and any(k in text for k in _FAQ_PRICES_SERVICE_KEYWORDS):
             return "faq_services"
         if any(p in text for p in services_p):   return "faq_services"
+
+        # ── Child / paediatric policy ────────────────────────────────────────
+        # Checked AFTER booking_priority_p so "my child's knee injury" (body+symptom)
+        # still routes to booking.  These are purely informational FAQ forms.
+        child_p = (
+            "do you see children", "do you treat children", "treat children",
+            "see children", "accept children",
+            "can my son", "can my daughter", "can my child", "can my kid",
+            "for a child", "for children", "for my son", "for my daughter",
+            "my son needs", "my daughter needs", "my child needs", "my kid needs",
+            "paediatric", "pediatric", "child physio", "children physio",
+            "little boy", "little girl", "young child",
+        )
+        if any(p in text for p in child_p): return "faq_child_policy"
+
+        # ── Referral / booking logistics ─────────────────────────────────────
+        # Specific question forms only — "referral" alone is too broad (caller
+        # might say "I have a referral letter", which is booking context).
+        referral_p = (
+            "do i need a referral", "do i need to be referred",
+            "need a referral", "need a gp referral", "need a doctor",
+            "gp referral", "doctor referral", "doctor's referral",
+            "can i self refer", "can i self-refer", "self-refer",
+        )
+        if any(p in text for p in referral_p): return "faq_booking_logistics"
 
         # Booking rescue: by this point reschedule_p and cancel_p have already
         # been checked and did not match.  If "appointment" (or its derivatives)
@@ -12958,6 +13060,9 @@ class FlowEngine:
         # re-anchor block below so the silence handler asks it only after real
         # silence — not immediately after every answer (over-aggressive).
         _re_anchor_sfx = ""
+        # Pop accumulated context fragment; deterministic paths discard it,
+        # general_query uses it to combine multi-turn fragmented questions.
+        _ctx_frag = self.session.pop("_faq_ctx_fragment", "")
         _FAQ_TOPICS = {
             "faq_prices":    "prices",
             "faq_insurance": "insurance",
@@ -13126,7 +13231,26 @@ class FlowEngine:
                     _mfi_ans = "Of course — " + "  ".join(_mfi_parts)
                 self.session["last_faq_sub"] = "hours"  # for correction recovery (BUG 2)
             else:  # faq_location
-                _parking_q = any(p in _mfi_text for p in (
+                # Accessibility-specific question (step-free, wheelchair) — check
+                # clinic-level faq.accessibility field first (applies to all locations).
+                _access_q = any(p in _mfi_text for p in (
+                    "step free", "step-free", "step three", "wheelchair",
+                    "disabled access", "disability",
+                ))
+                if _access_q:
+                    _acc_faq = _cli_mfi.get("faq", {}).get("accessibility")
+                    if _acc_faq:
+                        _mfi_ans = "Of course \u2014 " + _acc_faq
+                        self.session["last_faq_sub"] = "accessibility"
+                        logger.info(
+                            "[ms_flow] _handle_mid_flow_interrupt: faq_location accessibility fast path"
+                        )
+                        await self._tts.put(_mfi_ans + _re_anchor_sfx)
+                        self.session["last_faq_answer"] = _mfi_ans
+                        self.session["last_faq_loc_id"] = _mfi_loc_id
+                        self.session["last_faq_intent"] = intent
+                        return
+                _parking_q = _access_q or any(p in _mfi_text for p in (
                     "parking", "park", "disabled", "accessible", "accessibility",
                 ))
                 _transport_q = any(p in _mfi_text for p in (
@@ -13185,6 +13309,40 @@ class FlowEngine:
                     "1–2 sentences, just answer and stop."
                 )
                 await self._llm(instruction, allow_tools=False)
+        elif intent == "faq_child_policy":
+            from app.clinic_config import get_clinic as _gc_cp
+            _cli_cp = _gc_cp(self.session.get("clinic_id") or "demo")
+            _cp_ans = _cli_cp.get("faq", {}).get("children_policy") or _FAQ_CHILD_POLICY_ANSWER
+            logger.info("[ms_flow] _handle_mid_flow_interrupt: child_policy fast path")
+            await self._tts.put(_cp_ans + _re_anchor_sfx)
+            self.session["last_faq_answer"] = _cp_ans
+        elif intent == "faq_booking_logistics":
+            from app.clinic_config import get_clinic as _gc_bl
+            _cli_bl = _gc_bl(self.session.get("clinic_id") or "demo")
+            _bl_faq = _cli_bl.get("faq", {})
+            _bl_tx  = transcript.strip().lower()
+            if any(s in _bl_tx for s in ("referral", "refer", "self-refer", "gp letter")):
+                _bl_ans = _bl_faq.get("gp_referral") or "No referral is needed — you can book directly with us."
+            elif any(s in _bl_tx for s in ("cancel", "cancellation")):
+                _can_pol = _cli_bl.get("cancellation_policy", "")
+                _bl_ans = _can_pol or "You can cancel by phone, and we ask for at least 24 hours' notice."
+            elif any(s in _bl_tx for s in ("online", "book online", "how to book", "how do i book", "how do bookings")):
+                _bl_ans = _bl_faq.get("online_booking") or "You can book by phone or online at our website."
+            elif any(s in _bl_tx for s in ("pay", "payment", "how do i pay", "how can i pay")):
+                _bl_ans = _bl_faq.get("payment_methods") or "We accept cash and card — payment is due at or after your session."
+            else:
+                _bl_ans = None
+            if _bl_ans:
+                logger.info("[ms_flow] _handle_mid_flow_interrupt: booking_logistics fast path")
+                await self._tts.put(_bl_ans + _re_anchor_sfx)
+                self.session["last_faq_answer"] = _bl_ans
+            else:
+                # Non-deterministic path — set instruction and fall through to LLM below.
+                instruction = (
+                    f"The caller asked: '{transcript.strip()}'\n"
+                    "Answer briefly in 1\u20132 sentences about the booking or appointment process. "
+                    "Use the clinic information in your system prompt. Just answer and stop."
+                )
         elif intent in _FAQ_TOPICS:
             topic = _FAQ_TOPICS[intent]
             instruction = (
@@ -13195,20 +13353,28 @@ class FlowEngine:
                 "Just answer and stop — do NOT re-ask the booking question or add transitions."
             )
         else:
-            # General question — LLM answers from knowledge
+            # General question — LLM answers from knowledge.
+            # Combine with any accumulated context fragment from a prior turn.
+            _gq_text = transcript.strip()
+            if _ctx_frag and _ctx_frag != _gq_text:
+                _gq_text = f"{_ctx_frag} — {_gq_text}"
             instruction = (
-                f"The caller asked: '{transcript.strip()}'\n"
+                f"The caller asked: '{_gq_text}'\n"
                 "Answer it helpfully in 1–2 sentences from the clinic information in your "
                 "system prompt. "
                 "Do NOT call check_availability, book_appointment, or any booking tool. "
                 "Do NOT re-ask the booking question. "
                 "Do NOT add any transitional phrases or invitations such as "
                 "'yes go on', 'where were we', or 'sorry about that'. "
+                "Do NOT mention line quality, connection issues, or ask the caller to repeat. "
+                "If the question is unclear, give a brief helpful answer and offer to assist further. "
                 "Just answer and stop."
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
         _skip_llm = (
-            intent in ("faq_services", "faq_capability", "faq_insurance", "faq_hours", "faq_location")
+            intent in ("faq_services", "faq_capability", "faq_insurance",
+                       "faq_hours", "faq_location", "faq_child_policy")
+            or (intent == "faq_booking_logistics" and self.session.get("last_faq_answer"))
             or (intent == "faq_prices" and not any(
                 k in transcript.strip().lower() for k in _FAQ_PRICES_SERVICE_KEYWORDS
             ))

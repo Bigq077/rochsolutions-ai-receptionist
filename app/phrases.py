@@ -261,6 +261,8 @@ SILENCE_RESPONSES: dict = {
     "present_days":       "No rush — take your time picking a day.",
     "present_times":      "No rush — take your time picking a time.",
 
+    "confirm_assessment": "Of course — was there anything else you'd like to ask?",
+    "faq_offer":          "Is there anything else I can help with?",
     "default":            "Sorry about that — could you say that again for me?",
     "default_retry":      "Sorry about that — could you say that again?",
 }
@@ -299,6 +301,7 @@ SILENCE_THRESHOLDS: dict = {
     "present_days":       34.0,   # caller just heard a list of 4+ days
     "present_times":      34.0,   # caller just heard a list of time slots
     "confirm_assessment": 32.0,   # follows a long explanation
+    "faq_offer":          30.0,   # GENERAL_BOOKING_OFFER waiting for another question
     "default":            26.0,
 }
 
