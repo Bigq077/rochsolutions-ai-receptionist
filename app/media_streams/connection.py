@@ -1027,6 +1027,19 @@ class SilenceHandler:
                 q_gen, _attempt, _state,
             )
 
+            # CONFIRM_BOOKING: one clean re-ask only — hold patiently on further
+            # silence instead of churning or escalating to transfer.  The caller
+            # is deliberating; repeated prompts break the experience.
+            if _state == "CONFIRM_BOOKING" and _attempt >= 2:
+                self._no_input_reask_count -= 1  # keep counter at 1, no escalation
+                armed_at = time.time()
+                logger.info(
+                    "[ms_watchdog] CONFIRM_BOOKING silence-hold q_gen=%d — "
+                    "holding after 1 re-ask",
+                    q_gen,
+                )
+                continue
+
             # Graceful exit on 3rd+ attempt
             if _attempt >= 3:
                 # Don't transfer if the caller engaged recently — a missed STT on

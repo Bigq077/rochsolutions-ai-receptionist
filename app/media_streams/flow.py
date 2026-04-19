@@ -3275,10 +3275,9 @@ class FlowEngine:
                     logger.error("[ms_flow] CONFIRM_BOOKING: book exception: %r", _be)
 
                 question_text = (
-                    f"Lovely — {_name_part}you're all booked in for {_slot_cb} "
-                    f"at our {_clinic_name} clinic. "
-                    "I'll send a confirmation text to your number. "
-                    "Is there anything else I can help with?"
+                    f"Lovely — {_name_part}you're booked in for {_slot_cb} "
+                    f"at {_clinic_name}. "
+                    "I'll text a confirmation to your number."
                 )
                 self.session["booking_confirmed"] = True
                 self.session["state"]             = "DONE"
@@ -6908,10 +6907,17 @@ class FlowEngine:
                 "closest to", "nearest to", "nearest date",
                 "in that area", "around that area",
             )
+            _WK_NEXT_PHRASES = (
+                "the week after that", "week after that",
+                "the following week", "following week",
+                "next week after that", "week after this",
+                "the week after this",
+            )
             _wk_week_hit   = any(p in text for p in _WK_WEEK_PHRASES)
             _wk_around_hit = any(p in text for p in _WK_AROUND_PHRASES)
+            _wk_next_hit   = any(p in text for p in _WK_NEXT_PHRASES)
 
-            if _wk_week_hit or _wk_around_hit:
+            if _wk_week_hit or _wk_around_hit or _wk_next_hit:
                 # Extract explicit date from utterance if present ("week of the 8th of May")
                 _wk_avail = self.session.get("available_days", [])
                 _wk_expl  = _parse_transcript_date(transcript, _wk_avail)
@@ -6928,7 +6934,60 @@ class FlowEngine:
                     except (ValueError, TypeError):
                         _wk_anchor_obj = None
                     if _wk_anchor_obj and _wk_avail:
-                        if _wk_week_hit:
+                        if _wk_next_hit:
+                            # THE WEEK AFTER THAT: compute the ISO week whose Monday
+                            # falls one week after the anchor's ISO-week Monday.
+                            import datetime as _dt_wkn
+                            _wkn_mon = _wk_anchor_obj - _dt_wkn.timedelta(
+                                days=_wk_anchor_obj.weekday()
+                            )
+                            _wkn_next_mon = _wkn_mon + _dt_wkn.timedelta(weeks=1)
+                            _wkn_in_week  = _week_days_for_anchor(_wk_avail, _wkn_next_mon)
+                            # Advance anchor so further "the week after that" chaining works
+                            self.session["last_requested_date"] = _wkn_next_mon.isoformat()
+                            if _wkn_in_week:
+                                _wkn_phrase = _build_day_list_phrase(_wkn_in_week)
+                                # Lowercase first letter after "The following week, "
+                                _wkn_out = (
+                                    "The following week, "
+                                    + _wkn_phrase[:1].lower()
+                                    + _wkn_phrase[1:]
+                                )
+                                await self._tts.put(_wkn_out)
+                                self.session["last_question"] = _wkn_out
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _wkn_out}
+                                )
+                                self.session["days_page"]          = 0
+                                self.session["_pd_month_filtered"] = _wkn_in_week
+                                logger.info(
+                                    "[ms_flow] %s next-week: anchor=%s → next_mon=%s %d day(s)",
+                                    step["state"], _wk_anchor_str,
+                                    _wkn_next_mon.isoformat(), len(_wkn_in_week),
+                                )
+                                return
+                            # No availability that week — offer nearest alternatives
+                            _wkn_near = _build_day_list_phrase(
+                                _nearest_days(_wk_avail, _wkn_next_mon)
+                            )
+                            _wkn_na_out = (
+                                "I\u2019m afraid I don\u2019t have anything the following week \u2014 "
+                                + _wkn_near.replace("I can do ", "but the nearest I have is ", 1)
+                                           .replace("I\u2019ve got ", "but the nearest I have is ", 1)
+                                           .replace("The next opening I have is ",
+                                                    "but the nearest I have is ", 1)
+                            )
+                            await self._tts.put(_wkn_na_out)
+                            self.session["last_question"] = _wkn_na_out
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _wkn_na_out}
+                            )
+                            logger.info(
+                                "[ms_flow] %s next-week: no availability after %s",
+                                step["state"], _wkn_next_mon.isoformat(),
+                            )
+                            return
+                        elif _wk_week_hit:
                             # WEEK-OF-DATE: filter to ISO week (Mon–Sun) containing anchor
                             _wk_in_week = _week_days_for_anchor(_wk_avail, _wk_anchor_obj)
                             _wk_suf = (
@@ -7260,7 +7319,7 @@ class FlowEngine:
                     if _xd_na_month_days:
                         _xd_na_alt = _build_day_list_phrase(_xd_na_month_days)
                         _xd_na_msg = (
-                            f"I\u2019m afraid I don\u2019t have {_xd_spoken_date} available \u2014 "
+                            f"{_xd_spoken_date} isn\u2019t available \u2014 "
                             + _xd_na_alt.replace("I can do ", "but I can do ", 1)
                             .replace("I've got ", "but I've got ", 1)
                             .replace("I\u2019ve got ", "but I\u2019ve got ", 1)
@@ -7271,10 +7330,10 @@ class FlowEngine:
                     else:
                         # Constrained and empty — no dates in that constraint frame
                         _xd_na_msg = (
-                            f"I\u2019m afraid I don\u2019t have {_xd_spoken_date} available"
+                            f"I don\u2019t have {_xd_spoken_date} available"
                             + (
-                                f" in {_xd_month_s.capitalize()} right now. "
-                                "I can offer you the next available dates \u2014 would that work?"
+                                f" in {_xd_month_s.capitalize()} right now \u2014 "
+                                "would you like the next available dates?"
                                 if _xd_constrained_applied
                                 else ". " + _build_day_list_phrase(_xd_all_avail_na)
                             )
@@ -8027,6 +8086,13 @@ class FlowEngine:
                         )
                         self.session["days_page"] = 0
                         self.session["_pd_month_filtered"] = _mf_days
+                        # Store active month + representative anchor date so
+                        # relative follow-ups ("the week after that") resolve correctly.
+                        self.session["_pd_active_month_n"] = _target_month
+                        if not self.session.get("last_requested_date") and _mf_days:
+                            _mf_rep = _mf_days[0].get("date", "")
+                            if _mf_rep:
+                                self.session["last_requested_date"] = _mf_rep
                         logger.info(
                             "[ms_flow] PRESENT_DAYS month filter: dir=%s %d/%d days for month=%d",
                             ("mid" if _dir_mid else "later" if _dir_later else "earlier" if _dir_earlier else "any"),
