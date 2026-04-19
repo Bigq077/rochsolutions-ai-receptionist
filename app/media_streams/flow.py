@@ -6920,6 +6920,9 @@ class FlowEngine:
                 "earlier in that week", "later in that week",
                 "anything that week", "what have you got that week",
                 "around that week", "that particular week",
+                # "in that week" variants not covered by "that week"
+                "in that week", "anything in that week",
+                "available in that week", "dates in that week",
             )
             _WK_AROUND_PHRASES = (
                 "around then", "around that", "around there", "around that time",
@@ -7311,6 +7314,14 @@ class FlowEngine:
                         "th"
                     )
                     _xd_spoken_date = f"the {_xd_day_n}{_xd_na_suffix} of {_xd_month_s.capitalize()}"
+                    # Collect additional explicit day ordinals in the same month
+                    # context so we can mention ALL unavailable dates in one message
+                    # ("I don't have the 21st or 22nd of May available — but I can do…")
+                    import re as _re_xd_multi
+                    _xd_extra_dnums = sorted(set(
+                        int(m) for m in _re_xd_multi.findall(r'\b(\d{1,2})(?:st|nd|rd|th)\b', text)
+                        if 1 <= int(m) <= 31 and int(m) != _xd_day_n
+                    ))
                     _xd_all_avail_na = self.session.get("available_days", [])
                     # ── CONSTRAINED EXPLORATORY: check for month/bound/pair ────
                     # If the utterance is a search expression ("later than the 1st
@@ -7341,8 +7352,24 @@ class FlowEngine:
                             _xd_na_month_days = _xd_all_avail_na[:3]
                     if _xd_na_month_days:
                         _xd_na_alt = _build_day_list_phrase(_xd_na_month_days)
+                        # Build intro that names ALL requested dates when multiple
+                        # were given ("I don't have the 21st or 22nd of May available")
+                        if _xd_extra_dnums:
+                            def _xd_suf_fn(d):
+                                return ("st" if d % 10 == 1 and d != 11 else
+                                        "nd" if d % 10 == 2 and d != 12 else
+                                        "rd" if d % 10 == 3 and d != 13 else "th")
+                            _xd_all_parts = [f"{_xd_day_n}{_xd_na_suffix}"] + [
+                                f"{d}{_xd_suf_fn(d)}" for d in _xd_extra_dnums[:2]
+                            ]
+                            _xd_na_intro = (
+                                f"I don\u2019t have the {' or '.join(_xd_all_parts)} of "
+                                f"{_xd_month_s.capitalize()} available \u2014 "
+                            )
+                        else:
+                            _xd_na_intro = f"{_xd_spoken_date} isn\u2019t available \u2014 "
                         _xd_na_msg = (
-                            f"{_xd_spoken_date} isn\u2019t available \u2014 "
+                            _xd_na_intro
                             + _xd_na_alt.replace("I can do ", "but I can do ", 1)
                             .replace("I've got ", "but I've got ", 1)
                             .replace("I\u2019ve got ", "but I\u2019ve got ", 1)
@@ -7391,6 +7418,18 @@ class FlowEngine:
                 if len(_cp_all_days) >= 2 and any(w in text for w in (" or ", " and ")):
                     import datetime as _dt_cp
                     _cp_avail  = self.session.get("available_days", [])
+                    # Scope to active month — prevents "21st or 22nd" matching
+                    # April dates after the caller has moved the scope to May.
+                    _cp_active_month_n = self.session.get("_pd_active_month_n")
+                    if _cp_active_month_n:
+                        _cp_month_scope = [
+                            d for d in _cp_avail
+                            if _dt_cp.date.fromisoformat(
+                                (d.get("date") or "9999-12-31")[:10]
+                            ).month == _cp_active_month_n
+                        ]
+                        if _cp_month_scope:
+                            _cp_avail = _cp_month_scope
                     _cp_matched: list = []
                     _cp_tried:  list = []
                     for _cp_ds in _cp_all_days[:3]:
@@ -7447,8 +7486,21 @@ class FlowEngine:
                 if 1 <= _bo_day_n <= 31:
                     import datetime as _dt_bo
                     _bo_all = self.session.get("available_days", [])
+                    # Scope to active month — "21st" must not match April 21st
+                    # after the caller has narrowed the search window to May.
+                    _bo_active_month_n = self.session.get("_pd_active_month_n")
+                    if _bo_active_month_n:
+                        _bo_month_scope = [
+                            d for d in _bo_all
+                            if _dt_bo.date.fromisoformat(
+                                (d.get("date") or "9999-12-31")[:10]
+                            ).month == _bo_active_month_n
+                        ]
+                        _bo_scope = _bo_month_scope if _bo_month_scope else _bo_all
+                    else:
+                        _bo_scope = _bo_all
                     _bo_matched = None
-                    for _bo_d in _bo_all:
+                    for _bo_d in _bo_scope:
                         _bo_str = _bo_d.get("date") or _bo_d.get("datetime", "")
                         try:
                             if _dt_bo.date.fromisoformat(_bo_str[:10]).day == _bo_day_n:
@@ -7567,7 +7619,8 @@ class FlowEngine:
                         )
                         await self.ask_current_question()
                         return
-                    # Bare ordinal not found in available_days — say so and offer alternatives
+                    # Bare ordinal not found in scope — say so and offer alternatives
+                    # within the same month scope so we don't snap to a different month.
                     _bo_suffix = (
                         "st" if _bo_day_n % 10 == 1 and _bo_day_n != 11 else
                         "nd" if _bo_day_n % 10 == 2 and _bo_day_n != 12 else
@@ -7575,7 +7628,7 @@ class FlowEngine:
                         "th"
                     )
                     _bo_spoken = f"the {_bo_day_n}{_bo_suffix}"
-                    _bo_alt = _build_day_list_phrase(_bo_all)
+                    _bo_alt = _build_day_list_phrase(_bo_scope)
                     _bo_msg = (
                         f"I'm afraid I don't have {_bo_spoken} available — "
                         + (_bo_alt.replace("I can do ", "but I can do ", 1)
@@ -7641,6 +7694,10 @@ class FlowEngine:
                 "anything after that", "anything after this",
                 "after that date", "after that",
                 "beyond that", "past that",
+                # Reschedule-context: "later than the original appointment"
+                "later than the original", "after the original",
+                "later than my original", "after my original",
+                "later than the appointment", "after the appointment",
             )
             _PD_EARLIER_THAN = (
                 "earlier than that", "earlier than this",
@@ -7728,7 +7785,16 @@ class FlowEngine:
                     logger.info("[ms_flow] PRESENT_DAYS: no more days — graceful exit")
                 return
 
-            if any(p in text for p in _PD_BACK):
+            # Guard: _PD_BACK must not fire when (a) a month name is present
+            # (those go to the month filter) or (b) "later than" is in the
+            # utterance ("later than the original appointment" contains "the
+            # original" but is not a page-back request).
+            _pd_has_later_than_guard = "later than" in text or "after the original" in text
+            if (
+                any(p in text for p in _PD_BACK)
+                and not _exp_has_month
+                and not _pd_has_later_than_guard
+            ):
                 self.session.pop("_pd_month_filtered", None)
                 _page = max(0, self.session.get("days_page", 0) - 1)
                 self.session["days_page"] = _page
