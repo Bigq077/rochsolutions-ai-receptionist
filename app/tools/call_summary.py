@@ -58,7 +58,8 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
     # Calendar success (simple boolean)
-    calendar_success = calendar_status in ("created", "patched")
+    # "rescheduled" = Acuity reschedule; "patched" = Google Calendar reschedule
+    calendar_success = calendar_status in ("created", "patched", "rescheduled")
 
     # Build base summary
     summary: dict[str, Any] = {
@@ -247,7 +248,8 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # which previously caused all successful bookings to be labelled "rescheduled".
     if cal_status == "created":
         return "booked"
-    if cal_status == "patched":
+    if cal_status in ("patched", "rescheduled"):
+        # "patched" = Google Calendar reschedule; "rescheduled" = Acuity reschedule
         return "rescheduled"
 
     # Human / live-transfer explicitly requested
@@ -269,6 +271,10 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # Successful cancellation — must take precedence over abandoned fallthrough
     if session.get("cancel_confirmed"):
         return "cancelled"
+
+    # Reschedule reached the transaction stage but backend failed — never "abandoned"
+    if session.get("reschedule_confirmed") and not session.get("reschedule_execution_succeeded"):
+        return "reschedule_failed"
 
     # Call completed but no booking/reschedule → abandoned
     if (summary.get("meta", {}) or {}).get("call_status") == "completed":

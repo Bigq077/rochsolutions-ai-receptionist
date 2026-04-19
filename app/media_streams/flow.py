@@ -12515,11 +12515,25 @@ class FlowEngine:
                 "new_slot_iso":    self.session.get("selected_slot", ""),
                 "duration_minutes": 50,
             }
-            logger.info("[ms_flow] CONFIRM_RESCHEDULE — calling _exec_reschedule_appointment")
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE — calling _exec_reschedule_appointment "
+                "name=%r slot=%r location=%r",
+                reschedule_args["patient_name"],
+                reschedule_args["new_slot_iso"],
+                reschedule_args["location"],
+            )
             # Patient confirmed intent — record regardless of Acuity execution result
             self.session["reschedule_confirmed"] = True
             reschedule_result = await _exec_reschedule_appointment(reschedule_args, self.session)
-            if reschedule_result.get("success"):
+            exec_succeeded = bool(reschedule_result.get("success"))
+            self.session["reschedule_execution_succeeded"] = exec_succeeded
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE exec result: success=%s error=%r rescheduled_to=%r",
+                exec_succeeded,
+                reschedule_result.get("error"),
+                reschedule_result.get("rescheduled_to"),
+            )
+            if exec_succeeded:
                 slot_speech = self.session.get("selected_slot_speech", "the new time")
                 response = (
                     f"Done — I've moved you to {slot_speech}. "
@@ -12538,8 +12552,9 @@ class FlowEngine:
             )
             self.session["flow_step"] = len(self._active_flow)
             logger.info(
-                "[ms_flow] CONFIRM_RESCHEDULE complete — reschedule_confirmed=%s",
+                "[ms_flow] CONFIRM_RESCHEDULE complete — reschedule_confirmed=%s execution_succeeded=%s",
                 self.session["reschedule_confirmed"],
+                self.session["reschedule_execution_succeeded"],
             )
             return
 
