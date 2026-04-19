@@ -11543,7 +11543,8 @@ class FlowEngine:
                     # send the name-request SMS now that we have the phone number.
                     # create_pending_name_confirmation was already called inside
                     # _exec_book_appointment, so the Redis record exists.
-                    if self.session.pop("needs_name_correction_sms", False):
+                    _needs_name_sms = self.session.pop("needs_name_correction_sms", False)
+                    if _needs_name_sms:
                         _ncorr_phone = _book_args.get("phone") or ""
                         if _ncorr_phone:
                             _ncorr_body = (
@@ -11567,7 +11568,11 @@ class FlowEngine:
                     _cb_done = (
                         f"Brilliant — you're all booked in for {_slot_cb} "
                         f"at our {_clinic_name} clinic. "
-                        "We'll send a confirmation text shortly. Have a great day!"
+                        + (
+                            "I'm sending a confirmation text now — just reply to it with your full name to complete the booking. Have a great day!"
+                            if _needs_name_sms else
+                            "We'll send a confirmation text shortly. Have a great day!"
+                        )
                     )
                     logger.info(
                         "[ms_flow] CONFIRM_BOOKING YES handler → booking_confirmed=True "
