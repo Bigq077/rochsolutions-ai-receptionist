@@ -969,14 +969,15 @@ class NameCollector:
         if best:
             if len(best) >= _FN_STRONG_LEN:
                 # Caller in repair mode gave a strong, unambiguous name (≥5 chars).
-                # Skip fn_confirm entirely — direct store triggers the
-                # "Thanks {name} —" prefix on the next question.
+                # Skip fn_confirm AND surname collection — return ("accept", fn)
+                # immediately so the outer flow advances to its next step with
+                # the "Thanks {name} —" prefix.
                 logger.info(
                     "[NameCollector] fn_reask: stage=%d strong token %r "
-                    "(len≥%d) → direct store (skip fn_confirm)",
+                    "(len≥%d) → bypass (skip fn_confirm + surname)",
                     fn_reask_count, best, _FN_STRONG_LEN,
                 )
-                return self._store_fn_direct(best)
+                return self._accept_fn_direct_bypass(best)
             # Shorter name (4 chars, e.g. "Ryan") — still confirm once
             logger.info(
                 "[NameCollector] fn_reask: stage=%d shorter token %r (len=%d) → fn_confirm",
@@ -1375,6 +1376,29 @@ class NameCollector:
             return self._enter_sn_confirm(pending)
         logger.info("[NameCollector] _store_fn_direct: %r → sn_normal", fn)
         return ("ask", "And what's your surname?")
+
+    def _accept_fn_direct_bypass(self, fn: str) -> Tuple[str, str]:
+        """
+        Narrow repair-bypass path: accept first name only, skip surname collection.
+
+        Used exclusively by ``_fn_reask`` when the caller provides a strong
+        (≥_FN_STRONG_LEN) token after the repair prompt.  Caller already
+        demonstrated intent with a clear repair-format answer; asking for
+        surname adds friction without proportionate accuracy gain.
+
+        Sets ``_fn_direct_stored=True`` so ``_accept()`` will signal flow.py
+        to prepend "Thanks {fn} —" to the very next question.  Returns
+        ``("accept", fn)`` immediately — the outer flow advances without
+        entering any surname substate.
+        """
+        self._nc["_fn_direct_stored"] = True
+        self._store_first_name(fn, confirmed=True)   # stores fn, name_fragment, sn_normal (overridden below)
+        self._accept(fn)                              # overrides substate → DONE, sets _nc_fn_name_prefix
+        logger.info(
+            "[NameCollector] _accept_fn_direct_bypass: %r → accept (bypass surname)",
+            fn,
+        )
+        return ("accept", fn)
 
     def _enter_fn_confirm(self, candidate: str, spelled: bool = False) -> Tuple[str, str]:
         """Enter fn_confirm substate with the given first-name candidate.

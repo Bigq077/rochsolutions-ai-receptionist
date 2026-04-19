@@ -1003,14 +1003,14 @@ class TestUseThisNumberContract:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# PART 8 — fn_reask bypass: strong repaired name skips fn_confirm
+# PART 8 — fn_reask bypass: strong repaired name skips fn_confirm + surname
 # ════════════════════════════════════════════════════════════════════════════
 
 from app.media_streams.name_collector import (
     NameCollector,
+    NC_DONE,
     NC_FN_REASK,
     NC_SN_NORMAL,
-    NC_SN_CONFIRM,
     _FN_STRONG_LEN,
 )
 
@@ -1022,8 +1022,8 @@ def _nc_in_reask(fn_candidate: str | None = None) -> tuple[NameCollector, dict]:
     """
     session: dict = {}
     nc = NameCollector(session)
-    nc._nc["substate"]      = NC_FN_REASK
-    nc._nc["fn_retries"]    = 1
+    nc._nc["substate"]       = NC_FN_REASK
+    nc._nc["fn_retries"]     = 1
     nc._nc["fn_reask_count"] = 0
     if fn_candidate:
         nc._nc["fn_candidate"] = fn_candidate
@@ -1032,23 +1032,30 @@ def _nc_in_reask(fn_candidate: str | None = None) -> tuple[NameCollector, dict]:
 
 class TestFnReaskBypass:
     """
-    Strong repaired first name in fn_reask must skip fn_confirm and go directly
-    to sn_normal, setting _fn_direct_stored so the "Thanks {name} —" prefix fires.
+    Strong repaired first name in fn_reask must:
+    - skip fn_confirm entirely
+    - skip surname collection entirely
+    - return ("accept", first_name) immediately
+    - set _nc_fn_name_prefix so flow.py prepends "Thanks {name} —" to next question
     """
 
     # ── Core NameCollector unit tests ─────────────────────────────────────────
 
-    def test_strong_repair_format_skips_fn_confirm(self):
-        """'my name is quentin' in fn_reask → no 'is that right?' → sn_normal."""
+    def test_strong_repair_format_returns_accept(self):
+        """'my name is quentin' in fn_reask → action='accept', no surname asked."""
         nc, session = _nc_in_reask()
         action, payload = nc.handle("my name is quentin", "my name is Quentin")
-        # Must NOT produce a fn_confirm question
+        assert action == "accept", f"Expected 'accept', got {action!r}: {payload!r}"
+        assert "Quentin" in payload
+        # Must NOT produce fn_confirm or surname question
         assert "is that right" not in payload.lower()
-        # Must ask for surname (sn_normal)
-        assert action == "ask"
-        assert "surname" in payload.lower()
-        # Substate must be sn_normal
-        assert session["_nc"]["substate"] == NC_SN_NORMAL
+        assert "surname" not in payload.lower()
+
+    def test_strong_repair_substate_is_done(self):
+        """After bypass, substate must be NC_DONE (not sn_normal or fn_confirm)."""
+        nc, session = _nc_in_reask()
+        nc.handle("my name is quentin", "my name is Quentin")
+        assert session["_nc"]["substate"] == NC_DONE
 
     def test_strong_repair_sets_fn_direct_stored(self):
         """_fn_direct_stored flag must be True after strong repair bypass."""
@@ -1056,74 +1063,74 @@ class TestFnReaskBypass:
         nc.handle("my name is quentin", "my name is Quentin")
         assert session["_nc"].get("_fn_direct_stored") is True
 
+    def test_strong_repair_sets_fn_name_prefix(self):
+        """_nc_fn_name_prefix must be set immediately on bypass accept."""
+        nc, session = _nc_in_reask()
+        nc.handle("my name is quentin", "my name is Quentin")
+        assert session.get("_nc_fn_name_prefix") == "Quentin"
+
     def test_strong_repair_stores_first_name(self):
-        """First name must be stored in session['_nc']['first_name'] immediately."""
+        """first_name and name_fragment must be stored."""
         nc, session = _nc_in_reask()
         nc.handle("my name is quentin", "my name is Quentin")
         assert session["_nc"]["first_name"] == "Quentin"
-        # Legacy compat
         assert session.get("name_fragment") == "Quentin"
 
+    def test_strong_repair_stores_full_name(self):
+        """session['full_name'] must be set to the first name (no surname in bypass)."""
+        nc, session = _nc_in_reask()
+        nc.handle("my name is quentin", "my name is Quentin")
+        assert session.get("full_name") == "Quentin"
+
     def test_its_quentin_also_bypasses(self):
-        """'it's quentin' (repair prefix) → direct store, no fn_confirm."""
+        """'it's quentin' in fn_reask → action='accept', no fn_confirm."""
         nc, session = _nc_in_reask()
         action, payload = nc.handle("it's quentin", "It's Quentin")
+        assert action == "accept"
+        assert "Quentin" in payload
         assert "is that right" not in payload.lower()
-        assert action == "ask"
-        assert session["_nc"]["_fn_direct_stored"] is True
+
+    def test_bare_strong_name_in_reask_also_bypasses(self):
+        """Bare strong name 'quentin' in fn_reask → action='accept'."""
+        nc, session = _nc_in_reask()
+        action, payload = nc.handle("quentin", "Quentin")
+        assert action == "accept"
+        assert "Quentin" in payload
 
     def test_short_name_4_chars_still_confirms(self):
-        """4-char name 'ryan' in fn_reask → still goes to fn_confirm (not direct store)."""
+        """4-char name 'ryan' in fn_reask → still goes to fn_confirm (not bypass)."""
         nc, session = _nc_in_reask()
         action, payload = nc.handle("my name is ryan", "my name is Ryan")
-        # Must produce fn_confirm question — NOT skip it
+        # Must produce fn_confirm question — NOT bypass
         assert "is that right" in payload.lower()
         assert action == "ask"
         assert session["_nc"].get("_fn_direct_stored") is not True
 
-    def test_strong_repair_full_flow_sets_fn_name_prefix(self):
-        """
-        After strong repair bypass: give surname → confirm → accept.
-        _nc_fn_name_prefix must be set in session so flow.py injects
-        'Thanks Quentin —' onto the next question.
-        """
+    def test_no_surname_collection_in_bypass(self):
+        """After bypass accept, no further NC handle() calls produce surname questions."""
         nc, session = _nc_in_reask()
+        a1, p1 = nc.handle("my name is quentin", "my name is Quentin")
+        assert a1 == "accept"
+        # Any further input should be handled as DONE / unknown (not sn_normal)
+        assert session["_nc"]["substate"] == NC_DONE
 
-        # Step 1: repair answer → direct store → go to sn_normal
-        a1, q1 = nc.handle("my name is quentin", "my name is Quentin")
-        assert a1 == "ask"
-        assert "surname" in q1.lower()
-
-        # Step 2: give surname → sn_confirm
-        a2, q2 = nc.handle("roch", "Roch")
-        assert a2 == "ask"
-        assert "I've got Roch" in q2
-
-        # Step 3: confirm surname → accept
-        a3, full = nc.handle("yes", "yes")
-        assert a3 == "accept"
-        assert "Quentin" in full
-        assert "Roch" in full
-
-        # The prefix key must be set for flow.py to inject "Thanks Quentin —"
-        assert session.get("_nc_fn_name_prefix") == "Quentin"
+    # ── Normal fn_normal paths must be unaffected ─────────────────────────────
 
     def test_normal_fn_normal_strong_path_unaffected(self):
         """
-        Fresh fn_normal with strong token still goes direct (not via fn_confirm).
-        This ensures the existing fn_normal path is undisturbed.
+        Fresh fn_normal with strong token still asks for surname (sn_normal).
+        The bypass ONLY fires in fn_reask — not in fn_normal.
         """
         session: dict = {}
         nc = NameCollector(session)
         action, payload = nc.handle("quentin", "Quentin")
+        # fn_normal strong → _store_fn_direct → sn_normal (asks surname)
         assert action == "ask"
-        assert "is that right" not in payload.lower()
         assert "surname" in payload.lower()
+        assert "is that right" not in payload.lower()
 
     def test_normal_fn_normal_weak_path_unaffected(self):
-        """
-        Fresh fn_normal with weak token (4 chars) still routes to repair.
-        """
+        """Fresh fn_normal with weak token routes to repair (not bypass)."""
         session: dict = {}
         nc = NameCollector(session)
         action, payload = nc.handle("ting", "Ting")
@@ -1136,7 +1143,8 @@ class TestFnReaskBypass:
     async def test_booking_repair_no_fn_confirm_question(self):
         """
         Booking: weak token → repair → strong repair answer.
-        The fn_confirm question 'I've got X — is that right?' must NOT be emitted.
+        fn_confirm 'I've got X — is that right?' must NOT be emitted.
+        Surname 'And what's your surname?' must NOT be emitted.
         """
         tts = _FakeTTSQueue()
         session = _fresh_session(
@@ -1147,28 +1155,25 @@ class TestFnReaskBypass:
         )
         engine = _make_booking_engine(session, tts)
 
-        # Turn 1: ask for name
         await engine.ask_current_question()
         tts.items.clear()
 
-        # Turn 2: weak token → repair prompt emitted
-        await engine.handle_transcript("ting", "Ting")
+        await engine.handle_transcript("ting", "Ting")          # weak → repair
         tts.items.clear()
 
-        # Turn 3: strong repair-format answer
         await engine.handle_transcript("my name is quentin", "my name is Quentin")
 
-        # The fn_confirm question must NOT have been emitted
-        spoken = tts.all_text()
-        assert "is that right" not in spoken.lower() or "Quentin" not in spoken, (
-            f"Unexpected fn_confirm question spoken: {spoken!r}"
+        spoken = tts.all_text().lower()
+        assert "is that right" not in spoken, f"fn_confirm was emitted: {tts.all_text()!r}"
+        assert "what's your surname" not in spoken and "your surname" not in spoken, (
+            f"Surname question emitted: {tts.all_text()!r}"
         )
 
     @pytest.mark.asyncio
     async def test_booking_repair_prefix_in_next_question(self):
         """
-        After strong repair bypass, full name accepted → next booking question
-        must start with 'Thanks Quentin'.
+        After strong repair bypass, the IMMEDIATELY next question must contain
+        'Thanks Quentin' — no surname collection in between.
         """
         tts = _FakeTTSQueue()
         session = _fresh_session(
@@ -1179,26 +1184,49 @@ class TestFnReaskBypass:
         )
         engine = _make_booking_engine(session, tts)
 
-        # Simulate the name-repair path
-        await engine.ask_current_question()   # "What's your first name?"
-        await engine.handle_transcript("ting", "Ting")        # weak → repair
-        await engine.handle_transcript("my name is quentin", "my name is Quentin")  # strong → direct store
+        await engine.ask_current_question()
+        await engine.handle_transcript("ting", "Ting")   # weak → repair
         tts.items.clear()
-        await engine.handle_transcript("roch", "Roch")        # surname → sn_confirm
-        await engine.handle_transcript("yes", "yes")          # confirm → accept
 
-        # After accept, next question should start with "Thanks Quentin"
+        # Strong repair → accept immediately → next booking question with prefix
+        await engine.handle_transcript("my name is quentin", "my name is Quentin")
+
         spoken = tts.all_text()
         assert "Thanks Quentin" in spoken or "Thanks, Quentin" in spoken, (
-            f"Expected 'Thanks Quentin' prefix in: {spoken!r}"
+            f"Expected 'Thanks Quentin' in immediately next question, got: {spoken!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_booking_repair_no_surname_between_name_and_phone(self):
+        """
+        No 'surname' question must appear between repair answer and phone question.
+        """
+        tts = _FakeTTSQueue()
+        session = _fresh_session(
+            flow_step=_COLLECT_NAME_IDX,
+            new_or_returning="new",
+            phone_from_twilio=True,
+            twilio_from="+441234567890",
+        )
+        engine = _make_booking_engine(session, tts)
+
+        await engine.ask_current_question()
+        await engine.handle_transcript("ting", "Ting")
+        tts.items.clear()
+
+        await engine.handle_transcript("my name is quentin", "my name is Quentin")
+
+        spoken = tts.all_text().lower()
+        assert "surname" not in spoken, (
+            f"Surname question appeared after repair bypass: {tts.all_text()!r}"
         )
 
     # ── Reschedule flow ───────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_reschedule_repair_no_fn_confirm_question(self):
+    async def test_reschedule_repair_no_fn_confirm_no_surname(self):
         """
-        Reschedule: same bypass — no 'is that right?' emitted after repair.
+        Reschedule: strong repair → accept immediately, no fn_confirm, no surname.
         """
         tts = _FakeTTSQueue()
         session = _fresh_session(
@@ -1211,21 +1239,18 @@ class TestFnReaskBypass:
 
         await engine.ask_current_question()
         tts.items.clear()
-
         await engine.handle_transcript("ting", "Ting")
         tts.items.clear()
-
         await engine.handle_transcript("my name is quentin", "my name is Quentin")
 
-        spoken = tts.all_text()
-        assert "is that right" not in spoken.lower() or "Quentin" not in spoken, (
-            f"Unexpected fn_confirm in reschedule: {spoken!r}"
-        )
+        spoken = tts.all_text().lower()
+        assert "is that right" not in spoken, f"fn_confirm in reschedule: {tts.all_text()!r}"
+        assert "surname" not in spoken, f"Surname question in reschedule: {tts.all_text()!r}"
 
     @pytest.mark.asyncio
-    async def test_cancel_repair_no_fn_confirm_question(self):
+    async def test_cancel_repair_no_fn_confirm_no_surname(self):
         """
-        Cancel: same bypass — no 'is that right?' emitted after repair.
+        Cancel: strong repair → accept immediately, no fn_confirm, no surname.
         """
         tts = _FakeTTSQueue()
         session = _fresh_session(
@@ -1238,13 +1263,24 @@ class TestFnReaskBypass:
 
         await engine.ask_current_question()
         tts.items.clear()
-
         await engine.handle_transcript("ting", "Ting")
         tts.items.clear()
-
         await engine.handle_transcript("my name is quentin", "my name is Quentin")
 
-        spoken = tts.all_text()
-        assert "is that right" not in spoken.lower() or "Quentin" not in spoken, (
-            f"Unexpected fn_confirm in cancel: {spoken!r}"
-        )
+        spoken = tts.all_text().lower()
+        assert "is that right" not in spoken, f"fn_confirm in cancel: {tts.all_text()!r}"
+        assert "surname" not in spoken, f"Surname question in cancel: {tts.all_text()!r}"
+
+    # ── Phone accept contract verification (deterministic, no engine needed) ──
+
+    def test_phone_accept_use_this_number(self):
+        """_is_phone_accept('use this number') must return True."""
+        assert _is_phone_accept("use this number") is True
+
+    def test_phone_accept_yes_use_this_number(self):
+        """_is_phone_accept('yes use this number') must return True."""
+        assert _is_phone_accept("yes use this number") is True
+
+    def test_phone_accept_yeah_use_this_number(self):
+        """_is_phone_accept('yeah use this number') must return True."""
+        assert _is_phone_accept("yeah use this number") is True
