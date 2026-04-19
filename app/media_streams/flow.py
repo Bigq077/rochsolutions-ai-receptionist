@@ -11586,6 +11586,12 @@ class FlowEngine:
                     "you found the right", "found the right", "right appointment",
                     "right one", "the right one", "that one", "yes that's right",
                     "perfect", "great", "confirmed", "that's correct",
+                    # Explicit reschedule-intent phrases — unambiguous confirmation
+                    "reschedule that", "reschedule it", "yes reschedule",
+                    "please reschedule", "reschedule that appointment",
+                    "yes please reschedule", "yes, reschedule",
+                    # Polite single-word affirmative in response to a yes/no question
+                    "please",
                 )
                 _LU_NO = (
                     "no", "nope", "not right", "wrong", "that's not right",
