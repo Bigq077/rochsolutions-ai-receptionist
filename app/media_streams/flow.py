@@ -163,10 +163,9 @@ _FAQ_PRICES_SERVICE_KEYWORDS = (
 
 # ── FAQ: acupuncture fear / needle anxiety — reassurance-first answer ────────
 _FAQ_ACUPUNCTURE_FEAR_ANSWER = (
-    "Most people find acupuncture much gentler than they expect \u2014 the needles are very fine, "
-    "and many people feel little or no discomfort. "
-    "The practitioner would talk you through everything before starting, "
-    "and they\u2019d go at your pace if you were nervous."
+    "Acupuncture uses very fine needles \u2014 much thinner than injection needles \u2014 "
+    "and most people describe it as a mild sensation rather than something painful. "
+    "If you\u2019re nervous about needles, the practitioner will go at your pace and talk you through it."
 )
 
 # ── FAQ: first appointment / what to expect — deterministic fallback ─────────
@@ -2947,15 +2946,31 @@ class FlowEngine:
                     .get("content", "")
                     .lower()
                 )
-                _LIST_PHRASES = (
-                    "full list", "all services", "everything you offer",
-                    "all of them", "what do you offer", "what services do you",
-                    "what services", "list of services",
+                # Acupuncture needle-fear: answer the actual concern, not a broad service list.
+                # Must fire BEFORE _FAQ_SERVICES_FAST so the first response is correct.
+                # Also sets _faq_active_service so follow-up carry-forward can route back here.
+                _AQ_FEAR_SIG = (
+                    "scared", "afraid", "nervous", "anxious", "anxiety", "phobia",
+                    "hurt", "hurts", "will it hurt", "does it hurt",
+                    "painful", "pain", "scary", "scare",
+                    "needle", "needles", "how big", "how long", "size",
+                    "worried", "worry", "what does it feel", "feel like",
+                    "hate needle", "don't like needle",
                 )
-                if any(p in _faq_svc_text for p in _LIST_PHRASES):
-                    _fast_r = _FAQ_SERVICES_FULL
+                if "acupuncture" in _faq_svc_text and any(p in _faq_svc_text for p in _AQ_FEAR_SIG):
+                    _fast_r = _FAQ_ACUPUNCTURE_FEAR_ANSWER
+                    self.session["_faq_active_service"] = "acupuncture"
+                    logger.info("[ms_flow] ask_current_question: acupuncture fear fast path")
                 else:
-                    _fast_r = _FAQ_SERVICES_FAST
+                    _LIST_PHRASES = (
+                        "full list", "all services", "everything you offer",
+                        "all of them", "what do you offer", "what services do you",
+                        "what services", "list of services",
+                    )
+                    if any(p in _faq_svc_text for p in _LIST_PHRASES):
+                        _fast_r = _FAQ_SERVICES_FULL
+                    else:
+                        _fast_r = _FAQ_SERVICES_FAST
             # ANSWER_FAQ/insurance: deterministic self-pay / Bupa answer.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("insurance", "faq_insurance"):
                 _fast_r = _FAQ_INSURANCE_ANSWER
@@ -13533,8 +13548,11 @@ class FlowEngine:
             # than a generic acupuncture service description.
             _NEEDLE_FEAR_SIGNALS = (
                 "scared", "afraid", "nervous", "anxious", "anxiety", "phobia",
-                "does it hurt", "will it hurt", "is it painful",
+                "does it hurt", "will it hurt", "is it painful", "painful", "hurt", "hurts",
+                "scary", "is it scary",
+                "needle", "needles", "how big", "how long", "size of",
                 "hate needles", "don't like needles", "not keen on needles",
+                "what does it feel", "feel like", "worried", "worry",
             )
             if "acupuncture" in _svc_text and any(p in _svc_text for p in _NEEDLE_FEAR_SIGNALS):
                 _svc_answer = _FAQ_ACUPUNCTURE_FEAR_ANSWER
