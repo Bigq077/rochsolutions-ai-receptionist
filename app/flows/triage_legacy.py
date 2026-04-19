@@ -1680,6 +1680,45 @@ def detect_intent(text: str) -> str:
     return "OTHER"
 
 
+# ── FAQ follow-up classification helpers ─────────────────────────────────────
+
+_FAQ_TRANSITION_FRAGMENTS = [
+    "next question", "another question", "one more question",
+    "brings me to", "brings on my", "bring me to",
+    "leads me to", "move on to", "moving on",
+    "also wanted to ask", "also want to ask",
+    "i also have", "one more thing", "one other thing",
+    "following on from", "on from that",
+]
+
+
+def _is_faq_transition(text: str) -> bool:
+    """Return True when the utterance is a pure transition marker with no new question content."""
+    return _contains_any(_norm(text), _FAQ_TRANSITION_FRAGMENTS)
+
+
+def _partial_faq_signal(text: str) -> Optional[str]:
+    """
+    Return an FAQ intent if partial topic signal exists but detect_intent() returned OTHER.
+    More lenient than detect_intent — tolerates incomplete or fragmented utterances.
+    Returns None when no topic signal is found.
+    """
+    t = _norm(text)
+    if _contains_any(t, ["price", "cost", "fee", "how much", "charge", "rate", "pay"]):
+        return "FAQ_PRICES"
+    if _contains_any(t, ["hour", "open", "close", "when are", "weekend"]):
+        return "FAQ_HOURS"
+    if _contains_any(t, ["address", "where", "location", "parking", "direction"]):
+        return "FAQ_LOCATION"
+    if _contains_any(t, ["insurance", "insur", "bupa", "axa", "vitality", "aviva", "wpa", "covered", "claim"]):
+        return "FAQ_INSURANCE"
+    if detect_service_topic(t):
+        return "FAQ_SERVICE_EXPLAIN"
+    if _contains_any(t, ["service", "treatment", "physio", "shockwave", "massage", "needle", "rehab", "therapy"]):
+        return "FAQ_SERVICES"
+    return None
+
+
 # ============================================================================
 # FAQ HANDLER (deterministic, location-aware)
 # Improvement 2: Hours and address now location-specific
@@ -2508,16 +2547,45 @@ async def triage_turn(
         if dtmf in ("1", "2", "3"):
             return _say("You're in the help section. Say continue to go back to booking.", session, tone="checking")
 
+        # ── Transition marker: invite the next question without repair ──────
+        # Phrases like "that brings me to my next question" have no question
+        # content themselves — respond with a clean continuation prompt.
+        if _is_faq_transition(user_said):
+            return _say("Of course — what would you like to know?", session, tone="checking")
+
         if intent == "FAQ_SERVICE_EXPLAIN":
             topic   = detect_service_topic(user_said) or session.get("faq_topic")
             svc_key = extract_service_from_question(user_said) or topic
-            session["faq_topic"] = topic
+            session["faq_topic"]      = topic
+            session["faq_last_topic"] = "FAQ_SERVICE_EXPLAIN"
+            session[f"fallback_count_{FAQ_DETOUR}"] = 0
             answer  = get_service_explanation(svc_key or "physiotherapy", "detailed")
             _say(answer, session, tone="none")
             return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
 
         if intent == "FAQ_SERVICES":
+            session["faq_last_topic"] = "FAQ_SERVICES"
+            session[f"fallback_count_{FAQ_DETOUR}"] = 0
             return _say(SERVICES_PROMPT, session, tone="none")
+
+        # ── Handle all other FAQ intents inline (no state transition) ───────
+        if intent in ("FAQ_PRICES", "FAQ_HOURS", "FAQ_LOCATION",
+                      "FAQ_POLICIES", "FAQ_FIRST_VISIT", "FAQ_PRIVACY"):
+            session["faq_last_topic"] = intent
+            session[f"fallback_count_{FAQ_DETOUR}"] = 0
+            ans = faq_answer(intent, clinic, session)
+            _say(ans, session, tone="none")
+            return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
+
+        if intent == "FAQ_INSURANCE":
+            # Answer inline — do not transition to insurance flow states,
+            # which would conflict with the pending return_state.
+            session["faq_last_topic"] = "FAQ_INSURANCE"
+            session[f"fallback_count_{FAQ_DETOUR}"] = 0
+            clinic_name = clinic.get("name", "the clinic")
+            ans = _insurance_explain(clinic_name) + " " + INSURANCE_BUPA_WARNING
+            _say(ans, session, tone="none")
+            return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
 
         if is_continue(user_said) or is_yes(user_said):
             return_state = session.get("return_state", TRIAGE)
@@ -2540,6 +2608,28 @@ async def triage_turn(
                 "Would you like to book in for that, or is there anything else I can help with?",
                 session, tone="none",
             )
+
+        # ── Partial topic signal: attempt classification before generic repair ──
+        # If utterance is fragmented but contains recognisable topic words,
+        # answer or ask a targeted clarification rather than generic repair.
+        partial = _partial_faq_signal(user_said)
+        if partial:
+            if partial == "FAQ_SERVICE_EXPLAIN":
+                return _say(
+                    "Sure — which service would you like to know more about? "
+                    "For example: shockwave therapy, sports massage, or dry needling.",
+                    session, tone="checking",
+                )
+            if partial == "FAQ_SERVICES":
+                session["faq_last_topic"] = "FAQ_SERVICES"
+                session[f"fallback_count_{FAQ_DETOUR}"] = 0
+                return _say(SERVICES_PROMPT, session, tone="none")
+            # Prices, hours, location, insurance — answer directly from partial signal
+            session["faq_last_topic"] = partial
+            session[f"fallback_count_{FAQ_DETOUR}"] = 0
+            ans = faq_answer(partial, clinic, session)
+            _say(ans, session, tone="none")
+            return _say("You can ask another question, or say continue to go back to booking.", session, tone="checking")
 
         return await _handle_fallback(session, state, clinic)
 
@@ -2809,20 +2899,43 @@ async def triage_turn(
 
         # Improvement 3: Services question → gentle prompt
         if intent == "FAQ_SERVICES":
+            session["faq_last_topic"] = "FAQ_SERVICES"
             return _say(SERVICES_PROMPT, session, tone="none")
 
         # Improvement 6: Service explanation
         if intent == "FAQ_SERVICE_EXPLAIN":
             svc_key = extract_service_from_question(user_said)
             answer  = get_service_explanation(svc_key or "physiotherapy", "detailed")
+            session["faq_last_topic"] = "FAQ_SERVICE_EXPLAIN"
             return _say(answer, session, tone="none")
 
         # Location-aware quick FAQs (hours, address)
         if intent == "FAQ_HOURS":
+            session["faq_last_topic"] = "FAQ_HOURS"
             return _say(faq_answer("FAQ_HOURS", clinic, session), session, tone="none")
 
         if intent == "FAQ_LOCATION":
+            session["faq_last_topic"] = "FAQ_LOCATION"
             return _say(faq_answer("FAQ_LOCATION", clinic, session), session, tone="none")
+
+        # ── FAQ continuation check (pre-LLM) ─────────────────────────────────
+        # If caller is following up from a previous FAQ answer and the current
+        # utterance is either a transition phrase or carries partial topic signal,
+        # handle it deterministically rather than falling through to the LLM route.
+        if intent == "OTHER" and session.get("faq_last_topic"):
+            if _is_faq_transition(user_said):
+                return _say("Of course — what would you like to know?", session, tone="checking")
+            partial = _partial_faq_signal(user_said)
+            if partial:
+                if partial == "FAQ_SERVICE_EXPLAIN":
+                    return _say(
+                        "Sure — which service would you like to know more about? "
+                        "For example: shockwave therapy, sports massage, or dry needling.",
+                        session, tone="checking",
+                    )
+                session["faq_last_topic"] = partial
+                ans = faq_answer(partial, clinic, session)
+                return _say(ans, session, tone="none")
 
         # Try LLM route
         try:
