@@ -3094,11 +3094,16 @@ class FlowEngine:
                                 f"I'm afraid I couldn't find that booking. "
                                 f"Could I just double-check — is the surname {_fail_last}?"
                             )
-                        elif self.session.get("rc_phone_first"):
-                            # Phone-first mode: no name was ever collected — ask cleanly.
+                        elif self.session.get("rc_phone_first") and not self.session.get("rc_kp_phone_done"):
+                            # Phone-first mode, first failure: ask for keypad phone entry.
+                            # Keypad recovery is primary; name recovery is secondary.
+                            self.session["rc_kp_phone_pending"] = True
                             _fail_msg = (
                                 "I couldn't find a booking on that number. "
-                                "What name was the booking made under?"
+                                "Please enter the phone number used for the booking on your keypad."
+                            )
+                            logger.info(
+                                "[ms_flow] lookup failed (phone-first) → keypad phone recovery started"
                             )
                         else:
                             _fail_msg = (
@@ -4659,45 +4664,37 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
-                # ── Forced confirm guess: resolver returned None ───────────────
-                # Detect R/RE/RED opening signal to guess Redditch; otherwise
-                # default to Alcester.  Fires immediately — no vague open re-ask.
-                # Every input that wasn't caught by FAQ/reroute gates above gets
-                # a deterministic forced-confirm so the caller can correct via yes/no.
-                #
-                # Strip leading filler words before inspecting the opening token
-                # so that "your red ditch clinic" → "red" (not "your").
-                _fc_words = text.strip().lower().split()
-                _FC_FILLERS = {
-                    "the", "our", "your", "a", "an", "at", "for",
-                    "that", "this", "clinic", "is", "it",
-                }
-                _fc_meaningful = [w for w in _fc_words if w not in _FC_FILLERS]
-                _fc_first = (
-                    _fc_meaningful[0] if _fc_meaningful
-                    else (_fc_words[0] if _fc_words else "")
-                )
-                _RED_OPEN = (
-                    "red", "read", "rit", "rid", "reed", "ready", "reddit", "redd",
-                )
-                _has_red_open = (
-                    any(_fc_first.startswith(p) for p in _RED_OPEN)
-                    or _fc_first in ("re", "r")
-                )
-                _pending = "redditch" if _has_red_open else "alcester"
-                # Silent operational bind — carry location into next question.
-                # The caller hears which clinic was picked via the embedded question
-                # text (e.g. "At our Alcester clinic, have you been with us before…")
-                # and can correct mid-flow via the global location correction handler.
-                # Never emit a standalone "Sorry — did you mean…" confirmation.
-                self.session["selected_location"] = _pending
-                self.session["needs_location"] = False
-                self.session.pop("location_retry_count", None)
-                logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → silent bind (guess=%s) for %r",
-                    _pending, text[:40],
-                )
-                await self.ask_current_question()
+                # ── Retry ladder: escalate wording then switch to DTMF ───────────
+                # retry 0 → spoken re-ask with explicit clinic names
+                # retry 1+ → DTMF keypad fallback
+                _loc_retry = self.session.get("location_retry_count", 0)
+                if _loc_retry == 0:
+                    # Second ask: polite re-ask with explicit names
+                    _retry2_q = (
+                        "Sorry, I didn't quite catch that. "
+                        "Please say the Alcester clinic or the Redditch clinic."
+                    )
+                    self.session["location_retry_count"] = 1
+                    await self._tts.put(_retry2_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _retry2_q}
+                    )
+                    self.session["last_question"] = _retry2_q
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION retry 2 emitted for %r", text[:40]
+                    )
+                else:
+                    # Third ask: switch to DTMF keypad entry
+                    self.session["location_awaiting_dtmf"] = True
+                    _dtmf_q = "Press 1 for Alcester or 2 for Redditch."
+                    await self._tts.put(_dtmf_q)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _dtmf_q}
+                    )
+                    self.session["last_question"] = _dtmf_q
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION retry 3 switched to DTMF for %r", text[:40]
+                    )
             return
 
         # ════════════════════════════════════════════════════════════════════
@@ -11210,6 +11207,40 @@ class FlowEngine:
                         try: self._tts.get_nowait()
                         except Exception: break
 
+                # ── Keypad phone recovery: intercept before name/ladder steps ──────
+                # Active when lookup failed in phone-first mode and we asked for
+                # the booking phone number on the keypad.  Accepts DTMF-buffered
+                # digits (sent as synthetic transcript by connection.py) or spoken
+                # digits extracted from STT text.
+                if self.session.get("rc_kp_phone_pending"):
+                    import re as _re_kp
+                    _kp_digits = _re_kp.sub(r"\D", "", text or "")
+                    if len(_kp_digits) >= 10:
+                        _kp_phone = _to_e164_uk(_kp_digits) or _kp_digits
+                        self.session["phone_number"] = _kp_phone
+                        self.session.setdefault("collected", {})["phone"] = _kp_phone
+                        self.session.pop("rc_kp_phone_pending", None)
+                        self.session["rc_kp_phone_done"] = True   # mark so second failure goes to name
+                        self.session.pop("lookup_correction_mode", None)
+                        self.session.pop("rc_recovery_step", None)
+                        logger.info(
+                            "[ms_flow] keypad phone recovery lookup retried: digits=%r → phone=%r",
+                            _kp_digits, _kp_phone,
+                        )
+                        _flush_tts()
+                        await self.ask_current_question()
+                    else:
+                        # No usable digits — short re-prompt toward keypad
+                        _kp_reprompt = "Please enter the phone number on your keypad."
+                        _flush_tts()
+                        await self._tts.put(_kp_reprompt)
+                        self.session["last_question"] = _kp_reprompt
+                        logger.info(
+                            "[ms_flow] keypad phone recovery: unclear %r — re-prompting",
+                            text[:40],
+                        )
+                    return
+
                 # ── Step-specific branches ─────────────────────────────────────
                 if _rc_step == "surname":
                     if _is_confirmed:
@@ -11237,21 +11268,50 @@ class FlowEngine:
                         )
                         return
 
-                    # Surname correction supplied — update name and retry lookup
+                    # Name capture — support progressive first-name / surname entry
+                    # If caller gives a single word, store as first name and ask for surname.
+                    # If rc_name_first_name already stored, combine and retry immediately.
                     _correction = _parse_lookup_name_correction(text)
                     if _correction:
                         col = self.session.setdefault("collected", {})
+                        _stored_first = self.session.get("rc_name_first_name")
                         if _correction.startswith("__SURNAME__"):
                             _new_surname = _correction[len("__SURNAME__"):]
                             _existing_full = (col.get("full_name") or "").strip()
-                            _first = _existing_full.split()[0] if _existing_full else ""
+                            _first = _stored_first or (_existing_full.split()[0] if _existing_full else "")
                             _combined = f"{_first} {_new_surname}".strip() if _first else _new_surname
+                            self.session.pop("rc_name_first_name", None)
                             col["full_name"] = _combined
                             self.session["full_name"] = _combined
                             logger.info(
                                 "[ms_flow] recovery/surname correction: %r → full_name=%r",
                                 text[:50], _combined,
                             )
+                        elif _stored_first:
+                            # We have a stored first name — this is the surname
+                            _combined = f"{_stored_first} {_correction}".strip()
+                            self.session.pop("rc_name_first_name", None)
+                            col["full_name"] = _combined
+                            self.session["full_name"] = _combined
+                            logger.info(
+                                "[ms_flow] partial name: surname=%r received → full_name=%r",
+                                _correction, _combined,
+                            )
+                        elif len(_correction.split()) == 1:
+                            # Single word — treat as first name, ask for surname
+                            self.session["rc_name_first_name"] = _correction
+                            _sn_q = "Thanks — what surname was it booked under?"
+                            _flush_tts()
+                            await self._tts.put(_sn_q)
+                            self.session.setdefault("conversation_history", []).append(
+                                {"role": "assistant", "content": _sn_q}
+                            )
+                            self.session["last_question"] = _sn_q
+                            logger.info(
+                                "[ms_flow] partial name captured (first=%r) — requesting surname",
+                                _correction,
+                            )
+                            return
                         else:
                             col["full_name"] = _correction
                             self.session["full_name"] = _correction
@@ -11268,10 +11328,15 @@ class FlowEngine:
                         await self.ask_current_question()
                         return
                     else:
-                        _reask = (
-                            "Sorry — I didn't quite catch that. "
-                            "Could you give me the surname the booking was made under?"
-                        )
+                        # Cannot parse a name — check if we have partial info
+                        _stored_first_reask = self.session.get("rc_name_first_name")
+                        if _stored_first_reask:
+                            _reask = "What surname was the booking made under?"
+                        else:
+                            _reask = (
+                                "Sorry — I didn't quite catch that. "
+                                "Could you give me the surname the booking was made under?"
+                            )
                         _flush_tts()
                         await self._tts.put(_reask)
                         self.session["last_question"] = _reask

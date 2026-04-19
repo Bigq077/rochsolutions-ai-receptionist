@@ -1820,8 +1820,11 @@ class WebSocketCallHandler:
                 await self.transcript_queue.put("redditch")
             return
 
-        # Only accumulate DTMF while in phone-collection state
-        if self.session.get("state") not in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING"):
+        # Only accumulate DTMF while in phone-collection state or keypad lookup recovery
+        if (
+            self.session.get("state") not in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")
+            and not self.session.get("rc_kp_phone_pending")
+        ):
             return
 
         buf = self.session.get("phone_dtmf_buffer", "") + digit
