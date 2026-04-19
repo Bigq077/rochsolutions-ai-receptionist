@@ -1363,9 +1363,21 @@ class NameCollector:
         prepend "Thanks {name} —" to the next question.  If a pending_surname was
         pre-queued (2-token input like "quentin roch"), consume it immediately and
         enter sn_confirm; otherwise advance to sn_normal and ask for the surname.
+
+        For new-patient booking (COLLECT_NAME state) surname is skipped entirely —
+        it is collected via post-call SMS instead of live call.
         """
         self._nc["_fn_direct_stored"] = True
         self._store_first_name(fn, confirmed=True)
+        # New patient booking only: skip surname — collected via post-call SMS
+        if self._s.get("state") == "COLLECT_NAME":
+            self._nc["pending_surname"] = None
+            self._accept(fn)
+            logger.info(
+                "[NameCollector] _store_fn_direct: %r → accept (COLLECT_NAME, surname skipped)",
+                fn,
+            )
+            return ("accept", fn)
         pending = self._nc.get("pending_surname")
         if pending:
             self._nc["pending_surname"] = None

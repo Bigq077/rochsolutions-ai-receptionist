@@ -197,9 +197,11 @@ async def send_smart_followup_sms(
 
     patient_phone = _get_confirmed_phone(session)
 
-    # First name only
+    # First name only — sanitised: reject None, empty, and junk placeholders
     name_raw     = collected.get("name", "") or ""
     patient_name = name_raw.split()[0] if name_raw.strip() else ""
+    if patient_name.lower() in {"none", "unknown", "null", "n/a", "na", "undefined"}:
+        patient_name = ""
 
     outcome        = summary.get("outcome", "")
     meta_data      = summary.get("meta", {}) or {}
@@ -238,6 +240,11 @@ async def send_smart_followup_sms(
     # Booked — handled separately (booking confirmation SMS is already sent)
     if outcome == "booked":
         logger.info("✅ Booked — booking confirmation SMS already sent")
+        return False
+
+    # Reschedule reached transaction stage but backend failed — patient already told verbally
+    if outcome == "reschedule_failed":
+        logger.info("🔴 reschedule_failed — skipping SMS (patient informed verbally during call)")
         return False
 
     # Cancelled / any flow where a confirmation SMS was already sent during the call
@@ -366,7 +373,16 @@ def _choose_template(
         return templates.format_price_inquiry_sms(
             patient_name=patient_name, **ck)
 
-    # 10. ABANDONED — with a clean condition label only (never raw speech)
+    # 10. ABANDONED — suppressed when caller already made substantial booking progress
+    if outcome == "abandoned" and _booking_has_progressed(session, collected):
+        logger.info(
+            "🛑 abandoned but booking progressed (name=%r reason=%r type=%r) "
+            "— suppressing SMS",
+            collected.get("name"), collected.get("reason"), collected.get("patient_type"),
+        )
+        return None
+
+    # 11. ABANDONED — with a clean condition label only (never raw speech)
     if outcome == "abandoned" and condition_label:
         return templates.format_abandoned_booking_sms(
             patient_name    = patient_name,
@@ -374,7 +390,7 @@ def _choose_template(
             **ck,
         )
 
-    # 11. ABANDONED — general (no clean condition extracted)
+    # 12. ABANDONED — general (no clean condition extracted)
     if outcome == "abandoned":
         return templates.format_abandoned_booking_sms(
             patient_name=patient_name, **ck)
@@ -432,3 +448,30 @@ def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
         if isinstance(turn, dict) and "bupa" in turn.get("question", "").lower():
             return True
     return False
+
+
+def _booking_has_progressed(session: Dict, collected: Dict) -> bool:
+    """
+    True if the caller made substantial booking progress.
+
+    Requires at least 2 active signals so shallow calls (e.g. Twilio caller-ID
+    auto-populates phone but caller said nothing) are not suppressed.
+    """
+    _intent_is_booking = "book" in str(
+        session.get("intent") or session.get("last_intent") or ""
+    ).lower()
+    _name_captured    = bool(collected.get("name") or session.get("name_fragment"))
+    _reason_captured  = bool(collected.get("reason"))
+    _type_captured    = bool(collected.get("patient_type"))
+    _phone_confirmed  = (
+        session.get("phone_confirmed") is True
+        and bool(collected.get("phone") or session.get("phone_number"))
+    )
+    active_signals = sum([
+        _intent_is_booking,
+        _name_captured,
+        _reason_captured,
+        _type_captured,
+        _phone_confirmed,
+    ])
+    return active_signals >= 2
