@@ -6041,15 +6041,31 @@ class FlowEngine:
             # Caller signals they have questions without stating one yet.
             # Emit a natural opener and hold in DETECT_INTENT so the real question
             # arrives next turn — avoids routing "yeah a couple" to ANSWER_GENERAL LLM.
+            # FAQ multi-opener intercept: "I had a couple of questions" / "a few questions"
+            # etc. signal the caller wants to ask questions without stating one yet.
+            # Holding in DETECT_INTENT here prevents routing to ANSWER_GENERAL which
+            # would immediately advance the session to GENERAL_BOOKING_OFFER and host
+            # the entire FAQ exchange inside a booking-offer state.
+            # The word-count gate (≤5) is intentionally removed — longer openers like
+            # "yeah i had a couple of questions about your clinic" must also be caught.
+            # Specific topic keywords are in the exclusion list so "a few questions
+            # about acupuncture" falls through to _detect_intent → faq_services directly.
             _FAQ_MULTI_OPENER_SIGNALS = (
                 "a couple", "a few", "couple more", "few more", "couple questions",
+                "couple of questions", "a couple of questions",
+                "few questions", "some questions",
+                "had a question", "have a question", "got a question", "quick question",
+                "questions about", "questions first", "questions before",
+            )
+            _FAQ_OPENER_TOPIC_EXCLUSIONS = (
+                "book", "appoint", "reschedule", "cancel", "price", "insurance",
+                "parking", "address", "location", "hours", "opening",
+                "acupuncture", "shockwave", "laser", "pilates", "massage",
+                "physiotherapy", "physio",
             )
             if (
-                len(_ft_words) <= 5
-                and any(p in text for p in _FAQ_MULTI_OPENER_SIGNALS)
-                and not any(s in text for s in (
-                    "book", "appoint", "reschedule", "cancel", "price", "insurance",
-                ))
+                any(p in text for p in _FAQ_MULTI_OPENER_SIGNALS)
+                and not any(s in text for s in _FAQ_OPENER_TOPIC_EXCLUSIONS)
             ):
                 logger.info(
                     "[ms_flow] DETECT_INTENT: FAQ multi-opener %r — holding for question",
@@ -10586,6 +10602,7 @@ class FlowEngine:
                         "[ms_flow] FAQ_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",
                         _fbo_intent, time.time() - _fbo_last_at,
                     )
+                    self.session["fragment_suppressed"] = True  # block global hard fallback
                     return
                 self.session["faq_follow_up_count"] = _fbo_count + 1
                 logger.info(
@@ -10937,6 +10954,7 @@ class FlowEngine:
                         "[ms_flow] GENERAL_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",
                         _gbo_intent, time.time() - _gbo_last_at,
                     )
+                    self.session["fragment_suppressed"] = True  # block global hard fallback
                     return
                 # Stamp before the await so any re-entrant transcript for the same
                 # intent is already blocked by the time we resume.
@@ -10964,6 +10982,7 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] GENERAL_BOOKING_OFFER: dedup general_query — suppressed",
                     )
+                    self.session["fragment_suppressed"] = True  # block global hard fallback
                     return
                 self.session["_faq_ans_intent"] = _gbo_intent
                 self.session["_faq_ans_at"]     = time.time()
