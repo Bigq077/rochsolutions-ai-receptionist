@@ -4657,25 +4657,19 @@ class FlowEngine:
                     or _fc_first in ("re", "r")
                 )
                 _pending = "redditch" if _has_red_open else "alcester"
-                # Never silently bind on unresolved/ambiguous input — use forced-confirm
-                # so the caller explicitly says yes/no before location is committed.
-                _fc_named = "Redditch" if _pending == "redditch" else "Alcester"
-                _fc_other = "Alcester" if _pending == "redditch" else "Redditch"
-                _fc_reask = (
-                    f"Sorry — was that our {_fc_named} clinic, "
-                    f"or our {_fc_other} clinic?"
-                )
-                self.session["location_pending_guess"] = _pending
-                await self._tts.put(_fc_reask)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _fc_reask}
-                )
-                self.session["last_question"] = _fc_reask
+                # Silent operational bind — carry location into next question.
+                # The caller hears which clinic was picked via the embedded question
+                # text (e.g. "At our Alcester clinic, have you been with us before…")
+                # and can correct mid-flow via the global location correction handler.
+                # Never emit a standalone "Sorry — did you mean…" confirmation.
+                self.session["selected_location"] = _pending
+                self.session["needs_location"] = False
+                self.session.pop("location_retry_count", None)
                 logger.info(
-                    "[ms_flow] ASK_LOCATION: resolver None → forced-confirm re-ask "
-                    "(guess=%s) for %r",
+                    "[ms_flow] ASK_LOCATION: resolver None → silent bind (guess=%s) for %r",
                     _pending, text[:40],
                 )
+                await self.ask_current_question()
             return
 
         # ════════════════════════════════════════════════════════════════════
