@@ -722,11 +722,17 @@ _FAQ_RESOLUTION_PROCEED_SIGS: tuple[str, ...] = (
     "happy with acupuncture", "happy to try",
     "let's try", "lets try", "i'll try", "ill try", "i will try",
     "i'd like to try", "id like to try",
+    "i want to try", "wanted to try", "want to try out", "try out acupuncture",
     "let's do", "lets do", "let's go with", "lets go with",
+    "i'll go with", "ill go with", "i think i'll go", "i think ill go",
+    "i think i'll", "i think ill",
     "i'd like to book", "id like to book", "i want to book", "i wanna book",
-    "book in an acupuncture", "book an acupuncture",
+    "book in an acupuncture", "book an acupuncture", "acupuncture appointment",
+    "acupuncture booking", "book the acupuncture",
     "book me in", "book me",
     "go ahead with", "go with acupuncture",
+    "go through with", "want to go through", "go through with acupuncture",
+    "through with acupuncture",
     "that sounds fine", "that sounds good", "that sounds ok",
     "that sounds okay", "that's fine", "thats fine",
     "sounds good then", "sounds fine then",
@@ -11938,23 +11944,49 @@ class FlowEngine:
             # exit booking immediately regardless of current state.
             # Guard: do NOT reset if already in the target flow (avoids restart loops).
             if _mid_intent == "reschedule":
-                if self._active_flow is not RESCHEDULE_FLOW:
+                # Regression guard: generic booking language ("acupuncture
+                # booking", "i want to book", "go through with booking") must
+                # never trigger a reschedule hard-route.  Require an explicit
+                # reschedule/cancel/change/move signal in the raw text before
+                # abandoning the active booking flow.
+                _rs_explicit_sigs = (
+                    "reschedule", "re-schedule", "re schedule",
+                    "change my appointment", "change the appointment",
+                    "change an appointment", "change a booking",
+                    "change my booking", "change the booking",
+                    "move my appointment", "move the appointment",
+                    "move an appointment", "move my booking",
+                    "rearrange my appointment", "rearrange the appointment",
+                    "rebook my", "rebook the", "re-book my", "re-book the",
+                    "different time for my", "different day for my",
+                )
+                _rs_text_lower = (text or "").lower()
+                if not any(p in _rs_text_lower for p in _rs_explicit_sigs):
                     logger.info(
-                        "[ms_flow] mid-flow reschedule hard-route at %s", step["state"]
+                        "[ms_flow] reschedule_hard_route_suppressed "
+                        "reason=no_explicit_reschedule_language text=%r",
+                        text[:80],
                     )
-                    self._switch_flow("reschedule")
-                    await self.ask_current_question()
+                    _mid_intent = "booking"
+                    # Fall through — do NOT return; continue normal booking flow.
                 else:
-                    # Already in reschedule flow — re-anchor to current question so
-                    # the caller hears something instead of dead air.
-                    _rrs_lq = self.session.get("last_question", "")
-                    if _rrs_lq:
-                        await self._tts.put(_rrs_lq)
-                    logger.info(
-                        "[ms_flow] mid-flow reschedule already in RESCHEDULE_FLOW at %s — re-anchoring",
-                        step["state"],
-                    )
-                return
+                    if self._active_flow is not RESCHEDULE_FLOW:
+                        logger.info(
+                            "[ms_flow] mid-flow reschedule hard-route at %s", step["state"]
+                        )
+                        self._switch_flow("reschedule")
+                        await self.ask_current_question()
+                    else:
+                        # Already in reschedule flow — re-anchor to current question so
+                        # the caller hears something instead of dead air.
+                        _rrs_lq = self.session.get("last_question", "")
+                        if _rrs_lq:
+                            await self._tts.put(_rrs_lq)
+                        logger.info(
+                            "[ms_flow] mid-flow reschedule already in RESCHEDULE_FLOW at %s — re-anchoring",
+                            step["state"],
+                        )
+                    return
             if _mid_intent == "cancel":
                 if self._active_flow is not CANCEL_FLOW:
                     logger.info(
@@ -14085,10 +14117,30 @@ class FlowEngine:
         if step["state"] == "COLLECT_REASON":
             _cr_intent = self._detect_intent(text)
             if _cr_intent == "reschedule":
-                logger.info("[ms_flow] COLLECT_REASON: reschedule intent detected — switching flow")
-                self._switch_flow("reschedule")
-                await self.ask_current_question()
-                return
+                _cr_rs_sigs = (
+                    "reschedule", "re-schedule", "re schedule",
+                    "change my appointment", "change the appointment",
+                    "change an appointment", "change a booking",
+                    "change my booking", "change the booking",
+                    "move my appointment", "move the appointment",
+                    "move an appointment", "move my booking",
+                    "rearrange my appointment", "rearrange the appointment",
+                    "rebook my", "rebook the", "re-book my", "re-book the",
+                    "different time for my", "different day for my",
+                )
+                _cr_text_lower = (text or "").lower()
+                if not any(p in _cr_text_lower for p in _cr_rs_sigs):
+                    logger.info(
+                        "[ms_flow] reschedule_hard_route_suppressed "
+                        "at=COLLECT_REASON reason=no_explicit_reschedule_language "
+                        "text=%r", text[:80],
+                    )
+                    _cr_intent = "booking"
+                else:
+                    logger.info("[ms_flow] COLLECT_REASON: reschedule intent detected — switching flow")
+                    self._switch_flow("reschedule")
+                    await self.ask_current_question()
+                    return
             if _cr_intent == "cancel":
                 logger.info("[ms_flow] COLLECT_REASON: cancel intent detected — switching flow")
                 self._switch_flow("cancel")
