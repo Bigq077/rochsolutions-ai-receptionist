@@ -1323,7 +1323,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 7,
         "state": "COLLECT_NAME_RETURNING",
-        "question": "Could I take your first name please?",
+        "question": "Could I take your first name please? You can say: my first name is...",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -1352,7 +1352,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 10,
         "state": "COLLECT_NAME",
-        "question": "And what's your first name please?",
+        "question": "And what's your first name please? You can say: my first name is...",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -1783,7 +1783,7 @@ RESCHEDULE_FLOW: List[Dict[str, Any]] = [
     {
         "step": 0,
         "state": "COLLECT_NAME_RESCHEDULE",
-        "question": "What's your first name?",
+        "question": "What's your first name please? You can say: my first name is...",
         "answer_field": "full_name",
         "use_llm": False,
         "extract": "name",
@@ -5317,6 +5317,34 @@ class FlowEngine:
                 logger.info("[ms_flow] ASK_LOCATION DTMF: unresolved — looping")
                 return
 
+            # ── Tail-fragment suppression ─────────────────────────────────────
+            # A bare one-word connector / filler arriving right after the
+            # ASK_LOCATION prompt is almost always a stray tail of the caller's
+            # previous utterance (e.g. "...book an appointment then"), not a
+            # clinic answer.  Suppress so the retry counter is not consumed and
+            # the watchdog can repair the turn cleanly.  Note: "yes"/"no" are
+            # deliberately excluded — forced-confirm mode handled them above,
+            # and in fresh ASK_LOCATION they are meaningless location answers
+            # anyway, but we keep them out of the suppression set to leave any
+            # future binary-prompt reuse working.
+            _LOC_TAIL_FRAGMENTS = frozenset({
+                "then", "and", "so", "but",
+                "um", "uh", "er", "err", "hmm", "mmm", "mhm",
+                "okay", "ok", "right", "yeah",
+            })
+            _loc_frag_words = text.strip().split()
+            if (
+                len(_loc_frag_words) == 1
+                and _loc_frag_words[0] in _LOC_TAIL_FRAGMENTS
+            ):
+                self.session["fragment_suppressed"] = True
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: tail-fragment %r suppressed "
+                    "(state=ASK_LOCATION, retry not consumed, watchdog preserved)",
+                    text[:20],
+                )
+                return
+
             # ── Non-location corrective escape ────────────────────────────────
             # "I said I had a few questions first" / "I was asking about parking"
             # arriving inside the ASK_LOCATION block — caller is correcting the
@@ -6926,6 +6954,7 @@ class FlowEngine:
             _FIRST_TURN_FILLERS = frozenset({
                 "yeah", "yes", "yep", "yup", "hi", "hello", "hey",
                 "uh", "um", "er", "err", "okay", "ok", "right",
+                "then", "and", "so", "but", "hmm", "mmm", "mhm",
             })
             _ft_words = text.strip().split()
             if len(_ft_words) == 1 and _ft_words[0] in _FIRST_TURN_FILLERS:
