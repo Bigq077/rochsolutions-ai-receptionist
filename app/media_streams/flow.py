@@ -4354,6 +4354,29 @@ class FlowEngine:
         # Always returns — never falls through while pending is set.
         _gp_pending_loc = self.session.get("_faq_loc_pending_intent")
         if _gp_pending_loc and step:
+            # ── DTMF mode: waiting for keypad press — loops until resolved ────────────────
+            if self.session.get("_faq_loc_awaiting_dtmf"):
+                _gp_dtmf_loc = self._extract("location_selection", text, transcript)
+                if _gp_dtmf_loc:
+                    self.session["last_faq_loc_id"] = _gp_dtmf_loc
+                    _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
+                    self.session.pop("_faq_loc_pending_intent", None)
+                    self.session.pop("_faq_loc_retry_count", None)
+                    self.session.pop("_faq_loc_awaiting_dtmf", None)
+                    _gp_synth_tx = (
+                        f"{_gp_pend_sub} {_gp_dtmf_loc}".strip() if _gp_pend_sub else _gp_dtmf_loc
+                    )
+                    logger.info("[ms_flow] faq_pending: DTMF resolved → %s", _gp_dtmf_loc)
+                    self.session["_faq_ans_intent"] = _gp_pending_loc
+                    self.session["_faq_ans_at"]     = time.time()
+                    await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
+                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    return
+                _gp_dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                await self._tts.put(_gp_dtmf_re)
+                self.session["last_question"] = _gp_dtmf_re
+                return
+
             _gp_pending_guess = self.session.get("_faq_loc_pending_guess")
             if _gp_pending_guess:
                 # ── Confirm sub-block: waiting for yes/no on our guessed clinic ──
@@ -4399,6 +4422,8 @@ class FlowEngine:
                         return
                 # Confirmed — answer the original pending FAQ question
                 self.session.pop("_faq_loc_pending_guess", None)
+                self.session.pop("_faq_loc_retry_count", None)
+                self.session.pop("_faq_loc_awaiting_dtmf", None)
                 self.session["last_faq_loc_id"] = _gp_clinic
                 _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
                 self.session.pop("_faq_loc_pending_intent", None)
@@ -4452,6 +4477,8 @@ class FlowEngine:
                 self.session["last_faq_loc_id"] = _gp_clinic
                 _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
                 self.session.pop("_faq_loc_pending_intent", None)
+                self.session.pop("_faq_loc_retry_count", None)
+                self.session.pop("_faq_loc_awaiting_dtmf", None)
                 _gp_synth_tx = (
                     f"{_gp_pend_sub} {_gp_clinic}".strip() if _gp_pend_sub else _gp_clinic
                 )
@@ -4465,46 +4492,72 @@ class FlowEngine:
                 self.session["last_question"] = "Anything else you'd like to ask?"
                 return
             elif _gp_loc_result["status"] == "ambiguous":
-                # Conflict / never-bind — re-ask plainly, keep pending intact
-                _gp_reask = "Sorry \u2014 did you mean Alcester or Redditch?"
-                await self._tts.put(_gp_reask)
-                self.session["last_question"] = _gp_reask
-                logger.info(
-                    "[ms_flow] faq_pending: ambiguous → re-asking clinic, pending preserved",
-                )
-                return
-            else:
-                # Unknown / low signal — pick a guess from debug scores and ask confirm
-                _gp_debug = _gp_loc_result.get("debug", {})
-                _gp_alc_s = _gp_debug.get("alcester_score", 0)
-                _gp_red_s = _gp_debug.get("redditch_score", 0)
-                if _gp_alc_s > _gp_red_s and _gp_alc_s >= 15:
-                    _gp_guess = "alcester"
-                elif _gp_red_s > _gp_alc_s and _gp_red_s >= 15:
-                    _gp_guess = "redditch"
-                else:
-                    # No meaningful signal — re-ask plainly, keep pending intact
-                    _gp_reask = "Sorry \u2014 was that for Alcester or Redditch?"
+                _gp_conf  = _gp_loc_result.get("confidence", 0)
+                _gp_dbg2  = _gp_loc_result.get("debug", {})
+                _gp_alc2  = _gp_dbg2.get("alcester_score", 0)
+                _gp_red2  = _gp_dbg2.get("redditch_score", 0)
+                if _gp_conf >= 0.50:
+                    # Score ≥50 — silently bind the stronger clinic
+                    _gp_bind = "alcester" if _gp_alc2 >= _gp_red2 else "redditch"
+                    self.session["last_faq_loc_id"] = _gp_bind
+                    _gp_pend_sub = self.session.pop("_faq_loc_pending_sub", "")
+                    self.session.pop("_faq_loc_pending_intent", None)
+                    self.session.pop("_faq_loc_retry_count", None)
+                    self.session.pop("_faq_loc_awaiting_dtmf", None)
+                    _gp_synth_tx = (
+                        f"{_gp_pend_sub} {_gp_bind}".strip() if _gp_pend_sub else _gp_bind
+                    )
+                    logger.info(
+                        "[ms_flow] faq_pending: ambiguous conf=%.2f → silent bind %s",
+                        _gp_conf, _gp_bind,
+                    )
+                    self.session["_faq_ans_intent"] = _gp_pending_loc
+                    self.session["_faq_ans_at"]     = time.time()
+                    await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
+                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    return
+                # Low-confidence ambiguous — retry ladder
+                _gp_retry_n = self.session.get("_faq_loc_retry_count", 0)
+                if _gp_retry_n < 1:
+                    self.session["_faq_loc_retry_count"] = _gp_retry_n + 1
+                    _gp_reask = (
+                        "Sorry, I didn't quite catch that — "
+                        "can you please say the Alcester clinic or the Redditch clinic?"
+                    )
                     await self._tts.put(_gp_reask)
                     self.session["last_question"] = _gp_reask
                     logger.info(
-                        "[ms_flow] faq_pending: no signal in %r → re-asking, pending preserved",
-                        text[:40],
+                        "[ms_flow] faq_pending: ambiguous low-conf → voice retry %d", _gp_retry_n + 1,
                     )
                     return
-                # Weak lean — set pending guess and ask confirm, keep original intent
-                self.session["_faq_loc_pending_guess"] = _gp_guess
-                _gp_confirm = (
-                    "Just to confirm \u2014 was that Redditch?"
-                    if _gp_guess == "redditch"
-                    else "Just to confirm \u2014 was that Alcester?"
-                )
-                await self._tts.put(_gp_confirm)
-                self.session["last_question"] = _gp_confirm
-                logger.info(
-                    "[ms_flow] faq_pending: uncertain (guess=%s) → forced confirm for %r",
-                    _gp_guess, text[:40],
-                )
+                # Retry exhausted — switch to DTMF loop (never ends call)
+                self.session["_faq_loc_awaiting_dtmf"] = True
+                _gp_dtmf = "Press 1 for Alcester or 2 for Redditch."
+                await self._tts.put(_gp_dtmf)
+                self.session["last_question"] = _gp_dtmf
+                logger.info("[ms_flow] faq_pending: ambiguous → DTMF mode")
+                return
+            else:
+                # Unknown / no signal — retry ladder
+                _gp_retry_n = self.session.get("_faq_loc_retry_count", 0)
+                if _gp_retry_n < 1:
+                    self.session["_faq_loc_retry_count"] = _gp_retry_n + 1
+                    _gp_reask = (
+                        "Sorry, I didn't quite catch that — "
+                        "can you please say the Alcester clinic or the Redditch clinic?"
+                    )
+                    await self._tts.put(_gp_reask)
+                    self.session["last_question"] = _gp_reask
+                    logger.info(
+                        "[ms_flow] faq_pending: unknown → voice retry %d", _gp_retry_n + 1,
+                    )
+                    return
+                # Retry exhausted — switch to DTMF loop (never ends call)
+                self.session["_faq_loc_awaiting_dtmf"] = True
+                _gp_dtmf = "Press 1 for Alcester or 2 for Redditch."
+                await self._tts.put(_gp_dtmf)
+                self.session["last_question"] = _gp_dtmf
+                logger.info("[ms_flow] faq_pending: unknown → DTMF mode")
                 return
 
         # ── GLOBAL CHILD-AGE PENDING ──────────────────────────────────────────────
@@ -11917,6 +11970,25 @@ class FlowEngine:
                         return
 
                     # Try to resolve a new clinic from the utterance
+                    # ── DTMF mode: waiting for keypad press — loops until resolved ─────────
+                    if self.session.get("_recovery_loc_awaiting_dtmf"):
+                        _rl_dtmf_loc = self._extract("location_selection", text, transcript)
+                        if _rl_dtmf_loc:
+                            self.session["selected_location"] = _rl_dtmf_loc
+                            self.session.pop("lookup_correction_mode", None)
+                            self.session.pop("rc_recovery_step", None)
+                            self.session.pop("_recovery_loc_retry_count", None)
+                            self.session.pop("_recovery_loc_awaiting_dtmf", None)
+                            logger.info("[ms_flow] recovery/location: DTMF resolved → %s", _rl_dtmf_loc)
+                            _flush_tts()
+                            await self.ask_current_question()
+                            return
+                        _rl_dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                        _flush_tts()
+                        await self._tts.put(_rl_dtmf_re)
+                        self.session["last_question"] = _rl_dtmf_re
+                        return
+
                     _loc_result = _resolve_clinic(_lc_corr, context="ask_location")
                     if _loc_result["status"] == "resolved":
                         self.session["selected_location"] = _loc_result["location"]
@@ -11926,14 +11998,76 @@ class FlowEngine:
                         )
                         self.session.pop("lookup_correction_mode", None)
                         self.session.pop("rc_recovery_step", None)
+                        self.session.pop("_recovery_loc_retry_count", None)
+                        self.session.pop("_recovery_loc_awaiting_dtmf", None)
                         _flush_tts()
                         await self.ask_current_question()
                         return
-                    else:
-                        _reask = "Is the booking at the Alcester or Redditch clinic?"
+                    elif _loc_result["status"] == "ambiguous":
+                        _rl_conf = _loc_result.get("confidence", 0)
+                        _rl_dbg  = _loc_result.get("debug", {})
+                        _rl_alc  = _rl_dbg.get("alcester_score", 0)
+                        _rl_red  = _rl_dbg.get("redditch_score", 0)
+                        if _rl_conf >= 0.50:
+                            _rl_bind = "alcester" if _rl_alc >= _rl_red else "redditch"
+                            self.session["selected_location"] = _rl_bind
+                            self.session.pop("lookup_correction_mode", None)
+                            self.session.pop("rc_recovery_step", None)
+                            self.session.pop("_recovery_loc_retry_count", None)
+                            self.session.pop("_recovery_loc_awaiting_dtmf", None)
+                            logger.info(
+                                "[ms_flow] recovery/location: ambiguous conf=%.2f → silent bind %s",
+                                _rl_conf, _rl_bind,
+                            )
+                            _flush_tts()
+                            await self.ask_current_question()
+                            return
+                        # Low-confidence ambiguous — retry ladder
+                        _rl_retry_n = self.session.get("_recovery_loc_retry_count", 0)
+                        if _rl_retry_n < 1:
+                            self.session["_recovery_loc_retry_count"] = _rl_retry_n + 1
+                            _reask = (
+                                "Sorry, I didn't quite catch that — "
+                                "can you please say the Alcester clinic or the Redditch clinic?"
+                            )
+                            _flush_tts()
+                            await self._tts.put(_reask)
+                            self.session["last_question"] = _reask
+                            logger.info(
+                                "[ms_flow] recovery/location: ambiguous → voice retry %d", _rl_retry_n + 1,
+                            )
+                            return
+                        # Retry exhausted — DTMF loop (never ends call)
+                        self.session["_recovery_loc_awaiting_dtmf"] = True
+                        _reask = "Press 1 for Alcester or 2 for Redditch."
                         _flush_tts()
                         await self._tts.put(_reask)
                         self.session["last_question"] = _reask
+                        logger.info("[ms_flow] recovery/location: ambiguous → DTMF mode")
+                        return
+                    else:
+                        # Unknown / no signal — retry ladder
+                        _rl_retry_n = self.session.get("_recovery_loc_retry_count", 0)
+                        if _rl_retry_n < 1:
+                            self.session["_recovery_loc_retry_count"] = _rl_retry_n + 1
+                            _reask = (
+                                "Sorry, I didn't quite catch that — "
+                                "can you please say the Alcester clinic or the Redditch clinic?"
+                            )
+                            _flush_tts()
+                            await self._tts.put(_reask)
+                            self.session["last_question"] = _reask
+                            logger.info(
+                                "[ms_flow] recovery/location: unknown → voice retry %d", _rl_retry_n + 1,
+                            )
+                            return
+                        # Retry exhausted — DTMF loop (never ends call)
+                        self.session["_recovery_loc_awaiting_dtmf"] = True
+                        _reask = "Press 1 for Alcester or 2 for Redditch."
+                        _flush_tts()
+                        await self._tts.put(_reask)
+                        self.session["last_question"] = _reask
+                        logger.info("[ms_flow] recovery/location: unknown → DTMF mode")
                         return
 
                 # ── phone step / generic fallback ─────────────────────────────
