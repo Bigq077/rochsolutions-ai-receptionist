@@ -6892,8 +6892,14 @@ class FlowEngine:
             })
             _ft_words = text.strip().split()
             if len(_ft_words) == 1 and _ft_words[0] in _FIRST_TURN_FILLERS:
+                # Transcript arrived but is non-actionable — keep the pending question
+                # open.  Set fragment_suppressed so connection.py's global hard fallback
+                # does NOT fire ("Sorry, I can't answer that properly...").  The watchdog
+                # re-arm is handled by the post-turn silent-turn guard in connection.py.
+                self.session["fragment_suppressed"] = True
                 logger.info(
-                    "[ms_flow] DETECT_INTENT: first-turn filler %r — waiting for real request",
+                    "[ms_flow] DETECT_INTENT: first-turn filler %r — holding state, "
+                    "fallback suppressed, watchdog preserved",
                     text[:20],
                 )
                 return

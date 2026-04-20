@@ -2465,6 +2465,26 @@ class WebSocketCallHandler:
                                 self.session.get("state", "default")
                             )
                             self._silence_handler.on_question_asked(_last_q)
+                            # ── No-dead-state guarantee ──────────────────────────
+                            # If the flow consumed the transcript without emitting
+                            # TTS (filler suppression, fragment_suppressed, any
+                            # silent no-op path), the normal on_tts_finished →
+                            # _restart_timer chain never fires.  on_transcript_received
+                            # already cancelled the watchdog when the transcript
+                            # arrived, so without this explicit re-arm the state
+                            # would sit with NO watchdog and NO TTS → dead state.
+                            # Arming here is idempotent: if TTS was emitted, the
+                            # subsequent on_tts_finished re-arm supersedes this.
+                            _silent_turn = not self.session.get("_turn_speech_emitted")
+                            if _silent_turn:
+                                self._silence_handler.restart_for_question(_last_q)
+                                logger.info(
+                                    "[ms_conn] silent-turn watchdog re-arm "
+                                    "(fragment_suppressed=%s) state=%s q=%r",
+                                    bool(self.session.get("fragment_suppressed")),
+                                    self.session.get("state", "?"),
+                                    _last_q[:60],
+                                )
                             # Scaffold continuation: fragment received but no TTS was
                             # spoken.  Backdate last_audio_received_at so W1's 3.5 s
                             # audio-recency guard doesn't suppress the recovery prompt,
@@ -2961,6 +2981,13 @@ class WebSocketCallHandler:
                 "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
                 "CONFIRM_BOOKING", "CONFIRM_RESCHEDULE", "CONFIRM_CANCEL",
                 "COLLECT_REASON",
+                # Short-answer question states: a bare one-word valid answer
+                # ("Alcester", "Redditch", "Monday", "nine") arriving as short-duration
+                # barge-in MUST be processed — dropping it is the canonical
+                # "had to say it twice" bug.
+                "ASK_LOCATION",
+                "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+                "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
             })
             _cur_state_ft = self.session.get("state", "")
             _ft_meaningful = (
