@@ -307,11 +307,38 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     if session.get("cancel_confirmed"):
         return "cancelled"
 
+    # Deep-progress incomplete: caller reached a meaningful operational stage but
+    # hung up before completion. Covers booking (slots offered / pending / confirmed),
+    # reschedule (appointment found or user confirmed new time), and cancel (appt found).
+    # Reuses manual_followup so existing SMS routing sends a callback — not an abandoned SMS.
+    if _has_deep_progression(session):
+        return "manual_followup"
+
     # Call completed but no booking/reschedule → abandoned
     if (summary.get("meta", {}) or {}).get("call_status") == "completed":
         return "abandoned"
 
     return "failed"
+
+
+def _has_deep_progression(session: dict[str, Any]) -> bool:
+    """
+    True if the call reached a meaningful operational stage in any flow.
+
+    Booking  : slots were offered to the caller, or a specific slot was pending /
+               already confirmed by the caller.
+    Reschedule: the caller's existing appointment was found (rc_appointment_confirmed),
+                or the caller verbally confirmed the new time (reschedule_confirmed).
+    Cancel   : the caller's existing appointment was found (same rc_appointment_confirmed
+               flag shared with the reschedule flow).
+    """
+    return bool(
+        session.get("slots_offered")             # booking: availability fetched + offered
+        or session.get("slot_pending_confirmation")  # booking: specific slot awaiting confirm
+        or session.get("slot_confirmed")         # booking: slot confirmed, not yet saved
+        or session.get("rc_appointment_confirmed")   # reschedule/cancel: appt found + confirmed
+        or session.get("reschedule_confirmed")   # reschedule: caller confirmed new time
+    )
 
 
 def compute_confidence_score(session: dict[str, Any], summary: dict[str, Any]) -> int:

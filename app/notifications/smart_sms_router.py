@@ -479,11 +479,29 @@ def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
 
 def _booking_has_progressed(session: Dict, collected: Dict) -> bool:
     """
-    True if the caller made substantial booking progress.
+    True if the call reached a meaningful operational stage in any flow.
 
-    Requires at least 2 active signals so shallow calls (e.g. Twilio caller-ID
-    auto-populates phone but caller said nothing) are not suppressed.
+    Strong single-signal check (reschedule/cancel deep progress):
+      rc_appointment_confirmed — caller's existing appointment was found and confirmed
+      reschedule_confirmed     — caller verbally confirmed the new reschedule time
+      slots_offered            — availability was fetched and days/times offered
+      slot_pending_confirmation — a specific slot is awaiting caller confirmation
+      slot_confirmed           — slot confirmed by caller, not yet saved to calendar
+
+    Booking-intent soft check (requires ≥2 signals to filter shallow calls where
+    Twilio caller-ID pre-populates fields but caller said nothing meaningful).
     """
+    # Strong signals — any one is sufficient
+    if (
+        session.get("rc_appointment_confirmed")    # reschedule/cancel: appt found
+        or session.get("reschedule_confirmed")     # reschedule: caller confirmed new time
+        or session.get("slots_offered")            # booking: availability offered
+        or session.get("slot_pending_confirmation") # booking: specific slot pending confirm
+        or session.get("slot_confirmed")           # booking: slot confirmed
+    ):
+        return True
+
+    # Booking soft signals — require 2+ to avoid shallow-call false positives
     _intent_is_booking = "book" in str(
         session.get("intent") or session.get("last_intent") or ""
     ).lower()
