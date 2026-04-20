@@ -14943,6 +14943,114 @@ class FlowEngine:
                     _mfi_ans = "Of course — " + "  ".join(_mfi_parts)
                 self.session["last_faq_sub"] = "hours"  # for correction recovery (BUG 2)
             else:  # faq_location
+                # ── Compound practical FAQ composition ─────────────────────
+                # "does the clinic have step-free access and where exactly is
+                # the alcester one" / "where is alcester and do you have
+                # parking" must answer BOTH supported sub-questions in one
+                # concise response, not just the first matching single path.
+                # Only fires when 2+ supported parts are detected AND a
+                # clinic is resolved (explicit mention or last_faq_loc_id
+                # carry-over).  Falls through to existing single-path
+                # behaviour when the composite cannot be built.
+                _pp_access_sig = (
+                    "step free", "step-free", "step three",
+                    "wheelchair", "wheel chair",
+                    "accessible", "accessibility",
+                    "disabled access", "disability",
+                )
+                _pp_location_sig = (
+                    "where exactly", "where is", "where are",
+                    "address", "postcode", "post code",
+                    "which road", "which street",
+                    "find you", "locate you", "get to",
+                    "directions", "how do i get",
+                )
+                _pp_parking_sig = (
+                    "parking", "car park", "paid parking",
+                    "free parking", "easy to park",
+                    "pay to park", "do i need to pay",
+                    "is it free",
+                )
+                _pp_transport_sig = (
+                    "bus", "train", "public transport",
+                    "station", "tube", "coach",
+                )
+                _pp_parts: list = []
+                if any(p in _mfi_text for p in _pp_access_sig):    _pp_parts.append("accessibility")
+                if any(p in _mfi_text for p in _pp_location_sig):  _pp_parts.append("location")
+                if any(p in _mfi_text for p in _pp_parking_sig):   _pp_parts.append("parking")
+                if any(p in _mfi_text for p in _pp_transport_sig): _pp_parts.append("transport")
+
+                if len(_pp_parts) >= 2 and _mfi_loc:
+                    logger.info(
+                        "[ms_faq] practical_followup_detected clinic=%s parts=%s",
+                        _mfi_loc_id, "|".join(_pp_parts),
+                    )
+                    _pp_fragments: list = []
+                    # 1. Accessibility confirmation (clinic-wide)
+                    if "accessibility" in _pp_parts:
+                        _ac_raw   = (_cli_mfi.get("faq") or {}).get("accessibility") or ""
+                        _ac_first = _ac_raw.split(".")[0].strip() if _ac_raw else ""
+                        _pp_fragments.append(
+                            (_ac_first + ".") if _ac_first
+                            else "Yes \u2014 both our clinics are wheelchair accessible."
+                        )
+                    # 2. Exact clinic location (clinic-specific)
+                    if "location" in _pp_parts:
+                        _addr_raw   = _mfi_loc.get("address", "")
+                        _addr_first = _addr_raw.split(".")[0].strip() if _addr_raw else ""
+                        _loc_name   = _mfi_loc.get("name", _mfi_loc_id.title())
+                        # Strip leading "We're at " / "We are at " so the
+                        # composed sentence does not read "is at We're at ...".
+                        for _lead in ("we\u2019re at ", "we're at ", "we are at "):
+                            if _addr_first.lower().startswith(_lead):
+                                _addr_first = _addr_first[len(_lead):].lstrip()
+                                break
+                        if _addr_first:
+                            _pp_fragments.append(
+                                f"The {_loc_name} clinic is at {_addr_first}."
+                            )
+                    # 3. Parking practical detail (clinic-specific first sentence)
+                    if "parking" in _pp_parts:
+                        _park_raw   = _mfi_loc.get("parking", "")
+                        _park_first = _park_raw.split(".")[0].strip() if _park_raw else ""
+                        if _park_first:
+                            _pp_fragments.append(_park_first + ".")
+                    # 4. Transport practical detail (clinic-specific first sentence)
+                    if "transport" in _pp_parts:
+                        _trans_raw   = _mfi_loc.get("transport", "")
+                        _trans_first = _trans_raw.split(".")[0].strip() if _trans_raw else ""
+                        if _trans_first:
+                            _pp_fragments.append(_trans_first + ".")
+                    _mfi_ans_composite = " ".join(_pp_fragments).strip()
+                    if _mfi_ans_composite and len(_pp_fragments) >= 2:
+                        logger.info(
+                            "[ms_faq] practical_followup_answer_source=clinic_config "
+                            "composite=True clinic=%s parts=%s",
+                            _mfi_loc_id, "|".join(_pp_parts),
+                        )
+                        self.session["last_faq_sub"]           = "composite"
+                        self.session["last_faq_loc_id"]        = _mfi_loc_id
+                        self.session["last_faq_intent"]        = intent
+                        self.session["_faq_active_topic"]       = intent
+                        self.session["_faq_followup_window"]    = 3
+                        self.session["_faq_last_user_question"] = transcript
+                        await self._tts.put(_mfi_ans_composite + _re_anchor_sfx)
+                        self.session["last_faq_answer"] = _mfi_ans_composite
+                        return
+                    else:
+                        logger.info(
+                            "[ms_faq] practical_followup_fallback single_path=%s "
+                            "reason=insufficient_composite_fragments",
+                            intent,
+                        )
+                elif len(_pp_parts) >= 2 and not _mfi_loc:
+                    logger.info(
+                        "[ms_faq] practical_followup_fallback single_path=%s "
+                        "reason=clinic_unresolved parts=%s",
+                        intent, "|".join(_pp_parts),
+                    )
+
                 # Accessibility-specific question (step-free, wheelchair) — check
                 # clinic-level faq.accessibility field first (applies to all locations).
                 _access_q = any(p in _mfi_text for p in (
