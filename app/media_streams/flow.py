@@ -5200,7 +5200,10 @@ class FlowEngine:
                 # confidence = winner_score / 100 on the scoring path.
                 _sl_result = _resolve_clinic(text, context="ask_location")
                 _sl_conf   = _sl_result.get("confidence", 0)
-                if _sl_result["status"] == "ambiguous" and _sl_conf >= 0.50:
+                # Threshold raised from 0.50 → 0.55: weak score-bind below 0.55
+                # must NOT auto-select a clinic on partial/noisy transcripts
+                # (e.g. "d the clinic" at conf=0.54 was wrongly binding).
+                if _sl_result["status"] == "ambiguous" and _sl_conf >= 0.55:
                     _sl_dbg  = _sl_result.get("debug", {})
                     _sl_alc  = _sl_dbg.get("alcester_score", 0)
                     _sl_red  = _sl_dbg.get("redditch_score", 0)
@@ -5238,7 +5241,11 @@ class FlowEngine:
                 else:
                     # Third ask: switch to DTMF keypad entry
                     self.session["location_awaiting_dtmf"] = True
-                    _dtmf_q = "Press 1 for Alcester or 2 for Redditch."
+                    _dtmf_q = (
+                        "Sorry, I didn't quite catch that — "
+                        "could you please press 1 on your keypad for the Alcester clinic "
+                        "or 2 on your keypad for the Redditch clinic."
+                    )
                     await self._tts.put(_dtmf_q)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _dtmf_q}
@@ -5696,6 +5703,39 @@ class FlowEngine:
         # Every branch returns — no fallthrough.
         # ════════════════════════════════════════════════════════════════════
         if self.session.get("state") == "CONFIRM_PHONE":
+            # ── CLINIC-CORRECTION precedence ─────────────────────────────────
+            # If the caller is correcting a mistakenly-bound clinic (common
+            # after a weak score-bind at ASK_LOCATION), apply the clinic
+            # correction FIRST — do not let the leading "no" drive the local
+            # CONFIRM_PHONE NO handler into keypad mode.
+            #   e.g. "no it was at our sister" / "no, Alcester" / "I said Redditch"
+            # Strong alias resolution only (no weak score-bind here); utterance
+            # must carry a correction marker to avoid firing on plain yes/no.
+            if self.session.get("selected_location"):
+                _cc_corr_markers = (
+                    "no ", "no,", "nope", "nah",
+                    "actually", "i said", "i meant",
+                    "it was at", "it was the", "it's at", "its at",
+                    "it's the", "its the", "not ", "wrong clinic",
+                )
+                _cc_has_marker = any(m in text for m in _cc_corr_markers) or text.strip() in ("no", "nope", "nah")
+                if _cc_has_marker:
+                    _cc_loc = _resolve_location(text, in_location_state=True)
+                    if _cc_loc and _cc_loc != self.session.get("selected_location"):
+                        _cc_prev = self.session.get("selected_location")
+                        self.session["selected_location"] = _cc_loc
+                        self.session["needs_location"]    = False
+                        self.session.pop("location_pending_guess", None)
+                        # Do NOT disarm phone_confirm_armed — caller never
+                        # answered the phone question.  Re-ask it so the NO
+                        # handler cannot consume the same utterance.
+                        logger.info(
+                            "[ms_flow] CONFIRM_PHONE: clinic-correction precedence %s→%s for %r",
+                            _cc_prev, _cc_loc, text[:60],
+                        )
+                        await self.ask_current_question()
+                        return
+
             # ── BUG 4 fix: PHONE-CORRECTION early-exit ───────────────────────
             # "no it's a different number" / "no I want to use a different number"
             # must be caught BEFORE the name-repair check because _NAME_REPAIR
@@ -13913,20 +13953,128 @@ class FlowEngine:
         Classify the caller's first utterance into one of seven intent strings.
         Returns "booking" as the default fallback.
         """
+        import re as _re_di
+
+        # ── FAQ-FIRST PRECEDENCE GUARD ─────────────────────────────────────
+        # Root precedence fix: informational / question-form first turns must
+        # not be hijacked into booking by downstream heuristics that match
+        # "pain"/"painful"/"hurt"/body-part words. When the utterance is
+        # clearly a question AND mentions an FAQ topic AND contains no
+        # explicit booking verb, suppress the aggressive booking heuristics
+        # (body+symptom, body-alone, booking_priority_p, booking rescue) for
+        # this turn — the existing FAQ matchers further down will pick the
+        # right faq_* intent (or fall through to general_query).
+        _EXPLICIT_BOOK_PHRASES = (
+            "i want to book", "i'd like to book", "i need to book",
+            "want to book", "looking to book", "trying to book",
+            "book an appointment", "book appointment",
+            "booking an appointment", "booking appointment",
+            "make an appointment", "making an appointment",
+            "schedule an appointment", "schedule appointment",
+            "schedule a physio", "schedule me",
+            "book me in", "book me", "get me booked",
+            "can i book", "could i book", "can you book me",
+            "i'd like to schedule", "i want to schedule",
+            "i'd like to come in", "i want to come in",
+            "like to come in", "need to come in",
+            "see a physio", "see a physiotherapist",
+            "get an appointment", "need an appointment", "want an appointment",
+            "arrange an appointment", "arrange appointment",
+            # competitor-threat implicit booking signals
+            "another clinic", "different clinic",
+        )
+        _has_explicit_book = any(p in text for p in _EXPLICIT_BOOK_PHRASES)
+
+        _QUESTION_LEADS = (
+            "is it", "is that", "is the", "is there", "isn't it", "isnt it",
+            "are they", "are the", "are you", "are there", "aren't they",
+            "do you", "does the", "does it", "did you", "did the",
+            "can you", "can i", "can my", "could you", "could i",
+            "would you", "would it", "would that", "would physio",
+            "should i", "should we", "will you", "will it",
+            "what ", "what's", "whats", "what do", "what does",
+            "where ", "where's", "wheres",
+            "how ", "how's", "hows", "how do", "how does", "how much",
+            "how long", "how many",
+            "when ", "when's", "when is", "when are",
+            "why ", "which ", "who ", "whose ",
+            "tell me", "any chance", "any idea", "any way",
+        )
+        _has_question_form = (
+            text.strip().endswith("?")
+            or any(q in text for q in _QUESTION_LEADS)
+        )
+
+        _FAQ_TOPIC_KEYWORDS = (
+            # services / treatments
+            "acupuncture", "shockwave", "laser", "pilates", "massage",
+            "biomechanical", "biomechanics", "sports therapy",
+            "physio", "physiotherapy", "physiotherapist",
+            "rehab", "rehabilitation", "assessment",
+            "treatment", "treatments", "therapy", "therapies",
+            "service", "services",
+            "needle", "needles",
+            # accessibility / logistics
+            "step free", "step-free", "step three",
+            "wheelchair", "wheel chair", "accessible", "accessibility",
+            "disabled", "ramp", "mobility", "lift access",
+            "parking", "car park", "where to park",
+            "address", "postcode", "post code", "directions",
+            "where are you", "where is your", "where exactly", "where is the",
+            "how do i get", "get to the clinic",
+            # pricing / insurance / hours
+            "price", "cost", "how much", "charge", "fee", "rates", "pricing",
+            "insurance", "bupa", "axa", "aviva", "vitality",
+            "self pay", "self-pay", "claim",
+            "hours", "opening hours", "open", "closing", "closed",
+            "what time", "when are you open",
+            # capability / eligibility / policy
+            "what do you offer", "do you offer", "what you offer",
+            "what conditions", "what do you treat",
+            "see children", "treat children", "see kids", "treat kids",
+            "accept children", "do you see",
+            "paediatric", "pediatric", "child physio",
+            "referral", "self refer", "self-refer", "gp referral",
+            # logistics / first appointment
+            "website", "online", "online booking",
+            "first appointment", "first visit", "first session",
+            "what happens at", "what to expect", "coming for the first time",
+            "how many sessions",
+        )
+        _has_faq_topic = any(k in text for k in _FAQ_TOPIC_KEYWORDS)
+
+        _faq_first_guard = (
+            _has_question_form
+            and _has_faq_topic
+            and not _has_explicit_book
+        )
+        if _faq_first_guard:
+            logger.info(
+                "[ms_flow] first_turn_guard: faq_beats_booking — "
+                "question_form=%s faq_topic=%s explicit_book=%s text=%r",
+                _has_question_form, _has_faq_topic, _has_explicit_book,
+                text[:80],
+            )
+
         # ABSOLUTE TOP-PRIORITY: body-part + symptom compound detection.
         # Catches phrases like "my shoulder's been killing me" or "recurring ankle
         # problem" that may not have an explicit symptom keyword but combine a body
         # term with a pain/problem signal.
-        import re as _re_di
         _BODY_RE = r"\b(back|shoulder|ankle|knee|hip|neck|wrist|elbow|leg|arm)\b"
         _SYMP_RE = r"\b(pain|painful|ache|aching|hurt|hurting|injury|injured|problem|issue|sore|stiff|stiffness|recurring|grief|trouble|bother)\b"
         if (
-            _re_di.search(_BODY_RE, text) and
-            (_re_di.search(_SYMP_RE, text) or "killing me" in text
-             or "giving me grief" in text or "playing up" in text or "giving me trouble" in text)
+            not _faq_first_guard
+            and _re_di.search(_BODY_RE, text)
+            and (_re_di.search(_SYMP_RE, text) or "killing me" in text
+                 or "giving me grief" in text or "playing up" in text
+                 or "giving me trouble" in text)
         ):
             logger.debug(
                 "[ms_flow] detect_intent_booking_symptom_rule body+symptom: %r", text[:60]
+            )
+            logger.info(
+                "[ms_flow] top_level_intent_decision: chosen_intent=booking "
+                "source=body_symptom_rule override_reason=none"
             )
             return "booking"
 
@@ -13935,9 +14083,13 @@ class FlowEngine:
         # Only fires when the whole text is just an optional "my/the" + body part,
         # so it doesn't swallow sentences that happen to contain a body word.
         _BODY_ALONE_RE = r"^(my|the|my\s+left|my\s+right|left|right)?\s*\b(back|shoulder|ankle|knee|hip|neck|wrist|elbow|leg|arm)\b\s*$"
-        if _re_di.match(_BODY_ALONE_RE, text):
+        if not _faq_first_guard and _re_di.match(_BODY_ALONE_RE, text):
             logger.debug(
                 "[ms_flow] detect_intent body-alone rule: %r", text[:60]
+            )
+            logger.info(
+                "[ms_flow] top_level_intent_decision: chosen_intent=booking "
+                "source=body_alone_rule override_reason=none"
             )
             return "booking"
 
@@ -13970,14 +14122,35 @@ class FlowEngine:
         )
         # Very short direct booking utterances: "book", "book pls", "book now", "book please"
         if len(text.split()) <= 3 and "book" in text:
+            logger.info(
+                "[ms_flow] top_level_intent_decision: chosen_intent=booking "
+                "source=short_book_verb override_reason=none"
+            )
             return "booking"
         # BUG 1: longer utterances containing BOTH "book" and "appointment" anywhere
         if "book" in text and "appoint" in text:
             logger.debug("[ms_flow] detect_intent book+appoint match: %r", text[:60])
+            logger.info(
+                "[ms_flow] top_level_intent_decision: chosen_intent=booking "
+                "source=book_plus_appoint override_reason=none"
+            )
             return "booking"
+        # booking_priority_p includes symptom words (pain/painful/hurt/etc.). These
+        # must NOT force booking when the utterance is a clear FAQ question —
+        # "is acupuncture painful?" contains "painful" but is informational.
         if any(p in text for p in booking_priority_p):
-            logger.debug("[ms_flow] detect_intent_booking_symptom_rule matched: %r", text[:60])
-            return "booking"
+            if _faq_first_guard:
+                logger.info(
+                    "[ms_flow] first_turn_guard: explicit_booking_required_for_booking_path "
+                    "— booking_priority_p match suppressed (text=%r)", text[:60]
+                )
+            else:
+                logger.debug("[ms_flow] detect_intent_booking_symptom_rule matched: %r", text[:60])
+                logger.info(
+                    "[ms_flow] top_level_intent_decision: chosen_intent=booking "
+                    "source=booking_priority_p override_reason=none"
+                )
+                return "booking"
 
         transfer_p = (
             "speak to a person", "speak to someone", "speak to a human",
@@ -14161,13 +14334,26 @@ class FlowEngine:
             "what time", "what's the time", "when is my", "when's my",
             "do i have", "have i got", "how long is my",
         )
-        if "appoint" in text and not any(q in text for q in _APPT_INFO_QUERIES):
+        if (
+            "appoint" in text
+            and not any(q in text for q in _APPT_INFO_QUERIES)
+            and not _faq_first_guard
+        ):
+            logger.info(
+                "[ms_flow] top_level_intent_decision: chosen_intent=booking "
+                "source=appoint_rescue override_reason=none"
+            )
             logger.info(
                 "[ms_flow] DETECT_INTENT booking-rescue: transcript=%r → booking",
                 text[:60],
             )
             return "booking"
 
+        if _faq_first_guard:
+            logger.info(
+                "[ms_flow] top_level_intent_decision: chosen_intent=general_query "
+                "source=faq_first_guard override_reason=faq_question_form_no_booking_verb"
+            )
         return "general_query"  # unknown question — LLM handles it freely
 
     def _switch_flow(self, intent: str) -> None:
