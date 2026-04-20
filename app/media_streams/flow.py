@@ -4871,7 +4871,7 @@ class FlowEngine:
                 logger.info("[ms_flow] ASK_LOCATION forced-confirm: unclear → DTMF fallback")
                 return
 
-            # ── DTMF MODE: hybrid — voice still accepted, keypad also offered ──────
+            # ── DTMF MODE: waiting for keypad press (final fallback) ──────────────
             if self.session.get("location_awaiting_dtmf"):
                 loc = self._extract("location_selection", text, transcript)
                 if loc:
@@ -4882,17 +4882,29 @@ class FlowEngine:
                     logger.info("[ms_flow] ASK_LOCATION DTMF: resolved — %s", loc)
                     await self.ask_current_question()
                     return
-                # Still unresolved — stay in hybrid loop, never exit
-                _dtmf_re = (
-                    "You can say Alcester or Redditch, "
-                    "or press 1 for Alcester, 2 for Redditch."
-                )
-                await self._tts.put(_dtmf_re)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _dtmf_re}
-                )
-                self.session["last_question"] = _dtmf_re
-                logger.info("[ms_flow] ASK_LOCATION DTMF: unresolved — looping hybrid prompt")
+                # DTMF not received — one short re-prompt then graceful exit
+                _dtmf_retry = self.session.get("location_dtmf_retry", 0) + 1
+                self.session["location_dtmf_retry"] = _dtmf_retry
+                if _dtmf_retry >= 2:
+                    _dtmf_exit = (
+                        "I'm having trouble catching the clinic name — "
+                        "please give us a call back and the team will be happy to help."
+                    )
+                    await self._tts.put(_dtmf_exit)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _dtmf_exit}
+                    )
+                    self.session["last_question"] = _dtmf_exit
+                    self.session["graceful_exit"]    = True
+                    self.session["request_transfer"] = True
+                    self.session["needs_location"]   = False
+                else:
+                    _dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                    await self._tts.put(_dtmf_re)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _dtmf_re}
+                    )
+                    self.session["last_question"] = _dtmf_re
                 return
 
             # ── Non-location corrective escape ────────────────────────────────
@@ -5051,25 +5063,15 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
-                # ── Weak fragment guard: ignore very short STT noise ─────────────
-                import re as _re_loc
-                _loc_cleaned = _re_loc.sub(r'[^a-z]', '', text.lower())
-                if len(_loc_cleaned) < 3:
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION: weak fragment %r — ignored (no retry burned)",
-                        text[:20],
-                    )
-                    return
-
-                # ── Retry ladder: 3 stages, never exit ──────────────────────────
-                # Stage 2 (retry_count 0→1): reinforced voice retry
-                # Stage 3 (retry_count 1+):  hybrid voice + DTMF, loops forever
+                # ── Retry ladder: escalate wording then switch to DTMF ───────────
+                # retry 0 → spoken re-ask with explicit clinic names
+                # retry 1+ → DTMF keypad fallback
                 _loc_retry = self.session.get("location_retry_count", 0)
                 if _loc_retry == 0:
-                    # Stage 2: reinforced voice, emphasise both options
+                    # Second ask: polite re-ask with explicit names
                     _retry2_q = (
-                        "Sorry, I didn\u2019t quite catch that \u2014 "
-                        "was that the Alcester clinic, or the Redditch clinic?"
+                        "Sorry, I didn't quite catch that. "
+                        "Please say the Alcester clinic or the Redditch clinic."
                     )
                     self.session["location_retry_count"] = 1
                     await self._tts.put(_retry2_q)
@@ -5081,19 +5083,16 @@ class FlowEngine:
                         "[ms_flow] ASK_LOCATION retry 2 emitted for %r", text[:40]
                     )
                 else:
-                    # Stage 3+: hybrid — voice still accepted, DTMF also offered
+                    # Third ask: switch to DTMF keypad entry
                     self.session["location_awaiting_dtmf"] = True
-                    _dtmf_q = (
-                        "You can say Alcester or Redditch, "
-                        "or press 1 for Alcester, 2 for Redditch."
-                    )
+                    _dtmf_q = "Press 1 for Alcester or 2 for Redditch."
                     await self._tts.put(_dtmf_q)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _dtmf_q}
                     )
                     self.session["last_question"] = _dtmf_q
                     logger.info(
-                        "[ms_flow] ASK_LOCATION retry 3 (hybrid) for %r", text[:40]
+                        "[ms_flow] ASK_LOCATION retry 3 switched to DTMF for %r", text[:40]
                     )
             return
 
