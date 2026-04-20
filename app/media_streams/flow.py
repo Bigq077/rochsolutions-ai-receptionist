@@ -248,6 +248,116 @@ def _is_clinic_access_logistics(text: str) -> bool:
     return True
 
 
+# Explicit child-treatment / child-booking signals — when absent, mere child
+# relation words ("my son", "my daughter") are context only and must NOT
+# trigger first-turn ASK_CHILD_AGE gating.  With these present the caller is
+# clearly asking for treatment eligibility or booking for the child, so
+# service-fit / policy gating should proceed normally.
+_EXPLICIT_CHILD_TREATMENT_SIGS: tuple[str, ...] = (
+    # Treatment eligibility verbs
+    "do you treat", "do you see", "can you treat", "can you see",
+    "accept children", "treat children", "see children",
+    "can you help my son", "can you help my daughter", "can you help my child",
+    "can you help my kid",
+    # "can my <relation>" eligibility verb
+    "can my son", "can my daughter", "can my child", "can my kid",
+    # Booking-for-child phrasing
+    "book for my son", "book for my daughter", "book for my child",
+    "book for my kid",
+    "book my son", "book my daughter", "book my child",
+    "appointment for my son", "appointment for my daughter",
+    "appointment for my child", "appointment for my kid",
+    "session for my son", "session for my daughter", "session for my child",
+    # Needs-based eligibility (implies treatment)
+    "my son needs", "my daughter needs", "my child needs", "my kid needs",
+    # Eligibility vocabulary
+    "eligible", "old enough", "too young",
+    # Paediatric vocabulary
+    "paediatric", "pediatric", "child physio", "children physio",
+)
+
+
+def _has_explicit_child_treatment_request(text: str) -> bool:
+    """True when the utterance explicitly asks about treating/booking a child.
+
+    Mere child relation words ("my son is disabled", "for my daughter") are
+    context and return False.  The first-turn policy gate should only fire
+    when this returns True (or when a condition/symptom + child relation is
+    present in the same utterance — the policy_gate itself handles that).
+    """
+    t = (text or "").lower()
+    return any(s in t for s in _EXPLICIT_CHILD_TREATMENT_SIGS)
+
+
+# Practical-FAQ signals that indicate the utterance — even with child context
+# — is primarily a clinic/logistics question that must escape first-turn
+# service-fit / age-gate routing and reach the FAQ lane.  Superset of
+# _ACCESS_LOGISTICS_SIGS so callers asking about clinic comparison/difference
+# ("your two clinics", "difference between both") also preempt the age gate.
+_PRACTICAL_FAQ_PREEMPT_SIGS: tuple[str, ...] = (
+    # Clinic comparison / two-clinic signals
+    "difference between", "different from", "two clinics", "both clinics",
+    "both of them", "both of the", "which clinic", "which one",
+    "alcester or redditch", "redditch or alcester",
+    "two locations", "both locations", "either clinic",
+    # Practical-only info (services, prices) when combined with child context
+    "do you offer", "how much", "how much is",
+)
+
+
+def _is_practical_faq_preempt(text: str) -> bool:
+    """True when the utterance is clearly a practical clinic FAQ (access,
+    location, parking, clinic comparison, pricing) rather than a
+    treatment-eligibility / booking question for a child.  Superset of
+    _is_clinic_access_logistics adding clinic-comparison signals."""
+    t = (text or "").lower()
+    if _is_clinic_access_logistics(text):
+        return True
+    if any(p in t for p in _PRACTICAL_FAQ_PREEMPT_SIGS):
+        # Explicit child-treatment phrasing still wins — caller wants policy gate.
+        if any(p in t for p in _TREATMENT_ELIGIBILITY_SIGS):
+            return False
+        return True
+    return False
+
+
+# Plausible age-answer signals used by the service-fit age follow-up consumer
+# to decide whether the next utterance is genuinely answering "how old is
+# your son/daughter?" or whether it has escaped back to a practical FAQ.
+_AGE_NUMBER_WORDS: tuple[str, ...] = (
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty",
+)
+_AGE_ANSWER_PHRASES: tuple[str, ...] = (
+    "years old", "year old", "he's", "he is", "she's", "she is",
+    "my son is", "my daughter is", "my child is", "my kid is",
+    "age is", "aged",
+)
+# Non-age signals — practical FAQ / logistics / services / insurance /
+# pricing utterances that must NOT be consumed as an age answer.
+_NON_AGE_REROUTE_SIGS: tuple[str, ...] = (
+    # accessibility
+    "step free", "step-free", "wheelchair", "accessible", "accessibility",
+    "disabled access", "disability", "ramp", "mobility",
+    # location / directions
+    "where is", "where are", "where exactly", "address", "postcode",
+    "directions", "how do i get", "find you", "locate you",
+    # clinic comparison
+    "difference between", "two clinics", "both clinics", "both of them",
+    "which clinic", "alcester or redditch", "redditch or alcester",
+    "two locations",
+    # parking / transport
+    "parking", "car park", "bus", "train", "station",
+    # services / prices / insurance
+    "do you offer", "do you do", "do you have", "how much", "price",
+    "insurance", "bupa", "axa", "aviva",
+    # explicit question markers
+    "i wanted to ask", "i want to ask", "i had a question",
+    "i have a question", "quick question",
+)
+
+
 # ── Topic-aware FAQ re-anchor ───────────────────────────────────────────────
 # When an FAQ thread has a locked active service (e.g. acupuncture), the
 # post-answer re-anchor should stay on that topic — "Was there anything else
@@ -3428,11 +3538,23 @@ class FlowEngine:
                 _AQ2_TRANS_P = (
                     "bus", "train", "public transport", "station", "tube", "coach",
                 )
+                _AQ2_DIFF_P = (
+                    "difference between", "different from", "two clinics",
+                    "both clinics", "both of them", "both of the",
+                    "which clinic", "which one", "either clinic",
+                    "two locations", "both locations",
+                    "alcester or redditch", "redditch or alcester",
+                )
                 _aq2_parts: list = []
                 if any(p in _aq2_last_msg for p in _AQ2_ACCESS_P): _aq2_parts.append("accessibility")
                 if any(p in _aq2_last_msg for p in _AQ2_LOC_P):    _aq2_parts.append("location")
                 if any(p in _aq2_last_msg for p in _AQ2_PARK_P):   _aq2_parts.append("parking")
                 if any(p in _aq2_last_msg for p in _AQ2_TRANS_P):  _aq2_parts.append("transport")
+                if (
+                    any(p in _aq2_last_msg for p in _AQ2_DIFF_P)
+                    and len(_locs_aq2) >= 2
+                ):
+                    _aq2_parts.append("clinic_difference")
                 logger.info(
                     "[ms_faq] practical_first_turn_detected clinic=%s parts=%s",
                     _aq2_loc_id or "<unresolved>", "|".join(_aq2_parts) or "<none>",
@@ -3467,6 +3589,22 @@ class FlowEngine:
                         _tr_first = _tr_raw.split(".")[0].strip() if _tr_raw else ""
                         if _tr_first:
                             _frags.append(_tr_first + ".")
+                    if "clinic_difference" in _aq2_parts and len(_locs_aq2) >= 2:
+                        _diff_names = []
+                        for _dl in _locs_aq2.values():
+                            _dn = _dl.get("name") or _dl.get("id", "").title()
+                            _dadr = (_dl.get("address") or "").split(",")
+                            _darea = _dadr[-2].strip() if len(_dadr) >= 2 else ""
+                            _diff_names.append(
+                                f"{_dn}" + (f" in {_darea}" if _darea else "")
+                            )
+                        if _diff_names:
+                            _frags.append(
+                                "We have two clinics — "
+                                + " and ".join(_diff_names)
+                                + ". They offer the same core physiotherapy services; "
+                                "the main differences are location and opening hours."
+                            )
                     if len(_frags) >= 2:
                         _fast_r = " ".join(_frags).strip()
                         self.session["last_faq_loc_id"]     = _aq2_loc_id
@@ -6881,13 +7019,42 @@ class FlowEngine:
                     _fu_raw = int(_age_fu_m.group(1))
                     if 0 < _fu_raw < 100:
                         _fu_age = _fu_raw
-                logger.info(
-                    "[ms_flow] service_fit_followup: consumed age answer %r -> age=%s -> re-evaluating",
-                    text[:40], _fu_age,
+                _t_fu_low = (text or "").lower()
+                _plausible_age = (
+                    _fu_age is not None
+                    or any(p in _t_fu_low for p in _AGE_ANSWER_PHRASES)
+                    or any(
+                        _re_age_fu.search(rf'\b{_w}\b', _t_fu_low)
+                        for _w in _AGE_NUMBER_WORDS
+                    )
                 )
-                self.session.pop("pending_first_turn_followup", None)
+                _non_age_reroute = (
+                    not _plausible_age
+                    and (
+                        any(p in _t_fu_low for p in _NON_AGE_REROUTE_SIGS)
+                        or _is_practical_faq_preempt(text)
+                    )
+                )
+                if _non_age_reroute:
+                    logger.info(
+                        "[ms_flow] service_fit_followup: non_age_response_detected "
+                        "-- re-routing text=%r",
+                        text[:60],
+                    )
+                    self.session.pop("pending_first_turn_followup", None)
+                    # Fall through to normal DETECT_INTENT routing below.
+                else:
+                    logger.info(
+                        "[ms_flow] service_fit_followup: consumed age answer %r -> age=%s -> re-evaluating",
+                        text[:40], _fu_age,
+                    )
+                    self.session.pop("pending_first_turn_followup", None)
 
-                if _fu_age is not None:
+                if _non_age_reroute:
+                    # Skip the age-consumption / re-ask branches entirely and
+                    # let normal DETECT_INTENT routing handle the utterance.
+                    pass
+                elif _fu_age is not None:
                     self.session["first_turn_age"] = _fu_age
                     # Re-run gate with now-known age (shallow copy keeps session clean)
                     from app.media_streams.policy_gate import (
@@ -6943,21 +7110,23 @@ class FlowEngine:
                     )
                     return
 
-                # Age not parseable — re-ask once
-                _rel_pg   = self.session.get("first_turn_patient_relationship", "child")
-                _pron_map = {
-                    "son": "your son", "daughter": "your daughter",
-                    "teenager": "your teenager",
-                }
-                _pron_pg  = _pron_map.get(_rel_pg, "your child")
-                _reask_pg = f"Sorry, I didn\u2019t quite catch that \u2014 how old is {_pron_pg}?"
-                await self._tts.put(_reask_pg)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _reask_pg}
-                )
-                self.session["pending_first_turn_followup"] = "child_age"
-                self.session["_last_handled_by"] = "first_turn_policy_gate_reask_age"
-                return
+                else:
+                    # Age not parseable — re-ask once
+                    _rel_pg   = self.session.get("first_turn_patient_relationship", "child")
+                    _pron_map = {
+                        "son": "your son", "daughter": "your daughter",
+                        "teenager": "your teenager",
+                    }
+                    _pron_pg  = _pron_map.get(_rel_pg, "your child")
+                    _reask_pg = f"Sorry, I didn\u2019t quite catch that \u2014 how old is {_pron_pg}?"
+                    await self._tts.put(_reask_pg)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _reask_pg}
+                    )
+                    self.session["pending_first_turn_followup"] = "child_age"
+                    self.session["_last_handled_by"] = "first_turn_policy_gate_reask_age"
+                    return
+                # If _non_age_reroute: fall through to normal DETECT_INTENT routing.
 
             # ── Pending follow-up contract: post-service-fit / post-age-gate ────────
             # Set when a service-fit answer was given but booking was not yet entered.
@@ -7185,14 +7354,31 @@ class FlowEngine:
             # child-related utterances before the utterance router so that
             # policy decisions (decline / ask-age / allow) are never bypassed
             # by the bridge path or other router actions.
+            # Practical-FAQ preempt: if the utterance is clearly a practical
+            # clinic FAQ (access, parking, location, clinic comparison) and
+            # does NOT contain an explicit child-treatment / booking request,
+            # do NOT fire the child/service-fit age gate here.  Otherwise
+            # "my son is disabled, what's the difference between your two
+            # clinics?" gets hijacked into ASK_CHILD_AGE.  (Prompt-3 Rule 1.)
+            _ft_practical_preempt = (
+                _is_practical_faq_preempt(text)
+                and not _has_explicit_child_treatment_request(text)
+            )
+            if _ft_practical_preempt:
+                logger.info(
+                    "[ms_flow] first_turn_policy_gate: "
+                    "practical_faq_preempts_child_gate text=%r",
+                    text[:80],
+                )
+            elif _has_explicit_child_treatment_request(text):
+                logger.info(
+                    "[ms_flow] child_policy_gate: "
+                    "explicit_child_treatment_request -> ASK_CHILD_AGE"
+                )
             if (
                 self.session.get("_first_turn_extracted")
                 and not self.session.get("_first_turn_policy_gate_done")
-                # Bypass the child-policy age gate when the utterance is about
-                # clinic access / logistics rather than treatment eligibility.
-                # "Does the clinic have step-free access for my son" must not
-                # trigger ASK_CHILD_AGE. (Prompt-3 Rule 1 / Fix 1+2.)
-                and not _is_clinic_access_logistics(text)
+                and not _ft_practical_preempt
             ):
                 from app.media_streams.policy_gate import (
                     evaluate_policy_gate    as _pg_eval_ft,
@@ -7276,7 +7462,11 @@ class FlowEngine:
                 # action so the flow falls through to normal intent detection
                 # which will route to faq_location / accessibility.
                 # (Prompt-3 Rule 1 / Fix 1+2.)
-                if _di_action == _R_SVC_FIT and _is_clinic_access_logistics(text):
+                if (
+                    _di_action == _R_SVC_FIT
+                    and _is_practical_faq_preempt(text)
+                    and not _has_explicit_child_treatment_request(text)
+                ):
                     logger.info(
                         "[ms_flow] DETECT_INTENT: svc_fit suppressed — "
                         "clinic access/logistics question (%r)", text[:60]
