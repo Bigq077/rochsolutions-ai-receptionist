@@ -751,13 +751,28 @@ _FAQ_RESOLUTION_FRESH_CONCERN_SIGS: tuple[str, ...] = (
 )
 
 
+_FAQ_RESOLUTION_SHORT_ACCEPT_SIGS: tuple[str, ...] = (
+    "acupuncture then", "the acupuncture", "that acupuncture",
+    "probably acupuncture", "i guess acupuncture", "guess acupuncture",
+    "the acupuncture one", "acupuncture one",
+    "yeah acupuncture", "yes acupuncture", "yep acupuncture",
+    "okay acupuncture", "ok acupuncture",
+    "sounds okay then", "sounds ok then", "sounds fine then",
+    "sounds good then", "that sounds okay", "that sounds ok",
+    "that sounds fine", "that sounds good",
+    "that's okay then", "thats okay then", "that's ok then",
+    "yes let's book", "yes lets book", "okay yes", "yes let's",
+)
+
+
 def _is_mid_booking_acupuncture_resolution(
     text_lower: str, session: Dict[str, Any]
 ) -> bool:
     """
-    True only when: active mid-booking FAQ topic is acupuncture AND the
-    utterance is declarative / proceed-oriented AND has no question-form
-    or fresh-concern signal dominating.  Narrow by design.
+    True when: active mid-booking FAQ topic is acupuncture AND the
+    utterance is declarative / proceed-oriented / short acceptance AND
+    has no question-form or fresh-concern signal dominating.  Narrow by
+    design — intended for post-FAQ resume detection only.
     """
     ctx = session.get("_mid_booking_faq_ctx") or {}
     if ctx.get("topic") != "acupuncture":
@@ -769,7 +784,11 @@ def _is_mid_booking_acupuncture_resolution(
         return False
     if any(p in t for p in _FAQ_RESOLUTION_FRESH_CONCERN_SIGS):
         return False
-    return any(p in t for p in _FAQ_RESOLUTION_PROCEED_SIGS)
+    if any(p in t for p in _FAQ_RESOLUTION_PROCEED_SIGS):
+        return True
+    if any(p in t for p in _FAQ_RESOLUTION_SHORT_ACCEPT_SIGS):
+        return True
+    return False
 
 
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
@@ -11846,9 +11865,10 @@ class FlowEngine:
                 elif _is_mid_booking_acupuncture_resolution(_t_mbf, self.session):
                     # Declarative / proceed-oriented utterance after an
                     # acupuncture fear answer — caller has accepted the
-                    # concern and wants to resume booking.  Clear ctx and
-                    # mark resolved so the downstream interrupt detector
-                    # does not re-upgrade "acupuncture" to faq_services.
+                    # concern and wants to resume booking.  Clear ctx,
+                    # mark resolved, AND force _mid_intent=booking so that
+                    # the downstream mid-flow interrupt block cannot fire
+                    # a second acupuncture FAQ answer on the same turn.
                     _mbf_topic_log = _mbf_ctx.get("topic")
                     logger.info(
                         "[ms_flow] mid_booking_faq_resolution_detected "
@@ -11858,6 +11878,7 @@ class FlowEngine:
                     self.session.pop("_mid_booking_faq_ctx", None)
                     self.session.pop("_faq_active_service", None)
                     _mbf_resolved = True
+                    _mid_intent = "booking"
                     logger.info(
                         "[ms_flow] mid_booking_faq_context_cleared "
                         "reason=accepted_and_resuming_booking text=%r",
@@ -12005,7 +12026,7 @@ class FlowEngine:
                         step["state"],
                     )
                 return
-            if _mid_intent in _mid_intents:
+            if _mid_intent in _mid_intents and not _mbf_resolved:
                 logger.info(
                     "[ms_flow] mid-flow interrupt at %s — intent=%s transcript=%r",
                     step["state"], _mid_intent, transcript[:60],
