@@ -14949,12 +14949,51 @@ class FlowEngine:
         # ── COLLECT_REASON: inline empathy acknowledgement (replaces CONFIRM_ASSESSMENT) ──
         # Non-gating — spoken once, no reply expected. Flow advances immediately.
         if step["state"] == "COLLECT_REASON":
-            _cr_empathy = _fast_empathy_line(answer or "")
-            await self._tts.put(_cr_empathy)
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": _cr_empathy}
+            # Suppress empathy when the captured reason is effectively a
+            # service / treatment choice ("i'd like to book acupuncture",
+            # "let's do shockwave", "i want to try acupuncture then").  The
+            # generic "I'm sorry to hear that" line is wrong here — there is
+            # no pain/distress to acknowledge.
+            _cr_ans_lower = (answer or "").lower()
+            _CR_SERVICE_WORDS = (
+                "acupuncture", "shockwave", "laser", "pilates", "massage",
+                "biomechanical", "biomechanics", "sports therapy",
+                "physio assessment", "rehab", "rehabilitation",
             )
-            logger.info("[ms_flow] COLLECT_REASON: empathy emitted — %r", _cr_empathy[:80])
+            _CR_CHOICE_VERBS = (
+                "book", "booking", "try", "do ", "go ahead", "go with",
+                "go through", "have", "get", "want", "wanted", "like to",
+                "let's", "lets", "i'll", "ill ", "i will",
+                "happy to", "fine for", "fine with", "ok with", "okay with",
+            )
+            _cr_is_service_choice = (
+                any(s in _cr_ans_lower for s in _CR_SERVICE_WORDS)
+                and any(v in _cr_ans_lower for v in _CR_CHOICE_VERBS)
+            )
+            # Symptom/distress veto — if the reason also contains pain or
+            # body+symptom signals, treat as ordinary clinical reason and
+            # let empathy fire normally.
+            _CR_SYMPTOM_WORDS = (
+                "pain", "painful", "ache", "aching", "hurt", "hurting",
+                "sore", "stiff", "stiffness", "injury", "injured",
+                "killing me", "swollen", "swelling", "sprain", "strain",
+                "torn", "fracture", "headache", "migraine",
+            )
+            if _cr_is_service_choice and not any(
+                w in _cr_ans_lower for w in _CR_SYMPTOM_WORDS
+            ):
+                logger.info(
+                    "[ms_flow] COLLECT_REASON: service-choice reason "
+                    "detected — empathy suppressed answer=%r",
+                    (answer or "")[:80],
+                )
+            else:
+                _cr_empathy = _fast_empathy_line(answer or "")
+                await self._tts.put(_cr_empathy)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cr_empathy}
+                )
+                logger.info("[ms_flow] COLLECT_REASON: empathy emitted — %r", _cr_empathy[:80])
 
         # Emit a short conversational bridge before the next question.
         # Skip if the next step uses LLM — it writes its own opener.
