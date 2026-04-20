@@ -198,9 +198,10 @@ def format_reschedule_confirmation(
     phone = _cp(clinic_phone)
     name  = _cn(clinic_name)
 
+    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
     loc_clause = f" at our {loc_str} clinic" if loc_str else ""
     return (
-        f"Hi {patient_name}, your appointment has been moved to "
+        f"Hi {_greeting}, your appointment has been moved to "
         f"{new_date_str} at {new_time_str}{loc_clause}. "
         f"If anything changes, give us a call on {phone} and we'll sort it. See you then! {name}"
     )
@@ -222,8 +223,9 @@ def format_cancellation_confirmation(
     phone = _cp(clinic_phone)
     name  = _cn(clinic_name)
 
+    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
     msg = (
-        f"Hi {patient_name}, your appointment on {day_name} {day_num} {month} "
+        f"Hi {_greeting}, your appointment on {day_name} {day_num} {month} "
         f"at {time_str} has been cancelled as requested."
     )
     if is_late_cancellation:
@@ -241,8 +243,9 @@ def format_late_cancellation_warning(
     clinic_phone: Optional[str] = None,
 ) -> str:
     """Late cancellation warning (within 24 hours)."""
+    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
     return (
-        f"Hi {patient_name}, your appointment has been cancelled. "
+        f"Hi {_greeting}, your appointment has been cancelled. "
         f"As this was within 24 hours, our £25 cancellation fee applies. "
         f"Ready to rebook? Call {_cp(clinic_phone)}. {_cn(clinic_name)}"
     )

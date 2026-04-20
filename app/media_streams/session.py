@@ -218,6 +218,11 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "faq_answered":          False,  # True after ANSWER_FAQ LLM step completes
     "faq_booking_response":  None,   # "book" or "done" from FAQ_BOOKING_OFFER
 
+    # FAQ topic memory — follow-up window (Prompt 9 fix)
+    "_faq_active_topic":       None,  # last answered FAQ intent family (e.g. "faq_location")
+    "_faq_followup_window":    0,     # turns remaining for topic carry-forward (decremented on use)
+    "_faq_last_user_question": None,  # raw transcript of last FAQ question answered
+
     # Fast-path diagnostics
     "fast_path_last_resolved": None, # FastPathTurnType value of last fast-path match
 
