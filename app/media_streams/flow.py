@@ -3231,30 +3231,146 @@ class FlowEngine:
                     .get("content", "")
                     .lower()
                 )
-                _AQ2_ACCESS_P = (
-                    "step free", "step-free", "step three",
-                    "wheelchair", "disabled access", "disability",
-                    "accessible", "accessibility",
-                )
-                if any(p in _aq2_last_msg for p in _AQ2_ACCESS_P):
-                    from app.clinic_config import get_clinic as _gc_acc
-                    _cli_acc = _gc_acc(self.session.get("clinic_id") or "demo")
-                    _fast_r = _short_access_ans(_cli_acc)
-                    logger.info("[ms_flow] ask_current_question: ANSWER_FAQ accessibility intercept (faq_location route)")
+                from app.clinic_config import get_clinic as _gc_aq2
+                _cli_aq2 = _gc_aq2(self.session.get("clinic_id") or "demo")
+                _locs_aq2 = {loc["id"]: loc for loc in _cli_aq2.get("locations", [])}
+                # BUG 2: explicit clinic mention in utterance overrides selected_location
+                _aq2_redd = any(p in _aq2_last_msg for p in (
+                    "redditch", "reditch", "reddish", "reddit",
+                    "red itch", "red ditch", "red-ditch", "bromsgrove",
+                ))
+                _aq2_alce = any(p in _aq2_last_msg for p in (
+                    "alcester", "greig", "kinwarton",
+                ))
+                if _aq2_redd and not _aq2_alce:
+                    _aq2_loc_id = "redditch"
+                elif _aq2_alce and not _aq2_redd:
+                    _aq2_loc_id = "alcester"
                 else:
-                    from app.clinic_config import get_clinic as _gc_aq2
-                    _cli_aq2 = _gc_aq2(self.session.get("clinic_id") or "demo")
-                    _locs_aq2 = {loc["id"]: loc for loc in _cli_aq2.get("locations", [])}
                     _aq2_sel = (self.session.get("selected_location") or "").lower()
-                    _aq2_loc = _locs_aq2.get(_aq2_sel) or (list(_locs_aq2.values())[0] if len(_locs_aq2) == 1 else None)
-                    if _aq2_loc:
+                    _aq2_loc_id = _aq2_sel if _aq2_sel in _locs_aq2 else (
+                        next(iter(_locs_aq2.keys())) if len(_locs_aq2) == 1 else ""
+                    )
+                _aq2_loc = _locs_aq2.get(_aq2_loc_id) or (
+                    list(_locs_aq2.values())[0] if len(_locs_aq2) == 1 else None
+                )
+                # BUG 1: detect all practical sub-parts in the utterance
+                _AQ2_ACCESS_P = (
+                    "step free", "step-free", "step three", "wheelchair",
+                    "disabled access", "disability", "accessible", "accessibility",
+                )
+                _AQ2_LOC_P = (
+                    "where exactly", "where is", "where are", "address",
+                    "postcode", "post code", "which road", "which street",
+                    "find you", "locate you", "get to", "directions", "how do i get",
+                )
+                _AQ2_PARK_P = (
+                    "parking", "car park", "paid parking", "free parking",
+                    "easy to park", "pay to park", "do i need to pay",
+                )
+                _AQ2_TRANS_P = (
+                    "bus", "train", "public transport", "station", "tube", "coach",
+                )
+                _aq2_parts: list = []
+                if any(p in _aq2_last_msg for p in _AQ2_ACCESS_P): _aq2_parts.append("accessibility")
+                if any(p in _aq2_last_msg for p in _AQ2_LOC_P):    _aq2_parts.append("location")
+                if any(p in _aq2_last_msg for p in _AQ2_PARK_P):   _aq2_parts.append("parking")
+                if any(p in _aq2_last_msg for p in _AQ2_TRANS_P):  _aq2_parts.append("transport")
+                logger.info(
+                    "[ms_faq] practical_first_turn_detected clinic=%s parts=%s",
+                    _aq2_loc_id or "<unresolved>", "|".join(_aq2_parts) or "<none>",
+                )
+                # BUG 1: composite answer when 2+ practical parts + clinic resolved
+                if len(_aq2_parts) >= 2 and _aq2_loc:
+                    _frags: list = []
+                    if "accessibility" in _aq2_parts:
+                        _ac_raw   = (_cli_aq2.get("faq") or {}).get("accessibility") or ""
+                        _ac_first = _ac_raw.split(".")[0].strip() if _ac_raw else ""
+                        _frags.append(
+                            (_ac_first + ".") if _ac_first
+                            else "Yes \u2014 both our clinics are wheelchair accessible."
+                        )
+                    if "location" in _aq2_parts:
+                        _addr_raw   = _aq2_loc.get("address", "")
+                        _addr_first = _addr_raw.split(".")[0].strip() if _addr_raw else ""
+                        _loc_name   = _aq2_loc.get("name", _aq2_loc_id.title())
+                        for _lead in ("we\u2019re at ", "we're at ", "we are at "):
+                            if _addr_first.lower().startswith(_lead):
+                                _addr_first = _addr_first[len(_lead):].lstrip()
+                                break
+                        if _addr_first:
+                            _frags.append(f"The {_loc_name} clinic is at {_addr_first}.")
+                    if "parking" in _aq2_parts:
+                        _pk_raw   = _aq2_loc.get("parking", "")
+                        _pk_first = _pk_raw.split(".")[0].strip() if _pk_raw else ""
+                        if _pk_first:
+                            _frags.append(_pk_first + ".")
+                    if "transport" in _aq2_parts:
+                        _tr_raw   = _aq2_loc.get("transport", "")
+                        _tr_first = _tr_raw.split(".")[0].strip() if _tr_raw else ""
+                        if _tr_first:
+                            _frags.append(_tr_first + ".")
+                    if len(_frags) >= 2:
+                        _fast_r = " ".join(_frags).strip()
+                        self.session["last_faq_loc_id"]     = _aq2_loc_id
+                        self.session["last_faq_intent"]     = "faq_location"
+                        self.session["last_faq_sub"]        = "composite"
+                        self.session["_faq_parts_answered"] = list(_aq2_parts)
+                        logger.info(
+                            "[ms_faq] practical_first_turn_answer_source=clinic_config "
+                            "composite=True clinic=%s parts=%s",
+                            _aq2_loc_id, "|".join(_aq2_parts),
+                        )
+                        logger.info(
+                            "[ms_faq] practical_parts_answered stored=%s",
+                            "|".join(_aq2_parts),
+                        )
+                if not _fast_r:
+                    # Single-part / fallback paths — preserve existing behaviour
+                    if "accessibility" in _aq2_parts and not (_aq2_redd or _aq2_alce):
+                        # Accessibility-only, no clinic named → clinic-wide short answer
+                        _fast_r = _short_access_ans(_cli_aq2)
+                        self.session["last_faq_sub"]        = "accessibility"
+                        self.session["_faq_parts_answered"] = ["accessibility"]
+                        logger.info("[ms_flow] ask_current_question: ANSWER_FAQ accessibility intercept (faq_location route)")
+                    elif "accessibility" in _aq2_parts and _aq2_loc:
+                        _fast_r = _short_access_ans(_cli_aq2)
+                        self.session["last_faq_sub"]        = "accessibility"
+                        self.session["_faq_parts_answered"] = ["accessibility"]
+                        self.session["last_faq_loc_id"]     = _aq2_loc_id
+                        self.session["last_faq_intent"]     = "faq_location"
+                    elif "parking" in _aq2_parts and _aq2_loc:
+                        _pk_raw   = _aq2_loc.get("parking", "")
+                        _pk_first = _pk_raw.split(".")[0].strip() + ("." if "." in _pk_raw else "")
+                        _fast_r = _pk_first or _pk_raw
+                        self.session["last_faq_sub"]        = "parking"
+                        self.session["_faq_parts_answered"] = ["parking"]
+                        self.session["last_faq_loc_id"]     = _aq2_loc_id
+                        self.session["last_faq_intent"]     = "faq_location"
+                        logger.info(
+                            "[ms_faq] practical_first_turn_answer_source=clinic_config "
+                            "composite=False clinic=%s parts=parking", _aq2_loc_id,
+                        )
+                    elif "transport" in _aq2_parts and _aq2_loc:
+                        _fast_r = _aq2_loc.get("transport", "")
+                        self.session["last_faq_sub"]        = "transport"
+                        self.session["_faq_parts_answered"] = ["transport"]
+                        self.session["last_faq_loc_id"]     = _aq2_loc_id
+                        self.session["last_faq_intent"]     = "faq_location"
+                    elif _aq2_loc:
                         _fa2 = _aq2_loc.get("address", "")
                         _fast_r = _fa2.split(".")[0].strip() + ("." if _fa2 else "")
+                        self.session["last_faq_sub"]        = "address"
+                        self.session["_faq_parts_answered"] = ["location"]
+                        self.session["last_faq_loc_id"]     = _aq2_loc_id
+                        self.session["last_faq_intent"]     = "faq_location"
                     elif _locs_aq2:
                         _fast_r = "  ".join(
                             l.get("address", "").split(".")[0].strip() + "."
                             for l in _locs_aq2.values() if l.get("address")
                         )
+                        self.session["last_faq_sub"]        = "address"
+                        self.session["_faq_parts_answered"] = ["location"]
             # ANSWER_FAQ/prices: deterministic from-price gate.
             # If no specific service was named, always return the from-price line —
             # never a full price list.  If a service was named, let the LLM answer
@@ -11363,7 +11479,32 @@ class FlowEngine:
                 "cancellation policy", "how much notice", "notice to cancel",
                 "late cancellation", "cancel an appointment",
             ))
-            _fbo_intent = "faq_booking_logistics" if _fbo_info_cancel else self._detect_intent(text)
+            # BUG 4: parking-policy nuance ("time limit", "whole day", "when you say it's free")
+            # contains no parking keyword and would otherwise fall to general_query/LLM.
+            # When the prior FAQ turn was about location/parking, keep this in the practical
+            # FAQ lane so it gets deterministic handling.
+            _fbo_last_sub_nu = self.session.get("last_faq_sub", "")
+            _fbo_last_int_nu = self.session.get("last_faq_intent", "")
+            _FBO_PARK_NUANCE_P = (
+                "time limit", "whole day", "all day", "stay there", "stay here",
+                "how long can i", "how long do i", "how long can we",
+                "restriction", "restrictions",
+                "when you say it's free", "when you say it is free", "when you say free",
+            )
+            _fbo_parking_nuance = (
+                (_fbo_last_sub_nu in ("parking", "composite") or _fbo_last_int_nu == "faq_location")
+                and any(p in _txt_lower_fbo for p in _FBO_PARK_NUANCE_P)
+            )
+            if _fbo_info_cancel:
+                _fbo_intent = "faq_booking_logistics"
+            elif _fbo_parking_nuance:
+                logger.info(
+                    "[ms_faq] parking_nuance_route last_sub=%s last_intent=%s → faq_location",
+                    _fbo_last_sub_nu, _fbo_last_int_nu,
+                )
+                _fbo_intent = "faq_location"
+            else:
+                _fbo_intent = self._detect_intent(text)
 
             # Bug 8: reschedule/cancel must hard-route immediately — never fall
             # through to booking logic or FAQ follow-up answering.
@@ -11406,10 +11547,46 @@ class FlowEngine:
                     and _fbo_last_intent == "faq_location"
                     and any(p in transcript.lower() for p in _FBO_LOC_CLARIFY_SIGS)
                 )
+                # BUG 3: part-aware dedup — do not suppress a practical sub-part that
+                # was not actually answered in the last practical response.
+                _fbo_parts_answered = set(self.session.get("_faq_parts_answered") or [])
+                _fbo_tx_low = transcript.lower()
+                _FBO_PP_ACCESS = (
+                    "step free", "step-free", "wheelchair", "accessible",
+                    "accessibility", "disabled access", "disability",
+                )
+                _FBO_PP_LOC = (
+                    "where exactly", "where is", "where are", "address",
+                    "postcode", "which road", "directions", "how do i get",
+                    "find you", "locate you", "get to",
+                )
+                _FBO_PP_PARK = (
+                    "parking", "car park", "free parking", "easy to park",
+                    "pay to park", "do i need to pay",
+                )
+                _FBO_PP_TRANS = ("bus", "train", "public transport", "station")
+                _fbo_req_parts: set = set()
+                if any(p in _fbo_tx_low for p in _FBO_PP_ACCESS): _fbo_req_parts.add("accessibility")
+                if any(p in _fbo_tx_low for p in _FBO_PP_LOC):    _fbo_req_parts.add("location")
+                if any(p in _fbo_tx_low for p in _FBO_PP_PARK):   _fbo_req_parts.add("parking")
+                if any(p in _fbo_tx_low for p in _FBO_PP_TRANS):  _fbo_req_parts.add("transport")
+                _fbo_new_part = bool(_fbo_req_parts - _fbo_parts_answered) if _fbo_req_parts else False
+                logger.info(
+                    "[ms_faq] practical_dedup_check requested=%s last_answered=%s suppressed=%s",
+                    "|".join(sorted(_fbo_req_parts)) or "<none>",
+                    "|".join(sorted(_fbo_parts_answered)) or "<none>",
+                    (
+                        _fbo_intent == _fbo_last_intent
+                        and (time.time() - _fbo_last_at) < 8.0
+                        and not _fbo_is_loc_clarification
+                        and not _fbo_new_part
+                    ),
+                )
                 if (
                     _fbo_intent == _fbo_last_intent
                     and (time.time() - _fbo_last_at) < 8.0
                     and not _fbo_is_loc_clarification
+                    and not _fbo_new_part
                 ):
                     logger.info(
                         "[ms_flow] FAQ_BOOKING_OFFER: dedup — %s answered %.1fs ago, suppressed",
@@ -14943,6 +15120,52 @@ class FlowEngine:
                     _mfi_ans = "Of course — " + "  ".join(_mfi_parts)
                 self.session["last_faq_sub"] = "hours"  # for correction recovery (BUG 2)
             else:  # faq_location
+                # ── BUG 4: bounded parking-policy nuance (time limits / restrictions) ──
+                # Answer from clinic parking config when it explicitly addresses time
+                # limits; otherwise give a bounded deterministic "unknown" answer.
+                # Never fall through to LLM speculation.
+                _PARK_NUANCE_P = (
+                    "time limit", "whole day", "all day", "stay there", "stay here",
+                    "how long can i", "how long do i", "how long can we",
+                    "restriction", "restrictions",
+                    "when you say it's free", "when you say it is free", "when you say free",
+                )
+                if _mfi_loc and any(p in _mfi_text for p in _PARK_NUANCE_P):
+                    _pk_full = _mfi_loc.get("parking", "") or ""
+                    _pk_low  = _pk_full.lower()
+                    if "time limit" in _pk_low or "no time" in _pk_low:
+                        _mfi_ans = "Of course — " + _pk_full
+                        logger.info(
+                            "[ms_faq] parking_nuance_answer clinic=%s source=clinic_config",
+                            _mfi_loc_id,
+                        )
+                    else:
+                        _pk_known = _pk_full.split(".")[0].strip()
+                        _loc_name_nu = _mfi_loc.get("name", _mfi_loc_id.title())
+                        _nu_bits = []
+                        if _pk_known:
+                            _nu_bits.append(_pk_known + ".")
+                        _nu_bits.append(
+                            "I don\u2019t have a confirmed rule about time limits for the "
+                            f"{_loc_name_nu} parking \u2014 for exact restrictions it\u2019s "
+                            "best to check the signs on arrival or with the venue directly."
+                        )
+                        _mfi_ans = " ".join(_nu_bits)
+                        logger.info(
+                            "[ms_faq] practical_bounded_unknown part=parking_policy "
+                            "clinic=%s source=deterministic_unknown", _mfi_loc_id,
+                        )
+                    self.session["last_faq_sub"]           = "parking"
+                    self.session["last_faq_loc_id"]        = _mfi_loc_id
+                    self.session["last_faq_intent"]        = intent
+                    self.session["_faq_parts_answered"]    = ["parking"]
+                    self.session["_faq_active_topic"]      = intent
+                    self.session["_faq_followup_window"]   = 3
+                    self.session["_faq_last_user_question"] = transcript
+                    await self._tts.put(_mfi_ans + _re_anchor_sfx)
+                    self.session["last_faq_answer"] = _mfi_ans
+                    return
+
                 # ── Compound practical FAQ composition ─────────────────────
                 # "does the clinic have step-free access and where exactly is
                 # the alcester one" / "where is alcester and do you have
@@ -15032,9 +15255,14 @@ class FlowEngine:
                         self.session["last_faq_sub"]           = "composite"
                         self.session["last_faq_loc_id"]        = _mfi_loc_id
                         self.session["last_faq_intent"]        = intent
+                        self.session["_faq_parts_answered"]    = list(_pp_parts)
                         self.session["_faq_active_topic"]       = intent
                         self.session["_faq_followup_window"]    = 3
                         self.session["_faq_last_user_question"] = transcript
+                        logger.info(
+                            "[ms_faq] practical_parts_answered stored=%s",
+                            "|".join(_pp_parts),
+                        )
                         await self._tts.put(_mfi_ans_composite + _re_anchor_sfx)
                         self.session["last_faq_answer"] = _mfi_ans_composite
                         return
@@ -15060,6 +15288,7 @@ class FlowEngine:
                 if _access_q:
                     _mfi_ans = _short_access_ans(_cli_mfi)
                     self.session["last_faq_sub"] = "accessibility"
+                    self.session["_faq_parts_answered"] = ["accessibility"]
                     logger.info(
                         "[ms_flow] _handle_mid_flow_interrupt: faq_location accessibility fast path"
                     )
@@ -15085,14 +15314,17 @@ class FlowEngine:
                         _mfi_parking_first = (_mfi_parking_raw.split(".")[0].strip() + ".") if "." in _mfi_parking_raw else _mfi_parking_raw
                         _mfi_ans = "Of course — " + _mfi_parking_first
                         self.session["last_faq_sub"] = "parking"
+                        self.session["_faq_parts_answered"] = ["parking"]
                     elif _transport_q:
                         _mfi_ans = "Of course — " + _mfi_loc.get("transport", "")
                         self.session["last_faq_sub"] = "transport"
+                        self.session["_faq_parts_answered"] = ["transport"]
                     else:
                         # First sentence of address only — voice-friendly length
                         _fa = _mfi_loc.get("address", "")
                         _mfi_ans = "Of course — " + _fa.split(".")[0].strip() + ("." if _fa else "")
                         self.session["last_faq_sub"] = "address"
+                        self.session["_faq_parts_answered"] = ["location"]
                 else:
                     # No clinic established + multi-location clinic: asking for
                     # parking, transport, or address for an unspecified clinic
