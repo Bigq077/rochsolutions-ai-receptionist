@@ -628,32 +628,61 @@ def _is_booking_state_faq_interrupt(text: str) -> tuple[bool, str]:
 _FAQ_ELLIPSIS_FOLLOWUP_SIGS: tuple[str, ...] = (
     "do you think", "would that", "is that", "is it",
     "so is it", "so would", "so does", "so is that", "so are they",
+    "so do you think",
     "are they", "are the needles", "would it", "does that", "does it",
     "would they", "is there", "is there a",
-    "a problem", "a bad sign", "something to worry", "worry about",
+    "a problem", "be a problem", "be an issue", "an issue",
+    "a bad sign", "something to worry", "worry about",
     "ok to", "okay to", "safe to", "painful then",
     "hurt", "hurts", "painful", "scary",
     "side effect", "side effects", "dangerous",
     "normal", "is that normal", "is that ok", "is that okay",
     "how big", "how long", "how many",
+    "would that stop", "stop me doing", "could i still",
+    "scared of", "i'm scared", "im scared", "fear of", "my fear",
+    "nervous about", "anxious about", "worried about",
+    "needle", "needles",
+)
+
+# Continuation terms that, when an FAQ topic is already locked, imply the
+# caller is still on the same FAQ thread even if they do not repeat the
+# topic noun — e.g. "would my fear of needles be a problem" after
+# topic=acupuncture.  Deliberately narrow so bare booking payloads
+# ("my knee is killing me") never match.
+_FAQ_TOPIC_CONTINUATION_SIGS: tuple[str, ...] = (
+    "needle", "needles",
+    "pain", "painful", "hurt", "hurts",
+    "scared", "nervous", "anxious", "worried", "worry",
+    "problem", "issue", "concern",
+    "that would", "that'd", "stop me", "still do", "still okay",
 )
 
 
-def _is_faq_ellipsis_followup(text: str) -> bool:
-    """True when the utterance is a short ellipsis-style follow-up that
+def _is_faq_ellipsis_followup(text: str, ctx_active: bool = False) -> bool:
+    """True when the utterance is an ellipsis-style follow-up that
     plausibly continues a prior FAQ thread (no service noun repeated, no
-    booking payload).  Used only when a mid-booking FAQ interrupt context
-    is active."""
+    booking payload).  When ``ctx_active`` is True (mid-booking FAQ ctx
+    present) the length cap is relaxed and the topic-continuation signals
+    qualify."""
     t = (text or "").strip().lower()
     if not t:
-        return False
-    # Too long → probably a real booking reason, not an ellipsis follow-up.
-    if len(t.split()) > 14:
         return False
     # Body-part + symptom compound → genuine booking reason, not FAQ follow-up.
     if _BOOKING_FAQ_BODY_RE.search(t) and _BOOKING_FAQ_SYMP_RE.search(t):
         return False
-    return any(p in t for p in _FAQ_ELLIPSIS_FOLLOWUP_SIGS)
+    _word_count = len(t.split())
+    # Without ctx: short utterances only (≤14 words).  With ctx: allow
+    # longer natural-language follow-ups (up to 30 words) since caller is
+    # clearly extending the already-opened FAQ thread.
+    if not ctx_active and _word_count > 14:
+        return False
+    if ctx_active and _word_count > 30:
+        return False
+    if any(p in t for p in _FAQ_ELLIPSIS_FOLLOWUP_SIGS):
+        return True
+    if ctx_active and any(p in t for p in _FAQ_TOPIC_CONTINUATION_SIGS):
+        return True
+    return False
 
 
 # Explicit booking-resume signals — caller wants to exit FAQ thread and
@@ -11720,19 +11749,51 @@ class FlowEngine:
                 and step["state"] in _BOOKING_FAQ_STATES
                 and _mid_intent not in ("reschedule", "cancel", "booking")
             ):
+                _t_mbf = (text or "").lower()
+                _mbf_topic_switch = any(
+                    p in _t_mbf for p in (
+                        "what about shockwave", "tell me about another",
+                        "another service", "forget that", "never mind that",
+                        "different question", "change topic",
+                        "what about laser", "what about pilates",
+                        "what about massage", "what about parking",
+                        "what about prices", "what about insurance",
+                    )
+                )
                 if _is_booking_resume_signal(text):
                     self.session.pop("_mid_booking_faq_ctx", None)
                     logger.info(
                         "[ms_flow] mid_booking_faq_context_cleared "
-                        "reason=explicit_resume text=%r",
+                        "reason=explicit_resume_booking text=%r",
+                        text[:80],
+                    )
+                elif _mbf_topic_switch:
+                    self.session.pop("_mid_booking_faq_ctx", None)
+                    self.session.pop("_faq_active_service", None)
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_context_cleared "
+                        "reason=explicit_topic_switch text=%r",
                         text[:80],
                     )
                 else:
-                    _mbf_match = _is_faq_ellipsis_followup(text)
+                    _mbf_match = _is_faq_ellipsis_followup(text, ctx_active=True)
+                    _mbf_topic_log = _mbf_ctx.get("topic")
+                    _mbf_reason = (
+                        "needle_concern_followup"
+                        if (_mbf_topic_log == "acupuncture"
+                            and any(p in (text or "").lower() for p in (
+                                "needle", "needles", "scared", "nervous",
+                                "anxious", "worried", "fear",
+                                "painful", "hurt", "hurts",
+                                "problem", "issue", "concern",
+                            )))
+                        else "ellipsis_followup" if _mbf_match else "no_match"
+                    )
                     logger.info(
-                        "[ms_flow] mid_booking_faq_followup_check matched=%s "
-                        "explicit_resume=False text=%r",
-                        _mbf_match, text[:80],
+                        "[ms_flow] mid_booking_faq_followup_check "
+                        "topic=%s matched=%s reason=%s explicit_resume=False "
+                        "text=%r",
+                        _mbf_topic_log, _mbf_match, _mbf_reason, text[:80],
                     )
                     if not _mbf_match:
                         # Utterance is not an FAQ ellipsis follow-up — caller
@@ -11752,6 +11813,16 @@ class FlowEngine:
                             self.session["_mid_booking_faq_ctx"] = _mbf_ctx
                         _mbf_topic = _mbf_ctx.get("topic") or "acupuncture"
                         _mbf_synth = f"{_mbf_topic} {transcript}".strip()
+                        _mbf_route = (
+                            "acupuncture_fear_followup"
+                            if _mbf_topic == "acupuncture"
+                            else "faq_services"
+                        )
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_context_preserved "
+                            "topic=%s route=%s",
+                            _mbf_topic, _mbf_route,
+                        )
                         logger.info(
                             "[ms_flow] mid_booking_faq_followup_override "
                             "topic=%s route=faq_services",
@@ -15583,7 +15654,17 @@ class FlowEngine:
                 "hate needles", "don't like needles", "not keen on needles",
                 "what does it feel", "feel like", "worried", "worry",
             )
-            if "acupuncture" in _svc_text and any(p in _svc_text for p in _NEEDLE_FEAR_SIGNALS):
+            # Topic-lock safety net: if acupuncture is the active FAQ topic,
+            # treat needle-fear follow-ups as acupuncture even when the text
+            # omits the word "acupuncture" ("would my fear of needles be a
+            # problem" after topic=acupuncture).
+            _mbf_ctx_hmfi = self.session.get("_mid_booking_faq_ctx") or {}
+            _acu_topic_locked = (
+                "acupuncture" in _svc_text
+                or self.session.get("_faq_active_service") == "acupuncture"
+                or _mbf_ctx_hmfi.get("topic") == "acupuncture"
+            )
+            if _acu_topic_locked and any(p in _svc_text for p in _NEEDLE_FEAR_SIGNALS):
                 _svc_answer = _FAQ_ACUPUNCTURE_FEAR_ANSWER
                 self.session["_faq_active_service"] = "acupuncture"
                 logger.info("[ms_flow] _handle_mid_flow_interrupt: acupuncture fear fast path")
