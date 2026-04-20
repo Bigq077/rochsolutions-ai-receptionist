@@ -256,11 +256,18 @@ def _is_clinic_access_logistics(text: str) -> bool:
 _EXPLICIT_CHILD_TREATMENT_SIGS: tuple[str, ...] = (
     # Treatment eligibility verbs
     "do you treat", "do you see", "can you treat", "can you see",
+    "would you treat", "would you see",
     "accept children", "treat children", "see children",
+    "offer treatment for children", "offer paediatric", "offer pediatric",
+    "treatment for children",
     "can you help my son", "can you help my daughter", "can you help my child",
     "can you help my kid",
     # "can my <relation>" eligibility verb
     "can my son", "can my daughter", "can my child", "can my kid",
+    # "can he/she" treatment/booking forms
+    "can he be seen", "can she be seen", "can he be treated", "can she be treated",
+    "can he come in", "can she come in", "can he book", "can she book",
+    "seen there", "treated there",
     # Booking-for-child phrasing
     "book for my son", "book for my daughter", "book for my child",
     "book for my kid",
@@ -7384,21 +7391,34 @@ class FlowEngine:
                 _is_practical_faq_preempt(text)
                 and not _has_explicit_child_treatment_request(text)
             )
+            _ft_explicit_child_treatment = _has_explicit_child_treatment_request(text)
             if _ft_practical_preempt:
                 logger.info(
                     "[ms_flow] first_turn_policy_gate: "
                     "practical_faq_preempts_child_gate text=%r",
                     text[:80],
                 )
-            elif _has_explicit_child_treatment_request(text):
+            elif _ft_explicit_child_treatment:
                 logger.info(
                     "[ms_flow] child_policy_gate: "
                     "explicit_child_treatment_request -> ASK_CHILD_AGE"
                 )
+            else:
+                # Child relation present without explicit treatment/booking ask
+                # (e.g. "my son is disabled so I wanted to know if...") must
+                # not fire ASK_CHILD_AGE — fall through to normal routing.
+                if self.session.get("first_turn_child_related"):
+                    logger.info(
+                        "[ms_flow] first_turn_policy_gate: "
+                        "child_mention_without_explicit_treatment_request -- "
+                        "skipping gate text=%r",
+                        text[:80],
+                    )
             if (
                 self.session.get("_first_turn_extracted")
                 and not self.session.get("_first_turn_policy_gate_done")
                 and not _ft_practical_preempt
+                and _ft_explicit_child_treatment
             ):
                 from app.media_streams.policy_gate import (
                     evaluate_policy_gate    as _pg_eval_ft,
