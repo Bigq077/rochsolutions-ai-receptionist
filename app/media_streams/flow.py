@@ -273,6 +273,77 @@ def _faq_topic_reanchor(session: Dict[str, Any]) -> str:
         return f"Was there anything else you wanted to ask about {display}?"
     return "Anything else you'd like to ask?"
 
+
+# ── Locked-topic FAQ follow-up preemption ───────────────────────────────────
+# When a specific FAQ service topic is locked (_faq_active_service), a
+# natural follow-up about that same service MUST stay in the FAQ lane.
+# Without this preemption, _detect_intent classifies utterances like
+# "i'm a bit scared of needles, are they big and is it painful?" as
+# booking (via booking_priority_p matching "painful"/"hurt"/"pain")
+# and the caller gets a vague LLM dodge answer through the
+# semantic-guard → general_query fall-through.
+#
+# Generic signals apply to any locked service (hurt/painful/safe/side
+# effects/how it works/how long/scared etc.).  Service-specific signals
+# catch vocabulary that only makes sense for one modality
+# (needles for acupuncture, gait for biomechanics, etc.).
+
+_LOCKED_TOPIC_COMMON_SIGS: tuple[str, ...] = (
+    "painful", "pain", "hurt", "hurts", "does it hurt", "will it hurt",
+    "is it painful", "is it safe", "safe", "side effect", "side effects",
+    "what happens", "what does it feel", "feel like", "how does",
+    "how long", "how often", "how much", "how many",
+    "scared", "afraid", "nervous", "anxious", "anxiety", "worried",
+    "scary", "scare", "how it works", "how does it work", "work exactly",
+)
+
+_LOCKED_TOPIC_SERVICE_SIGS: Dict[str, tuple[str, ...]] = {
+    "acupuncture":    ("needle", "needles", "how big", "size", " big ", " big?",
+                       "small", "thin", "thick", "sterile"),
+    "shockwave":      ("shock", "wave", "pulse", "sound wave", "energy", "loud"),
+    "laser":          ("laser", "light", "beam", "burn", "heat"),
+    "sports_massage": ("massage", "pressure", "deep", "soft", "oil"),
+    "pilates":        ("class", "classes", "mat", "reformer", "group", "beginner"),
+    "biomechanics":   ("gait", "walk", "walking", "movement", "scan",
+                       "assessment", "posture"),
+}
+
+# Explicit intent-switch phrases — if the caller clearly wants to
+# book/reschedule/cancel, the locked-topic preemption MUST NOT fire.
+_LOCKED_TOPIC_SWITCH_PHRASES: tuple[str, ...] = (
+    "i want to book", "i'd like to book", "i need to book",
+    "want to book", "looking to book", "trying to book",
+    "book an appointment", "book appointment", "book me in",
+    "can i book", "could i book", "schedule an appointment",
+    "make an appointment", "get an appointment",
+    "reschedule", "cancel my", "cancel the", "cancel an",
+    "come in and see", "actually book", "actually i want to book",
+    "actually i'd like to book",
+)
+
+
+def _check_locked_topic_followup(
+    session: Dict[str, Any],
+    text_lower: str,
+) -> tuple[Optional[str], bool, bool]:
+    """
+    Decide whether the current utterance is a locked-topic FAQ follow-up
+    that must be kept in the FAQ lane, preempting _detect_intent.
+
+    Returns (locked_svc, matched, explicit_switch).
+      - locked_svc: active FAQ service, or None if no topic is locked
+      - matched: utterance contains follow-up signals for the locked service
+      - explicit_switch: utterance clearly asks to book/reschedule/cancel
+    """
+    locked_svc = session.get("_faq_active_service")
+    if not locked_svc:
+        return None, False, False
+    sigs = set(_LOCKED_TOPIC_COMMON_SIGS)
+    sigs.update(_LOCKED_TOPIC_SERVICE_SIGS.get(locked_svc, ()))
+    matched = any(s in text_lower for s in sigs)
+    explicit_switch = any(p in text_lower for p in _LOCKED_TOPIC_SWITCH_PHRASES)
+    return locked_svc, matched, explicit_switch
+
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
 # Patterns that callers use as labels instead of actual names.
 # If the transcript matches one of these entirely (or after stripping,
@@ -11249,6 +11320,40 @@ class FlowEngine:
                 await self._tts.put("Of course — what would you like to know?")
                 return
 
+            # ── Locked-topic FAQ follow-up preemption ─────────────────────
+            # Runs BEFORE _detect_intent so booking_priority_p ("painful",
+            # "hurt", "pain") cannot hijack a natural follow-up about the
+            # locked service topic (e.g. acupuncture + needles) into
+            # booking / general_query.  Ack / continuation / clinic-correction
+            # guards above already returned; this only sees substantive
+            # follow-up utterances.
+            _lt_svc, _lt_matched, _lt_switch = _check_locked_topic_followup(
+                self.session, _txt_lower_fbo,
+            )
+            if _lt_svc:
+                logger.info(
+                    "[ms_faq] locked_topic_followup_check topic=%s text=%r "
+                    "matched=%s explicit_switch=%s",
+                    _lt_svc, text[:60], _lt_matched, _lt_switch,
+                )
+            if _lt_svc and _lt_matched and not _lt_switch:
+                logger.info(
+                    "[ms_faq] locked_topic_followup_override topic=%s "
+                    "reason=service_followup_preempts_general_reroute route=faq_services",
+                    _lt_svc,
+                )
+                self.session["_faq_ans_intent"] = "faq_services"
+                self.session["_faq_ans_at"]     = time.time()
+                # Prepend the locked service so _handle_mid_flow_interrupt's
+                # existing acupuncture fear / specific-service drill-down
+                # paths (which key off "acupuncture" in the text) fire
+                # correctly even when the follow-up does not repeat the name.
+                _lt_synth_tx = f"{_lt_svc} {transcript}"
+                await self._handle_mid_flow_interrupt("faq_services", _lt_synth_tx)
+                if not self.session.get("_faq_loc_pending_intent"):
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
+                return
+
             # Pre-flight: informational cancel questions ("can I cancel by phone?",
             # "what's your cancellation policy?") must NOT trigger CANCEL_FLOW.
             # They are FAQ questions about the process, not actual cancel requests.
@@ -11625,6 +11730,33 @@ class FlowEngine:
                         return
                 logger.info("[ms_flow] faq_followup: continue %r", text[:40])
                 await self._tts.put("Of course — what would you like to know?")
+                return
+
+            # ── Locked-topic FAQ follow-up preemption ─────────────────────
+            # Mirror of the FAQ_BOOKING_OFFER preemption — see that block
+            # for rationale.  Must run BEFORE _detect_intent so locked-topic
+            # service follow-ups never get reclassified as booking/general.
+            _glt_svc, _glt_matched, _glt_switch = _check_locked_topic_followup(
+                self.session, _txt_lower_gbo,
+            )
+            if _glt_svc:
+                logger.info(
+                    "[ms_faq] locked_topic_followup_check topic=%s text=%r "
+                    "matched=%s explicit_switch=%s",
+                    _glt_svc, text[:60], _glt_matched, _glt_switch,
+                )
+            if _glt_svc and _glt_matched and not _glt_switch:
+                logger.info(
+                    "[ms_faq] locked_topic_followup_override topic=%s "
+                    "reason=service_followup_preempts_general_reroute route=faq_services",
+                    _glt_svc,
+                )
+                self.session["_faq_ans_intent"] = "faq_services"
+                self.session["_faq_ans_at"]     = time.time()
+                _glt_synth_tx = f"{_glt_svc} {transcript}"
+                await self._handle_mid_flow_interrupt("faq_services", _glt_synth_tx)
+                if not self.session.get("_faq_loc_pending_intent"):
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
 
             # Pre-flight: informational cancel questions must NOT trigger CANCEL_FLOW.
