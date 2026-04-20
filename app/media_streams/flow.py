@@ -247,6 +247,32 @@ def _is_clinic_access_logistics(text: str) -> bool:
         return False
     return True
 
+
+# ── Topic-aware FAQ re-anchor ───────────────────────────────────────────────
+# When an FAQ thread has a locked active service (e.g. acupuncture), the
+# post-answer re-anchor should stay on that topic — "Was there anything else
+# you wanted to ask about acupuncture?" — instead of the generic
+# "Anything else you'd like to ask?" which resets the caller's mental model.
+_FAQ_TOPIC_DISPLAY_NAMES: Dict[str, str] = {
+    "acupuncture":    "acupuncture",
+    "shockwave":      "shockwave therapy",
+    "laser":          "laser therapy",
+    "sports_massage": "sports massage",
+    "pilates":        "Pilates",
+    "biomechanics":   "biomechanical assessments",
+}
+
+
+def _faq_topic_reanchor(session: Dict[str, Any]) -> str:
+    """Return the topic-specific re-anchor when an FAQ service topic is
+    locked, otherwise the generic re-anchor.  Safe for every site that
+    currently writes the generic string."""
+    svc = session.get("_faq_active_service")
+    display = _FAQ_TOPIC_DISPLAY_NAMES.get(svc or "", "")
+    if display:
+        return f"Was there anything else you wanted to ask about {display}?"
+    return "Anything else you'd like to ask?"
+
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
 # Patterns that callers use as labels instead of actual names.
 # If the transcript matches one of these entirely (or after stripping,
@@ -3065,17 +3091,48 @@ class FlowEngine:
                 if "acupuncture" in _faq_svc_text and any(p in _faq_svc_text for p in _AQ_FEAR_SIG):
                     _fast_r = _FAQ_ACUPUNCTURE_FEAR_ANSWER
                     self.session["_faq_active_service"] = "acupuncture"
-                    logger.info("[ms_flow] ask_current_question: acupuncture fear fast path")
+                    logger.info(
+                        "[ms_faq] topic_lock set topic=acupuncture source=caller_utterance "
+                        "(fear-signal fast path)"
+                    )
+                    logger.info(
+                        "[ms_faq] answer_source=clinic_config topic=acupuncture "
+                        "subtype=needle_pain"
+                    )
                 else:
+                    # ── Specific-service drill-down (TOPIC LOCK on first turn) ──
+                    # "I saw on the website about acupuncture" / "tell me about
+                    # shockwave" etc. must (a) be answered about that service
+                    # specifically and (b) set _faq_active_service so any
+                    # immediate follow-up ("are the needles big, is it painful?")
+                    # is routed back to this topic deterministically rather than
+                    # drifting through top-level intent reconsideration.
+                    _aq_specific_key = next(
+                        (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _faq_svc_text),
+                        None,
+                    )
                     _LIST_PHRASES = (
                         "full list", "all services", "everything you offer",
                         "all of them", "what do you offer", "what services do you",
                         "what services", "list of services",
                     )
-                    if any(p in _faq_svc_text for p in _LIST_PHRASES):
+                    if _aq_specific_key and not any(p in _faq_svc_text for p in _LIST_PHRASES):
+                        _fast_r = _SPECIFIC_SERVICE_ANSWERS[_aq_specific_key]
+                        self.session["_faq_active_service"] = _aq_specific_key
+                        logger.info(
+                            "[ms_faq] topic_lock set topic=%s source=caller_utterance",
+                            _aq_specific_key,
+                        )
+                        logger.info(
+                            "[ms_faq] answer_source=clinic_config topic=%s subtype=service_overview",
+                            _aq_specific_key,
+                        )
+                    elif any(p in _faq_svc_text for p in _LIST_PHRASES):
                         _fast_r = _FAQ_SERVICES_FULL
+                        logger.info("[ms_faq] answer_source=clinic_config topic=services subtype=full_list")
                     else:
                         _fast_r = _FAQ_SERVICES_FAST
+                        logger.info("[ms_faq] answer_source=clinic_config topic=services subtype=fast_summary")
             # ANSWER_FAQ/insurance: deterministic self-pay / Bupa answer.
             if step["state"] == "ANSWER_FAQ" and format_args.get("faq_topic") in ("insurance", "faq_insurance"):
                 _fast_r = _FAQ_INSURANCE_ANSWER
@@ -4379,7 +4436,7 @@ class FlowEngine:
                     self.session["_faq_ans_intent"] = _gp_pending_loc
                     self.session["_faq_ans_at"]     = time.time()
                     await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
                 _gp_dtmf_re = "Press 1 for Alcester or 2 for Redditch."
                 await self._tts.put(_gp_dtmf_re)
@@ -4446,7 +4503,7 @@ class FlowEngine:
                 self.session["_faq_ans_intent"] = _gp_pending_loc
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
-                self.session["last_question"] = "Anything else you'd like to ask?"
+                self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
 
             # ── New sub-question intercept ────────────────────────────────────────
@@ -4498,7 +4555,7 @@ class FlowEngine:
                 self.session["_faq_ans_intent"] = _gp_pending_loc
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
-                self.session["last_question"] = "Anything else you'd like to ask?"
+                self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
             elif _gp_loc_result["status"] == "ambiguous":
                 _gp_conf  = _gp_loc_result.get("confidence", 0)
@@ -4523,7 +4580,7 @@ class FlowEngine:
                     self.session["_faq_ans_intent"] = _gp_pending_loc
                     self.session["_faq_ans_at"]     = time.time()
                     await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
                 # Low-confidence ambiguous — retry ladder
                 _gp_retry_n = self.session.get("_faq_loc_retry_count", 0)
@@ -11042,7 +11099,7 @@ class FlowEngine:
                     self.session["_faq_ans_intent"] = _fbo_pending_loc
                     self.session["_faq_ans_at"]     = time.time()
                     await self._handle_mid_flow_interrupt(_fbo_pending_loc, _fbo_synth_tx)
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                     logger.info(
                         "[ms_flow] FAQ_BOOKING_OFFER: pending location resolved → %s for %s",
                         _fbo_pending_loc, _fbo_pend_clinic,
@@ -11125,7 +11182,7 @@ class FlowEngine:
                 await self._handle_mid_flow_interrupt(_last_faq_intent_corr, _synth_tx)
                 # last_question already updated inside _handle_mid_flow_interrupt for
                 # offer states (Fix C). Explicit overwrite here for defence-in-depth.
-                self.session["last_question"] = "Anything else you'd like to ask?"
+                self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
 
             # ── FAQ follow-up phrase buckets ────────────────────────────────────
@@ -11186,7 +11243,7 @@ class FlowEngine:
                         self.session["_faq_ans_at"]     = time.time()
                         await self._handle_mid_flow_interrupt(_fbo_cont_intent, transcript)
                         if not self.session.get("_faq_loc_pending_intent"):
-                            self.session["last_question"] = "Anything else you'd like to ask?"
+                            self.session["last_question"] = _faq_topic_reanchor(self.session)
                         return
                 logger.info("[ms_flow] faq_followup: continue %r", text[:40])
                 await self._tts.put("Of course — what would you like to know?")
@@ -11273,7 +11330,7 @@ class FlowEngine:
                     # handler to re-read the full FAQ answer aloud on the next
                     # silence event, and the NEXT turn's re-anchor would replay
                     # it as stale content.
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
 
             # Reset follow-up count on any non-FAQ answer
@@ -11325,7 +11382,7 @@ class FlowEngine:
                     self.session["_faq_ans_at"]     = time.time()
                     await self._handle_mid_flow_interrupt("general_query", transcript)
                     if not self.session.get("_faq_loc_pending_intent"):
-                        self.session["last_question"] = "Anything else you'd like to ask?"
+                        self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
                 # Dangling-fragment guard: connector-start + open-end word = incomplete clause.
                 # "to go to your", "and is the approach kind of slowly based or" etc.
@@ -11388,6 +11445,11 @@ class FlowEngine:
                             "[ms_flow] faq_followup: service topic carry-forward %s for %r",
                             _fbo_active_svc, text[:40],
                         )
+                        logger.info(
+                            "[ms_faq] followup matched locked topic=%s — kept in faq_topic "
+                            "instead of top_level_reroute",
+                            _fbo_active_svc,
+                        )
                     elif (
                         _fbo_active_topic
                         and _fbo_fw > 0
@@ -11416,7 +11478,7 @@ class FlowEngine:
                     self.session["_faq_repair_count"] = 0
                     await self._handle_mid_flow_interrupt(_fbo_eff_intent, _fbo_eff_tx)
                     if not self.session.get("_faq_loc_pending_intent"):
-                        self.session["last_question"] = "Anything else you'd like to ask?"
+                        self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
                 logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
                 _faq_rc = self.session.get("_faq_repair_count", 0) + 1
@@ -11459,7 +11521,7 @@ class FlowEngine:
                     self.session["_faq_ans_intent"] = _gbo_pending_loc
                     self.session["_faq_ans_at"]     = time.time()
                     await self._handle_mid_flow_interrupt(_gbo_pending_loc, _gbo_synth_tx)
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                     logger.info(
                         "[ms_flow] GENERAL_BOOKING_OFFER: pending location resolved → %s for %s",
                         _gbo_pending_loc, _gbo_pend_clinic,
@@ -11559,7 +11621,7 @@ class FlowEngine:
                         self.session["_faq_ans_at"]     = time.time()
                         await self._handle_mid_flow_interrupt(_gbo_cont_intent, transcript)
                         if not self.session.get("_faq_loc_pending_intent"):
-                            self.session["last_question"] = "Anything else you'd like to ask?"
+                            self.session["last_question"] = _faq_topic_reanchor(self.session)
                         return
                 logger.info("[ms_flow] faq_followup: continue %r", text[:40])
                 await self._tts.put("Of course — what would you like to know?")
@@ -11630,7 +11692,7 @@ class FlowEngine:
                 # If a location clarification was emitted, last_question already
                 # holds the clarification text — don't overwrite with "Anything else?"
                 if not self.session.get("_faq_loc_pending_intent"):
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
             # general_query only fires for genuine questions (contains a question signal).
             # Without a signal, "okay" / "okay that's fine" etc. reach here and must not
@@ -11654,7 +11716,7 @@ class FlowEngine:
                 self.session["_faq_ans_at"]     = time.time()
                 await self._handle_mid_flow_interrupt(_gbo_intent, transcript)
                 if not self.session.get("_faq_loc_pending_intent"):
-                    self.session["last_question"] = "Anything else you'd like to ask?"
+                    self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
 
             # Bare negatives ("no", "nope", "nah") — caller has no more questions.
@@ -11700,7 +11762,7 @@ class FlowEngine:
                     self.session["_faq_ans_at"]     = time.time()
                     await self._handle_mid_flow_interrupt("general_query", transcript)
                     if not self.session.get("_faq_loc_pending_intent"):
-                        self.session["last_question"] = "Anything else you'd like to ask?"
+                        self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
                 # Dangling-fragment guard: connector-start + open-end word = incomplete clause.
                 # Hold without answering so the caller can finish the thought.
@@ -11759,6 +11821,11 @@ class FlowEngine:
                             "[ms_flow] faq_followup: service topic carry-forward %s for %r",
                             _gbo_active_svc, text[:40],
                         )
+                        logger.info(
+                            "[ms_faq] followup matched locked topic=%s — kept in faq_topic "
+                            "instead of top_level_reroute",
+                            _gbo_active_svc,
+                        )
                     elif (
                         _gbo_active_topic
                         and _gbo_fw > 0
@@ -11787,7 +11854,7 @@ class FlowEngine:
                     self.session["_faq_repair_count"] = 0
                     await self._handle_mid_flow_interrupt(_gbo_eff_intent, _gbo_eff_tx)
                     if not self.session.get("_faq_loc_pending_intent"):
-                        self.session["last_question"] = "Anything else you'd like to ask?"
+                        self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
                 logger.info("[ms_flow] faq_followup: faq_repair %r", text[:40])
                 _faq_rc = self.session.get("_faq_repair_count", 0) + 1
