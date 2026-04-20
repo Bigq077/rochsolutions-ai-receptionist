@@ -98,10 +98,36 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Tail-fragment suppression
+# ---------------------------------------------------------------------------
+
+# How long (seconds) after a completed turn during which a tiny trailing
+# STT final is considered a residual fragment of the same speech event.
+_TAIL_FRAGMENT_WINDOW: float = 2.0
+
+# Short utterances that are always legitimate booking answers — never
+# suppressed even when they arrive within the tail-fragment window.
+_TAIL_FRAGMENT_SAFE: frozenset = frozenset({
+    "no", "yes", "yep", "yup", "nah", "nope",
+    "ok", "okay",
+    "hi", "hey",
+    "am", "pm",
+    "one", "two",
+})
+
+
 # Sentinel object placed on audio_out_queue AFTER the last audio chunk for a
 # TTS utterance.  send_loop detects it and fires on_tts_finished() only once
 # all audio for that utterance has actually been sent to Twilio.
 _TTS_DONE_SENTINEL = object()
+
+# Prefix marker prepended to a TTS text chunk by the no-input watchdog when it
+# enqueues a silence-recovery re-ask.  _tts_loop strips the marker and bypasses
+# the consecutive-duplicate dedup guard for that single chunk only — a watchdog
+# replay of the same question is a deliberate recovery, not an accidental
+# duplicate emission.  Normal dedup remains active for every other chunk.
+_WATCHDOG_REASK_MARKER = "\x01WDG_REASK\x01"
 
 
 # ---------------------------------------------------------------------------
@@ -1127,7 +1153,9 @@ class SilenceHandler:
 
             logger.info("[ms_watchdog] WATCHDOG_FIRE prompt=%r attempt=#%d", phrase[:80], _attempt)
             self.currently_reasking = True
-            await self._tts_text_queue.put(phrase)
+            # Tag with watchdog-reask marker so _tts_loop bypasses dedup for this
+            # one chunk (a deliberate silence recovery is not an accidental dup).
+            await self._tts_text_queue.put(_WATCHDOG_REASK_MARKER + phrase)
             if self._on_reask:
                 asyncio.create_task(self._on_reask(phrase))
 
@@ -1139,24 +1167,15 @@ class SilenceHandler:
                 return
             self.currently_reasking = False
 
-            if self._cancelled or q_gen != self._q_gen:
-                return
-
-            # Restart main silence timer (stale after re-ask).
-            # No new watchdog task — this loop continues as the single owner.
-            _my_q_gen = self._q_gen
-            _session2 = self._get_session() if self._get_session else None
-            self._replay_flow_step = (_session2 or {}).get("flow_step", -1) if _session2 else -1
-            if self._task and not self._task.done():
-                self._task.cancel()
-            self._task = asyncio.create_task(self._run(_my_q_gen), name="ms_silence_timer")
-            # Advance armed_at so the next attempt gets a fresh 3-second window.
-            armed_at = time.time()
+            # Cap audible re-asks at one per question generation: retire cleanly
+            # rather than looping and replaying the same prompt every few seconds.
+            # The next audible recovery only happens when a new question is asked
+            # (which arms a fresh watchdog) or real caller input arrives.
             logger.info(
-                "[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs (attempt #%d loop)",
-                q_gen, _wait, _attempt + 1,
+                "[ms_watchdog] WATCHDOG_RETIRE q_gen=%d reason=audible_reask_done",
+                q_gen,
             )
-            # (outer while-loop continues — same task, same ownership)
+            return
 
     def _restart_timer(self) -> None:
         if self._cancelled:   # guard: don't restart after teardown
@@ -1190,6 +1209,20 @@ class SilenceHandler:
             if _live and self._watchdog_q_gen == _my_q_gen:
                 logger.debug(
                     "[ms_watchdog] WATCHDOG_SKIP_IDEMPOTENT q_gen=%d", _my_q_gen
+                )
+            elif (
+                self._no_input_reask_count > 0
+                and self._watchdog_q_gen == _my_q_gen
+            ):
+                # An audible watchdog re-ask already played for this q_gen.
+                # Cap at one per question generation: do not arm a fresh
+                # watchdog that would re-fire and spam the caller.  The next
+                # audible recovery only happens when a new question advances
+                # q_gen (which resets _no_input_reask_count to 0).
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_RETIRED_FOR_QGEN q_gen=%d "
+                    "reask_count=%d — not re-arming",
+                    _my_q_gen, self._no_input_reask_count,
                 )
             else:
                 if _live:
@@ -1635,6 +1668,10 @@ class WebSocketCallHandler:
         self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
         self._bad_line_played         = False        # once-per-call bad-line phrase guard
         self._last_audio_received_at: float = 0.0   # monotonic time of last inbound Twilio audio
+        # Monotonic timestamp when the most recent LLM turn completed (finally:
+        # block cleared _llm_busy).  Used by the tail-fragment guard to discard
+        # tiny residual STT finals that arrive immediately after a successful turn.
+        self._last_turn_done_at:      float = 0.0
         # Text of the TTS utterance currently in-flight through audio_out_queue.
         # Set in _tts_loop when synthesis completes; cleared in send_loop when
         # the _TTS_DONE_SENTINEL is drained — at that point on_tts_finished fires.
@@ -2129,6 +2166,29 @@ class WebSocketCallHandler:
                     )
                     continue
 
+                # ── Tail-fragment guard ───────────────────────────────────────
+                # Drop tiny residual STT finals that arrive immediately after a
+                # successfully handled turn (e.g. "ic" trailing "alcester clin").
+                # Conditions (all must be true):
+                #   1. A turn has completed (_last_turn_done_at is set)
+                #   2. Fragment arrived within _TAIL_FRAGMENT_WINDOW seconds
+                #   3. Text is ≤ 3 chars (sub-word — cannot be a real answer)
+                #   4. Not a whitelisted valid short answer ("no", "yes", "ok"…)
+                # This is a true no-op: no state change, no silence/watchdog effect.
+                _tf_text  = utterance.strip()
+                _tf_since = time.monotonic() - self._last_turn_done_at
+                if (
+                    self._last_turn_done_at > 0
+                    and _tf_since < _TAIL_FRAGMENT_WINDOW
+                    and len(_tf_text) <= 3
+                    and _tf_text.lower() not in _TAIL_FRAGMENT_SAFE
+                ):
+                    logger.info(
+                        "[ms_conn] tail-fragment suppressed %r (%.2fs after last turn) — no-op",
+                        _tf_text, _tf_since,
+                    )
+                    continue
+
                 # ── Barge-in resolution ───────────────────────────────────────
                 # Must run before setting _llm_busy so:
                 #   - false triggers resume TTS without entering the flow
@@ -2339,6 +2399,7 @@ class WebSocketCallHandler:
                     if _lq and not flow.is_complete():
                         await self.tts_text_queue.put(_lq)
                 finally:
+                    self._last_turn_done_at               = time.monotonic()
                     self._llm_busy                        = False
                     self._silence_handler.on_llm_finished()
                     self.session["llm_generation_active"] = False
@@ -2446,6 +2507,17 @@ class WebSocketCallHandler:
                 if not chunk_text or not chunk_text.strip():
                     continue
 
+                # Watchdog re-ask marker: deliberate silence-recovery replay.
+                # Strip the marker and bypass the consecutive-duplicate dedup
+                # guard for this one chunk only.  All other safety conditions
+                # (q_gen, engagement, _tts_playing, barge-in) are enforced at
+                # the watchdog fire site before the chunk was enqueued.
+                _watchdog_reask = chunk_text.startswith(_WATCHDOG_REASK_MARKER)
+                if _watchdog_reask:
+                    chunk_text = chunk_text[len(_WATCHDOG_REASK_MARKER):]
+                    if not chunk_text.strip():
+                        continue
+
                 # Bug 5: discard stale LLM chunks that arrived after a confirmed barge-in.
                 # The flag is cleared in _llm_loop finally when the new turn starts.
                 if self.session.get("tts_inhibit"):
@@ -2454,13 +2526,22 @@ class WebSocketCallHandler:
                     )
                     continue
 
-                # Skip consecutive identical chunks (dedup guard)
-                if chunk_text.strip().lower() == _last_tts_chunk.lower():
+                # Skip consecutive identical chunks (dedup guard) — but never for
+                # a watchdog re-ask, which is a deliberate replay of the question.
+                if (
+                    not _watchdog_reask
+                    and chunk_text.strip().lower() == _last_tts_chunk.lower()
+                ):
                     logger.info(
                         "[ms_conn] TTS dedup: skipping duplicate chunk %r",
                         chunk_text[:80],
                     )
                     continue
+                if _watchdog_reask:
+                    logger.info(
+                        "[ms_conn] TTS watchdog re-ask: dedup bypassed for %r",
+                        chunk_text[:80],
+                    )
                 _last_tts_chunk = chunk_text.strip()
 
                 # Split long phrases into shorter sub-chunks so barge-in fires
@@ -2878,7 +2959,24 @@ class WebSocketCallHandler:
                 except Exception:
                     break
 
-        self._silence_handler.on_transcript_received(text)
+        # Tail-fragment gate: if this final arrived within the suppression window
+        # of the last completed turn and is too short to be a real answer, skip
+        # on_transcript_received so the watchdog timer is not spuriously cancelled.
+        # _clearing=False (above) always runs — only the silence side-effect is gated.
+        _fc_text  = (text or "").strip()
+        _fc_since = time.monotonic() - self._last_turn_done_at
+        if (
+            self._last_turn_done_at > 0
+            and _fc_since < _TAIL_FRAGMENT_WINDOW
+            and 1 <= len(_fc_text) <= 3
+            and _fc_text.lower() not in _TAIL_FRAGMENT_SAFE
+        ):
+            logger.info(
+                "[ms_conn] tail-fragment in on_final_clear suppressed %r (%.2fs after last turn) — watchdog preserved",
+                _fc_text, _fc_since,
+            )
+        else:
+            self._silence_handler.on_transcript_received(text)
 
     # ========================================================================
     # Greeting injection
