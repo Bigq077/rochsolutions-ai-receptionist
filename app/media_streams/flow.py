@@ -4142,8 +4142,16 @@ class FlowEngine:
                     self.session.pop("phone", None)
                     self.session.pop("customer_phone", None)
                     self.session.setdefault("collected", {}).pop("phone", None)
-                    # Context-aware prompt: reschedule/cancel → booking number; booking → contact number
-                    if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
+                    # Keep keypad mode active so the caller can restart typing
+                    # without having to ask again.  The deterministic reset
+                    # acknowledgement phrasing is reused from the hard-gate
+                    # reset-intent handler.
+                    if self.session.get("phone_awaiting_dtmf"):
+                        _repair_q = (
+                            "No problem — I've reset the keypad for you. "
+                            "You can restart typing in the number."
+                        )
+                    elif self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
                         _repair_q = (
                             "No problem — let's try that again. "
                             "Please enter the number your booking was made under using your keypad."
@@ -4154,7 +4162,8 @@ class FlowEngine:
                             "Please enter your number using your keypad."
                         )
                     logger.info(
-                        "[ms_flow] COLLECT_PHONE local repair: all digit buffers cleared, re-prompting keypad"
+                        "[ms_flow] COLLECT_PHONE local repair: all digit buffers cleared, re-prompting keypad (awaiting_dtmf=%s)",
+                        self.session.get("phone_awaiting_dtmf"),
                     )
                 else:
                     _repair_q = self.session.get("last_question", "Could you say that number again?")
@@ -5341,8 +5350,24 @@ class FlowEngine:
                     "begin again", "from the beginning", "wrong number", "that's wrong",
                     "thats wrong", "wrong one", "made a mistake", "got it wrong",
                     "actually no", "no wait", "scratch that", "never mind that",
+                    "reset the keypad", "reset keypad", "reset it", "can you reset",
+                    "clear that", "clear it", "clear the keypad",
+                    "realised i made", "realized i made",
                 )
                 _is_restart = any(p in (text or "").lower() for p in _KP_RESTART)
+
+                # Explicit voice-switch intent — caller wants to say the number
+                # instead of typing.  Must be detected BEFORE the non-digit speech
+                # fallback below so the acknowledgement is deterministic.
+                _KP_VOICE_SWITCH = (
+                    "i'll say it", "ill say it", "i will say it",
+                    "say it instead", "can i say it", "could i say it",
+                    "i'd rather say", "id rather say", "rather say it",
+                    "i want to say it", "i wanna say it",
+                    "let me say it", "let me just say", "i'll just say it",
+                    "ill just say it", "speak it instead", "say the number instead",
+                )
+                _is_voice_switch = any(p in (text or "").lower() for p in _KP_VOICE_SWITCH)
                 # Progress queries — caller asking if digits have arrived yet.
                 _KP_PROGRESS_Q = (
                     "did you get", "have you got", "did that come through",
@@ -5352,15 +5377,15 @@ class FlowEngine:
                 _is_progress_q = any(p in (text or "").lower() for p in _KP_PROGRESS_Q)
 
                 if _is_restart:
-                    # BUG 9 & 10 fix: clear ALL phone-entry buffers before restart.
-                    # Use a dedicated restart prompt — not last_question (stale) — so the
-                    # caller hears a clean re-anchor specifically about number entry.
+                    # Clear ALL phone-entry buffers; stay in keypad mode so the caller
+                    # can immediately resume typing without being re-prompted to switch.
                     self.session["phone_dtmf_buffer"]    = ""
                     self.session["phone_digits_buffer"]  = ""
                     self.session["phone_voice_attempts"] = 0
+                    self.session["phone_awaiting_dtmf"]  = True
                     _restart_prompt = (
-                        "No problem — let's start that number again. "
-                        "Please type the full number your booking was made under on your keypad."
+                        "No problem — I've reset the keypad for you. "
+                        "You can restart typing in the number."
                     )
                     await self._tts.put(_restart_prompt)
                     self.session["last_question"] = _restart_prompt
@@ -5368,7 +5393,31 @@ class FlowEngine:
                         {"role": "assistant", "content": _restart_prompt}
                     )
                     logger.info(
-                        "[ms_flow] COLLECT_PHONE: keypad restart %r — ALL buffers cleared, re-prompting",
+                        "[ms_flow] COLLECT_PHONE: keypad reset intent %r — ALL buffers cleared, staying in keypad mode",
+                        (text or "")[:50],
+                    )
+                    return
+
+                if _is_voice_switch:
+                    # Caller explicitly wants to speak the number instead.  Exit
+                    # keypad mode cleanly, clear any stale DTMF buffer state, and
+                    # reset the spoken-attempts counter so spoken collection begins
+                    # from scratch.  Recommend keypad as the more reliable path.
+                    self.session["phone_dtmf_buffer"]    = ""
+                    self.session["phone_digits_buffer"]  = ""
+                    self.session["phone_voice_attempts"] = 0
+                    self.session["phone_awaiting_dtmf"]  = False
+                    _vs_prompt = (
+                        "Okay — you can say it, but I recommend typing it on the keypad "
+                        "because I'm not the best at catching phone numbers."
+                    )
+                    await self._tts.put(_vs_prompt)
+                    self.session["last_question"] = _vs_prompt
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _vs_prompt}
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_PHONE: voice-switch intent %r — exited keypad mode",
                         (text or "")[:50],
                     )
                     return
