@@ -7284,14 +7284,34 @@ class FlowEngine:
                 "parking", "address", "location", "hours", "opening",
                 "acupuncture", "shockwave", "laser", "pilates", "massage",
                 "physiotherapy", "physio",
+                # Accessibility / access substance
+                "step free", "step-free", "wheelchair", "accessible",
+                "accessibility", "disabled", "disability", "mobility", "ramp",
+                # Location / clinic-comparison substance
+                "alcester", "redditch", "both clinics", "two clinics",
+                "both locations", "which clinic", "difference between",
+                "where exactly", "where is", "where are", "located",
+                "postcode", "directions",
+                # Service / info substance
+                "needles", "needle", "painful", "how does it work",
+                "side effects", "is it safe", "how safe", "biomechanics",
+                # Park-related variants
+                "park ", "car park",
             )
-            if (
-                any(p in text for p in _FAQ_MULTI_OPENER_SIGNALS)
-                and not any(s in text for s in _FAQ_OPENER_TOPIC_EXCLUSIONS)
-            ):
+            _opener_match = any(p in text for p in _FAQ_MULTI_OPENER_SIGNALS)
+            _opener_substantive = any(s in text for s in _FAQ_OPENER_TOPIC_EXCLUSIONS)
+            if _opener_match and _opener_substantive:
                 logger.info(
-                    "[ms_flow] DETECT_INTENT: FAQ multi-opener %r — holding for question",
-                    text[:40],
+                    "[ms_flow] DETECT_INTENT: FAQ multi-opener bypassed — "
+                    "substantive_faq_present text=%r",
+                    text[:80],
+                )
+                # Fall through to normal DETECT_INTENT routing.
+            elif _opener_match:
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: FAQ multi-opener hold — "
+                    "opener_only text=%r",
+                    text[:80],
                 )
                 await self._tts.put("Of course — what would you like to ask?")
                 return
