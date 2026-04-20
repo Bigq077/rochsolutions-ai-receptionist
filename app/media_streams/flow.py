@@ -618,6 +618,64 @@ def _is_booking_state_faq_interrupt(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+# ── Mid-booking FAQ ellipsis follow-up detector ──────────────────────────────
+# After a mid-booking FAQ answer (e.g. acupuncture fear), the caller's next
+# utterance often omits the service noun: "do you think that would be a
+# problem", "is that normal", "would that hurt", "are they usually big then".
+# Without an explicit guard, these reach COLLECT_REASON / COLLECT_NAME and
+# get stored as booking payload.  This helper returns True for short,
+# question-shaped follow-ups that plausibly continue the prior FAQ thread.
+_FAQ_ELLIPSIS_FOLLOWUP_SIGS: tuple[str, ...] = (
+    "do you think", "would that", "is that", "is it",
+    "so is it", "so would", "so does", "so is that", "so are they",
+    "are they", "are the needles", "would it", "does that", "does it",
+    "would they", "is there", "is there a",
+    "a problem", "a bad sign", "something to worry", "worry about",
+    "ok to", "okay to", "safe to", "painful then",
+    "hurt", "hurts", "painful", "scary",
+    "side effect", "side effects", "dangerous",
+    "normal", "is that normal", "is that ok", "is that okay",
+    "how big", "how long", "how many",
+)
+
+
+def _is_faq_ellipsis_followup(text: str) -> bool:
+    """True when the utterance is a short ellipsis-style follow-up that
+    plausibly continues a prior FAQ thread (no service noun repeated, no
+    booking payload).  Used only when a mid-booking FAQ interrupt context
+    is active."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    # Too long → probably a real booking reason, not an ellipsis follow-up.
+    if len(t.split()) > 14:
+        return False
+    # Body-part + symptom compound → genuine booking reason, not FAQ follow-up.
+    if _BOOKING_FAQ_BODY_RE.search(t) and _BOOKING_FAQ_SYMP_RE.search(t):
+        return False
+    return any(p in t for p in _FAQ_ELLIPSIS_FOLLOWUP_SIGS)
+
+
+# Explicit booking-resume signals — caller wants to exit FAQ thread and
+# continue the interrupted booking step.
+_BOOKING_RESUME_SIGS: tuple[str, ...] = (
+    "let's book", "lets book", "i'd like to book", "id like to book",
+    "i want to book", "i wanna book",
+    "carry on", "let's carry on", "lets carry on",
+    "let's continue", "lets continue", "continue",
+    "go ahead", "let's go ahead", "lets go ahead",
+    "let's proceed", "lets proceed", "proceed",
+    "the reason i", "reason i'm coming", "reason im coming",
+    "my first name", "my last name", "my surname", "my name is",
+    "use this number", "this number", "my number",
+)
+
+
+def _is_booking_resume_signal(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return any(p in t for p in _BOOKING_RESUME_SIGS)
+
+
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
 # Patterns that callers use as labels instead of actual names.
 # If the transcript matches one of these entirely (or after stripping,
@@ -11650,6 +11708,60 @@ class FlowEngine:
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
                 "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
             }
+            # ── Mid-booking FAQ ellipsis follow-up ─────────────────────────
+            # After a mid-booking FAQ answer, the immediate next utterance is
+            # often an ellipsis follow-up ("do you think that would be a
+            # problem") that contains no service noun and no booking payload.
+            # Without this guard it would be consumed by COLLECT_REASON /
+            # COLLECT_NAME etc. Bind it back to the FAQ thread instead.
+            _mbf_ctx = self.session.get("_mid_booking_faq_ctx")
+            if (
+                _mbf_ctx
+                and step["state"] in _BOOKING_FAQ_STATES
+                and _mid_intent not in ("reschedule", "cancel", "booking")
+            ):
+                if _is_booking_resume_signal(text):
+                    self.session.pop("_mid_booking_faq_ctx", None)
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_context_cleared "
+                        "reason=explicit_resume text=%r",
+                        text[:80],
+                    )
+                else:
+                    _mbf_match = _is_faq_ellipsis_followup(text)
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_followup_check matched=%s "
+                        "explicit_resume=False text=%r",
+                        _mbf_match, text[:80],
+                    )
+                    if not _mbf_match:
+                        # Utterance is not an FAQ ellipsis follow-up — caller
+                        # has resumed the booking flow.  Clear context so
+                        # normal booking payload consumption proceeds.
+                        self.session.pop("_mid_booking_faq_ctx", None)
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_context_cleared "
+                            "reason=booking_payload_resumed text=%r",
+                            text[:80],
+                        )
+                    if _mbf_match:
+                        _mbf_ctx["turns_left"] = int(_mbf_ctx.get("turns_left", 1)) - 1
+                        if _mbf_ctx["turns_left"] <= 0:
+                            self.session.pop("_mid_booking_faq_ctx", None)
+                        else:
+                            self.session["_mid_booking_faq_ctx"] = _mbf_ctx
+                        _mbf_topic = _mbf_ctx.get("topic") or "acupuncture"
+                        _mbf_synth = f"{_mbf_topic} {transcript}".strip()
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_followup_override "
+                            "topic=%s route=faq_services",
+                            _mbf_topic,
+                        )
+                        self.session["_faq_active_service"] = _mbf_topic
+                        await self._handle_mid_flow_interrupt(
+                            "faq_services", _mbf_synth
+                        )
+                        return
             if (
                 step["state"] in _BOOKING_FAQ_STATES
                 and _mid_intent not in _mid_intents
@@ -11708,6 +11820,26 @@ class FlowEngine:
                     step["state"], _mid_intent, transcript[:60],
                 )
                 await self._handle_mid_flow_interrupt(_mid_intent, transcript)
+                # Set a short-lived context so the next utterance (likely an
+                # ellipsis follow-up like "do you think that would be a
+                # problem") is bound back to the FAQ thread rather than
+                # consumed as booking payload.
+                if (
+                    step["state"] in _BOOKING_FAQ_STATES
+                    and _mid_intent in ("faq_services", "general_query")
+                ):
+                    _mbf_topic_set = self.session.get("_faq_active_service")
+                    self.session["_mid_booking_faq_ctx"] = {
+                        "interrupted_state": step["state"],
+                        "intent": _mid_intent,
+                        "topic": _mbf_topic_set,
+                        "turns_left": 2,
+                    }
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_context_set "
+                        "interrupted_state=%s topic=%s intent=%s",
+                        step["state"], _mbf_topic_set, _mid_intent,
+                    )
                 return  # do NOT call ask_current_question — let caller respond naturally
 
         # ── FAQ_BOOKING_OFFER: yes → switch to booking, no → goodbye ─────────
