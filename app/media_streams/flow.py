@@ -263,14 +263,51 @@ _FAQ_TOPIC_DISPLAY_NAMES: Dict[str, str] = {
 }
 
 
+_PRACTICAL_REANCHORS: Dict[str, str] = {
+    "accessibility":  "Was there anything else you wanted to ask about access to the clinic?",
+    "address":        "Was there anything else you wanted to ask about the clinic location?",
+    "location":       "Was there anything else you wanted to ask about the clinic location?",
+    "parking":        "Was there anything else you wanted to ask about parking?",
+    "transport":      "Was there anything else you wanted to ask about getting to the clinic?",
+}
+
+_PRACTICAL_PART_PHRASES: Dict[str, str] = {
+    "location":      "the clinic location",
+    "parking":       "parking",
+    "accessibility": "access to the clinic",
+    "transport":     "getting to the clinic",
+}
+
+
 def _faq_topic_reanchor(session: Dict[str, Any]) -> str:
     """Return the topic-specific re-anchor when an FAQ service topic is
-    locked, otherwise the generic re-anchor.  Safe for every site that
-    currently writes the generic string."""
+    locked, or a practical-part-aware re-anchor when the caller is inside
+    a practical FAQ thread (location / parking / accessibility / transport).
+    Falls back to the generic re-anchor otherwise."""
     svc = session.get("_faq_active_service")
     display = _FAQ_TOPIC_DISPLAY_NAMES.get(svc or "", "")
     if display:
         return f"Was there anything else you wanted to ask about {display}?"
+    sub   = session.get("last_faq_sub", "")
+    parts = session.get("_faq_parts_answered") or []
+    if sub == "composite" and parts:
+        _pp_order = ["location", "parking", "accessibility", "transport"]
+        _pieces = [
+            _PRACTICAL_PART_PHRASES[p]
+            for p in _pp_order
+            if p in parts and p in _PRACTICAL_PART_PHRASES
+        ]
+        if len(_pieces) >= 2:
+            _joined = (
+                " or ".join(_pieces) if len(_pieces) == 2
+                else ", ".join(_pieces[:-1]) + f", or {_pieces[-1]}"
+            )
+            logger.info("[ms_faq] practical_reanchor_chosen kind=composite parts=%s",
+                        "|".join(parts))
+            return f"Was there anything else you wanted to ask about {_joined}?"
+    if sub in _PRACTICAL_REANCHORS:
+        logger.info("[ms_faq] practical_reanchor_chosen kind=single sub=%s", sub)
+        return _PRACTICAL_REANCHORS[sub]
     return "Anything else you'd like to ask?"
 
 
@@ -11568,13 +11605,20 @@ class FlowEngine:
                 )
                 _FBO_PP_PARK = (
                     "parking", "car park", "free parking", "easy to park",
-                    "pay to park", "do i need to pay",
+                    "pay to park", "do i need to pay", "is it free",
+                )
+                _FBO_PP_PARK_NUANCE = (
+                    "time limit", "whole day", "all day", "stay there", "stay here",
+                    "how long can i", "how long do i", "how long can we",
+                    "restriction", "restrictions",
+                    "when you say it's free", "when you say it is free", "when you say free",
                 )
                 _FBO_PP_TRANS = ("bus", "train", "public transport", "station")
                 _fbo_req_parts: set = set()
                 if any(p in _fbo_tx_low for p in _FBO_PP_ACCESS): _fbo_req_parts.add("accessibility")
                 if any(p in _fbo_tx_low for p in _FBO_PP_LOC):    _fbo_req_parts.add("location")
                 if any(p in _fbo_tx_low for p in _FBO_PP_PARK):   _fbo_req_parts.add("parking")
+                if any(p in _fbo_tx_low for p in _FBO_PP_PARK_NUANCE): _fbo_req_parts.add("parking_policy")
                 if any(p in _fbo_tx_low for p in _FBO_PP_TRANS):  _fbo_req_parts.add("transport")
                 _fbo_new_part = bool(_fbo_req_parts - _fbo_parts_answered) if _fbo_req_parts else False
                 logger.info(
@@ -15164,7 +15208,12 @@ class FlowEngine:
                     self.session["last_faq_sub"]           = "parking"
                     self.session["last_faq_loc_id"]        = _mfi_loc_id
                     self.session["last_faq_intent"]        = intent
-                    self.session["_faq_parts_answered"]    = ["parking"]
+                    # Track parking_policy as a distinct virtual part so a later
+                    # plain "do you have parking?" is still seen as a new part,
+                    # while a repeat of the same nuance correctly dedups.
+                    _pp_existing = set(self.session.get("_faq_parts_answered") or [])
+                    _pp_existing.update(["parking", "parking_policy"])
+                    self.session["_faq_parts_answered"]    = list(_pp_existing)
                     self.session["_faq_active_topic"]      = intent
                     self.session["_faq_followup_window"]   = 3
                     self.session["_faq_last_user_question"] = transcript
