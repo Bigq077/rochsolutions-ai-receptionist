@@ -1848,6 +1848,15 @@ GENERAL_QUERY_FLOW: List[Dict[str, Any]] = [
             "If it is a travel or directions question (e.g. how long to drive from a place): "
             "say you don't have live journey times but give the clinic address and suggest "
             "they use Google Maps or a sat nav for an accurate estimate. "
+            "CRITICAL: Do NOT speculate about clinic-specific operational facts "
+            "(accessibility, step-free access, wheelchair access, exact address, parking, "
+            "child/age policy, opening hours, prices, insurance, referrals). "
+            "If the caller is asking an operational clinic question and you do not have "
+            "the confirmed fact in this conversation, say briefly that you don't have that "
+            "detail confirmed and offer to take a message or direct them to the clinic — "
+            "do NOT infer from the type of building, location, or general world knowledge "
+            "(e.g. never say things like 'leisure centres generally have good access' or "
+            "'it's probably...'). "
             "If it is something you genuinely cannot answer, give a brief general helpful answer "
             "and offer to assist further — do not guess facts or make things up. "
             "Do NOT mention line quality, connection issues, or ask the caller to repeat themselves. "
@@ -3042,6 +3051,105 @@ class FlowEngine:
                 )
                 if not _named_svc:
                     _fast_r = _FAQ_PRICES_NO_SERVICE
+            # ANSWER_GENERAL: deterministic clinic-fact precedence layer.
+            # If the caller's question is really an operational clinic-fact question
+            # (accessibility / address / parking / child-policy / basic booking
+            # logistics) that slipped past _detect_intent into general_query because
+            # of STT noise, answer from clinic config rather than letting the LLM
+            # improvise from generic world knowledge.
+            if step["state"] == "ANSWER_GENERAL" and not _fast_r:
+                _gq_text = (
+                    (self.session.get("general_query_text") or "")
+                    + " "
+                    + (
+                        (self.session.get("conversation_history") or [{}])[-1]
+                        .get("content", "") or ""
+                    )
+                ).lower()
+                try:
+                    from app.clinic_config import get_clinic as _gc_gq
+                    _cli_gq = _gc_gq(self.session.get("clinic_id") or "demo")
+                except Exception:
+                    _cli_gq = {}
+                _faq_cfg = (_cli_gq.get("faq") or {})
+                _locs_gq = {loc["id"]: loc for loc in (_cli_gq.get("locations") or [])}
+                _sel_gq = (self.session.get("selected_location") or "").lower()
+                _loc_gq = _locs_gq.get(_sel_gq) or (
+                    list(_locs_gq.values())[0] if len(_locs_gq) == 1 else None
+                )
+
+                _ACCESS_SIG = (
+                    "step free", "step-free", "step three", "wheelchair",
+                    "disabled access", "disability", "accessible", "accessibility",
+                    "ramp", "lift access", "mobility",
+                )
+                _ADDRESS_SIG = (
+                    "address", "where are you", "where is your", "where exactly",
+                    "where is the", "find you", "locate you", "clinic address",
+                    "postcode", "post code",
+                )
+                _PARKING_SIG = (
+                    "parking", "car park", "can i park", "where to park",
+                    "where can i park", "park near", "park there", "park in the",
+                )
+                _CHILD_SIG = (
+                    "children", "child", "kid", "kids", "son", "daughter",
+                    "paediatric", "pediatric", "little boy", "little girl",
+                    "young child", "my boy", "my girl",
+                )
+                _REFERRAL_SIG = (
+                    "referral", "gp referral", "self refer", "self-refer",
+                    "need a doctor", "doctor's referral",
+                )
+                _SAMEDAY_SIG = (
+                    "today", "same day", "same-day", "this afternoon", "this morning",
+                    "right now", "straight away",
+                )
+
+                def _has(sig):
+                    return any(p in _gq_text for p in sig)
+
+                # Accessibility takes priority — accessibility+location phrasing
+                # should answer accessibility, not address.
+                if _has(_ACCESS_SIG):
+                    _acc = _faq_cfg.get("accessibility") or ""
+                    _fast_r = ("Of course — " + _acc) if _acc else _FAQ_ACCESSIBILITY_FALLBACK
+                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: accessibility")
+                elif _has(_PARKING_SIG):
+                    _park = (_loc_gq or {}).get("parking") or ""
+                    if _park:
+                        _fast_r = _park
+                    elif _locs_gq:
+                        _park_all = [l.get("parking") for l in _locs_gq.values() if l.get("parking")]
+                        _fast_r = "  ".join(_park_all) if _park_all else (
+                            "I don't have the exact parking details confirmed — "
+                            "I'd recommend checking the clinic website, or I can take a message for the team."
+                        )
+                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: parking")
+                elif _has(_ADDRESS_SIG):
+                    if _loc_gq and _loc_gq.get("address"):
+                        _addr = _loc_gq["address"]
+                        _fast_r = _addr.split(".")[0].strip() + "."
+                    elif _locs_gq:
+                        _fast_r = "  ".join(
+                            l.get("address", "").split(".")[0].strip() + "."
+                            for l in _locs_gq.values() if l.get("address")
+                        )
+                    if _fast_r:
+                        logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: address")
+                elif _has(_CHILD_SIG):
+                    _fast_r = _faq_cfg.get("children_policy") or _FAQ_CHILD_POLICY_ANSWER
+                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: children_policy")
+                elif _has(_REFERRAL_SIG):
+                    _ref = _faq_cfg.get("gp_referral")
+                    if _ref:
+                        _fast_r = _ref
+                        logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: gp_referral")
+                elif _has(_SAMEDAY_SIG) and ("book" in _gq_text or "appoint" in _gq_text):
+                    _sd = _faq_cfg.get("same_day_booking")
+                    if _sd:
+                        _fast_r = _sd
+                        logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: same_day_booking")
             if _fast_r:
                 # Fast-path: speak the deterministic answer directly to TTS.
                 # The LLM path handles TTS internally via streaming; fast-path must
@@ -4640,7 +4748,7 @@ class FlowEngine:
                 logger.info("[ms_flow] ASK_LOCATION forced-confirm: unclear → DTMF fallback")
                 return
 
-            # ── DTMF MODE: waiting for keypad press (final fallback) ──────────────
+            # ── DTMF MODE: hybrid — voice still accepted, keypad also offered ──────
             if self.session.get("location_awaiting_dtmf"):
                 loc = self._extract("location_selection", text, transcript)
                 if loc:
@@ -4651,29 +4759,17 @@ class FlowEngine:
                     logger.info("[ms_flow] ASK_LOCATION DTMF: resolved — %s", loc)
                     await self.ask_current_question()
                     return
-                # DTMF not received — one short re-prompt then graceful exit
-                _dtmf_retry = self.session.get("location_dtmf_retry", 0) + 1
-                self.session["location_dtmf_retry"] = _dtmf_retry
-                if _dtmf_retry >= 2:
-                    _dtmf_exit = (
-                        "I'm having trouble catching the clinic name — "
-                        "please give us a call back and the team will be happy to help."
-                    )
-                    await self._tts.put(_dtmf_exit)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _dtmf_exit}
-                    )
-                    self.session["last_question"] = _dtmf_exit
-                    self.session["graceful_exit"]    = True
-                    self.session["request_transfer"] = True
-                    self.session["needs_location"]   = False
-                else:
-                    _dtmf_re = "Press 1 for Alcester or 2 for Redditch."
-                    await self._tts.put(_dtmf_re)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _dtmf_re}
-                    )
-                    self.session["last_question"] = _dtmf_re
+                # Still unresolved — stay in hybrid loop, never exit
+                _dtmf_re = (
+                    "You can say Alcester or Redditch, "
+                    "or press 1 for Alcester, 2 for Redditch."
+                )
+                await self._tts.put(_dtmf_re)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _dtmf_re}
+                )
+                self.session["last_question"] = _dtmf_re
+                logger.info("[ms_flow] ASK_LOCATION DTMF: unresolved — looping hybrid prompt")
                 return
 
             # ── Non-location corrective escape ────────────────────────────────
@@ -4832,15 +4928,25 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
-                # ── Retry ladder: escalate wording then switch to DTMF ───────────
-                # retry 0 → spoken re-ask with explicit clinic names
-                # retry 1+ → DTMF keypad fallback
+                # ── Weak fragment guard: ignore very short STT noise ─────────────
+                import re as _re_loc
+                _loc_cleaned = _re_loc.sub(r'[^a-z]', '', text.lower())
+                if len(_loc_cleaned) < 3:
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: weak fragment %r — ignored (no retry burned)",
+                        text[:20],
+                    )
+                    return
+
+                # ── Retry ladder: 3 stages, never exit ──────────────────────────
+                # Stage 2 (retry_count 0→1): reinforced voice retry
+                # Stage 3 (retry_count 1+):  hybrid voice + DTMF, loops forever
                 _loc_retry = self.session.get("location_retry_count", 0)
                 if _loc_retry == 0:
-                    # Second ask: polite re-ask with explicit names
+                    # Stage 2: reinforced voice, emphasise both options
                     _retry2_q = (
-                        "Sorry, I didn't quite catch that. "
-                        "Please say the Alcester clinic or the Redditch clinic."
+                        "Sorry, I didn\u2019t quite catch that \u2014 "
+                        "was that the Alcester clinic, or the Redditch clinic?"
                     )
                     self.session["location_retry_count"] = 1
                     await self._tts.put(_retry2_q)
@@ -4852,16 +4958,19 @@ class FlowEngine:
                         "[ms_flow] ASK_LOCATION retry 2 emitted for %r", text[:40]
                     )
                 else:
-                    # Third ask: switch to DTMF keypad entry
+                    # Stage 3+: hybrid — voice still accepted, DTMF also offered
                     self.session["location_awaiting_dtmf"] = True
-                    _dtmf_q = "Press 1 for Alcester or 2 for Redditch."
+                    _dtmf_q = (
+                        "You can say Alcester or Redditch, "
+                        "or press 1 for Alcester, 2 for Redditch."
+                    )
                     await self._tts.put(_dtmf_q)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _dtmf_q}
                     )
                     self.session["last_question"] = _dtmf_q
                     logger.info(
-                        "[ms_flow] ASK_LOCATION retry 3 switched to DTMF for %r", text[:40]
+                        "[ms_flow] ASK_LOCATION retry 3 (hybrid) for %r", text[:40]
                     )
             return
 
