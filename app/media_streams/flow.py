@@ -3106,50 +3106,136 @@ class FlowEngine:
                     "right now", "straight away",
                 )
 
-                def _has(sig):
-                    return any(p in _gq_text for p in sig)
+                def _score(sig):
+                    return sum(1 for p in sig if p in _gq_text)
 
-                # Accessibility takes priority — accessibility+location phrasing
-                # should answer accessibility, not address.
-                if _has(_ACCESS_SIG):
-                    _acc = _faq_cfg.get("accessibility") or ""
-                    _fast_r = ("Of course — " + _acc) if _acc else _FAQ_ACCESSIBILITY_FALLBACK
-                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: accessibility")
-                elif _has(_PARKING_SIG):
-                    _park = (_loc_gq or {}).get("parking") or ""
-                    if _park:
-                        _fast_r = _park
-                    elif _locs_gq:
-                        _park_all = [l.get("parking") for l in _locs_gq.values() if l.get("parking")]
-                        _fast_r = "  ".join(_park_all) if _park_all else (
-                            "I don't have the exact parking details confirmed — "
-                            "I'd recommend checking the clinic website, or I can take a message for the team."
+                _scores = {
+                    "accessibility": _score(_ACCESS_SIG),
+                    "parking":       _score(_PARKING_SIG),
+                    "address":       _score(_ADDRESS_SIG),
+                    "child":         _score(_CHILD_SIG),
+                    "referral":      _score(_REFERRAL_SIG),
+                    "sameday":       _score(_SAMEDAY_SIG),
+                }
+                # same-day only counts when paired with booking verb
+                if _scores["sameday"] and not ("book" in _gq_text or "appoint" in _gq_text):
+                    _scores["sameday"] = 0
+                # child signals are weak (common pronouns) — require a second supporting
+                # child word OR an explicit eligibility verb to count as an intent signal.
+                if _scores["child"] == 1 and not any(
+                    t in _gq_text for t in ("see children", "treat children",
+                    "paediatric", "pediatric", "my son", "my daughter", "my kid",
+                    "for a child", "for children")
+                ):
+                    # leave as 1 only if it's a strong standalone term
+                    if not any(t in _gq_text for t in (
+                        "paediatric", "pediatric", "little boy", "little girl", "young child"
+                    )):
+                        _scores["child"] = 0
+
+                _hits = [c for c, s in _scores.items() if s > 0]
+
+                def _fact_for(cat):
+                    if cat == "accessibility":
+                        _acc = _faq_cfg.get("accessibility") or ""
+                        return ("Of course — " + _acc) if _acc else _FAQ_ACCESSIBILITY_FALLBACK
+                    if cat == "parking":
+                        _park = (_loc_gq or {}).get("parking") or ""
+                        if _park:
+                            return _park
+                        if _locs_gq:
+                            _pa = [l.get("parking") for l in _locs_gq.values() if l.get("parking")]
+                            if _pa:
+                                return "  ".join(_pa)
+                        return ("I don't have the exact parking details confirmed — "
+                                "I'd recommend checking the clinic website, or I can take a message for the team.")
+                    if cat == "address":
+                        if _loc_gq and _loc_gq.get("address"):
+                            return _loc_gq["address"].split(".")[0].strip() + "."
+                        if _locs_gq:
+                            return "  ".join(
+                                l.get("address", "").split(".")[0].strip() + "."
+                                for l in _locs_gq.values() if l.get("address")
+                            )
+                        return ""
+                    if cat == "child":
+                        return _faq_cfg.get("children_policy") or _FAQ_CHILD_POLICY_ANSWER
+                    if cat == "referral":
+                        return _faq_cfg.get("gp_referral") or ""
+                    if cat == "sameday":
+                        return _faq_cfg.get("same_day_booking") or ""
+                    return ""
+
+                # Priority for tie-breaking (accessibility is safety-critical first).
+                _PRIORITY = ("accessibility", "parking", "address", "child", "referral", "sameday")
+
+                if len(_hits) == 1:
+                    _fast_r = _fact_for(_hits[0])
+                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: %s", _hits[0])
+                elif len(_hits) >= 2:
+                    _ranked = sorted(_hits, key=lambda c: (-_scores[c], _PRIORITY.index(c)))
+                    _top, _second = _ranked[0], _ranked[1]
+                    _top_fact = _fact_for(_top)
+                    _second_fact = _fact_for(_second)
+                    # Compatible pairs: when both facts are available and the caller
+                    # clearly signalled both, a short grounded combined answer is safe.
+                    _COMBINABLE = {
+                        frozenset(("accessibility", "address")),
+                        frozenset(("accessibility", "parking")),
+                        frozenset(("parking", "address")),
+                        frozenset(("child", "referral")),
+                        frozenset(("child", "sameday")),
+                    }
+                    _pair = frozenset((_top, _second))
+                    if _top_fact and _second_fact and _pair in _COMBINABLE:
+                        _fast_r = (_top_fact.rstrip() + " " + _second_fact.rstrip()).strip()
+                        logger.info(
+                            "[ms_flow] ANSWER_GENERAL deterministic intercept: combined %s+%s",
+                            _top, _second,
                         )
-                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: parking")
-                elif _has(_ADDRESS_SIG):
-                    if _loc_gq and _loc_gq.get("address"):
-                        _addr = _loc_gq["address"]
-                        _fast_r = _addr.split(".")[0].strip() + "."
-                    elif _locs_gq:
-                        _fast_r = "  ".join(
-                            l.get("address", "").split(".")[0].strip() + "."
-                            for l in _locs_gq.values() if l.get("address")
+                    elif _scores[_top] > _scores[_second]:
+                        _fast_r = _top_fact
+                        logger.info(
+                            "[ms_flow] ANSWER_GENERAL deterministic intercept: winner %s (%d>%d)",
+                            _top, _scores[_top], _scores[_second],
                         )
-                    if _fast_r:
-                        logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: address")
-                elif _has(_CHILD_SIG):
-                    _fast_r = _faq_cfg.get("children_policy") or _FAQ_CHILD_POLICY_ANSWER
-                    logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: children_policy")
-                elif _has(_REFERRAL_SIG):
-                    _ref = _faq_cfg.get("gp_referral")
-                    if _ref:
-                        _fast_r = _ref
-                        logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: gp_referral")
-                elif _has(_SAMEDAY_SIG) and ("book" in _gq_text or "appoint" in _gq_text):
-                    _sd = _faq_cfg.get("same_day_booking")
-                    if _sd:
-                        _fast_r = _sd
-                        logger.info("[ms_flow] ANSWER_GENERAL deterministic intercept: same_day_booking")
+                    else:
+                        _CLARIFY = {
+                            frozenset(("accessibility", "address")):
+                                "Are you asking about access at the clinic, or where the clinic is?",
+                            frozenset(("accessibility", "parking")):
+                                "Are you asking about access at the clinic, or about parking?",
+                            frozenset(("parking", "address")):
+                                "Are you asking about parking, or the address?",
+                            frozenset(("child", "referral")):
+                                "Are you asking whether we see children, or about GP referrals?",
+                            frozenset(("child", "sameday")):
+                                "Are you asking whether we see children, or about same-day appointments?",
+                            frozenset(("child", "address")):
+                                "Are you asking whether we see children, or where the clinic is?",
+                            frozenset(("accessibility", "child")):
+                                "Are you asking about access at the clinic, or whether we see children?",
+                        }
+                        _label = {
+                            "accessibility": "access at the clinic",
+                            "parking": "parking",
+                            "address": "the address",
+                            "child": "whether we see children",
+                            "referral": "GP referrals",
+                            "sameday": "same-day appointments",
+                        }
+                        _fast_r = _CLARIFY.get(_pair) or (
+                            f"Just to check — did you want to know about "
+                            f"{_label.get(_top, _top)}, or {_label.get(_second, _second)}?"
+                        )
+                        # Mark clarification so the flow does not advance to
+                        # GENERAL_BOOKING_OFFER — the next utterance must re-run
+                        # intent detection with the clarified phrasing.
+                        self.session["_gq_clarify_pending"] = True
+                        logger.info(
+                            "[ms_flow] ANSWER_GENERAL clarification emitted: %s vs %s",
+                            _top, _second,
+                        )
             if _fast_r:
                 # Fast-path: speak the deterministic answer directly to TTS.
                 # The LLM path handles TTS internally via streaming; fast-path must
@@ -3192,6 +3278,19 @@ class FlowEngine:
                 logger.info("[ms_flow] ANSWER_FAQ complete — advancing to FAQ_BOOKING_OFFER")
                 return
             if step["state"] == "ANSWER_GENERAL":
+                if self.session.pop("_gq_clarify_pending", False):
+                    # Clarification emitted for an ambiguous noisy inquiry — do not
+                    # advance to GENERAL_BOOKING_OFFER (which would interpret the
+                    # caller's clarified reply as a yes/no booking answer). Reset
+                    # to DETECT_INTENT_FLOW so the next utterance is re-classified.
+                    self._active_flow = DETECT_INTENT_FLOW
+                    self.session["flow_step"] = 0
+                    self.session.pop("intent", None)
+                    self.session.pop("general_query_text", None)
+                    logger.info(
+                        "[ms_flow] ANSWER_GENERAL clarification — reset to DETECT_INTENT_FLOW"
+                    )
+                    return
                 self.session["flow_step"] = step["step"] + 1
                 logger.info("[ms_flow] ANSWER_GENERAL complete — advancing to GENERAL_BOOKING_OFFER")
                 return
