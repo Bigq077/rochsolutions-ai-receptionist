@@ -5130,6 +5130,30 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
+                # ── Score-based silent bind: winner ≥ 50 pts → bind and advance ──
+                # The resolver already computed both scores.  If the winning clinic
+                # cleared 50 (out of 100) the signal is strong enough to commit
+                # without asking again — the next question names the clinic aloud
+                # so the caller can correct mid-flow via the global correction handler.
+                # confidence = winner_score / 100 on the scoring path.
+                _sl_result = _resolve_clinic(text, context="ask_location")
+                _sl_conf   = _sl_result.get("confidence", 0)
+                if _sl_result["status"] == "ambiguous" and _sl_conf >= 0.50:
+                    _sl_dbg  = _sl_result.get("debug", {})
+                    _sl_alc  = _sl_dbg.get("alcester_score", 0)
+                    _sl_red  = _sl_dbg.get("redditch_score", 0)
+                    _sl_bind = "alcester" if _sl_alc >= _sl_red else "redditch"
+                    self.session["selected_location"] = _sl_bind
+                    self.session["needs_location"]    = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: score-bind (alc=%d red=%d conf=%.2f → %s) for %r",
+                        _sl_alc, _sl_red, _sl_conf, _sl_bind, text[:40],
+                    )
+                    await self.ask_current_question()
+                    return
+
                 # ── Retry ladder: escalate wording then switch to DTMF ───────────
                 # retry 0 → spoken re-ask with explicit clinic names
                 # retry 1+ → DTMF keypad fallback
