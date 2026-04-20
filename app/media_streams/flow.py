@@ -4194,6 +4194,109 @@ class FlowEngine:
                 )
                 return
 
+        # ── GLOBAL CHILD-AGE PENDING ──────────────────────────────────────────────
+        # When _handle_mid_flow_interrupt asked "How old is your son/child?" via the
+        # faq_child_policy age-gate, the caller's age response arrives here before any
+        # state handler.  Consumes the response and branches deterministically:
+        #   age < clinic threshold → short rejection
+        #   age ≥ threshold        → allow (offer booking)
+        #   no age detected        → re-ask once, then give up cleanly
+        # Always returns — never falls through while pending is set.
+        if self.session.get("_child_age_pending") and step:
+            _cap_tx  = text.strip().lower()
+            _cap_rel = self.session.get("_child_age_relationship", "child")
+            _CAP_PRONOUNS = {"son": "your son", "daughter": "your daughter"}
+            _cap_pronoun  = _CAP_PRONOUNS.get(_cap_rel, "your child")
+
+            # Abandon detection — caller moved on or said never mind
+            _CAP_ABANDON = frozenset({"no", "nope", "nah", "forget it", "never mind",
+                                      "nothing", "not anymore", "doesn't matter"})
+            _cap_words = set(_cap_tx.split())
+            if _cap_words <= _CAP_ABANDON or any(p in _cap_tx for p in ("forget it", "never mind", "doesn't matter")):
+                self.session.pop("_child_age_pending",      None)
+                self.session.pop("_child_age_relationship", None)
+                self.session.pop("_child_age_reask_count",  None)
+                _cap_abandon_r = "No problem — is there anything else I can help with?"
+                await self._tts.put(_cap_abandon_r)
+                self.session["last_question"] = _cap_abandon_r
+                return
+
+            # Extract integer age (digit-form or word-form)
+            _CAP_WORD_AGES = {
+                "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+                "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+                "nineteen": 19, "twenty": 20,
+            }
+            _cap_age_m = _re_mod.search(r'\b(\d+)\b', _cap_tx)
+            _cap_age: int | None = None
+            if _cap_age_m:
+                _cap_age = int(_cap_age_m.group(1))
+            else:
+                for _wrd, _num in _CAP_WORD_AGES.items():
+                    if _wrd in _cap_tx:
+                        _cap_age = _num
+                        break
+
+            if _cap_age is None:
+                # No age found — re-ask once, then give up
+                _cap_reask_n = int(self.session.get("_child_age_reask_count") or 0)
+                if _cap_reask_n >= 1:
+                    self.session.pop("_child_age_pending",      None)
+                    self.session.pop("_child_age_relationship", None)
+                    self.session.pop("_child_age_reask_count",  None)
+                    _cap_fallback = "No problem — is there anything else I can help with?"
+                    await self._tts.put(_cap_fallback)
+                    self.session["last_question"] = _cap_fallback
+                    logger.info("[ms_flow] child_age_pending: still no age after re-ask — giving up")
+                    return
+                self.session["_child_age_reask_count"] = _cap_reask_n + 1
+                _cap_reask = f"Sorry \u2014 how old is {_cap_pronoun}?"
+                await self._tts.put(_cap_reask)
+                self.session["last_question"] = _cap_reask
+                logger.info("[ms_flow] child_age_pending: no age in %r — re-asking", text[:40])
+                return
+
+            # Age captured — load clinic threshold and branch
+            from app.clinic_config import get_clinic as _gc_cap
+            _cap_clinic    = _gc_cap(self.session.get("clinic_id") or "demo")
+            _cap_policies  = _cap_clinic.get("patient_policies", {})
+            _cap_threshold = int(
+                _cap_policies.get("min_patient_age")
+                or _cap_policies.get("adult_age_threshold")
+                or 16
+            )
+            self.session.pop("_child_age_pending",      None)
+            self.session.pop("_child_age_relationship", None)
+            self.session.pop("_child_age_reask_count",  None)
+
+            if _cap_age < _cap_threshold:
+                _cap_decline = (
+                    f"I\u2019m sorry \u2014 we only see patients aged {_cap_threshold} "
+                    f"and over, so we wouldn\u2019t be able to book them in with us."
+                )
+                await self._tts.put(_cap_decline)
+                self.session["last_question"]  = "Is there anything else I can help with?"
+                self.session["last_faq_answer"] = _cap_decline
+                logger.info(
+                    "[ms_flow] child_age_pending: age=%s < threshold=%s → declined",
+                    _cap_age, _cap_threshold,
+                )
+            else:
+                _cap_allow = (
+                    "That\u2019s absolutely fine \u2014 "
+                    "would you like to go ahead and book an appointment?"
+                )
+                await self._tts.put(_cap_allow)
+                self.session["last_question"]  = "Would you like to go ahead and book?"
+                self.session["last_faq_answer"] = _cap_allow
+                logger.info(
+                    "[ms_flow] child_age_pending: age=%s >= threshold=%s → allowed",
+                    _cap_age, _cap_threshold,
+                )
+            return
+
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
         # Very short / noisy transcripts must not drive a full response.
         # Suppress if: in explicit blocklist, OR ≤ 6 chars with no strong intent.
@@ -13934,12 +14037,30 @@ class FlowEngine:
                 )
                 await self._llm(instruction, allow_tools=False)
         elif intent == "faq_child_policy":
-            from app.clinic_config import get_clinic as _gc_cp
-            _cli_cp = _gc_cp(self.session.get("clinic_id") or "demo")
-            _cp_ans = _cli_cp.get("faq", {}).get("children_policy") or _FAQ_CHILD_POLICY_ANSWER
-            logger.info("[ms_flow] _handle_mid_flow_interrupt: child_policy fast path")
-            await self._tts.put(_cp_ans + _re_anchor_sfx)
-            self.session["last_faq_answer"] = _cp_ans
+            # Age-gate: never reject before knowing the age — "my son" could be 19.
+            # Ask age first; the global _child_age_pending block handles the response.
+            _cp_tx  = transcript.strip().lower()
+            _cp_rel = (
+                "son"      if any(w in _cp_tx for w in ("son", "boy", " he ", "his")) else
+                "daughter" if any(w in _cp_tx for w in ("daughter", "girl", " she ", "her")) else
+                "child"
+            )
+            _CP_PRONOUNS = {"son": "your son", "daughter": "your daughter"}
+            _cp_age_q = (
+                f"Of course \u2014 just so I can check we can help, "
+                f"how old is {_CP_PRONOUNS.get(_cp_rel, 'your child')}?"
+            )
+            await self._tts.put(_cp_age_q)
+            self.session["_child_age_pending"]      = True
+            self.session["_child_age_relationship"] = _cp_rel
+            self.session["_child_age_reask_count"]  = 0
+            self.session["last_question"]           = _cp_age_q
+            self.session["last_faq_answer"]         = _cp_age_q
+            logger.info(
+                "[ms_flow] _handle_mid_flow_interrupt: faq_child_policy → age-gate "
+                "(rel=%s)", _cp_rel,
+            )
+            return  # global _child_age_pending block handles next turn; skip re-anchor
         elif intent == "faq_booking_logistics":
             from app.clinic_config import get_clinic as _gc_bl
             _cli_bl = _gc_bl(self.session.get("clinic_id") or "demo")
