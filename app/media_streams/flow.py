@@ -176,12 +176,76 @@ _FAQ_FIRST_APPT_ANSWER = (
     "and in most cases they\u2019ll begin hands-on treatment in that same session."
 )
 
-# ── FAQ: accessibility / step-free / wheelchair — fallback if config absent ──
+# ── FAQ: accessibility / step-free / wheelchair — short voice-safe answer ──
+# Kept intentionally short: one direct answer + one short practical invite.
 _FAQ_ACCESSIBILITY_FALLBACK = (
-    "Yes \u2014 both our clinics are step-free and wheelchair accessible. "
-    "If there\u2019s anything specific you\u2019d need, just let us know when booking "
-    "and we can make sure the team is aware."
+    "Yes \u2014 both our clinics are wheelchair accessible. "
+    "Just let us know any specific access needs when you book."
 )
+
+
+def _short_access_ans(clinic: Dict[str, Any]) -> str:
+    """
+    Return the clinic's configured accessibility answer trimmed to the first
+    sentence plus a short booking invite. Voice-safe — never the full 2-3
+    sentence config paragraph. Falls back to _FAQ_ACCESSIBILITY_FALLBACK if
+    clinic config does not define one.
+    """
+    _ac = (clinic.get("faq") or {}).get("accessibility") or ""
+    if not _ac:
+        return _FAQ_ACCESSIBILITY_FALLBACK
+    _first = _ac.split(".")[0].strip()
+    if not _first:
+        return _FAQ_ACCESSIBILITY_FALLBACK
+    return _first + ". Just let us know any specific access needs when you book."
+
+
+# ── Clinic access/logistics detector ────────────────────────────────────────
+# True when the utterance is about the CLINIC (step-free, parking, address,
+# location) rather than about whether a child can be TREATED there. Used to
+# prevent "my son/daughter/child" relation words from hijacking an access or
+# logistics question into service-fit / child-policy age-gating.
+_ACCESS_LOGISTICS_SIGS: tuple[str, ...] = (
+    "step free", "step-free", "step three",
+    "wheelchair", "wheel chair",
+    "disabled access", "disability access", "disabled parking",
+    "accessible", "accessibility",
+    "ramp", "lift access", "mobility",
+    "parking", "car park", "can i park", "where to park",
+    "where can i park", "park near", "park there", "park in the",
+    "address", "where are you", "where is your", "where exactly",
+    "where is the", "find you", "locate you", "clinic address",
+    "postcode", "post code", "directions", "how do i get",
+    "get to the clinic", "get to your clinic",
+)
+
+# Treatment-eligibility language — if any of these appear, the utterance IS
+# about whether the child can be treated / booked and service-fit SHOULD run.
+_TREATMENT_ELIGIBILITY_SIGS: tuple[str, ...] = (
+    "do you treat", "do you see", "can you treat", "can you see",
+    "accept children", "treat children", "see children",
+    "can my son book", "can my daughter book", "can my child book",
+    "can my kid book", "book for my son", "book for my daughter",
+    "book for my child", "appointment for my son",
+    "appointment for my daughter", "appointment for my child",
+    "is my child eligible", "is my son eligible", "is my daughter eligible",
+    "eligible for", "can you help my son", "can you help my daughter",
+    "can you help my child", "my son needs", "my daughter needs",
+    "my child needs", "my kid needs",
+    "paediatric", "pediatric", "child physio", "children physio",
+)
+
+
+def _is_clinic_access_logistics(text: str) -> bool:
+    """Return True when the utterance is a clinic access / logistics question
+    and NOT a treatment-eligibility question, even if a child relation word
+    (my son, my daughter, my child) is present."""
+    t = (text or "").lower()
+    if not any(p in t for p in _ACCESS_LOGISTICS_SIGS):
+        return False
+    if any(p in t for p in _TREATMENT_ELIGIBILITY_SIGS):
+        return False
+    return True
 
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
 # Patterns that callers use as labels instead of actual names.
@@ -302,6 +366,14 @@ _GLOBAL_REPAIR_PHRASES = (
     "that's not my question", "not my question",
     "no my question was", "no my question is",
     "no that's not the question", "no that's not what",
+    # Strong repair signals that may appear as a standalone lead-in.
+    # Must be checked even without a preceding "no"/"that's not" because
+    # callers often just say "my question is ...", "what i meant was ...",
+    # "i mean ...", "i am asking ..." to correct a misrouted branch.
+    "my question is", "my question was",
+    "what i meant was", "what i meant", "i meant to ask",
+    "i'm asking", "im asking", "i am asking",
+    "i mean ", "i mean,", "i mean.",
     # Booking-flow backtrack / correction triggers
     "i made an error", "i made a mistake",
     "i need to correct", "i need to go back",
@@ -3039,8 +3111,7 @@ class FlowEngine:
                 if any(p in _aq2_last_msg for p in _AQ2_ACCESS_P):
                     from app.clinic_config import get_clinic as _gc_acc
                     _cli_acc = _gc_acc(self.session.get("clinic_id") or "demo")
-                    _acc_ans = _cli_acc.get("faq", {}).get("accessibility") or ""
-                    _fast_r = ("Of course \u2014 " + _acc_ans) if _acc_ans else _FAQ_ACCESSIBILITY_FALLBACK
+                    _fast_r = _short_access_ans(_cli_acc)
                     logger.info("[ms_flow] ask_current_question: ANSWER_FAQ accessibility intercept (faq_location route)")
                 else:
                     from app.clinic_config import get_clinic as _gc_aq2
@@ -3161,8 +3232,7 @@ class FlowEngine:
 
                 def _fact_for(cat):
                     if cat == "accessibility":
-                        _acc = _faq_cfg.get("accessibility") or ""
-                        return ("Of course — " + _acc) if _acc else _FAQ_ACCESSIBILITY_FALLBACK
+                        return _short_access_ans(_cli_gq)
                     if cat == "parking":
                         _park = (_loc_gq or {}).get("parking") or ""
                         if _park:
@@ -3930,6 +4000,16 @@ class FlowEngine:
             if len(_rw) <= 2 and _rw and _rw[0] in ("stop", "wrong"):
                 _is_repair = True
         if _is_repair:
+            # Strong repair — stale child-policy / service-fit branches must not
+            # keep controlling the turn (Rule 3). Clear pending routing state
+            # before re-interpreting the clarified utterance so the caller isn't
+            # trapped in the previous wrong interpretation.
+            for _repair_clr_key in (
+                "_pending_svc_fit", "_pending_svc_fit_turns",
+                "_svc_fit_gq_guard", "_gq_clarify_pending",
+                "pending_first_turn_followup", "pending_followup",
+            ):
+                self.session.pop(_repair_clr_key, None)
             # Try to extract an embedded FAQ question before falling back to generic repair.
             # "that's not what I asked, my question was about insurance" → route to insurance FAQ.
             _EMBEDDED_SUFFIXES = (
@@ -3937,6 +4017,8 @@ class FlowEngine:
                 "i was asking about", "i was asking",
                 "i wanted to ask", "i actually wanted",
                 "what i meant", "i meant to ask",
+                "i'm asking", "im asking", "i am asking",
+                "i mean",
             )
             _emb_intent = None
             _emb_raw = ""
@@ -4882,29 +4964,14 @@ class FlowEngine:
                     logger.info("[ms_flow] ASK_LOCATION DTMF: resolved — %s", loc)
                     await self.ask_current_question()
                     return
-                # DTMF not received — one short re-prompt then graceful exit
-                _dtmf_retry = self.session.get("location_dtmf_retry", 0) + 1
-                self.session["location_dtmf_retry"] = _dtmf_retry
-                if _dtmf_retry >= 2:
-                    _dtmf_exit = (
-                        "I'm having trouble catching the clinic name — "
-                        "please give us a call back and the team will be happy to help."
-                    )
-                    await self._tts.put(_dtmf_exit)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _dtmf_exit}
-                    )
-                    self.session["last_question"] = _dtmf_exit
-                    self.session["graceful_exit"]    = True
-                    self.session["request_transfer"] = True
-                    self.session["needs_location"]   = False
-                else:
-                    _dtmf_re = "Press 1 for Alcester or 2 for Redditch."
-                    await self._tts.put(_dtmf_re)
-                    self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _dtmf_re}
-                    )
-                    self.session["last_question"] = _dtmf_re
+                # Not resolved — re-prompt and keep waiting; never end the call
+                _dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                await self._tts.put(_dtmf_re)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _dtmf_re}
+                )
+                self.session["last_question"] = _dtmf_re
+                logger.info("[ms_flow] ASK_LOCATION DTMF: unresolved — looping")
                 return
 
             # ── Non-location corrective escape ────────────────────────────────
@@ -5070,8 +5137,8 @@ class FlowEngine:
                 if _loc_retry == 0:
                     # Second ask: polite re-ask with explicit names
                     _retry2_q = (
-                        "Sorry, I didn't quite catch that. "
-                        "Please say the Alcester clinic or the Redditch clinic."
+                        "Sorry, I didn't quite catch that — "
+                        "can you please say the Alcester clinic or the Redditch clinic?"
                     )
                     self.session["location_retry_count"] = 1
                     await self._tts.put(_retry2_q)
@@ -6519,6 +6586,11 @@ class FlowEngine:
             if (
                 self.session.get("_first_turn_extracted")
                 and not self.session.get("_first_turn_policy_gate_done")
+                # Bypass the child-policy age gate when the utterance is about
+                # clinic access / logistics rather than treatment eligibility.
+                # "Does the clinic have step-free access for my son" must not
+                # trigger ASK_CHILD_AGE. (Prompt-3 Rule 1 / Fix 1+2.)
+                and not _is_clinic_access_logistics(text)
             ):
                 from app.media_streams.policy_gate import (
                     evaluate_policy_gate    as _pg_eval_ft,
@@ -6595,6 +6667,19 @@ class FlowEngine:
                     _di_action, _di_router["primary_intent"],
                     _di_router["confidence"], _di_router.get("source", "?"),
                 )
+                # Access/logistics about the CLINIC (step-free, parking,
+                # address, etc.) — not a treatment-eligibility question — must
+                # NOT trigger service-fit / child-policy age-gating even when a
+                # relation word like "my son" is present. Neutralise the router
+                # action so the flow falls through to normal intent detection
+                # which will route to faq_location / accessibility.
+                # (Prompt-3 Rule 1 / Fix 1+2.)
+                if _di_action == _R_SVC_FIT and _is_clinic_access_logistics(text):
+                    logger.info(
+                        "[ms_flow] DETECT_INTENT: svc_fit suppressed — "
+                        "clinic access/logistics question (%r)", text[:60]
+                    )
+                    _di_action = None
                 if _di_action == _R_SVC_FIT:
                     # ── Deterministic service-fit policy evaluator ─────────────────
                     # Routes through service_fit_policy.py which checks:
@@ -14191,8 +14276,7 @@ class FlowEngine:
                     "disabled access", "disability",
                 ))
                 if _access_q:
-                    _acc_faq = _cli_mfi.get("faq", {}).get("accessibility")
-                    _mfi_ans = ("Of course \u2014 " + _acc_faq) if _acc_faq else _FAQ_ACCESSIBILITY_FALLBACK
+                    _mfi_ans = _short_access_ans(_cli_mfi)
                     self.session["last_faq_sub"] = "accessibility"
                     logger.info(
                         "[ms_flow] _handle_mid_flow_interrupt: faq_location accessibility fast path"
