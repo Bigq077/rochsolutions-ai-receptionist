@@ -381,6 +381,126 @@ def _check_locked_topic_followup(
     explicit_switch = any(p in text_lower for p in _LOCKED_TOPIC_SWITCH_PHRASES)
     return locked_svc, matched, explicit_switch
 
+# ── Booking-state FAQ interrupt detector ─────────────────────────────────────
+# Used by handle_transcript at DATA_COLLECTION states (COLLECT_REASON,
+# COLLECT_NAME*, CONFIRM_PHONE*) to decide whether the caller has asked an
+# FAQ-shaped question mid-booking.  Without this, utterances like
+# "I saw you offer acupuncture — I'm scared of needles" arriving at
+# COLLECT_REASON get stored as the booking reason and the flow advances as
+# if that were the caller's symptom.  This helper lets us hard-route such
+# utterances through _handle_mid_flow_interrupt instead, preserving the
+# suspended booking question via the existing re-anchor path.
+#
+# Returns True only for utterances that are CLEARLY FAQ-shaped.  Bare body-
+# part / symptom answers ("neck pain", "my ankle hurts"), valid name
+# answers ("my first name is Quentin"), and yes/no confirmations remain
+# False so their legitimate capture is never blocked.
+
+_BOOKING_FAQ_SERVICE_TERMS: tuple[str, ...] = (
+    "acupuncture", "shockwave", "laser", "pilates",
+    "sports massage", "massage",
+    "biomechanical", "biomechanics",
+    "physio", "physiotherapy", "physiotherapist",
+)
+
+_BOOKING_FAQ_INFO_SEEKING: tuple[str, ...] = (
+    "i saw on your website", "saw on your website", "on your website",
+    "i saw on the website", "saw on the website",
+    "i saw you offer", "saw you offer", "i saw you do", "saw you do",
+    "i want to know", "i wanted to know", "want to know",
+    "i'd like to know", "id like to know", "would like to know",
+    "can you tell me", "could you tell me", "tell me about",
+    "i was wondering", "just wondering", "wondering if",
+    "how does it work", "how does that work", "how does acupuncture",
+    "how does shockwave", "how does laser",
+    "what happens", "what is it", "what is acupuncture",
+    "what does it feel", "what does it involve",
+    "will it hurt", "is it painful", "is it safe",
+    "are the needles", "are they big", "are they small",
+    "how big", "how long", "how often", "how many sessions",
+    "side effects", "any side",
+)
+
+_BOOKING_FAQ_CONCERN: tuple[str, ...] = (
+    "i'm scared", "im scared", "scared of",
+    "i'm nervous", "im nervous", "nervous about",
+    "i'm anxious", "im anxious", "anxious about",
+    "i'm worried", "im worried", "worried about",
+    "afraid of", "i'm afraid", "im afraid",
+    "hate needles", "don't like needles", "dont like needles",
+    "not keen on needles", "phobia",
+)
+
+_BOOKING_FAQ_EXPLICIT_OPENERS: tuple[str, ...] = (
+    "i had a question", "i have a question", "quick question",
+    "can i ask", "could i ask", "may i ask",
+    "before we book", "before i book", "before booking",
+    "one quick thing", "one thing first", "first a question",
+)
+
+_BOOKING_FAQ_STRONG_BOOK_VERBS: tuple[str, ...] = (
+    "book", "booking", "booked",
+    "appointment", "appointments",
+    "schedule", "scheduled", "scheduling",
+    "reschedule", "rescheduled",
+    "cancel", "cancelled", "canceling",
+    "come in", "coming in", "come and see",
+)
+
+# Body-part + symptom compound — must be excluded so real COLLECT_REASON
+# answers like "my neck is killing me" are still captured as reason.
+import re as _re_bfi
+_BOOKING_FAQ_BODY_RE  = _re_bfi.compile(
+    r"\b(back|shoulder|ankle|knee|hip|neck|wrist|elbow|leg|arm|foot|heel)\b"
+)
+_BOOKING_FAQ_SYMP_RE  = _re_bfi.compile(
+    r"\b(pain|painful|ache|aching|hurt|hurting|injury|injured|problem|issue"
+    r"|sore|stiff|stiffness|killing|playing up)\b"
+)
+
+
+def _is_booking_state_faq_interrupt(text: str) -> tuple[bool, str]:
+    """
+    Decide whether ``text`` arriving at a DATA_COLLECTION booking state is
+    clearly an FAQ interruption rather than a genuine booking answer.
+
+    Returns ``(is_faq, reason)``.  ``reason`` is a short tag used in logs.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False, ""
+
+    # Strong book-verb anywhere → never treat as FAQ interrupt; the caller is
+    # still inside the booking/reschedule/cancel lane.
+    if any(v in t for v in _BOOKING_FAQ_STRONG_BOOK_VERBS):
+        return False, "strong_book_verb"
+
+    # Body-part + symptom compound → this is a genuine COLLECT_REASON answer.
+    if _BOOKING_FAQ_BODY_RE.search(t) and _BOOKING_FAQ_SYMP_RE.search(t):
+        return False, "body_symptom_compound"
+
+    has_service     = any(s in t for s in _BOOKING_FAQ_SERVICE_TERMS)
+    has_info_seek   = any(p in t for p in _BOOKING_FAQ_INFO_SEEKING)
+    has_concern     = any(p in t for p in _BOOKING_FAQ_CONCERN)
+    has_opener      = any(p in t for p in _BOOKING_FAQ_EXPLICIT_OPENERS)
+
+    # Primary: service mention AND (info-seeking OR concern).
+    if has_service and (has_info_seek or has_concern):
+        return True, "service+infoseek_or_concern"
+
+    # Secondary: explicit interrupt opener (e.g. "I had a question…").
+    if has_opener:
+        return True, "explicit_opener"
+
+    # Tertiary: needle-fear phrasing without an explicit service word
+    # ("I'm scared of needles", "I hate needles") — only treat as FAQ if
+    # there IS a question / concern shape, not bare statements.
+    if has_concern and ("needle" in t or "needles" in t):
+        return True, "needle_concern"
+
+    return False, ""
+
+
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
 # Patterns that callers use as labels instead of actual names.
 # If the transcript matches one of these entirely (or after stripping,
@@ -11279,6 +11399,40 @@ class FlowEngine:
             if step["state"] not in _DATA_COLLECTION_STATES:
                 _mid_intents.add("general_query")
             _mid_intent = self._detect_intent(text)
+            # ── Booking-state FAQ interrupt upgrade ──────────────────────────
+            # At DATA_COLLECTION states (COLLECT_REASON, COLLECT_NAME*,
+            # CONFIRM_PHONE*) _detect_intent often returns "general_query" for
+            # FAQ-shaped utterances ("I saw you offer acupuncture — is it
+            # painful?") because question-form detection is conservative.
+            # general_query is deliberately excluded from _mid_intents at
+            # these states so ambiguous stutters don't swallow answers —
+            # but that also lets genuine FAQ interruptions fall through
+            # into the state's payload consumer, where e.g. the full
+            # FAQ utterance becomes `reason`.  Detect obvious FAQ shape
+            # and upgrade the intent so the mid-flow interrupt fires and
+            # _handle_mid_flow_interrupt re-anchors to the suspended
+            # booking question.  Strong book verbs and body+symptom
+            # compounds short-circuit the helper → legitimate booking
+            # answers are never affected.
+            _BOOKING_FAQ_STATES = {
+                "COLLECT_REASON",
+                "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+                "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+            }
+            if (
+                step["state"] in _BOOKING_FAQ_STATES
+                and _mid_intent not in _mid_intents
+                and _mid_intent not in ("reschedule", "cancel", "booking")
+            ):
+                _bfi_hit, _bfi_reason = _is_booking_state_faq_interrupt(text)
+                if _bfi_hit:
+                    logger.info(
+                        "[ms_flow] booking_state_faq_interrupt at=%s reason=%s "
+                        "prior_intent=%s transcript=%r — upgrading to faq_services",
+                        step["state"], _bfi_reason, _mid_intent, transcript[:80],
+                    )
+                    _mid_intent = "faq_services"
             # Hard-route reschedule/cancel before any FAQ handling — these must
             # exit booking immediately regardless of current state.
             # Guard: do NOT reset if already in the target flow (avoids restart loops).
@@ -13288,6 +13442,25 @@ class FlowEngine:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         })
         if step["state"] in _COLLECT_NAME_STATES_ALL:
+            # ── COLLECT_NAME: FAQ-shape utterance defensive guard ────────
+            # Backup for the handle_transcript mid-flow upgrade.  Caller may
+            # fire an FAQ question while we're asking for their name
+            # ("how big are the needles?", "quick question — do you take
+            # insurance?"); the NameCollector would otherwise reject the
+            # utterance as invalid name after multiple retries.  Route any
+            # clearly-FAQ-shaped utterance to the mid-flow interrupt so it
+            # is answered and the pending name question is re-anchored.
+            # Valid names like "my first name is Quentin" do not match the
+            # helper (no service term, no info-seek phrase, no opener).
+            _cn_faq_hit, _cn_faq_reason = _is_booking_state_faq_interrupt(text)
+            if _cn_faq_hit:
+                logger.info(
+                    "[ms_flow] %s: faq_interrupt_guard reason=%s "
+                    "transcript=%r — routing to mid-flow interrupt, not storing as name",
+                    step["state"], _cn_faq_reason, transcript[:80],
+                )
+                await self._handle_mid_flow_interrupt("faq_services", transcript)
+                return
             from app.media_streams.name_collector import NameCollector as _NameColl
             _nc_action, _nc_payload = _NameColl(self.session).handle(text, transcript)
             while not self._tts.empty():
@@ -13399,6 +13572,23 @@ class FlowEngine:
                 logger.info("[ms_flow] COLLECT_REASON: cancel intent detected — switching flow")
                 self._switch_flow("cancel")
                 await self.ask_current_question()
+                return
+            # ── COLLECT_REASON: FAQ-shape utterance defensive guard ──────────
+            # Backup for the handle_transcript mid-flow upgrade.  If an FAQ-
+            # shaped utterance reached this point, route it through the mid-
+            # flow interrupt so it is answered and the suspended
+            # COLLECT_REASON question is re-anchored — NEVER stored as the
+            # caller's booking reason.  Body+symptom compounds and strong
+            # book verbs short-circuit the helper, so "my neck is killing me"
+            # still falls through to normal reason capture.
+            _cr_faq_hit, _cr_faq_reason = _is_booking_state_faq_interrupt(text)
+            if _cr_faq_hit:
+                logger.info(
+                    "[ms_flow] COLLECT_REASON: faq_interrupt_guard reason=%s "
+                    "transcript=%r — routing to mid-flow interrupt, not storing as reason",
+                    _cr_faq_reason, transcript[:80],
+                )
+                await self._handle_mid_flow_interrupt("faq_services", transcript)
                 return
 
         # ── COLLECT_REASON: partial-reason join (BUG 2 continuation) ─────────────
