@@ -705,6 +705,67 @@ def _is_booking_resume_signal(text: str) -> bool:
     return any(p in t for p in _BOOKING_RESUME_SIGS)
 
 
+# ── Mid-booking FAQ resolution detector ─────────────────────────────────────
+# After a mid-booking acupuncture fear answer + re-anchor, declarative /
+# proceed-oriented utterances ("I should be fine for acupuncture then",
+# "I'd like to book in an acupuncture appointment then", "let's try
+# acupuncture", "that sounds fine") must resume the booking flow rather
+# than re-enter the FAQ path.  Without this the word "acupuncture" gets
+# re-caught by `_is_booking_state_faq_interrupt` and loops back to an
+# acupuncture service overview.
+_FAQ_RESOLUTION_PROCEED_SIGS: tuple[str, ...] = (
+    "should be fine", "i should be fine", "i'll be fine", "ill be fine",
+    "i'm fine with", "im fine with", "i'm ok with", "im ok with",
+    "i'm okay with", "im okay with",
+    "fine for acupuncture", "fine with acupuncture",
+    "ok with acupuncture", "okay with acupuncture",
+    "happy with acupuncture", "happy to try",
+    "let's try", "lets try", "i'll try", "ill try", "i will try",
+    "i'd like to try", "id like to try",
+    "let's do", "lets do", "let's go with", "lets go with",
+    "i'd like to book", "id like to book", "i want to book", "i wanna book",
+    "book in an acupuncture", "book an acupuncture",
+    "book me in", "book me",
+    "go ahead with", "go with acupuncture",
+    "that sounds fine", "that sounds good", "that sounds ok",
+    "that sounds okay", "that's fine", "thats fine",
+    "sounds good then", "sounds fine then",
+)
+
+_FAQ_RESOLUTION_QUESTION_SIGS: tuple[str, ...] = (
+    "?", "do you think", "would that", "would it",
+    "is it", "is that", "does it", "does that",
+    "how ", "what ", "why ", "when ", "will it",
+    "a problem", "an issue", "be a problem", "be an issue",
+)
+
+_FAQ_RESOLUTION_FRESH_CONCERN_SIGS: tuple[str, ...] = (
+    "scared", "nervous", "anxious", "worried", "fear",
+    "painful", "hurt", "hurts",
+)
+
+
+def _is_mid_booking_acupuncture_resolution(
+    text_lower: str, session: Dict[str, Any]
+) -> bool:
+    """
+    True only when: active mid-booking FAQ topic is acupuncture AND the
+    utterance is declarative / proceed-oriented AND has no question-form
+    or fresh-concern signal dominating.  Narrow by design.
+    """
+    ctx = session.get("_mid_booking_faq_ctx") or {}
+    if ctx.get("topic") != "acupuncture":
+        return False
+    t = (text_lower or "").strip()
+    if not t:
+        return False
+    if any(p in t for p in _FAQ_RESOLUTION_QUESTION_SIGS):
+        return False
+    if any(p in t for p in _FAQ_RESOLUTION_FRESH_CONCERN_SIGS):
+        return False
+    return any(p in t for p in _FAQ_RESOLUTION_PROCEED_SIGS)
+
+
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
 # Patterns that callers use as labels instead of actual names.
 # If the transcript matches one of these entirely (or after stripping,
@@ -11744,6 +11805,7 @@ class FlowEngine:
             # Without this guard it would be consumed by COLLECT_REASON /
             # COLLECT_NAME etc. Bind it back to the FAQ thread instead.
             _mbf_ctx = self.session.get("_mid_booking_faq_ctx")
+            _mbf_resolved = False
             if (
                 _mbf_ctx
                 and step["state"] in _BOOKING_FAQ_STATES
@@ -11773,6 +11835,31 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] mid_booking_faq_context_cleared "
                         "reason=explicit_topic_switch text=%r",
+                        text[:80],
+                    )
+                elif _is_mid_booking_acupuncture_resolution(_t_mbf, self.session):
+                    # Declarative / proceed-oriented utterance after an
+                    # acupuncture fear answer — caller has accepted the
+                    # concern and wants to resume booking.  Clear ctx and
+                    # mark resolved so the downstream interrupt detector
+                    # does not re-upgrade "acupuncture" to faq_services.
+                    _mbf_topic_log = _mbf_ctx.get("topic")
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_resolution_detected "
+                        "topic=%s route=booking_resume text=%r",
+                        _mbf_topic_log, text[:80],
+                    )
+                    self.session.pop("_mid_booking_faq_ctx", None)
+                    self.session.pop("_faq_active_service", None)
+                    _mbf_resolved = True
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_context_cleared "
+                        "reason=accepted_and_resuming_booking text=%r",
+                        text[:80],
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON: consumed acupuncture "
+                        "resolution as booking reason text=%r",
                         text[:80],
                     )
                 else:
@@ -11837,6 +11924,7 @@ class FlowEngine:
                 step["state"] in _BOOKING_FAQ_STATES
                 and _mid_intent not in _mid_intents
                 and _mid_intent not in ("reschedule", "cancel", "booking")
+                and not _mbf_resolved
             ):
                 _bfi_hit, _bfi_reason = _is_booking_state_faq_interrupt(text)
                 if _bfi_hit:
@@ -13886,7 +13974,7 @@ class FlowEngine:
             # Valid names like "my first name is Quentin" do not match the
             # helper (no service term, no info-seek phrase, no opener).
             _cn_faq_hit, _cn_faq_reason = _is_booking_state_faq_interrupt(text)
-            if _cn_faq_hit:
+            if _cn_faq_hit and not _mbf_resolved:
                 logger.info(
                     "[ms_flow] %s: faq_interrupt_guard reason=%s "
                     "transcript=%r — routing to mid-flow interrupt, not storing as name",
@@ -14015,7 +14103,7 @@ class FlowEngine:
             # book verbs short-circuit the helper, so "my neck is killing me"
             # still falls through to normal reason capture.
             _cr_faq_hit, _cr_faq_reason = _is_booking_state_faq_interrupt(text)
-            if _cr_faq_hit:
+            if _cr_faq_hit and not _mbf_resolved:
                 logger.info(
                     "[ms_flow] COLLECT_REASON: faq_interrupt_guard reason=%s "
                     "transcript=%r — routing to mid-flow interrupt, not storing as reason",
