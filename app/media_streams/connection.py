@@ -621,7 +621,7 @@ class SilenceHandler:
         elif _state in ("GREETING", "DETECT_INTENT", ""):
             phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
         elif _state == "ASK_LOCATION":
-            phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?"
+            phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — the Alcester clinic or the Redditch clinic?"
         else:
             phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
 
@@ -1108,7 +1108,7 @@ class SilenceHandler:
             if _state in ("GREETING", "DETECT_INTENT", ""):
                 phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
-                phrase = _prefix + " — please say Alcester or Redditch."
+                phrase = _prefix + " — please say the Alcester clinic or the Redditch clinic."
                 # Count this watchdog re-ask as a retry so the next unresolvable
                 # speech input goes straight to DTMF instead of another voice retry.
                 if _sess is not None:
@@ -1661,6 +1661,12 @@ class WebSocketCallHandler:
         # utterance is processed.
         self._in_barge_in_recovery: bool = False
 
+        # Keypad idle-finalize: scheduled when the DTMF buffer has enough digits
+        # to plausibly be a complete number but the caller has paused.  If no
+        # further digits arrive within _KEYPAD_IDLE_FINALIZE_SEC we finalize the
+        # buffer as a synthetic transcript so the flow gate can readback.
+        self._dtmf_idle_task: Optional[asyncio.Task] = None
+
         # Prompt generation counter — monotonically increasing.
         # Incremented whenever a confirmed barge-in clears the active TTS.
         # Each _delayed_tts_finished task captures the generation at creation
@@ -1883,14 +1889,65 @@ class WebSocketCallHandler:
 
         logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
 
+        # Cancel any pending idle-finalize task; a new digit just arrived so
+        # the caller is still actively typing.  A fresh task is scheduled
+        # below if the buffer has reached the plausibly-complete threshold.
+        if self._dtmf_idle_task and not self._dtmf_idle_task.done():
+            self._dtmf_idle_task.cancel()
+            self._dtmf_idle_task = None
+
         if len(buf) >= 11:
             # Full UK number collected via keypad (min 11 digits) — push as
-            # synthetic transcript.  10-digit buffers are incomplete (BUG 5).
+            # synthetic transcript immediately.
             complete = buf[:11]
             self.session["phone_dtmf_buffer"]   = ""
             self.session["phone_awaiting_dtmf"] = False
             logger.info("[ms_conn] DTMF buffer complete → synthetic transcript %r", complete)
             await self.transcript_queue.put(complete)
+        elif len(buf) >= 10:
+            # Plausibly complete (UK 10-digit without leading 0).  Wait a short
+            # idle window for further digits; if none arrive, finalize.
+            self._dtmf_idle_task = asyncio.create_task(
+                self._dtmf_idle_finalize(buf), name="ms_dtmf_idle_finalize"
+            )
+
+    async def _dtmf_idle_finalize(self, expected_buf: str) -> None:
+        """
+        Finalize the keypad buffer after a short idle window when the caller
+        has typed enough digits to plausibly complete a number but stopped.
+
+        Cancelled by _handle_dtmf whenever a new digit arrives.  Only fires
+        if the buffer is unchanged and still holds the same digits.
+        """
+        _KEYPAD_IDLE_FINALIZE_SEC = 3.5
+        try:
+            await asyncio.sleep(_KEYPAD_IDLE_FINALIZE_SEC)
+        except asyncio.CancelledError:
+            return
+        if not self.session:
+            return
+        buf = self.session.get("phone_dtmf_buffer", "")
+        if buf != expected_buf:
+            # Another digit arrived during the sleep window (race) — newer
+            # task will handle finalization.
+            return
+        if self.session.get("state") not in (
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE",
+            "RETURNING_PLAN_COLLECT_PHONE",
+        ) and not self.session.get("rc_kp_phone_pending"):
+            return
+        if len(buf) < 10:
+            return
+        # Pad 10-digit buffer with leading 0 so the flow gate's 11-digit
+        # threshold accepts it; otherwise truncate to 11.
+        complete = ("0" + buf) if len(buf) == 10 else buf[:11]
+        self.session["phone_dtmf_buffer"]   = ""
+        self.session["phone_awaiting_dtmf"] = False
+        logger.info(
+            "[ms_conn] DTMF idle-finalize after %.1fs → synthetic transcript %r",
+            _KEYPAD_IDLE_FINALIZE_SEC, complete,
+        )
+        await self.transcript_queue.put(complete)
 
     async def _handle_start(self, msg: Dict[str, Any]) -> None:
         """
