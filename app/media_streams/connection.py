@@ -1109,6 +1109,12 @@ class SilenceHandler:
                 phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
                 phrase = _prefix + " — please say Alcester or Redditch."
+                # Count this watchdog re-ask as a retry so the next unresolvable
+                # speech input goes straight to DTMF instead of another voice retry.
+                if _sess is not None:
+                    _sess["location_retry_count"] = max(
+                        1, _sess.get("location_retry_count", 0)
+                    )
             elif _state in (
                 "COLLECT_NAME", "COLLECT_NAME_RETURNING",
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
