@@ -14255,6 +14255,88 @@ class FlowEngine:
                 text[:80],
             )
 
+        # ── Narrow service-question guard (companion to _faq_first_guard) ──
+        # The question-form test above is conservative: phrases like
+        # "i saw on your website you offered acupuncture and i want to know if
+        # they're big and if it's painful" do not contain a _QUESTION_LEADS
+        # token and do not end with "?", so _faq_first_guard stays False.
+        # booking_priority_p then matches "painful" and returns booking.
+        #
+        # This companion guard fires ONLY when all three conditions hold:
+        #   (1) the utterance mentions a recognised service (acupuncture,
+        #       shockwave, laser, pilates, massage, biomechanics, physio,
+        #       physiotherapy);
+        #   (2) the utterance contains information-seeking / concern language
+        #       (i saw, i want to know, i'm scared, i'm nervous, can you tell
+        #       me, how does it work, etc.);
+        #   (3) NO strong appointment-action verb is present (book, booking,
+        #       appointment, schedule, reschedule, cancel, come in).
+        #
+        # Generic symptom words (pain, painful, hurt, sore, ache) are NOT
+        # treated as booking signals for this guard — they are legitimate
+        # content words inside a service-information question.
+        _SERVICE_MENTION_KEYWORDS = (
+            "acupuncture", "shockwave", "laser", "pilates",
+            "sports massage", "massage",
+            "biomechanical", "biomechanics",
+            "physio", "physiotherapy", "physiotherapist",
+        )
+        _has_service_mention = any(
+            k in text for k in _SERVICE_MENTION_KEYWORDS
+        )
+        _INFO_SEEKING_PHRASES = (
+            "i saw on your website", "saw on your website", "on your website",
+            "i saw on the website", "saw on the website",
+            "i want to know", "i wanted to know", "want to know",
+            "i'd like to know", "id like to know", "would like to know",
+            "can you tell me", "could you tell me", "tell me about",
+            "i was wondering", "just wondering", "wondering if",
+            "i'm scared", "im scared", "scared of",
+            "i'm nervous", "im nervous", "nervous about",
+            "i'm anxious", "im anxious", "anxious about",
+            "i'm worried", "im worried", "worried about",
+            "how does it work", "how does that work", "how does acupuncture",
+            "how does shockwave", "how does laser",
+            "what happens", "what is it", "what is acupuncture",
+            "what does it feel", "what does it involve",
+            "will it hurt", "is it painful", "is it safe",
+            "are the needles", "are they big", "are they small",
+            "how big", "how long", "how often", "how many sessions",
+            "side effects", "any side",
+        )
+        _has_info_seeking = any(
+            p in text for p in _INFO_SEEKING_PHRASES
+        )
+        # Narrow strong-booking list — only strict appointment-action verbs.
+        # Does NOT include symptom/problem words like pain/hurt/sore.
+        _STRONG_BOOK_VERBS = (
+            "book", "booking", "booked",
+            "appointment", "appointments",
+            "schedule", "scheduled", "scheduling",
+            "reschedule", "rescheduled",
+            "cancel", "cancelled", "canceling",
+            "come in", "coming in", "come and see",
+        )
+        _has_strong_book_verb = any(
+            v in text for v in _STRONG_BOOK_VERBS
+        )
+        _service_question_guard = (
+            _has_service_mention
+            and _has_info_seeking
+            and not _has_strong_book_verb
+        )
+        if _service_question_guard:
+            logger.info(
+                "[ms_flow] first_turn_guard: service_question_beats_booking — "
+                "service_mention=%s info_seeking=%s strong_book_verb=%s text=%r",
+                _has_service_mention, _has_info_seeking, _has_strong_book_verb,
+                text[:80],
+            )
+            # Fold into _faq_first_guard so all four booking heuristics
+            # (body+symptom, body-alone, booking_priority_p, booking-rescue)
+            # are suppressed on this turn without duplicating conditions.
+            _faq_first_guard = True
+
         # ABSOLUTE TOP-PRIORITY: body-part + symptom compound detection.
         # Catches phrases like "my shoulder's been killing me" or "recurring ankle
         # problem" that may not have an explicit symptom keyword but combine a body
