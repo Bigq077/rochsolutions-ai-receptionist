@@ -664,6 +664,26 @@ class SilenceHandler:
             _session = self._get_session() if self._get_session else None
             self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
 
+            # Stale pause clearance: if caller_pause_active was set for a prior
+            # question generation, a genuinely new flow question means the flow
+            # has advanced past the pause context. Clear it so the watchdog can
+            # re-ask on silence. DTMF-collect states don't invoke on_question_asked
+            # mid-digit entry, so keypad flows are unaffected.
+            if _session and _session.get("caller_pause_active"):
+                _pause_q_gen = _session.get("caller_pause_q_gen")
+                # Only clear when pause is tagged to a DIFFERENT (older) question
+                # generation. A pause with no tag yet (None) is being freshly set
+                # in the same event and must not be prematurely cleared.
+                if _pause_q_gen is not None and _pause_q_gen != self._q_gen:
+                    _session["caller_pause_active"] = False
+                    _session["pause_silence_total"] = 0.0
+                    _session.pop("caller_pause_q_gen", None)
+                    _session.pop("caller_pause_state", None)
+                    logger.info(
+                        "[ms_pause] cleared: reason=new_question_asked old_q_gen=%s new_q_gen=%d",
+                        _pause_q_gen, self._q_gen,
+                    )
+
     def on_tts_started(self) -> None:
         """Track TTS activity and cancel silence/recovery timers before Susie speaks.
 
@@ -958,8 +978,20 @@ class SilenceHandler:
 
             _sess = self._get_session() if self._get_session else {}
             if (_sess or {}).get("caller_pause_active"):
-                logger.info("[ms_watchdog] WATCHDOG_ABORT q_gen=%d reason=pause_mode", q_gen)
-                return
+                # Only honor pause when it is bound to the current question generation.
+                # A pause tied to an older q_gen is stale (flow has advanced past the
+                # pause context) and must not suppress re-asks for the fresh question.
+                _pause_q_gen = (_sess or {}).get("caller_pause_q_gen")
+                if _pause_q_gen is None or _pause_q_gen == self._q_gen:
+                    logger.info(
+                        "[ms_watchdog] pause_mode active and valid -> aborting re-ask q_gen=%d",
+                        q_gen,
+                    )
+                    return
+                logger.info(
+                    "[ms_watchdog] pause_mode stale for q_gen=%d (pause_q_gen=%s current=%d) -> ignoring",
+                    q_gen, _pause_q_gen, self._q_gen,
+                )
 
             # ── Phase 3: Soft guards (wait 0.5 s, then re-evaluate) ──────
             # TTS playing: Susie is speaking — wait; last_engagement_at is NOT
@@ -2284,18 +2316,30 @@ class WebSocketCallHandler:
                         self.session["caller_pause_active"] = True
                         self.session["pause_silence_total"] = 0.0
                         await self.tts_text_queue.put("Of course, take your time.")
-                        await save_session(self.call_sid, self.session)
-                        logger.info("[ms_conn] caller pause detected — entering pause mode")
                         # Don't pass to state machine; silence timer will use 45s window
-                        # We still need to re-arm the silence handler after speaking
+                        # We still need to re-arm the silence handler after speaking.
+                        # NOTE: on_question_asked bumps _q_gen, so bind caller_pause_q_gen
+                        # to the POST-rearm value (otherwise the stale-pause guard in
+                        # on_question_asked would immediately clear the pause we just set).
                         self._silence_handler.on_question_asked(self.session.get("last_question", ""))
+                        _pause_q_gen = getattr(self._silence_handler, "_q_gen", 0)
+                        _pause_state = self.session.get("state", "")
+                        self.session["caller_pause_q_gen"] = _pause_q_gen
+                        self.session["caller_pause_state"] = _pause_state
+                        await save_session(self.call_sid, self.session)
+                        logger.info(
+                            "[ms_pause] set: reason=caller_requested_pause state=%s q_gen=%d",
+                            _pause_state, _pause_q_gen,
+                        )
                         # Fall through to finally: clears _llm_busy
                     else:
                         # Clear pause mode if caller resumes with a substantive utterance
                         if _is_substantive and self.session.get("caller_pause_active"):
                             self.session["caller_pause_active"] = False
                             self.session["pause_silence_total"] = 0.0
-                            logger.info("[ms_conn] caller_pause_active cleared — resuming flow")
+                            self.session.pop("caller_pause_q_gen", None)
+                            self.session.pop("caller_pause_state", None)
+                            logger.info("[ms_pause] cleared: reason=caller_substantive_utterance")
 
                     # Record utterance for tone detection (first two turns lock the tone)
                     if not _is_pause:
