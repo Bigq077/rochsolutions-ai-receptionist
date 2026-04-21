@@ -2465,6 +2465,41 @@ class WebSocketCallHandler:
                                 self.session.get("state", "default")
                             )
                             self._silence_handler.on_question_asked(_last_q)
+                            # ── Stale-lifecycle repair: force-refresh canonical question ──
+                            # on_question_asked() routes through the heuristic
+                            # _is_question_worth_storing filter, which rejects ANY text
+                            # containing "sorry, i didn't quite catch" — a phrase that
+                            # legitimately prefixes every flow-emitted retry / DTMF
+                            # prompt (ASK_LOCATION tier-2, COLLECT_PHONE keypad fallback,
+                            # PRESENT_DAYS re-anchor, etc.).  Without this refresh, the
+                            # silence handler's last_question and _q_gen remained pinned
+                            # to the ORIGINAL question, so the no-input watchdog would
+                            # later re-ask the stale original wording instead of the
+                            # active tier's wording, and stale-generation guards could
+                            # not retire the prior watchdog cleanly.
+                            #
+                            # Session["last_question"] is authoritative (flow owns it),
+                            # so when it diverges from the handler's stored text we
+                            # unconditionally overwrite, bump _q_gen, reset re-ask
+                            # counters, and restart the timer.  The restart cancels
+                            # any stale W1 task and re-arms the watchdog bound to the
+                            # new _q_gen; the previous watchdog (if still live) will
+                            # abort at its next iteration via the existing stale-q_gen
+                            # guard.  No-op when session and handler already agree.
+                            _lq_handler = self._silence_handler.last_question
+                            if _last_q and _last_q != _lq_handler:
+                                self._silence_handler.last_question         = _last_q
+                                self._silence_handler.reask_count           = 0
+                                self._silence_handler._no_input_reask_count = 0
+                                self._silence_handler._last_question_set_at = time.time()
+                                self._silence_handler._q_gen               += 1
+                                self._silence_handler._restart_timer()
+                                logger.info(
+                                    "[ms_conn] last_question force-refreshed "
+                                    "(filter bypass) q_gen=%d new=%r old=%r",
+                                    self._silence_handler._q_gen,
+                                    _last_q[:70], (_lq_handler or "")[:70],
+                                )
                             # ── No-dead-state guarantee ──────────────────────────
                             # If the flow consumed the transcript without emitting
                             # TTS (filler suppression, fragment_suppressed, any
