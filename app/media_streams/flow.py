@@ -16956,6 +16956,30 @@ class FlowEngine:
         }
         if intent == "faq_services":
             _svc_text = transcript.strip().lower()
+            # ── Treatment-suitability / best-starting-point: priority over all
+            # other faq_services branches. Callers asking "would X work for Y",
+            # "should I book X or something else", "what appointment is best
+            # for Y" want operational guidance — not a service description and
+            # not a reassurance answer carried forward from an earlier sub-topic.
+            from app.media_streams.service_fit_policy import (
+                is_treatment_suitability_question as _mfi_is_ts,
+                best_starting_point_response      as _mfi_best_start,
+            )
+            _mfi_ts_handled = False
+            if _mfi_is_ts(_svc_text):
+                _svc_answer = _mfi_best_start(_svc_text)
+                _mfi_ts_svc_key = next(
+                    (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _svc_text),
+                    None,
+                )
+                if _mfi_ts_svc_key:
+                    self.session["_faq_active_service"] = _mfi_ts_svc_key
+                logger.info(
+                    "[ms_flow] _handle_mid_flow_interrupt: services treatment_suitability "
+                    "topic=%s -> best_starting_point",
+                    _mfi_ts_svc_key or self.session.get("_faq_active_service") or "generic",
+                )
+                _mfi_ts_handled = True
             # ── Needle-fear / anxiety: reassurance-first — checked before service detection ──
             # "I'm scared of needles", "does it hurt", etc. need a different answer
             # than a generic acupuncture service description.
@@ -16977,7 +17001,9 @@ class FlowEngine:
                 or self.session.get("_faq_active_service") == "acupuncture"
                 or _mbf_ctx_hmfi.get("topic") == "acupuncture"
             )
-            if _acu_topic_locked and any(p in _svc_text for p in _NEEDLE_FEAR_SIGNALS):
+            if _mfi_ts_handled:
+                pass  # _svc_answer already set by treatment-suitability branch
+            elif _acu_topic_locked and any(p in _svc_text for p in _NEEDLE_FEAR_SIGNALS):
                 _svc_answer = _FAQ_ACUPUNCTURE_FEAR_ANSWER
                 self.session["_faq_active_service"] = "acupuncture"
                 logger.info("[ms_flow] _handle_mid_flow_interrupt: acupuncture fear fast path")
