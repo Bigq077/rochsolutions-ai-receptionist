@@ -1161,13 +1161,15 @@ class SilenceHandler:
             if _state in ("GREETING", "DETECT_INTENT", ""):
                 phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
-                phrase = _prefix + " — please say the Alcester clinic or the Redditch clinic."
-                # Count this watchdog re-ask as a retry so the next unresolvable
-                # speech input goes straight to DTMF instead of another voice retry.
-                if _sess is not None:
-                    _sess["location_retry_count"] = max(
-                        1, _sess.get("location_retry_count", 0)
-                    )
+                # Approved-copy watchdog: replay the exact sentence that is
+                # currently active for this retry tier.  Never invent or
+                # shorten ASK_LOCATION wording.  `last_question` is set by
+                # flow.py to the approved copy for the active tier
+                # (initial prompt, first retry, or DTMF fallback).
+                _lq_al = (_sess or {}).get("last_question", "")
+                phrase = _lq_al or (
+                    "Are you looking to book at our Alcester or Redditch clinic?"
+                )
             elif _state in (
                 "COLLECT_NAME", "COLLECT_NAME_RETURNING",
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
@@ -1477,11 +1479,13 @@ class SilenceHandler:
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
         )
-        # Bug D: ASK_LOCATION silence phrase already contains a full
-        # re-ask ("Which of our locations... Alcester or Redditch?").
-        # Appending last_question here produces a double-ask.  Suppress.
+        # Approved-copy replay for ASK_LOCATION: replay the exact sentence
+        # that is currently active for the retry tier (stored in last_question
+        # by flow.py).  Never invent or shorten ASK_LOCATION wording.
         if self.current_state == "ASK_LOCATION":
-            _reask1 = phrase1
+            _reask1 = q or (
+                "Are you looking to book at our Alcester or Redditch clinic?"
+            )
         else:
             _reask1 = phrase1 + (" " + q if q else "")
 

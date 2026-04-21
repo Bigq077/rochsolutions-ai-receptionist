@@ -5505,7 +5505,7 @@ class FlowEngine:
                     self.session["_faq_loc_retry_count"] = _gp_retry_n + 1
                     _gp_reask = (
                         "Sorry, I didn't quite catch that — "
-                        "can you please say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Alcester clinic or the Redditch clinic?"
                     )
                     await self._tts.put(_gp_reask)
                     self.session["last_question"] = _gp_reask
@@ -5527,7 +5527,7 @@ class FlowEngine:
                     self.session["_faq_loc_retry_count"] = _gp_retry_n + 1
                     _gp_reask = (
                         "Sorry, I didn't quite catch that — "
-                        "can you please say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Alcester clinic or the Redditch clinic?"
                     )
                     await self._tts.put(_gp_reask)
                     self.session["last_question"] = _gp_reask
@@ -6365,7 +6365,7 @@ class FlowEngine:
                     # Second ask: polite re-ask with explicit names
                     _retry2_q = (
                         "Sorry, I didn't quite catch that — "
-                        "can you please say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Alcester clinic or the Redditch clinic?"
                     )
                     self.session["location_retry_count"] = 1
                     await self._tts.put(_retry2_q)
@@ -12650,7 +12650,10 @@ class FlowEngine:
                         "[ms_flow] FAQ_BOOKING_OFFER: location pending, no clinic in %r — re-asking",
                         text[:40],
                     )
-                    await self._tts.put("Sorry — did you say Alcester or Redditch?")
+                    await self._tts.put(
+                        "Sorry, I didn't quite catch that — "
+                        "could you say the Alcester clinic or the Redditch clinic?"
+                    )
                     return
                 else:
                     # Global block handles all pending FAQ clarification before reaching
@@ -12660,7 +12663,10 @@ class FlowEngine:
                         "[ms_flow] FAQ_BOOKING_OFFER: pending loc not consumed by global block %r",
                         text[:40],
                     )
-                    await self._tts.put("Sorry \u2014 was that for Alcester or Redditch?")
+                    await self._tts.put(
+                        "Sorry, I didn't quite catch that — "
+                        "could you say the Alcester clinic or the Redditch clinic?"
+                    )
                     return
 
             # Weak acknowledgements alone ("yeah", "okay", "understood" etc.) must NOT
@@ -13173,7 +13179,10 @@ class FlowEngine:
                         "[ms_flow] GENERAL_BOOKING_OFFER: location pending, no clinic in %r — re-asking",
                         text[:40],
                     )
-                    await self._tts.put("Sorry — did you say Alcester or Redditch?")
+                    await self._tts.put(
+                        "Sorry, I didn't quite catch that — "
+                        "could you say the Alcester clinic or the Redditch clinic?"
+                    )
                     return
                 else:
                     # Global block handles all pending FAQ clarification before reaching
@@ -13182,7 +13191,10 @@ class FlowEngine:
                         "[ms_flow] GENERAL_BOOKING_OFFER: pending loc not consumed by global block %r",
                         text[:40],
                     )
-                    await self._tts.put("Sorry \u2014 was that for Alcester or Redditch?")
+                    await self._tts.put(
+                        "Sorry, I didn't quite catch that — "
+                        "could you say the Alcester clinic or the Redditch clinic?"
+                    )
                     return
 
             # Pure acknowledgements ("okay", "okay perfect", "alright", "that's understood")
@@ -13860,7 +13872,7 @@ class FlowEngine:
                             self.session["_recovery_loc_retry_count"] = _rl_retry_n + 1
                             _reask = (
                                 "Sorry, I didn't quite catch that — "
-                                "can you please say the Alcester clinic or the Redditch clinic?"
+                                "could you say the Alcester clinic or the Redditch clinic?"
                             )
                             _flush_tts()
                             await self._tts.put(_reask)
@@ -13884,7 +13896,7 @@ class FlowEngine:
                             self.session["_recovery_loc_retry_count"] = _rl_retry_n + 1
                             _reask = (
                                 "Sorry, I didn't quite catch that — "
-                                "can you please say the Alcester clinic or the Redditch clinic?"
+                                "could you say the Alcester clinic or the Redditch clinic?"
                             )
                             _flush_tts()
                             await self._tts.put(_reask)

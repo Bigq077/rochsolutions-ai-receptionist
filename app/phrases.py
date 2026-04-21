@@ -74,7 +74,7 @@ P: dict = {
     ),
 
     # ── Location ───────────────────────────────────────────────────────────
-    "ask_location":             "Are you calling about our Alcester or Redditch clinic?",
+    "ask_location":             "Are you looking to book at our Alcester or Redditch clinic?",
     "ask_location_full":        "Just to make sure I get you to the right team — Alcester or Redditch?",
     "location_complaint_bridge":(
         "Got it — we can certainly look into that for you. "
@@ -255,7 +255,7 @@ SILENCE_RESPONSES: dict = {
     "ask_reason":         "Take your time telling me.",
     # BUG 1 fix: GREETING gets a booking-intent re-ask; ASK_LOCATION gets a location re-ask
     "greeting":           "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?",
-    "ask_location":       "Sorry, I didn't catch that. Which of our locations were you looking for — Alcester or Redditch?",
+    "ask_location":       "Sorry, I didn't quite catch that — could you say the Alcester clinic or the Redditch clinic?",
     "confirm_read_back":  "Just let me know if any of those details need changing.",
     # Long list / long explanation states — encourage patient thinking
     "present_days":       "No rush — take your time picking a day.",
