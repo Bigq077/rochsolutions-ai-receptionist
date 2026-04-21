@@ -5180,6 +5180,59 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── Service-fit disallow latch ──────────────────────────────────────
+        # After the clinic has said it cannot see this patient (paediatric /
+        # outside policy), polite closeouts must NEVER fall into ANSWER_GENERAL
+        # — that path has previously produced contradictory booking offers
+        # ("shall we get an appointment booked for your son's ankle?").
+        # Narrow: intercept only polite thank-yous / closeouts. A clear topic
+        # switch ("do you treat adults?", "can you give me a number?") clears
+        # the latch so normal routing resumes.
+        if self.session.get("_svc_fit_disallow_active"):
+            _D_CLOSEOUT_SIGS = (
+                "thanks", "thank you", "thankyou", "cheers",
+                "appreciate", "no worries", "no problem",
+                "take care", "have a good", "have a nice",
+                "bye", "goodbye", "that's okay", "thats okay",
+                "that's fine", "thats fine", "okay then", "ok then",
+                "alright then", "fair enough", "that's alright", "thats alright",
+                "letting me know", "understood", "got it",
+            )
+            _D_TOPIC_SWITCH_SIGS = (
+                "what about", "do you", "can you", "could you",
+                "how much", "how long", "where", "when", "phone",
+                "number", "adult", "adults", "myself", "for me", "instead",
+                "different", "another",
+            )
+            _d_text = text.strip()
+            _d_has_closeout = _d_text and any(s in _d_text for s in _D_CLOSEOUT_SIGS)
+            _d_has_switch   = _d_text and any(s in _d_text for s in _D_TOPIC_SWITCH_SIGS)
+            if _d_has_closeout and not _d_has_switch:
+                logger.info(
+                    "[ms_flow] svc_fit_disallow: polite_closeout %r -> bounded closeout; "
+                    "booking offer suppressed",
+                    _d_text[:60],
+                )
+                await self._tts.put(
+                    "You\u2019re very welcome \u2014 I hope you find the right support. "
+                    "Take care."
+                )
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant",
+                     "content": "You\u2019re very welcome — I hope you find the right support. Take care."}
+                )
+                self.session["call_outcome_logged"] = "policy_disallow"
+                if self._active_flow:
+                    self.session["flow_step"] = len(self._active_flow)
+                self.session.pop("_svc_fit_disallow_active", None)
+                return
+            if _d_has_switch:
+                logger.info(
+                    "[ms_flow] svc_fit_disallow: topic_switch %r -> latch cleared",
+                    _d_text[:60],
+                )
+                self.session.pop("_svc_fit_disallow_active", None)
+
         # ── Pending FAQ-intro combine (Bug B) ───────────────────────────────
         # A previous turn held an incomplete FAQ intro (e.g. "I saw on your
         # website where you offer acupuncture") waiting for the concern to
@@ -7947,6 +8000,8 @@ class FlowEngine:
                         self.session["_last_handled_by"] = (
                             "first_turn_policy_gate_disallow_after_age"
                         )
+                        # Latch: subsequent polite closeouts must not reopen booking.
+                        self.session["_svc_fit_disallow_active"] = True
                         logger.info(
                             "[ms_flow] first_turn_policy_gate: age=%s "
                             "clinic_policy=disallow_children -> SERVICE_FIT_DISALLOW",
@@ -8491,6 +8546,8 @@ class FlowEngine:
                             {"role": "assistant", "content": _sfp_result.response_text}
                         )
                         self.session["_last_handled_by"] = "service_fit_policy_disallow"
+                        # Latch: subsequent polite closeouts must not reopen booking.
+                        self.session["_svc_fit_disallow_active"] = True
                         logger.info(
                             "service_fit_policy: response_template=policy_disallow "
                             "child=%s age=%s",
