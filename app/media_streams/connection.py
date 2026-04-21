@@ -1477,7 +1477,13 @@ class SilenceHandler:
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
         )
-        _reask1 = phrase1 + (" " + q if q else "")
+        # Bug D: ASK_LOCATION silence phrase already contains a full
+        # re-ask ("Which of our locations... Alcester or Redditch?").
+        # Appending last_question here produces a double-ask.  Suppress.
+        if self.current_state == "ASK_LOCATION":
+            _reask1 = phrase1
+        else:
+            _reask1 = phrase1 + (" " + q if q else "")
 
         # Name-capture structured recovery: replace generic phrase+last_question
         # with a substate-aware scaffold prompt. name_fragment is set (in session)

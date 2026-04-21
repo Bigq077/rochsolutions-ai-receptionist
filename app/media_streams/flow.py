@@ -658,6 +658,81 @@ _FAQ_TOPIC_CONTINUATION_SIGS: tuple[str, ...] = (
 )
 
 
+# ── Incomplete FAQ-intro detector (Bug B) ────────────────────────────────────
+# Caller starts "I saw on your website where you offer acupuncture" and pauses.
+# Endpointing fires, STT finalises the chunk, and the system would answer the
+# FAQ before the caller has expressed the real concern
+# ("...but I'm scared of needles, what do you think").  This detector holds
+# the turn: we defer FAQ answering by storing the intro and combining it
+# with the next utterance.
+_FAQ_INTRO_OPENERS: tuple[str, ...] = (
+    "i saw on your website", "saw on your website",
+    "i saw on the website", "saw on the website",
+    "on your website you", "your website says",
+    "i saw you offer", "saw you offer",
+    "i saw that you offer", "saw that you offer",
+    "i saw you do", "saw you do",
+    "i noticed you offer", "noticed you offer",
+    "i noticed you do", "noticed you do",
+    "i read that you", "read that you",
+    "i heard you offer", "heard you offer",
+    "i heard you do", "heard you do",
+    "i see that you offer", "see that you offer",
+)
+
+_FAQ_INTRO_COMPLETE_SIGS: tuple[str, ...] = (
+    "?",
+    "scared", "nervous", "anxious", "worried", "afraid", "fear",
+    "painful", "hurt", "hurts", "hurting",
+    "what do you think", "would that", "would it",
+    "is it", "is that", "will it", "will that",
+    "does it", "does that", "how does", "how long", "how much", "how many",
+    "side effect", "side effects", "any side",
+    "for my", "for a", "for the",
+    "about my", "about a", "about the",
+    "can you", "could you", "should i",
+    "needle", "needles",
+    "bad sign", "a problem", "an issue", "any good", "worth it",
+    "safe",
+)
+
+_FAQ_INTRO_TAIL_FILLERS: frozenset = frozenset({
+    "then", "too", "and", "also", "actually", "okay", "ok", "so",
+})
+
+
+def _is_incomplete_faq_intro(text: str) -> bool:
+    """True when the utterance looks like an FAQ lead-in that mentions a
+    service but has not yet landed the concern or question.  Kept narrow
+    by requiring an explicit opener + service noun + absence of any
+    completion signal AND a trailing service/filler token."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if len(t.split()) > 16:
+        return False
+    if not any(op in t for op in _FAQ_INTRO_OPENERS):
+        return False
+    if not any(s in t for s in _BOOKING_FAQ_SERVICE_TERMS):
+        return False
+    if any(sig in t for sig in _FAQ_INTRO_COMPLETE_SIGS):
+        return False
+    _svc_last_words: set[str] = {s.split()[-1] for s in _BOOKING_FAQ_SERVICE_TERMS}
+    _tok = [w.strip(".,!?;:") for w in t.split()]
+    _tok = [w for w in _tok if w]
+    if not _tok:
+        return False
+    if _tok[-1] in _svc_last_words:
+        return True
+    if (
+        len(_tok) >= 2
+        and _tok[-2] in _svc_last_words
+        and _tok[-1] in _FAQ_INTRO_TAIL_FILLERS
+    ):
+        return True
+    return False
+
+
 def _is_faq_ellipsis_followup(text: str, ctx_active: bool = False) -> bool:
     """True when the utterance is an ellipsis-style follow-up that
     plausibly continues a prior FAQ thread (no service noun repeated, no
@@ -833,9 +908,9 @@ def _is_service_rejection(text_lower: str) -> bool:
 # topic names that line up with _mid_booking_faq_ctx["topic"].
 _SERVICE_SWITCH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("physiotherapy", ("physiotherapy", "physio assessment",
-                       "physio appointment", "physio ")),
+                       "physio appointment", "physio")),
     ("shockwave", ("shockwave",)),
-    ("laser", ("laser therapy", "laser treatment", "laser ")),
+    ("laser", ("laser therapy", "laser treatment", "laser")),
     ("pilates", ("pilates",)),
     ("massage", ("sports massage", "deep tissue", "massage")),
     ("biomechanics", ("biomechanical", "biomechanics")),
@@ -844,12 +919,15 @@ _SERVICE_SWITCH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 _SERVICE_SWITCH_VERB_SIGS: tuple[str, ...] = (
     "instead",
-    "rather go with", "rather do", "rather have",
+    "rather go with", "rather do", "rather have", "rather book",
+    "i'd rather do", "id rather do",
     "i'll go with", "ill go with",
     "i'm going to go with", "im going to go with",
     "going to go with",
     "want to go with", "wanna go with",
     "let's do", "lets do",
+    "let's just do", "lets just do",
+    "just do",
     "let's go with", "lets go with",
     "let's try", "lets try",
     "start with", "start off with",
@@ -4784,6 +4862,21 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── Pending FAQ-intro combine (Bug B) ───────────────────────────────
+        # A previous turn held an incomplete FAQ intro (e.g. "I saw on your
+        # website where you offer acupuncture") waiting for the concern to
+        # land.  Prepend it to this utterance so downstream classification
+        # sees the full thought.  Only applies at COLLECT_REASON where the
+        # hold was set.
+        _pending_intro = self.session.pop("_faq_pending_intro", None)
+        if _pending_intro and step and step["state"] == "COLLECT_REASON":
+            transcript = (_pending_intro.rstrip() + " " + transcript.strip()).strip()
+            text = transcript.lower()
+            logger.info(
+                "[ms_flow] COLLECT_REASON: faq_intro_combined text=%r",
+                transcript[:100],
+            )
+
         # ── Prefix-fallback correction window ────────────────────────────────────
         # Opens for exactly one turn after a low-confidence prefix_fallback
         # resolution.  If the caller says "no", "the other one", "Redditch" etc.
@@ -6217,6 +6310,35 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
+
+                # ── ASK_LOCATION-only clear-dominance bind (Bug A) ───────────────
+                # Some obvious STT variants ("you access the clinic") produce
+                # ambiguous status with pure-similarity evidence, so the bind
+                # above skips them.  When one clinic score is clearly dominant
+                # (winner ≥ 55 AND lead ≥ 30 over the loser) AND the caller has
+                # not landed a filler (already filtered above), commit the
+                # winner silently.  Scoped to ASK_LOCATION only — does NOT
+                # relax the global resolver or weaken other states.
+                if _sl_result["status"] == "ambiguous":
+                    _sl_dbg2 = _sl_result.get("debug", {})
+                    _sl_alc2 = _sl_dbg2.get("alcester_score", 0)
+                    _sl_red2 = _sl_dbg2.get("redditch_score", 0)
+                    _sl_win2  = max(_sl_alc2, _sl_red2)
+                    _sl_lose2 = min(_sl_alc2, _sl_red2)
+                    if _sl_win2 >= 55 and (_sl_win2 - _sl_lose2) >= 30:
+                        _sl_bind2 = "alcester" if _sl_alc2 >= _sl_red2 else "redditch"
+                        self.session["selected_location"] = _sl_bind2
+                        self.session["needs_location"]    = False
+                        self.session.pop("location_retry_count", None)
+                        self.session.pop("location_pending_guess", None)
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: dominance-bind "
+                            "(alc=%d red=%d margin=%d → %s) for %r",
+                            _sl_alc2, _sl_red2, _sl_win2 - _sl_lose2,
+                            _sl_bind2, text[:40],
+                        )
+                        await self.ask_current_question()
+                        return
 
                 # ── Retry ladder: escalate wording then switch to DTMF ───────────
                 # retry 0 → spoken re-ask with explicit clinic names
@@ -12314,6 +12436,23 @@ class FlowEngine:
             ):
                 _bfi_hit, _bfi_reason = _is_booking_state_faq_interrupt(text)
                 if _bfi_hit:
+                    # ── Incomplete-intro hold (Bug B) ────────────────────────
+                    # "I saw on your website where you offer acupuncture"
+                    # is a lead-in that hasn't yet landed the concern.  Hold
+                    # the turn so the caller can finish the thought; on the
+                    # next utterance the prepend at handle_transcript entry
+                    # combines it and we classify/answer on the full text.
+                    if (
+                        step["state"] == "COLLECT_REASON"
+                        and _is_incomplete_faq_intro(text)
+                    ):
+                        self.session["_faq_pending_intro"] = transcript.strip()
+                        logger.info(
+                            "[ms_flow] COLLECT_REASON: faq_intro_held "
+                            "text=%r — awaiting continuation",
+                            transcript[:80],
+                        )
+                        return
                     logger.info(
                         "[ms_flow] booking_state_faq_interrupt at=%s reason=%s "
                         "prior_intent=%s transcript=%r — upgrading to faq_services",
