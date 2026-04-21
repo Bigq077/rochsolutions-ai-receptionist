@@ -672,12 +672,20 @@ _FAQ_INTRO_OPENERS: tuple[str, ...] = (
     "i saw you offer", "saw you offer",
     "i saw that you offer", "saw that you offer",
     "i saw you do", "saw you do",
+    "i saw that you do", "saw that you do",
     "i noticed you offer", "noticed you offer",
     "i noticed you do", "noticed you do",
+    "i noticed acupuncture", "i noticed physio",
+    "i noticed shockwave", "i noticed laser",
+    "on the website",
     "i read that you", "read that you",
     "i heard you offer", "heard you offer",
     "i heard you do", "heard you do",
     "i see that you offer", "see that you offer",
+    # Bare setup lines — "you offer acupuncture", "you do acupuncture"
+    # These are often prefaces, not questions.  The detector below
+    # still requires a trailing service noun + no completion signal.
+    "you offer", "you do", "you provide", "you have",
 )
 
 _FAQ_INTRO_COMPLETE_SIGS: tuple[str, ...] = (
@@ -908,7 +916,8 @@ def _is_service_rejection(text_lower: str) -> bool:
 # topic names that line up with _mid_booking_faq_ctx["topic"].
 _SERVICE_SWITCH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("physiotherapy", ("physiotherapy", "physio assessment",
-                       "physio appointment", "physio")),
+                       "physio appointment", "physio",
+                       "initial assessment")),
     ("shockwave", ("shockwave",)),
     ("laser", ("laser therapy", "laser treatment", "laser")),
     ("pilates", ("pilates",)),
@@ -921,7 +930,11 @@ _SERVICE_SWITCH_VERB_SIGS: tuple[str, ...] = (
     "instead",
     "rather go with", "rather do", "rather have", "rather book",
     "i'd rather do", "id rather do",
+    "i'd rather book", "id rather book",
+    "i'd rather have", "id rather have",
     "i'll go with", "ill go with",
+    "i'll probably go with", "ill probably go with",
+    "probably go with",
     "i'm going to go with", "im going to go with",
     "going to go with",
     "want to go with", "wanna go with",
@@ -931,9 +944,13 @@ _SERVICE_SWITCH_VERB_SIGS: tuple[str, ...] = (
     "let's go with", "lets go with",
     "let's try", "lets try",
     "start with", "start off with",
+    "start with a", "start with an", "start with the",
+    "start off with a", "start off with an",
+    "i'll start with", "ill start with",
     "go ahead with",
     "book a", "book an", "book the",
     "i'll do", "ill do",
+    "go with a", "go with an", "go with the",
 )
 
 
@@ -12295,35 +12312,72 @@ class FlowEngine:
                         "[ms_flow] mid_booking_faq_context_cleared "
                         "reason=service_switch text=%r", text[:80],
                     )
-                # ── Priority 2: explicit service rejection / decline.  Must
-                #   NOT be stored as the booking reason.  Re-ask so caller
-                #   can state what they'd like to book for instead.
+                # ── Priority 2: explicit service rejection / decline.
+                #   Two sub-cases:
+                #     (a) Same utterance also names a replacement service →
+                #         DO NOT re-ask; let normal reason capture consume
+                #         the whole utterance so the caller is not asked
+                #         "what would you like to book for then?" after
+                #         they already said.
+                #     (b) Rejection with no replacement → clean re-ask.
                 elif _is_service_rejection(_t_mbf):
+                    _reject_replacement = None
+                    for _rsvc, _raliases in _SERVICE_SWITCH_ALIASES:
+                        if _rsvc == (_mbf_current_topic or "").lower():
+                            continue
+                        if any(_a in _t_mbf for _a in _raliases):
+                            _reject_replacement = _rsvc
+                            break
                     self.session.pop("_mid_booking_faq_ctx", None)
                     self.session.pop("_faq_active_service", None)
-                    self.session.pop("_partial_reason", None)
                     _mbf_resolved = True
                     _mid_intent = "booking"
-                    logger.info(
-                        "[ms_flow] mid_booking_faq_service_rejected "
-                        "topic=%s text=%r",
-                        _mbf_current_topic, text[:80],
-                    )
-                    logger.info(
-                        "[ms_flow] mid_booking_faq_context_cleared "
-                        "reason=service_rejected text=%r", text[:80],
-                    )
-                    _reject_phrase = (
-                        "No problem — what would you like to book for then?"
-                    )
-                    await self._tts.put(_reject_phrase)
-                    self.session["last_question"] = _reject_phrase
-                    self.session.setdefault(
-                        "conversation_history", []
-                    ).append(
-                        {"role": "assistant", "content": _reject_phrase}
-                    )
-                    return
+                    if _reject_replacement:
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_service_rejected_with_replacement "
+                            "rejected=%s replacement=%s text=%r",
+                            _mbf_current_topic, _reject_replacement, text[:80],
+                        )
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_context_cleared "
+                            "reason=rejected_with_replacement text=%r",
+                            text[:80],
+                        )
+                        # Fall through — normal COLLECT_REASON extraction
+                        # captures the utterance as the booking reason and
+                        # advances.  No re-ask.
+                    else:
+                        self.session.pop("_partial_reason", None)
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_service_rejected "
+                            "topic=%s text=%r",
+                            _mbf_current_topic, text[:80],
+                        )
+                        logger.info(
+                            "[ms_flow] mid_booking_faq_context_cleared "
+                            "reason=service_rejected text=%r", text[:80],
+                        )
+                        # Speak a friendly one-liner but store a clean
+                        # stand-alone last_question so the watchdog replay
+                        # doesn't stack prefixes ("Sorry, I didn't catch
+                        # that. No problem — what...").
+                        _reject_spoken = (
+                            "No problem — what would you like to book for then?"
+                        )
+                        _reject_lq = "What would you like to book for then?"
+                        await self._tts.put(_reject_spoken)
+                        self.session["last_question"] = _reject_lq
+                        self.session.setdefault(
+                            "conversation_history", []
+                        ).append(
+                            {"role": "assistant", "content": _reject_spoken}
+                        )
+                        logger.info(
+                            "[ms_flow] COLLECT_REASON: clean_reject_reask "
+                            "spoken=%r last_question=%r",
+                            _reject_spoken, _reject_lq,
+                        )
+                        return
                 elif _is_booking_resume_signal(text):
                     self.session.pop("_mid_booking_faq_ctx", None)
                     _mbf_resolved = True
@@ -14720,6 +14774,15 @@ class FlowEngine:
                 "tendon", "ligament", "muscle", "nerve", "joint",
                 "problem", "issue", "trouble", "condition",
                 "physiotherapy", "physio", "treatment", "rehab",
+                # Context-valid service/appointment-type tokens — when the
+                # caller has already navigated the mid-booking FAQ and gives
+                # a short fragment like "assessment" or "initial assessment",
+                # the preceding context (flow state + FAQ history) makes
+                # these unambiguously a booking-reason.  Accept instead of
+                # kicking into the too-short/too-vague re-ask.
+                "assessment", "initial",
+                "acupuncture", "shockwave", "laser", "massage", "pilates",
+                "biomechanical", "biomechanics",
             )
             _reason_lower = answer.strip().lower()
             _has_content  = any(w in _reason_lower for w in _REASON_FLOOR_WORDS)
@@ -16996,6 +17059,12 @@ class FlowEngine:
             # never speak it immediately after the answer (Bug 1 fix).
             _offer_states = {"FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"}
             _anchor_spoken = ""  # always defined — prevents UnboundLocalError in logger below
+            # Prompt 5 Bug #3: after a mid-booking FAQ answer in COLLECT_REASON, do
+            # NOT speak a forced re-anchor in the same response — store last_question
+            # silently so the silence watchdog can replay it only after real silence.
+            _defer_reanchor = (
+                _int_state == "COLLECT_REASON" and intent == "faq_services"
+            )
             if _int_state in _offer_states:
                 _faq_reanchor_text = "Anything else you'd like to ask?"
                 # Prompt 8 Bug 1 fix: only store the deferred prompt when last_question
@@ -17009,6 +17078,13 @@ class FlowEngine:
                 # Do NOT emit aloud — the silence handler replays last_question after
                 # real silence.  Speaking it right after the answer felt over-aggressive.
                 logger.info("[ms_flow] faq_reanchor: (deferred to silence handler)")
+            elif _defer_reanchor:
+                if _int_anchor.strip():
+                    self.session["last_question"] = _int_anchor
+                logger.info(
+                    "[ms_flow] faq_reanchor: COLLECT_REASON+faq_services deferred "
+                    "(last_question=%r)", (_int_anchor or "")[:80],
+                )
             else:
                 if not _int_anchor.strip():
                     logger.warning(
