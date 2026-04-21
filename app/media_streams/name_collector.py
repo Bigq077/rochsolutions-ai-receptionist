@@ -465,6 +465,55 @@ def _has_meta_language(text: str) -> bool:
     return any(p in text for p in _META_LANGUAGE)
 
 
+# Conversational filler / continuation fragments that must NOT be parsed as
+# names.  Example: "just to get things started" tokenises to ["things",
+# "started"], both ≥5 chars, each passing the strong-first-name gate — so
+# without this guard the system stores "Things" as the caller's first name.
+# Keep this list tight: substring matches catch the common phrasings while
+# real name answers ("my name is Quentin", "Quentin Roch") contain none of
+# these snippets.
+_FN_NON_NAME_SUBSTRINGS: tuple = (
+    "just to get",
+    "just to start",
+    "just to begin",
+    "just to kick",
+    "to get things",
+    "to get started",
+    "to start off",
+    "to start with",
+    "to begin with",
+    "to kick things",
+    "to kick off",
+    "for now",
+    "for a moment",
+    "for a sec",
+    "for a second",
+)
+
+# Whole-utterance filler (after lowercasing + trimming trailing punctuation).
+_FN_NON_NAME_WHOLE: frozenset = frozenset({
+    "basically", "well", "yeah", "yup", "yep", "okay", "ok", "right",
+    "i think", "i guess", "i mean", "you know",
+    "just for now", "for now",
+    "um", "uh", "er", "erm",
+})
+
+
+def _is_non_name_filler(text: str) -> bool:
+    """
+    True if the utterance is a conversational filler/continuation fragment
+    with no real name intent.  Used as a surgical pre-filter in _fn_normal
+    to block phrases like "just to get things started" being stored as a
+    first name.
+    """
+    t = (text or "").strip().lower().rstrip(".,!?")
+    if not t:
+        return False
+    if t in _FN_NON_NAME_WHOLE:
+        return True
+    return any(p in t for p in _FN_NON_NAME_SUBSTRINGS)
+
+
 def _is_incomplete_scaffold(text: str) -> bool:
     """
     Return True if the utterance is a pure setup/scaffold fragment with no
@@ -713,6 +762,23 @@ class NameCollector:
         if _is_incomplete_scaffold(text):
             logger.info("[NameCollector] fn_normal: incomplete scaffold %r — scaffold_continue", text)
             return ("scaffold_continue", "What's your first name please?")
+
+        # Non-name filler / continuation fragment ("just to get things
+        # started", "for now", "basically", etc.).  Reject outright —
+        # these utterances contain no name intent but can tokenise to
+        # ≥5-char words that would otherwise pass the strong-first-name
+        # gate and corrupt the booking.  Re-ask WITHOUT counting this
+        # as a failed attempt (fn_retries unchanged) so a single stray
+        # filler turn does not escalate the collector into SMS fallback.
+        if _is_non_name_filler(text):
+            logger.info(
+                "[NameCollector] fn_normal: non-name filler %r → repair (no retry counted)",
+                text[:80],
+            )
+            return (
+                "ask",
+                "Sorry, I just need your first name — could you say it on its own?",
+            )
 
         cleaned = _strip_filler_prefix(text)
 
