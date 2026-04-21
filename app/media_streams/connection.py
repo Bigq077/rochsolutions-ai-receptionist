@@ -1161,15 +1161,34 @@ class SilenceHandler:
             if _state in ("GREETING", "DETECT_INTENT", ""):
                 phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
-                # Approved-copy watchdog: replay the exact sentence that is
-                # currently active for this retry tier.  Never invent or
-                # shorten ASK_LOCATION wording.  `last_question` is set by
-                # flow.py to the approved copy for the active tier
-                # (initial prompt, first retry, or DTMF fallback).
-                _lq_al = (_sess or {}).get("last_question", "")
-                phrase = _lq_al or (
-                    "Are you looking to book at our Alcester or Redditch clinic?"
+                # Approved-copy watchdog with tier escalation.  Never invent
+                # or shorten ASK_LOCATION wording.  Each watchdog fire must
+                # advance the retry ladder (initial → first-retry → DTMF);
+                # replaying `last_question` alone kept the caller stuck on
+                # the initial prompt forever.  Drive escalation off the
+                # same `location_retry_count` that flow.py uses so voice
+                # retries and silence retries share one ladder.
+                _APPROVED_LOC_RETRY = (
+                    "Sorry, I didn't quite catch that — "
+                    "could you say the Alcester clinic or the Redditch clinic?"
                 )
+                _APPROVED_LOC_DTMF = (
+                    "Sorry, I didn't quite catch that — "
+                    "could you please press 1 on your keypad for the Alcester clinic "
+                    "or 2 on your keypad for the Redditch clinic."
+                )
+                _lrc_w = int((_sess or {}).get("location_retry_count", 0))
+                if _lrc_w == 0:
+                    phrase = _APPROVED_LOC_RETRY
+                    if _sess is not None:
+                        _sess["location_retry_count"] = 1
+                        _sess["last_question"] = phrase
+                else:
+                    phrase = _APPROVED_LOC_DTMF
+                    if _sess is not None:
+                        _sess["location_awaiting_dtmf"] = True
+                        _sess["location_retry_count"] = max(_lrc_w + 1, 2)
+                        _sess["last_question"] = phrase
             elif _state in (
                 "COLLECT_NAME", "COLLECT_NAME_RETURNING",
                 "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
@@ -1479,13 +1498,34 @@ class SilenceHandler:
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
         )
-        # Approved-copy replay for ASK_LOCATION: replay the exact sentence
-        # that is currently active for the retry tier (stored in last_question
-        # by flow.py).  Never invent or shorten ASK_LOCATION wording.
+        # Approved-copy replay for ASK_LOCATION with tier escalation.
+        # The ladder is: tier 0 (initial) → tier 1 (first-retry wording)
+        # → tier 2+ (DTMF).  W1 must advance the ladder; replaying
+        # last_question alone kept callers stuck on the initial prompt.
+        # location_retry_count is the shared ladder index with flow.py
+        # so voice retries and silence retries never get out of sync.
         if self.current_state == "ASK_LOCATION":
-            _reask1 = q or (
-                "Are you looking to book at our Alcester or Redditch clinic?"
+            _APPROVED_LOC_RETRY_W1 = (
+                "Sorry, I didn't quite catch that — "
+                "could you say the Alcester clinic or the Redditch clinic?"
             )
+            _APPROVED_LOC_DTMF_W1 = (
+                "Sorry, I didn't quite catch that — "
+                "could you please press 1 on your keypad for the Alcester clinic "
+                "or 2 on your keypad for the Redditch clinic."
+            )
+            _lrc_w1 = int((_session_now or {}).get("location_retry_count", 0))
+            if _lrc_w1 == 0:
+                _reask1 = _APPROVED_LOC_RETRY_W1
+                if _session_now is not None:
+                    _session_now["location_retry_count"] = 1
+                    _session_now["last_question"] = _reask1
+            else:
+                _reask1 = _APPROVED_LOC_DTMF_W1
+                if _session_now is not None:
+                    _session_now["location_awaiting_dtmf"] = True
+                    _session_now["location_retry_count"] = max(_lrc_w1 + 1, 2)
+                    _session_now["last_question"] = _reask1
         else:
             _reask1 = phrase1 + (" " + q if q else "")
 
