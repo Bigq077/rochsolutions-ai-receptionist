@@ -5912,6 +5912,73 @@ class FlowEngine:
                 )
                 return
 
+            # ── Filler / non-location guard (tier-stable replay) ────────────────
+            # Obvious politeness / acknowledgement / greeting fragments carry no
+            # clinic signal and must NOT advance the retry ladder.  We simply
+            # replay last_question — which always reflects the CURRENT repair
+            # tier wording (original ask, polite re-ask, or DTMF prompt) — so
+            # the caller stays on the same tier until they either (a) give a
+            # genuine location attempt (which feeds the extractor / score-bind
+            # and can escalate) or (b) fall silent (which the watchdog handles).
+            #
+            # Invariants preserved:
+            #   • no clinic is bound
+            #   • location_retry_count is NOT mutated
+            #   • location_awaiting_dtmf is NOT toggled
+            #   • flow_step / state are NOT advanced
+            #   • last_question is re-spoken, so silence-handler / watchdog
+            #     re-arm naturally via the normal on_tts_finished path
+            #   • call cannot hang up from this path
+            import re as _re_loc_fg
+            _loc_norm = _re_loc_fg.sub(r"[^\w\s']", "", text.strip().lower()).strip()
+            _ASK_LOCATION_FILLER: frozenset = frozenset({
+                # Politeness
+                "please", "thanks", "thank you", "thank you so much",
+                "cheers", "ta",
+                # Bare acknowledgements / hedges
+                "yes", "yeah", "yep", "yup", "yah", "ya",
+                "no", "nope", "nah",
+                "okay", "ok", "k", "kk", "sure", "alright", "all right",
+                "right", "fine", "good", "great", "perfect", "lovely",
+                "brilliant", "cool", "got it", "understood", "noted",
+                "maybe", "dunno", "i dont know", "i don't know",
+                "not sure", "not really", "whatever",
+                # Greetings / attention-checks
+                "hi", "hello", "hey", "hiya",
+                "can you hear me", "hello hello", "are you there",
+                "you there", "hello are you there",
+                # Non-answer clarifiers (those not already caught by
+                # _is_repair_utt — kept conservative to avoid overlap)
+                "um", "uh", "erm", "hm", "hmm", "mm", "mhm",
+                "one second", "one sec", "hold on", "hang on",
+                # Short fragments seen in production that were never a clinic
+                "use this number", "you can use this number",
+                "yeah you can use this number", "yes use this number",
+                "my first time", "first time",
+                "its my first time", "it's my first time",
+                "this is my first time",
+            })
+            if _loc_norm in _ASK_LOCATION_FILLER:
+                _loc_tier_q = (
+                    self.session.get("last_question")
+                    or "Would that be at our Alcester or Redditch clinic?"
+                )
+                await self._tts.put(_loc_tier_q)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _loc_tier_q}
+                )
+                # Keep last_question pointing at the SAME tier wording —
+                # explicit assignment defends against upstream mutation.
+                self.session["last_question"] = _loc_tier_q
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: filler_guard %r \u2192 tier-stable replay "
+                    "(retry=%s dtmf=%s)",
+                    text[:40],
+                    self.session.get("location_retry_count", 0),
+                    bool(self.session.get("location_awaiting_dtmf")),
+                )
+                return
+
             loc = self._extract("location_selection", text, transcript)
             if loc:
                 self.session["selected_location"] = loc
