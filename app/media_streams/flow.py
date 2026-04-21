@@ -9011,6 +9011,24 @@ class FlowEngine:
                     _wk_expl.isoformat() if _wk_expl
                     else self.session.get("last_requested_date")
                 )
+                # Bug A fix: when caller says "none of those, anything the week after"
+                # without having referenced a specific date, anchor on the currently-
+                # offered page's last date.  This makes "week after" / "following week"
+                # resolve relative to what the system just offered instead of falling
+                # through to stale page-advance in the _PD_NONE guard below.
+                if _wk_anchor_str is None and _wk_avail:
+                    _wk_page_fb   = self.session.get("days_page", 0)
+                    _wk_offered_fb = _wk_avail[_wk_page_fb * 3 : (_wk_page_fb + 1) * 3]
+                    if not _wk_offered_fb:
+                        _wk_offered_fb = _wk_avail[:3]
+                    if _wk_offered_fb:
+                        _wk_last_fb = (_wk_offered_fb[-1].get("date") or "")[:10]
+                        if _wk_last_fb:
+                            _wk_anchor_str = _wk_last_fb
+                            logger.info(
+                                "[ms_flow] %s week-nav anchor fallback: offered-last=%s",
+                                step["state"], _wk_last_fb,
+                            )
                 if _wk_anchor_str:
                     import datetime as _dt_wk
                     self.session["last_requested_date"] = _wk_anchor_str
@@ -11458,13 +11476,17 @@ class FlowEngine:
                                 f"on {_day_label_na}, but I do have "
                                 f"{_spoken_alts_na[0]} \u2014 would that work?"
                             )
+                            # Bug B fix: do NOT pre-bind selected_slot silently when
+                            # caller's explicit requested hour is unavailable.  Store
+                            # the alternative as an offered-constrained subset so the
+                            # caller must affirm before it binds (routed via the
+                            # constrained-subset handler's vague-accept path).
                             if _alt_slots_na:
-                                self.session["selected_slot"] = (
-                                    _alt_slots_na[0].get("start", "")
-                                )
-                                self.session["selected_slot_speech"] = (
-                                    f"{_day_label_na} at {_spoken_alts_na[0]}"
-                                )
+                                self.session["offered_constrained_times"] = _alt_times_na
+                                self.session["offered_constrained_slots"] = _alt_slots_na
+                                self.session.pop("selected_slot", None)
+                                self.session.pop("selected_slot_speech", None)
+                                self.session.pop("slot_pending_confirmation", None)
                         elif _spoken_alts_na:
                             _na_phrase = (
                                 f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
@@ -11486,8 +11508,8 @@ class FlowEngine:
                             {"role": "assistant", "content": _na_phrase}
                         )
                         logger.info(
-                            "[ms_flow] %s: exact hour %d unavailable on %r — "
-                            "offered nearest alternatives deterministically",
+                            "[ms_flow] %s explicit_requested_time_unavailable: "
+                            "hour=%d on %r — offered safe_alt_offer (no silent bind)",
                             step["state"], _matched_hour, _day_label_na,
                         )
                         return
