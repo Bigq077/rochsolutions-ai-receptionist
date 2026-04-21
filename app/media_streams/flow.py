@@ -13107,6 +13107,9 @@ class FlowEngine:
                 "okay please", "ok please",
                 "yes lets", "yes let's", "yeah lets", "yeah let's",
             )
+            # Local lowercase form — the shared _txt_lower_fbo isn't assigned
+            # until later in this block, so compute it here for the detector.
+            _txt_lower_fbo = text.strip().lower()
             _fbo_last_ans = (self.session.get("last_faq_answer") or "").lower()
             _FBO_OFFER_MARKERS = (
                 "get that arranged", "take a few details", "take some details",
