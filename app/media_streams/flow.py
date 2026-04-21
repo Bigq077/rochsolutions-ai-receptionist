@@ -12343,6 +12343,17 @@ class FlowEngine:
                             "reason=rejected_with_replacement text=%r",
                             text[:80],
                         )
+                        # Narrow UX polish: when the caller replaces one
+                        # service with another, prepend a short
+                        # acknowledgement onto the very next COLLECT_NAME
+                        # question so the hand-off doesn't feel abrupt.
+                        # Uses the existing _nc_transition_prefix fold
+                        # mechanism (ask_current_question ~line 4753) so
+                        # the ack + name question are spoken as ONE
+                        # utterance with no extra state or re-ask.
+                        self.session["_nc_transition_prefix"] = (
+                            "Okay, that's noted —"
+                        )
                         # Fall through — normal COLLECT_REASON extraction
                         # captures the utterance as the booking reason and
                         # advances.  No re-ask.
