@@ -146,20 +146,57 @@ _NEVER_BIND: frozenset = frozenset({
 _PREFIX_FALLBACK_BLOCKLIST: frozenset = frozenset({
     # "a…" — discourse starters / common English words, phonetically nothing like Alcester
     "actually", "anyway", "already", "again", "also", "always",
-    # Additional "a…" discourse words not previously listed:
-    #   "and"     → starts with "an" (score 15!) — very common sentence-joiner
-    #   "any"     → starts with "an" — "any parking?" is NOT a clinic name
-    #   "another" → starts with "an"
-    #   "are"     → starts with "a" — "are you open?" is NOT a clinic name
-    #   "as"      → starts with "a"
-    #   "about"   → starts with "a" — "about the parking" is NOT a clinic name
-    #   "after"   → starts with "a"
-    #   "at"      → starts with "a" — "at the clinic" extracted fragment
-    "and", "any", "another", "are", "as", "about", "after", "at",
+    # "an…" family — very common sentence-openers that share the weak "an" prefix
+    # but have zero phonetic resemblance to Alcester.  "anything around the 21st"
+    # was prefix-falling-back to Alcester before "anything" was added here.
+    "and", "any", "anything", "anyone", "anywhere", "anybody",
+    "another", "are", "as", "about", "after", "at", "am",
     # "re…" / "r…" — discourse starters, phonetically nothing like Redditch
     "right", "really", "rather", "recently",
     # Pure discourse openers (no clinic-prefix ambiguity)
     "i", "so", "well", "no", "yes", "wait", "never", "sorry",
+})
+
+# ---------------------------------------------------------------------------
+# Non-location fragments
+# Whole-utterance blocklist of politeness / filler / generic acknowledgement
+# phrases that must NEVER bind a clinic on their own — even when similarity
+# against "alcester" / "redditch" happens to score high enough to cross a
+# downstream score-bind threshold.  Matched as exact whole normalized-text
+# (so "please help me find alcester" is unaffected — only bare "please" hits).
+#
+# IMPORTANT: this list is NOT a general "location word" block — it only vetoes
+# utterances whose entire content is one of these fragments.  Noisy genuine
+# location answers like "at your alsister clinic" or "our sister" are
+# untouched because they are not whole-text matches here.
+# ---------------------------------------------------------------------------
+_NON_LOCATION_FRAGMENTS: frozenset = frozenset({
+    # Politeness
+    "please", "thanks", "thank you", "thank you so much", "thanks a lot",
+    "cheers", "ta",
+    # Bare affirmations / acknowledgements
+    "ok", "okay", "k", "kk", "sure", "alright", "all right",
+    "right", "fine", "good", "great", "perfect", "lovely", "brilliant",
+    "cool", "got it", "gotcha", "understood", "noted", "makes sense",
+    "yes", "yep", "yeah", "yup", "yah", "ya",
+    # Bare negations
+    "no", "nope", "nah", "no problem", "no worries",
+    # Greetings / openers
+    "hi", "hello", "hey", "hiya",
+    # Hedges / non-answers
+    "maybe", "dunno", "i dont know", "i don't know",
+    "not sure", "not really", "whatever",
+    # Small fragments the caller commonly emits that are NOT clinic names.
+    # These are whole-utterance matches so they don't touch genuine location
+    # phrases containing these tokens (e.g. "my first appointment was at
+    # Alcester" still resolves normally via the extractor).
+    "use this number", "you can use this number",
+    "yeah you can use this number", "yes use this number",
+    "my first time", "first time", "its my first time", "it's my first time",
+    "this is my first time",
+    "my name is", "my names", "my name's",
+    # Common short "one more thing" / repair fillers
+    "sorry", "um", "uh", "erm", "hm", "hmm", "mm",
 })
 
 # ---------------------------------------------------------------------------
@@ -317,7 +354,16 @@ def _build_reason(
 
 def _log_result(result: dict) -> None:
     d = result["debug"]
-    logger.info(
+    # Non-resolved "noise" outcomes (no real location signal) log at DEBUG to
+    # keep production logs focused on meaningful resolver activity.  Any
+    # actually-resolved or genuinely-ambiguous-with-signal outcome still logs
+    # at INFO for traceability.
+    _noisy = (
+        result["status"] == "unknown"
+        or result.get("reason") in ("non_location_fragment", "low_signal")
+    )
+    _log = logger.debug if _noisy else logger.info
+    _log(
         "[location_resolver] raw=%r normalized=%r candidate=%r "
         "alcester_score=%s(sim=%s,prefix=%s) redditch_score=%s(sim=%s,prefix=%s) "
         "status=%r location=%r reason=%r confidence=%.2f "
@@ -388,6 +434,29 @@ def resolve_clinic_location(
         }
         _log_result(result)
         return result
+
+    # ── 0. Non-location fragment guard ────────────────────────────────────
+    # If the whole normalized utterance is a bare politeness / filler /
+    # generic-acknowledgement fragment, refuse to score it as a clinic name.
+    # Similarity alone ("please" vs "alcester" → ratio ~0.57) was leaking
+    # through downstream score-bind paths and silently binding a clinic.
+    # Skipped when a hard alias hit is present — a caller could say
+    # "alcester please" and the hard alias should still win.  We detect that
+    # below (hard_alc/hard_red) but here we short-circuit only for the bare
+    # whole-text fragment case where no location content exists at all.
+    if (
+        normalized in _NON_LOCATION_FRAGMENTS
+        or candidate in _NON_LOCATION_FRAGMENTS
+    ):
+        # Double-check: if a hard alias substring is present anywhere, allow
+        # scoring to proceed (e.g. "alcester please" — normalized != fragment
+        # but guard defensively in case normalization trims differently).
+        if not (
+            _contains_any(candidate, _HARD_ALC)
+            or _contains_any(candidate, _HARD_RED)
+        ):
+            debug["hard_alias_hit"] = "non_location_fragment"
+            return _resolve("unknown", None, 0.0, "non_location_fragment")
 
     # ── 1. Never-bind guard ────────────────────────────────────────────────
     # Whole-word check against known collision words.  These always clarify.

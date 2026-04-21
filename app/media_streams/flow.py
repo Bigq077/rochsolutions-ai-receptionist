@@ -5939,18 +5939,32 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
-                # ── Score-based silent bind: winner ≥ 50 pts → bind and advance ──
+                # ── Score-based silent bind: winner ≥ 60 pts WITH prefix or soft-alias evidence ──
                 # The resolver already computed both scores.  If the winning clinic
-                # cleared 50 (out of 100) the signal is strong enough to commit
+                # cleared the threshold AND has positive prefix/soft-alias evidence
+                # (not pure similarity), the signal is strong enough to commit
                 # without asking again — the next question names the clinic aloud
                 # so the caller can correct mid-flow via the global correction handler.
-                # confidence = winner_score / 100 on the scoring path.
+                #
+                # Pure-similarity-only ambiguous results are REJECTED here: words
+                # like "please" / "alright" happen to share enough characters with
+                # "alcester" to score 50–60 on similarity alone, but carry zero
+                # clinic signal.  Requiring prefix or soft-alias evidence
+                # eliminates that entire false-bind class without weakening
+                # genuine noisy location capture (which always contributes a
+                # prefix score via the first word).
                 _sl_result = _resolve_clinic(text, context="ask_location")
                 _sl_conf   = _sl_result.get("confidence", 0)
-                # Threshold raised from 0.50 → 0.55: weak score-bind below 0.55
-                # must NOT auto-select a clinic on partial/noisy transcripts
-                # (e.g. "d the clinic" at conf=0.54 was wrongly binding).
-                if _sl_result["status"] == "ambiguous" and _sl_conf >= 0.55:
+                _sl_reason = _sl_result.get("reason", "")
+                _sl_has_signal = (
+                    "prefix" in _sl_reason
+                    or "soft_alias" in _sl_reason
+                )
+                if (
+                    _sl_result["status"] == "ambiguous"
+                    and _sl_conf >= 0.60
+                    and _sl_has_signal
+                ):
                     _sl_dbg  = _sl_result.get("debug", {})
                     _sl_alc  = _sl_dbg.get("alcester_score", 0)
                     _sl_red  = _sl_dbg.get("redditch_score", 0)
@@ -13280,7 +13294,15 @@ class FlowEngine:
                         _rl_dbg  = _loc_result.get("debug", {})
                         _rl_alc  = _rl_dbg.get("alcester_score", 0)
                         _rl_red  = _rl_dbg.get("redditch_score", 0)
-                        if _rl_conf >= 0.50:
+                        _rl_reason = _loc_result.get("reason", "")
+                        # Recovery/location score-bind must also require prefix
+                        # or soft-alias evidence — pure-similarity-only ambiguous
+                        # results (e.g. "please" at 0.57) must never silent-bind.
+                        _rl_has_signal = (
+                            "prefix" in _rl_reason
+                            or "soft_alias" in _rl_reason
+                        )
+                        if _rl_conf >= 0.60 and _rl_has_signal:
                             _rl_bind = "alcester" if _rl_alc >= _rl_red else "redditch"
                             self.session["selected_location"] = _rl_bind
                             self.session.pop("lookup_correction_mode", None)
