@@ -1113,6 +1113,53 @@ def _is_question_worth_storing(text: str) -> bool:
     return False
 
 
+def _store_last_question(
+    session: dict,
+    text: str,
+    *,
+    force: bool = False,
+    source: str = "",
+) -> bool:
+    """Authoritative / heuristic write-path for session['last_question'].
+
+    Deterministic flow-committed prompts (the ones that definitively ARE the
+    currently awaited question for the state machine) must pass force=True.
+    They bypass _is_question_worth_storing() so that a prompt whose wording
+    happens to overlap _NEVER_STORE_PHRASES (e.g. a flow-committed retry that
+    begins "Sorry, I didn't quite catch —") is still stored as the active
+    question.  The silence handler / watchdog will then re-ask from the
+    correct lineage instead of stale text.
+
+    Heuristic / inferred / opportunistic candidates (LLM-extracted question
+    sentences, fast-path fallbacks, known-phrase recognitions) keep the
+    existing filter behaviour by passing force=False (the default).
+
+    Returns True if a write was performed.
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+    if force:
+        session["last_question"] = t
+        logger.info(
+            "[ms_flow] last_question stored AUTHORITATIVE source=%s force=True text=%r",
+            source or "unspecified", t[:80],
+        )
+        return True
+    if _is_question_worth_storing(t):
+        session["last_question"] = t
+        logger.info(
+            "[ms_flow] last_question stored heuristic source=%s text=%r",
+            source or "unspecified", t[:80],
+        )
+        return True
+    logger.debug(
+        "[ms_flow] last_question REJECTED by heuristic filter source=%s text=%r",
+        source or "unspecified", t[:80],
+    )
+    return False
+
+
 # Filler prefixes the LLM sometimes prepends — strip from re-ask question
 _STRIP_PREFIXES = (
     "Absolutely, ", "Absolutely! ", "Absolutely — ",
@@ -2930,8 +2977,10 @@ class FlowEngine:
             )
             self.session["question_asked_this_turn"] = True
             await self._tts.put(_cb_prompt)
-            if _is_question_worth_storing(_cb_prompt):
-                self.session["last_question"] = _cb_prompt
+            _store_last_question(
+                self.session, _cb_prompt,
+                force=True, source="flow_step:CONFIRM_BOOKING",
+            )
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _cb_prompt}
             )
@@ -3184,8 +3233,10 @@ class FlowEngine:
                 "shall I go ahead and move you to that?"
             )
             await self._tts.put(q)
-            if _is_question_worth_storing(q):
-                self.session["last_question"] = q
+            _store_last_question(
+                self.session, q,
+                force=True, source="flow_step:CONFIRM_RESCHEDULE",
+            )
             self.session["question_asked_this_turn"] = True
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": q}
@@ -3348,8 +3399,10 @@ class FlowEngine:
                 self.session["slot_pending_confirmation"] = True
                 self.session["question_asked_this_turn"]  = True
                 await self._tts.put(_pt_phrase)
-                if _is_question_worth_storing(_pt_phrase):
-                    self.session["last_question"] = _pt_phrase
+                _store_last_question(
+                    self.session, _pt_phrase,
+                    force=True, source="flow_step:PRESENT_TIMES_1slot",
+                )
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _pt_phrase}
                 )
@@ -3372,8 +3425,10 @@ class FlowEngine:
                 if _pt_ms_phrase:
                     self.session["question_asked_this_turn"] = True
                     await self._tts.put(_pt_ms_phrase)
-                    if _is_question_worth_storing(_pt_ms_phrase):
-                        self.session["last_question"] = _pt_ms_phrase
+                    _store_last_question(
+                        self.session, _pt_ms_phrase,
+                        force=True, source="flow_step:PRESENT_TIMES_multi",
+                    )
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _pt_ms_phrase}
                     )
@@ -4060,15 +4115,18 @@ class FlowEngine:
             # Extract only the question sentence from the LLM response so the
             # SilenceHandler re-asks a clean question, not the full paragraph.
             _q = _extract_question_sentence(response or "") or (step["question"] or "")
-            if _is_question_worth_storing(_q):
-                self.session["last_question"] = _q
-                logger.info("[ms_flow] last_question stored: %r", _q[:120])
+            _q_stored = _store_last_question(
+                self.session, _q,
+                force=False, source=f"llm_step:{step['state']}",
+            )
             # Fast-path ANSWER_FAQ answers that have no trailing question (e.g. capability)
             # would leave last_question stale. Store the full answer so repeat/silence
             # recovery replays the actual spoken content, not an old unrelated question.
-            if _fast_r and step["state"] in ("ANSWER_FAQ", "ANSWER_GENERAL") and not _is_question_worth_storing(_q):
-                self.session["last_question"] = response
-                logger.info("[ms_flow] last_question set to fast-path answer (no question extracted): %r", (response or "")[:80])
+            if _fast_r and step["state"] in ("ANSWER_FAQ", "ANSWER_GENERAL") and not _q_stored:
+                _store_last_question(
+                    self.session, response or "",
+                    force=True, source=f"fast_path_answer:{step['state']}",
+                )
             # Record Susie's LLM response to conversation_history
             if response:
                 self.session.setdefault("conversation_history", []).append(
@@ -14985,8 +15043,10 @@ class FlowEngine:
             self.session["flow_step"] = step["step"] + 1
             phrase = "No problem — what number would you like us to use?"
             await self._tts.put(phrase)
-            if _is_question_worth_storing(phrase):
-                self.session["last_question"] = phrase
+            _store_last_question(
+                self.session, phrase,
+                force=True, source="flow_step:CONFIRM_PHONE_decline",
+            )
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": phrase}
             )
@@ -16890,8 +16950,10 @@ class FlowEngine:
                 # No day correction — stay at PRESENT_TIMES for caller to pick again.
                 phrase = "No problem — which slot would you prefer?"
                 await self._tts.put(phrase)
-                if _is_question_worth_storing(phrase):
-                    self.session["last_question"] = phrase
+                _store_last_question(
+                    self.session, phrase,
+                    force=True, source="flow_step:slot_confirm_reask",
+                )
                 return
 
         # No match — acknowledged re-ask with retry counting
