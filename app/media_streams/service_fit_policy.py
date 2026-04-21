@@ -130,6 +130,123 @@ def is_suitability_question(text: str) -> bool:
     return any(p in t for p in _SUITABILITY_PHRASES)
 
 
+# ── Treatment-suitability / best-starting-point detection ─────────────────────
+# Broader than is_suitability_question: catches the "would X work for Y",
+# "should I book X or something else", "what should I book for Y" family.
+# Callers asking this want operational guidance — not a service description and
+# not a reassurance answer from an earlier sub-topic.  The receptionist must
+# steer toward an assessment / practitioner review as the best starting point.
+
+_TREATMENT_SUITABILITY_PHRASES: tuple = (
+    # "would X work for Y" / "would it work for my ..."
+    "work for", "works for",
+    # "should I book X" / "should I book X or something else"
+    "should i book", "should i get an appointment",
+    "should i see someone", "should i come in",
+    # disjunction: "or something else" / "or should I book"
+    "or something else", "or something different",
+    "or should i", "or would",
+    # "would you recommend X for Y"
+    "would you recommend", "do you recommend", "what would you recommend",
+    "what do you recommend",
+    # "is X the right appointment for Y" / "right for"
+    "right for", "right appointment for", "right treatment for",
+    "best for", "best appointment for", "best treatment for",
+    "most suitable", "most appropriate",
+    "suitable for", "appropriate for",
+    # "what kind of appointment" / "what should I book"
+    "what kind of appointment", "what type of appointment",
+    "what appointment", "which appointment",
+    "what should i book", "what would be best",
+    # "would this treatment be right for me"
+    "treatment be right", "treatment right for",
+    # "do you think I should see someone ... what should I book"
+    "what should i",
+)
+
+
+def is_treatment_suitability_question(text: str) -> bool:
+    """
+    Return True if the caller is asking a treatment-suitability /
+    best-starting-point question — e.g. "Would acupuncture work for ankle
+    pain?", "Should I book physio or massage for back pain?", "What kind of
+    appointment would be best for knee pain?".
+
+    Broader than is_suitability_question, which is tuned for
+    "what do you recommend" style clinician-decides questions.
+    """
+    t = (text or "").lower()
+    return any(p in t for p in _TREATMENT_SUITABILITY_PHRASES)
+
+
+# Body-area / problem phrases — used to include the caller's concern in the
+# best-starting-point response so the answer is directional, not generic.
+_BODY_AREAS: tuple = (
+    "ankle", "knee", "shoulder", "back", "neck", "hip", "wrist", "elbow",
+    "foot", "feet", "heel", "toe", "leg", "thigh", "calf", "hamstring",
+    "arm", "hand", "finger", "thumb", "spine", "disc", "jaw",
+)
+
+
+def _detect_problem_phrase(text: str) -> str:
+    """
+    Extract a short "<body-area> pain/injury" style phrase from the utterance
+    so the response can echo the caller's concern.  Returns "" if nothing
+    clear is found.
+    """
+    t = (text or "").lower()
+    for area in _BODY_AREAS:
+        if area in t:
+            for suffix in (" pain", " ache", " injury", " problem", " issue",
+                           " soreness", " stiffness", " strain", " sprain"):
+                if area + suffix in t:
+                    return area + suffix
+            return area
+    for noun in ("pain", "injury", "ache", "soreness", "stiffness"):
+        if noun in t:
+            return noun
+    return ""
+
+
+def best_starting_point_response(text: str) -> str:
+    """
+    Safe, operational "best starting point" answer for treatment-suitability
+    questions.  Acknowledges the concern if identifiable, steers toward an
+    assessment, and leaves treatment choice to the practitioner.
+
+    Never diagnoses, never endorses a specific modality as correct for a
+    condition, never rejects one.
+    """
+    problem = _detect_problem_phrase(text)
+    service = detect_service_name(text)
+    if problem and service:
+        return (
+            f"For {problem}, the best starting point is usually an assessment "
+            f"so the practitioner can recommend the most suitable treatment, "
+            f"whether that includes {service.lower()} or something else. "
+            f"If you\u2019d like to get that arranged, I can take a few details."
+        )
+    if problem:
+        return (
+            f"For {problem}, the best starting point is usually an assessment "
+            f"so the practitioner can recommend the most suitable treatment. "
+            f"If you\u2019d like to get that arranged, I can take a few details."
+        )
+    if service:
+        return (
+            f"That would depend on your symptoms. The best starting point is "
+            f"usually an assessment so the practitioner can advise on whether "
+            f"{service.lower()} or something else would be most suitable. "
+            f"If you\u2019d like to get that arranged, I can take a few details."
+        )
+    return (
+        "That would depend on your symptoms. The best starting point is "
+        "usually an assessment so the practitioner can recommend the most "
+        "suitable treatment from there. "
+        "If you\u2019d like to get that arranged, I can take a few details."
+    )
+
+
 # ── Service availability question detection ───────────────────────────────────
 # "Do you offer X?" — pure availability query; answer only with what's listed.
 

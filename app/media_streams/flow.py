@@ -1482,6 +1482,7 @@ def _store_last_question(
     *,
     force: bool = False,
     source: str = "",
+    watchdog_eligible: bool = True,
 ) -> bool:
     """Authoritative / heuristic write-path for session['last_question'].
 
@@ -1497,30 +1498,57 @@ def _store_last_question(
     sentences, fast-path fallbacks, known-phrase recognitions) keep the
     existing filter behaviour by passing force=False (the default).
 
+    watchdog_eligible — when False the stored text is declarative (e.g.
+    deterministic FAQ answer, booking-confirmed statement) and must NOT be
+    replayed by the no-input watchdog.  Implementation: a marker field
+    ``_last_question_not_reaskable`` captures the exact text; arm-time gate in
+    SilenceHandler skips arming when current last_question matches the marker.
+    Any subsequent write of different text naturally invalidates the marker,
+    so downstream real-question writes need no changes to restore eligibility.
+
     Returns True if a write was performed.
     """
     if not text or not text.strip():
         return False
     t = text.strip()
+    wrote = False
     if force:
         session["last_question"] = t
         logger.info(
-            "[ms_flow] last_question stored AUTHORITATIVE source=%s force=True text=%r",
-            source or "unspecified", t[:80],
+            "[ms_flow] last_question stored AUTHORITATIVE source=%s force=True text=%r eligible=%s",
+            source or "unspecified", t[:80], watchdog_eligible,
         )
-        return True
-    if _is_question_worth_storing(t):
+        wrote = True
+    elif _is_question_worth_storing(t):
         session["last_question"] = t
         logger.info(
-            "[ms_flow] last_question stored heuristic source=%s text=%r",
+            "[ms_flow] last_question stored heuristic source=%s text=%r eligible=%s",
+            source or "unspecified", t[:80], watchdog_eligible,
+        )
+        wrote = True
+    else:
+        logger.debug(
+            "[ms_flow] last_question REJECTED by heuristic filter source=%s text=%r",
             source or "unspecified", t[:80],
         )
-        return True
-    logger.debug(
-        "[ms_flow] last_question REJECTED by heuristic filter source=%s text=%r",
-        source or "unspecified", t[:80],
-    )
-    return False
+        return False
+
+    if wrote:
+        if watchdog_eligible:
+            # Clear any prior non-reaskable marker — the current stored prompt
+            # is a real reply-seeking question and watchdog should arm for it.
+            if session.pop("_last_question_not_reaskable", None) is not None:
+                logger.debug(
+                    "[ms_flow] cleared non-reaskable marker (new eligible prompt source=%s)",
+                    source or "unspecified",
+                )
+        else:
+            session["_last_question_not_reaskable"] = t
+            logger.info(
+                "[ms_flow] last_question marked NON-REASKABLE source=%s text=%r",
+                source or "unspecified", t[:80],
+            )
+    return wrote
 
 
 # Filler prefixes the LLM sometimes prepends — strip from re-ask question
@@ -4013,6 +4041,30 @@ class FlowEngine:
                     .get("content", "")
                     .lower()
                 )
+                # Treatment-suitability / best-starting-point questions take priority
+                # over all other faq_services branches. A caller asking "would X work
+                # for ankle pain?" or "should I book acupuncture or something else?"
+                # wants operational guidance — not a service description, and not a
+                # reassurance answer carried forward from an earlier sub-topic.
+                from app.media_streams.service_fit_policy import (
+                    is_treatment_suitability_question as _aq_is_ts,
+                    best_starting_point_response      as _aq_best_start,
+                )
+                if _aq_is_ts(_faq_svc_text):
+                    _fast_r = _aq_best_start(_faq_svc_text)
+                    # Preserve or set topic lock if the caller named a service —
+                    # keeps follow-up carry-forward coherent without drift.
+                    _ts_svc_key = next(
+                        (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _faq_svc_text),
+                        None,
+                    )
+                    if _ts_svc_key:
+                        self.session["_faq_active_service"] = _ts_svc_key
+                    logger.info(
+                        "[ms_faq] answer_source=policy topic=%s "
+                        "subtype=treatment_suitability_best_starting_point",
+                        _ts_svc_key or self.session.get("_faq_active_service") or "generic",
+                    )
                 # Acupuncture needle-fear: answer the actual concern, not a broad service list.
                 # Must fire BEFORE _FAQ_SERVICES_FAST so the first response is correct.
                 # Also sets _faq_active_service so follow-up carry-forward can route back here.
@@ -4024,7 +4076,7 @@ class FlowEngine:
                     "worried", "worry", "what does it feel", "feel like",
                     "hate needle", "don't like needle",
                 )
-                if "acupuncture" in _faq_svc_text and any(p in _faq_svc_text for p in _AQ_FEAR_SIG):
+                if _fast_r is None and "acupuncture" in _faq_svc_text and any(p in _faq_svc_text for p in _AQ_FEAR_SIG):
                     _fast_r = _FAQ_ACUPUNCTURE_FEAR_ANSWER
                     self.session["_faq_active_service"] = "acupuncture"
                     logger.info(
@@ -4035,7 +4087,7 @@ class FlowEngine:
                         "[ms_faq] answer_source=clinic_config topic=acupuncture "
                         "subtype=needle_pain"
                     )
-                else:
+                elif _fast_r is None:
                     # ── Specific-service drill-down (TOPIC LOCK on first turn) ──
                     # "I saw on the website about acupuncture" / "tell me about
                     # shockwave" etc. must (a) be answered about that service
@@ -4529,10 +4581,17 @@ class FlowEngine:
             # Fast-path ANSWER_FAQ answers that have no trailing question (e.g. capability)
             # would leave last_question stale. Store the full answer so repeat/silence
             # recovery replays the actual spoken content, not an old unrelated question.
+            # watchdog_eligible=False — the answer is declarative, not reply-seeking, so
+            # the no-input watchdog must NOT replay it as "Sorry, I didn't catch that.
+            # A physio assessment is 50 minutes and costs £75." (real bug family).
+            # A real follow-up prompt (e.g. "Anything else?") written afterwards will
+            # naturally overwrite the marker via a new _store_last_question call with
+            # watchdog_eligible=True and the watchdog will arm against that instead.
             if _fast_r and step["state"] in ("ANSWER_FAQ", "ANSWER_GENERAL") and not _q_stored:
                 _store_last_question(
                     self.session, response or "",
                     force=True, source=f"fast_path_answer:{step['state']}",
+                    watchdog_eligible=False,
                 )
             # Record Susie's LLM response to conversation_history
             if response:
