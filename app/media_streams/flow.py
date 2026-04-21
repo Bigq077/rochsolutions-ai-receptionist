@@ -4266,23 +4266,67 @@ class FlowEngine:
                         self.session["_faq_parts_answered"] = ["location"]
             # ANSWER_FAQ/prices: deterministic from-price gate.
             # If no specific service was named, always return the from-price line —
-            # never a full price list.  If a service was named, let the LLM answer
-            # with just that service's price (instruction already constrains it).
+            # never a full price list.  If a service was named AND we have the
+            # facts in clinic_config.service_prices, answer deterministically with
+            # price + duration (never hand the named-service case to the LLM,
+            # which otherwise invents a "which service did you want the price for?"
+            # clarifier even when the service is already explicit).
             if (
                 step["state"] == "ANSWER_FAQ"
                 and format_args.get("faq_topic") in ("prices", "faq_prices")
                 and not _fast_r
             ):
-                _last_user = (
+                # Use the widest available source for the caller's utterance so
+                # a clipped conversation_history tail can't strip the second
+                # fact ("…and how long does it last"). We combine the stored
+                # general_query_text / faq_pending_user_text with the last
+                # history entry — whichever is longer wins.
+                _hist_last = (
                     (self.session.get("conversation_history") or [{}])[-1]
                     .get("content", "")
-                    .lower()
                 )
+                _stored_q = (
+                    self.session.get("faq_pending_user_text")
+                    or self.session.get("general_query_text")
+                    or ""
+                )
+                _last_user = (
+                    _hist_last if len(_hist_last) >= len(_stored_q) else _stored_q
+                ).lower()
                 _named_svc = any(
                     k in _last_user for k in _FAQ_PRICES_SERVICE_KEYWORDS
                 )
                 if not _named_svc:
                     _fast_r = _FAQ_PRICES_NO_SERVICE
+                else:
+                    # Deterministic named-service price/duration fast path.
+                    try:
+                        from app.clinic_config import get_clinic as _gc_aq
+                        _cli_aq = _gc_aq(self.session.get("clinic_id") or "demo")
+                    except Exception:
+                        _cli_aq = {}
+                    _det_aq = _faq_price_deterministic(_last_user, _cli_aq)
+                    if _det_aq:
+                        _det_ans_aq, _det_key_aq, _det_facts_aq = _det_aq
+                        _fast_r = _det_ans_aq
+                        # Stamp FAQ memory so the practical_dedup_check and
+                        # price-fact pronoun carry-forward logic downstream
+                        # see this answer as already given.
+                        self.session["_faq_last_service"] = _det_key_aq
+                        self.session["_faq_last_facts"]   = list(_det_facts_aq)
+                        self.session["last_faq_intent"]   = "faq_prices"
+                        self.session["_faq_ans_intent"]   = "faq_prices"
+                        self.session["_faq_ans_at"]       = time.time()
+                        _pp_aq = set(self.session.get("_faq_parts_answered") or [])
+                        _pp_aq.add(f"svc:{_det_key_aq}")
+                        _pp_aq.update({f"fact:{f}" for f in _det_facts_aq})
+                        self.session["_faq_parts_answered"] = list(_pp_aq)
+                        logger.info(
+                            "[ms_faq] answer_faq_prices_deterministic service=%s "
+                            "facts=%s src_len=%d",
+                            _det_key_aq, "|".join(sorted(_det_facts_aq)),
+                            len(_last_user),
+                        )
             # ANSWER_GENERAL: deterministic clinic-fact precedence layer.
             # If the caller's question is really an operational clinic-fact question
             # (accessibility / address / parking / child-policy / basic booking
@@ -4828,10 +4872,27 @@ class FlowEngine:
                 except Exception as _be:
                     logger.error("[ms_flow] CONFIRM_BOOKING: book exception: %r", _be)
 
+                # Pending full name?  Only first name is collected on the
+                # call, so _name_cb is typically a single token.  When a full
+                # name is already confirmed (contains a space) we must NOT add
+                # the "reply with your full name" instruction to the spoken
+                # closeout.
+                _cb_pending_full_name = bool(_name_cb) and (" " not in _name_cb.strip())
+                if _cb_pending_full_name:
+                    _cb_sms_tail = (
+                        "I'll text a confirmation to your number — "
+                        "please reply to that message with your full name "
+                        "to complete the booking."
+                    )
+                else:
+                    _cb_sms_tail = "I'll text a confirmation to your number."
+                logger.info(
+                    "[ms_flow] BOOKING_CONFIRM spoken_closeout includes_full_name_instruction=%s",
+                    _cb_pending_full_name,
+                )
                 question_text = (
                     f"Lovely — {_name_part}you're booked in for {_slot_cb} "
-                    f"at {_clinic_name}. "
-                    "I'll text a confirmation to your number."
+                    f"at {_clinic_name}. " + _cb_sms_tail
                 )
                 self.session["booking_confirmed"] = True
                 self.session["state"]             = "DONE"
@@ -15250,6 +15311,71 @@ class FlowEngine:
                         {"role": "assistant", "content": _dangle_phrase}
                     )
                     return  # wait for caller to complete the phrase
+
+        # ── COLLECT_REASON: clipped-leading-fragment normalization (BUG 1) ───
+        # Handle STT-clipped openings like "is for back pain", "for back pain",
+        # "about my knee", "with neck pain", "because of lower back pain".
+        # Deterministic cleanup only — the fragment guard above has already
+        # established the utterance has clinical content and enough length.
+        if (
+            step["state"] == "COLLECT_REASON"
+            and isinstance(answer, str)
+            and answer.strip()
+        ):
+            import re as _re_crn
+            _cr_raw = answer.strip()
+            _LEADING_CLIP_RE = _re_crn.compile(
+                r"^(?:"
+                r"it'?s\s+for\s+|is\s+for\s+|for\s+my\s+|for\s+the\s+|for\s+"
+                r"|it'?s\s+my\s+|is\s+my\s+"
+                r"|it'?s\s+about\s+|is\s+about\s+|about\s+my\s+|about\s+the\s+|about\s+"
+                r"|with\s+my\s+|with\s+the\s+|with\s+"
+                r"|because\s+of\s+|due\s+to\s+|regarding\s+|to\s+do\s+with\s+"
+                r")",
+                _re_crn.IGNORECASE,
+            )
+            _cr_stripped = _LEADING_CLIP_RE.sub("", _cr_raw).strip()
+            if _cr_stripped and _cr_stripped.lower() != _cr_raw.lower():
+                _cr_strip_lower = _cr_stripped.lower()
+                # Only accept the stripped remainder if clinical content remains.
+                _CR_FLOOR = (
+                    "pain", "ache", "aching", "hurt", "hurting", "injury", "injured",
+                    "sore", "soreness", "stiff", "stiffness", "swollen", "swelling",
+                    "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
+                    "elbow", "leg", "arm", "foot", "heel", "spine", "head",
+                    "tendon", "ligament", "muscle", "nerve", "joint",
+                    "problem", "issue", "trouble", "condition",
+                )
+                if any(w in _cr_strip_lower for w in _CR_FLOOR):
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON clipped_leading_fragment_detected "
+                        "raw=%r normalized=%r",
+                        _cr_raw[:80], _cr_stripped[:80],
+                    )
+                    _CR_SYMPTOMS = (
+                        "pain", "ache", "aching", "hurt", "hurting", "sore",
+                        "soreness", "stiff", "stiffness", "swollen", "swelling",
+                        "injury", "injured", "issue", "problem", "trouble",
+                        "condition",
+                    )
+                    _CR_BODY = (
+                        "ankle", "knee", "back", "neck", "shoulder", "hip", "wrist",
+                        "elbow", "leg", "arm", "foot", "heel", "spine", "head",
+                    )
+                    _has_symptom = any(w in _cr_strip_lower for w in _CR_SYMPTOMS)
+                    _has_body    = any(w in _cr_strip_lower for w in _CR_BODY)
+                    # If only a bare body-part remains ("my knee" → "knee"),
+                    # append "pain" so the stored reason reads naturally.
+                    if _has_body and not _has_symptom:
+                        _cr_final = _cr_stripped + " pain"
+                    else:
+                        _cr_final = _cr_stripped
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON reason_normalized_safe "
+                        "raw=%r normalized=%r",
+                        _cr_raw[:80], _cr_final[:80],
+                    )
+                    answer = _cr_final
 
         # ── NEW_OR_RETURNING: Haiku silent classifier fallback ───────────────────
         # Fires when deterministic keyword matching missed — e.g. "I came about
