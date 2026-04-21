@@ -183,6 +183,145 @@ _FAQ_ACCESSIBILITY_FALLBACK = (
     "Just let us know any specific access needs when you book."
 )
 
+# ── FAQ-only polite-exit: bounded closeout ──────────────────────────────────
+# Why: the LLM otherwise invents "give us a ring on 07870 166861…" which reads
+# the clinic number aloud digit-by-digit. We must never speak the number in a
+# FAQ-only exit — use "this same number" instead.
+_FAQ_POLITE_CLOSEOUT = (
+    "No problem at all \u2014 absolutely, call us back any time on this same number "
+    "and we\u2019ll get something sorted for you."
+)
+_FAQ_EXIT_FAREWELL = (
+    "thanks", "thank you", "thankyou", "cheers", "appreciate",
+    "nice to talk", "good to talk", "speak soon",
+)
+_FAQ_EXIT_DEFER = (
+    "think about", "think on it", "think it over", "mull it over",
+    "sleep on it", "get back to you", "call back", "ring back",
+    "ring you back", "i'll call", "i will call", "i'll get back",
+    "i will get back", "maybe later", "book later", "later on",
+    "another time", "another day", "leave it for now", "for now",
+    "i'll think", "i will think", "have a think",
+)
+_FAQ_EXIT_STANDALONE = (
+    "bye", "goodbye", "bye now", "bye bye",
+    "that's all for now", "thats all for now",
+    "that's all thanks", "thats all thanks",
+    "nothing else thanks", "nothing more thanks",
+    "all i needed thanks", "all i needed",
+    "i'll leave it there", "ill leave it there",
+)
+
+
+def _is_polite_faq_exit(text: str) -> bool:
+    """
+    True when caller is politely ending the FAQ call.
+    Either a standalone farewell signal, OR a farewell combined with a
+    deferral ("thank you… I'll think about it / book later / call back").
+    """
+    t = (text or "").lower()
+    if not t:
+        return False
+    if any(p in t for p in _FAQ_EXIT_STANDALONE):
+        return True
+    return (
+        any(p in t for p in _FAQ_EXIT_FAREWELL)
+        and any(p in t for p in _FAQ_EXIT_DEFER)
+    )
+
+
+# ── FAQ named-service price/duration: deterministic facts ────────────────────
+# Keyed by clinic service-price key; each entry matches caller phrasings.
+# Used in the faq_prices branch so we never hand price/duration questions
+# to the LLM when we already know the facts.
+_FAQ_PRICE_SERVICE_MATCHERS: tuple = (
+    # (service_price_key, matcher_phrases, spoken_label)
+    ("initial_assessment",
+     ("initial assessment", "initial physio", "initial appointment",
+      "first appointment", "first session", "first visit",
+      "new patient", "new-patient", "physio assessment",
+      "physiotherapy assessment", "assessment"),
+     "a physiotherapy assessment"),
+    ("follow_up",
+     ("follow up", "follow-up", "followup",
+      "next session", "next appointment", "subsequent session",
+      "standard session"),
+     "a follow-up physiotherapy session"),
+    ("rehabilitation",
+     ("rehabilitation", "rehab session", "rehab appointment", "rehab"),
+     "a rehabilitation session"),
+    ("shockwave",
+     ("shockwave",),
+     "shockwave therapy"),
+)
+_FAQ_PRICE_WANT_PRICE = (
+    "how much", "how many pounds", "price", "prices", "cost",
+    "costs", "charge", "charges", "fee", "fees", "£",
+)
+_FAQ_PRICE_WANT_DURATION = (
+    "how long", "how many minutes", "how long does", "how long is",
+    "how long will", "duration", "length of", "how long it",
+    "how long last", "how long do",
+)
+
+
+def _faq_price_deterministic(text: str, clinic: Dict[str, Any]) -> Optional[tuple]:
+    """
+    Build a one-sentence price/duration answer for a named service when the
+    facts are in clinic_config.service_prices.
+    Returns (spoken_answer, service_key, facts_set) or None if no match.
+    """
+    t = (text or "").lower()
+    prices = (clinic.get("service_prices") or {})
+    if not prices:
+        return None
+    matched_key = None
+    spoken_label = None
+    for key, phrases, label in _FAQ_PRICE_SERVICE_MATCHERS:
+        if key not in prices:
+            continue
+        if any(p in t for p in phrases):
+            matched_key = key
+            spoken_label = label
+            break
+    if not matched_key:
+        return None
+    info = prices[matched_key]
+    price = (info.get("price") or "").strip()
+    duration = (info.get("duration") or "").strip()
+    want_price = any(p in t for p in _FAQ_PRICE_WANT_PRICE)
+    want_dur   = any(p in t for p in _FAQ_PRICE_WANT_DURATION)
+    # If caller didn't explicitly gate, default to answering both facts —
+    # cheaper for the caller than a clarifier and avoids LLM invention.
+    if not (want_price or want_dur):
+        want_price = True
+        want_dur = True
+    facts: set = set()
+    parts: list = []
+    if want_dur and duration:
+        parts.append(duration)
+        facts.add("duration")
+    if want_price and price:
+        parts.append(price)
+        facts.add("price")
+    if not parts:
+        return None
+    label_cap = matched_key_label(spoken_label)
+    if "duration" in facts and "price" in facts:
+        body = f"{label_cap} is {duration} and costs {price}."
+    elif "duration" in facts:
+        body = f"{label_cap} is {duration} long."
+    else:
+        body = f"{label_cap} costs {price}."
+    return (body, matched_key, facts)
+
+
+def matched_key_label(label: str) -> str:
+    """Capitalise a service label for sentence-start use."""
+    if not label:
+        return ""
+    return label[0].upper() + label[1:]
+
 
 def _short_access_ans(clinic: Dict[str, Any]) -> str:
     """
@@ -12928,6 +13067,20 @@ class FlowEngine:
                     self.session["last_question"] = _faq_topic_reanchor(self.session)
                 return
 
+            # Polite-exit intercept — checked BEFORE _detect_intent so "thanks,
+            # I'll think about it and maybe book later" can never route to the
+            # general_query LLM (which would invent a close that reads the
+            # clinic phone number aloud). Always emit the bounded closeout.
+            if _is_polite_faq_exit(_txt_lower_fbo):
+                logger.info(
+                    "[ms_flow] FAQ_BOOKING_OFFER: polite_exit %r — bounded closeout",
+                    text[:60],
+                )
+                self.session["call_outcome_logged"] = "faq_only"
+                await self._tts.put(_FAQ_POLITE_CLOSEOUT)
+                self.session["flow_step"] = len(self._active_flow)
+                return
+
             # Pre-flight: informational cancel questions ("can I cancel by phone?",
             # "what's your cancellation policy?") must NOT trigger CANCEL_FLOW.
             # They are FAQ questions about the process, not actual cancel requests.
@@ -13179,7 +13332,46 @@ class FlowEngine:
                         _txt_lower_fbo.startswith(p) or p in _txt_lower_fbo
                         for p in _FOLLOWUP_STARTERS
                     )
+                    # Price-fact pronoun carry-forward: "and how long is that?" /
+                    # "and the price?" after a deterministic service answer.
+                    # If _faq_last_service is set and the caller asks for a price
+                    # or duration fact without naming a service, route as
+                    # faq_prices with the remembered service synthesized.
+                    _fbo_last_svc_pr  = self.session.get("_faq_last_service")
+                    _fbo_last_facts_pr = set(self.session.get("_faq_last_facts") or [])
+                    _fbo_wants_price = any(p in _txt_lower_fbo for p in _FAQ_PRICE_WANT_PRICE)
+                    _fbo_wants_dur   = any(p in _txt_lower_fbo for p in _FAQ_PRICE_WANT_DURATION)
+                    _fbo_names_any_svc = any(
+                        k in _txt_lower_fbo for k in _FAQ_PRICES_SERVICE_KEYWORDS
+                    )
                     if (
+                        _fbo_last_svc_pr
+                        and (_fbo_wants_price or _fbo_wants_dur)
+                        and not _fbo_names_any_svc
+                        and _fbo_intent in ("general_query", "faq_prices")
+                        and len(_fbo_substantive) <= 8
+                    ):
+                        # Dedup: if the caller is asking for a fact we already
+                        # answered for the same service, suppress silently so the
+                        # LLM can't re-read or re-invent figures.
+                        _asked = set()
+                        if _fbo_wants_price: _asked.add("price")
+                        if _fbo_wants_dur:   _asked.add("duration")
+                        if _asked and _asked <= _fbo_last_facts_pr:
+                            logger.info(
+                                "[ms_faq] price_fact_dedup service=%s asked=%s already_answered=%s",
+                                _fbo_last_svc_pr, "|".join(sorted(_asked)),
+                                "|".join(sorted(_fbo_last_facts_pr)),
+                            )
+                            self.session["fragment_suppressed"] = True
+                            return
+                        _fbo_eff_intent = "faq_prices"
+                        _fbo_eff_tx     = f"{_fbo_last_svc_pr.replace('_', ' ')} {transcript}"
+                        logger.info(
+                            "[ms_faq] price_fact_carry_forward service=%s for %r",
+                            _fbo_last_svc_pr, text[:40],
+                        )
+                    elif (
                         _fbo_active_svc
                         and len(_fbo_substantive) <= 10  # raised from 5
                         and _fbo_intent == "general_query"
@@ -13405,6 +13597,17 @@ class FlowEngine:
                 await self._handle_mid_flow_interrupt("faq_services", _glt_synth_tx)
                 if not self.session.get("_faq_loc_pending_intent"):
                     self.session["last_question"] = _faq_topic_reanchor(self.session)
+                return
+
+            # Polite-exit intercept — see FAQ_BOOKING_OFFER polite_exit note.
+            if _is_polite_faq_exit(_txt_lower_gbo):
+                logger.info(
+                    "[ms_flow] GENERAL_BOOKING_OFFER: polite_exit %r — bounded closeout",
+                    text[:60],
+                )
+                self.session["call_outcome_logged"] = "faq_only"
+                await self._tts.put(_FAQ_POLITE_CLOSEOUT)
+                self.session["flow_step"] = len(self._active_flow)
                 return
 
             # Pre-flight: informational cancel questions must NOT trigger CANCEL_FLOW.
@@ -16656,14 +16859,35 @@ class FlowEngine:
                 await self._tts.put(_FAQ_PRICES_NO_SERVICE + _re_anchor_sfx)
                 self.session["last_faq_answer"] = _FAQ_PRICES_NO_SERVICE
             else:
-                instruction = (
-                    f"The caller asked about the price of a specific service. "
-                    f"Their message: '{transcript.strip()}'\n"
-                    "Give ONLY the price and duration for that one service in one sentence. "
-                    "Do NOT list other services or prices. "
-                    "Answer directly from the clinic information in your system prompt. "
-                    "Just answer and stop."
-                )
+                # Deterministic price/duration answer for known services —
+                # bypasses LLM entirely so we never invent figures.
+                from app.clinic_config import get_clinic as _gc_pr
+                _cid_pr = self.session.get("clinic_id") or "demo"
+                _cli_pr = _gc_pr(_cid_pr)
+                _det = _faq_price_deterministic(_pr_text, _cli_pr)
+                if _det:
+                    _det_ans, _det_key, _det_facts = _det
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: prices deterministic "
+                        "service=%s facts=%s",
+                        _det_key, "|".join(sorted(_det_facts)),
+                    )
+                    await self._tts.put(_det_ans + _re_anchor_sfx)
+                    self.session["last_faq_answer"]   = _det_ans
+                    self.session["_faq_last_service"] = _det_key
+                    self.session["_faq_last_facts"]   = list(_det_facts)
+                else:
+                    # No deterministic match (service named but not in price table,
+                    # e.g. pilates / acupuncture "enquire for pricing") — fall
+                    # through to LLM with a tight one-sentence instruction.
+                    instruction = (
+                        f"The caller asked about the price of a specific service. "
+                        f"Their message: '{transcript.strip()}'\n"
+                        "Give ONLY the price and duration for that one service in one sentence. "
+                        "Do NOT list other services or prices. "
+                        "Answer directly from the clinic information in your system prompt. "
+                        "Just answer and stop."
+                    )
         elif intent in ("faq_hours", "faq_location"):
             # ── Deterministic clinic-data lookup — no LLM needed ──────────────
             from app.clinic_config import get_clinic as _gc_mfi
