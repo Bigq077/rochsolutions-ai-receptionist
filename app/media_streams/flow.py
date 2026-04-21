@@ -8952,6 +8952,12 @@ class FlowEngine:
                 "near that", "near then", "near there",
                 "nearby", "close to that", "closest to", "nearest to",
                 "in that area", "around that area", "around that time",
+                # Prompt D: relative-week-shift phrases must bypass the
+                # exploratory guard so they reach the week-nav block below.
+                "week after", "following week", "week later",
+                "a week after", "a week later",
+                "just offered", "just gave", "you gave me", "you just gave",
+                "the one you", "those dates", "those days",
             ))
             if _exp_match and not _exp_has_day and not _exp_has_ordinal and not _exp_has_month and not _exp_has_week_or_prox:
                 _exp_replay = self.session.get("last_question", "Which day would suit you best?")
@@ -8997,6 +9003,12 @@ class FlowEngine:
                 "the following week", "following week",
                 "next week after that", "week after this",
                 "the week after this",
+                # Prompt D: relative-to-current-offer variants
+                "a week after", "week after the", "the week after",
+                "a week later", "week later",
+                "anything a week", "anything the week after",
+                "week after the one", "week after the dates",
+                "week after the ones",
             )
             _wk_week_hit   = any(p in text for p in _WK_WEEK_PHRASES)
             _wk_around_hit = any(p in text for p in _WK_AROUND_PHRASES)
@@ -9093,6 +9105,31 @@ class FlowEngine:
                         elif _wk_week_hit:
                             # WEEK-OF-DATE: filter to ISO week (Mon–Sun) containing anchor
                             _wk_in_week = _week_days_for_anchor(_wk_avail, _wk_anchor_obj)
+                            # Prompt D: caller-natural bias — when the caller names an
+                            # explicit date ("week of the 1st of May"), prefer dates on
+                            # or after that date so we don't surprise them by jumping
+                            # backward into the previous month.  Strict calendar-week
+                            # wording ("week containing the 1st", "calendar week") opts
+                            # out and keeps full Mon–Sun behavior.
+                            _wk_strict_calendar = any(p in text for p in (
+                                "week containing", "calendar week",
+                                "the whole week", "entire week",
+                            ))
+                            if _wk_expl and _wk_in_week and not _wk_strict_calendar:
+                                import datetime as _dt_wkn2
+                                _wk_forward = [
+                                    d for d in _wk_in_week
+                                    if _dt_wkn2.date.fromisoformat(
+                                        (d.get("date") or "9999-12-31")[:10]
+                                    ) >= _wk_anchor_obj
+                                ]
+                                if _wk_forward:
+                                    _wk_in_week = _wk_forward
+                                    logger.info(
+                                        "[ms_flow] %s week_of_date natural_anchor=%s forward_only=%d",
+                                        step["state"], _wk_anchor_obj.isoformat(),
+                                        len(_wk_forward),
+                                    )
                             _wk_suf = (
                                 "st" if _wk_anchor_obj.day % 10 == 1 and _wk_anchor_obj.day != 11 else
                                 "nd" if _wk_anchor_obj.day % 10 == 2 and _wk_anchor_obj.day != 12 else
