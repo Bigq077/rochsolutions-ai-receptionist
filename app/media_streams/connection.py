@@ -2532,10 +2532,31 @@ class WebSocketCallHandler:
                                 "(stale question suppressed: %r)", _last_q[:80]
                             )
                         else:
+                            # Watchdog eligibility gate — declarative text (e.g.
+                            # deterministic FAQ answer) is stored in last_question
+                            # so repeat/recovery can replay it, but the no-input
+                            # watchdog must NOT re-ask it. _store_last_question
+                            # marks such text via _last_question_not_reaskable;
+                            # when current last_question matches the marker we
+                            # skip arming entirely. Any future real question
+                            # overwrites last_question → marker mismatches →
+                            # watchdog arms normally again.
+                            _nonreaskable = self.session.get("_last_question_not_reaskable", "")
+                            _watchdog_eligible = not (_nonreaskable and _nonreaskable == _last_q)
                             self._silence_handler.set_state(
                                 self.session.get("state", "default")
                             )
-                            self._silence_handler.on_question_asked(_last_q)
+                            if _watchdog_eligible:
+                                self._silence_handler.on_question_asked(_last_q)
+                            else:
+                                # Clear handler's stored question so no stale prior
+                                # prompt gets replayed either — the current stored
+                                # text is declarative and owns the repeat-path only.
+                                self._silence_handler.last_question = ""
+                                logger.info(
+                                    "[ms_conn] watchdog NOT armed — last_question is "
+                                    "non-reaskable (declarative): %r", _last_q[:80],
+                                )
                             # ── Stale-lifecycle repair: force-refresh canonical question ──
                             # on_question_asked() routes through the heuristic
                             # _is_question_worth_storing filter, which rejects ANY text
@@ -2558,7 +2579,7 @@ class WebSocketCallHandler:
                             # abort at its next iteration via the existing stale-q_gen
                             # guard.  No-op when session and handler already agree.
                             _lq_handler = self._silence_handler.last_question
-                            if _last_q and _last_q != _lq_handler:
+                            if _watchdog_eligible and _last_q and _last_q != _lq_handler:
                                 self._silence_handler.last_question         = _last_q
                                 self._silence_handler.reask_count           = 0
                                 self._silence_handler._no_input_reask_count = 0
@@ -3250,6 +3271,7 @@ class WebSocketCallHandler:
         # use the number..." and the session was reloaded).  The silence handler
         # is also zeroed so no cross-call question can leak into the re-ask path.
         self.session["last_question"]       = ""
+        self.session.pop("_last_question_not_reaskable", None)
         self._silence_handler.last_question = ""
         self.session["greeting_delivered"]  = True
 

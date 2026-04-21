@@ -379,6 +379,14 @@ F_FAST_PATH_FULL_PHONE      = "_fast_path_full_phone"
 F_TWILIO_FROM               = "twilio_from"
 F_TWILIO_TO                 = "twilio_to"
 F_LAST_QUESTION             = "last_question"
+# Marker text: when session["last_question"] equals this value, the stored
+# prompt is declarative (e.g. deterministic FAQ answer) and the no-input
+# watchdog MUST NOT arm/fire against it. Any subsequent write of different
+# text to last_question naturally invalidates the marker (text differs) and
+# restores default watchdog eligibility — so existing write sites need no
+# changes. Only write sites that intentionally store declarative / answer
+# text update this marker (via _store_last_question(..., watchdog_eligible=False)).
+F_LAST_QUESTION_NOT_REASKABLE = "_last_question_not_reaskable"
 
 # New fields specific to the Media Streams parallel pipeline
 F_STREAM_SID                = "stream_sid"
