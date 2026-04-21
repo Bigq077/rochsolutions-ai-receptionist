@@ -13069,6 +13069,77 @@ class FlowEngine:
                 self.session["fragment_suppressed"] = True
                 return
 
+            # ── Deterministic FAQ-offer → booking pivot ─────────────────────────
+            # When the caller clearly accepts an offer to arrange/book, transition
+            # state machine into the real booking flow. Runs BEFORE _detect_intent
+            # and FAQ follow-up routing so "yeah go on then i'd like to get that
+            # arranged" / "yes please" / "book me in" never fall into
+            # general_query + _handle_mid_flow_interrupt (which would emit a
+            # booking-like sentence without actually moving state).
+            #
+            # Two tiers:
+            #  • STRONG: explicit book/arrange/proceed verbs — always pivot.
+            #  • SOFT:   "yes please" / "yeah please" — pivot only when the
+            #            most recent FAQ answer was an offer-to-book (contains
+            #            "get that arranged" / "take a few details"). Avoids
+            #            hijacking "yes please" after "Anything else?" prompts.
+            _FBO_BOOK_STRONG = (
+                "get that arranged", "get it arranged", "get that sorted",
+                "get that booked", "get it booked", "get me booked",
+                "arrange that", "arrange it", "arrange one",
+                "let's book", "lets book", "let's do that", "lets do that",
+                "let's get", "lets get",
+                "book that in", "book it in", "book me in", "book me",
+                "book one in", "book an appointment", "book a slot",
+                "i'd like to book", "id like to book", "i would like to book",
+                "i'd like to proceed", "id like to proceed", "i would like to proceed",
+                "i'd like to get that", "id like to get that",
+                "i want to book", "i want to proceed", "i want to arrange",
+                "let's proceed", "lets proceed", "let's go ahead", "lets go ahead",
+                "go ahead", "go on then", "yeah go on", "yes go ahead",
+                "can we arrange", "can we book", "please book",
+                "take my details", "take a few details", "take some details",
+                "proceed with booking", "start booking", "start the booking",
+                "sign me up", "pencil me in", "put me down",
+            )
+            _FBO_BOOK_SOFT = (
+                "yes please", "yeah please", "yep please", "yep, please",
+                "okay please", "ok please",
+                "yes lets", "yes let's", "yeah lets", "yeah let's",
+            )
+            _fbo_last_ans = (self.session.get("last_faq_answer") or "").lower()
+            _FBO_OFFER_MARKERS = (
+                "get that arranged", "take a few details", "take some details",
+                "i can take a few details", "if you\u2019d like to get that arranged",
+                "if you'd like to get that arranged",
+            )
+            _fbo_offer_active = any(p in _fbo_last_ans for p in _FBO_OFFER_MARKERS)
+            _fbo_accepts_book = (
+                any(p in _txt_lower_fbo for p in _FBO_BOOK_STRONG)
+                or (_fbo_offer_active and any(p in _txt_lower_fbo for p in _FBO_BOOK_SOFT))
+            )
+            if _fbo_accepts_book:
+                logger.info(
+                    "[ms_flow] FAQ_BOOKING_OFFER: booking_pivot accepted %r "
+                    "offer_active=%s → switch_flow(booking)",
+                    text[:60], _fbo_offer_active,
+                )
+                # Clear FAQ context so stale topic lock / prompts don't leak
+                # into the booking flow.
+                self.session.pop("_faq_active_service", None)
+                self.session.pop("_faq_active_topic", None)
+                self.session.pop("_faq_ans_intent", None)
+                self.session.pop("_faq_followup_window", None)
+                self.session.pop("_faq_loc_pending_intent", None)
+                self.session.pop("_faq_loc_pending_sub", None)
+                self.session.pop("last_question", None)
+                # Ensure the call is no longer tagged as faq_only.
+                if self.session.get("call_outcome_logged") == "faq_only":
+                    self.session.pop("call_outcome_logged", None)
+                self._switch_flow("booking")
+                await self.ask_current_question()
+                return
+
             # Bare affirmatives ("yes", "please") after "Anything else?" mean the
             # caller has another question but hasn't stated it yet.  Emit a clean
             # continuation prompt instead of triggering topic carry-forward.
