@@ -780,6 +780,11 @@ def _is_mid_booking_acupuncture_resolution(
     t = (text_lower or "").strip()
     if not t:
         return False
+    # Defence-in-depth: negative utterances ("I don't think I'm going to
+    # do acupuncture then") contain short-accept substrings like
+    # "acupuncture then" and would otherwise flip positive.
+    if _is_service_rejection(t):
+        return False
     if any(p in t for p in _FAQ_RESOLUTION_QUESTION_SIGS):
         return False
     if any(p in t for p in _FAQ_RESOLUTION_FRESH_CONCERN_SIGS):
@@ -789,6 +794,88 @@ def _is_mid_booking_acupuncture_resolution(
     if any(p in t for p in _FAQ_RESOLUTION_SHORT_ACCEPT_SIGS):
         return True
     return False
+
+
+# ── Service rejection / switch detectors (COLLECT_REASON mid-booking) ───────
+# Used to separate negative "I don't think I'm going to do acupuncture then"
+# from positive resolution, and to cleanly detect when the caller abandons
+# the prior FAQ topic for a different service.
+_SERVICE_REJECTION_SIGS: tuple[str, ...] = (
+    "don't think i'm going to do", "dont think i'm going to do",
+    "don't think im going to do", "dont think im going to do",
+    "don't think i'll do", "dont think i'll do",
+    "don't think ill do", "dont think ill do",
+    "don't think i want", "dont think i want",
+    "don't think acupuncture", "dont think acupuncture",
+    "don't want to do", "dont want to do",
+    "not going to do", "not gonna do",
+    "i'd rather not", "id rather not",
+    "rather not do",
+    "changed my mind",
+    "not for me",
+    "don't fancy", "dont fancy",
+    "not keen on", "not keen",
+    "skip the",
+)
+
+
+def _is_service_rejection(text_lower: str) -> bool:
+    """True when the utterance is a deterministic rejection / decline of
+    the currently-discussed service path.  Narrow by design — only fires
+    on unambiguous negative phrasings."""
+    t = (text_lower or "").strip()
+    if not t:
+        return False
+    return any(p in t for p in _SERVICE_REJECTION_SIGS)
+
+
+# Service aliases used by the switch detector.  Keys are canonical
+# topic names that line up with _mid_booking_faq_ctx["topic"].
+_SERVICE_SWITCH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("physiotherapy", ("physiotherapy", "physio assessment",
+                       "physio appointment", "physio ")),
+    ("shockwave", ("shockwave",)),
+    ("laser", ("laser therapy", "laser treatment", "laser ")),
+    ("pilates", ("pilates",)),
+    ("massage", ("sports massage", "deep tissue", "massage")),
+    ("biomechanics", ("biomechanical", "biomechanics")),
+    ("acupuncture", ("acupuncture",)),
+)
+
+_SERVICE_SWITCH_VERB_SIGS: tuple[str, ...] = (
+    "instead",
+    "rather go with", "rather do", "rather have",
+    "i'll go with", "ill go with",
+    "i'm going to go with", "im going to go with",
+    "going to go with",
+    "want to go with", "wanna go with",
+    "let's do", "lets do",
+    "let's go with", "lets go with",
+    "let's try", "lets try",
+    "start with", "start off with",
+    "go ahead with",
+    "book a", "book an", "book the",
+    "i'll do", "ill do",
+)
+
+
+def _detect_service_switch(text_lower: str, current_topic: str | None) -> str | None:
+    """Return the canonical name of a new service if the utterance
+    clearly commits to a different service than ``current_topic``;
+    otherwise None.  Requires BOTH a commit-verb signal AND a service
+    term that differs from the current FAQ topic."""
+    t = (text_lower or "").strip()
+    if not t:
+        return None
+    if not any(v in t for v in _SERVICE_SWITCH_VERB_SIGS):
+        return None
+    _cur = (current_topic or "").strip().lower()
+    for svc, aliases in _SERVICE_SWITCH_ALIASES:
+        if svc == _cur:
+            continue
+        if any(a in t for a in aliases):
+            return svc
+    return None
 
 
 # ── Name wrapper patterns (BUG 4 fix) ────────────────────────────────────────
@@ -12066,8 +12153,59 @@ class FlowEngine:
                         "what about prices", "what about insurance",
                     )
                 )
-                if _is_booking_resume_signal(text):
+                _mbf_current_topic = _mbf_ctx.get("topic")
+                _mbf_new_svc = _detect_service_switch(_t_mbf, _mbf_current_topic)
+                # ── Priority 1: explicit service switch to a different service.
+                #   Clear prior FAQ topic, mark resolved, resume booking so the
+                #   mid-flow interrupt block below cannot re-fire a stale FAQ
+                #   on the same utterance.
+                if _mbf_new_svc:
                     self.session.pop("_mid_booking_faq_ctx", None)
+                    self.session.pop("_faq_active_service", None)
+                    _mbf_resolved = True
+                    _mid_intent = "booking"
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_service_switch "
+                        "from=%s to=%s text=%r",
+                        _mbf_current_topic, _mbf_new_svc, text[:80],
+                    )
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_context_cleared "
+                        "reason=service_switch text=%r", text[:80],
+                    )
+                # ── Priority 2: explicit service rejection / decline.  Must
+                #   NOT be stored as the booking reason.  Re-ask so caller
+                #   can state what they'd like to book for instead.
+                elif _is_service_rejection(_t_mbf):
+                    self.session.pop("_mid_booking_faq_ctx", None)
+                    self.session.pop("_faq_active_service", None)
+                    self.session.pop("_partial_reason", None)
+                    _mbf_resolved = True
+                    _mid_intent = "booking"
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_service_rejected "
+                        "topic=%s text=%r",
+                        _mbf_current_topic, text[:80],
+                    )
+                    logger.info(
+                        "[ms_flow] mid_booking_faq_context_cleared "
+                        "reason=service_rejected text=%r", text[:80],
+                    )
+                    _reject_phrase = (
+                        "No problem — what would you like to book for then?"
+                    )
+                    await self._tts.put(_reject_phrase)
+                    self.session["last_question"] = _reject_phrase
+                    self.session.setdefault(
+                        "conversation_history", []
+                    ).append(
+                        {"role": "assistant", "content": _reject_phrase}
+                    )
+                    return
+                elif _is_booking_resume_signal(text):
+                    self.session.pop("_mid_booking_faq_ctx", None)
+                    _mbf_resolved = True
+                    _mid_intent = "booking"
                     logger.info(
                         "[ms_flow] mid_booking_faq_context_cleared "
                         "reason=explicit_resume_booking text=%r",
@@ -12076,6 +12214,8 @@ class FlowEngine:
                 elif _mbf_topic_switch:
                     self.session.pop("_mid_booking_faq_ctx", None)
                     self.session.pop("_faq_active_service", None)
+                    _mbf_resolved = True
+                    _mid_intent = "booking"
                     logger.info(
                         "[ms_flow] mid_booking_faq_context_cleared "
                         "reason=explicit_topic_switch text=%r",
