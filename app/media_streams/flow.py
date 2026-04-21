@@ -213,21 +213,48 @@ _FAQ_EXIT_STANDALONE = (
 )
 
 
+_FAQ_EXIT_TERMINATORS = (
+    "that's all", "thats all", "that's it", "thats it",
+    "all i wanted", "all i needed", "nothing more", "leave it there",
+    "we're done", "were done", "i'm done", "im done",
+)
+_FAQ_EXIT_QUESTION_SIGNALS = (
+    "?", "what", "how", "where", "when", "why", "which",
+    "can you", "do you", "is there", "are you", "could you",
+)
+
+
 def _is_polite_faq_exit(text: str) -> bool:
     """
     True when caller is politely ending the FAQ call.
-    Either a standalone farewell signal, OR a farewell combined with a
-    deferral ("thank you… I'll think about it / book later / call back").
+    Hierarchy (any one is enough):
+      1. A standalone exit phrase ("bye", "goodbye", "all i needed", …).
+      2. A deferral signal ("i'll think about it", "book later",
+         "call back"). Unambiguous on its own.
+      3. A farewell ("thanks"/"thank you"/"cheers") combined with a
+         terminator ("that's all") — strong enough.
+      4. A farewell alone in a short utterance with no question signals
+         ("okay thank you", "thanks"). Length + no-question guard keeps
+         "thank you, where are you located?" out.
     """
-    t = (text or "").lower()
+    t = (text or "").lower().strip()
     if not t:
         return False
     if any(p in t for p in _FAQ_EXIT_STANDALONE):
         return True
-    return (
-        any(p in t for p in _FAQ_EXIT_FAREWELL)
-        and any(p in t for p in _FAQ_EXIT_DEFER)
-    )
+    if any(p in t for p in _FAQ_EXIT_DEFER):
+        return True
+    has_farewell = any(p in t for p in _FAQ_EXIT_FAREWELL)
+    if not has_farewell:
+        return False
+    if any(p in t for p in _FAQ_EXIT_TERMINATORS):
+        return True
+    # Farewell alone: only treat as an exit when the utterance is short and
+    # carries no question signal — otherwise "thank you, where are you?"
+    # would incorrectly close the call.
+    if len(t.split()) <= 6 and not any(s in t for s in _FAQ_EXIT_QUESTION_SIGNALS):
+        return True
+    return False
 
 
 # ── FAQ named-service price/duration: deterministic facts ────────────────────
@@ -13188,6 +13215,17 @@ class FlowEngine:
                 if any(p in _fbo_tx_low for p in _FBO_PP_PARK):   _fbo_req_parts.add("parking")
                 if any(p in _fbo_tx_low for p in _FBO_PP_PARK_NUANCE): _fbo_req_parts.add("parking_policy")
                 if any(p in _fbo_tx_low for p in _FBO_PP_TRANS):  _fbo_req_parts.add("transport")
+                # BUG 2: named-service price/duration dedup — when the same caller
+                # repeats the same service+facts combination we already answered
+                # deterministically, mark the req_parts so new_part=False suppresses.
+                for _svc_k, _svc_ph, _ in _FAQ_PRICE_SERVICE_MATCHERS:
+                    if any(p in _fbo_tx_low for p in _svc_ph):
+                        _fbo_req_parts.add(f"svc:{_svc_k}")
+                        break
+                if any(p in _fbo_tx_low for p in _FAQ_PRICE_WANT_PRICE):
+                    _fbo_req_parts.add("fact:price")
+                if any(p in _fbo_tx_low for p in _FAQ_PRICE_WANT_DURATION):
+                    _fbo_req_parts.add("fact:duration")
                 _fbo_new_part = bool(_fbo_req_parts - _fbo_parts_answered) if _fbo_req_parts else False
                 logger.info(
                     "[ms_faq] practical_dedup_check requested=%s last_answered=%s suppressed=%s",
@@ -16708,6 +16746,10 @@ class FlowEngine:
         # re-anchor block below so the silence handler asks it only after real
         # silence — not immediately after every answer (over-aggressive).
         _re_anchor_sfx = ""
+        # BUG 1 fix: flag for the deterministic named-service prices branch so
+        # the shared LLM fallback below is skipped (otherwise `instruction` is
+        # never bound and the call raises UnboundLocalError).
+        _faq_prices_det_handled = False
         # Clear active service topic when a non-service FAQ is answered.
         # Prevents stale acupuncture context leaking into hours/location/etc. answers.
         # Exception: when routing a general_query follow-up within an open follow-up
@@ -16876,6 +16918,17 @@ class FlowEngine:
                     self.session["last_faq_answer"]   = _det_ans
                     self.session["_faq_last_service"] = _det_key
                     self.session["_faq_last_facts"]   = list(_det_facts)
+                    self.session["last_faq_intent"]   = "faq_prices"
+                    self.session["_faq_ans_intent"]   = "faq_prices"
+                    self.session["_faq_ans_at"]       = time.time()
+                    # Extend part-aware dedup memory so a repeated same-service
+                    # same-facts question is suppressed by the existing
+                    # practical_dedup_check.
+                    _pp = set(self.session.get("_faq_parts_answered") or [])
+                    _pp.update({f"svc:{_det_key}"})
+                    _pp.update({f"fact:{f}" for f in _det_facts})
+                    self.session["_faq_parts_answered"] = list(_pp)
+                    _faq_prices_det_handled = True
                 else:
                     # No deterministic match (service named but not in price table,
                     # e.g. pilates / acupuncture "enquire for pricing") — fall
@@ -17296,6 +17349,9 @@ class FlowEngine:
             or (intent == "faq_prices" and not any(
                 k in transcript.strip().lower() for k in _FAQ_PRICES_SERVICE_KEYWORDS
             ))
+            # BUG 1: named-service prices handled deterministically above —
+            # never fall through to the shared LLM call (instruction is unbound).
+            or (intent == "faq_prices" and _faq_prices_det_handled)
         )
         if not _skip_llm:
             await self._llm(instruction, allow_tools=False)
