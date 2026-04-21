@@ -932,6 +932,27 @@ class SilenceHandler:
         if (_sess_faq_w or {}).get("state") in ("GREETING", "DETECT_INTENT", ""):
             _wait = max(_wait, 8.0)
             logger.info("[ms_watchdog] greeting_grace=%.1fs", _wait)
+        # Caller-choice states: the AI has just asked a question that requires
+        # the caller to parse spoken content and make a decision (pick a clinic,
+        # pick a day/time, confirm a booking, answer a binary yes/no).  The
+        # 4.5 s default is too aggressive here — callers routinely pause 5-7 s
+        # while deciding between two options.  Raise the floor to 8 s so the
+        # watchdog does not re-ask on top of a caller who is still thinking.
+        _CHOICE_GRACE_STATES = (
+            "ASK_LOCATION",
+            "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+            "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+            "CONFIRM_BOOKING",
+            "CONFIRM_RESCHEDULE", "CONFIRM_RESCHEDULE_OR_CANCEL",
+            "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+            "ASK_NEW_OR_RETURNING",
+        )
+        if (_sess_faq_w or {}).get("state") in _CHOICE_GRACE_STATES:
+            _wait = max(_wait, 8.0)
+            logger.info(
+                "[ms_watchdog] choice_grace state=%s wait=%.1fs",
+                (_sess_faq_w or {}).get("state"), _wait,
+            )
 
         # Ownership check: yield once so any pending cancellation of a superseded
         # task is delivered before we log WATCHDOG_START.  If a newer watchdog task
