@@ -2128,8 +2128,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 3,
         "state": "RETURNING_PLAN_CONFIRM_PHONE",
         "question": (
-            "If the number you're calling on is the one associated with your booking, "
-            "say: use this number."
+            "Is the number you're calling on the same one you used for your last "
+            "appointment? If you're not sure, we can just book a new set of appointments."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -12437,6 +12437,78 @@ class FlowEngine:
                 "[ms_flow] CONFIRM_PHONE state=%s input=%r phone_accept=%s",
                 step["state"], text[:60], _is_phone_accept(text),
             )
+            # ── RETURNING_PLAN_CONFIRM_PHONE: "not sure" / NO → normal booking ──
+            # For on-plan returning patients we asked whether this is the same number
+            # used for their last appointment. If they're unsure OR say no/different
+            # number, we abandon the phone-based plan lookup and route through the
+            # standard booking path (COLLECT_REASON → returning name/phone collection).
+            if step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
+                _RPCP_NOT_SURE = (
+                    "not sure", "i'm not sure", "im not sure", "i am not sure",
+                    "don't know", "dont know", "i don't know", "i dont know",
+                    "don't remember", "dont remember", "can't remember", "cant remember",
+                    "i don't remember", "i dont remember",
+                    "i can't remember", "i cant remember",
+                    "i can't recall", "cant recall", "no idea",
+                    "probably not", "maybe not", "not really sure",
+                )
+                _RPCP_DIFFERENT = (
+                    "different number", "another number", "a different number",
+                    "used another number", "used a different number",
+                    "different phone", "another phone",
+                    "wrong number", "not the same", "not the same number",
+                    "it's a different", "its a different",
+                )
+                _rpcp_not_sure = any(p in text for p in _RPCP_NOT_SURE)
+                _rpcp_different = any(p in text for p in _RPCP_DIFFERENT)
+                # Plain "no" / "nope" / "nah" also means not-this-number → fallback.
+                import re as _re_rpcp
+                _rpcp_plain_no = bool(_re_rpcp.search(r'\b(no|nope|nah)\b', text)) and not _is_phone_accept(text)
+                if _rpcp_not_sure or _rpcp_different or _rpcp_plain_no:
+                    # Abandon plan-lookup path; treat as standard returning booking.
+                    self.session["phone_confirmed"]     = False
+                    self.session["phone_from_twilio"]   = False
+                    self.session["phone_number"]        = None
+                    self.session["phone_digits_buffer"] = ""
+                    self.session["phone_dtmf_buffer"]   = ""
+                    self.session.setdefault("collected", {}).pop("phone", None)
+                    # Clear on-plan flags so downstream skip guards route through the
+                    # normal returning booking flow (COLLECT_REASON → COLLECT_NAME_RETURNING
+                    # → CONFIRM_PHONE_RETURNING → …).
+                    for _rpcp_f in (
+                        "on_treatment_plan",
+                        "returning_plan_looked_up", "returning_plan",
+                        "returning_plan_lookup_name", "returning_plan_lookup_type",
+                    ):
+                        self.session.pop(_rpcp_f, None)
+                    self.session.setdefault("collected", {}).pop("on_treatment_plan", None)
+                    # Jump past RETURNING_PLAN_COLLECT_PHONE and RETURNING_PLAN_LOOKUP
+                    # straight to COLLECT_REASON (index immediately after lookup step).
+                    self.session["flow_step"]  = _RETURNING_PLAN_LOOKUP_INDEX + 1
+                    _rpcp_next_state = self._active_flow[
+                        _RETURNING_PLAN_LOOKUP_INDEX + 1
+                    ]["state"]
+                    self.session["state"]      = _rpcp_next_state
+                    self.session["flow_state"] = _rpcp_next_state
+                    self.session.pop("slot_pending_confirmation", None)
+                    self.session.pop("vague_option_pending", None)
+                    self.session.pop("vague_clarification_asked", None)
+                    _rpcp_bridge = (
+                        "No problem — let's just book you a new set of appointments."
+                    )
+                    self.session["last_question"] = _rpcp_bridge
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rpcp_bridge}
+                    )
+                    await self._tts.put(_rpcp_bridge)
+                    logger.info(
+                        "[ms_flow] RETURNING_PLAN_CONFIRM_PHONE: not-sure/no/different → "
+                        "falling back to normal booking (next_state=%s not_sure=%s "
+                        "different=%s plain_no=%s)",
+                        _rpcp_next_state, _rpcp_not_sure, _rpcp_different, _rpcp_plain_no,
+                    )
+                    await self.ask_current_question()
+                    return
             # ── FIRST-CHECK: explicit phone-accept phrase ────────────────────
             # Must precede generic _CP_YES/_CP_NO so "yes use this number" is
             # never ambiguous — it is always YES with no possibility of _cp_no

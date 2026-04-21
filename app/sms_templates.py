@@ -30,10 +30,17 @@ BOOKING_CONFIRMATION_SMS = (
     "⏰ {appointment_time}\n"
     "📍 {clinic_address}\n\n"
     "{first_visit_note}"
-    "To confirm your booking, please reply with your full name.\n\n"
+    "{full_name_request}"
     "Maps: {maps_link}\n\n"
     "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
+)
+
+# Explicit full-name request — inserted only when the caller's full name is
+# still pending (only first name was captured on the call).
+FULL_NAME_REQUEST_NOTE = (
+    "Please reply to this message with your full name so we can complete "
+    "your booking details.\n\n"
 )
 
 
@@ -134,14 +141,29 @@ def build_sms(session: dict) -> str:
     clinic_address = _location_addresses.get(_loc) or CLINIC_ADDRESS
     maps_link      = build_maps_link(clinic_address)
 
+    # Pending full name?  Only the caller's first name is collected on the
+    # call, so the stored name is typically a single token.  When a full name
+    # has already been confirmed (contains a space) the SMS must NOT re-ask.
+    _full_name_confirmed = bool(name_raw) and (" " in name_raw)
+    pending_full_name    = not _full_name_confirmed
+    full_name_request    = FULL_NAME_REQUEST_NOTE if pending_full_name else ""
+
+    import logging as _logging_sms
+    _logging_sms.getLogger(__name__).info(
+        "BOOKING_CONFIRM pending_full_name=%s → SMS %s full-name instruction",
+        pending_full_name,
+        "requests" if pending_full_name else "omits",
+    )
+
     body = BOOKING_CONFIRMATION_SMS.format(
-        patient_name     = patient_name,
-        clinic_name      = clinic_name,
-        appointment_date = appointment_date,
-        appointment_time = appointment_time,
-        clinic_address   = clinic_address,
-        first_visit_note = note,
-        maps_link        = maps_link,
-        clinic_phone     = clinic_phone,
+        patient_name      = patient_name,
+        clinic_name       = clinic_name,
+        appointment_date  = appointment_date,
+        appointment_time  = appointment_time,
+        clinic_address    = clinic_address,
+        first_visit_note  = note,
+        full_name_request = full_name_request,
+        maps_link         = maps_link,
+        clinic_phone      = clinic_phone,
     )
     return body
