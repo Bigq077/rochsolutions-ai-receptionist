@@ -926,6 +926,21 @@ _SERVICE_SWITCH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("acupuncture", ("acupuncture",)),
 )
 
+# Spoken display labels used by the replacement-service acknowledgement
+# prefix ("Okay, that's noted — we'll go with <label>.").  Keys must match
+# the canonical service names returned by _detect_service_switch /
+# _SERVICE_SWITCH_ALIASES.
+_SERVICE_DISPLAY_ACK: dict[str, str] = {
+    "physiotherapy": "a physiotherapy assessment",
+    "shockwave":     "shockwave therapy",
+    "laser":         "laser therapy",
+    "pilates":       "pilates",
+    "massage":       "a sports massage",
+    "biomechanics":  "a biomechanical assessment",
+    "acupuncture":   "acupuncture",
+}
+
+
 _SERVICE_SWITCH_VERB_SIGS: tuple[str, ...] = (
     "instead",
     "rather go with", "rather do", "rather have", "rather book",
@@ -12303,6 +12318,18 @@ class FlowEngine:
                     self.session.pop("_faq_active_service", None)
                     _mbf_resolved = True
                     _mid_intent = "booking"
+                    # Narrow UX polish: acknowledge the new service choice
+                    # on the next spoken turn via the existing prefix-fold
+                    # mechanism (ask_current_question ~line 4753) so the
+                    # caller hears "Okay, that's noted — we'll go with
+                    # <label>. And what's your first name please? ..."
+                    # as ONE utterance, no extra state.
+                    _ack_label = _SERVICE_DISPLAY_ACK.get(
+                        _mbf_new_svc, _mbf_new_svc
+                    )
+                    self.session["_nc_transition_prefix"] = (
+                        f"Okay, that's noted — we'll go with {_ack_label}."
+                    )
                     logger.info(
                         "[ms_flow] mid_booking_faq_service_switch "
                         "from=%s to=%s text=%r",
@@ -12351,8 +12378,11 @@ class FlowEngine:
                         # mechanism (ask_current_question ~line 4753) so
                         # the ack + name question are spoken as ONE
                         # utterance with no extra state or re-ask.
+                        _ack_label = _SERVICE_DISPLAY_ACK.get(
+                            _reject_replacement, _reject_replacement
+                        )
                         self.session["_nc_transition_prefix"] = (
-                            "Okay, that's noted —"
+                            f"Okay, that's noted — we'll go with {_ack_label}."
                         )
                         # Fall through — normal COLLECT_REASON extraction
                         # captures the utterance as the booking reason and

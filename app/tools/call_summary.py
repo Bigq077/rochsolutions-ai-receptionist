@@ -307,12 +307,16 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     if session.get("cancel_confirmed"):
         return "cancelled"
 
-    # Deep-progress incomplete: caller reached a meaningful operational stage but
-    # hung up before completion. Covers booking (slots offered / pending / confirmed),
-    # reschedule (appointment found or user confirmed new time), and cancel (appt found).
-    # Reuses manual_followup so existing SMS routing sends a callback — not an abandoned SMS.
+    # Deep-progress incomplete: caller reached a meaningful operational stage
+    # (availability offered, slot pending, slot confirmed, reschedule/cancel
+    # appointment located, etc.) but hung up before final confirmation.
+    # Classified as "abandoned" — the caller engaged genuinely with the flow
+    # but didn't complete.  NOT "manual_followup": no rule-based reason staff
+    # intervention is required.  Genuine manual cases are already captured
+    # above by the handoff_needed check (line ~277), which sets the flag
+    # from deterministic rules (safeguarding, ambiguous identity, etc.).
     if _has_deep_progression(session):
-        return "manual_followup"
+        return "abandoned"
 
     # Call completed but no booking/reschedule → abandoned
     if (summary.get("meta", {}) or {}).get("call_status") == "completed":
