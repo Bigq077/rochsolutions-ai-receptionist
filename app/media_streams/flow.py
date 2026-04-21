@@ -5959,10 +5959,32 @@ class FlowEngine:
                 "this is my first time",
             })
             if _loc_norm in _ASK_LOCATION_FILLER:
-                _loc_tier_q = (
-                    self.session.get("last_question")
-                    or "Would that be at our Alcester or Redditch clinic?"
-                )
+                _fil_count = int(self.session.get("_ask_location_filler_count", 0)) + 1
+                self.session["_ask_location_filler_count"] = _fil_count
+                if self.session.get("location_awaiting_dtmf"):
+                    # DTMF tier — keep DTMF wording stable.
+                    _loc_tier_q = (
+                        self.session.get("last_question")
+                        or "Press 1 for Alcester or 2 for Redditch."
+                    )
+                elif _fil_count == 1:
+                    # First filler — clean replay of current tier wording.
+                    _loc_tier_q = (
+                        self.session.get("last_question")
+                        or "Would that be at our Alcester or Redditch clinic?"
+                    )
+                else:
+                    # Subsequent filler — escalate to tier-2 wording and hold there.
+                    _loc_tier_q = (
+                        "Sorry, I didn't quite catch that \u2014 can you please say "
+                        "the Alcester clinic or the Redditch clinic?"
+                    )
+                    # Sync retry counter so downstream ladder stays consistent
+                    # with the elevated wording, but do NOT push it past 1 here —
+                    # real failed extractions (not fillers) own tier-3/DTMF moves.
+                    self.session["location_retry_count"] = max(
+                        1, int(self.session.get("location_retry_count", 0) or 0)
+                    )
                 await self._tts.put(_loc_tier_q)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _loc_tier_q}
@@ -5972,12 +5994,16 @@ class FlowEngine:
                 self.session["last_question"] = _loc_tier_q
                 logger.info(
                     "[ms_flow] ASK_LOCATION: filler_guard %r \u2192 tier-stable replay "
-                    "(retry=%s dtmf=%s)",
+                    "(filler_n=%d retry=%s dtmf=%s)",
                     text[:40],
+                    _fil_count,
                     self.session.get("location_retry_count", 0),
                     bool(self.session.get("location_awaiting_dtmf")),
                 )
                 return
+            # Non-filler path inside ASK_LOCATION — clear streak counter so a
+            # later isolated filler does not inherit prior escalation.
+            self.session.pop("_ask_location_filler_count", None)
 
             loc = self._extract("location_selection", text, transcript)
             if loc:
@@ -7620,6 +7646,60 @@ class FlowEngine:
                 logger.info(
                     "[ms_flow] DETECT_INTENT: greeting-only %r — "
                     "holding for real intent", text[:30],
+                )
+                return
+
+            # ── Incomplete booking-lead guard ────────────────────────────────────
+            # Partial openers like "yeah i'd like to" / "i wanted to" / "can i"
+            # carry the SHAPE of a request but no payload — feeding them to the
+            # utterance router / _detect_intent mislabels them as general_query
+            # and the LLM then invents questions ("What's your first name?").
+            # When such a fragment appears with no substantive signal (booking
+            # verb, symptom, FAQ keyword, clinic mention) and ≤ 6 words, emit a
+            # neutral continuation prompt and hold state — the caller will
+            # finish their sentence on the next turn.
+            _INCOMPLETE_BOOKING_LEAD = (
+                "i'd like to", "id like to", "i would like to",
+                "i want to", "i wanted to",
+                "i need to", "i needed to",
+                "i'm calling to", "im calling to", "i am calling to",
+                "i'm looking to", "im looking to",
+                "i'm trying to", "im trying to",
+                "can i", "could i", "may i",
+                "is it possible", "would it be possible",
+                "i was wondering",
+            )
+            _SUBSTANTIVE_SIGNALS = (
+                "book", "appointment", "appt", "schedule",
+                "cancel", "reschedule", "move", "change",
+                "physio", "physiotherap", "massage", "sports",
+                "pain", "hurt", "injur", "sore", "ache", "sprain", "strain",
+                "back", "neck", "shoulder", "knee", "ankle", "hip", "wrist",
+                "price", "cost", "fee", "charge", "how much",
+                "parking", "park", "insurance", "bupa", "axa",
+                "hours", "open", "close", "location", "address",
+                "alcester", "redditch", "clinic",
+                "follow up", "follow-up", "followup",
+            )
+            _tl = text.strip().lower()
+            if (
+                len(_ft_words) <= 6
+                and any(_tl == lead or _tl.startswith(lead + " ") or _tl.endswith(" " + lead)
+                        or lead in _tl
+                        for lead in _INCOMPLETE_BOOKING_LEAD)
+                and not any(s in _tl for s in _SUBSTANTIVE_SIGNALS)
+            ):
+                _inc_prompt = "Of course \u2014 what would you like to do today?"
+                await self._tts.put(_inc_prompt)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _inc_prompt}
+                )
+                self.session["last_question"] = _inc_prompt
+                self.session["_last_handled_by"] = "incomplete_booking_lead_guard"
+                logger.info(
+                    "[ms_flow] DETECT_INTENT: incomplete_booking_lead %r \u2192 "
+                    "neutral continuation (no router, no intent)",
+                    text[:60],
                 )
                 return
 
