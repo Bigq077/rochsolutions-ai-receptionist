@@ -5586,6 +5586,51 @@ class FlowEngine:
                     transcript[:80],
                 )
                 _is_repair = False
+        # ── Intent-switch bypass ─────────────────────────────────────────────
+        # If the repair utterance ALSO contains a clear alternate top-level
+        # intent ("reschedule", "cancel", "book a new appointment"), the new
+        # intent MUST win over generic repair.  Otherwise utterances like
+        # "actually I made a mistake, can I reschedule instead" get swallowed
+        # by the global repair intercept ("Sorry about that — what was your
+        # question?") instead of rerouting to RESCHEDULE_FLOW.  State-specific
+        # reroute handlers (e.g. ASK_LOCATION at the reroute-signals block
+        # below, NEW_OR_RETURNING, etc.) will pick up the intent once repair
+        # is bypassed.
+        if _is_repair:
+            _ISW_SIGNALS = (
+                "reschedule", "rescheduling", "re-schedule", "re schedule",
+                "move my appointment", "move the appointment", "move my booking",
+                "change my appointment", "change the appointment",
+                "cancel", "cancelling", "canceling", "call it off",
+                "book instead", "book an appointment", "book a new",
+                "make a new appointment", "new appointment instead",
+                "instead of booking", "instead of a new",
+            )
+            if any(p in text for p in _ISW_SIGNALS):
+                try:
+                    _isw_intent = self._detect_intent(text)
+                except Exception:
+                    _isw_intent = None
+                # Only bypass if the detected intent is a DIFFERENT top-level
+                # task than the caller's current flow.  Avoid bypassing when
+                # the caller is already on that flow and just wants repair.
+                _isw_current = None
+                if self._active_flow is RESCHEDULE_FLOW:
+                    _isw_current = "reschedule"
+                elif self._active_flow is CANCEL_FLOW:
+                    _isw_current = "cancel"
+                elif self._active_flow is BOOKING_FLOW:
+                    _isw_current = "booking"
+                if (
+                    _isw_intent in ("reschedule", "cancel", "booking")
+                    and _isw_intent != _isw_current
+                ):
+                    logger.info(
+                        "[ms_flow] repair_bypass intent-switch: %r → %s "
+                        "(current_flow=%s)",
+                        transcript[:80], _isw_intent, _isw_current,
+                    )
+                    _is_repair = False
         if _is_repair:
             # Strong repair — stale child-policy / service-fit branches must not
             # keep controlling the turn (Rule 3). Clear pending routing state
