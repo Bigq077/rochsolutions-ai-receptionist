@@ -1974,7 +1974,10 @@ class WebSocketCallHandler:
 
         # Only accumulate DTMF while in phone-collection state or keypad lookup recovery
         if (
-            self.session.get("state") not in ("COLLECT_PHONE", "COLLECT_PHONE_RETURNING")
+            self.session.get("state") not in (
+                "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+                "RETURNING_PLAN_COLLECT_PHONE",
+            )
             and not self.session.get("rc_kp_phone_pending")
         ):
             return
