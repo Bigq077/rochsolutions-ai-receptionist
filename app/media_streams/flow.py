@@ -3378,8 +3378,16 @@ class FlowEngine:
             logger.info("[ms_flow] SPOKE CONFIRM_BOOKING")
             return
 
-        # DETECT_INTENT step has no question — wait silently for caller to speak
-        if not step["use_llm"] and step["question"] is None:
+        # DETECT_INTENT step has no question — wait silently for caller to speak.
+        # NOTE: RETURNING_PLAN_LOOKUP also has question=None but must NOT fall through
+        # here — it has an inline Acuity lookup block further below that MUST run.
+        # If this guard fires first, the lookup never executes, flow sits waiting for
+        # transcript, and connection.py triggers a GLOBAL HARD FALLBACK.
+        if (
+            not step["use_llm"]
+            and step["question"] is None
+            and step["state"] != "RETURNING_PLAN_LOOKUP"
+        ):
             logger.info("[ms_flow] step %d (%s): no question to play — waiting for transcript",
                         step["step"], step["state"])
             return
@@ -12445,12 +12453,63 @@ class FlowEngine:
                 "[ms_flow] CONFIRM_PHONE state=%s input=%r phone_accept=%s",
                 step["state"], text[:60], _is_phone_accept(text),
             )
-            # ── RETURNING_PLAN_CONFIRM_PHONE: "not sure" / NO → normal booking ──
-            # For on-plan returning patients we asked whether this is the same number
-            # used for their last appointment. If they're unsure OR say no/different
-            # number, we abandon the phone-based plan lookup and route through the
-            # standard booking path (COLLECT_REASON → returning name/phone collection).
+            # ── RETURNING_PLAN_CONFIRM_PHONE: branching ──────────────────────
+            # Three outcomes for the returning-on-plan phone question:
+            #   A) same number  → fall through to YES handler → lookup with caller-ID
+            #   B) different/unsure (default) → normal booking path
+            #   C) different number BUT still wants lookup → DTMF keypad entry of
+            #      the old number, then lookup proceeds at RETURNING_PLAN_LOOKUP.
             if step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
+                # ── Branch C: different number but still wants lookup ─────────
+                # Checked BEFORE the not-sure/no fallback so a combined utterance
+                # like "different number but can you look it up" routes to DTMF
+                # entry rather than normal booking.
+                _RPCP_WANTS_LOOKUP = (
+                    "can you look it up", "can you still look",
+                    "but can you look", "but i want you to find",
+                    "but i still want you to find", "want you to find it",
+                    "want you to look it up", "look it up with",
+                    "can i enter", "can i give you the old",
+                    "give you the old number", "enter the old number",
+                    "let me enter", "i'll enter", "i will enter",
+                    "type the old number", "type in the old",
+                    "use a different number for the lookup",
+                    "different number for the lookup",
+                    "use the other number", "use the old number",
+                    "look up the old number",
+                )
+                _rpcp_wants_lookup = any(p in text for p in _RPCP_WANTS_LOOKUP)
+                if _rpcp_wants_lookup:
+                    # Route to RETURNING_PLAN_COLLECT_PHONE for DTMF keypad entry.
+                    self.session["phone_confirmed"]     = False
+                    self.session["phone_from_twilio"]   = False
+                    self.session["phone_number"]        = None
+                    self.session["phone_digits_buffer"] = ""
+                    self.session["phone_dtmf_buffer"]   = ""
+                    self.session["phone_awaiting_dtmf"] = True
+                    self.session.setdefault("collected", {}).pop("phone", None)
+                    self.session.pop("slot_pending_confirmation", None)
+                    self.session.pop("vague_option_pending", None)
+                    self.session.pop("vague_clarification_asked", None)
+                    # on_treatment_plan stays True so RETURNING_PLAN_LOOKUP still
+                    # runs after the keypad entry is collected.
+                    self.session["flow_step"]  = _RETURNING_PLAN_COLLECT_PHONE_INDEX
+                    self.session["state"]      = "RETURNING_PLAN_COLLECT_PHONE"
+                    self.session["flow_state"] = "RETURNING_PLAN_COLLECT_PHONE"
+                    _rpcp_dtmf_bridge = (
+                        "No problem — please type the previous number on your keypad now."
+                    )
+                    self.session["last_question"] = _rpcp_dtmf_bridge
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rpcp_dtmf_bridge}
+                    )
+                    await self._tts.put(_rpcp_dtmf_bridge)
+                    logger.info(
+                        "[ms_flow] RETURNING_PLAN_CONFIRM_PHONE: different-number + "
+                        "wants-lookup → routing to RETURNING_PLAN_COLLECT_PHONE (DTMF entry)"
+                    )
+                    return
+                # ── Branch B: not sure / no / different number → normal booking ──
                 _RPCP_NOT_SURE = (
                     "not sure", "i'm not sure", "im not sure", "i am not sure",
                     "don't know", "dont know", "i don't know", "i dont know",
