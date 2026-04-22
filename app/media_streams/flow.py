@@ -5913,7 +5913,32 @@ class FlowEngine:
             "did you catch my name", "did you get my name",
             "what name did you get",
         )
-        if any(p in text for p in _GLOBAL_CATCH_PHRASES):
+        # HARD PRIVACY GUARD: during scheduling negotiation, "what do you have"
+        # is an availability query ("what do you have 5 pm", "what do you have
+        # on tuesday"), not a recap request.  Let the deterministic
+        # PRESENT_TIMES/PRESENT_DAYS/CONFIRM_BOOKING handlers below answer.
+        # This prevents the catch intercept from leaking caller name/phone.
+        _catch_state_peek = self.session.get("state", "")
+        _catch_suppress = (
+            _catch_state_peek in {
+                "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+                "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+                "CONFIRM_BOOKING", "CONFIRM_BOOKING_RESCHEDULE",
+            }
+            or any(_cue in (" " + text + " ") for _cue in (
+                " pm", " am", " p m", " a m", "o'clock", "oclock",
+                " noon", "midday", "midnight",
+                "morning", "afternoon", "evening",
+                "at 1", "at 2", "at 3", "at 4", "at 5", "at 6",
+                "at 7", "at 8", "at 9", "at 10", "at 11", "at 12",
+                "monday", "tuesday", "wednesday", "thursday", "friday",
+                "saturday", "sunday",
+                "nearby day", "nearby days", "another day", "other day",
+                "another time", "other time", "any time", "any day",
+                "that day", "that week",
+            ))
+        )
+        if any(p in text for p in _GLOBAL_CATCH_PHRASES) and not _catch_suppress:
             _catch_state = self.session.get("state", "")
             _catch_name  = (
                 self.session.get("full_name")
@@ -11639,6 +11664,88 @@ class FlowEngine:
                 logger.info("[ms_flow] PRESENT_TIMES: inquiry preamble — skipping ordinal bind, re-asked")
                 return
 
+            # ── SAME-DAY ALTERNATIVES for specific-time miss decision ────────
+            # Armed by the TIME_QUERY miss branch (specific_time_decision_pending).
+            # If the caller chose "another time on that day" / "what else do you
+            # have that day", list the actual same-day slots — do NOT broaden.
+            _pref_hour_sda = self.session.get("preferred_hour_24")
+            if (_pref_hour_sda is not None
+                    and self.session.get("specific_time_decision_pending")):
+                _SAME_DAY_ALT = (
+                    "another time that day", "another time on that day",
+                    "other time that day", "other time on that day",
+                    "different time that day", "different time on that day",
+                    "what else that day", "what else on that day",
+                    "what else do you have that day",
+                    "what else do you have on that day",
+                    "what else is there that day",
+                    "what else is there on that day",
+                    "other times that day", "other times on that day",
+                    "another time", "other time", "different time",
+                    "same day", "on that day", "that day",
+                    "what other times",
+                    "what times do you have",
+                )
+                # Explicit nearby phrases win — don't hijack them here.
+                _NEARBY_WORDS_SDA = (
+                    "nearby day", "nearby days", "other day", "other days",
+                    "another day", "different day", "around that week",
+                    "days around",
+                )
+                _is_same_day_alt = any(p in text for p in _SAME_DAY_ALT)
+                _is_nearby_sda   = any(p in text for p in _NEARBY_WORDS_SDA)
+                if _is_same_day_alt and not _is_nearby_sda:
+                    from app.vagueness_detector import _time_to_speech as _t2s_sda
+                    _sda_avail  = self.session.get("available_days", [])
+                    _sda_chosen = self.session.get("chosen_day", "") or (
+                        self.session.get("nearby_time_search_anchor") or ""
+                    )
+                    _sda_target = _find_chosen_day_entry(_sda_avail, _sda_chosen)
+                    _sda_times  = (_sda_target or {}).get("slot_times", [])
+                    _sda_label  = (_sda_target or {}).get("day_label", _sda_chosen or "that day")
+                    _sda_all_sp = [_t2s_sda(t) for t in _sda_times[:4]]
+                    if not _sda_all_sp:
+                        _sda_msg = (
+                            f"I don\u2019t have any other times on {_sda_label}. "
+                            "Would you like to try a different day?"
+                        )
+                    elif len(_sda_all_sp) == 1:
+                        _sda_list = _sda_all_sp[0]
+                        _sda_msg = (
+                            f"On {_sda_label} I\u2019ve got {_sda_list}. "
+                            "Would that work?"
+                        )
+                    elif len(_sda_all_sp) == 2:
+                        _sda_list = f"{_sda_all_sp[0]} or {_sda_all_sp[1]}"
+                        _sda_msg = (
+                            f"On {_sda_label} I\u2019ve got {_sda_list}. "
+                            "Which would suit you?"
+                        )
+                    else:
+                        _sda_list = (
+                            ", ".join(_sda_all_sp[:-1]) + f", or {_sda_all_sp[-1]}"
+                        )
+                        _sda_msg = (
+                            f"On {_sda_label} I\u2019ve got {_sda_list}. "
+                            "Which would suit you?"
+                        )
+                    # Disarm both decision flags — caller has picked same-day path
+                    self.session.pop("specific_time_decision_pending", None)
+                    self.session.pop("nearby_time_search_armed", None)
+                    self.session.pop("preferred_hour_24", None)
+                    self.session.pop("nearby_time_search_anchor", None)
+                    await self._tts.put(_sda_msg)
+                    self.session["last_question"] = _sda_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _sda_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] PRESENT_TIMES same_day_alternatives: day=%r "
+                        "slots=%d",
+                        _sda_label, len(_sda_all_sp),
+                    )
+                    return
+
             # ── NEARBY-DAY SEARCH for stored specific-hour preference ────────
             # Armed by the TIME_QUERY handler when the caller's requested hour
             # was unavailable on the current day.  Fires on the next turn when
@@ -11672,12 +11779,10 @@ class FlowEngine:
                     from app.vagueness_detector import _time_to_speech as _t2s_nb
                     _nb_avail = self.session.get("available_days", [])
                     _nb_exact: list = []
-                    _nb_near:  list = []
                     for _nb_day in _nb_avail:
                         _nb_label_d = _nb_day.get("day_label", "")
                         _nb_times_d = _nb_day.get("slot_times", [])
                         _nb_exact_hit = False
-                        _nb_near_hit  = False
                         for _nb_t in _nb_times_d:
                             try:
                                 _nb_h = int(_nb_t.split(":")[0])
@@ -11686,76 +11791,58 @@ class FlowEngine:
                             if _nb_h == _pref_hour_nb:
                                 _nb_exact_hit = True
                                 break
-                            if abs(_nb_h - _pref_hour_nb) <= 1:
-                                _nb_near_hit = True
                         if _nb_exact_hit:
                             _nb_exact.append(_nb_label_d)
-                        elif _nb_near_hit:
-                            _nb_near.append(_nb_label_d)
+                        # BUG 3: do NOT offer near-hour fallbacks.  If caller
+                        # asked for 5 pm on nearby days, only days that
+                        # actually have 5 pm may be offered.
                     _nb_req_sp = _t2s_nb(f"{_pref_hour_nb:02d}:00")
                     logger.info(
                         "[ms_flow] %s nearby_time_search executed hour=%d "
-                        "exact=%d near=%d",
-                        step["state"], _pref_hour_nb, len(_nb_exact), len(_nb_near),
+                        "exact=%d",
+                        step["state"], _pref_hour_nb, len(_nb_exact),
                     )
                     if _nb_exact:
                         _nb_pick = _nb_exact[:3]
                         if len(_nb_pick) == 1:
                             _nb_msg = (
-                                f"Around that week I can do {_nb_pick[0]} at "
-                                f"{_nb_req_sp} \u2014 would that work?"
+                                f"I do have {_nb_req_sp} on {_nb_pick[0]} "
+                                "\u2014 would you like to book that?"
                             )
                         elif len(_nb_pick) == 2:
                             _nb_msg = (
-                                f"Around that week I can do {_nb_pick[0]} or "
-                                f"{_nb_pick[1]} at {_nb_req_sp} \u2014 which of "
-                                "those would suit you?"
+                                f"I can do {_nb_req_sp} on {_nb_pick[0]} or "
+                                f"{_nb_pick[1]} \u2014 which works for you?"
                             )
                         else:
                             _nb_msg = (
-                                f"Around that week I can do {_nb_pick[0]}, "
-                                f"{_nb_pick[1]}, or {_nb_pick[2]} at {_nb_req_sp}"
-                                " \u2014 which of those would suit you?"
+                                f"I can do {_nb_req_sp} on {_nb_pick[0]}, "
+                                f"{_nb_pick[1]}, or {_nb_pick[2]} \u2014 "
+                                "which works for you?"
                             )
-                    elif _nb_near:
-                        _nb_pick = _nb_near[:3]
-                        if len(_nb_pick) == 1:
-                            _nb_joined = _nb_pick[0]
-                        elif len(_nb_pick) == 2:
-                            _nb_joined = f"{_nb_pick[0]} or {_nb_pick[1]}"
-                        else:
-                            _nb_joined = (
-                                ", ".join(_nb_pick[:-1]) + f", or {_nb_pick[-1]}"
-                            )
-                        _nb_msg = (
-                            f"I don\u2019t have exactly {_nb_req_sp} around that "
-                            f"week, but I\u2019ve got availability close to then on "
-                            f"{_nb_joined} \u2014 would any of those work?"
-                        )
                     else:
-                        _nb_chosen_x = self.session.get("chosen_day", "")
-                        _nb_target_x = _find_chosen_day_entry(_nb_avail, _nb_chosen_x)
-                        _nb_cur_t = (_nb_target_x or {}).get("slot_times", [])
-                        if _nb_cur_t:
-                            def _nb_dist(t: str) -> int:
-                                try: return abs(int(t.split(":")[0]) - _pref_hour_nb)
-                                except: return 999
-                            _nb_closest   = sorted(_nb_cur_t, key=_nb_dist)[0]
-                            _nb_closest_s = _t2s_nb(_nb_closest)
-                            _nb_lbl_x     = (_nb_target_x or {}).get("day_label", "that day")
+                        # BUG 3: no nearby day has the requested exact hour —
+                        # say so honestly and offer a clean choice.  Do NOT
+                        # substitute a different hour.
+                        _nb_chosen_x = self.session.get("chosen_day", "") or (
+                            self.session.get("nearby_time_search_anchor") or ""
+                        )
+                        _nb_lbl_x    = _nb_chosen_x or "that day"
+                        if _nb_chosen_x:
                             _nb_msg = (
-                                f"I don\u2019t have anything around {_nb_req_sp} "
-                                f"that week. The closest I\u2019ve got is "
-                                f"{_nb_closest_s} on {_nb_lbl_x}, or I can check "
-                                "a later week for you."
+                                f"I don\u2019t have any nearby days with "
+                                f"{_nb_req_sp}. I can offer you other times on "
+                                f"{_nb_lbl_x}, or other times on nearby days."
                             )
                         else:
                             _nb_msg = (
-                                f"I don\u2019t have anything around {_nb_req_sp} "
-                                "that week. Would you like me to check a later week?"
+                                f"I don\u2019t have any nearby days with "
+                                f"{_nb_req_sp}. Would you like to try a "
+                                "different time instead?"
                             )
                     # Disarm after executing so subsequent turns don't re-fire.
                     self.session.pop("nearby_time_search_armed", None)
+                    self.session.pop("specific_time_decision_pending", None)
                     self.session.pop("offered_constrained_times", None)
                     self.session.pop("offered_constrained_slots", None)
                     await self._tts.put(_nb_msg)
@@ -12145,34 +12232,22 @@ class FlowEngine:
                         self.session.pop("offered_constrained_slots", None)
                     else:
                         # No exact same-day match for the caller's specific
-                        # requested hour.  Acknowledge, restate what IS available
-                        # on that day, and arm a nearby-day search so the next
-                        # turn can broaden the search across the week instead of
-                        # replaying the same same-day shortlist.
+                        # requested hour.  Offer the explicit choice — do NOT
+                        # pre-list same-day alternatives and do NOT auto-route
+                        # to nearby days.  The caller must choose.
                         _tq_req_sp  = _t2s_tq(f"{_tq_hour:02d}:00")
-                        _tq_all_sp  = [_t2s_tq(t) for t in _tq_times[:4]]
-                        if not _tq_all_sp:
-                            _tq_list_str = "no other times"
-                        elif len(_tq_all_sp) == 1:
-                            _tq_list_str = _tq_all_sp[0]
-                        elif len(_tq_all_sp) == 2:
-                            _tq_list_str = f"{_tq_all_sp[0]} or {_tq_all_sp[1]}"
-                        else:
-                            _tq_list_str = (
-                                ", ".join(_tq_all_sp[:-1]) + f", or {_tq_all_sp[-1]}"
-                            )
                         _tq_msg = (
                             f"I don\u2019t have {_tq_req_sp} on {_tq_label}. "
-                            f"I do have {_tq_list_str} that day. "
-                            f"If you need around {_tq_req_sp}, I can check other "
-                            "nearby days for you."
+                            f"Would you like me to check nearby days for "
+                            f"{_tq_req_sp}, or would you prefer another time "
+                            f"on {_tq_label}?"
                         )
                         # Arm nearby-day search — consumed on the next caller turn
-                        # if they ask to broaden (see PRESENT_TIMES nearby-search
-                        # handler near the top of the catch-all block).
+                        # only if the caller explicitly asks for nearby days.
                         self.session["preferred_hour_24"]         = _tq_hour
                         self.session["nearby_time_search_armed"]  = True
                         self.session["nearby_time_search_anchor"] = _tq_label
+                        self.session["specific_time_decision_pending"] = True
                         self.session.pop("offered_constrained_times", None)
                         self.session.pop("offered_constrained_slots", None)
                         self.session.pop("selected_slot", None)
