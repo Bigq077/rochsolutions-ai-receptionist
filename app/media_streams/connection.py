@@ -3236,8 +3236,10 @@ class WebSocketCallHandler:
             and _fc_text.lower() not in _TAIL_FRAGMENT_SAFE
         ):
             logger.info(
-                "[ms_conn] tail-fragment in on_final_clear suppressed %r (%.2fs after last turn) — watchdog preserved",
+                "[ms_conn] tail-fragment in on_final_clear suppressed %r "
+                "(%.2fs after last turn, %.2fs after last TTS start) — watchdog preserved",
                 _fc_text, _fc_since,
+                time.time() - self._tts_last_start_ts,
             )
         else:
             self._silence_handler.on_transcript_received(text)
