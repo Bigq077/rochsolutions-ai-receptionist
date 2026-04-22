@@ -16071,6 +16071,58 @@ class FlowEngine:
                 )
                 await self._handle_mid_flow_interrupt("faq_services", transcript)
                 return
+            # ── COLLECT_NAME: child / third-party semantic interrupt guard ───
+            # High-priority semantic content ("my son hurt his ankle",
+            # "it's for my daughter", "i was with my son") must never be
+            # parsed as a name attempt — fall through to the deterministic
+            # child-policy age-gate instead, preserving the caller's meaning
+            # and avoiding a bogus "sorry, I didn't catch that — could you
+            # say 'my name is'" reask.  Deterministic phrase match only; no
+            # LLM, no retry-counter side effects.
+            _cn_child_hit = _has_minor_ref(text)
+            _CN_THIRD_PARTY_SIGS = (
+                "not for me", "not for myself", "not myself",
+                "it's for my", "it is for my", "its for my",
+                "for someone else", "for a family member",
+                "for my husband", "for my wife", "for my partner",
+                "for my mum", "for my dad",
+                "for my mother", "for my father",
+            )
+            _cn_third_party_hit = any(p in text for p in _CN_THIRD_PARTY_SIGS)
+            # Echo-after-child-context: if a minor was already established
+            # upstream (first-turn extractor, age-gate, or child_age_pending),
+            # pronoun + injury/check-up language is clearly NOT a name.
+            _cn_child_context_active = bool(
+                self.session.get("first_turn_child_related")
+                or self.session.get("_child_age_pending")
+                or self.session.get("_child_age_relationship")
+                or (self.session.get("first_turn_patient_relationship") in ("son", "daughter", "child"))
+            )
+            _CN_ECHO_SIGS = (
+                " he ", " she ", " him ", " her ", " his ",
+                "he's", "she's", "he got", "she got", "he was", "she was",
+                "he hurt", "she hurt", "he fell", "she fell",
+                "injured", "injury", "hurting", "playing football",
+                "playing rugby", "check him", "check her",
+                "get him checked", "get her checked",
+            )
+            _cn_echo_hit = (
+                _cn_child_context_active
+                and any(p in f" {text} " for p in _CN_ECHO_SIGS)
+            )
+            if _cn_child_hit or _cn_third_party_hit or _cn_echo_hit:
+                logger.info(
+                    "[ms_flow] %s: child/third-party interrupt — "
+                    "child=%s third_party=%s echo=%s text=%r — "
+                    "bypassing NameCollector",
+                    step["state"],
+                    _cn_child_hit, _cn_third_party_hit, _cn_echo_hit,
+                    transcript[:80],
+                )
+                await self._handle_mid_flow_interrupt(
+                    "faq_child_policy", transcript,
+                )
+                return
             from app.media_streams.name_collector import NameCollector as _NameColl
             _nc_action, _nc_payload = _NameColl(self.session).handle(text, transcript)
             while not self._tts.empty():
