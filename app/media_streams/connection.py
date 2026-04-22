@@ -199,6 +199,28 @@ def _is_question_worth_storing(text: str) -> bool:
 # SilenceHandler — re-ask after caller silence
 # ---------------------------------------------------------------------------
 
+# Single source of truth: is the flow explicitly expecting keypad input?
+# When True, the normal speech watchdog must stand down — no generic
+# "Sorry, I didn't catch that" re-asks, no arming, and any live watchdog
+# must be cancelled on the first DTMF digit.  Any new keypad branch that
+# sets one of these flags automatically inherits correct behaviour.
+_DTMF_EXPECTED_FLAGS = (
+    "phone_awaiting_dtmf",
+    "location_awaiting_dtmf",
+    "_faq_loc_awaiting_dtmf",
+    "rc_kp_phone_pending",
+)
+
+
+def _is_dtmf_expected(session: Optional[Dict[str, Any]]) -> bool:
+    if not session:
+        return False
+    for _flag in _DTMF_EXPECTED_FLAGS:
+        if session.get(_flag):
+            return True
+    return False
+
+
 class SilenceHandler:
     """
     Fires a re-ask phrase if the caller has been silent for an extended
@@ -990,6 +1012,21 @@ class SilenceHandler:
                 logger.info("[ms_watchdog] WATCHDOG_ABORT q_gen=%d reason=call_cancelled", q_gen)
                 return
 
+            # DTMF-expected guard (terminal): while the flow is waiting for
+            # keypad input (booking / returning / reschedule / cancel / FAQ
+            # location / location-fallback), the speech watchdog must not
+            # fire a generic "Sorry, I didn't catch that" re-ask.  Abort so
+            # any DTMF-specific reminder is owned by the flow, not by this
+            # speech-first re-ask path.  A fresh watchdog will be armed by
+            # _restart_timer() once the flow leaves keypad mode.
+            _sess_dtmf_exp = self._get_session() if self._get_session else {}
+            if _is_dtmf_expected(_sess_dtmf_exp):
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_ABORT q_gen=%d reason=dtmf_expected",
+                    q_gen,
+                )
+                return
+
             if q_gen != 0 and q_gen != self._q_gen:
                 logger.info(
                     "[ms_watchdog] WATCHDOG_ABORT q_gen=%d reason=stale_question current=%d",
@@ -1259,6 +1296,27 @@ class SilenceHandler:
 
     def _restart_timer(self) -> None:
         if self._cancelled:   # guard: don't restart after teardown
+            return
+        # DTMF-expected short-circuit: never arm the speech watchdog while
+        # keypad input is expected.  Cancel any live one too, since the
+        # previous arming context is now stale.  Also cancel the W1/W2/W3
+        # silence cascade so no speech-first re-ask path stays live.  The
+        # flow owns any DTMF-specific reminder in keypad mode.
+        _sess_restart = self._get_session() if self._get_session else None
+        if _is_dtmf_expected(_sess_restart):
+            if self._task and not self._task.done():
+                self._task.cancel()
+            self._task = None
+            if (
+                self._no_input_watchdog_task is not None
+                and not self._no_input_watchdog_task.done()
+            ):
+                self._no_input_watchdog_task.cancel()
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_SUPPRESS reason=dtmf_expected"
+                )
+            self._no_input_watchdog_task = None
+            self.currently_reasking = False
             return
         # ── Cancel W1/W2/W3 silence cascade only ──────────────────────────
         # Do NOT call _cancel_timer() here: it also kills the watchdog, which
@@ -1961,6 +2019,17 @@ class WebSocketCallHandler:
         digit = (msg.get("dtmf") or {}).get("digit", "")
         if not digit or digit in ("#", "*"):
             return
+
+        # First real keypad press: cancel any leftover speech watchdog / W1-W3
+        # silence cascade.  The caller has switched to the keypad channel; any
+        # pending speech-first "Sorry, I didn't catch that" re-ask must not
+        # fire on top of the DTMF interaction.
+        if self._silence_handler is not None:
+            _wdg = getattr(self._silence_handler, "_no_input_watchdog_task", None)
+            _tsk = getattr(self._silence_handler, "_task", None)
+            if (_wdg is not None and not _wdg.done()) or (_tsk is not None and not _tsk.done()):
+                logger.info("[ms_conn] DTMF digit received — cancelling speech watchdog")
+                self._silence_handler._cancel_timer()
 
         # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
         if self.session.get("state") == "ASK_LOCATION":
