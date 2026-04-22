@@ -3518,6 +3518,18 @@ class FlowEngine:
                     "let me find your next available slot."
                 )
                 self.session["returning_plan"] = True
+                # Persist looked-up name/phone so downstream skip guards and the
+                # booking summary have them — caller must not be re-asked.
+                if _rpl_name:
+                    self.session["full_name"]     = _rpl_name
+                    self.session["patient_name"]  = _rpl_name
+                    _rpl_collected = self.session.setdefault("collected", {})
+                    _rpl_collected["full_name"]   = _rpl_name
+                    _rpl_collected["name"]        = _rpl_name
+                if _rpl_phone:
+                    self.session["phone_number"]  = _rpl_phone
+                    self.session["phone_confirmed"] = True
+                    self.session.setdefault("collected", {})["phone"] = _to_e164_uk(_rpl_phone)
             else:
                 _rpl_greeting = (
                     "Sorry, I couldn't find a recent appointment — "
@@ -3535,6 +3547,13 @@ class FlowEngine:
                 _rpl_result.get("last_appointment_type", ""),
             )
             self.session["flow_step"] = step["step"] + 1
+            # Clear the once-per-turn guard — the filler+greeting above counted as
+            # the "speech" for this turn, but we must still continue through the
+            # skip chain (COLLECT_REASON, name, phone — all skipped for on-plan)
+            # to PRESENT_DAYS and actually emit the slot-offer question.  Without
+            # this reset, the recursive ask_current_question below bails out at
+            # the question_asked_this_turn guard and no slots are ever offered.
+            self.session["question_asked_this_turn"] = False
             await self.ask_current_question()
             return
 
