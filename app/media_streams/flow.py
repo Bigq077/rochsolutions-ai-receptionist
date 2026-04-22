@@ -3512,24 +3512,51 @@ class FlowEngine:
             if _rpl_result.get("found"):
                 _rpl_name = _rpl_result.get("full_name", "")
                 _rpl_type = _rpl_result.get("last_appointment_type", "physiotherapy")
+                # ── SAFETY GATE: never auto-promote looked-up identity ──────
+                # _exec_lookup_recent_appointment writes full_name /
+                # collected.* into session directly from an Acuity match.
+                # That identity is UNCONFIRMED — the caller may have entered
+                # a number that resolves to someone else (e.g. a keypad entry
+                # for a different previous patient).  Quarantine every
+                # looked-up field into pending_lookup_* and require explicit
+                # in-call identity confirmation before anything downstream
+                # (skip guards, booking summary, SMS) can use it.
+                self.session["pending_lookup_name"]  = _rpl_name
+                self.session["pending_lookup_phone"] = _rpl_phone
+                self.session["pending_lookup_type"]  = _rpl_type
+                self.session["identity_confirmation_required"]   = True
+                self.session["awaiting_lookup_identity_confirm"] = True
+                self.session["lookup_identity_reask_count"]      = 0
+                # Strip the contamination the tool wrote to the confirmed
+                # identity fields.  Nothing may read looked-up name from
+                # these slots until the caller confirms.
+                self.session.pop("full_name", None)
+                self.session.pop("patient_name", None)
+                self.session.pop("returning_plan_lookup_name", None)
+                self.session.pop("returning_plan_lookup_type", None)
+                _rpl_coll = self.session.setdefault("collected", {})
+                _rpl_coll.pop("full_name", None)
+                _rpl_coll.pop("name", None)
+                # Do NOT set returning_plan / phone_confirmed yet.
                 _rpl_greeting = (
-                    f"Welcome back{', ' + _rpl_name.split()[0] if _rpl_name else ''}! "
-                    f"I can see you've been coming in for {_rpl_type} — "
-                    "let me find your next available slot."
+                    f"I found a recent appointment under "
+                    f"{_rpl_name or 'that number'}. Is that you?"
                 )
-                self.session["returning_plan"] = True
-                # Persist looked-up name/phone so downstream skip guards and the
-                # booking summary have them — caller must not be re-asked.
-                if _rpl_name:
-                    self.session["full_name"]     = _rpl_name
-                    self.session["patient_name"]  = _rpl_name
-                    _rpl_collected = self.session.setdefault("collected", {})
-                    _rpl_collected["full_name"]   = _rpl_name
-                    _rpl_collected["name"]        = _rpl_name
-                if _rpl_phone:
-                    self.session["phone_number"]  = _rpl_phone
-                    self.session["phone_confirmed"] = True
-                    self.session.setdefault("collected", {})["phone"] = _to_e164_uk(_rpl_phone)
+                await self._tts.put(_rpl_greeting)
+                self.session["last_question"] = _rpl_greeting
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _rpl_filler + " " + _rpl_greeting}
+                )
+                logger.info(
+                    "[ms_flow] RETURNING_PLAN_LOOKUP: found pending identity "
+                    "name=%r confirmation required",
+                    _rpl_name,
+                )
+                # Hold flow_step at RETURNING_PLAN_LOOKUP until identity is
+                # confirmed by the identity-confirm intercept at the top of
+                # handle_transcript().
+                self.session["question_asked_this_turn"] = True
+                return
             else:
                 _rpl_greeting = (
                     "Sorry, I couldn't find a recent appointment — "
@@ -5214,6 +5241,162 @@ class FlowEngine:
         )
 
         text = transcript.strip().lower()
+
+        # ── LOOKUP IDENTITY CONFIRMATION GATE (hard safety) ──────────────
+        # RETURNING_PLAN_LOOKUP stages a found patient as pending_lookup_*
+        # and asks "Is that you?" — never promoting identity automatically.
+        # Until the caller explicitly confirms YES, no booking finalization,
+        # name use, or SMS may key off the looked-up record.
+        if self.session.get("awaiting_lookup_identity_confirm"):
+            import re as _re_lic
+            _lic_yes = bool(_re_lic.search(
+                r"\b(yes|yeah|yep|yup|correct|right|i am|"
+                r"that'?s?\s*me|that\s+is\s+me|it'?s?\s*me|"
+                r"that'?s?\s*right|that'?s?\s*correct|that'?s?\s*mine)\b",
+                text,
+            ))
+            _lic_no = bool(_re_lic.search(
+                r"\b(no|nope|nah|not\s*me|that'?s?\s*not\s*me|"
+                r"that\s+isn'?t\s*me|i'?m\s*not|different\s+person|"
+                r"someone\s+else|wrong\s+person|not\s+mine)\b",
+                text,
+            ))
+            _lic_unsure = any(p in text for p in (
+                "not sure", "don't know", "dont know", "do not know",
+                "unsure", "maybe", "possibly", "i think",
+            ))
+            _pending_name  = self.session.get("pending_lookup_name", "")
+            _pending_phone = self.session.get("pending_lookup_phone", "")
+            _pending_type  = (
+                self.session.get("pending_lookup_type") or "physiotherapy"
+            )
+
+            # ── YES → promote pending identity to confirmed ─────────────
+            if _lic_yes and not _lic_no:
+                if _pending_name:
+                    self.session["full_name"]    = _pending_name
+                    self.session["patient_name"] = _pending_name
+                    _lic_coll = self.session.setdefault("collected", {})
+                    _lic_coll["full_name"] = _pending_name
+                    _lic_coll["name"]      = _pending_name
+                if _pending_phone:
+                    self.session["phone_number"]    = _pending_phone
+                    self.session["phone_confirmed"] = True
+                    self.session.setdefault("collected", {})["phone"] = (
+                        _to_e164_uk(_pending_phone)
+                    )
+                self.session["returning_plan"]             = True
+                self.session["returning_plan_lookup_name"] = _pending_name
+                self.session["returning_plan_lookup_type"] = _pending_type
+                for _lic_k in (
+                    "pending_lookup_name", "pending_lookup_phone",
+                    "pending_lookup_type",
+                    "awaiting_lookup_identity_confirm",
+                    "identity_confirmation_required",
+                    "lookup_identity_reask_count",
+                ):
+                    self.session.pop(_lic_k, None)
+                _lic_first = _pending_name.split()[0] if _pending_name else ""
+                _lic_welcome = (
+                    f"Great{', ' + _lic_first if _lic_first else ''} \u2014 "
+                    f"I can see you've been coming in for {_pending_type}. "
+                    "Let me find your next available slot."
+                )
+                await self._tts.put(_lic_welcome)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _lic_welcome}
+                )
+                self.session["flow_step"] = _RETURNING_PLAN_LOOKUP_INDEX + 1
+                self.session["question_asked_this_turn"] = False
+                logger.info(
+                    "[ms_flow] RETURNING_LOOKUP_IDENTITY_CONFIRM: YES \u2192 "
+                    "promoting looked-up identity name=%r",
+                    _pending_name,
+                )
+                await self.ask_current_question()
+                return
+
+            # ── Ambiguous (neither yes nor no nor unsure) → re-ask once ─
+            if not _lic_no and not _lic_unsure and not _lic_yes:
+                _lic_reask = int(
+                    self.session.get("lookup_identity_reask_count") or 0
+                )
+                if _lic_reask < 1:
+                    self.session["lookup_identity_reask_count"] = _lic_reask + 1
+                    _lic_reask_q = (
+                        f"Sorry \u2014 I just need a quick yes or no. "
+                        f"The recent appointment I found is under "
+                        f"{_pending_name or 'that number'}. Is that you?"
+                    )
+                    await self._tts.put(_lic_reask_q)
+                    self.session["last_question"] = _lic_reask_q
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _lic_reask_q}
+                    )
+                    logger.info(
+                        "[ms_flow] RETURNING_LOOKUP_IDENTITY_CONFIRM: ambiguous "
+                        "reply %r \u2014 re-asking (attempt %d)",
+                        text[:40], _lic_reask + 1,
+                    )
+                    return
+                # Ambiguous again → safe fallback to NO branch below
+
+            # ── NO / UNSURE / ambiguous-again → discard + fresh booking ─
+            for _lic_k in (
+                "pending_lookup_name", "pending_lookup_phone",
+                "pending_lookup_type",
+                "awaiting_lookup_identity_confirm",
+                "identity_confirmation_required",
+                "lookup_identity_reask_count",
+            ):
+                self.session.pop(_lic_k, None)
+            # Defensively strip any looked-up identity left anywhere.
+            for _lic_k in (
+                "full_name", "patient_name",
+                "returning_plan_lookup_name", "returning_plan_lookup_type",
+                "returning_plan", "returning_plan_looked_up",
+                "on_treatment_plan",
+            ):
+                self.session.pop(_lic_k, None)
+            _lic_coll = self.session.setdefault("collected", {})
+            _lic_coll.pop("full_name", None)
+            _lic_coll.pop("name", None)
+            _lic_coll.pop("phone", None)
+            _lic_coll.pop("on_treatment_plan", None)
+            # Require re-entry of phone via normal collection.
+            self.session["phone_confirmed"]     = False
+            self.session["phone_from_twilio"]   = False
+            self.session["phone_number"]        = None
+            self.session["phone_digits_buffer"] = ""
+            self.session["phone_dtmf_buffer"]   = ""
+            self.session["new_or_returning"]    = "new"
+            self.session["flow_step"] = _RETURNING_PLAN_LOOKUP_INDEX + 1
+            _lic_next_state = self._active_flow[
+                _RETURNING_PLAN_LOOKUP_INDEX + 1
+            ]["state"]
+            self.session["state"]      = _lic_next_state
+            self.session["flow_state"] = _lic_next_state
+            _lic_msg = (
+                "No problem \u2014 let's book you in as a fresh appointment. "
+                "I'll just need a few details from you."
+            )
+            await self._tts.put(_lic_msg)
+            self.session["last_question"] = _lic_msg
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _lic_msg}
+            )
+            self.session["question_asked_this_turn"] = False
+            logger.info(
+                "[ms_flow] RETURNING_LOOKUP_IDENTITY_CONFIRM: %s \u2192 "
+                "discarding looked-up identity and routing to fresh booking",
+                "NO" if _lic_no else ("UNSURE" if _lic_unsure else "AMBIGUOUS"),
+            )
+            logger.info(
+                "[ms_flow] booking safety gate: lookup identity unconfirmed "
+                "\u2192 blocking finalization under looked-up record"
+            )
+            await self.ask_current_question()
+            return
 
         # ── Service-fit disallow latch ──────────────────────────────────────
         # After the clinic has said it cannot see this patient (paediatric /
@@ -15313,11 +15496,69 @@ class FlowEngine:
 
             _is_yes = any(p in text for p in _CB_YES)
 
+            # ── PART 6: SLOT REJECTION / CHANGE — distinct from field corrections ─
+            # Caller means "not THIS slot" (time/day change).  Distinct from
+            # name/clinic field corrections handled by _is_correction above.
+            # Every match here MUST clear stale slot state and reroute back
+            # into scheduling — otherwise a later generic booking-related
+            # utterance can latch onto the rejected slot.
+            _CB_SLOT_CHANGE_TIME = (
+                "different time", "another time", "other time",
+                "a different time", "change the time",
+                "change the appointment time", "change the slot",
+                "different slot", "another slot", "not that slot",
+                "move it later", "move it earlier", "move later", "move earlier",
+                "move it to a later", "move it to an earlier",
+                "anything later", "anything earlier",
+                "later that day", "earlier that day",
+                "can't do that time", "cant do that time",
+                "can't do two", "can't do three", "can't do four",
+                "can't do five", "can't do six", "can't do seven",
+                "cant do two", "cant do three", "cant do four",
+                "cant do five", "cant do six", "cant do seven",
+                "can't make two", "can't make three", "can't make four",
+                "can't make five", "cant make",
+                "not that time",
+                "a different time that day", "another time that day",
+                "do you have anything later", "do you have anything earlier",
+            )
+            _CB_SLOT_CHANGE_DAY = (
+                "different day", "another day", "other day",
+                "a different day", "change the day", "change the date",
+                "different date", "another date", "a different date",
+                "change the appointment day", "change the appointment date",
+                "not that day", "not that date",
+                "can we do another day", "can we do a different day",
+                "can we do another date",
+                "not the 13th", "not the 14th", "not the 15th",
+                "not the 16th", "not the 17th", "not the 18th",
+                "not the 19th", "not the 20th", "not the 21st",
+                "move it to another day", "move to another day",
+                "i'd like to change the date", "id like to change the date",
+                "i want to change the date",
+            )
+            _CB_SLOT_CHANGE_GENERIC = (
+                "change the appointment", "change my appointment",
+                "change the booking", "change my booking",
+                "i'd like to change", "id like to change",
+                "i want to change", "i would like to change",
+                "change it",
+                "reschedule",
+                "move it",
+            )
+            _is_slot_change_time = any(p in text for p in _CB_SLOT_CHANGE_TIME)
+            _is_slot_change_day  = any(p in text for p in _CB_SLOT_CHANGE_DAY)
+            _is_slot_change_gen  = any(p in text for p in _CB_SLOT_CHANGE_GENERIC)
+            _is_slot_rejection   = (
+                _is_slot_change_time or _is_slot_change_day or _is_slot_change_gen
+            )
+
             # ── Decision tree — fail closed ──────────────────────────────────
             # Secondary slot guard (belt-and-suspenders): ask_current_question should
             # have blocked entry without a valid slot, but if slot somehow empty here,
             # abort before the booking call and re-route to time selection.
-            if _is_yes and not _is_q and not _is_no and not _is_correction:
+            if (_is_yes and not _is_q and not _is_no and not _is_correction
+                    and not _is_slot_rejection):
                 _cb_ys_slot = self.session.get("selected_slot") or ""
                 if not _cb_ys_slot.strip():
                     logger.error(
@@ -15334,7 +15575,8 @@ class FlowEngine:
                         self.session["state"]     = self._active_flow[_cb_ys_pt]["state"]
                         await self.ask_current_question()
                     return
-            if _is_yes and not _is_q and not _is_no and not _is_correction:
+            if (_is_yes and not _is_q and not _is_no and not _is_correction
+                    and not _is_slot_rejection):
                 # Strong explicit confirm — execute booking
                 from app.tools.receptionist_tools import _exec_book_appointment as _do_book
                 _name_cb = (
@@ -15452,6 +15694,74 @@ class FlowEngine:
 
             # ── Non-YES paths — _exec_book_appointment is unreachable below ──
 
+            elif _is_slot_rejection:
+                # Caller is rejecting the proposed slot OR asking to change
+                # time/day.  Clear every field that could cause the rejected
+                # slot to be reused implicitly.  Then reroute into scheduling.
+                _CB_STALE_SLOT_KEYS = (
+                    "selected_slot", "selected_slot_speech",
+                    "slot_confirmed", "slot_pending_confirmation",
+                    "offered_constrained_times", "offered_constrained_slots",
+                    "preferred_hour_24", "nearby_time_search_armed",
+                    "nearby_time_search_anchor",
+                    "vague_option_pending", "vague_clarification_asked",
+                )
+                for _cb_rj_k in _CB_STALE_SLOT_KEYS:
+                    self.session.pop(_cb_rj_k, None)
+
+                if _is_slot_change_day and not _is_slot_change_time:
+                    _cb_rj_targets = ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")
+                    self.session.pop("chosen_day", None)
+                    self.session.setdefault("collected", {}).pop("chosen_day", None)
+                    _cb_rj_msg = (
+                        "No problem \u2014 which day would you prefer instead?"
+                    )
+                elif _is_slot_change_time and not _is_slot_change_day:
+                    _cb_rj_targets = ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")
+                    # Keep chosen_day — caller wants a different time on the
+                    # same day.  ask_current_question() at PRESENT_TIMES will
+                    # re-offer slots for the selected day.
+                    _cb_rj_msg = None
+                else:
+                    # Generic "change the appointment" / both flags set →
+                    # re-anchor with an explicit choice.
+                    _cb_rj_targets = ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")
+                    self.session.pop("chosen_day", None)
+                    self.session.setdefault("collected", {}).pop("chosen_day", None)
+                    _cb_rj_msg = (
+                        "No problem \u2014 would you like a different time on "
+                        "that day, or a different day?"
+                    )
+
+                _cb_rj_idx = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in _cb_rj_targets),
+                    None,
+                )
+                if _cb_rj_idx is not None:
+                    self.session["flow_step"]  = _cb_rj_idx
+                    self.session["state"]      = self._active_flow[_cb_rj_idx]["state"]
+                    self.session["flow_state"] = self._active_flow[_cb_rj_idx]["state"]
+                self.session["question_asked_this_turn"] = False
+                logger.info(
+                    "[ms_flow] CONFIRM_BOOKING slot-rejection: text=%r "
+                    "change_time=%s change_day=%s change_gen=%s \u2192 "
+                    "stale slot cleared, reroute=%s",
+                    text[:80], _is_slot_change_time, _is_slot_change_day,
+                    _is_slot_change_gen,
+                    (self._active_flow[_cb_rj_idx]["state"]
+                     if _cb_rj_idx is not None else "NONE"),
+                )
+                if _cb_rj_msg:
+                    await self._tts.put(_cb_rj_msg)
+                    self.session["last_question"] = _cb_rj_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _cb_rj_msg}
+                    )
+                    return
+                await self.ask_current_question()
+                return
+
             elif _is_repeat:
                 # Replay the booking summary; do not advance state
                 _replay = self.session.get("last_question") or "Shall I go ahead and book that?"
@@ -15504,16 +15814,32 @@ class FlowEngine:
                 return
 
             elif _is_no:
+                # Pure NO without specifying what to change.  Must clear
+                # every field that could cause the rejected slot to be
+                # booked later, then re-anchor with an explicit choice.
+                _CB_STALE_SLOT_KEYS_NO = (
+                    "selected_slot", "selected_slot_speech",
+                    "slot_confirmed", "slot_pending_confirmation",
+                    "offered_constrained_times", "offered_constrained_slots",
+                    "preferred_hour_24", "nearby_time_search_armed",
+                    "nearby_time_search_anchor",
+                    "vague_option_pending", "vague_clarification_asked",
+                )
+                for _cb_no_k in _CB_STALE_SLOT_KEYS_NO:
+                    self.session.pop(_cb_no_k, None)
                 _no_text = (
-                    "No problem. Is there something you'd like to change, "
-                    "or shall I leave it there for now?"
+                    "No problem \u2014 would you like a different time on "
+                    "that day, or a different day?"
                 )
                 await self._tts.put(_no_text)
                 self.session["last_question"] = _no_text
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _no_text}
                 )
-                logger.info("[ms_flow] CONFIRM_BOOKING: NO — re-anchoring without booking")
+                logger.info(
+                    "[ms_flow] CONFIRM_BOOKING: NO \u2014 stale slot cleared, "
+                    "re-anchoring without booking"
+                )
                 return
 
             else:
