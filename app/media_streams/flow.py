@@ -2016,6 +2016,13 @@ def _extract_hour_from_text(text: str):
         .replace("o'clock", "").replace("oclock", "")
     )
     _t = " ".join(_t.split())
+    # Normalize STT variants of hour+":00" that the main regex below won't parse:
+    #   "500 pm" / "500pm" / "5 00 pm" → "5 pm"
+    #   "1700" (no am/pm) → "17:00"
+    # Narrow patterns — only activate when the surrounding context makes the
+    # intent unambiguous (am/pm tag, or a full 4-digit 24h form).
+    _t = _re_eh.sub(r'\b(\d{1,2})\s*0{2}\s*(am|pm)\b', r'\1 \2', _t)
+    _t = _re_eh.sub(r'\b([01]?\d|2[0-3])00\b(?!\d)', r'\1:00', _t)
     # 1. Digit match: "10 am", "3 pm", "14:00", "10"
     _dm = _re_eh.search(r'\b(\d{1,2})(?::\d{2})?\s*(?:pm|am)?\b', _t)
     if _dm:
@@ -9951,7 +9958,29 @@ class FlowEngine:
                         # ── INLINE TIME: "30th at 10", "23rd April in the morning" ──
                         # If the same utterance also contains a time, resolve it now
                         # so we don't replay the full time list unnecessarily.
-                        _xd_inline_hour = _extract_hour_from_text(text)
+                        # Hard guard: strip the matched date span from the text before
+                        # hour extraction so the day-of-month token ("12" in "12 May")
+                        # can't be reused as an hour.  Also require an explicit time
+                        # cue (at / around / pm / am / noon / morning / afternoon /
+                        # evening / o'clock / midday) — plain date utterances like
+                        # "12 may works for me" must go to PRESENT_TIMES, not bind noon.
+                        _xd_stripped_text = (text[:_XD_PAT.start()] + " " + text[_XD_PAT.end():])
+                        _XD_TIME_CUES = (
+                            " at ", " around ", " about ", " for ",
+                            "pm", "am", "p.m", "a.m",
+                            "noon", "midday", "midnight",
+                            "morning", "afternoon", "evening", "lunchtime",
+                            "o'clock", "oclock", "o clock",
+                            "mid-morning", "mid morning",
+                            "mid-afternoon", "mid afternoon",
+                            "late morning", "late afternoon", "late evening",
+                            "early morning", "early afternoon", "early evening",
+                        )
+                        _xd_has_time_cue = any(c in _xd_stripped_text for c in _XD_TIME_CUES)
+                        _xd_inline_hour = (
+                            _extract_hour_from_text(_xd_stripped_text)
+                            if _xd_has_time_cue else None
+                        )
                         if _xd_inline_hour is not None:
                             _xd_il_slots = _xd_matched.get("slots", [])
                             _xd_il_times = _xd_matched.get("slot_times", [])
