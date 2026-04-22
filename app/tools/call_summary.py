@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, List
+
+logger = logging.getLogger(__name__)
 
 
 def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
@@ -45,9 +48,17 @@ def build_call_summary(session: dict[str, Any]) -> dict[str, Any]:
 
     calendar_error = session.get("calendar_error") or session.get("calendar_last_error") or ""
 
-    # Service vs reason: keep both
-    service = collected.get("service") or collected.get("reason")
-    reason = collected.get("reason")
+    # Service vs reason: keep both.
+    # Belt-and-braces: fall back to top-level session["reason"] when collected
+    # hasn't been populated (e.g. first-turn / deferred paths that skip
+    # COLLECT_REASON write session["reason"] directly). This guarantees the
+    # canonical reason propagates even if a write site forgot to mirror.
+    service = collected.get("service") or collected.get("reason") or session.get("reason")
+    reason = collected.get("reason") or session.get("reason")
+    logger.info(
+        "[call_summary] pre-summary reason: collected=%r session=%r → %r",
+        collected.get("reason"), session.get("reason"), reason,
+    )
 
     # Conversation stats
     caller_turns = [t.get("text", "") for t in turns if t.get("role") == "caller"]

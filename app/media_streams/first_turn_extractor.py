@@ -266,6 +266,18 @@ def apply_first_turn_signals(signals: Dict[str, Any], session: Dict[str, Any]) -
             # but only if it hasn't been set by something with higher confidence.
             if not session.get("reason"):
                 session["reason"] = value
+                # Mirror into collected["reason"] — the nested slot read by
+                # build_call_summary and smart_sms_router. Without this mirror,
+                # skipping COLLECT_REASON leaves collected["reason"]=None and
+                # the downstream summary / SMS log shows reason=None.
+                _collected = session.setdefault("collected", {})
+                if not _collected.get("reason"):
+                    _collected["reason"] = value
+                    logger.info(
+                        "[first_turn] canonical-commit reason=%r "
+                        "(mirrored session['reason'] → collected['reason'])",
+                        value[:60] if isinstance(value, str) else value,
+                    )
             session["first_turn_reason"] = value  # always store the extracted phrase
         elif key not in session:
             session[key] = value

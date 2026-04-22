@@ -3591,6 +3591,59 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
+        # ── COLLECT_REASON: consume deferred first-turn reason ─────────────────
+        # If the bridge path stored a pending reason (first-turn context detected
+        # but reason couldn't be cleanly extracted into session["reason"]), promote
+        # it now — before the skip check — so COLLECT_REASON is skipped and the
+        # caller is not asked to repeat themselves.
+        # Quality check: must be ≥ 4 words AND contain at least one clinical word.
+        # Weak fillers like "yeah i need to book in" are rejected here.
+        if step["state"] == "COLLECT_REASON" and not self.session.get("reason"):
+            _dfr = self.session.get("_deferred_reason", "")
+            if _dfr:
+                _DFR_CLINICAL = frozenset({
+                    "pain", "ache", "aching", "hurt", "hurting",
+                    "injury", "injured", "sore", "stiff", "stiffness",
+                    "swollen", "swelling", "sprain", "strain", "fracture",
+                    "ankle", "knee", "back", "neck", "shoulder", "hip",
+                    "wrist", "elbow", "leg", "foot", "arm", "calf",
+                    "hamstring", "achilles", "spine", "muscle", "joint",
+                    "tendon", "ligament", "nerve",
+                    "problem", "issue", "condition", "physio", "treatment",
+                    "rehab", "rehabilitation", "mobility", "movement",
+                    "accident", "sports", "running", "football", "rugby",
+                    "golf", "tennis", "cycling", "fallen", "fall",
+                })
+                _dfr_words = _dfr.lower().split()
+                _dfr_valid = (
+                    len(_dfr_words) >= 4
+                    and any(w.rstrip(".,!?;:'") in _DFR_CLINICAL for w in _dfr_words)
+                )
+                if _dfr_valid:
+                    self.session["reason"] = _dfr
+                    # Mirror into collected["reason"] — the nested slot read by
+                    # build_call_summary and smart_sms_router. Without this
+                    # mirror, skipping COLLECT_REASON leaves collected["reason"]
+                    # =None and the final summary / SMS log shows reason=None.
+                    _collected = self.session.setdefault("collected", {})
+                    if not _collected.get("reason"):
+                        _collected["reason"] = _dfr
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON consumed deferred reason=%r "
+                        "(first_turn_reason_pending=True, "
+                        "canonical-commit mirrored to collected['reason'], "
+                        "COLLECT_REASON skipped prompt due to pending reason, "
+                        "pending reason cleared after consumption)",
+                        _dfr[:60],
+                    )
+                else:
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON pending reason ignored "
+                        "(invalid/junk/overridden): %r",
+                        _dfr[:60],
+                    )
+                self.session.pop("_deferred_reason", None)
+
         # ── COLLECT_REASON: skip for on-plan returning patients (treatment type already known)
         # OR when reason was already captured from the caller's first utterance.
         if step["state"] == "COLLECT_REASON" and (
@@ -5249,6 +5302,330 @@ class FlowEngine:
 
         text = transcript.strip().lower()
 
+        # ── POST-NEARBY-ESCALATION TAIL-FRAGMENT SUPPRESSION ─────────────
+        # Narrow guard: once the nearby-day handler has spoken a constrained
+        # availability list, a trailing low-information fragment from the
+        # same user utterance (e.g. "please", "thanks", "for me") must NOT
+        # trigger a second semantic pass / duplicate response.
+        # Armed ONLY by the nearby-day handler; honoured for 2 transcripts
+        # (covers typical STT chunking); cleared immediately on substantive
+        # content.  Does not affect any other flow path.
+        _ntt = int(self.session.get("nearby_tail_suppress_ttl") or 0)
+        if _ntt > 0:
+            _NT_LOWINFO = {
+                "please", "thanks", "thank", "cheers",
+                "yeah", "yep", "yes", "ok", "okay", "sure",
+                "alright", "cool", "fine", "right",
+                "for", "me", "you", "that", "that's", "thats",
+                "mhm", "mm", "uhuh", "uh", "um", "erm",
+            }
+            _nt_words = [w.strip(".,!?;:'") for w in text.split() if w.strip(".,!?;:'")]
+            _nt_is_lowinfo = (
+                0 < len(_nt_words) <= 3
+                and all(w in _NT_LOWINFO for w in _nt_words)
+            )
+            if _nt_is_lowinfo:
+                self.session["nearby_tail_suppress_ttl"] = _ntt - 1
+                logger.info(
+                    "[ms_flow] nearby_tail_suppressed: %r "
+                    "(low-info tail after nearby-day escalation, "
+                    "ttl_remaining=%d — no-op)",
+                    transcript[:40], _ntt - 1,
+                )
+                return
+            # Substantive content — clear immediately and fall through to
+            # normal routing.
+            self.session.pop("nearby_tail_suppress_ttl", None)
+            logger.info(
+                "[ms_flow] nearby_tail_suppress cleared by substantive "
+                "utterance: %r",
+                transcript[:40],
+            )
+
+        # ── LOOKUP_RESCHEDULE: SAME-DAY DIRECTION INTERCEPT ──────────────
+        # After a successful reschedule lookup (reschedule_appt_datetime set),
+        # phrases like "later on that day" / "any earlier slots that day" /
+        # "latest slot on that day" / "on the day of the appointment do you
+        # have anything later" / "anything later than that" must be handled
+        # deterministically against the FOUND appointment's date + time.
+        # - Never re-ask confirmation.
+        # - Never fall back to the generic PRESENT_DAYS_RESCHEDULE menu.
+        # - Never hand off to the LLM.
+        # Scope: only fires in RESCHEDULE_FLOW at LOOKUP_RESCHEDULE or
+        # PRESENT_DAYS_RESCHEDULE; PRESENT_TIMES_RESCHEDULE already has its
+        # own deterministic constraint handling.
+        _sd_appt_iso = (self.session.get("reschedule_appt_datetime") or "").strip()
+        _sd_state    = step["state"] if step else ""
+        if (
+            _sd_appt_iso
+            and self._active_flow is RESCHEDULE_FLOW
+            and _sd_state in ("LOOKUP_RESCHEDULE", "PRESENT_DAYS_RESCHEDULE")
+        ):
+            _SD_LATER_KW = (
+                "later", "latest", "after that",
+                "anything later", "later slot", "later one", "later option",
+                # "late " variants — bare "late" would over-match (e.g. "lately"),
+                # so each entry carries its own disambiguating tail.
+                "late slot", "late slots", "late available",
+                "any late", "latest available",
+            )
+            _SD_EARLIER_KW = (
+                "earlier", "earliest", "before that",
+                "anything earlier", "earlier slot", "earlier one", "earlier option",
+                "early slot", "early slots", "early available",
+                "any early", "earliest available",
+            )
+            _SD_SAMEDAY_KW = (
+                "that day", "same day", "on that day", "on the same day",
+                "the same day", "on the day", "day of the appointment",
+                "appointment day", "that same day", "same appointment day",
+            )
+            _sd_is_later    = any(p in text for p in _SD_LATER_KW)
+            _sd_is_earlier  = any(p in text for p in _SD_EARLIER_KW)
+            _sd_same_day    = any(p in text for p in _SD_SAMEDAY_KW)
+            # "later than <time>" / "earlier than <time>" / "anything later" /
+            # "anything earlier" — explicit threshold phrasing carries same-day
+            # intent even without "that day" / "same day".  Also captures the
+            # "than that" implicit-anchor form.
+            _sd_threshold_phrase = (
+                "later than" in text or "earlier than" in text
+                or "anything later"  in text or "anything earlier"  in text
+            )
+            # Optional numeric threshold hour (24h) parsed from the phrase.
+            _sd_thr_hour = None
+            if _sd_threshold_phrase:
+                import re as _re_sd_thr
+                _sd_thr_m = _re_sd_thr.search(
+                    r'(?:later than|earlier than|anything later(?:\s+than)?|'
+                    r'anything earlier(?:\s+than)?)\s+(.{1,30})',
+                    text,
+                )
+                _sd_thr_snip = _sd_thr_m.group(1) if _sd_thr_m else ""
+                if _sd_thr_snip:
+                    try:
+                        _sd_thr_hour = _extract_hour_from_text(_sd_thr_snip)
+                    except Exception:
+                        _sd_thr_hour = None
+            # Caller explicitly names the stored appointment date
+            # ("April 27th" / "27th of April" / "27 april") — same-day anchor.
+            _sd_appt_date_hit = False
+            try:
+                import datetime as _sd_dt_mod, re as _re_sd_date
+                _sd_appt_d = _sd_dt_mod.date.fromisoformat(_sd_appt_iso[:10])
+                _SD_MONTHS = {
+                    1: "january",   2: "february", 3: "march",
+                    4: "april",     5: "may",      6: "june",
+                    7: "july",      8: "august",   9: "september",
+                    10: "october", 11: "november", 12: "december",
+                }
+                _sd_mfull = _SD_MONTHS[_sd_appt_d.month]
+                _sd_mabbr = _sd_mfull[:3]
+                _sd_dn    = str(_sd_appt_d.day)
+                _sd_date_re = _re_sd_date.compile(
+                    r'\b(?:' + _sd_mfull + r'|' + _sd_mabbr + r')\s+(?:the\s+)?'
+                    + _sd_dn + r'(?:st|nd|rd|th)?\b'
+                    r'|\b' + _sd_dn + r'(?:st|nd|rd|th)?\s+(?:of\s+)?(?:'
+                    + _sd_mfull + r'|' + _sd_mabbr + r')\b'
+                )
+                _sd_appt_date_hit = bool(_sd_date_re.search(text))
+            except Exception:
+                _sd_appt_date_hit = False
+            _sd_anchor_ok = (
+                _sd_same_day or _sd_appt_date_hit or _sd_threshold_phrase
+            )
+            if (_sd_is_later or _sd_is_earlier) and _sd_anchor_ok:
+                _sd_direction   = "later" if _sd_is_later else "earlier"
+                _sd_superlative = ("latest" in text) or ("earliest" in text)
+                # Parse anchor date + minute-of-day from ISO datetime.
+                _sd_anchor_date = _sd_appt_iso[:10]
+                try:
+                    _sd_anchor_hhmm = _sd_appt_iso[11:16]  # "HH:MM"
+                    _sd_anchor_min  = (
+                        int(_sd_anchor_hhmm[:2]) * 60 + int(_sd_anchor_hhmm[3:])
+                    )
+                except (ValueError, IndexError):
+                    _sd_anchor_hhmm = ""
+                    _sd_anchor_min  = None
+                # Ensure availability is populated (lookup_done enters this
+                # block before PRESENT_DAYS_RESCHEDULE has fetched it).
+                _sd_avail = self.session.get("available_days", []) or []
+                if not _sd_avail:
+                    from app.tools.receptionist_tools import (
+                        _exec_check_availability as _sd_ca,
+                    )
+                    try:
+                        await _sd_ca(
+                            {
+                                "location":         self.session.get(
+                                    "selected_location", "alcester"
+                                ),
+                                "duration_minutes": 50,
+                            },
+                            self.session,
+                        )
+                    except Exception as _sd_err:
+                        logger.error(
+                            "[ms_flow] LOOKUP same-day intercept: "
+                            "check_availability failed: %r",
+                            _sd_err,
+                        )
+                    _sd_avail = self.session.get("available_days", []) or []
+                # Find the entry matching the anchor date.
+                _sd_entry = None
+                for _d in _sd_avail:
+                    _d_iso = (_d.get("date") or _d.get("datetime", ""))[:10]
+                    if _d_iso == _sd_anchor_date:
+                        _sd_entry = _d
+                        break
+                _sd_day_label = (
+                    (_sd_entry or {}).get("day_label")
+                    or self.session.get("reschedule_appt_day_label")
+                    or "that day"
+                )
+                # Compute the direction threshold.
+                #   "later than 2 pm"  → threshold = 14:00  (overrides anchor)
+                #   "earlier than 10"  → threshold = 10:00
+                #   no explicit threshold → use booked-slot time
+                _sd_base_min = _sd_anchor_min
+                if _sd_thr_hour is not None:
+                    _sd_base_min = _sd_thr_hour * 60
+                # Filter the day's slots by direction, excluding the booked slot.
+                _sd_matched_times: list = []
+                _sd_matched_slots: list = []
+                if _sd_entry and _sd_base_min is not None:
+                    _sd_times_all = _sd_entry.get("slot_times", []) or []
+                    _sd_slots_all = _sd_entry.get("slots",       []) or []
+                    for _st, _ss in zip(_sd_times_all, _sd_slots_all):
+                        try:
+                            _st_parts = _st.split(":")
+                            _st_min = int(_st_parts[0]) * 60 + int(_st_parts[1])
+                        except (ValueError, IndexError):
+                            continue
+                        # Always exclude the already-booked slot itself.
+                        if _sd_anchor_min is not None and _st_min == _sd_anchor_min:
+                            continue
+                        if _sd_direction == "later" and _st_min > _sd_base_min:
+                            _sd_matched_times.append(_st)
+                            _sd_matched_slots.append(_ss)
+                        elif _sd_direction == "earlier" and _st_min < _sd_base_min:
+                            _sd_matched_times.append(_st)
+                            _sd_matched_slots.append(_ss)
+                logger.info(
+                    "[ms_flow] LOOKUP same-day intercept: text=%r "
+                    "direction=%s superlative=%s anchor_date=%s "
+                    "anchor_time=%s thr_hour=%s appt_date_hit=%s matches=%d",
+                    text[:60], _sd_direction, _sd_superlative,
+                    _sd_anchor_date, _sd_anchor_hhmm,
+                    _sd_thr_hour, _sd_appt_date_hit, len(_sd_matched_times),
+                )
+                # Auto-confirm — directional intent is operationally a confirmation
+                # that the caller wants THIS appointment rescheduled, not another.
+                self.session["rc_appointment_confirmed"] = True
+                self.session["rc_stage"] = "confirmed"
+                if _sd_matched_times:
+                    # Superlative → pin the extreme slot; otherwise offer up to 3.
+                    if _sd_superlative:
+                        _idx_pick = (
+                            len(_sd_matched_times) - 1
+                            if _sd_direction == "later" else 0
+                        )
+                        _sd_pick_times = [_sd_matched_times[_idx_pick]]
+                        _sd_pick_slots = [_sd_matched_slots[_idx_pick]]
+                    else:
+                        _sd_pick_times = _sd_matched_times[:3]
+                        _sd_pick_slots = _sd_matched_slots[:3]
+                    from app.vagueness_detector import _time_to_speech as _sd_t2s
+                    _sd_spoken = [_sd_t2s(t) for t in _sd_pick_times]
+                    if len(_sd_spoken) == 1:
+                        _sd_msg = (
+                            f"On {_sd_day_label} I've got {_sd_spoken[0]} \u2014 "
+                            "would that work for you?"
+                        )
+                    elif len(_sd_spoken) == 2:
+                        _sd_msg = (
+                            f"On {_sd_day_label} I've got {_sd_spoken[0]} or "
+                            f"{_sd_spoken[1]} \u2014 which would suit you?"
+                        )
+                    else:
+                        _sd_msg = (
+                            f"On {_sd_day_label} I've got "
+                            f"{', '.join(_sd_spoken[:-1])}, or {_sd_spoken[-1]} "
+                            "\u2014 which of those works?"
+                        )
+                    # Advance flow_step directly to PRESENT_TIMES_RESCHEDULE.
+                    _sd_pt_idx = next(
+                        (i for i, s in enumerate(self._active_flow)
+                         if s["state"] == "PRESENT_TIMES_RESCHEDULE"),
+                        None,
+                    )
+                    if _sd_pt_idx is not None:
+                        self.session["flow_step"] = _sd_pt_idx
+                        self.session["state"]     = "PRESENT_TIMES_RESCHEDULE"
+                    self.session["chosen_day"] = _sd_day_label
+                    self.session.setdefault("collected", {})["chosen_day"] = _sd_day_label
+                    if len(_sd_pick_slots) == 1:
+                        # Single option → pin so next YES confirms via the
+                        # existing slot_pending_confirmation path.
+                        _sd_single = _sd_pick_slots[0] or {}
+                        self.session["selected_slot"]        = _sd_single.get("start", "")
+                        self.session["selected_slot_speech"] = (
+                            f"{_sd_day_label} at {_sd_spoken[0]}"
+                        )
+                        self.session["slot_pending_confirmation"] = True
+                        self.session.pop("offered_constrained_times", None)
+                        self.session.pop("offered_constrained_slots", None)
+                    else:
+                        # Multi option → use the existing constrained-subset
+                        # binding machinery in PRESENT_TIMES_RESCHEDULE.
+                        self.session["offered_constrained_times"] = list(_sd_pick_times)
+                        self.session["offered_constrained_slots"] = list(_sd_pick_slots)
+                        self.session.pop("selected_slot", None)
+                        self.session.pop("slot_pending_confirmation", None)
+                    self.session["question_asked_this_turn"] = True
+                    await self._tts.put(_sd_msg)
+                    self.session["last_question"] = _sd_msg
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _sd_msg}
+                    )
+                    logger.info(
+                        "[ms_flow] LOOKUP same-day intercept: speaking %d "
+                        "option(s) direction=%s day=%r \u2014 advanced to "
+                        "PRESENT_TIMES_RESCHEDULE",
+                        len(_sd_pick_times), _sd_direction, _sd_day_label,
+                    )
+                    return
+                # No same-day direction matches — deterministic honest answer
+                # and advance to PRESENT_DAYS_RESCHEDULE so the caller's next
+                # YES / "check other days" is handled by the existing
+                # PRESENT_DAYS_RESCHEDULE YES-gate (generic day offer).
+                _sd_no_msg = (
+                    f"I'm afraid I don't have anything "
+                    f"{'later' if _sd_direction == 'later' else 'earlier'} "
+                    f"on {_sd_day_label}. Would you like me to check other "
+                    "days instead?"
+                )
+                _sd_pd_idx = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] == "PRESENT_DAYS_RESCHEDULE"),
+                    None,
+                )
+                if _sd_pd_idx is not None:
+                    self.session["flow_step"] = _sd_pd_idx
+                    self.session["state"]     = "PRESENT_DAYS_RESCHEDULE"
+                self.session["question_asked_this_turn"] = True
+                await self._tts.put(_sd_no_msg)
+                self.session["last_question"] = _sd_no_msg
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _sd_no_msg}
+                )
+                logger.info(
+                    "[ms_flow] LOOKUP same-day intercept: no %s matches on "
+                    "%r \u2014 advanced to PRESENT_DAYS_RESCHEDULE, awaiting "
+                    "broaden-yes",
+                    _sd_direction, _sd_day_label,
+                )
+                return
+
         # ── LOOKUP IDENTITY CONFIRMATION GATE (hard safety) ──────────────
         # RETURNING_PLAN_LOOKUP stages a found patient as pending_lookup_*
         # and asks "Is that you?" — never promoting identity automatically.
@@ -6838,6 +7215,61 @@ class FlowEngine:
                 )
                 return
 
+            # ── Clinic-comparison / both-clinics clarification interrupt ─────────
+            # Caller is asking about the difference between the clinics, or has
+            # said "both clinics" without selecting one.  These are informational
+            # interrupts, NOT failed selection attempts — intercept before the
+            # extractor so they never reach the retry ladder or keypad escalation.
+            # Answer briefly with the practical difference, then re-ask location.
+            _LOC_COMPARISON_SIGNALS = (
+                "both clinic",
+                "both of them",
+                "both of those",
+                "either clinic",
+                "either of them",
+                "both locations",
+                "both practices",
+                "both offer",
+                "do they both",
+                "are they both",
+                "difference between",
+                "what's the difference",
+                "what is the difference",
+                "whats the difference",
+                "is there a difference",
+                "which clinic is better",
+                "which one is better",
+                "which clinic should",
+                "which one should",
+                "same services",
+            )
+            if any(p in text.strip().lower() for p in _LOC_COMPARISON_SIGNALS):
+                _cmp_ans = (
+                    "Both clinics offer the same core physiotherapy and "
+                    "rehabilitation services. The main practical difference is "
+                    "location and opening hours \u2014 the Alcester clinic is on "
+                    "Kinwarton Road and is open Monday to Friday, eight thirty "
+                    "until nine in the evening. The Redditch clinic is on "
+                    "Bromsgrove Road and is open Monday to Saturday, closing at "
+                    "five most days and seven on Wednesdays and Thursdays. It "
+                    "usually just comes down to which is most convenient for you. "
+                    "Would you like to book at our Alcester or Redditch clinic?"
+                )
+                await self._tts.put(_cmp_ans)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cmp_ans}
+                )
+                self.session["last_question"] = (
+                    "Would you like to book at our Alcester or Redditch clinic?"
+                )
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: info_interrupt detected %r "
+                    "(clinic_comparison_question=True, retry_count unchanged, "
+                    "keypad_fallback suppressed, answer_then_return_to_ask_location)",
+                    text[:60],
+                )
+                return
+
             # ── Repair / confusion guard ─────────────────────────────────────────
             # Must run BEFORE the location extractor: repair utterances like
             # "sorry that's unclear" / "what were you asking?" would otherwise
@@ -7046,6 +7478,23 @@ class FlowEngine:
                         )
                         await self.ask_current_question()
                         return
+
+                # ── Clipped-fragment keep-listening guard ────────────────────────
+                # STT can emit a clipped barge-in partial as a "final" during or
+                # just after the re-ask / DTMF prompt — e.g. "the", "d the clin".
+                # These carry no location signal (resolver returns status=unknown)
+                # and are ≤ 3 words, making them unambiguously clipped STT noise.
+                # Suppress without advancing the retry ladder or speaking again.
+                # The watchdog handles silence if no real follow-up arrives.
+                if _sl_result["status"] == "unknown" and len(text.strip().split()) <= 3:
+                    self.session["fragment_suppressed"] = True
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: clipped fragment ignored %r "
+                        "(reason=low_information_fragment_keep_listening, "
+                        "retry_count unchanged, watchdog preserved)",
+                        text[:40],
+                    )
+                    return
 
                 # ── Retry ladder: escalate wording then switch to DTMF ───────────
                 # retry 0 → spoken re-ask with explicit clinic names
@@ -8961,6 +9410,19 @@ class FlowEngine:
                                 "reason stored from condition signal %r",
                                 transcript.strip()[:60],
                             )
+                    # If neither router reason_text nor condition signals captured a
+                    # reason, but the router detected reason context (hence _R_BRIDGE),
+                    # store the full transcript as a deferred pending reason.
+                    # COLLECT_REASON will promote this to session["reason"] and skip
+                    # the question — prevents the caller repeating their reason.
+                    if not self.session.get("reason"):
+                        self.session["_deferred_reason"] = transcript.strip()
+                        logger.info(
+                            "[ms_flow] BRIDGE_THEN_ASK_PENDING: "
+                            "first_turn_reason_pending stored %r "
+                            "(deferred to COLLECT_REASON stage)",
+                            transcript.strip()[:60],
+                        )
                     await self.ask_current_question()
                     return
 
@@ -11059,7 +11521,25 @@ class FlowEngine:
                 "go back", "back to dates", "back to days",
                 "other options", "other days",
             )
-            if any(p in text for p in _PT_STEPBACK):
+            _pt_sb_match = any(p in text for p in _PT_STEPBACK)
+            # BUG-FAMILY 2: if nearby-day search is armed for a specific
+            # requested hour, phrases like "other days" / "another day" must
+            # route to the constrained nearby-day handler below (which
+            # preserves the requested hour in both filtering and wording),
+            # NOT to the generic step-back that discards the constraint.
+            if (
+                _pt_sb_match
+                and self.session.get("nearby_time_search_armed")
+                and self.session.get("preferred_hour_24") is not None
+            ):
+                logger.info(
+                    "[ms_flow] PRESENT_TIMES: generic step-back suppressed "
+                    "for %r — nearby_time_search armed (hour=%d), "
+                    "routing to constrained nearby-day handler",
+                    text[:40], self.session["preferred_hour_24"],
+                )
+                _pt_sb_match = False
+            if _pt_sb_match:
                 # Clear day + slot state
                 self.session.pop("chosen_day", None)
                 self.session.pop("selected_slot", None)
@@ -11845,6 +12325,18 @@ class FlowEngine:
                     self.session.pop("specific_time_decision_pending", None)
                     self.session.pop("offered_constrained_times", None)
                     self.session.pop("offered_constrained_slots", None)
+                    # BUG-FAMILY 1: arm narrow tail-fragment suppression so a
+                    # trailing "please" / "thanks" / "yeah" from the same user
+                    # utterance does not trigger a second semantic pass on top
+                    # of this deterministic answer.  Cleared at the top of
+                    # handle_transcript on substantive content or after 2
+                    # transcripts.
+                    self.session["nearby_tail_suppress_ttl"] = 2
+                    logger.info(
+                        "[ms_flow] %s nearby_tail_suppress armed "
+                        "(ttl=2) after constrained nearby-day answer",
+                        step["state"],
+                    )
                     await self._tts.put(_nb_msg)
                     self.session["last_question"] = _nb_msg
                     self.session.setdefault("conversation_history", []).append(
@@ -14916,6 +15408,11 @@ class FlowEngine:
                     self.session["reschedule_appt_type"]      = _bound_cand.get("type", "appointment")
                     self.session["lookup_appt_first_name"]    = _bound_cand.get("first_name", "")
                     self.session["lookup_appt_last_name"]     = _bound_cand.get("last_name", "")
+                    # Persist anchor labels so the same-day direction intercept
+                    # (handle_transcript, early branch) can speak the day/time
+                    # without recomputing suffixes.
+                    self.session["reschedule_appt_day_label"]  = _bound_cand.get("day_label", "")
+                    self.session["reschedule_appt_time_label"] = _bound_cand.get("time_label", "")
                     self.session["rc_stage"] = "lookup_done"
                     # Remaining candidates become alternatives for NO-path advancement
                     _leftover = [c for c in _lu_cands if c["id"] != _bound_cand["id"]]
@@ -15385,6 +15882,170 @@ class FlowEngine:
                     if _lu_yes_fn:
                         self.session["_nc_transition_prefix"] = f"Thanks {_lu_yes_fn} —"
                     await self.ask_current_question()
+                    return
+
+                # ── IMPLICIT CONFIRM via reschedule constraint ─────────────
+                # If the caller volunteers a concrete reschedule preference
+                # (day / date / month / time / time-band / direction) this is
+                # operationally implicit acceptance of the found appointment
+                # plus a desired new slot.  Must NEVER be treated as rejection
+                # or route into lookup_correction_mode.
+                #
+                # Critical: this gate MUST run before the NO gate below because
+                # the current _LU_NO substring match false-positives on the
+                # literal "no" inside words like "afternoon" / "another" /
+                # "noon" / "cannot" — which would otherwise mis-reject the
+                # candidate when the caller simply said a constraint.
+                import re as _re_ic
+                _IC_DOW = (
+                    "monday", "tuesday", "wednesday", "thursday",
+                    "friday", "saturday", "sunday",
+                )
+                _IC_MONTH_FULL = (
+                    "january", "february", "march", "april", "may", "june",
+                    "july", "august", "september", "october", "november",
+                    "december",
+                )
+                _IC_MONTH_ABBR = (
+                    "jan", "feb", "mar", "apr", "jun", "jul", "aug",
+                    "sep", "sept", "oct", "nov", "dec",
+                )
+                _IC_BAND = (
+                    "morning", "afternoon", "evening", "noon", "lunchtime",
+                    "late afternoon", "early morning", "mid afternoon",
+                    "early afternoon", "late morning",
+                )
+                _IC_DIR = ("later", "earlier", "latest", "earliest")
+                _IC_REL_DAY = (
+                    "that day", "same day", "on the day",
+                    "day of the appointment", "appointment day",
+                    "tomorrow", "today", "next week", "this week",
+                    "next friday", "next monday", "next tuesday",
+                    "next wednesday", "next thursday", "next saturday",
+                    "next sunday",
+                )
+                _IC_THR = (
+                    "after ", "before ", "around ",
+                    "later than", "earlier than",
+                )
+                _has_dow_ic   = any(w in _lc_t for w in _IC_DOW)
+                # Month match: only accept words that actually look like month
+                # names in context — avoid "may" inside "maybe" or "that may".
+                _has_month_ic = (
+                    any(w in _lc_t for w in _IC_MONTH_FULL if w != "may")
+                    or any(m in _lc_t for m in ("jan ", "feb ", "mar ", "apr ",
+                                                 "jun ", "jul ", "aug ", "sep ",
+                                                 "sept ", "oct ", "nov ", "dec "))
+                    or bool(_re_ic.search(
+                        r'\b(?:of\s+)?may\b(?:\s+\d|\s+the\s+\d|$)', _lc_t))
+                    or bool(_re_ic.search(
+                        r'\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?may\b', _lc_t))
+                )
+                _has_band_ic = any(w in _lc_t for w in _IC_BAND)
+                _has_dir_ic  = any(w in _lc_t for w in _IC_DIR)
+                _has_rel_ic  = any(w in _lc_t for w in _IC_REL_DAY)
+                _has_thr_ic  = any(w in _lc_t for w in _IC_THR)
+                _has_time_ic = bool(_re_ic.search(
+                    r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\b'
+                    r'|\b(?:after|before|around)\s+\d{1,2}\b'
+                    r'|\b\d{1,2}(?:st|nd|rd|th)\b',
+                    _lc_t,
+                ))
+                _has_constraint_ic = (
+                    _has_dow_ic or _has_month_ic or _has_band_ic
+                    or _has_dir_ic or _has_rel_ic or _has_thr_ic
+                    or _has_time_ic
+                )
+                # Explicit rejection phrases still win — "no that's the wrong
+                # appointment" / "that's not the one" must reject even when
+                # the utterance mentions a day-of-week or time-band word.
+                _IC_EXPLICIT_REJECT = (
+                    "wrong appointment", "not the one", "not that one",
+                    "different appointment",
+                    "that's wrong", "thats wrong",
+                    "that's not right", "thats not right",
+                    "that's not the one", "thats not the one",
+                    "that's not it", "thats not it",
+                )
+                _is_explicit_reject_ic = any(
+                    p in _lc_t for p in _IC_EXPLICIT_REJECT
+                )
+                if (
+                    _has_constraint_ic
+                    and not _is_explicit_reject_ic
+                    and not _is_lu_yes
+                ):
+                    # Auto-confirm the found appointment (same effect as YES
+                    # gate above) — preserve reschedule_appt_* fields.
+                    self.session["rc_appointment_confirmed"] = True
+                    self.session["rc_stage"] = "confirmed"
+                    _imp_next = step["step"] + 1
+                    if (_imp_next < len(self._active_flow)
+                            and self._active_flow[_imp_next]["state"]
+                                == "CONFIRM_RESCHEDULE_OR_CANCEL"):
+                        _imp_next += 1
+                    # Land on PRESENT_DAYS_RESCHEDULE (or whatever the flow
+                    # has next) so downstream handlers own the constraint.
+                    self.session["flow_step"] = _imp_next
+                    if _imp_next < len(self._active_flow):
+                        self.session["state"] = self._active_flow[_imp_next]["state"]
+                    # Diagnostic log — one line summarising captured signals.
+                    _req_day_ic  = (
+                        next((w for w in _IC_DOW      if w in _lc_t), None)
+                        or next((w for w in _IC_MONTH_FULL if w in _lc_t), None)
+                        or next((w for w in _IC_REL_DAY if w in _lc_t), None)
+                    )
+                    _req_band_ic = next(
+                        (w for w in _IC_BAND if w in _lc_t), None
+                    )
+                    _req_dir_ic  = next(
+                        (w for w in _IC_DIR  if w in _lc_t), None
+                    )
+                    logger.info(
+                        "[ms_flow] LOOKUP_RESCHEDULE: "
+                        "implicit_confirm_from_constraint "
+                        "requested_day=%r requested_timeband=%r "
+                        "requested_direction=%r "
+                        "keeping_found_appointment=True "
+                        "(advanced to %s)",
+                        _req_day_ic, _req_band_ic, _req_dir_ic,
+                        self.session.get("state"),
+                    )
+                    # Pre-fetch availability so the same-day intercept and
+                    # PRESENT_DAYS_RESCHEDULE handlers have data to work with
+                    # in this same turn.
+                    if not self.session.get("available_days"):
+                        from app.tools.receptionist_tools import (
+                            _exec_check_availability as _ic_ca,
+                        )
+                        try:
+                            await _ic_ca(
+                                {
+                                    "location": self.session.get(
+                                        "selected_location", "alcester"
+                                    ),
+                                    "duration_minutes": 50,
+                                },
+                                self.session,
+                            )
+                        except Exception as _ic_err:
+                            logger.error(
+                                "[ms_flow] LOOKUP_RESCHEDULE "
+                                "implicit_confirm: check_availability "
+                                "failed: %r",
+                                _ic_err,
+                            )
+                    # Re-dispatch the original transcript so downstream
+                    # handlers (same-day intercept / PRESENT_DAYS_RESCHEDULE
+                    # date extraction) process the constraint in one turn.
+                    # Pop the just-appended user message so the inner call's
+                    # re-append doesn't duplicate it.
+                    _ch_ic = self.session.get("conversation_history", [])
+                    if (_ch_ic
+                            and _ch_ic[-1].get("role") == "user"
+                            and _ch_ic[-1].get("content") == transcript):
+                        _ch_ic.pop()
+                    await self.handle_transcript(transcript)
                     return
 
                 # ── PART 3: deterministic NO handling — advance to next candidate ──

@@ -209,6 +209,16 @@ async def send_smart_followup_sms(
     handoff_data   = summary.get("handoff", {}) or {}
     faq_data       = summary.get("faq", []) or []
 
+    # Pre-SMS reason visibility — makes it obvious when a propagation break
+    # (e.g. top-level-only write bypassing COLLECT_REASON) reaches the router.
+    logger.info(
+        "[smart_sms] pre-SMS reason: collected=%r session=%r summary.appointment=%r outcome=%r",
+        collected.get("reason"),
+        session.get("reason"),
+        (summary.get("appointment", {}) or {}).get("reason"),
+        outcome,
+    )
+
     # Clinic branding
     _clinic      = get_clinic(session.get("clinic_id"))
     clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name")
