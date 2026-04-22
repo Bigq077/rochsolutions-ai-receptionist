@@ -12460,6 +12460,107 @@ class FlowEngine:
             #   C) different number BUT still wants lookup → DTMF keypad entry of
             #      the old number, then lookup proceeds at RETURNING_PLAN_LOOKUP.
             if step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
+                # ── CLARIFY-MODE reply handling ───────────────────────────────
+                # Set further below when Branch B would otherwise have fired: we
+                # first OFFER the DTMF-lookup alternative and await the caller's
+                # choice. The caller's next utterance is classified as either
+                # "type the old number" (DTMF) or "just book new" (normal).
+                _rpcp_clarify = self.session.get("rpcp_clarify_offer_active", False)
+                if _rpcp_clarify:
+                    _RPCP_CX_DTMF = (
+                        "type", "enter", "keypad", "key pad", "keyboard",
+                        "look it up", "look up", "find it", "find my",
+                        "yes look", "yeah look", "yes find", "yeah find",
+                        "yes type", "yeah type", "yes enter", "yeah enter",
+                        "yes please look", "please look it up",
+                        "the old number", "the previous number",
+                        "old one", "previous one",
+                        "first option", "the first", "option one",
+                    )
+                    _RPCP_CX_BOOK = (
+                        "just book", "new booking", "new appointment",
+                        "new appointments", "new one", "make a new",
+                        "no just book", "skip it", "forget it", "never mind",
+                        "nevermind", "just make a new", "fresh",
+                        "start fresh", "start again", "book new",
+                        "second option", "the second", "option two",
+                    )
+                    _cx_dtmf = any(p in text for p in _RPCP_CX_DTMF)
+                    _cx_book = any(p in text for p in _RPCP_CX_BOOK)
+                    # Plain "no" in clarify-mode = "no don't look it up" → booking.
+                    # Plain "yes" in clarify-mode = "yes look it up" → DTMF (the
+                    # lookup option was mentioned first in the offer).
+                    import re as _re_cx
+                    _cx_plain_yes = bool(_re_cx.search(r'\b(yes|yeah|yep|yup)\b', text))
+                    _cx_plain_no  = bool(_re_cx.search(r'\b(no|nope|nah)\b', text))
+                    if _cx_dtmf and not _cx_book:
+                        _cx_choice = "dtmf"
+                    elif _cx_book and not _cx_dtmf:
+                        _cx_choice = "book"
+                    elif _cx_plain_yes and not _cx_plain_no:
+                        _cx_choice = "dtmf"
+                    elif _cx_plain_no and not _cx_plain_yes:
+                        _cx_choice = "book"
+                    else:
+                        _cx_choice = "book"   # safe default
+                    self.session.pop("rpcp_clarify_offer_active", None)
+                    if _cx_choice == "dtmf":
+                        # Route to DTMF keypad entry for lookup.
+                        self.session["phone_confirmed"]     = False
+                        self.session["phone_from_twilio"]   = False
+                        self.session["phone_number"]        = None
+                        self.session["phone_digits_buffer"] = ""
+                        self.session["phone_dtmf_buffer"]   = ""
+                        self.session["phone_awaiting_dtmf"] = True
+                        self.session.setdefault("collected", {}).pop("phone", None)
+                        self.session["flow_step"]  = _RETURNING_PLAN_COLLECT_PHONE_INDEX
+                        self.session["state"]      = "RETURNING_PLAN_COLLECT_PHONE"
+                        self.session["flow_state"] = "RETURNING_PLAN_COLLECT_PHONE"
+                        _cx_bridge = (
+                            "Great — please type the previous number on your keypad now."
+                        )
+                        self.session["last_question"] = _cx_bridge
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _cx_bridge}
+                        )
+                        await self._tts.put(_cx_bridge)
+                        logger.info(
+                            "[ms_flow] RETURNING_PLAN_CONFIRM_PHONE clarify → DTMF entry"
+                        )
+                        return
+                    else:
+                        # Normal booking path.
+                        self.session["phone_confirmed"]     = False
+                        self.session["phone_from_twilio"]   = False
+                        self.session["phone_number"]        = None
+                        self.session["phone_digits_buffer"] = ""
+                        self.session["phone_dtmf_buffer"]   = ""
+                        self.session.setdefault("collected", {}).pop("phone", None)
+                        for _cx_f in (
+                            "on_treatment_plan",
+                            "returning_plan_looked_up", "returning_plan",
+                            "returning_plan_lookup_name", "returning_plan_lookup_type",
+                        ):
+                            self.session.pop(_cx_f, None)
+                        self.session.setdefault("collected", {}).pop("on_treatment_plan", None)
+                        self.session["flow_step"]  = _RETURNING_PLAN_LOOKUP_INDEX + 1
+                        _cx_next_state = self._active_flow[
+                            _RETURNING_PLAN_LOOKUP_INDEX + 1
+                        ]["state"]
+                        self.session["state"]      = _cx_next_state
+                        self.session["flow_state"] = _cx_next_state
+                        _cx_bridge = "No problem — let's book you a new set of appointments."
+                        self.session["last_question"] = _cx_bridge
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _cx_bridge}
+                        )
+                        await self._tts.put(_cx_bridge)
+                        logger.info(
+                            "[ms_flow] RETURNING_PLAN_CONFIRM_PHONE clarify → normal booking "
+                            "(next_state=%s)", _cx_next_state,
+                        )
+                        await self.ask_current_question()
+                        return
                 # ── Branch C: different number but still wants lookup ─────────
                 # Checked BEFORE the not-sure/no fallback so a combined utterance
                 # like "different number but can you look it up" routes to DTMF
@@ -12532,49 +12633,31 @@ class FlowEngine:
                 import re as _re_rpcp
                 _rpcp_plain_no = bool(_re_rpcp.search(r'\b(no|nope|nah)\b', text)) and not _is_phone_accept(text)
                 if _rpcp_not_sure or _rpcp_different or _rpcp_plain_no:
-                    # Abandon plan-lookup path; treat as standard returning booking.
-                    self.session["phone_confirmed"]     = False
-                    self.session["phone_from_twilio"]   = False
-                    self.session["phone_number"]        = None
-                    self.session["phone_digits_buffer"] = ""
-                    self.session["phone_dtmf_buffer"]   = ""
-                    self.session.setdefault("collected", {}).pop("phone", None)
-                    # Clear on-plan flags so downstream skip guards route through the
-                    # normal returning booking flow (COLLECT_REASON → COLLECT_NAME_RETURNING
-                    # → CONFIRM_PHONE_RETURNING → …).
-                    for _rpcp_f in (
-                        "on_treatment_plan",
-                        "returning_plan_looked_up", "returning_plan",
-                        "returning_plan_lookup_name", "returning_plan_lookup_type",
-                    ):
-                        self.session.pop(_rpcp_f, None)
-                    self.session.setdefault("collected", {}).pop("on_treatment_plan", None)
-                    # Jump past RETURNING_PLAN_COLLECT_PHONE and RETURNING_PLAN_LOOKUP
-                    # straight to COLLECT_REASON (index immediately after lookup step).
-                    self.session["flow_step"]  = _RETURNING_PLAN_LOOKUP_INDEX + 1
-                    _rpcp_next_state = self._active_flow[
-                        _RETURNING_PLAN_LOOKUP_INDEX + 1
-                    ]["state"]
-                    self.session["state"]      = _rpcp_next_state
-                    self.session["flow_state"] = _rpcp_next_state
+                    # Caller said no/different/unsure WITHOUT explicit lookup intent.
+                    # Don't jump straight to normal booking — first OFFER the DTMF
+                    # lookup alternative so they can opt into Branch C if they want.
+                    # Stay at RETURNING_PLAN_CONFIRM_PHONE and set a clarify-mode
+                    # flag; the clarify-mode handler above processes the reply.
+                    self.session["rpcp_clarify_offer_active"] = True
                     self.session.pop("slot_pending_confirmation", None)
                     self.session.pop("vague_option_pending", None)
                     self.session.pop("vague_clarification_asked", None)
-                    _rpcp_bridge = (
-                        "No problem — let's just book you a new set of appointments."
+                    _rpcp_clarify_q = (
+                        "No problem — would you like to type the previous number "
+                        "on your keypad so I can look up your appointment, or shall "
+                        "I just book you a new set of appointments?"
                     )
-                    self.session["last_question"] = _rpcp_bridge
+                    self.session["last_question"] = _rpcp_clarify_q
                     self.session.setdefault("conversation_history", []).append(
-                        {"role": "assistant", "content": _rpcp_bridge}
+                        {"role": "assistant", "content": _rpcp_clarify_q}
                     )
-                    await self._tts.put(_rpcp_bridge)
+                    await self._tts.put(_rpcp_clarify_q)
                     logger.info(
                         "[ms_flow] RETURNING_PLAN_CONFIRM_PHONE: not-sure/no/different → "
-                        "falling back to normal booking (next_state=%s not_sure=%s "
-                        "different=%s plain_no=%s)",
-                        _rpcp_next_state, _rpcp_not_sure, _rpcp_different, _rpcp_plain_no,
+                        "offering DTMF vs new-booking choice (not_sure=%s different=%s "
+                        "plain_no=%s)",
+                        _rpcp_not_sure, _rpcp_different, _rpcp_plain_no,
                     )
-                    await self.ask_current_question()
                     return
             # ── FIRST-CHECK: explicit phone-accept phrase ────────────────────
             # Must precede generic _CP_YES/_CP_NO so "yes use this number" is
