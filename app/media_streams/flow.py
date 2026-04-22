@@ -4983,8 +4983,16 @@ class FlowEngine:
                             "If the number you're calling on is the one associated with your appointment, "
                             "say: use this number."
                         )
+                elif step["state"] == "RETURNING_PLAN_CONFIRM_PHONE":
+                    # On-plan returning: ask whether this is the number used for the
+                    # last appointment. "Not sure" → fall back to normal booking.
+                    question_text = (
+                        "Is the number you're calling on the same one you used for "
+                        "your last appointment? If you're not sure, we can just "
+                        "book a new set of appointments."
+                    )
                 else:
-                    # Booking/returning-plan: ask whether to use the caller-ID
+                    # Booking (new patient): ask whether to use the caller-ID
                     question_text = (
                         "If you'd like me to use the number you're calling on for the booking, "
                         "say: use this number."
