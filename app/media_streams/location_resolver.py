@@ -358,10 +358,7 @@ def _log_result(result: dict) -> None:
     # keep production logs focused on meaningful resolver activity.  Any
     # actually-resolved or genuinely-ambiguous-with-signal outcome still logs
     # at INFO for traceability.
-    _noisy = (
-        result["status"] == "unknown"
-        or result.get("reason") in ("non_location_fragment", "low_signal")
-    )
+    _noisy = result.get("reason") == "non_location_fragment"
     _log = logger.debug if _noisy else logger.info
     _log(
         "[location_resolver] raw=%r normalized=%r candidate=%r "
