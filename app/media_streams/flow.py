@@ -16220,6 +16220,75 @@ class FlowEngine:
                 )
                 answer = None
 
+        # ── COLLECT_REASON: child / third-party semantic interrupt gate ──────
+        # Adult self-booking spine must NOT consume third-party or child-
+        # patient content as the caller's own booking reason.  When the
+        # utterance contains minor/relation language ("my son hurt his
+        # ankle", "i'm booking for my daughter", "i was with my son"), or
+        # third-party language ("it's for my husband", "not for me"), or
+        # pronoun+injury echo after a minor was already flagged upstream,
+        # bypass the normal COLLECT_REASON path and route straight to the
+        # deterministic child-policy age-gate (_handle_mid_flow_interrupt
+        # "faq_child_policy").  No adult empathy, no reason storage, no
+        # advancement to COLLECT_NAME.
+        if step["state"] == "COLLECT_REASON":
+            _cr_child_hit = _has_minor_ref(text)
+            _CR_THIRD_PARTY_SIGS = (
+                "not for me", "not for myself", "not myself",
+                "it's for my", "it is for my", "its for my",
+                "booking for my", "book for my", "appointment for my",
+                "calling about my", "calling for my",
+                "for someone else", "for a family member",
+                "for my husband", "for my wife", "for my partner",
+                "for my mum", "for my dad",
+                "for my mother", "for my father",
+            )
+            _cr_third_party_hit = any(p in text for p in _CR_THIRD_PARTY_SIGS)
+            _cr_child_context_active = bool(
+                self.session.get("first_turn_child_related")
+                or self.session.get("_child_age_pending")
+                or self.session.get("_child_age_relationship")
+                or (self.session.get("first_turn_patient_relationship")
+                    in ("son", "daughter", "child"))
+            )
+            _CR_ECHO_SIGS = (
+                " he ", " she ", " him ", " her ", " his ",
+                "he's", "she's", "he got", "she got", "he was", "she was",
+                "he hurt", "she hurt", "he fell", "she fell",
+                "injured his", "injured her", "hurt his", "hurt her",
+                "playing football", "playing rugby",
+                "check him", "check her",
+                "get him checked", "get her checked",
+            )
+            _cr_echo_hit = (
+                _cr_child_context_active
+                and any(p in f" {text} " for p in _CR_ECHO_SIGS)
+            )
+            # Determine relation label for logs (best-effort, non-semantic).
+            _cr_relation = (
+                "son"      if any(p in text for p in ("my son", "my little boy", "my boy ", " his ", "he ")) else
+                "daughter" if any(p in text for p in ("my daughter", "my little girl", "my girl ", " her ", "she ")) else
+                "child"    if ("my child" in text or "my kid" in text or "my kids" in text) else
+                "third_party" if _cr_third_party_hit else
+                "unknown"
+            )
+            if _cr_child_hit or _cr_third_party_hit or _cr_echo_hit:
+                logger.info(
+                    "[ms_flow] third_party_interrupt_detected "
+                    "state=COLLECT_REASON relation=%s child=%s third_party=%s "
+                    "echo=%s reroute=faq_child_policy text=%r",
+                    _cr_relation, _cr_child_hit, _cr_third_party_hit,
+                    _cr_echo_hit, transcript[:80],
+                )
+                logger.info(
+                    "[ms_flow] COLLECT_REASON blocked adult progression "
+                    "due_to=third_party_child_signal",
+                )
+                await self._handle_mid_flow_interrupt(
+                    "faq_child_policy", transcript,
+                )
+                return
+
         # ── COLLECT_REASON: reschedule/cancel re-route ───────────────────────────
         # Caller says "I want to reschedule" at the booking-reason step.
         # Do NOT store this as a booking reason — switch flow immediately.
