@@ -15700,12 +15700,20 @@ class FlowEngine:
                                     "[ms_flow] CONFIRM_BOOKING: name-correction SMS failed "
                                     "(non-fatal): %r", _ncorr_err,
                                 )
+                    # Ask for full name via SMS whenever only a first name was
+                    # captured — same condition used by build_sms() in
+                    # sms_templates.py so voice and SMS stay in sync.
+                    _name_cb_raw = (_name_cb or "").strip()
+                    _sms_will_ask_full_name = (
+                        _needs_name_sms
+                        or (bool(_name_cb_raw) and " " not in _name_cb_raw)
+                    )
                     _cb_done = (
                         f"Brilliant — you're all booked in for {_slot_cb} "
                         f"at our {_clinic_name} clinic. "
                         + (
                             "I'm sending a confirmation text now — just reply to it with your full name to complete the booking. Have a great day!"
-                            if _needs_name_sms else
+                            if _sms_will_ask_full_name else
                             "We'll send a confirmation text shortly. Have a great day!"
                         )
                     )
