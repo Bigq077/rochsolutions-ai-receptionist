@@ -12372,61 +12372,31 @@ class FlowEngine:
                         return
                     else:
                         # ── EXACT HOUR UNAVAILABLE ────────────────────────────
-                        # Caller asked for a specific time (e.g. "5 o'clock") that
-                        # does not exist on the chosen day.  Answer directly with
-                        # the nearest available alternatives — never fall to LLM.
+                        # Caller named a specific time (e.g. "5 o'clock") that
+                        # does not exist on the chosen day.  Ask the explicit
+                        # nearby-days-OR-same-day choice.  Do NOT pre-list
+                        # alternatives.  Do NOT auto-broaden.  Arm the same
+                        # decision flags the TIME_QUERY miss branch uses so
+                        # the next turn routes through the deterministic
+                        # same-day-alternatives or nearby-day handler.
                         from app.vagueness_detector import _time_to_speech as _t2s_na
-                        _day_label_na = _target_dt.get("day_label", "that day")
+                        _day_label_na  = _target_dt.get("day_label", "that day")
                         _spoken_req_na = _t2s_na(f"{_matched_hour:02d}:00")
-                        # Sort slot_times by proximity to requested hour
-                        def _hour_dist_na(t: str) -> int:
-                            try:
-                                return abs(int(t.split(":")[0]) - _matched_hour)
-                            except (ValueError, IndexError):
-                                return 999
-                        _alt_times_na = sorted(_slot_times_dt, key=_hour_dist_na)[:2]
-                        # Resolve matching slot objects for the alternatives
-                        _alt_slots_na: list = []
-                        for _at_na in _alt_times_na:
-                            for _si_na, _st_na in enumerate(_slot_times_dt):
-                                if _st_na == _at_na:
-                                    _avail_slots_na = _target_dt.get("slots", [])
-                                    if _si_na < len(_avail_slots_na):
-                                        _alt_slots_na.append(_avail_slots_na[_si_na])
-                                    break
-                        _spoken_alts_na = [_t2s_na(t) for t in _alt_times_na]
-                        if len(_spoken_alts_na) == 1:
-                            _na_phrase = (
-                                f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
-                                f"on {_day_label_na}, but I do have "
-                                f"{_spoken_alts_na[0]} \u2014 would that work?"
-                            )
-                            # Bug B fix: do NOT pre-bind selected_slot silently when
-                            # caller's explicit requested hour is unavailable.  Store
-                            # the alternative as an offered-constrained subset so the
-                            # caller must affirm before it binds (routed via the
-                            # constrained-subset handler's vague-accept path).
-                            if _alt_slots_na:
-                                self.session["offered_constrained_times"] = _alt_times_na
-                                self.session["offered_constrained_slots"] = _alt_slots_na
-                                self.session.pop("selected_slot", None)
-                                self.session.pop("selected_slot_speech", None)
-                                self.session.pop("slot_pending_confirmation", None)
-                        elif _spoken_alts_na:
-                            _na_phrase = (
-                                f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
-                                f"on {_day_label_na}, but I do have "
-                                f"{_spoken_alts_na[0]} or {_spoken_alts_na[1]}"
-                                " \u2014 which would suit you?"
-                            )
-                            self.session["offered_constrained_times"] = _alt_times_na
-                            self.session["offered_constrained_slots"] = _alt_slots_na
-                        else:
-                            _na_phrase = (
-                                f"I\u2019m afraid I don\u2019t have {_spoken_req_na} "
-                                f"on {_day_label_na}. "
-                                "Would you like to try a different time or a different day?"
-                            )
+                        _na_phrase = (
+                            f"I don\u2019t have {_spoken_req_na} on "
+                            f"{_day_label_na}. Would you like me to check "
+                            f"nearby days for {_spoken_req_na}, or would you "
+                            f"prefer another time on {_day_label_na}?"
+                        )
+                        self.session["preferred_hour_24"]              = _matched_hour
+                        self.session["nearby_time_search_armed"]       = True
+                        self.session["nearby_time_search_anchor"]      = _day_label_na
+                        self.session["specific_time_decision_pending"] = True
+                        self.session.pop("offered_constrained_times", None)
+                        self.session.pop("offered_constrained_slots", None)
+                        self.session.pop("selected_slot", None)
+                        self.session.pop("selected_slot_speech", None)
+                        self.session.pop("slot_pending_confirmation", None)
                         await self._tts.put(_na_phrase)
                         self.session["last_question"] = _na_phrase
                         self.session.setdefault("conversation_history", []).append(
@@ -12434,7 +12404,7 @@ class FlowEngine:
                         )
                         logger.info(
                             "[ms_flow] %s explicit_requested_time_unavailable: "
-                            "hour=%d on %r — offered safe_alt_offer (no silent bind)",
+                            "hour=%d on %r — offered nearby/same-day choice",
                             step["state"], _matched_hour, _day_label_na,
                         )
                         return
