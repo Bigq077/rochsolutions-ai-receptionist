@@ -5545,6 +5545,47 @@ class FlowEngine:
             _rw = text.strip().split()
             if len(_rw) <= 2 and _rw and _rw[0] in ("stop", "wrong"):
                 _is_repair = True
+        # CONFIRM_BOOKING slot-change bypass: when the caller's repair utterance
+        # is really a request to change slot/day/time ("i made a mistake do you
+        # have anything available on that day", "actually i can't do two..."),
+        # skip the generic repair path so the CONFIRM_BOOKING handler below can
+        # apply the hard slot-rejection gate (clear slot state, route to
+        # PRESENT_TIMES/DAYS).  Without this the repair intercept returns first
+        # with a "what was your question?" reprompt and the booking slot stays
+        # latched.
+        if _is_repair and step and step.get("state") in {
+            "CONFIRM_BOOKING", "CONFIRM_BOOKING_RESCHEDULE",
+        }:
+            _CB_REPAIR_BYPASS = (
+                "different time", "another time", "other time",
+                "different slot", "another slot", "other slot",
+                "different day", "another day", "other day",
+                "different date", "another date", "other date",
+                "change the time", "change the day", "change the date",
+                "change the appointment", "change the booking",
+                "change my appointment", "change my booking",
+                "change the slot", "change it",
+                "anything later", "anything earlier",
+                "later that day", "earlier that day",
+                "any other", "anything else", "any others",
+                "other available", "available slots", "available spots",
+                "available times", "available time",
+                "any available", "anything available", "any availability",
+                "something later", "something earlier",
+                "can't do", "cant do", "can't make", "cant make",
+                "not that time", "not that day", "not that date", "not that slot",
+                "reschedule", "move it", "move to",
+                "i'd like to change", "id like to change",
+                "i want to change", "i would like to change",
+                "do you have anything", "do you have any other",
+                "what else do you have", "what other",
+            )
+            if any(p in text for p in _CB_REPAIR_BYPASS):
+                logger.info(
+                    "[ms_flow] repair_bypass CONFIRM_BOOKING slot-change: %r",
+                    transcript[:80],
+                )
+                _is_repair = False
         if _is_repair:
             # Strong repair — stale child-policy / service-fit branches must not
             # keep controlling the turn (Rule 3). Clear pending routing state
