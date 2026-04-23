@@ -15995,8 +15995,16 @@ class FlowEngine:
                         _fbo_active_svc
                         and len(_fbo_substantive) <= 10  # raised from 5
                         and _fbo_intent == "general_query"
+                        and (
+                            # Only carry forward when utterance is actually about
+                            # the locked service — prevents "do you have evening
+                            # appointments" from being re-routed as faq_services.
+                            _fbo_active_svc.replace("_", " ") in text
+                            or any(p in text for p in _LOCKED_TOPIC_COMMON_SIGS)
+                            or any(p in text for p in _LOCKED_TOPIC_SERVICE_SIGS.get(_fbo_active_svc, ()))
+                        )
                     ):
-                        # Service topic carry-forward
+                        # Service topic carry-forward (relevance-guarded)
                         _fbo_eff_intent = "faq_services"
                         _fbo_eff_tx     = f"{_fbo_active_svc} {transcript}"
                         self.session["_faq_followup_window"] = max(0, _fbo_fw - 1)
@@ -16416,6 +16424,14 @@ class FlowEngine:
                         _gbo_active_svc
                         and len(_gbo_substantive) <= 10
                         and _gbo_intent == "general_query"
+                        and (
+                            # Only carry forward when utterance is actually about
+                            # the locked service — prevents "do you have evening
+                            # appointments" from being re-routed as faq_services.
+                            _gbo_active_svc.replace("_", " ") in _txt_lower_gbo
+                            or any(p in _txt_lower_gbo for p in _LOCKED_TOPIC_COMMON_SIGS)
+                            or any(p in _txt_lower_gbo for p in _LOCKED_TOPIC_SERVICE_SIGS.get(_gbo_active_svc, ()))
+                        )
                     ):
                         _gbo_eff_intent = "faq_services"
                         _gbo_eff_tx     = f"{_gbo_active_svc} {transcript}"
@@ -20072,8 +20088,20 @@ class FlowEngine:
         # window, preserve the active service — the caller is continuing the same topic.
         if intent != "faq_services":
             _faq_fw = self.session.get("_faq_followup_window", 0)
-            if not (intent == "general_query" and _faq_fw > 0
-                    and self.session.get("_faq_active_service")):
+            _int_svc = self.session.get("_faq_active_service")
+            _int_text = transcript.strip().lower()
+            # Only preserve the active service when the current utterance is
+            # genuinely about that service — prevents stale acupuncture context
+            # leaking into unrelated general_query turns (e.g. "do you have
+            # evening appointments" matching the carry-forward window).
+            _int_svc_relevant = bool(
+                _int_svc and (
+                    _int_svc.replace("_", " ") in _int_text
+                    or any(p in _int_text for p in _LOCKED_TOPIC_COMMON_SIGS)
+                    or any(p in _int_text for p in _LOCKED_TOPIC_SERVICE_SIGS.get(_int_svc, ()))
+                )
+            )
+            if not (intent == "general_query" and _faq_fw > 0 and _int_svc_relevant):
                 self.session.pop("_faq_active_service", None)
         # Pop accumulated context fragment; deterministic paths discard it,
         # general_query uses it to combine multi-turn fragmented questions.
@@ -20204,6 +20232,12 @@ class FlowEngine:
                         "can i get", "can you do", "can you offer", "is it available",
                         "do you run", "do you carry out", "is that a service",
                         "is that something", "can i book a", "do you see",
+                        # Additional binary availability patterns
+                        "if you do", "if you offer",
+                        "so you do", "so you offer",
+                        "can i have", "could i get", "could i have", "could i book",
+                        "do you actually", "do you currently",
+                        "available",   # "is acupuncture available" — safe: only reached when specific_key is set
                     )
                     _SVC_DISPLAY_NAMES = {
                         "shockwave":    "shockwave therapy",
