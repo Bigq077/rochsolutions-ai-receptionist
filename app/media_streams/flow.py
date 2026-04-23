@@ -12471,6 +12471,9 @@ class FlowEngine:
                 "another day", "different day",
                 "go back", "back to dates", "back to days",
                 "other options", "other days",
+                # "day after" / "the day after" — step back to day selection so
+                # caller can pick the next available day (non-pending-confirmation path)
+                "day after", "the day after",
             )
             _pt_sb_match = any(p in text for p in _PT_STEPBACK)
             # BUG-FAMILY 2: if nearby-day search is armed for a specific
@@ -12576,7 +12579,16 @@ class FlowEngine:
                     and _pt_esc_month_hit != "may"
                 ) or (
                     _pt_esc_month_hit == "may"
-                    and any(p in text for p in ("in may", "for may", "any may", "the month of may", "slots in may", "dates in may"))
+                    and any(p in text for p in (
+                        "in may", "for may", "any may", "the month of may",
+                        "slots in may", "dates in may",
+                        # Directional/window phrases — "mid may", "early may", "late may"
+                        # prevent false-positive on "that may work" / "may be"
+                        "mid may", "early may", "late may",
+                        "mid-may", "early-may", "late-may",
+                        "thinking may", "thinking mid may",
+                        "more may", "so thinking may",
+                    ))
                 )
             )
             if _pt_esc_trigger:
@@ -21267,15 +21279,19 @@ class FlowEngine:
                     "another day", "any other day", "other day",
                     "a different day", "different day",
                     "move on", "move to next",
+                    # "day after" / "the day after" — caller wants the next calendar day
+                    "day after", "the day after",
                     # Whole-day rejections embedded in compound utterance
                     "can't do that day", "can't make that day", "can't make it that day",
                     "nothing on that day", "nothing works on that day",
                     "that day doesn't work", "that day won't work",
                     "busy that day", "not free that day",
                     "can't do anything on that day",
+                    "not that day", "can't do any of those",
                     # Navigational question openers
                     "what about the next", "what about another day",
                     "what about a different day",
+                    "what about the day after",
                 )
                 _sc_is_adv = any(p in text for p in _SC_ADV_SIGS)
                 if _sc_is_adv:
