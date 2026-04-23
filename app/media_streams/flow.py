@@ -19840,6 +19840,53 @@ class FlowEngine:
         }
         if intent == "faq_services":
             _svc_text = transcript.strip().lower()
+            # ── ASK_LOCATION fast path: flow is blocked on clinic selection ───────
+            # When needs_location=True the only decision pending is Alcester vs
+            # Redditch.  Any service / capability question must produce ONE short
+            # sentence and immediately fuse the location re-anchor — no service
+            # description, no follow-up offer, no separate re-anchor TTS block.
+            if self.session.get("needs_location"):
+                from app.media_streams.service_fit_policy import (
+                    is_treatment_suitability_question as _mfi_is_ts_al,
+                )
+                _al_loc_q = "Would you like Alcester or Redditch?"
+                if _mfi_is_ts_al(_svc_text):
+                    _al_svc_ans = (
+                        "Yes \u2014 an initial assessment is the right starting point "
+                        "for that. " + _al_loc_q
+                    )
+                else:
+                    _al_specific = next(
+                        (svc for kw, svc in _SERVICE_KEYWORD_MAP if kw in _svc_text),
+                        None,
+                    )
+                    _AL_SVC_NAMES = {
+                        "shockwave":      "shockwave therapy",
+                        "acupuncture":    "acupuncture",
+                        "laser":          "laser therapy",
+                        "sports_massage": "sports massage",
+                        "pilates":        "Pilates classes",
+                        "biomechanics":   "biomechanical assessments",
+                    }
+                    if _al_specific:
+                        _al_disp = _AL_SVC_NAMES.get(
+                            _al_specific, _al_specific.replace("_", " ")
+                        )
+                        _al_svc_ans = f"Yes \u2014 we do offer {_al_disp}. " + _al_loc_q
+                    else:
+                        _al_svc_ans = "Yes \u2014 we can help with that. " + _al_loc_q
+                await self._tts.put(_al_svc_ans)
+                self.session["last_faq_answer"] = _al_svc_ans
+                self.session["last_question"]   = _al_loc_q
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _al_svc_ans}
+                )
+                logger.info(
+                    "[ms_flow] _handle_mid_flow_interrupt: faq_services "
+                    "needs_location short-answer fast path"
+                )
+                return  # skip full service body + separate re-anchor block
+
             # ── Treatment-suitability / best-starting-point: priority over all
             # other faq_services branches. Callers asking "would X work for Y",
             # "should I book X or something else", "what appointment is best
@@ -19953,6 +20000,23 @@ class FlowEngine:
             await self._tts.put(_svc_answer + _re_anchor_sfx)
             self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
+            if self.session.get("needs_location"):
+                _al_cap_anchor = "Would you like Alcester or Redditch?"
+                _al_cap_ans = (
+                    "Yes \u2014 an initial assessment is the right starting point for that. "
+                    + _al_cap_anchor
+                )
+                await self._tts.put(_al_cap_ans)
+                self.session["last_faq_answer"] = _al_cap_ans
+                self.session["last_question"]   = _al_cap_anchor
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _al_cap_ans}
+                )
+                logger.info(
+                    "[ms_flow] _handle_mid_flow_interrupt: faq_capability "
+                    "needs_location short-answer fast path"
+                )
+                return  # skip verbose capability answer + separate re-anchor block
             logger.info("[ms_flow] _handle_mid_flow_interrupt: capability fast path")
             await self._tts.put(_CAPABILITY_ANSWER + _re_anchor_sfx)
             self.session["last_faq_answer"] = _CAPABILITY_ANSWER
@@ -20446,6 +20510,36 @@ class FlowEngine:
             _gq_text = transcript.strip()
             if _ctx_frag and _ctx_frag != _gq_text:
                 _gq_text = f"{_ctx_frag} — {_gq_text}"
+            # Fast path: clinic-comparison when blocked on ASK_LOCATION.
+            # Bypass LLM entirely — deterministic answer + fused re-anchor.
+            if self.session.get("needs_location"):
+                _CMP_SIGS_GQ = (
+                    "difference between", "different about",
+                    "which is better", "better clinic",
+                    "compare the", "which would you recommend",
+                    "which one should i", "what's different", "whats different",
+                    "what makes them different", "how do they differ",
+                    "which clinic is best", "what are the differences",
+                )
+                _gq_lower = _gq_text.lower()
+                if any(p in _gq_lower for p in _CMP_SIGS_GQ):
+                    _al_cmp_anchor = "Would you like Alcester or Redditch?"
+                    _al_cmp_ans = (
+                        "They offer the same core services \u2014 "
+                        "it mostly comes down to which location is more convenient for you. "
+                        + _al_cmp_anchor
+                    )
+                    await self._tts.put(_al_cmp_ans)
+                    self.session["last_faq_answer"] = _al_cmp_ans
+                    self.session["last_question"]   = _al_cmp_anchor
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _al_cmp_ans}
+                    )
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: general_query "
+                        "needs_location clinic-comparison fast path"
+                    )
+                    return  # bypass LLM + separate re-anchor block
             instruction = (
                 f"The caller asked: '{_gq_text}'\n"
                 "Answer it helpfully in 1–2 sentences from the clinic information in your "
