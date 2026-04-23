@@ -6317,11 +6317,37 @@ class FlowEngine:
             ):
                 _repair_q = "Sorry about that \u2014 what was your question?"
             elif _repair_state in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL", "LOOKUP_TREATMENT_PLAN"):
-                # Mid-lookup repair — LLM is running tool. Re-anchor caller.
-                _repair_q = self.session.get(
-                    "last_question",
-                    "No problem — just bear with me one moment while I check your appointment.",
+                # If keypad phone recovery is armed (rc_kp_phone_pending) and the
+                # caller says a reset phrase (which triggered the global repair
+                # intercept via "i made a mistake"), perform the same buffer-clear
+                # + re-arm as the canonical COLLECT_PHONE reset path.  Without this,
+                # "I made a mistake can you reset the keypad" reaches the generic
+                # "just bear with me" re-anchor and leaves stale digits in the buffer.
+                _LOOKUP_KP_RESET_SIGS = (
+                    "reset", "clear", "start again", "start over",
+                    "redo", "restart", "made a mistake", "made an error",
+                    "wrong number", "wrong digits", "wrong one",
                 )
+                if (self.session.get("rc_kp_phone_pending")
+                        and any(p in text for p in _LOOKUP_KP_RESET_SIGS)):
+                    self.session["phone_dtmf_buffer"]   = ""
+                    self.session["phone_digits_buffer"] = ""
+                    self.session["phone_awaiting_dtmf"] = True
+                    _repair_q = (
+                        "No problem \u2014 I\u2019ve reset the keypad for you. "
+                        "You can restart typing in the number."
+                    )
+                    logger.info(
+                        "[ms_flow] phone_reset_detected state=%s reason=reset_keypad_request "
+                        "(rc_kp_phone_pending via global repair intercept)",
+                        _repair_state,
+                    )
+                else:
+                    # Mid-lookup repair — LLM is running tool. Re-anchor caller.
+                    _repair_q = self.session.get(
+                        "last_question",
+                        "No problem \u2014 just bear with me one moment while I check your appointment.",
+                    )
             else:
                 # BUG 11 fix: state-aware fallback — phone/name states get targeted responses
                 _PHONE_REPAIR_STATES = {
@@ -16138,15 +16164,42 @@ class FlowEngine:
                         _flush_tts()
                         await self.ask_current_question()
                     else:
-                        # No usable digits — short re-prompt toward keypad
-                        _kp_reprompt = "Please enter the phone number on your keypad."
+                        # No usable digits — check for reset intent before generic reprompt.
+                        # "reset the keypad" / "clear that" / "start again" arrive here
+                        # because they are NOT global repair phrases, so they bypass the
+                        # global repair intercept and land directly in this handler.
+                        _RC_KP_RESET_SIGS = (
+                            "reset the keypad", "reset keypad", "reset it", "can you reset",
+                            "clear the keypad", "clear that", "clear it",
+                            "start again", "start over", "let me start", "begin again",
+                            "wrong number", "wrong digits", "made a mistake", "got it wrong",
+                            "redo", "restart", "scratch that",
+                        )
+                        if any(p in (text or "") for p in _RC_KP_RESET_SIGS):
+                            # Clear ALL digit buffers; keep rc_kp_phone_pending armed
+                            # so the next digits go back through the recovery lookup.
+                            self.session["phone_dtmf_buffer"]   = ""
+                            self.session["phone_digits_buffer"] = ""
+                            self.session["phone_awaiting_dtmf"] = True
+                            _kp_reprompt = (
+                                "No problem \u2014 I\u2019ve reset the keypad for you. "
+                                "You can restart typing in the number."
+                            )
+                            logger.info(
+                                "[ms_flow] phone_reset_detected state=rc_kp_phone_pending "
+                                "reason=reset_keypad_request text=%r — buffers cleared, re-armed",
+                                text[:50],
+                            )
+                        else:
+                            # No usable digits, no reset intent — short reprompt.
+                            _kp_reprompt = "Please enter the phone number on your keypad."
+                            logger.info(
+                                "[ms_flow] keypad phone recovery: unclear %r — re-prompting",
+                                text[:40],
+                            )
                         _flush_tts()
                         await self._tts.put(_kp_reprompt)
                         self.session["last_question"] = _kp_reprompt
-                        logger.info(
-                            "[ms_flow] keypad phone recovery: unclear %r — re-prompting",
-                            text[:40],
-                        )
                     return
 
                 # ── Step-specific branches ─────────────────────────────────────
