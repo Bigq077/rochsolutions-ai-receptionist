@@ -611,10 +611,16 @@ def _faq_topic_reanchor(session: Dict[str, Any]) -> str:
 _LOCKED_TOPIC_COMMON_SIGS: tuple[str, ...] = (
     "painful", "pain", "hurt", "hurts", "does it hurt", "will it hurt",
     "is it painful", "is it safe", "safe", "side effect", "side effects",
-    "what happens", "what does it feel", "feel like", "how does",
-    "how long", "how often", "how much", "how many",
+    "what happens", "what does it feel", "feel like",
     "scared", "afraid", "nervous", "anxious", "anxiety", "worried",
-    "scary", "scare", "how it works", "how does it work", "work exactly",
+    "scary", "scare", "work exactly",
+    # SURGICAL FIX (regression family — stale topic pollution):
+    # Removed "how does", "how long", "how often", "how much", "how many",
+    # "how it works", "how does it work" — these are too generic and caused
+    # questions like "How much does physio cost?" or "How does insurance work?"
+    # to be falsely routed as follow-ups to a locked acupuncture/shockwave topic.
+    # Service-specific "how does X work" questions are now caught by
+    # _SVC_EXPAND_TRIGGERS in the answer-generation path instead.
 )
 
 _LOCKED_TOPIC_SERVICE_SIGS: Dict[str, tuple[str, ...]] = {
@@ -4266,14 +4272,44 @@ class FlowEngine:
                         "what services", "list of services",
                     )
                     if _aq_specific_key and not any(p in _faq_svc_text for p in _LIST_PHRASES):
-                        _fast_r = _SPECIFIC_SERVICE_ANSWERS[_aq_specific_key]
+                        # SURGICAL FIX (regression family B — FAQ brevity first turn):
+                        # Same expand-trigger gate as _handle_mid_flow_interrupt.
+                        # Default is the short availability confirmation; only use the
+                        # fuller description when caller explicitly asks for it.
+                        _AQ_EXPAND_TRIGGERS = (
+                            "tell me about", "tell me more", "more about",
+                            "how does", "how do", "how it works",
+                            "what is", "what does", "what's involved",
+                            "explain", "can you explain",
+                            "describe", "what happens",
+                            "what kind of", "what type of",
+                        )
+                        _aq_display_names = {
+                            "shockwave":      "shockwave therapy",
+                            "acupuncture":    "acupuncture",
+                            "laser":          "laser therapy",
+                            "sports_massage": "sports massage",
+                            "pilates":        "Pilates classes",
+                            "biomechanics":   "biomechanical assessments",
+                        }
+                        _aq_disp = _aq_display_names.get(
+                            _aq_specific_key, _aq_specific_key.replace("_", " ")
+                        )
+                        if any(t in _faq_svc_text for t in _AQ_EXPAND_TRIGGERS):
+                            _fast_r = _SPECIFIC_SERVICE_ANSWERS[_aq_specific_key]
+                            logger.info(
+                                "[ms_faq] answer_source=clinic_config topic=%s subtype=service_description_expand",
+                                _aq_specific_key,
+                            )
+                        else:
+                            _fast_r = f"Yes \u2014 we do offer {_aq_disp}."
+                            logger.info(
+                                "[ms_faq] answer_source=clinic_config topic=%s subtype=service_availability_brief",
+                                _aq_specific_key,
+                            )
                         self.session["_faq_active_service"] = _aq_specific_key
                         logger.info(
                             "[ms_faq] topic_lock set topic=%s source=caller_utterance",
-                            _aq_specific_key,
-                        )
-                        logger.info(
-                            "[ms_faq] answer_source=clinic_config topic=%s subtype=service_overview",
                             _aq_specific_key,
                         )
                     elif any(p in _faq_svc_text for p in _LIST_PHRASES):
@@ -10726,12 +10762,25 @@ class FlowEngine:
                 "how much", "cost", "price", "insurance",
                 "opening hours", "what time do you", "are you open",
                 "what services", "do you do", "do you offer",
+                # SURGICAL FIX (regression family C/D): side questions like
+                # "which clinic has more availability" or "do you have evening
+                # appointments" must be caught by the FAQ guard, not fall through
+                # into patient-type classification.
+                "availability", "available", "evening", "evenings",
+                "weekend", "weekends", "saturday", "sunday",
+                "acupuncture", "shockwave", "massage", "sports massage",
+                "physio", "physiotherapy", "sports injury",
+                "aviva", "bupa", "vitality", "axa", "cigna",
+                "appointment", "appointments", "slot", "slots", "booking",
+                "clinic", "clinician", "therapist",
             )
             _nor_q_signals = (
                 "?" in transcript
                 or any(p in text for p in (
                     "do you", "have you", "is there", "are you",
-                    "can you", "where", "how ", "what time",
+                    "can you", "could you", "would you",
+                    "where", "how ", "what time", "what about",
+                    "which ", "which,", "any ", "anywhere",
                 ))
             )
             if _nor_q_signals and any(p in text for p in _NOR_FAQ_VOCAB):
@@ -10747,6 +10796,41 @@ class FlowEngine:
                     logger.info(
                         "[ms_flow] NEW_OR_RETURNING: FAQ guard fired (%s) — "
                         "answered and re-anchored by _handle_mid_flow_interrupt", _nor_faq_intent,
+                    )
+                    return
+            # SURGICAL FIX (regression family D): if the utterance is clearly a
+            # question (ends with "?" OR starts with a wh/auxiliary phrase) and
+            # does NOT contain a new/returning answer token, route it to the
+            # FAQ handler instead of letting fuzzy extraction coerce it into
+            # "new" / "returning".  This catches side questions the narrower
+            # vocab list above may miss (e.g. unusual phrasings).
+            _NOR_ANSWER_TOKENS = (
+                "new", "first time", "never been", "haven't been before",
+                "returning", "been before", "existing patient",
+                "yes i am", "no i haven't", "no i havent",
+                "patient here", "i'm a patient", "im a patient",
+            )
+            _nor_is_question_form = (
+                transcript.strip().endswith("?")
+                or any(text.startswith(p) for p in (
+                    "which ", "what about", "do you ", "does the ",
+                    "is there", "are there", "have you ", "can you ",
+                    "could you ", "would you ", "any chance",
+                ))
+            )
+            _nor_has_answer_tok = any(tok in text for tok in _NOR_ANSWER_TOKENS)
+            if _nor_is_question_form and not _nor_has_answer_tok:
+                _nor_qf_intent = self._detect_intent(text)
+                if _nor_qf_intent in {
+                    "faq_hours", "faq_location", "faq_prices",
+                    "faq_insurance", "faq_services", "faq_capability",
+                    "general_query",
+                }:
+                    await self._handle_mid_flow_interrupt(_nor_qf_intent, transcript)
+                    logger.info(
+                        "[ms_flow] NEW_OR_RETURNING: question-form guard fired "
+                        "(%s) — side question answered, pending step preserved",
+                        _nor_qf_intent,
                     )
                     return
 
@@ -10843,6 +10927,46 @@ class FlowEngine:
             logger.info(
                 "[ms_flow] NEW_OR_RETURNING: no deterministic match → falling through (general_query blocked)"
             )
+
+        # ── RETURNING_RECENCY: FAQ / question-form guard BEFORE extraction ─────
+        # SURGICAL FIX (regression family D): an unrelated question asked while
+        # RETURNING_RECENCY is active ("which clinic has more availability?",
+        # "do you have evening slots?") must NOT be coerced by Haiku/fuzzy
+        # classification into "recent" / "a while ago", and must NOT trigger
+        # the Haiku-bypass replay that simply re-asks the recency question
+        # without ever answering the caller's actual question.
+        if step["state"] == "RETURNING_RECENCY":
+            _RR_ANSWER_TOKENS = (
+                "recent", "recently", "last week", "last month",
+                "few days", "few weeks", "couple of weeks",
+                "a while", "a while ago", "long time", "months ago",
+                "year ago", "years ago", "ages ago", "some time ago",
+                "not long", "just", "yesterday",
+            )
+            _rr_has_answer_tok = any(tok in text for tok in _RR_ANSWER_TOKENS)
+            _rr_is_question_form = (
+                transcript.strip().endswith("?")
+                or any(text.startswith(p) for p in (
+                    "which ", "what about", "do you ", "does the ",
+                    "is there", "are there", "have you ", "can you ",
+                    "could you ", "would you ", "any chance",
+                    "how much", "how long", "where ", "when ",
+                ))
+            )
+            if _rr_is_question_form and not _rr_has_answer_tok:
+                _rr_intent = self._detect_intent(text)
+                if _rr_intent in {
+                    "faq_hours", "faq_location", "faq_prices",
+                    "faq_insurance", "faq_services", "faq_capability",
+                    "general_query",
+                }:
+                    await self._handle_mid_flow_interrupt(_rr_intent, transcript)
+                    logger.info(
+                        "[ms_flow] RETURNING_RECENCY: FAQ/question-form guard "
+                        "fired (%s) — side question answered, pending step preserved",
+                        _rr_intent,
+                    )
+                    return
 
         # ── RETURNING_TREATMENT_PLAN: deterministic extraction BEFORE interrupt ─────
         # FIX B: Direct answers like "I'm still coming in regularly" or "it's a new
@@ -12474,6 +12598,24 @@ class FlowEngine:
                 # "day after" / "the day after" — step back to day selection so
                 # caller can pick the next available day (non-pending-confirmation path)
                 "day after", "the day after",
+                # SURGICAL FIX (regression family E): explicit slot rejection on
+                # the offered day must beat stale same-day slot replay. Caller
+                # phrasings like "I can't do any of those slots on that day" or
+                # "none of those times work" must route back to PRESENT_DAYS so
+                # the caller can pick a different day / date window instead of
+                # hearing the same rejected slots re-read.
+                "can't do any of those", "cant do any of those",
+                "can't do those", "cant do those",
+                "can't do any", "cant do any",
+                "none of those", "none of these",
+                "none of those times", "none of those slots",
+                "none work", "none of them work", "none of those work",
+                "can't do that day", "cant do that day",
+                "can't make that day", "cant make that day",
+                "not that day", "not on that day",
+                "doesn't work for me", "doesnt work for me",
+                "don't work for me", "dont work for me",
+                "none suit", "none suitable",
             )
             _pt_sb_match = any(p in text for p in _PT_STEPBACK)
             # BUG-FAMILY 2: if nearby-day search is armed for a specific
@@ -20234,23 +20376,6 @@ class FlowEngine:
                     None,
                 )
                 if _specific_key:
-                    _svc_answer = _SPECIFIC_SERVICE_ANSWERS[_specific_key]
-                    # ── Availability-first: if the caller asked whether we offer
-                    # the service (not just for a description), lead with a direct
-                    # yes-confirmation before any explanatory detail.
-                    # Applies to every specific service uniformly.
-                    _SVC_AVAIL_TRIGGERS = (
-                        "do you do", "do you offer", "do you have", "do you provide",
-                        "can i get", "can you do", "can you offer", "is it available",
-                        "do you run", "do you carry out", "is that a service",
-                        "is that something", "can i book a", "do you see",
-                        # Additional binary availability patterns
-                        "if you do", "if you offer",
-                        "so you do", "so you offer",
-                        "can i have", "could i get", "could i have", "could i book",
-                        "do you actually", "do you currently",
-                        "available",   # "is acupuncture available" — safe: only reached when specific_key is set
-                    )
                     _SVC_DISPLAY_NAMES = {
                         "shockwave":    "shockwave therapy",
                         "acupuncture":  "acupuncture",
@@ -20259,20 +20384,48 @@ class FlowEngine:
                         "pilates":      "Pilates classes",
                         "biomechanics": "biomechanical assessments",
                     }
-                    if any(t in _svc_text for t in _SVC_AVAIL_TRIGGERS):
-                        # Availability question — one short confirmation, no description.
-                        # Caller only wants to know if we offer it; detail is not asked for.
-                        _display = _SVC_DISPLAY_NAMES.get(
-                            _specific_key, _specific_key.replace("_", " ")
-                        )
-                        _svc_answer = f"Yes, absolutely — we do offer {_display}."
+                    _display = _SVC_DISPLAY_NAMES.get(
+                        _specific_key, _specific_key.replace("_", " ")
+                    )
+                    # SURGICAL FIX (regression family B — FAQ brevity):
+                    # Flip the default. Previously the code returned the full
+                    # multi-sentence service description by default and only gave
+                    # the short availability answer when an explicit trigger phrase
+                    # was present. This caused callers saying "Acupuncture?",
+                    # "What about acupuncture?", "I was wondering about
+                    # acupuncture" to receive a 3-4 sentence monologue.
+                    #
+                    # New rule:
+                    #   • DEFAULT → one short "Yes, we do offer X." answer
+                    #   • ONLY if caller uses an explicit expand trigger
+                    #     ("tell me about", "how does it work", "explain", etc.)
+                    #     → return the fuller description from
+                    #       _SPECIFIC_SERVICE_ANSWERS[key]
+                    _SVC_EXPAND_TRIGGERS = (
+                        "tell me about", "tell me more", "more about",
+                        "how does", "how do", "how it works",
+                        "what is", "what does", "what's involved", "what is involved",
+                        "explain", "can you explain", "could you explain",
+                        "describe", "can you describe",
+                        "what happens", "what would happen",
+                        "what kind of", "what type of",
+                        "interested in learning", "want to know more",
+                    )
+                    _svc_wants_description = any(
+                        t in _svc_text for t in _SVC_EXPAND_TRIGGERS
+                    )
+                    if _svc_wants_description:
+                        _svc_answer = _SPECIFIC_SERVICE_ANSWERS[_specific_key]
                         logger.info(
-                            "[ms_flow] _handle_mid_flow_interrupt: services availability-first %s",
-                            _specific_key,
+                            "[ms_flow] _handle_mid_flow_interrupt: services expand-trigger "
+                            "→ description for %s", _specific_key,
                         )
                     else:
+                        # Binary availability / mention — one crisp confirmation.
+                        _svc_answer = f"Yes \u2014 we do offer {_display}."
                         logger.info(
-                            "[ms_flow] _handle_mid_flow_interrupt: services specific=%s", _specific_key
+                            "[ms_flow] _handle_mid_flow_interrupt: services availability-brief %s",
+                            _specific_key,
                         )
                     # Store active service for topic carry-forward on follow-up fragments.
                     self.session["_faq_active_service"] = _specific_key
@@ -20835,14 +20988,15 @@ class FlowEngine:
                     return  # bypass LLM + separate re-anchor block
             instruction = (
                 f"The caller asked: '{_gq_text}'\n"
-                "Answer it helpfully in 1–2 sentences from the clinic information in your "
-                "system prompt. "
+                "Answer EXACTLY what was asked in a maximum of 2 sentences. "
+                "Answer the specific question directly — do NOT pivot to a related topic, "
+                "do NOT give a speech about a service, do NOT educate unless education was asked for. "
+                "If the question is a yes/no question, start with yes or no. "
                 "Do NOT call check_availability, book_appointment, or any booking tool. "
                 "Do NOT re-ask the booking question. "
-                "Do NOT add any transitional phrases or invitations such as "
-                "'yes go on', 'where were we', or 'sorry about that'. "
+                "Do NOT add transitional phrases such as 'yes go on', 'where were we', "
+                "or 'sorry about that'. "
                 "Do NOT mention line quality, connection issues, or ask the caller to repeat. "
-                "If the question is unclear, give a brief helpful answer and offer to assist further. "
                 "Just answer and stop."
             )
         logger.info("[ms_flow] _handle_mid_flow_interrupt: intent=%s", intent)
