@@ -4002,11 +4002,17 @@ class FlowEngine:
                     # phone-only lookup — failure is handled deterministically via
                     # rc_lookup_failed below.  Only bypass when full_name is truly
                     # absent (never collected), not when it's present but garbage.
-                    if self.session.get("rc_phone_first") and not _lu_full:
+                    if (self.session.get("rc_phone_first") and not _lu_full) \
+                            or self.session.get("rc_name_surname"):
+                        # Bypass 1: phone-first, no name collected yet — allow phone-only lookup.
+                        # Bypass 2: recovery is still assembling staged fields (surname stored,
+                        #   first name pending in rc_name_surname) — BUG13 must not block.
                         logger.info(
-                            "[ms_flow] BUG13 bypassed for phone-first mode (no name yet)"
+                            "[ms_flow] BUG13 bypassed: phone_first=%s rc_name_surname=%r",
+                            bool(self.session.get("rc_phone_first")),
+                            self.session.get("rc_name_surname"),
                         )
-                        # fall through to LLM — phone-only lookup will fire
+                        # fall through to LLM — recovery still assembling fields
                     else:
                         logger.warning(
                             "[ms_flow] BUG13: lookup blocked — invalid name tokens: first=%r last=%r full=%r",
@@ -8928,7 +8934,12 @@ class FlowEngine:
                 self.session["_last_no_detected"]  = False
                 # Reschedule/cancel: emit a short holding message before the LLM
                 # fires the lookup so the caller hears something immediately.
-                if self._active_flow is RESCHEDULE_FLOW:
+                # Guard: suppress if already in recovery mode — lookup has already
+                # failed at least once and asking for missing fields is next, so
+                # the preamble would play immediately before a "Sorry, I need..."
+                # correction prompt which is jarring and misleading.
+                if self._active_flow is RESCHEDULE_FLOW \
+                        and not self.session.get("lookup_correction_mode"):
                     await self._tts.put(
                         "One second please — I'm just looking for your booking."
                     )
@@ -16478,7 +16489,79 @@ class FlowEngine:
                         )
                         return
 
-                    # Name capture — support progressive first-name / surname entry
+                    # ── First-name intercept: fires when surname already stored ──────────
+                    # rc_name_surname is set when caller gave surname but no first name.
+                    # _parse_lookup_name_correction cannot capture bare words ("Matt"),
+                    # so this block runs BEFORE it with a looser bare-word extractor.
+                    _stored_surname_rc = self.session.get("rc_name_surname")
+                    if _stored_surname_rc:
+                        _fn_parsed = _parse_lookup_name_correction(text)
+                        _fn_raw = None
+                        if _fn_parsed and not _fn_parsed.startswith("__SURNAME__"):
+                            # Full-name pattern matched — use first token as first name
+                            _fn_raw = _fn_parsed.split()[0].title()
+                        elif _fn_parsed and _fn_parsed.startswith("__SURNAME__"):
+                            # Caller corrected the surname — update and re-ask first name
+                            _stored_surname_rc = _fn_parsed[len("__SURNAME__"):]
+                            self.session["rc_name_surname"] = _stored_surname_rc
+                            _fn_reask = (
+                                f"Got it \u2014 and what first name was the booking made under?"
+                            )
+                            _flush_tts()
+                            await self._tts.put(_fn_reask)
+                            self.session["last_question"] = _fn_reask
+                            logger.info(
+                                "[ms_flow] recovery: surname updated to %r, re-asking first name",
+                                _stored_surname_rc,
+                            )
+                            return
+                        else:
+                            # No structured pattern — bare-word fallback for plain names.
+                            # Strip filler/scaffold tokens and take the first clean word.
+                            _FN_SCAFFOLD_RC = frozenset({
+                                "my", "is", "it's", "its", "name", "first", "the", "i'm", "im",
+                                "and", "a", "an", "it", "that", "yes", "yeah", "ok", "okay",
+                                "sure", "um", "uh", "so", "i", "just", "its",
+                            })
+                            _fn_candidates = [
+                                w.title() for w in text.strip().split()
+                                if w.lower() not in _FN_SCAFFOLD_RC
+                                and w.isalpha() and len(w) >= 2
+                            ]
+                            _fn_raw = _fn_candidates[0] if _fn_candidates else None
+                        if _fn_raw:
+                            _combined_rc = f"{_fn_raw} {_stored_surname_rc}".strip()
+                            _col_rc = self.session.setdefault("collected", {})
+                            _col_rc["full_name"] = _combined_rc
+                            self.session["full_name"] = _combined_rc
+                            self.session.pop("rc_name_surname", None)
+                            self.session.pop("rc_name_first_name", None)
+                            self.session.pop("lookup_correction_mode", None)
+                            self.session.pop("rc_recovery_step", None)
+                            self.session.pop("rc_phone_first", None)
+                            _flush_tts()
+                            logger.info(
+                                "[ms_flow] recovery: first=%r + surname=%r → full_name=%r — retrying lookup",
+                                _fn_raw, _stored_surname_rc, _combined_rc,
+                            )
+                            await self.ask_current_question()
+                            return
+                        else:
+                            # Can't extract a first name — re-ask specifically
+                            _fn_reask2 = (
+                                "Sorry \u2014 could you say the first name "
+                                "the booking was made under?"
+                            )
+                            _flush_tts()
+                            await self._tts.put(_fn_reask2)
+                            self.session["last_question"] = _fn_reask2
+                            logger.info(
+                                "[ms_flow] recovery: first-name extraction failed for %r — re-asking",
+                                text[:50],
+                            )
+                            return
+
+                    # Name capture — support progressive first-name / surname entry.
                     # If caller gives a single word, store as first name and ask for surname.
                     # If rc_name_first_name already stored, combine and retry immediately.
                     _correction = _parse_lookup_name_correction(text)
@@ -16489,14 +16572,35 @@ class FlowEngine:
                             _new_surname = _correction[len("__SURNAME__"):]
                             _existing_full = (col.get("full_name") or "").strip()
                             _first = _stored_first or (_existing_full.split()[0] if _existing_full else "")
-                            _combined = f"{_first} {_new_surname}".strip() if _first else _new_surname
-                            self.session.pop("rc_name_first_name", None)
-                            col["full_name"] = _combined
-                            self.session["full_name"] = _combined
-                            logger.info(
-                                "[ms_flow] recovery/surname correction: %r → full_name=%r",
-                                text[:50], _combined,
-                            )
+                            if _first:
+                                # Have first name — combine and proceed to retry
+                                _combined = f"{_first} {_new_surname}".strip()
+                                self.session.pop("rc_name_first_name", None)
+                                col["full_name"] = _combined
+                                self.session["full_name"] = _combined
+                                logger.info(
+                                    "[ms_flow] recovery/surname correction: %r → full_name=%r",
+                                    text[:50], _combined,
+                                )
+                                # fall through to common retry block
+                            else:
+                                # No first name yet — store surname and ask for first name.
+                                # Do NOT call ask_current_question() with an incomplete name.
+                                self.session["rc_name_surname"] = _new_surname
+                                _fn_q = (
+                                    "Thanks \u2014 and what first name was the booking made under?"
+                                )
+                                _flush_tts()
+                                await self._tts.put(_fn_q)
+                                self.session.setdefault("conversation_history", []).append(
+                                    {"role": "assistant", "content": _fn_q}
+                                )
+                                self.session["last_question"] = _fn_q
+                                logger.info(
+                                    "[ms_flow] recovery: surname=%r stored, requesting first name",
+                                    _new_surname,
+                                )
+                                return
                         elif _stored_first:
                             # We have a stored first name — this is the surname
                             _combined = f"{_stored_first} {_correction}".strip()
