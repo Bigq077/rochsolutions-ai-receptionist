@@ -6072,6 +6072,14 @@ class FlowEngine:
                         transcript[:80], _isw_intent, _isw_current,
                     )
                     _is_repair = False
+        # RETURNING qualification states — utterances like "i mean it's been a
+        # while" match repair phrases purely by substring ("i mean ") but are
+        # direct answers to the qualification question, not corrections.
+        # Suppress the repair intercept entirely at these states.
+        if _is_repair and step and step.get("state") in {
+            "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
+        }:
+            _is_repair = False
         if _is_repair:
             # Strong repair — stale child-policy / service-fit branches must not
             # keep controlling the turn (Rule 3). Clear pending routing state
@@ -9299,11 +9307,17 @@ class FlowEngine:
             step["state"] in _PHONE_REVERSAL_STATES
             and _is_phone_accept(text)
         )
+        # RETURNING qualification states: "not anymore", "not now" etc. are
+        # direct answers to the current question, never abandonment signals.
+        _is_returning_qual_answer = step is not None and step.get("state") in {
+            "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
+        }
         if (
             step["state"] != "DETECT_INTENT"
             and not _is_active_nav
             and not _is_sched_nav_ambiguous
             and not _is_phone_reversal
+            and not _is_returning_qual_answer
             and any(sig in text for sig in _ABANDON_SIGNALS)
         ):
             # Insertion point 2 — name usage tracker (final sign-off)
@@ -10719,12 +10733,29 @@ class FlowEngine:
                 "yes i am", "yes i'm", "yeah i am", "yeah i'm",
                 "i am yeah", "i am yes",
             )
+            # ── Expanded NO list: includes ALL "been a while / not ongoing / new episode"
+            # signals.  Discourse-marker prefixes ("actually", "no", "well") are handled
+            # automatically because we do substring matching on the normalised text.
             _RTP_NO = (
+                # already-existing "new episode / not active" signals
                 "new episode", "new issue", "new problem", "new thing",
                 "flared up", "flare up", "came back", "come back",
                 "happened again", "different thing", "something else",
                 "not really", "not any more", "not anymore", "stopped",
                 "finished", "ended", "no i'm not", "no i haven't",
+                # been-a-while / recency signals — the critical missing set
+                "been a while", "it's been a while", "its been a while",
+                "been some time", "been a long time", "a long time ago",
+                "a while ago", "ages ago", "quite a while", "quite some time",
+                "long time ago", "some time ago", "some time back",
+                "not since", "not recently", "not been recent",
+                "hasn't been recent", "months ago", "years ago",
+                "not any longer", "no longer",
+                "used to but", "used to come", "haven't been",
+                "haven't come", "wasn't recent", "not that recent",
+                "no not anymore", "not at the moment", "not right now",
+                "this is different", "this is new", "was before but",
+                "i was before", "i did before",
             )
             _rtp_yes = any(p in text for p in _RTP_YES)
             _rtp_no = any(p in text for p in _RTP_NO)
@@ -10749,9 +10780,36 @@ class FlowEngine:
             if _rtp_no and not _rtp_yes:
                 self.session["on_treatment_plan"] = False
                 self.session.setdefault("collected", {})["on_treatment_plan"] = False
+                # ── Hard exit to standard booking flow ────────────────────────────
+                # Any NO at RETURNING_TREATMENT_PLAN means the caller is NOT on an
+                # active treatment plan.  This is case B (been a while / not ongoing /
+                # new episode) and must rejoin the standard booking flow.
+                #
+                # Setting new_or_returning="new" causes the skip chain to:
+                #   • bypass steps 3-5 (RETURNING_PLAN family — requires on_treatment_plan=True)
+                #   • bypass steps 7-9 (COLLECT_NAME_RETURNING / CONFIRM_PHONE_RETURNING /
+                #     COLLECT_PHONE_RETURNING — skip when new_or_returning=="new")
+                #   • NOT bypass steps 10-12 (COLLECT_NAME / CONFIRM_PHONE / COLLECT_PHONE —
+                #     skip only when new_or_returning=="returning")
+                # This routes the caller through the standard new-patient identity/phone
+                # collection path without any returning-specific lookup assumptions.
+                #
+                # Clearing returning_recency ensures no stale "recent" flag can later
+                # re-activate returning-plan paths in downstream intercepts.
+                self.session["new_or_returning"] = "new"
+                self.session.pop("returning_recency", None)
+                # Defensive: clear any staged returning-lookup flags from Prompt 6
+                # cancel/reschedule recovery so they cannot trigger surname lookup.
+                self.session.pop("rc_name_surname", None)
+                self.session.pop("rc_name_first_name", None)
+                self.session.pop("lookup_correction_mode", None)
+                self.session.pop("rc_recovery_step", None)
+                self.session.pop("rc_phone_first", None)
                 self.session["flow_step"] = step["step"] + 1
                 logger.info(
-                    "[ms_flow] RETURNING_TREATMENT_PLAN: deterministic NO %r → step %d (interrupt bypassed)",
+                    "[ms_flow] RETURNING_TREATMENT_PLAN: deterministic NO (not-ongoing) "
+                    "%r → step %d — new_or_returning reset to 'new', rejoining standard "
+                    "booking flow (COLLECT_NAME_RETURNING/CONFIRM_PHONE_RETURNING skipped)",
                     transcript[:60], step["step"] + 1,
                 )
                 _rtp_next = self.current_step()
@@ -10766,6 +10824,9 @@ class FlowEngine:
                 return
             # No deterministic match — fall through; _DATA_COLLECTION_STATES
             # blocks general_query, and Haiku fallback handles ambiguous answers.
+            # If Haiku also returns NO, the answer-storage path at line ~18779 sets
+            # on_treatment_plan=False; a separate post-Haiku intercept below then
+            # applies the same new_or_returning reset for safety.
             logger.info(
                 "[ms_flow] RETURNING_TREATMENT_PLAN: no deterministic match for %r — falling through",
                 transcript[:60],
@@ -18778,6 +18839,31 @@ class FlowEngine:
         # Store the answer
         self.session[step["answer_field"]] = answer
         self.session["general_inquiry_count"] = 0  # reset inquiry frequency on valid answer
+
+        # ── RETURNING_TREATMENT_PLAN: Haiku-fallback NO safety net ────────────────
+        # The deterministic NO branch above (lines ~10749+) handles the common cases
+        # and already resets new_or_returning="new".  This guard catches the residual
+        # path where Haiku (line ~18302) classified the utterance as NO and stored
+        # on_treatment_plan=False through the generic answer-storage path above.
+        # Without this reset the skip chain at ask_current_question() would still route
+        # through COLLECT_NAME_RETURNING instead of the standard COLLECT_NAME.
+        if (
+            step["state"] == "RETURNING_TREATMENT_PLAN"
+            and answer is False
+            and self.session.get("new_or_returning") != "new"
+        ):
+            self.session["new_or_returning"] = "new"
+            self.session.pop("returning_recency", None)
+            self.session.pop("rc_name_surname", None)
+            self.session.pop("rc_name_first_name", None)
+            self.session.pop("lookup_correction_mode", None)
+            self.session.pop("rc_recovery_step", None)
+            self.session.pop("rc_phone_first", None)
+            logger.info(
+                "[ms_flow] RETURNING_TREATMENT_PLAN Haiku-NO safety net: "
+                "new_or_returning reset to 'new' → standard booking identity path"
+            )
+
         # Mirror into collected{} for LLM context
         if step["answer_field"] in ("full_name", "phone_number", "new_or_returning"):
             col = self.session.setdefault("collected", {})
