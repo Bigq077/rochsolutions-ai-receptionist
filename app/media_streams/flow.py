@@ -5982,6 +5982,106 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+        # ── Deterministic location-correction interceptor ─────────────────────
+        # Runs BEFORE the short-form _glc block, the global repair intercept,
+        # NEW_OR_RETURNING / early-step extraction and any Haiku fallback.
+        # Handles long natural corrections the short-form _glc block skips,
+        # e.g. "no i meant the redditch clinic, i made an error".
+        # Requires BOTH:
+        #   (a) correction language  ("no", "not", "meant", "mistake", "wrong",
+        #                              "sorry", "error", "actually")
+        #   (b) clinic signal        (resolver resolves a clinic, or explicit
+        #                              "not alcester" / "not redditch")
+        # On match, commit corrected selected_location, acknowledge, re-ask the
+        # current booking question — deterministic, no repair, no Haiku.
+        _lc_state = step["state"] if step else None
+        _LC_STATES = {
+            "ASK_LOCATION", "NEW_OR_RETURNING",
+            "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
+        }
+        if (
+            _lc_state in _LC_STATES
+            and self.session.get("rc_stage") != "lookup_done"
+        ):
+            _LC_CORRECTION_TOKENS = (
+                " no ", " no,", "no,", "nope", " not ",
+                "meant", "mistake", "mistaken", "wrong",
+                "sorry", "error", "actually", "apolog",
+                "correct it", "correction",
+            )
+            _text_padded = " " + text + " "
+            _lc_has_correction = any(
+                p in _text_padded for p in _LC_CORRECTION_TOKENS
+            )
+            if _lc_has_correction:
+                from app.media_streams.location_resolver import (
+                    resolve_clinic_location as _lc_resolve,
+                )
+                _lc_result = _lc_resolve(text, context="ask_location")
+                _lc_new: Optional[str] = None
+                if (
+                    _lc_result["status"] == "resolved"
+                    and _lc_result.get("reason") != "prefix_fallback"
+                ):
+                    _lc_new = _lc_result["location"]
+                # Explicit negation: "not alcester" / "not redditch" — flip.
+                if _lc_new is None:
+                    if (
+                        "not alcester" in text or "not alchester" in text
+                        or "not ancester" in text or "not ancestor" in text
+                    ):
+                        _lc_new = "redditch"
+                    elif (
+                        "not redditch" in text or "not reddit" in text
+                    ):
+                        _lc_new = "alcester"
+                if _lc_new:
+                    _lc_cur = self.session.get("selected_location")
+                    logger.info(
+                        "[ms_flow] location_correction_intercept matched "
+                        "state=%s old=%s new=%s text=%r",
+                        _lc_state, _lc_cur, _lc_new, transcript[:100],
+                    )
+                    if _lc_new != _lc_cur:
+                        logger.info(
+                            "[ms_flow] location_correction_commit old=%s new=%s",
+                            _lc_cur, _lc_new,
+                        )
+                    self.session["selected_location"] = _lc_new
+                    # Clear any stale ASK_LOCATION residue so we don't loop back.
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_awaiting_dtmf", None)
+                    self.session.pop("location_fallback_unconfirmed", None)
+                    # Neutralise any repair / fallback routing for this turn.
+                    for _lc_clr in (
+                        "_pending_svc_fit", "_pending_svc_fit_turns",
+                        "_svc_fit_gq_guard", "_gq_clarify_pending",
+                        "pending_first_turn_followup", "pending_followup",
+                    ):
+                        self.session.pop(_lc_clr, None)
+                    logger.info(
+                        "[ms_flow] repair_intercept suppressed "
+                        "reason=location_correction"
+                    )
+                    logger.info(
+                        "[ms_flow] haiku_blocked "
+                        "reason=location_correction_context"
+                    )
+                    logger.info(
+                        "[ms_flow] watchdog_suppressed "
+                        "reason=location_correction_or_repair_prompt"
+                    )
+                    _lc_name = (
+                        "Redditch" if _lc_new == "redditch" else "Alcester"
+                    )
+                    await self._tts.put(
+                        f"No problem \u2014 {_lc_name} clinic. "
+                    )
+                    await self.ask_current_question()
+                    return
+
         # ── Global location-correction handler ────────────────────────────────────
         # Allows mid-flow correction of the already-bound clinic
         # ("actually Redditch", "no Redditch", "Redditch — under this number").
