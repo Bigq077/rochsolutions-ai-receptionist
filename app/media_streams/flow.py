@@ -18801,6 +18801,26 @@ class FlowEngine:
                     self.session["phone_confirm_armed"] = True
                     logger.info("[ms_flow] CONFIRM_PHONE: Haiku bypassed — watchdog retry")
                     return
+                # Bypass Haiku for RETURNING_RECENCY — any utterance that reaches
+                # this path was not matched by the deterministic recency signals.
+                # Haiku generates a verbose clarification ("Thanks for letting me
+                # know! Just to clarify, when you say 'a little while' …") which
+                # is confusing and wastes a retry.  Just replay the question so
+                # the caller can try again with clearer phrasing.
+                if step["state"] == "RETURNING_RECENCY":
+                    _rr_replay = self.session.get(
+                        "last_question",
+                        "Was that recently, or has it been a little while?",
+                    )
+                    await self._tts.put(_rr_replay)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _rr_replay}
+                    )
+                    logger.info(
+                        "[ms_flow] RETURNING_RECENCY: Haiku bypassed — replaying last_question %r",
+                        _rr_replay[:80],
+                    )
+                    return
                 # Bypass Haiku for PRESENT_DAYS states when utterance is a short cut-off
                 # fragment with no unambiguous day/time content. "that's why i" etc. are
                 # audio artifacts — replay last_question instead.
@@ -21765,6 +21785,27 @@ class FlowEngine:
                 "quite a while", "good while", "been a while",
                 "long while", "donkey's", "forever",
                 "not for a while", "long way back", "long time ago",
+                # "a little while" — the question itself offers this phrasing;
+                # "been a little while" does NOT contain "been a while" (substring
+                # mismatch due to the word "little"), so must be listed separately.
+                "little while",          # "a little while", "it's been a little while"
+                "while ago",             # "a while ago", "quite a while ago"
+                "while back",            # "a while back"
+                "fair while",            # "a fair while"
+                # Explicit "longer than" comparisons — caller heard "little while"
+                # and says "longer than that" meaning not-recent.
+                "longer than that",      # "it's been longer than that"
+                "been longer",           # "it's been longer"
+                # "not recently" must be caught in long_ago BEFORE "recently" in
+                # the recent list can match it as a false positive.
+                "not recently",          # "not recently", "not that recently"
+                "not that recent",       # "not that recent"
+                # Negated "been in" phrasing
+                "haven't been in",       # "haven't been in a while"
+                "not been in",           # "not been in recently"
+                # "some time" phrasing
+                "been some time",        # "it's been some time"
+                "some time ago",         # "some time ago"
                 # Bare "no"/"nope" to "Was that recently?" means "not recently"
                 "no", "nope", "nah", "not really",
             )
@@ -21779,7 +21820,8 @@ class FlowEngine:
                 "10 months", "ten months", "12 months", "twelve months",
                 "18 months", "eighteen months", "a year ago", "about a year",
             )
-            # Check long_ago first — "long time" takes priority over shorter matches
+            # Check long_ago first — ensures "not recently" → long_ago before
+            # the bare "recently" signal in the recent list can fire.
             for sig in long_ago:
                 if sig in text:
                     logger.info("[ms_extract] recency=long_ago matched=%r", sig)
@@ -21788,9 +21830,11 @@ class FlowEngine:
                 if sig in text:
                     logger.info("[ms_extract] recency=recent matched=%r", sig)
                     return "recent"
-            if _fuzzy_match(text, ["long time ago", "a while ago", "been a while"], threshold=75):
+            if _fuzzy_match(text, ["long time ago", "a while ago", "been a while", "a little while"], threshold=75):
+                logger.info("[ms_extract] recency=long_ago (fuzzy) text=%r", text[:40])
                 return "long_ago"
             if _fuzzy_match(text, ["recently", "not long ago", "a few months ago"], threshold=75):
+                logger.info("[ms_extract] recency=recent (fuzzy) text=%r", text[:40])
                 return "recent"
             return None
 
