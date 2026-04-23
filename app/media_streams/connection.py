@@ -674,7 +674,20 @@ class SilenceHandler:
             self.current_state = state
 
     def on_question_asked(self, question: str) -> None:
-        """Update last_question so re-asks have the right text."""
+        """Update last_question so re-asks have the right text.
+
+        Also explicitly arms the no-input watchdog for the new q_gen.  Previously
+        the watchdog was only armed in on_tts_finished when its is_question
+        heuristic matched the final chunk text — which misses prompts whose
+        tail chunk lacks a "?" and a listed keyword (e.g. initial COLLECT_NAME's
+        "You can say: my first name is..." tail).  Arming here removes the
+        dependency on per-chunk text heuristics: every flow question state that
+        invokes on_question_asked is covered.  _restart_timer is idempotent
+        per-q_gen so a subsequent tts_finished call is harmless.  _watchdog_grace_until
+        (set at final audible completion in on_tts_finished) re-anchors the
+        deadline to tts_finished + _wait, so arming earlier does NOT shorten
+        the caller's real answer window.
+        """
         if not question or not question.strip():
             return
         if _is_question_worth_storing(question):
@@ -705,6 +718,20 @@ class SilenceHandler:
                         "[ms_pause] cleared: reason=new_question_asked old_q_gen=%s new_q_gen=%d",
                         _pause_q_gen, self._q_gen,
                     )
+
+            # ── Explicit watchdog arm for EVERY flow question ─────────────────
+            # Don't rely on on_tts_finished's keyword heuristic to arm the
+            # no-input watchdog.  Fixes initial COLLECT_NAME (whose tail TTS
+            # "You can say: my first name is..." matches no keyword and misses
+            # "?" anchoring) and any other state whose tail chunk fails the
+            # is_question heuristic.  DTMF-expected states are skipped by
+            # _restart_timer's own guard.  Idempotent per-q_gen.
+            if not _is_dtmf_expected(_session):
+                self._restart_timer()
+                logger.debug(
+                    "[ms_silence] on_question_asked: watchdog armed q_gen=%d q=%r",
+                    self._q_gen, self.last_question[:60],
+                )
 
     def on_tts_started(self) -> None:
         """Track TTS activity and cancel silence/recovery timers before Susie speaks.
@@ -825,6 +852,20 @@ class SilenceHandler:
                 "(transcript received after question set) — suppressing timer restart"
             )
             return
+        # ── Anchor the watchdog deadline to final audible completion ─────────
+        # A question is considered "active" once on_question_asked has bound it
+        # (last_question is set and _last_question_set_at is live).  Any final
+        # TTS chunk reaching this point (intermediate-chunk suppression guard
+        # above has already cleared) is the audible completion of an active
+        # question OR a post-question bridge — either way the caller's answer
+        # window should begin NOW.  Moved out of the is_question branch so
+        # prompts whose final chunk text misses the heuristic keyword list
+        # (e.g. COLLECT_NAME's "You can say: my first name is..." tail,
+        # CONFIRM_PHONE's "say: use this number.") still anchor correctly.
+        # Guarded by "question active within 60 s" so unrelated tail TTS long
+        # after a transcript cannot hold a stale deadline indefinitely.
+        if self.last_question and (time.time() - self._last_question_set_at) < 60.0:
+            self._watchdog_grace_until = max(self._watchdog_grace_until, time.time())
         is_question = (
             t.endswith("?") or
             any(p in t.lower() for p in [
@@ -862,20 +903,9 @@ class SilenceHandler:
                     )
             # Record when the question's audio finished so _speech_recovery can
             # enforce a minimum response window before firing a premature re-ask.
+            # (_watchdog_grace_until is set above, before the is_question split,
+            # so both heuristic-matched and keyword-miss prompts re-anchor.)
             self._tts_done_at = time.time()
-            # Roll the no-input watchdog deadline forward to NOW so the caller
-            # gets the full _wait window AFTER the final audible completion of
-            # the question, not from the earlier arm-time.  Without this, multi-
-            # chunk prompts (e.g. CONFIRM_PHONE's "Thanks Quentin — If you'd
-            # like me to use the number you're calling on…" + "say: use this
-            # number.") shorten the caller's real answer window by however long
-            # the audio played.  The watchdog reads max(armed_at,
-            # last_engagement_at, _watchdog_grace_until) as its activity anchor,
-            # so setting this here cleanly re-bases the deadline to
-            # tts_finished + _wait.  Only reached after the intermediate-chunk
-            # suppression guard above, so multi-chunk prompts still count as
-            # ONE atomic spoken question for timing.
-            self._watchdog_grace_until = max(self._watchdog_grace_until, time.time())
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
         elif self._task is None:
@@ -968,22 +998,24 @@ class SilenceHandler:
             _wait = max(_wait, 8.0)
             logger.info("[ms_watchdog] greeting_grace=%.1fs", _wait)
         # Caller-choice states: the AI has just asked a question that requires
-        # the caller to parse spoken content and make a decision (pick a clinic,
-        # pick a day/time, confirm a booking, answer a binary yes/no).  The
-        # 4.5 s default is too aggressive here — callers routinely pause 5-7 s
-        # while deciding between two options.  Raise the floor to 8 s so the
-        # watchdog does not re-ask on top of a caller who is still thinking.
+        # the caller to parse spoken content and make a decision between multiple
+        # options (pick a clinic, pick a day, pick a slot, confirm which
+        # appointment).  Callers routinely pause 5-7 s while deliberating between
+        # options, so raise the floor to 8 s.
+        #
+        # Simple yes/no confirmations (CONFIRM_PHONE, CONFIRM_BOOKING,
+        # CONFIRM_RESCHEDULE*) and binary mid-flow questions (ASK_NEW_OR_RETURNING)
+        # are intentionally NOT listed here — their answer space is small and a
+        # post-audio 4.5 s default feels natural rather than sluggish.  The
+        # deadline is anchored to final tts_finished (see _watchdog_grace_until
+        # update in on_tts_finished), so 4.5 s post-audio is the true window.
         _CHOICE_GRACE_STATES = (
             "ASK_LOCATION",
             "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
             "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
-            "CONFIRM_BOOKING",
-            "CONFIRM_RESCHEDULE", "CONFIRM_RESCHEDULE_OR_CANCEL",
-            "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
-            "ASK_NEW_OR_RETURNING",
-            # LOOKUP_RESCHEDULE / LOOKUP_CANCEL emit a long confirmation prompt
-            # ("I found an appointment under … — is that the right one?") that
-            # needs extra parsing time; the 4.5 s default feels too aggressive.
+            # LOOKUP_RESCHEDULE / LOOKUP_CANCEL still list the found appointment
+            # and ask for confirmation — the prompt is long and the caller is
+            # parsing the read-back, so keep the longer deliberation window.
             "LOOKUP_RESCHEDULE", "LOOKUP_CANCEL",
         )
         if (_sess_faq_w or {}).get("state") in _CHOICE_GRACE_STATES:
