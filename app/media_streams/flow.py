@@ -7058,7 +7058,43 @@ class FlowEngine:
                         break
 
             if _cap_age is None:
-                # No age found — re-ask once, then give up
+                # Narrative-continuation absorption (Phase C) — if the caller
+                # is still extending their injury/reason narrative rather
+                # than answering with an age, merge the text into
+                # session["reason"] so it isn't lost, and soften the re-ask
+                # so it doesn't read as "you failed to answer".
+                _CAP_NARRATIVE_TOKENS = (
+                    "playing", "played", "fell", "slipped", "twisted",
+                    "sprained", "broke", "broken",
+                    "injured", "injury", "hurt", "hurts", "hurting",
+                    "pain", "ache", "aching", "sore", "swollen", "stiff",
+                    "football", "rugby", "tennis", "cricket",
+                    "ankle", "knee", "back", "neck", "shoulder",
+                    "hip", "wrist", "elbow", "leg", "arm",
+                    "foot", "heel", "head",
+                )
+                _cap_is_narrative = any(
+                    tok in _cap_tx for tok in _CAP_NARRATIVE_TOKENS
+                )
+                if _cap_is_narrative:
+                    _cap_existing = (self.session.get("reason") or "").strip()
+                    _cap_incoming = text.strip()
+                    _cap_merged   = (
+                        f"{_cap_existing} {_cap_incoming}".strip()
+                        if _cap_existing else _cap_incoming
+                    )
+                    self.session["reason"] = _cap_merged
+                    _cap_col = self.session.setdefault("collected", {})
+                    _cap_col["reason"] = _cap_merged
+                    _cap_pre = self.session.get("_pre_age_gate_transcript", "")
+                    self.session["_pre_age_gate_transcript"] = (
+                        f"{_cap_pre.strip()} {_cap_incoming}".strip()
+                        if _cap_pre else _cap_merged
+                    )
+                    logger.info(
+                        "[ms_flow] child_age_pending: narrative continuation "
+                        "absorbed into reason=%r", _cap_merged[:80],
+                    )
                 _cap_reask_n = int(self.session.get("_child_age_reask_count") or 0)
                 if _cap_reask_n >= 1:
                     self.session.pop("_child_age_pending",      None)
@@ -7070,7 +7106,12 @@ class FlowEngine:
                     logger.info("[ms_flow] child_age_pending: still no age after re-ask — giving up")
                     return
                 self.session["_child_age_reask_count"] = _cap_reask_n + 1
-                _cap_reask = f"Sorry \u2014 how old is {_cap_pronoun}?"
+                # Soften re-ask when the caller was clearly continuing their
+                # narrative rather than failing an age answer.
+                if _cap_is_narrative:
+                    _cap_reask = f"Got it \u2014 and how old is {_cap_pronoun}?"
+                else:
+                    _cap_reask = f"Sorry \u2014 how old is {_cap_pronoun}?"
                 await self._tts.put(_cap_reask)
                 self.session["last_question"] = _cap_reask
                 logger.info("[ms_flow] child_age_pending: no age in %r — re-asking", text[:40])
@@ -18525,21 +18566,131 @@ class FlowEngine:
                 "unknown"
             )
             if _cr_child_hit or _cr_third_party_hit or _cr_echo_hit:
-                logger.info(
-                    "[ms_flow] third_party_interrupt_detected "
-                    "state=COLLECT_REASON relation=%s child=%s third_party=%s "
-                    "echo=%s reroute=faq_child_policy text=%r",
-                    _cr_relation, _cr_child_hit, _cr_third_party_hit,
-                    _cr_echo_hit, transcript[:80],
-                )
-                logger.info(
-                    "[ms_flow] COLLECT_REASON blocked adult progression "
-                    "due_to=third_party_child_signal",
-                )
-                await self._handle_mid_flow_interrupt(
-                    "faq_child_policy", transcript,
-                )
-                return
+                # Deferred-gate continuation: if the age gate was already
+                # deferred on a prior turn (narrative still unfolding), do
+                # NOT re-fire the interrupt.  Fall through to the normal
+                # reason-capture path so _partial_reason merges this turn
+                # into the full reason below.
+                if self.session.get("_child_age_gate_deferred"):
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON: child signal during "
+                        "deferred age gate \u2014 continuing reason capture "
+                        "text=%r", transcript[:80],
+                    )
+                else:
+                    # Narrative-defer heuristic.  The bug: on an in-progress
+                    # reason narrative like "my son was playing football",
+                    # immediate reroute to the age gate cuts the caller off,
+                    # and the next fragment ("and he got injured") is then
+                    # misread as a failed age answer.  When the utterance
+                    # contains injury/activity/body-part tokens AND no age
+                    # is present, DEFER the age gate: store the partial
+                    # reason, mark the gate pending, prompt the caller to
+                    # continue.  The _partial_reason join at the next turn
+                    # merges the continuation; Phase B fires the gate once
+                    # the reason is fully captured.  Clean third-party
+                    # declarations ("booking for my daughter", "my son is
+                    # 16 and hurt his ankle") still hit the hard-reroute
+                    # path below (no narrative OR age already in text).
+                    # Activity / situational tokens — signal that the caller
+                    # is describing CONTEXT leading up to the reason, not the
+                    # reason itself.  "was playing football" is context; the
+                    # clinical reason ("and he got injured") has not yet been
+                    # spoken.
+                    _CR_NARRATIVE_CTX_TOKENS = (
+                        "playing", "played", "plays",
+                        "fell", "falls", "fall ",
+                        "trip", "tripped", "slipped",
+                        "twist", "twisted",
+                        "football", "rugby", "tennis", "cricket",
+                        "running", "dance", "dancing", "gym", "sport",
+                        "went over on", "rolled",
+                        "at school", "at home", "in the garden",
+                    )
+                    # Clinical content — signals the reason is already
+                    # fleshed out (injury named or body part + symptom).
+                    # If present, caller's utterance is complete enough to
+                    # hard-reroute to the age gate (existing behaviour).
+                    _CR_CLINICAL_TOKENS = (
+                        "pain", "painful", "ache", "aching",
+                        "hurt", "hurting", "hurts",
+                        "injured", "injury", "sore", "soreness",
+                        "stiff", "stiffness", "swollen", "swelling",
+                        "sprain", "sprained", "strain", "strained",
+                        "broke", "broken", "fracture", "torn",
+                        "ankle", "knee", "back", "neck", "shoulder",
+                        "hip", "wrist", "elbow", "foot", "heel",
+                        "spine", "headache", "migraine",
+                    )
+                    import re as _re_cr_defer
+                    _cr_has_age_digit = bool(
+                        _re_cr_defer.search(r'\b\d{1,3}\b', text)
+                    )
+                    _CR_WORD_AGES = (
+                        "one", "two", "three", "four", "five",
+                        "six", "seven", "eight", "nine", "ten",
+                        "eleven", "twelve", "thirteen", "fourteen",
+                        "fifteen", "sixteen", "seventeen", "eighteen",
+                        "nineteen", "twenty",
+                    )
+                    _cr_has_age_word = any(
+                        f" {w} " in f" {text} " for w in _CR_WORD_AGES
+                    )
+                    _cr_has_age_in_text = _cr_has_age_digit or _cr_has_age_word
+                    _cr_is_narrative_ctx = any(
+                        tok in text for tok in _CR_NARRATIVE_CTX_TOKENS
+                    )
+                    _cr_has_clinical = any(
+                        tok in text for tok in _CR_CLINICAL_TOKENS
+                    )
+                    if (
+                        _cr_is_narrative_ctx
+                        and not _cr_has_clinical
+                        and not _cr_has_age_in_text
+                    ):
+                        # Defer the age gate — preserve the spoken reason
+                        # text and keep the caller in reason-capture mode.
+                        self.session["_child_age_gate_deferred"] = True
+                        self.session["_child_age_relationship"] = (
+                            "son"      if _cr_relation == "son"      else
+                            "daughter" if _cr_relation == "daughter" else
+                            "child"
+                        )
+                        self.session["_partial_reason"] = transcript.strip()
+                        _cr_defer_phrase = (
+                            "Oh no \u2014 go ahead, tell me what happened."
+                        )
+                        await self._tts.put(_cr_defer_phrase)
+                        self.session["last_question"] = _cr_defer_phrase
+                        self.session.setdefault(
+                            "conversation_history", []
+                        ).append(
+                            {"role": "assistant",
+                             "content": _cr_defer_phrase}
+                        )
+                        logger.info(
+                            "[ms_flow] COLLECT_REASON: child/third-party "
+                            "narrative detected \u2014 deferring age gate "
+                            "(relation=%s text=%r)",
+                            _cr_relation, transcript[:80],
+                        )
+                        return
+                    logger.info(
+                        "[ms_flow] third_party_interrupt_detected "
+                        "state=COLLECT_REASON relation=%s child=%s "
+                        "third_party=%s echo=%s reroute=faq_child_policy "
+                        "text=%r",
+                        _cr_relation, _cr_child_hit, _cr_third_party_hit,
+                        _cr_echo_hit, transcript[:80],
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_REASON blocked adult progression "
+                        "due_to=third_party_child_signal",
+                    )
+                    await self._handle_mid_flow_interrupt(
+                        "faq_child_policy", transcript,
+                    )
+                    return
 
         # ── COLLECT_REASON: reschedule/cancel re-route ───────────────────────────
         # Caller says "I want to reschedule" at the booking-reason step.
@@ -19545,6 +19696,57 @@ class FlowEngine:
                     {"role": "assistant", "content": _cr_empathy}
                 )
                 logger.info("[ms_flow] COLLECT_REASON: empathy emitted — %r", _cr_empathy[:80])
+
+        # ── COLLECT_REASON: deferred child-age gate firing (Phase B) ─────────
+        # Phase A deferred the age gate on a child/third-party narrative turn
+        # so the caller could finish their reason.  Now the reason has been
+        # stored and flow_step has advanced past COLLECT_REASON — fire the
+        # age question deterministically.  The existing _child_age_pending
+        # block consumes the age on the next turn; _post_age_confirm_pending
+        # handles yes/no.  ask_current_question is NOT called here — the
+        # post-age YES branch resumes the flow and asks the next question.
+        if (
+            step["state"] == "COLLECT_REASON"
+            and self.session.get("_child_age_gate_deferred")
+        ):
+            self.session.pop("_child_age_gate_deferred", None)
+            _dg_rel = self.session.get("_child_age_relationship") or "child"
+            _DG_PRONOUNS = {"son": "your son", "daughter": "your daughter"}
+            _dg_age_q = (
+                f"Just so I can check we can help \u2014 "
+                f"how old is {_DG_PRONOUNS.get(_dg_rel, 'your child')}?"
+            )
+            await self._tts.put(_dg_age_q)
+            self.session["_child_age_pending"]     = True
+            self.session["_child_age_reask_count"] = 0
+            self.session["last_question"]          = _dg_age_q
+            self.session["last_faq_answer"]        = _dg_age_q
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _dg_age_q}
+            )
+            # Arm the authoritative-policy lock so clarifications arriving
+            # before age capture are still handled deterministically.
+            try:
+                from app.clinic_config import get_clinic as _dg_gc
+                from app.media_streams.authoritative_policy import (
+                    set_lock                as _dg_set_lock,
+                    TOPIC_CHILDREN_AGE      as _DG_TOPIC,
+                    ELIGIBILITY_PENDING_AGE as _DG_PEND,
+                    resolve_min_age         as _dg_min,
+                )
+                _dg_clinic = _dg_gc(self.session.get("clinic_id") or "demo")
+                _dg_set_lock(
+                    self.session, _DG_TOPIC, _DG_PEND,
+                    min_age=_dg_min(_dg_clinic),
+                )
+            except Exception:  # pragma: no cover — defensive
+                pass
+            logger.info(
+                "[ms_flow] COLLECT_REASON: deferred child-age gate fired "
+                "relation=%s reason=%r",
+                _dg_rel, (self.session.get("reason") or "")[:60],
+            )
+            return
 
         # Emit a short conversational bridge before the next question.
         # Skip if the next step uses LLM — it writes its own opener.
