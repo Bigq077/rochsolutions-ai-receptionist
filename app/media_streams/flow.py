@@ -8722,7 +8722,7 @@ class FlowEngine:
                 )
                 if (
                     _sl_result["status"] == "ambiguous"
-                    and _sl_conf >= 0.60
+                    and _sl_conf >= 0.57
                     and _sl_has_signal
                 ):
                     _sl_dbg  = _sl_result.get("debug", {})
@@ -8754,7 +8754,7 @@ class FlowEngine:
                     _sl_red2 = _sl_dbg2.get("redditch_score", 0)
                     _sl_win2  = max(_sl_alc2, _sl_red2)
                     _sl_lose2 = min(_sl_alc2, _sl_red2)
-                    if _sl_win2 >= 55 and (_sl_win2 - _sl_lose2) >= 30:
+                    if _sl_win2 >= 53 and (_sl_win2 - _sl_lose2) >= 30:
                         _sl_bind2 = "alcester" if _sl_alc2 >= _sl_red2 else "redditch"
                         self.session["selected_location"] = _sl_bind2
                         self.session["needs_location"]    = False
