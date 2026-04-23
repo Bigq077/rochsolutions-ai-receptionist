@@ -864,8 +864,22 @@ class SilenceHandler:
         # CONFIRM_PHONE's "say: use this number.") still anchor correctly.
         # Guarded by "question active within 60 s" so unrelated tail TTS long
         # after a transcript cannot hold a stale deadline indefinitely.
-        if self.last_question and (time.time() - self._last_question_set_at) < 60.0:
+        # Risk-2 fix: also require this chunk started at or after the current
+        # question was armed (_last_question_set_at).  Chunks from a prior turn
+        # (chunk_started_at < _last_question_set_at) must not roll the live
+        # grace window forward.  chunk_started_at == 0.0 means legacy/unknown —
+        # allow (safe direction).
+        if (
+            self.last_question
+            and (time.time() - self._last_question_set_at) < 60.0
+            and (chunk_started_at == 0.0 or chunk_started_at >= self._last_question_set_at)
+        ):
             self._watchdog_grace_until = max(self._watchdog_grace_until, time.time())
+            logger.debug(
+                "[ms_silence] grace_anchor: q_gen=%d chunk_ts=%.3f q_ts=%.3f grace_until=%.3f",
+                self._q_gen, chunk_started_at, self._last_question_set_at,
+                self._watchdog_grace_until,
+            )
         is_question = (
             t.endswith("?") or
             any(p in t.lower() for p in [
@@ -1013,17 +1027,32 @@ class SilenceHandler:
             "ASK_LOCATION",
             "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
             "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
-            # LOOKUP_RESCHEDULE / LOOKUP_CANCEL still list the found appointment
-            # and ask for confirmation — the prompt is long and the caller is
-            # parsing the read-back, so keep the longer deliberation window.
-            "LOOKUP_RESCHEDULE", "LOOKUP_CANCEL",
         )
-        if (_sess_faq_w or {}).get("state") in _CHOICE_GRACE_STATES:
+        _sess_state_w = (_sess_faq_w or {}).get("state", "")
+        _sess_rc_stage = (_sess_faq_w or {}).get("rc_stage", "")
+        if _sess_state_w in _CHOICE_GRACE_STATES:
             _wait = max(_wait, 8.0)
             logger.info(
                 "[ms_watchdog] choice_grace state=%s wait=%.1fs",
-                (_sess_faq_w or {}).get("state"), _wait,
+                _sess_state_w, _wait,
             )
+        elif _sess_state_w in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+            # LOOKUP states present a read-back of the found appointment — the
+            # caller is parsing it — so a longer window is usually appropriate.
+            # Exception: when rc_stage=="lookup_done" the prompt is a short
+            # binary "Is that you?" confirmation that needs only default timing.
+            if _sess_rc_stage != "lookup_done":
+                _wait = max(_wait, 8.0)
+                logger.info(
+                    "[ms_watchdog] choice_grace state=%s rc_stage=%s wait=%.1fs",
+                    _sess_state_w, _sess_rc_stage, _wait,
+                )
+            else:
+                logger.info(
+                    "[ms_watchdog] lookup_confirm state=%s rc_stage=lookup_done "
+                    "→ binary confirmation wait=%.1fs",
+                    _sess_state_w, _wait,
+                )
 
         # Ownership check: yield once so any pending cancellation of a superseded
         # task is delivered before we log WATCHDOG_START.  If a newer watchdog task
@@ -1136,11 +1165,29 @@ class SilenceHandler:
                         return
                     continue
 
-            # Activity re-check: last_engagement_at may have been updated while
-            # we were in the terminal-guard checks above.
-            _last_activity = max(armed_at, self.last_engagement_at)
+            # Activity re-check: last_engagement_at or _watchdog_grace_until may
+            # have advanced while we were in the terminal-guard checks above.
+            # Include _watchdog_grace_until so a late tts_finished callback
+            # (race between Phase 1 exit and guard execution) is still respected.
+            _last_activity = max(armed_at, self.last_engagement_at, self._watchdog_grace_until)
             if (time.time() - _last_activity) < _wait:
-                logger.debug("[ms_watchdog] WATCHDOG_ACTIVITY q_gen=%d — deadline extended", q_gen)
+                logger.debug(
+                    "[ms_watchdog] WATCHDOG_ACTIVITY q_gen=%d — deadline extended "
+                    "(grace_until=%.3f)",
+                    q_gen, self._watchdog_grace_until,
+                )
+                continue
+
+            # Risk-1 / fire-time enforcement: honour _watchdog_grace_until as the
+            # authoritative start of the caller's response window.  Even if Phase 1
+            # and the guards above passed, if the grace window has not yet expired
+            # we must not fire yet — defer back to Phase 1.
+            if time.time() < self._watchdog_grace_until:
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_GRACE_DEFER q_gen=%d "
+                    "grace_until=%.3f now=%.3f",
+                    q_gen, self._watchdog_grace_until, time.time(),
+                )
                 continue
 
             if self.currently_reasking:
