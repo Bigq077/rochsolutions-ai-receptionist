@@ -6119,7 +6119,45 @@ class FlowEngine:
                 logger.info(
                     "[ms_flow] repair: embedded FAQ %s — answering directly", _emb_intent
                 )
+                # Clear stale ASK_LOCATION state so the caller doesn't loop back to
+                # the location question after receiving their FAQ answer.
+                if self.session.get("needs_location"):
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_awaiting_dtmf", None)
+                    logger.info(
+                        "[ms_flow] repair: needs_location cleared (FAQ answer "
+                        "mid-ASK_LOCATION intercept)"
+                    )
                 await self._handle_mid_flow_interrupt(_emb_intent, _emb_raw or transcript)
+                return
+            # Also route embedded general_query with question-form content.
+            # Example: "i mean do you have any evening appointments" — "i mean" is a
+            # repair phrase, but the rest is an informational question that should be
+            # answered via _handle_mid_flow_interrupt, not dropped or looped.
+            if (
+                _emb_intent == "general_query"
+                and _emb_raw
+                and any(q in _emb_raw.lower() for q in (
+                    "do you", "can you", "is there", "are you", "are there",
+                    "how ", "what ", "which ", "when ", "any chance", "?",
+                ))
+            ):
+                logger.info(
+                    "[ms_flow] repair: embedded general_query question-form — "
+                    "answering directly"
+                )
+                if self.session.get("needs_location"):
+                    self.session["needs_location"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_awaiting_dtmf", None)
+                    logger.info(
+                        "[ms_flow] repair: needs_location cleared (general_query "
+                        "mid-ASK_LOCATION intercept)"
+                    )
+                await self._handle_mid_flow_interrupt("general_query", _emb_raw)
                 return
             # No extractable embedded question — state-aware repair prompt.
             # Do NOT enqueue phrase here; _llm_loop finally drains then enqueues.
@@ -7790,6 +7828,32 @@ class FlowEngine:
                 "which clinic should",
                 "which one should",
                 "same services",
+                # Availability-comparison signals (caller asks which clinic is easier
+                # to book / has more slots — same answer: "it depends on the week,
+                # which location is more convenient for you?")
+                "more availability",
+                "has more availability",
+                "most availability",
+                "usually has more",
+                "which clinic has more",
+                "which one has more",
+                "easier to get into",
+                "easier to book",
+                "easier to get booked",
+                "which is easier",
+                "which clinic is easier",
+                "which one is easier",
+                "evening availability",
+                "open later",
+                "availability usually",
+                "which has more",
+                "more appointments available",
+                "more slots",
+                "busier clinic",
+                "busier one",
+                "less busy",
+                "quieter clinic",
+                "quieter one",
             )
             if any(p in text.strip().lower() for p in _LOC_COMPARISON_SIGNALS):
                 _cmp_ans = (
@@ -19727,9 +19791,27 @@ class FlowEngine:
         # ("took", "need", "want") should not push a real booking to general_query.
         # Block question-form queries ("what time is my appointment", "when is my
         # appointment") so informational follow-ups still reach the LLM.
+        # Also block scheduling / availability FAQ questions:
+        #   "do you have any evening appointments by any chance"
+        #   "do you do late appointments"
+        #   "which clinic has more availability"
+        # These contain "appoint" but are informational, not booking commands.
         _APPT_INFO_QUERIES = (
             "what time", "what's the time", "when is my", "when's my",
             "do i have", "have i got", "how long is my",
+            # ── Scheduling / availability info questions ─────────────────────
+            # "appointment" appears but the utterance is a question about
+            # scheduling patterns, not a request to start booking.
+            "any evening", "evening appointment", "evening appointments",
+            "do you do evening", "do you offer evening", "do you have any evening",
+            "any late", "late appointment", "late appointments",
+            "later appointment", "later appointments",
+            "morning appointment", "morning appointments", "any morning",
+            "early appointment", "early appointments",
+            "more availability", "which clinic has more", "which clinic usually",
+            "which one usually has", "easier to get", "easier to book",
+            "usually available", "normally available",
+            "how easy", "is it easy to get",
         )
         if (
             "appoint" in text
