@@ -7032,6 +7032,72 @@ class FlowEngine:
             await self.ask_current_question()
             return
 
+        # ── EXPLICIT CLINIC CORRECTION GUARD ────────────────────────────────────
+        # High-priority: fires before any per-state extraction so that a clinic
+        # correction utterance ("no, I said the Redditch clinic") cannot be
+        # silently consumed as a NEW_OR_RETURNING answer, COLLECT_REASON text,
+        # or other slot value.
+        #
+        # Trigger conditions (all must be true):
+        #   1. We are in an early booking state where clinic might be mis-parsed
+        #   2. A clinic is already bound (selected_location set to a known clinic)
+        #   3. Utterance contains a negation / correction marker
+        #   4. Utterance names or implies the OPPOSITE clinic
+        #
+        # Hard early exit: utterance is NOT re-used for any other purpose.
+        _CC_INTERCEPT_STATES = frozenset({
+            "NEW_OR_RETURNING", "COLLECT_REASON",
+            "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
+            "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+        })
+        _cc_current = self.session.get("selected_location", "")
+        if (
+            current_state in _CC_INTERCEPT_STATES
+            and _cc_current in ("alcester", "redditch")
+        ):
+            _cc_opposite = "redditch" if _cc_current == "alcester" else "alcester"
+            _CC_NEGATION: tuple = (
+                "no ", "not ", "didn't say", "didnt say",
+                "i said", "i meant", "meant to say", "meant to", "i meant",
+                "sorry not", "sorry i said", "actually i said",
+                "the other clinic", "other clinic", "the other one",
+            )
+            # Tokens for each clinic (covers common STT variants)
+            _CC_ALC_TOKENS: tuple = ("alcester", "kinwarton", "al-cess", "alcess")
+            _CC_RED_TOKENS: tuple = (
+                "redditch", "reditch", "reddit ", "reddich",
+                "bromsgrove", "red ditch",
+            )
+            _cc_opp_tokens = _CC_RED_TOKENS if _cc_opposite == "redditch" else _CC_ALC_TOKENS
+            _cc_lo = text.lower()
+            _cc_has_negation = any(m in _cc_lo for m in _CC_NEGATION)
+            _cc_has_opposite  = any(t in _cc_lo for t in _cc_opp_tokens)
+            _cc_has_other     = any(
+                t in _cc_lo
+                for t in ("the other clinic", "other one", "the other one", "other location")
+            )
+            if _cc_has_negation and (_cc_has_opposite or _cc_has_other):
+                _cc_display = "Redditch" if _cc_opposite == "redditch" else "Alcester"
+                # Rebind selected_location atomically
+                self.session["selected_location"] = _cc_opposite
+                # Re-ask the current step question so the prompt reflects the
+                # corrected clinic and no stale clinic context leaks forward.
+                self.session["question_asked_this_turn"] = False
+                _cc_ack = (
+                    f"No problem \u2014 we\u2019ll use our {_cc_display} clinic. "
+                )
+                await self._tts.put(_cc_ack)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _cc_ack}
+                )
+                logger.info(
+                    "[ms_flow] clinic_correction_guard: state=%s %r → %r "
+                    "text=%r",
+                    current_state, _cc_current, _cc_opposite, text[:60],
+                )
+                await self.ask_current_question()
+                return
+
         # ── MID-FLOW PATH SWITCH ─────────────────────────────────────────────────
         # Caller can switch between reschedule and cancel at any point mid-flow.
         # Reschedule → cancel: detected here for PRESENT_DAYS/TIMES/CONFIRM_RESCHEDULE.
