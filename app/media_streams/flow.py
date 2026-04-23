@@ -7126,6 +7126,17 @@ class FlowEngine:
                 or _cap_policies.get("adult_age_threshold")
                 or 15
             )
+            # Capture mid-booking flag + relationship BEFORE clearing state —
+            # the allow branch reads them to resume the flow instead of
+            # re-offering booking.  Deferred-gate path (Phase B) sets
+            # _child_age_gate_in_booking so we know booking is already in
+            # progress; the upstream faq_child_policy path does not.
+            _cap_in_booking = bool(
+                self.session.pop("_child_age_gate_in_booking", False)
+            )
+            _cap_rel = (
+                self.session.get("_child_age_relationship") or "child"
+            )
             self.session.pop("_child_age_pending",      None)
             self.session.pop("_child_age_relationship", None)
             self.session.pop("_child_age_reask_count",  None)
@@ -7154,29 +7165,125 @@ class FlowEngine:
                     "[ms_flow] child_age_pending: age=%s < threshold=%s → declined",
                     _cap_age, _cap_threshold,
                 )
-            else:
-                _cap_allow = (
-                    "That\u2019s absolutely fine \u2014 "
-                    "would you like to go ahead and book an appointment?"
+                return
+            # ── Age allowed ──────────────────────────────────────────────
+            _ap_set_lock_cap(
+                self.session, _AP_TOPIC_CAP, _AP_ELIG_ALLOW_CAP,
+                min_age=_cap_threshold, last_age=_cap_age,
+            )
+            if _cap_in_booking:
+                # Mid-booking path: the deferred age gate fired after the
+                # caller's narrative reason was already being captured in
+                # COLLECT_REASON.  Booking has NOT been interrupted — do
+                # not re-offer it as a yes/no.  Instead:
+                #   • if the stored reason is complete (contains a clinical
+                #     token), speak a short resume line and continue the
+                #     flow — the COLLECT_REASON skip-chain advances to
+                #     COLLECT_NAME automatically;
+                #   • if the reason is still incomplete (narrative only),
+                #     roll flow_step back to COLLECT_REASON, preserve what
+                #     the caller said as _partial_reason, and ask a focused
+                #     injury question so reason capture can finish.
+                _CAP_RESUME_CLINICAL = (
+                    "pain", "painful", "ache", "aching",
+                    "hurt", "hurting", "hurts",
+                    "injured", "injury", "sore", "soreness",
+                    "stiff", "stiffness", "swollen", "swelling",
+                    "sprain", "sprained", "strain", "strained",
+                    "broke", "broken", "fracture", "torn",
+                    "ankle", "knee", "back", "neck", "shoulder",
+                    "hip", "wrist", "elbow", "foot", "heel",
+                    "spine", "headache", "migraine",
                 )
-                await self._tts.put(_cap_allow)
-                self.session["last_question"]  = "Would you like to go ahead and book?"
-                self.session["last_faq_answer"] = _cap_allow
-                # Arm deterministic yes/no branch; handled by the global
-                # _post_age_confirm_pending block below on the next turn.
-                # This prevents the next reply ("yes please") from being routed
-                # through COLLECT_REASON fragment rejection or LLM fallback.
-                self.session["_post_age_confirm_pending"] = True
-                self.session["_post_age_confirm_reask_count"] = 0
-                _ap_set_lock_cap(
-                    self.session, _AP_TOPIC_CAP, _AP_ELIG_ALLOW_CAP,
-                    min_age=_cap_threshold, last_age=_cap_age,
+                _cap_reason_txt = (
+                    (self.session.get("reason") or "").lower()
                 )
+                _cap_reason_complete = any(
+                    tok in _cap_reason_txt for tok in _CAP_RESUME_CLINICAL
+                )
+                _CAP_PRONOUN_OBJ = {"son": "he", "daughter": "she"}
+                _cap_pron_obj = _CAP_PRONOUN_OBJ.get(_cap_rel, "they")
+                if _cap_reason_complete:
+                    _cap_resume = (
+                        "That\u2019s absolutely fine \u2014 let\u2019s continue."
+                    )
+                    await self._tts.put(_cap_resume)
+                    self.session.setdefault(
+                        "conversation_history", []
+                    ).append(
+                        {"role": "assistant", "content": _cap_resume}
+                    )
+                    self.session["last_question"]  = _cap_resume
+                    self.session["last_faq_answer"] = _cap_resume
+                    # Let ask_current_question emit the next booking
+                    # question — the skip-chain passes COLLECT_REASON
+                    # because session["reason"] is set.
+                    self.session["question_asked_this_turn"] = False
+                    logger.info(
+                        "[ms_flow] child_age_pending: age=%s allowed, in-booking "
+                        "resume — reason complete (%r), skipping re-offer",
+                        _cap_age, _cap_reason_txt[:60],
+                    )
+                    await self.ask_current_question()
+                    return
+                # Reason incomplete — roll back to COLLECT_REASON so the
+                # caller can finish describing the injury.  The narrative
+                # so far is preserved as _partial_reason and merged on the
+                # next COLLECT_REASON turn (existing merge path).
+                _cap_partial = (self.session.get("reason") or "").strip()
+                if _cap_partial:
+                    self.session["_partial_reason"] = _cap_partial
+                self.session.pop("reason", None)
+                _cap_col = self.session.setdefault("collected", {})
+                _cap_col.pop("reason", None)
+                try:
+                    _cap_reason_idx = next(
+                        i for i, s in enumerate(self._active_flow)
+                        if s.get("state") == "COLLECT_REASON"
+                    )
+                except StopIteration:
+                    _cap_reason_idx = None
+                if _cap_reason_idx is not None:
+                    self.session["flow_step"] = _cap_reason_idx
+                    self.session["state"]     = "COLLECT_REASON"
+                    self.session["flow_state"] = "COLLECT_REASON"
+                _cap_injury_q = (
+                    f"That\u2019s absolutely fine \u2014 can you tell me "
+                    f"what injury {_cap_pron_obj}\u2019s got?"
+                )
+                await self._tts.put(_cap_injury_q)
+                self.session.setdefault(
+                    "conversation_history", []
+                ).append(
+                    {"role": "assistant", "content": _cap_injury_q}
+                )
+                self.session["last_question"]  = _cap_injury_q
+                self.session["last_faq_answer"] = _cap_injury_q
+                self.session["question_asked_this_turn"] = True
                 logger.info(
-                    "[ms_flow] child_age_pending: age=%s >= threshold=%s → allowed "
-                    "(_post_age_confirm_pending armed)",
-                    _cap_age, _cap_threshold,
+                    "[ms_flow] child_age_pending: age=%s allowed, in-booking "
+                    "reason incomplete \u2014 rolled back to COLLECT_REASON "
+                    "(partial=%r)",
+                    _cap_age, _cap_partial[:60],
                 )
+                return
+            # Upstream / pre-booking path (faq_child_policy hard-reroute) —
+            # booking has NOT been started.  Ask yes/no so the caller can
+            # opt into booking; _post_age_confirm_pending handles the reply.
+            _cap_allow = (
+                "That\u2019s absolutely fine \u2014 "
+                "would you like to go ahead and book an appointment?"
+            )
+            await self._tts.put(_cap_allow)
+            self.session["last_question"]  = "Would you like to go ahead and book?"
+            self.session["last_faq_answer"] = _cap_allow
+            self.session["_post_age_confirm_pending"] = True
+            self.session["_post_age_confirm_reask_count"] = 0
+            logger.info(
+                "[ms_flow] child_age_pending: age=%s >= threshold=%s → allowed "
+                "(_post_age_confirm_pending armed)",
+                _cap_age, _cap_threshold,
+            )
             return
 
         # ── GLOBAL POST-AGE-GATE CONFIRMATION PENDING ─────────────────────────────
@@ -18565,7 +18672,35 @@ class FlowEngine:
                 "third_party" if _cr_third_party_hit else
                 "unknown"
             )
-            if _cr_child_hit or _cr_third_party_hit or _cr_echo_hit:
+            # Resolved-age guard: if the authoritative policy already
+            # recorded ELIGIBILITY_ALLOWED on children_age for this session,
+            # the age gate has already been passed.  A follow-up utterance
+            # in COLLECT_REASON containing child signals (pronoun echoes,
+            # "my son") must NOT re-fire the hard-reroute — it is the
+            # caller continuing the injury narrative after the gate, or
+            # the rolled-back "incomplete reason" path asking for the
+            # injury.  Fall through to normal reason capture.
+            _cr_age_already_allowed = False
+            try:
+                from app.media_streams.authoritative_policy import (
+                    get_active_lock        as _cr_get_lock,
+                    TOPIC_CHILDREN_AGE     as _CR_TOPIC_AGE,
+                    ELIGIBILITY_ALLOWED    as _CR_ELIG_ALLOW,
+                )
+                _cr_lock = _cr_get_lock(self.session) or {}
+                _cr_age_already_allowed = (
+                    _cr_lock.get("topic") == _CR_TOPIC_AGE
+                    and _cr_lock.get("eligibility") == _CR_ELIG_ALLOW
+                )
+            except Exception:  # pragma: no cover — defensive
+                _cr_age_already_allowed = False
+            if (_cr_child_hit or _cr_third_party_hit or _cr_echo_hit) and _cr_age_already_allowed:
+                logger.info(
+                    "[ms_flow] COLLECT_REASON: child signal with age already "
+                    "allowed \u2014 skipping interrupt, continuing reason capture "
+                    "text=%r", transcript[:80],
+                )
+            elif _cr_child_hit or _cr_third_party_hit or _cr_echo_hit:
                 # Deferred-gate continuation: if the age gate was already
                 # deferred on a prior turn (narrative still unfolding), do
                 # NOT re-fire the interrupt.  Fall through to the normal
@@ -19719,6 +19854,13 @@ class FlowEngine:
             await self._tts.put(_dg_age_q)
             self.session["_child_age_pending"]     = True
             self.session["_child_age_reask_count"] = 0
+            # Mark that this age gate fired from within COLLECT_REASON
+            # advancement — booking is already in progress.  The
+            # _child_age_pending allow branch reads this flag to skip
+            # the pre-booking "would you like to go ahead and book?"
+            # prompt and instead resume the flow (or continue reason
+            # collection if the stored reason is still incomplete).
+            self.session["_child_age_gate_in_booking"] = True
             self.session["last_question"]          = _dg_age_q
             self.session["last_faq_answer"]        = _dg_age_q
             self.session.setdefault("conversation_history", []).append(
