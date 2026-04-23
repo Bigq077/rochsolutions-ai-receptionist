@@ -2549,6 +2549,12 @@ def _is_phone_accept(text: str) -> bool:
         "this number's fine", "number's fine", "that number's fine",
         # Bare confirmations: "yes this number", "yeah this number"
         "yes this number", "yeah this number",
+        # Phone-preference reversal phrases:
+        # "use the number i'm calling on", "use the number i'm calling from", etc.
+        "use the number",
+        "number i'm calling on", "number i am calling on",
+        "number i'm calling from", "number i am calling from",
+        "the number i'm calling", "the number i am calling",
     )
     return any(p in text for p in _PHONE_ACCEPT)
 
@@ -8104,6 +8110,33 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
 
+            # ── PHONE-ACCEPT REVERSAL: caller wants to use the calling number ───
+            # "just use this number", "use the number i'm calling on", etc.
+            # Fires before keypad-mode and digit-extraction so the phrase is not
+            # silently consumed as a failed digit entry or a voice fallback.
+            if _is_phone_accept(text):
+                _cpa_twilio = (
+                    self.session.get("twilio_from_local")
+                    or self.session.get("twilio_from", "")
+                )
+                if _cpa_twilio:
+                    import re as _re_cpa
+                    _cpa_digits = _re_cpa.sub(r"\D", "", _cpa_twilio)
+                    _cpa_phone  = _to_e164_uk(_cpa_digits) or _cpa_digits
+                    self.session["phone_number"]          = _cpa_phone
+                    self.session["phone_confirmed"]       = True
+                    self.session["phone_awaiting_dtmf"]   = False
+                    self.session["phone_dtmf_buffer"]     = ""
+                    self.session["phone_digits_buffer"]   = ""
+                    self.session.pop("phone_candidate", None)
+                    self.session.setdefault("collected", {})["phone"] = _cpa_phone
+                    logger.info(
+                        "[ms_flow] %s: phone-accept reversal → caller ID %r",
+                        current_state, _cpa_phone,
+                    )
+                    await self.ask_current_question()
+                    return
+
             # ── KEYPAD MODE REQUEST: caller asks to use the keypad ───────────────
             # Handles "can I type it", "use the keypad" etc. arriving when
             # phone_awaiting_dtmf is not yet active.  Must run before the
@@ -8496,6 +8529,38 @@ class FlowEngine:
                 self.session["_last_handled_by"]   = "collect_phone_no_digits"
                 self.session["_last_yes_detected"] = False
                 self.session["_last_no_detected"]  = False
+                await self.ask_current_question()
+                return
+
+        # ── COLLECT_PHONE_RETURNING phone-accept reversal ─────────────────────
+        # Caller was already sent to COLLECT_PHONE_RETURNING (said NO to Twilio
+        # number at CONFIRM_PHONE_RETURNING) but now reverses:
+        # "use the number i'm calling on" / "never mind use this number".
+        # Treat as acceptance of the Twilio caller ID and advance the flow.
+        # RETURNING_PLAN_COLLECT_PHONE also lands here as a safety net.
+        if step["state"] in (
+            "COLLECT_PHONE_RETURNING",
+            "RETURNING_PLAN_COLLECT_PHONE",
+        ) and _is_phone_accept(text):
+            _cpret_twilio = (
+                self.session.get("twilio_from_local")
+                or self.session.get("twilio_from", "")
+            )
+            if _cpret_twilio:
+                import re as _re_cpret
+                _cpret_digits = _re_cpret.sub(r"\D", "", _cpret_twilio)
+                _cpret_phone  = _to_e164_uk(_cpret_digits) or _cpret_digits
+                self.session["phone_number"]          = _cpret_phone
+                self.session["phone_confirmed"]       = True
+                self.session["phone_awaiting_dtmf"]   = False
+                self.session["phone_dtmf_buffer"]     = ""
+                self.session["phone_digits_buffer"]   = ""
+                self.session.pop("phone_candidate", None)
+                self.session.setdefault("collected", {})["phone"] = _cpret_phone
+                logger.info(
+                    "[ms_flow] %s: phone-accept reversal → caller ID %r (will skip step)",
+                    step["state"], _cpret_phone,
+                )
                 await self.ask_current_question()
                 return
 
@@ -9209,10 +9274,25 @@ class FlowEngine:
             step["state"] in _SCHED_NAV_STATES
             and any(p in text for p in _SCHED_NAV_AMBIGUOUS)
         )
+        # Phone-reversal guard: "never mind use this number" / "never mind use
+        # the number i'm calling on" must NOT trigger abandonment in phone states.
+        # The caller is still engaged — they're reversing their phone preference.
+        # Precedence: phone-reversal BEATS abandonment signal in phone states.
+        _PHONE_REVERSAL_STATES = frozenset({
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+            "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+            "RETURNING_PLAN_CONFIRM_PHONE", "RETURNING_PLAN_COLLECT_PHONE",
+            "COLLECT_PHONE_RESCHEDULE",
+        })
+        _is_phone_reversal = (
+            step["state"] in _PHONE_REVERSAL_STATES
+            and _is_phone_accept(text)
+        )
         if (
             step["state"] != "DETECT_INTENT"
             and not _is_active_nav
             and not _is_sched_nav_ambiguous
+            and not _is_phone_reversal
             and any(sig in text for sig in _ABANDON_SIGNALS)
         ):
             # Insertion point 2 — name usage tracker (final sign-off)
