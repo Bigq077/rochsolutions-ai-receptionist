@@ -8640,9 +8640,47 @@ class FlowEngine:
                 self.session["needs_location"] = False
                 self.session.pop("location_retry_count", None)
                 self.session.pop("location_pending_guess", None)
+                # Successful bind clears any pending stitch candidate.
+                if self.session.get("_loc_stitch_from_merge"):
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: stitch_recovery SUCCESS → %s", loc,
+                    )
+                self.session.pop("_loc_stitch_pending", None)
+                self.session.pop("_loc_stitch_from_merge", None)
                 logger.info("[ms_flow] ASK_LOCATION answered: selected_location=%s", loc)
                 await self.ask_current_question()
             else:
+                # ── Split-final stitch candidate ──────────────────────────────
+                # STT fragmentation ("your author" … "ity" → "your authority")
+                # can destroy a clearly spoken clinic name.  When the primary
+                # extractor fails, record this transcript + timestamp so that
+                # an imminent tail fragment (dropped by the connection-level
+                # tail-fragment guard) can be stitched onto it and the
+                # resolver re-run on the combined text before any retry
+                # escalation occurs.  Narrowly scoped to ASK_LOCATION and
+                # cleared on any successful bind (above) or on stitched
+                # re-entry (below) to prevent infinite stitching.
+                if not self.session.get("_loc_stitch_from_merge"):
+                    self.session["_loc_stitch_pending"] = {
+                        "text": text,
+                        "transcript": transcript,
+                        "ts": time.monotonic(),
+                    }
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: stitch_candidate stored "
+                        "text=%r (awaiting adjacent tail within window)",
+                        text[:60],
+                    )
+                else:
+                    # Stitched re-entry still failed — drop the marker so a
+                    # fresh pair can be tracked next turn.
+                    self.session.pop("_loc_stitch_pending", None)
+                    self.session.pop("_loc_stitch_from_merge", None)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: stitch_recovery failed — "
+                        "falling back to normal retry ladder text=%r",
+                        text[:60],
+                    )
                 # ── FAQ interrupt — check before entering fallback ladder ──────
                 # general_query excluded: vague phrases must not fire the LLM here.
                 # Note: explicit workflow-switch signals were already handled above

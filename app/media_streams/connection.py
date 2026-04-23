@@ -2529,11 +2529,62 @@ class WebSocketCallHandler:
                     and len(_tf_text) <= 3
                     and _tf_text.lower() not in _TAIL_FRAGMENT_SAFE
                 ):
-                    logger.info(
-                        "[ms_conn] tail-fragment suppressed %r (%.2fs after last turn) — no-op",
-                        _tf_text, _tf_since,
-                    )
-                    continue
+                    # ── ASK_LOCATION split-final stitch recovery ──────────────
+                    # Before dropping a tiny tail fragment, check whether the
+                    # flow is waiting on a clinic answer AND just failed to
+                    # resolve a prior adjacent final.  STT can split a clearly
+                    # spoken "the Alcester clinic" into two finals
+                    # ("your author" + "ity" ≈ "your authority"); suppressing
+                    # the tail destroys the answer and forces an ASK_LOCATION
+                    # retry.  If a recent stitch candidate is available, merge
+                    # the two transcripts and re-enter the flow with the
+                    # stitched text — the flow's extractor / resolver gets a
+                    # second chance on a richer utterance.  If that still
+                    # fails, flow.py clears the marker and normal retry logic
+                    # resumes on the next turn.
+                    _stitch = self.session.get("_loc_stitch_pending") or {}
+                    _stitch_text = str(_stitch.get("text") or "").strip()
+                    _stitch_ts   = float(_stitch.get("ts") or 0.0)
+                    _stitch_age  = time.monotonic() - _stitch_ts
+                    if (
+                        self.session.get("needs_location")
+                        and _stitch_text
+                        and _stitch_ts > 0
+                        and _stitch_age <= 1.5
+                    ):
+                        # Build candidate stitched transcripts — the STT
+                        # fragmentation case is tail-glued (no space), but
+                        # we also try a space-separated form in case the
+                        # fragment is a discrete word.  Flow.py will run
+                        # its extractor/resolver on whichever we forward.
+                        _stitched_glued  = (_stitch_text + _tf_text).strip()
+                        _stitched_spaced = (_stitch_text + " " + _tf_text).strip()
+                        logger.info(
+                            "[ms_conn] stitch_attempt prior=%r tail=%r "
+                            "candidates=[%r, %r] age=%.2fs",
+                            _stitch_text[:60], _tf_text,
+                            _stitched_glued[:80], _stitched_spaced[:80],
+                            _stitch_age,
+                        )
+                        # Forward the glued variant (covers the observed
+                        # "your author"+"ity" → "your authority" case) and
+                        # mark session so flow.py knows this is a stitched
+                        # re-entry (prevents infinite re-stitching).
+                        self.session["_loc_stitch_from_merge"] = True
+                        self.session.pop("_loc_stitch_pending", None)
+                        utterance = _stitched_glued
+                        logger.info(
+                            "[ms_conn] stitch_forward replacing tail fragment "
+                            "with stitched utterance %r (ASK_LOCATION recovery)",
+                            utterance[:80],
+                        )
+                        # Fall through — don't continue/suppress.
+                    else:
+                        logger.info(
+                            "[ms_conn] tail-fragment suppressed %r (%.2fs after last turn) — no-op",
+                            _tf_text, _tf_since,
+                        )
+                        continue
 
                 # ── Barge-in resolution ───────────────────────────────────────
                 # Must run before setting _llm_busy so:
