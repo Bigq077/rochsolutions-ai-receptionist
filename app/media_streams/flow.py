@@ -9306,6 +9306,16 @@ class FlowEngine:
                     )
                     self.session["_pending_svc_fit"] = "service_fit_pending"
                     self.session.pop("_pending_svc_fit_turns", None)
+                    from app.media_streams.authoritative_policy import (
+                        set_lock            as _ap_set_lock_ftpg,
+                        TOPIC_CHILDREN_AGE  as _AP_TOPIC_FTPG,
+                        ELIGIBILITY_ALLOWED as _AP_ELIG_ALLOW_FTPG,
+                        resolve_min_age     as _ap_rma_ftpg,
+                    )
+                    _ap_set_lock_ftpg(
+                        self.session, _AP_TOPIC_FTPG, _AP_ELIG_ALLOW_FTPG,
+                        min_age=_ap_rma_ftpg(_pg_re_clinic), last_age=_fu_age,
+                    )
                     self.session["_last_handled_by"] = (
                         "first_turn_policy_gate_allow_after_age"
                     )
@@ -9413,6 +9423,58 @@ class FlowEngine:
                     )
                     self.session["_last_handled_by"] = "service_fit_declined"
                     return
+
+                # ── Policy-confirmation follow-up intercept ─────────────────────────
+                # "even though he's under 18", "so you do see under 18s", "even at 15"
+                # resolve_service_fit_followup returns RESOLVE_UNKNOWN for these because
+                # they are neither proceed/info/decline.  The authoritative lock holds
+                # the resolved eligibility + ages — answer directly; never replay the
+                # generic assessment pitch.
+                from app.media_streams.authoritative_policy import (
+                    get_active_lock              as _ap_get_lock_sfp,
+                    is_clinic_critical_age_topic as _ap_age_topic_sfp,
+                    ELIGIBILITY_ALLOWED          as _AP_ELIG_ALLOW_SFP,
+                    ELIGIBILITY_DISALLOWED       as _AP_ELIG_DISALLOW_SFP,
+                    resolve_min_age              as _ap_rma_sfp,
+                )
+                _sfp_lock = _ap_get_lock_sfp(self.session)
+                if _sfp_lock and _ap_age_topic_sfp(text):
+                    from app.clinic_config import get_clinic as _gc_sfp
+                    _sfp_clinic   = _gc_sfp(self.session.get("clinic_id") or "demo")
+                    _sfp_min_age  = _ap_rma_sfp(_sfp_clinic) or _sfp_lock.get("min_age")
+                    _sfp_elig     = _sfp_lock["eligibility_status"]
+                    _sfp_last_age = _sfp_lock.get("last_age")
+                    _sfp_resp: Optional[str] = None
+                    if _sfp_elig == _AP_ELIG_ALLOW_SFP:
+                        _sfp_age_str = (
+                            f"{_sfp_last_age} is" if _sfp_last_age else "that's"
+                        )
+                        _sfp_resp = (
+                            f"Yes \u2014 {_sfp_age_str} absolutely fine, "
+                            f"we see patients aged {_sfp_min_age} and over. "
+                            "Would you like to go ahead and book?"
+                        )
+                        self.session["_pending_svc_fit"] = "service_fit_pending"
+                        self.session.pop("_pending_svc_fit_turns", None)
+                    elif _sfp_elig == _AP_ELIG_DISALLOW_SFP:
+                        _sfp_resp = (
+                            f"I\u2019m afraid not \u2014 we see patients aged "
+                            f"{_sfp_min_age} and over, so we wouldn\u2019t be "
+                            "able to book them in."
+                        )
+                    if _sfp_resp:
+                        await self._tts.put(_sfp_resp)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _sfp_resp}
+                        )
+                        self.session["last_faq_answer"] = _sfp_resp
+                        self.session["_last_handled_by"] = "policy_confirmation_followup"
+                        logger.info(
+                            "[ms_flow] policy_confirmation_followup: elig=%s "
+                            "last_age=%s min_age=%s → direct reply",
+                            _sfp_elig, _sfp_last_age, _sfp_min_age,
+                        )
+                        return
 
                 # RESOLVE_UNKNOWN — clear pending, arm general_query guard, fall through
                 # to router.  If router/detect_intent lands on general_query, the guard
