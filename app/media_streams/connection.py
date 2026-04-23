@@ -968,6 +968,10 @@ class SilenceHandler:
             "CONFIRM_RESCHEDULE", "CONFIRM_RESCHEDULE_OR_CANCEL",
             "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
             "ASK_NEW_OR_RETURNING",
+            # LOOKUP_RESCHEDULE / LOOKUP_CANCEL emit a long confirmation prompt
+            # ("I found an appointment under … — is that the right one?") that
+            # needs extra parsing time; the 4.5 s default feels too aggressive.
+            "LOOKUP_RESCHEDULE", "LOOKUP_CANCEL",
         )
         if (_sess_faq_w or {}).get("state") in _CHOICE_GRACE_STATES:
             _wait = max(_wait, 8.0)
@@ -1853,6 +1857,11 @@ class WebSocketCallHandler:
         # Forwarded to _delayed_tts_finished so on_tts_finished() can detect whether a
         # newer chunk has started before clearing _tts_playing (fixes multi-chunk gap).
         self._tts_pending_chunk_start_ts: float = 0.0
+        # q_gen captured when the current chunk's on_tts_started() fired.
+        # Forwarded to _delayed_tts_finished so late tts_finished callbacks for an
+        # older prompt cannot restart the silence timer / overwrite last_question
+        # after the flow has advanced to a new question (stale-prompt ownership fix).
+        self._tts_pending_q_gen: int = -1
 
         # ── Silence handler (4-second re-ask) ─────────────────────────────
         # Created eagerly so _handle_media can call on_audio_received() before
@@ -2920,6 +2929,10 @@ class WebSocketCallHandler:
                     # fire on_tts_finished once every byte has been sent to Twilio.
                     self._tts_text_pending = chunk_text
                     self._tts_pending_chunk_start_ts = _chunk_tts_start_ts
+                    # Snapshot q_gen at chunk-finish time so a late tts_finished
+                    # callback whose owning prompt was superseded by a new question
+                    # is rejected as stale (prevents old-prompt timer restarts).
+                    self._tts_pending_q_gen = self._silence_handler._q_gen
                     await self.audio_out_queue.put(_TTS_DONE_SENTINEL)
 
         except asyncio.CancelledError:
@@ -2960,8 +2973,10 @@ class WebSocketCallHandler:
                 if b64_payload is _TTS_DONE_SENTINEL:
                     text = self._tts_text_pending
                     chunk_start_ts = self._tts_pending_chunk_start_ts
+                    chunk_q_gen = self._tts_pending_q_gen
                     self._tts_text_pending = ""
                     self._tts_pending_chunk_start_ts = 0.0
+                    self._tts_pending_q_gen = -1
                     play_secs = _tts_bytes_sent / 8000.0
                     _tts_bytes_sent = 0
                     # Only arm the silence timer if audio was actually delivered.
@@ -2975,7 +2990,7 @@ class WebSocketCallHandler:
                             play_secs, text[:60],
                         )
                         asyncio.create_task(
-                            self._delayed_tts_finished(play_secs, text, self._tts_gen, chunk_start_ts),
+                            self._delayed_tts_finished(play_secs, text, self._tts_gen, chunk_start_ts, chunk_q_gen),
                             name="ms_silence_tts_delay",
                         )
                     elif text:
@@ -3021,6 +3036,7 @@ class WebSocketCallHandler:
         text: str,
         gen: int = 0,
         chunk_started_at: float = 0.0,
+        q_gen_at_start: int = -1,
     ) -> None:
         """
         Fire on_tts_finished after `delay` seconds so the silence timer starts
@@ -3047,6 +3063,20 @@ class WebSocketCallHandler:
                 logger.debug(
                     "[ms_silence] tts_finished ignored — stale gen %d vs current %d: %r",
                     gen, self._tts_gen, text[:60],
+                )
+                return
+            # Stale-question guard: if the flow has advanced to a new question
+            # since this chunk was enqueued, the old prompt must not restart the
+            # silence timer or overwrite last_question.  Fixes the "old prompt
+            # owns the timer after state transition" bug (e.g. a late FAQ-answer
+            # tts_finished firing while CONFIRM_PHONE is the active prompt).
+            if (
+                q_gen_at_start != -1
+                and q_gen_at_start != self._silence_handler._q_gen
+            ):
+                logger.info(
+                    "[ms_silence] stale tts_finished ignored: callback_q_gen=%d active_q_gen=%d text=%r",
+                    q_gen_at_start, self._silence_handler._q_gen, text[:60],
                 )
                 return
             # Don't arm the silence timer once the booking flow is complete.
