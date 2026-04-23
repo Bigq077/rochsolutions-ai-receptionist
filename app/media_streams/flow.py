@@ -9181,9 +9181,68 @@ class FlowEngine:
 
         # ── SLOT CONFIRMATION: waiting for yes/no after slot selection ────────
         if not _in_phone_step and self.session.get("slot_pending_confirmation"):
-            await self._handle_slot_confirmation(text, transcript)
-            self.session["_last_handled_by"] = "slot_pending_confirmation"
-            return
+            # PRESENT_TIMES ordinal/info follow-up guard:
+            # Before treating every utterance as a yes/no answer, check whether the
+            # caller is asking a fresh ordinal or time-info question while still inside
+            # PRESENT_TIMES.  These are NOT failed confirmations and must not consume
+            # slot_confirmation retry counts or trigger graceful exit.
+            # Example scenario: "what's the latest?" → system asks "The latest is 4pm
+            # — would you like that one?" → caller asks "what's the earliest?" — that
+            # last turn must route to the PRESENT_TIMES ordinal handler, not here.
+            _spc_state = step["state"] if step else ""
+            _spc_in_pt = _spc_state in ("PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE")
+            if _spc_in_pt:
+                _SPC_FOLLOWUP_SIGNALS = (
+                    # Ordinal info-queries — asking about a slot, not confirming one
+                    "what's the earliest", "whats the earliest", "what is the earliest",
+                    "what's the latest",   "whats the latest",   "what is the latest",
+                    "what's the first",    "whats the first",    "what is the first",
+                    "what's the last",     "whats the last",     "what is the last",
+                    "the earliest slot", "the latest slot",
+                    "earliest slot you have", "latest slot you have",
+                    "earliest slot that day", "latest slot that day",
+                    "earliest you have", "latest you have",
+                    "earliest available", "latest available",
+                    "earliest one", "latest one",
+                    # Constraint / availability queries — also not confirmations
+                    "anything earlier", "anything later",
+                    "anything in the morning", "anything in the afternoon",
+                    "anything in the evening",
+                    "any morning", "any afternoon", "any evening",
+                    "in the morning", "in the afternoon",
+                    "morning slot", "afternoon slot",
+                    "what do you have in the", "what have you got in the",
+                    # Other exploratory time queries
+                    "what other times", "what times do you have",
+                    "what times have you got",
+                    "do you have anything", "have you got anything",
+                    "any other times", "any other slots",
+                    "what else do you have", "what else is there",
+                )
+                if any(p in text for p in _SPC_FOLLOWUP_SIGNALS):
+                    # Clear the stale pending slot — the caller is requesting a
+                    # different slot, not confirming the one being proposed.
+                    # The PRESENT_TIMES ordinal/constraint handlers below will
+                    # answer the query and re-arm slot_pending_confirmation with
+                    # the newly surfaced slot.
+                    self.session.pop("slot_pending_confirmation", None)
+                    self.session.pop("selected_slot", None)
+                    self.session.pop("selected_slot_speech", None)
+                    logger.info(
+                        "[ms_flow] slot_pending_confirmation: PRESENT_TIMES ordinal/"
+                        "info follow-up %r — clearing pending slot, routing to "
+                        "PRESENT_TIMES ordinal/constraint handler",
+                        text[:60],
+                    )
+                    # Do NOT return — fall through to the PRESENT_TIMES block below
+                else:
+                    await self._handle_slot_confirmation(text, transcript)
+                    self.session["_last_handled_by"] = "slot_pending_confirmation"
+                    return
+            else:
+                await self._handle_slot_confirmation(text, transcript)
+                self.session["_last_handled_by"] = "slot_pending_confirmation"
+                return
 
         # ── READBACK CONFIRMATION: waiting for caller to confirm full booking ─
         if self.session.get("readback_pending"):
@@ -21303,7 +21362,12 @@ class FlowEngine:
                 {"role": "assistant", "content": phrase}
             )
             self.session["graceful_exit"] = True
-            self.session["request_transfer"] = True
+            # NOTE: do NOT set request_transfer here.  This is a graceful callback
+            # fallback ("please call back"), NOT a live-agent transfer scenario.
+            # Setting request_transfer caused a contradictory state: connection.py
+            # clears the flag before calling _should_allow_transfer(), so the check
+            # fails and logs "transfer blocked — guard conditions not met" even
+            # though no transfer was ever appropriate for this code path.
             self.session["flow_step"] = len(self._active_flow)
             logger.info("[ms_flow] slot confirmation retry >= 3 — graceful exit triggered")
             return
