@@ -1336,6 +1336,46 @@ _FRAGMENT_BLOCKLIST = frozenset({
     "thank you", "thanks",
 })
 
+# ── KEEP-LISTENING FRAGMENTS (turn-finalisation fix) ────────────────────────────
+# Clipped / filler / hesitation finals that are NOT a failed answer — they mean
+# the caller is still thinking or mid-sentence.  When one of these arrives in a
+# choice state (ASK_LOCATION, NEW_OR_RETURNING, day/time selection, phone/booking
+# confirm, returning-path gates), Susie must NOT replay the question or burn a
+# retry; she should stay silent and let the caller finish.  The no-input
+# watchdog's grace window is extended to absorb the natural gap before the real
+# answer arrives.
+_KEEP_LISTENING_FRAGMENTS = frozenset({
+    # Fillers / hesitation
+    "uh", "um", "er", "err", "erm", "ah", "hmm", "mmm", "mhm", "uhh", "umm",
+    # Polite / social fillers mid-answer
+    "please", "give", "gimme", "give me", "give us",
+    # Think-tokens
+    "one sec", "one second", "hold on", "hang on", "wait", "just a sec",
+    "just a second", "let me think", "let me see", "thinking",
+    "give me a sec", "give me a second", "give me a minute",
+    # Clipped incapability / negation openers
+    "i can't", "i cant", "i can", "i can't quite", "i cant quite",
+    "i don't", "i dont", "i don", "i'm not", "im not", "i'm just", "im just",
+    # Conjunction-only tails (pre-answer carry-over)
+    "like", "well", "actually", "basically",
+})
+
+# Choice states where keep-listening fragments must NOT trigger a replay.
+# These are the states where STT segmentation errors and natural hesitation
+# produce fragments that are indistinguishable from filler.  Listed explicitly
+# so non-choice states (COLLECT_REASON, COLLECT_NAME, etc.) retain their own
+# existing handling.
+_KEEP_LISTENING_CHOICE_STATES = frozenset({
+    "ASK_LOCATION",
+    "NEW_OR_RETURNING",
+    "RETURNING_RECENCY",
+    "RETURNING_TREATMENT_PLAN",
+    "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+    "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+    "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+    "CONFIRM_BOOKING",
+})
+
 if not _RAPIDFUZZ_AVAILABLE:
     logger.warning(
         "[ms_flow] rapidfuzz not installed — fuzzy matching disabled. "
@@ -7224,6 +7264,33 @@ class FlowEngine:
                         return
         except Exception as _ap_exc:  # pragma: no cover — defensive
             logger.debug("[ms_flow] authoritative_policy interceptor error: %s", _ap_exc)
+
+        # ── KEEP-LISTENING FRAGMENT GATE (turn-finalisation fix) ────────────────
+        # In choice states, clipped / filler / hesitation finals such as
+        # "please", "give", "i can't", "uh", "um", "one sec" are NOT failed
+        # answers — they mean the caller is still forming the real answer.
+        # Suppress the turn WITHOUT burning a retry, and signal the watchdog
+        # to extend its grace window so Susie doesn't replay the question on
+        # top of the caller mid-sentence.  Runs BEFORE the global fragment
+        # suppression so the _keep_listening_fragment flag is set reliably.
+        _kl_text_raw = text.strip().lower()
+        _kl_state = (
+            "ASK_LOCATION"
+            if self.session.get("needs_location")
+            else (step["state"] if step is not None else "")
+        )
+        if (
+            _kl_state in _KEEP_LISTENING_CHOICE_STATES
+            and _kl_text_raw in _KEEP_LISTENING_FRAGMENTS
+        ):
+            self.session["fragment_suppressed"]       = True
+            self.session["_keep_listening_fragment"]  = True
+            logger.info(
+                "[ms_flow] keep-listening fragment %r in state=%s — "
+                "suppressing turn, extending watchdog grace, retry not consumed",
+                _kl_text_raw[:30], _kl_state,
+            )
+            return
 
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
         # Very short / noisy transcripts must not drive a full response.

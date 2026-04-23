@@ -2777,11 +2777,22 @@ class WebSocketCallHandler:
                             # subsequent on_tts_finished re-arm supersedes this.
                             _silent_turn = not self.session.get("_turn_speech_emitted")
                             if _silent_turn:
+                                # Turn-finalisation fix: if this silent turn was a
+                                # keep-listening fragment in a choice state, extend
+                                # the watchdog grace window BEFORE re-arming, so the
+                                # watchdog doesn't immediately replay the question
+                                # over the caller's ongoing answer.
+                                if self.session.get("_keep_listening_fragment"):
+                                    self._silence_handler._watchdog_grace_until = (
+                                        time.time() + 4.0
+                                    )
                                 self._silence_handler.restart_for_question(_last_q)
                                 logger.info(
                                     "[ms_conn] silent-turn watchdog re-arm "
-                                    "(fragment_suppressed=%s) state=%s q=%r",
+                                    "(fragment_suppressed=%s keep_listening=%s) "
+                                    "state=%s q=%r",
                                     bool(self.session.get("fragment_suppressed")),
+                                    bool(self.session.get("_keep_listening_fragment")),
                                     self.session.get("state", "?"),
                                     _last_q[:60],
                                 )
@@ -2884,6 +2895,21 @@ class WebSocketCallHandler:
                     if self.session.pop("fragment_suppressed", False):
                         _frag_lq = self.session.get("last_question", "")
                         if _frag_lq:
+                            # Turn-finalisation fix: when the suppressed turn was
+                            # a keep-listening fragment (clipped / filler / "one
+                            # sec" in a choice state), extend the watchdog grace
+                            # window so Susie does NOT replay the question on top
+                            # of the caller's real answer still being formed.
+                            # Only the first re-arm after the fragment gets the
+                            # extension; normal silence cascade resumes afterwards.
+                            if self.session.pop("_keep_listening_fragment", False):
+                                self._silence_handler._watchdog_grace_until = (
+                                    time.time() + 4.0
+                                )
+                                logger.info(
+                                    "[ms_conn] keep-listening fragment: watchdog "
+                                    "grace extended +4.0s before replay"
+                                )
                             self._silence_handler.restart_for_question(_frag_lq)
                     await save_session(self.call_sid, self.session)
 
