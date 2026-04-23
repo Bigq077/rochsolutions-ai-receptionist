@@ -5949,10 +5949,20 @@ class FlowEngine:
                 _glc_new = _glc_result["location"]
                 if _glc_new and _glc_new != _glc_cur:
                     self.session["selected_location"] = _glc_new
+                    _glc_display = "Redditch" if _glc_new == "redditch" else "Alcester"
                     logger.info(
                         "[ms_flow] embedded_location_corrected from=%s to=%s via %r",
                         _glc_cur, _glc_new, text[:60],
                     )
+                    # Consuming event: the same utterance must not be re-processed as
+                    # an answer to the current step (e.g. "no i" → "new patient").
+                    # Acknowledge the correction, re-ask the current question with the
+                    # corrected clinic, and return.
+                    await self._tts.put(
+                        f"No problem \u2014 we\u2019ll use our {_glc_display} clinic. "
+                    )
+                    await self.ask_current_question()
+                    return
 
         # ── GLOBAL REPAIR INTERCEPT (Bug 4 — HARD REQUIREMENT) ──────────────────
         # Runs before ALL state machine logic.
@@ -7148,7 +7158,7 @@ class FlowEngine:
             # Tokens for each clinic (covers common STT variants)
             _CC_ALC_TOKENS: tuple = ("alcester", "kinwarton", "al-cess", "alcess")
             _CC_RED_TOKENS: tuple = (
-                "redditch", "reditch", "reddit ", "reddich",
+                "redditch", "reditch", "reddit", "reddich",
                 "bromsgrove", "red ditch",
             )
             _cc_opp_tokens = _CC_RED_TOKENS if _cc_opposite == "redditch" else _CC_ALC_TOKENS
