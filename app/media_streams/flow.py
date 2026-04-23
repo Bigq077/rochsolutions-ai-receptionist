@@ -79,9 +79,7 @@ _SPECIFIC_SERVICE_ANSWERS: dict = {
         "Your clinician will confirm whether it\u2019s the right option for you."
     ),
     "acupuncture": (
-        "Acupuncture uses very fine needles \u2014 much finer than injection needles \u2014 "
-        "placed at specific points to help with pain relief and muscle tension. "
-        "Most people find it much gentler than they expect, "
+        "Acupuncture uses very fine needles to help with pain relief and muscle tension, "
         "and it\u2019s often used alongside physiotherapy as part of treatment."
     ),
     "laser": (
@@ -128,9 +126,8 @@ _FAQ_PRICES_NO_SERVICE = (
 
 # ── FAQ insurance: deterministic self-pay / Bupa / claim-back answer ────────
 _FAQ_INSURANCE_ANSWER = (
-    "Of course \u2014 we\u2019re a self-pay clinic, so you\u2019d pay us directly. "
-    "If your insurance policy covers physiotherapy, "
-    "you can usually claim it back from your insurer afterwards."
+    "We\u2019re self-pay, so you\u2019d pay us directly \u2014 "
+    "if your policy covers physio you can usually claim it back afterwards."
 )
 
 # ── FAQ capability: deterministic "what can you help me with" answer ─────────
@@ -163,9 +160,23 @@ _FAQ_PRICES_SERVICE_KEYWORDS = (
 
 # ── FAQ: acupuncture fear / needle anxiety — reassurance-first answer ────────
 _FAQ_ACUPUNCTURE_FEAR_ANSWER = (
-    "Acupuncture uses very fine needles \u2014 much thinner than injection needles \u2014 "
-    "and most people describe it as a mild sensation rather than something painful. "
-    "If you\u2019re nervous about needles, the practitioner will go at your pace and talk you through it."
+    "Not at all \u2014 the needles are very fine, "
+    "and the practitioner will go gently and talk you through it."
+)
+
+# ── FAQ: recommendation / "which first" (physio vs acupuncture etc.) ─────────
+_FAQ_RECOMMEND_PHYSIO_FIRST_ANSWER = (
+    "The best starting point is usually a physiotherapy assessment first \u2014 "
+    "they can then decide whether acupuncture would help as part of treatment."
+)
+_FAQ_RECOMMEND_TRIGGERS = (
+    "would you recommend", "do you recommend", "what would you recommend",
+    "which should i", "which would be better", "which is better",
+    "better first", "which first", "what first",
+    "physio or acupuncture", "acupuncture or physio",
+    "physiotherapy or acupuncture", "acupuncture or physiotherapy",
+    "start with physio", "start with acupuncture",
+    "best to start with", "best starting point",
 )
 
 # ── FAQ: first appointment / what to expect — deterministic fallback ─────────
@@ -10773,6 +10784,8 @@ class FlowEngine:
                 "aviva", "bupa", "vitality", "axa", "cigna",
                 "appointment", "appointments", "slot", "slots", "booking",
                 "clinic", "clinician", "therapist",
+                "recommend", "recommendation", "which first", "better first",
+                "should i start", "start with",
             )
             _nor_q_signals = (
                 "?" in transcript
@@ -20061,6 +20074,9 @@ class FlowEngine:
             "which one usually has", "easier to get", "easier to book",
             "usually available", "normally available",
             "how easy", "is it easy to get",
+            "at your clinic", "at the clinic",
+            "would you recommend", "do you recommend", "which first",
+            "which should i", "better first",
         )
         if (
             "appoint" in text
@@ -20316,6 +20332,25 @@ class FlowEngine:
                 )
                 return  # skip full service body + separate re-anchor block
 
+            # ── Recommendation / "which first" fast path ───────────────────
+            # "Would you recommend acupuncture or physio first?" / "which should
+            # I start with" — produce a short, direct best-starting-point
+            # answer and do NOT fall through to the full service description.
+            if any(p in _svc_text for p in _FAQ_RECOMMEND_TRIGGERS):
+                _rec_ans = _FAQ_RECOMMEND_PHYSIO_FIRST_ANSWER
+                _rec_reanchor = _faq_topic_reanchor(self.session)
+                await self._tts.put(_rec_ans + " " + _rec_reanchor)
+                self.session["last_faq_answer"] = _rec_ans
+                self.session["last_question"]   = _rec_reanchor
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _rec_ans}
+                )
+                self.session["_faq_followup_window"] = 2
+                logger.info(
+                    "[ms_flow] _handle_mid_flow_interrupt: services recommend fast path"
+                )
+                return
+
             # ── Treatment-suitability / best-starting-point: priority over all
             # other faq_services branches. Callers asking "would X work for Y",
             # "should I book X or something else", "what appointment is best
@@ -20476,9 +20511,8 @@ class FlowEngine:
             }
             if "bupa" in _ins_text:
                 _ins_ans = (
-                    "I\u2019m sorry about that \u2014 we don\u2019t accept Bupa directly. "
-                    "You\u2019re welcome to self-pay and claim back if your policy allows, "
-                    "but Bupa direct billing isn\u2019t something we currently offer."
+                    "I\u2019m sorry \u2014 we don\u2019t accept Bupa directly, "
+                    "but you\u2019re welcome to self-pay and claim back if your policy allows."
                 )
             else:
                 _named = next(
@@ -20486,10 +20520,8 @@ class FlowEngine:
                 )
                 if _named:
                     _ins_ans = (
-                        f"Of course \u2014 for {_named}, we\u2019re a self-pay clinic, "
-                        f"so you\u2019d pay us directly and then submit a claim to {_named} "
-                        "if your policy covers physiotherapy. "
-                        "It\u2019s worth confirming the cover with them and the clinic beforehand."
+                        f"We\u2019re self-pay, so you\u2019d pay us directly \u2014 "
+                        f"if your {_named} policy covers physio you can usually claim it back afterwards."
                     )
                 else:
                     _ins_ans = _FAQ_INSURANCE_ANSWER
