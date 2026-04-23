@@ -7392,6 +7392,75 @@ class FlowEngine:
 
             # ── DTMF MODE: waiting for keypad press (final fallback) ──────────────
             if self.session.get("location_awaiting_dtmf"):
+                # ── Explicit intent-switch escape inside DTMF mode ────────────
+                # If the caller clearly pivots away from the current flow while
+                # we are waiting for a keypad press, honour the switch before
+                # the location extractor runs.  Without this gate the utterance
+                # ("sorry ignore that i just want to book instead") is consumed
+                # as a failed DTMF answer and the caller gets re-prompted with
+                # "Press 1 for Alcester or 2 for Redditch."
+                # Only strong multi-word explicit phrases fire the escape —
+                # bare "book" / "my appointment" / vague mentions are excluded.
+                _DTMF_BOOKING_ESCAPE = (
+                    "book a new appointment",
+                    "book an appointment instead",
+                    "book instead",
+                    "just want to book",
+                    "just book me in",
+                    "want to make a booking",
+                    "want to book a new",
+                    "make a new booking",
+                    "new appointment instead",
+                    "new booking instead",
+                    "want to book instead",
+                    "ignore that",
+                    "forget the reschedule",
+                    "forget reschedul",
+                    "don't want to reschedule",
+                    "dont want to reschedule",
+                    "not reschedul",
+                )
+                _DTMF_RESCHEDULE_ESCAPE = (
+                    "reschedule instead",
+                    "want to reschedule",
+                    "need to reschedule",
+                    "i want to reschedule",
+                    "rescheduling instead",
+                )
+                _DTMF_CANCEL_ESCAPE = (
+                    "cancel instead",
+                    "want to cancel",
+                    "need to cancel",
+                    "i want to cancel",
+                )
+                _dtmf_lo = text.strip().lower()
+                _dtmf_escape_intent = None
+                if any(p in _dtmf_lo for p in _DTMF_BOOKING_ESCAPE):
+                    _dtmf_escape_intent = "booking"
+                elif (
+                    self._active_flow is not RESCHEDULE_FLOW
+                    and any(p in _dtmf_lo for p in _DTMF_RESCHEDULE_ESCAPE)
+                ):
+                    _dtmf_escape_intent = "reschedule"
+                elif (
+                    self._active_flow is not CANCEL_FLOW
+                    and any(p in _dtmf_lo for p in _DTMF_CANCEL_ESCAPE)
+                ):
+                    _dtmf_escape_intent = "cancel"
+                if _dtmf_escape_intent:
+                    self.session["needs_location"]       = False
+                    self.session["location_awaiting_dtmf"] = False
+                    self.session.pop("location_retry_count", None)
+                    self.session.pop("location_pending_guess", None)
+                    self._switch_flow(_dtmf_escape_intent)
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION DTMF: explicit intent-switch escape "
+                        "%r → %s (DTMF loop exited)",
+                        text[:60], _dtmf_escape_intent,
+                    )
+                    await self.ask_current_question()
+                    return
+
                 loc = self._extract("location_selection", text, transcript)
                 if loc:
                     self.session["selected_location"] = loc
