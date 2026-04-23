@@ -863,6 +863,19 @@ class SilenceHandler:
             # Record when the question's audio finished so _speech_recovery can
             # enforce a minimum response window before firing a premature re-ask.
             self._tts_done_at = time.time()
+            # Roll the no-input watchdog deadline forward to NOW so the caller
+            # gets the full _wait window AFTER the final audible completion of
+            # the question, not from the earlier arm-time.  Without this, multi-
+            # chunk prompts (e.g. CONFIRM_PHONE's "Thanks Quentin — If you'd
+            # like me to use the number you're calling on…" + "say: use this
+            # number.") shorten the caller's real answer window by however long
+            # the audio played.  The watchdog reads max(armed_at,
+            # last_engagement_at, _watchdog_grace_until) as its activity anchor,
+            # so setting this here cleanly re-bases the deadline to
+            # tts_finished + _wait.  Only reached after the intermediate-chunk
+            # suppression guard above, so multi-chunk prompts still count as
+            # ONE atomic spoken question for timing.
+            self._watchdog_grace_until = max(self._watchdog_grace_until, time.time())
             self._restart_timer()
             logger.info("[ms_silence] timer restarted: %r", t[:50])
         elif self._task is None:
