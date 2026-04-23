@@ -12791,6 +12791,19 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
 
+            # ── TIME_SELECTION classification (hoisted) ──────────────────────
+            # Defined here so the ordinal info-question guard below can use it.
+            # _allow_time_bind (in the DIRECT TIME block) also references this.
+            _TIME_SELECTION_PHRASES = (
+                "works for me", "work for me", "that works",
+                "i'll do", "i'll take", "i will take", "i will do",
+                "book ", "book me in", "please book",
+                "suits me", "that suits", "i'll go with",
+                "i'd like ", "i would like ", "i want ",
+                "sign me up", "confirm",
+            )
+            _is_time_selection = any(p in text for p in _TIME_SELECTION_PHRASES)
+
             _ordinal_idx: Optional[int] = None
             if not _is_constraint:
                 for _pat, _idx in _PT_ORDINALS:
@@ -12822,35 +12835,17 @@ class FlowEngine:
                     _day_label_o  = _target_o.get("day_label", "")
                     _slot_speech_o = f"{_day_label_o} at {_spoken_time}" if _day_label_o else _spoken_time
                     # ── Ordinal info-question guard ──────────────────────────
-                    # "What's the latest slot?" is an availability question, not
-                    # a slot selection.  If the utterance carries question-form
-                    # language AND no explicit selection phrase, answer with the
-                    # identified slot and ask for confirmation via
-                    # slot_pending_confirmation — the caller must explicitly say
-                    # yes before flow_step advances.
-                    # Direct selections ("I'll take the latest", "book the
-                    # earliest", "latest is fine", "last one please") pass
-                    # _is_time_selection=True or have no info-question marker
-                    # and fall through to the existing advance-and-confirm path.
-                    _ORDINAL_INFO_SIGS = (
-                        "what's the latest", "what is the latest",
-                        "what's the earliest", "what is the earliest",
-                        "what's the last", "what is the last",
-                        "what's the first", "what is the first",
-                        "what time is the latest", "what time is the earliest",
-                        "what time is the last", "what time is the first",
-                        "what would the latest", "what would the earliest",
-                        "i want to know", "can you tell me the",
-                        "what's your latest", "what's your earliest",
-                        "what is your latest", "what is your earliest",
-                        "how late can", "how early can",
-                        "do you have a later slot", "do you have an earlier slot",
-                        "is there a later slot", "is there an earlier slot",
-                    )
-                    _is_ordinal_info_q = (
-                        any(p in text for p in _ORDINAL_INFO_SIGS)
-                        and not _is_time_selection
-                    )
+                    # Policy: ordinal matches ("latest", "earliest", "last",
+                    # etc.) are treated as PENDING unless the utterance carries
+                    # an unambiguous selection phrase.
+                    # Rationale: "what's the latest slot you can offer?" /
+                    # "it's three o'clock, the latest slot you can offer" /
+                    # "the last one please" are all non-committal until the
+                    # caller says yes.  The only exception is when phrasing
+                    # is unambiguously a booking choice (e.g. "I'll take the
+                    # latest", "book the earliest").  Conservative default
+                    # avoids silent over-commitment; caller answers yes/no.
+                    _is_ordinal_info_q = not _is_time_selection
                     if _is_ordinal_info_q:
                         # Pending — do NOT advance flow_step; require explicit yes.
                         _ord_dir = (
@@ -12916,21 +12911,11 @@ class FlowEngine:
             # constrained-subset binding to protect that block too).
             _is_time_query = _is_time_query_early
 
-            # TIME_SELECTION phrases — caller is explicitly choosing.
-            # These override _is_time_query only when unambiguously binding.
-            _TIME_SELECTION_PHRASES = (
-                "works for me", "work for me", "that works",
-                "i'll do", "i'll take", "i will take", "i will do",
-                "book ", "book me in", "please book",
-                "suits me", "that suits", "i'll go with",
-                "i'd like ", "i would like ", "i want ",
-                # NOTE: "the " was intentionally removed — it matched "in the afternoon"
-                # making _is_time_selection True inside exploratory phrases and defeating
-                # the _is_constraint guard.  "the 5 o'clock one" has no constraint phrase
-                # so _allow_time_bind is True anyway without this entry.
-                "sign me up", "confirm",
-            )
-            _is_time_selection = any(p in text for p in _TIME_SELECTION_PHRASES)
+            # TIME_SELECTION phrases / _is_time_selection — computed above
+            # (hoisted before ordinal handler so ordinal gate can reference it).
+            # NOTE: "the " was intentionally excluded — it matched "in the
+            # afternoon" and made _is_time_selection True inside exploratory
+            # phrases, defeating the _is_constraint guard.
 
             # Final gate: allow direct-time binding only when:
             #   a) NOT a query phrase, AND
