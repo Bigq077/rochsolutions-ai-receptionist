@@ -6216,6 +6216,89 @@ class FlowEngine:
                         "[ms_flow] COLLECT_PHONE local repair: all digit buffers cleared, re-prompting keypad (awaiting_dtmf=%s)",
                         self.session.get("phone_awaiting_dtmf"),
                     )
+                elif _repair_state in (
+                    "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+                    "RETURNING_PLAN_CONFIRM_PHONE",
+                ):
+                    # ── DTMF RESET in phone-confirm states ───────────────────
+                    # Caller is asking to clear a wrong number entered by keypad
+                    # and re-enter it.  Must NOT replay the old digit readback
+                    # ("Just to check — is that 07900...?").  Instead: clear all
+                    # phone state, route to the correct COLLECT_PHONE step, and
+                    # speak a clean reset acknowledgement.
+                    _CONFIRM_PHONE_RESET_SIGNALS = (
+                        "reset", "clear that", "clear the number",
+                        "start again", "start over",
+                        "re-enter", "re enter", "enter it again",
+                        "type it again", "type again", "retype",
+                        "i made a mistake", "made a mistake",
+                        "wrong number", "wrong digits",
+                        "reset the keypad", "clear the keypad",
+                        "reset that please", "reset please",
+                        "let me re-enter", "let me type",
+                        "can you reset", "please reset",
+                        "that's not right", "thats not right",
+                        "that was wrong", "the wrong number",
+                        "incorrect number", "not the right digits",
+                    )
+                    if any(p in text for p in _CONFIRM_PHONE_RESET_SIGNALS):
+                        # Full atomic phone reset
+                        self.session["phone_dtmf_buffer"]      = ""
+                        self.session["phone_digits_buffer"]    = ""
+                        self.session["phone_candidate"]        = None
+                        self.session["phone_readback_pending"] = False
+                        self.session["phone_confirm_armed"]    = False
+                        self.session["phone_confirmed"]        = False
+                        self.session.pop("phone_number", None)
+                        self.session.pop("phone", None)
+                        self.session.pop("customer_phone", None)
+                        self.session.setdefault("collected", {}).pop("phone", None)
+                        # Route to the correct phone-collection step
+                        _is_rp_reset = (_repair_state == "RETURNING_PLAN_CONFIRM_PHONE")
+                        _cp_tgt = (
+                            "RETURNING_PLAN_COLLECT_PHONE" if _is_rp_reset else "COLLECT_PHONE"
+                        )
+                        _cp_reset_idx = next(
+                            (i for i, s in enumerate(self._active_flow)
+                             if s["state"] == _cp_tgt),
+                            None,
+                        )
+                        if _cp_reset_idx is None:
+                            # Fallback: any collect-phone state in the active flow
+                            _cp_reset_idx = next(
+                                (i for i, s in enumerate(self._active_flow)
+                                 if s["state"] in (
+                                    "COLLECT_PHONE", "RETURNING_PLAN_COLLECT_PHONE",
+                                    "COLLECT_PHONE_RETURNING",
+                                )),
+                                None,
+                            )
+                        if _cp_reset_idx is not None:
+                            self.session["flow_step"] = _cp_reset_idx
+                            self.session["state"]     = self._active_flow[_cp_reset_idx]["state"]
+                        self.session["phone_awaiting_dtmf"] = True
+                        _repair_q = (
+                            "Of course \u2014 I\u2019ve cleared that. "
+                            "Please type the correct number again using your keypad."
+                        )
+                        logger.info(
+                            "[ms_flow] phone_reset_detected state=%s reason=reset_keypad_request",
+                            _repair_state,
+                        )
+                        logger.info(
+                            "[ms_flow] phone_reset_cleared dtmf_buffer=cleared "
+                            "readback_pending=False phone_confirm_armed=False",
+                        )
+                        logger.info(
+                            "[ms_flow] phone_reset_route -> %s (idx=%s)",
+                            _cp_tgt, _cp_reset_idx,
+                        )
+                    else:
+                        # Non-reset repair in phone-confirm (e.g. genuine confusion)
+                        # — replay the current question so the caller can answer.
+                        _repair_q = self.session.get(
+                            "last_question", "Could you say that number again?"
+                        )
                 else:
                     _repair_q = self.session.get("last_question", "Could you say that number again?")
             elif _repair_state in (
