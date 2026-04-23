@@ -7180,6 +7180,11 @@ class FlowEngine:
                 "i said", "i meant", "meant to say", "meant to", "i meant",
                 "sorry not", "sorry i said", "actually i said",
                 "the other clinic", "other clinic", "the other one",
+                # Additional correction starters not covered by the original set
+                "actually ", "actually,",           # "actually redditch"
+                "can you correct", "correct that",   # "can you correct that, redditch"
+                "change that", "change it to",       # "change that to redditch"
+                "should be", "it should be",         # "it should be redditch"
             )
             # Tokens for each clinic (covers common STT variants)
             _CC_ALC_TOKENS: tuple = ("alcester", "kinwarton", "al-cess", "alcess")
@@ -10512,6 +10517,40 @@ class FlowEngine:
                         "[ms_flow] NEW_OR_RETURNING: FAQ guard fired (%s) — "
                         "answered and re-anchored by _handle_mid_flow_interrupt", _nor_faq_intent,
                     )
+                    return
+
+            # ── Clinic-correction safety gate ────────────────────────────────
+            # Final defence: if the utterance contains a clinic name AND a
+            # correction/negation token, the clinic_correction_guard above
+            # should have caught it and returned.  If it somehow slipped
+            # through (unusual phrasing), do NOT run new_or_returning
+            # extraction — a leading "no" in "no I said Redditch" must never
+            # be extracted as patient_type="new" and advance to COLLECT_REASON.
+            # Replay the last question so the caller can clarify on the next
+            # turn; the guard will catch the corrected utterance then.
+            if self.session.get("selected_location") in ("alcester", "redditch"):
+                _NOR_CC_CLINIC_TOKS = (
+                    "alcester", "redditch", "kinwarton", "bromsgrove",
+                    "reditch", "alcess", "red ditch",
+                    "the other clinic", "other clinic", "other location",
+                )
+                _NOR_CC_CORR_TOKS = (
+                    "no i said", "i said", "i meant", "didn't say", "didnt say",
+                    "not alcester", "not redditch",
+                    "actually ", "can you correct", "correct that",
+                    "change that", "change it to", "should be", "it should be",
+                    "sorry i", "sorry not",
+                )
+                if (any(p in text for p in _NOR_CC_CLINIC_TOKS)
+                        and any(p in text for p in _NOR_CC_CORR_TOKS)):
+                    logger.info(
+                        "[ms_flow] NEW_OR_RETURNING: clinic-correction safety gate — "
+                        "skipping extraction to prevent 'no' misread as new_patient "
+                        "text=%r", text[:60],
+                    )
+                    _nor_lq_cc = self.session.get("last_question", "")
+                    if _nor_lq_cc:
+                        await self._tts.put(_nor_lq_cc)
                     return
 
             _nor_answer = self._extract("new_or_returning", text, transcript)
