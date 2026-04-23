@@ -6753,10 +6753,33 @@ class FlowEngine:
             if not _rpt_bypass:
                 # Also bypass if enough non-repeat content remains after stripping
                 # all repeat phrases from the text (≥ 3 words of ≥ 3 chars).
+                # Harmless greeting / politeness / filler words are stripped
+                # first so utterances like "hi there could you repeat that
+                # please" are treated as pure repeat requests, not mixed
+                # content.  Without this, the three residual words "hi",
+                # "there", "please" flip the bypass on and the repeat path
+                # is skipped — which was the observed failure.
                 _rpt_rem = text
                 for _rp in _GLOBAL_REPEAT_PHRASES:
                     _rpt_rem = _rpt_rem.replace(_rp, " ")
-                _rpt_bypass = len([w for w in _rpt_rem.split() if len(w) >= 3]) >= 3
+                _REPEAT_FILLER = (
+                    "hi there", "hello there", "hey there",
+                    "hi ", "hello ", "hey ", "hiya",
+                    "sorry", "please", "just", "um", "uh", "erm",
+                    "yeah", "yes", "okay", "ok",
+                    "the question", "that question", "your question",
+                    "again", "once more", "one more time",
+                    "could you", "can you", "would you", "will you",
+                )
+                _rpt_rem_padded = " " + _rpt_rem + " "
+                for _fw in _REPEAT_FILLER:
+                    _rpt_rem_padded = _rpt_rem_padded.replace(
+                        " " + _fw + " ", " "
+                    )
+                _rpt_rem_clean = _rpt_rem_padded.strip()
+                _rpt_bypass = len([
+                    w for w in _rpt_rem_clean.split() if len(w) >= 3
+                ]) >= 3
             if _rpt_bypass:
                 logger.info(
                     "[ms_flow] global repeat: bypassed (mixed utterance) %r",
@@ -7360,12 +7383,15 @@ class FlowEngine:
             # Upstream / pre-booking path (faq_child_policy hard-reroute) —
             # booking has NOT been started.  Ask yes/no so the caller can
             # opt into booking; _post_age_confirm_pending handles the reply.
+            # Wording: "continue with the appointment" reads as a natural
+            # booking continuation (reason was already captured on the
+            # pre-age-gate turn) rather than a hard yes/no trap.
             _cap_allow = (
                 "That\u2019s absolutely fine \u2014 "
-                "would you like to go ahead and book an appointment?"
+                "would you like to continue with the appointment?"
             )
             await self._tts.put(_cap_allow)
-            self.session["last_question"]  = "Would you like to go ahead and book?"
+            self.session["last_question"]  = "Would you like to continue with the appointment?"
             self.session["last_faq_answer"] = _cap_allow
             self.session["_post_age_confirm_pending"] = True
             self.session["_post_age_confirm_reask_count"] = 0
@@ -7439,20 +7465,84 @@ class FlowEngine:
                 self.session["last_faq_answer"] = _pa_decline
                 logger.info("[ms_flow] _post_age_confirm_pending: NO → offering other help")
                 return
-            # Ambiguous: re-ask deterministically; cap at one re-ask, then give up cleanly.
-            _pa_n = int(self.session.get("_post_age_confirm_reask_count") or 0)
-            if _pa_n >= 1:
-                self.session.pop("_post_age_confirm_pending", None)
-                self.session.pop("_post_age_confirm_reask_count", None)
-                self.session.pop("_pre_age_gate_transcript", None)
-                _pa_giveup = "No problem — is there anything else I can help with?"
-                await self._tts.put(_pa_giveup)
-                self.session["last_question"]  = _pa_giveup
-                self.session["last_faq_answer"] = _pa_giveup
-                logger.info("[ms_flow] _post_age_confirm_pending: ambiguous × 2 → giving up")
+            # Clarification-question branch.  When the caller responds with a
+            # question about the appointment type / what the booking would
+            # be / whether it's an assessment / what happens next, it is
+            # NOT a failed yes/no — it's a reasonable follow-up that should
+            # be answered and re-anchored back to the continuation prompt.
+            # Without this branch the prior logic re-asked "yes or no" then
+            # abandoned booking with "is there anything else I can help
+            # with?" after two ambiguous turns.
+            _PA_CLARIFY_SIGS = (
+                "assessment", "initial assessment",
+                "what would the booking", "what would the appointment",
+                "what would that booking", "what would that appointment",
+                "what would it be", "what will it be",
+                "what's the appointment", "whats the appointment",
+                "what is the appointment",
+                "what kind of appointment", "what type of appointment",
+                "what sort of appointment", "what do you offer",
+                "what happens next", "what happens at",
+                "what does it involve", "what would happen",
+                "would it be an assessment", "is it an assessment",
+                "first appointment", "first visit", "first session",
+                "what do you recommend", "would you recommend",
+                "would that be", "will that be", "would this be",
+            )
+            _pa_is_clarify = any(p in _pa_tx for p in _PA_CLARIFY_SIGS)
+            if _pa_is_clarify:
+                # Deterministic answer derived from the active booking
+                # shape (new-patient flow → initial assessment).  Keeps
+                # state coherent and does not broaden LLM authority.
+                _pa_is_new = (
+                    self.session.get("new_or_returning") == "new"
+                )
+                if _pa_is_new or not self.session.get("new_or_returning"):
+                    _pa_clar_ans = (
+                        "Yes \u2014 it would be an initial physiotherapy "
+                        "assessment where the clinician talks through "
+                        "what\u2019s going on and advises on the best "
+                        "next steps, usually starting treatment in that "
+                        "same session. "
+                        "Would you like to continue with the appointment?"
+                    )
+                else:
+                    _pa_clar_ans = (
+                        "It would be a follow-up physiotherapy "
+                        "appointment with one of our clinicians. "
+                        "Would you like to continue with the appointment?"
+                    )
+                await self._tts.put(_pa_clar_ans)
+                self.session.setdefault(
+                    "conversation_history", []
+                ).append(
+                    {"role": "assistant", "content": _pa_clar_ans}
+                )
+                self.session["last_question"]  = (
+                    "Would you like to continue with the appointment?"
+                )
+                self.session["last_faq_answer"] = _pa_clar_ans
+                # Keep the pending flag armed so the NEXT turn is still
+                # deterministic.  Reset the re-ask counter — this turn
+                # was answered, not a failed yes/no.
+                self.session["_post_age_confirm_reask_count"] = 0
+                logger.info(
+                    "[ms_flow] _post_age_confirm_pending: clarify %r "
+                    "\u2014 answered + re-anchored",
+                    _pa_tx[:60],
+                )
                 return
+            # Ambiguous but not a recognised clarification.  Re-ask once
+            # using the same "continue with the appointment" wording.  If
+            # the caller is STILL neither yes/no/clarify on the next turn,
+            # do not abandon the booking — simply re-ask again.  The watchdog
+            # / hangup paths handle a truly silent caller elsewhere.
+            _pa_n = int(self.session.get("_post_age_confirm_reask_count") or 0)
             self.session["_post_age_confirm_reask_count"] = _pa_n + 1
-            _pa_reask = "Sorry — would you like to go ahead and book an appointment? Yes or no."
+            _pa_reask = (
+                "Sorry \u2014 would you like to continue with the "
+                "appointment? Yes or no is fine."
+            )
             await self._tts.put(_pa_reask)
             self.session["last_question"]  = _pa_reask
             self.session["last_faq_answer"] = _pa_reask
