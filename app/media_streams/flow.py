@@ -6695,6 +6695,7 @@ class FlowEngine:
                 await self._tts.put(_cap_decline)
                 self.session["last_question"]  = "Is there anything else I can help with?"
                 self.session["last_faq_answer"] = _cap_decline
+                self.session.pop("_pre_age_gate_transcript", None)
                 logger.info(
                     "[ms_flow] child_age_pending: age=%s < threshold=%s → declined",
                     _cap_age, _cap_threshold,
@@ -6707,10 +6708,103 @@ class FlowEngine:
                 await self._tts.put(_cap_allow)
                 self.session["last_question"]  = "Would you like to go ahead and book?"
                 self.session["last_faq_answer"] = _cap_allow
+                # Arm deterministic yes/no branch; handled by the global
+                # _post_age_confirm_pending block below on the next turn.
+                # This prevents the next reply ("yes please") from being routed
+                # through COLLECT_REASON fragment rejection or LLM fallback.
+                self.session["_post_age_confirm_pending"] = True
+                self.session["_post_age_confirm_reask_count"] = 0
                 logger.info(
-                    "[ms_flow] child_age_pending: age=%s >= threshold=%s → allowed",
+                    "[ms_flow] child_age_pending: age=%s >= threshold=%s → allowed "
+                    "(_post_age_confirm_pending armed)",
                     _cap_age, _cap_threshold,
                 )
+            return
+
+        # ── GLOBAL POST-AGE-GATE CONFIRMATION PENDING ─────────────────────────────
+        # After the child-age gate passed and we spoke
+        #   "That's absolutely fine — would you like to go ahead and book?"
+        # the next caller turn MUST be handled deterministically as yes/no.
+        # Without this block the answer ("yes please") falls through into the
+        # prior flow state (typically COLLECT_REASON) and gets rejected as a
+        # short fragment, then the LLM fallback re-asks the same question and
+        # the call desynchronises.  Deterministic exit in all branches.
+        if self.session.get("_post_age_confirm_pending") and step:
+            _pa_tx = text.strip().lower()
+            _PA_YES_SUBSTR = (
+                "go ahead", "please book", "book him in", "book her in",
+                "book them in", "yes please", "sounds good", "that's fine",
+                "thats fine", "that would be great", "that'd be great",
+            )
+            _PA_NO_SUBSTR = (
+                "not now", "not today", "not yet", "just wanted to check",
+                "just checking", "just wondering", "never mind", "nevermind",
+                "forget it", "call back", "think about it", "no thanks",
+                "no thank you", "not at the moment",
+            )
+            _pa_is_no = (
+                _pa_tx in {"no", "nope", "nah"}
+                or _pa_tx.startswith(("no ", "nope ", "nah "))
+                or any(p in _pa_tx for p in _PA_NO_SUBSTR)
+            )
+            _pa_is_yes = (not _pa_is_no) and (
+                _pa_tx in {"yes", "yeah", "yep", "yup", "ok", "okay", "sure",
+                           "alright", "please", "fine", "great"}
+                or _pa_tx.startswith(("yes", "yeah", "yep", "yup", "ok", "okay",
+                                       "sure", "alright", "please do", "go ahead"))
+                or any(p in _pa_tx for p in _PA_YES_SUBSTR)
+            )
+            if _pa_is_yes:
+                self.session.pop("_post_age_confirm_pending", None)
+                self.session.pop("_post_age_confirm_reask_count", None)
+                # Promote the preserved pre-age-gate utterance as the booking
+                # reason so ask_current_question's skip-chain advances past
+                # COLLECT_REASON instead of re-asking "what brings you in?".
+                _pa_pre = self.session.pop("_pre_age_gate_transcript", "") or ""
+                if _pa_pre and not self.session.get("reason"):
+                    self.session["reason"] = _pa_pre.strip()
+                    _collected = self.session.setdefault("collected", {})
+                    if not _collected.get("reason"):
+                        _collected["reason"] = _pa_pre.strip()
+                # Reset the once-per-turn guard so ask_current_question can speak.
+                self.session["question_asked_this_turn"] = False
+                logger.info(
+                    "[ms_flow] _post_age_confirm_pending: YES → resuming booking "
+                    "(reason=%r)", (self.session.get("reason") or "")[:60],
+                )
+                await self.ask_current_question()
+                return
+            if _pa_is_no:
+                self.session.pop("_post_age_confirm_pending", None)
+                self.session.pop("_post_age_confirm_reask_count", None)
+                self.session.pop("_pre_age_gate_transcript", None)
+                _pa_decline = "No problem — is there anything else I can help with?"
+                await self._tts.put(_pa_decline)
+                self.session["last_question"]  = _pa_decline
+                self.session["last_faq_answer"] = _pa_decline
+                logger.info("[ms_flow] _post_age_confirm_pending: NO → offering other help")
+                return
+            # Ambiguous: re-ask deterministically; cap at one re-ask, then give up cleanly.
+            _pa_n = int(self.session.get("_post_age_confirm_reask_count") or 0)
+            if _pa_n >= 1:
+                self.session.pop("_post_age_confirm_pending", None)
+                self.session.pop("_post_age_confirm_reask_count", None)
+                self.session.pop("_pre_age_gate_transcript", None)
+                _pa_giveup = "No problem — is there anything else I can help with?"
+                await self._tts.put(_pa_giveup)
+                self.session["last_question"]  = _pa_giveup
+                self.session["last_faq_answer"] = _pa_giveup
+                logger.info("[ms_flow] _post_age_confirm_pending: ambiguous × 2 → giving up")
+                return
+            self.session["_post_age_confirm_reask_count"] = _pa_n + 1
+            _pa_reask = "Sorry — would you like to go ahead and book an appointment? Yes or no."
+            await self._tts.put(_pa_reask)
+            self.session["last_question"]  = _pa_reask
+            self.session["last_faq_answer"] = _pa_reask
+            logger.info(
+                "[ms_flow] _post_age_confirm_pending: ambiguous %r → re-asking",
+                _pa_tx[:40],
+            )
             return
 
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
@@ -19258,6 +19352,11 @@ class FlowEngine:
             self.session["_child_age_reask_count"]  = 0
             self.session["last_question"]           = _cp_age_q
             self.session["last_faq_answer"]         = _cp_age_q
+            # Preserve the pre-age-gate transcript (e.g. "my son injured his ankle")
+            # so that, once age passes and the caller confirms booking, the existing
+            # reason context is promoted into session["reason"] and the flow skips
+            # re-asking COLLECT_REASON.  Cleared on decline / abandon / consumption.
+            self.session["_pre_age_gate_transcript"] = transcript
             logger.info(
                 "[ms_flow] _handle_mid_flow_interrupt: faq_child_policy → age-gate "
                 "(rel=%s)", _cp_rel,
