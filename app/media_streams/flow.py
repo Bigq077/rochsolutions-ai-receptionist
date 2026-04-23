@@ -6122,6 +6122,96 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
 
+                # Case B — correction language + clinic-reference signal but
+                # no safe resolution.  Examples: "meant to say the reddish
+                # clinic", "I made a mistake with the clinic", "I meant the
+                # other one".  The resolver returns unknown/ambiguous (e.g.
+                # "reddish" is in the never-bind list) and there is no
+                # explicit "not alcester"/"not redditch" negation to flip
+                # from.  Without this branch the turn falls through into
+                # sidebar, Haiku, generic fallback, or replays the stale
+                # wrong-clinic NEW_OR_RETURNING question — every one of
+                # which has been observed as a user-facing failure.
+                #
+                # Requirement: a clinic-reference anchor (the word "clinic"
+                # / "location" / "other" / "branch" / "site" / "practice"),
+                # OR the resolver surfaced a near-miss (ambiguous, or
+                # never-bind unknown).  Bare "no"/"actually" alone is NOT
+                # enough — those are valid NEW_OR_RETURNING content.
+                _LC_CLINIC_REF_TOKENS = (
+                    "clinic", "location", "the other", "other one",
+                    "other clinic", "wrong one", "wrong clinic",
+                    "branch", "site", "practice",
+                )
+                _lc_ref_hit = any(
+                    p in text for p in _LC_CLINIC_REF_TOKENS
+                )
+                _lc_res_status = _lc_result.get("status")
+                _lc_res_reason = str(_lc_result.get("reason") or "")
+                _lc_near_miss = (
+                    _lc_res_status == "ambiguous"
+                    or (
+                        _lc_res_status == "unknown"
+                        and _lc_res_reason.startswith("never_bind")
+                    )
+                )
+                if _lc_ref_hit or _lc_near_miss:
+                    _lc_cur_b = self.session.get("selected_location")
+                    logger.info(
+                        "[ms_flow] location_correction_context_unresolved "
+                        "state=%s cur=%s ref_hit=%s near_miss=%s "
+                        "res_status=%s res_reason=%s text=%r",
+                        _lc_state, _lc_cur_b, _lc_ref_hit, _lc_near_miss,
+                        _lc_res_status, _lc_res_reason, transcript[:100],
+                    )
+                    # Drop the stale clinic bind so the prior "At our
+                    # Alcester clinic, have you been with us before..."
+                    # question cannot replay verbatim.  Route the next
+                    # caller utterance through the ASK_LOCATION handler.
+                    self.session.pop("selected_location", None)
+                    self.session["needs_location"] = True
+                    self.session["state"]       = "ASK_LOCATION"
+                    self.session["flow_state"]  = "ASK_LOCATION"
+                    self.session.pop("location_retry_count",         None)
+                    self.session.pop("location_pending_guess",       None)
+                    self.session.pop("location_awaiting_dtmf",       None)
+                    self.session.pop("location_fallback_unconfirmed", None)
+                    for _lc_clr_b in (
+                        "_pending_svc_fit", "_pending_svc_fit_turns",
+                        "_svc_fit_gq_guard", "_gq_clarify_pending",
+                        "pending_first_turn_followup", "pending_followup",
+                    ):
+                        self.session.pop(_lc_clr_b, None)
+                    logger.info(
+                        "[ms_flow] repair_intercept suppressed "
+                        "reason=location_correction_context_unresolved"
+                    )
+                    logger.info(
+                        "[ms_flow] haiku_blocked "
+                        "reason=location_correction_context_unresolved"
+                    )
+                    logger.info(
+                        "[ms_flow] sidebar_blocked "
+                        "reason=location_correction_context_unresolved"
+                    )
+                    logger.info(
+                        "[ms_flow] watchdog_suppressed "
+                        "reason=location_correction_context_unresolved"
+                    )
+                    _lc_clarify_q = (
+                        "No problem \u2014 did you mean Alcester or Redditch?"
+                    )
+                    await self._tts.put(_lc_clarify_q)
+                    self.session.setdefault(
+                        "conversation_history", []
+                    ).append(
+                        {"role": "assistant", "content": _lc_clarify_q}
+                    )
+                    self.session["last_question"]   = _lc_clarify_q
+                    self.session["last_faq_answer"] = _lc_clarify_q
+                    self.session["question_asked_this_turn"] = True
+                    return
+
         # ── Global location-correction handler ────────────────────────────────────
         # Allows mid-flow correction of the already-bound clinic
         # ("actually Redditch", "no Redditch", "Redditch — under this number").
