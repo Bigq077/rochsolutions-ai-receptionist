@@ -13908,6 +13908,43 @@ class FlowEngine:
                 await self.ask_current_question()
                 return
 
+            # ── CASE D: relist — caller rejects date + asks to see all options ─
+            # e.g. "Thursday 30th April doesn't work, relist all availability"
+            # Must NOT rebind to any date mentioned alongside — strip and step back.
+            _PT_RELIST_SIGS = (
+                "relist", "list all", "show all", "show me all",
+                "all availability", "all your availability", "all the availability",
+                "everything you have", "what else do you have",
+                "see all options", "see all the options", "all options",
+                "open it up", "widen", "broader", "full list",
+                "all times", "all slots", "all dates",
+            )
+            _pt_is_relist = any(p in text for p in _PT_RELIST_SIGS)
+            if _pt_is_relist:
+                _pt_rej_day_d = self.session.get("chosen_day", "")
+                if _pt_rej_day_d:
+                    self.session["_pt_rejected_day"] = _pt_rej_day_d
+                self.session.pop("chosen_day", None)
+                self.session.setdefault("collected", {}).pop("chosen_day", None)
+                self.session.pop("selected_slot", None)
+                self.session.pop("selected_slot_speech", None)
+                self.session.pop("slot_pending_confirmation", None)
+                self.session.pop("offered_constrained_times", None)
+                self.session.pop("offered_constrained_slots", None)
+                _pt_rl_pd = next(
+                    (i for i, s in enumerate(self._active_flow)
+                     if s["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")),
+                    max(0, step["step"] - 1),
+                )
+                self.session["flow_step"] = _pt_rl_pd
+                self.session["state"]     = self._active_flow[_pt_rl_pd]["state"]
+                logger.info(
+                    "[ms_flow] %s: relist detected rejected_day=%r → stepping back to %s",
+                    step["state"], _pt_rej_day_d, self.session["state"],
+                )
+                await self.ask_current_question()
+                return
+
             # ── PRESENT_TIMES: deterministic "none/no" rejection ────────────
             # If caller rejects all offered times (no constraint specified),
             # offer a different day instead of looping on the same times or LLM.
@@ -13919,6 +13956,14 @@ class FlowEngine:
                 "no not those", "no none", "no none of",
                 "something else", "different time", "different day",
                 "another day", "any other day",
+                # CASE C: whole-day rejection phrases
+                "can't do anything on that day", "nothing works on that day",
+                "that day doesn't work", "that day won't work",
+                "that day doesn't suit", "that day isn't good",
+                "not free that day", "busy that day",
+                "can't make that day", "can't make it that day",
+                "can't do that day", "not that day",
+                "won't work for me that day", "that doesn't work at all",
             )
             _PT_STOP = ("stop", "wait", "hold on", "actually")
             _pt_is_none = any(p in text for p in _PT_NONE)
@@ -13926,6 +13971,10 @@ class FlowEngine:
             if _pt_is_none and not _is_constraint:
                 _pt_avail = self.session.get("available_days", [])
                 _pt_chosen = self.session.get("chosen_day", "")
+                # Track the rejected day so PRESENT_DAYS won't immediately
+                # re-offer it if the caller cycles back.
+                if _pt_chosen:
+                    self.session["_pt_rejected_day"] = _pt_chosen
                 _pt_other = [
                     d for d in _pt_avail if d.get("day_label", "") != _pt_chosen
                 ]
@@ -20490,6 +20539,57 @@ class FlowEngine:
                 logger.info("[ms_flow] slot confirmation: NO matched=%r", p)
                 self.session["slot_pending_confirmation"] = False
                 self.session["selected_slot"] = None
+                # ── CASE B: no + inline ordinal request ──────────────────────
+                # e.g. "no what about the earliest slot", "no can I get the last one"
+                # Answer the ordinal directly instead of generic re-ask.
+                _SC_NO_ORD: list = [
+                    ("earliest", 0), ("first slot", 0), ("first one", 0),
+                    ("latest", -1), ("last slot", -1), ("last one", -1),
+                    ("final slot", -1), ("final one", -1),
+                ]
+                _sc_no_oidx: Optional[int] = None
+                _sc_no_dir = "next"
+                for _sc_pat, _sc_oi in _SC_NO_ORD:
+                    if _sc_pat in text:
+                        _sc_no_oidx = _sc_oi
+                        _sc_no_dir = "latest" if _sc_oi < 0 else "earliest"
+                        break
+                if _sc_no_oidx is not None:
+                    _sc_avail_b = self.session.get("available_days", [])
+                    _sc_chosen_b = self.session.get("chosen_day", "")
+                    _sc_target_b = next(
+                        (d for d in _sc_avail_b if d.get("day_label", "") == _sc_chosen_b),
+                        _sc_avail_b[0] if _sc_avail_b else None,
+                    )
+                    if _sc_target_b and _sc_target_b.get("slots"):
+                        _sc_slots_b = _sc_target_b["slots"]
+                        _sc_times_b = _sc_target_b.get("slot_times", [])
+                        _sc_nb = len(_sc_slots_b)
+                        _sc_ridx = _sc_no_oidx if _sc_no_oidx >= 0 else max(0, _sc_nb + _sc_no_oidx)
+                        _sc_ridx = min(_sc_ridx, _sc_nb - 1)
+                        _sc_iso_b = _sc_slots_b[_sc_ridx].get("start", "")
+                        _sc_tstr_b = _sc_times_b[_sc_ridx] if _sc_ridx < len(_sc_times_b) else ""
+                        from app.vagueness_detector import _time_to_speech as _t2s_scb
+                        _sc_spoken_b = _t2s_scb(_sc_tstr_b) if _sc_tstr_b else _sc_iso_b
+                        _sc_dlabel_b = _sc_target_b.get("day_label", "that day")
+                        _sc_speech_b = f"{_sc_dlabel_b} at {_sc_spoken_b}" if _sc_dlabel_b else _sc_spoken_b
+                        _sc_phrase_b = (
+                            f"The {_sc_no_dir} I have on {_sc_dlabel_b} is "
+                            f"{_sc_spoken_b} — would you like that one?"
+                        )
+                        self.session["selected_slot"]            = _sc_iso_b
+                        self.session["selected_slot_speech"]     = _sc_speech_b
+                        self.session["slot_pending_confirmation"] = True
+                        await self._tts.put(_sc_phrase_b)
+                        _store_last_question(
+                            self.session, _sc_phrase_b,
+                            force=True, source="slot_confirm_no_ordinal",
+                        )
+                        logger.info(
+                            "[ms_flow] slot_confirm NO+ordinal: dir=%r ridx=%d slot=%r",
+                            _sc_no_dir, _sc_ridx, _sc_iso_b,
+                        )
+                        return
                 # Check if the caller is correcting to a different offered day
                 # (e.g. "no, I said Thursday not Tuesday").
                 import re as _re_sc
