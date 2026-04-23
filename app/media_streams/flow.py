@@ -7400,6 +7400,87 @@ class FlowEngine:
                 )
                 return
 
+            # ── Booking-readiness clarification guard ────────────────────────────
+            # Caller is confirming / acknowledging the service-fit recommendation —
+            # NOT naming a clinic.  Examples:
+            #   "so you recommend I book an assessment then?"
+            #   "so I should book something to get my ankle looked at?"
+            #   "okay, so I'd need a physio assessment first?"
+            # These MUST NOT consume a location retry or trigger DTMF escalation.
+            # Respond naturally with confirmation + re-ask location.
+            _BOOK_READY_SIGNALS = (
+                # Assessment-acknowledgement patterns
+                "so you recommend",
+                "you recommend i book",
+                "you'd recommend",
+                "you would recommend",
+                "recommend i come",
+                "so i should book",
+                "i should book",
+                "i'd need to book",
+                "i need to book",
+                "book an assessment",
+                "book a physio",
+                "book that in",
+                "book that",
+                "get that booked",
+                "so that would be a physio",
+                "that would be a physio",
+                "so that would be an assessment",
+                "that would be an assessment",
+                "i'd need an assessment",
+                "i need an assessment",
+                "so i need an assessment",
+                "physio assessment",
+                "so i'd need to come",
+                "i'd need to come in",
+                "so i should come in",
+                "i should come in",
+                "come in for an assessment",
+                "come in to get it looked at",
+                "get it looked at",
+                "get my ankle looked at",
+                "get it checked",
+                "get it checked out",
+                "get that looked at",
+                "get that sorted",
+                "so you think i should",
+                "you think i should",
+                "right so i'd need",
+                "right so i need",
+                "okay so i'd need",
+                "okay so i need",
+                "so basically i need",
+                "basically i need",
+            )
+            _brc_text = text.strip().lower()
+            _brc_match = any(p in _brc_text for p in _BOOK_READY_SIGNALS)
+            # Extra guard: only fire when there's no genuine clinic token already
+            # present — if the caller said "so I should book at Alcester" we let
+            # the normal extractor handle it.
+            _BRC_CLINIC_TOKENS = ("alcester", "redditch", "kinwarton", "bromsgrove")
+            if _brc_match and not any(ct in _brc_text for ct in _BRC_CLINIC_TOKENS):
+                _brc_loc_q = (
+                    "Would you like to book at our Alcester or Redditch clinic?"
+                )
+                _brc_resp = (
+                    "Yes, exactly \u2014 an initial assessment is the best starting "
+                    "point for that kind of issue. "
+                    + _brc_loc_q
+                )
+                await self._tts.put(_brc_resp)
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _brc_resp}
+                )
+                self.session["last_question"] = _brc_loc_q
+                # Deliberately do NOT increment location_retry_count.
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: booking_readiness_clarification %r "
+                    "\u2192 confirmed + re-asked location (retry count unchanged)",
+                    text[:60],
+                )
+                return
+
             # ── Clinic-comparison / both-clinics clarification interrupt ─────────
             # Caller is asking about the difference between the clinics, or has
             # said "both clinics" without selecting one.  These are informational
@@ -19749,6 +19830,15 @@ class FlowEngine:
                 # last_question update in the FAQ_BOOKING_OFFER handler, so the only
                 # reliable way to break the stale-anchor chain is here.)
                 _int_anchor = "Anything else you'd like to ask?"
+            elif self.session.get("needs_location"):
+                # Bug 1 fix: ASK_LOCATION re-anchor after a service-fit / FAQ
+                # answer must feel booking-aligned, not a stale snap-back.
+                # Use a focused clinic-choice question tied to the booking trajectory
+                # rather than pulling last_question (which may be the raw "Alcester
+                # or Redditch?" prompt that pairs badly with brittle openers).
+                _int_anchor = (
+                    "Would you like to book at our Alcester or Redditch clinic?"
+                )
             else:
                 _int_anchor = self.session.get("last_question", "")
 
@@ -19823,13 +19913,24 @@ class FlowEngine:
                         "[ms_flow] faq_reanchor_empty_guard_hit: state=%s anchor=%r",
                         _int_state, _int_anchor,
                     )
-                _RE_ANCHOR_OPENERS = [
-                    "Anyway \u2014 ",
-                    "So \u2014 ",
-                    "Right \u2014 ",
-                    "Coming back to that \u2014 ",
-                ]
-                _anchor_spoken = _random.choice(_RE_ANCHOR_OPENERS) + _int_anchor
+                # Bug 1 fix: for ASK_LOCATION, use a booking-aligned opener that
+                # ties naturally to the service-fit answer rather than snapping back
+                # with a disconnected "Anyway —".
+                if self.session.get("needs_location"):
+                    _ASK_LOC_OPENERS = [
+                        "If you\u2019d like to get that booked \u2014 ",
+                        "If you\u2019re happy to go ahead \u2014 ",
+                        "Great \u2014 ",
+                    ]
+                    _anchor_spoken = _random.choice(_ASK_LOC_OPENERS) + _int_anchor
+                else:
+                    _RE_ANCHOR_OPENERS = [
+                        "Anyway \u2014 ",
+                        "So \u2014 ",
+                        "Right \u2014 ",
+                        "Coming back to that \u2014 ",
+                    ]
+                    _anchor_spoken = _random.choice(_RE_ANCHOR_OPENERS) + _int_anchor
                 await self._tts.put(_anchor_spoken)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _anchor_spoken}
