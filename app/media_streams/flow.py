@@ -12821,6 +12821,64 @@ class FlowEngine:
                     _spoken_time = _t2s_ord(_time_str_o) if _time_str_o else "that time"
                     _day_label_o  = _target_o.get("day_label", "")
                     _slot_speech_o = f"{_day_label_o} at {_spoken_time}" if _day_label_o else _spoken_time
+                    # ── Ordinal info-question guard ──────────────────────────
+                    # "What's the latest slot?" is an availability question, not
+                    # a slot selection.  If the utterance carries question-form
+                    # language AND no explicit selection phrase, answer with the
+                    # identified slot and ask for confirmation via
+                    # slot_pending_confirmation — the caller must explicitly say
+                    # yes before flow_step advances.
+                    # Direct selections ("I'll take the latest", "book the
+                    # earliest", "latest is fine", "last one please") pass
+                    # _is_time_selection=True or have no info-question marker
+                    # and fall through to the existing advance-and-confirm path.
+                    _ORDINAL_INFO_SIGS = (
+                        "what's the latest", "what is the latest",
+                        "what's the earliest", "what is the earliest",
+                        "what's the last", "what is the last",
+                        "what's the first", "what is the first",
+                        "what time is the latest", "what time is the earliest",
+                        "what time is the last", "what time is the first",
+                        "what would the latest", "what would the earliest",
+                        "i want to know", "can you tell me the",
+                        "what's your latest", "what's your earliest",
+                        "what is your latest", "what is your earliest",
+                        "how late can", "how early can",
+                        "do you have a later slot", "do you have an earlier slot",
+                        "is there a later slot", "is there an earlier slot",
+                    )
+                    _is_ordinal_info_q = (
+                        any(p in text for p in _ORDINAL_INFO_SIGS)
+                        and not _is_time_selection
+                    )
+                    if _is_ordinal_info_q:
+                        # Pending — do NOT advance flow_step; require explicit yes.
+                        _ord_dir = (
+                            "latest"   if any(w in text for w in ("latest", "last", "final")) else
+                            "earliest" if any(w in text for w in ("earliest", "first")) else
+                            "next"
+                        )
+                        self.session["selected_slot"]            = _slot_iso_o
+                        self.session["selected_slot_speech"]     = _slot_speech_o
+                        self.session["slot_pending_confirmation"] = True
+                        _iq_phrase = (
+                            f"The {_ord_dir} I have on {_day_label_o} is "
+                            f"{_spoken_time} — would you like that one?"
+                        )
+                        await self._tts.put(_iq_phrase)
+                        _store_last_question(
+                            self.session, _iq_phrase,
+                            force=True, source="ordinal_info_question",
+                        )
+                        logger.info(
+                            "[ms_flow] %s: ordinal info-question → idx=%d "
+                            "slot=%r pending_confirmation=True phrase=%r",
+                            step["state"], _resolved_idx,
+                            _slot_iso_o, _iq_phrase[:80],
+                        )
+                        return
+
+                    # Direct selection — advance immediately as before.
                     _nxt_ord_i = step["step"] + 1
                     _nxt_ord_state = (
                         self._active_flow[_nxt_ord_i]["state"]
