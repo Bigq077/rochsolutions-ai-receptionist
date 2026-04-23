@@ -6155,7 +6155,19 @@ class FlowEngine:
                         and _lc_res_reason.startswith("never_bind")
                     )
                 )
-                if _lc_ref_hit or _lc_near_miss:
+                # ASK_LOCATION context relaxation: when we're already
+                # explicitly asking for a clinic and the caller responds
+                # with correction language that resolves to nothing ("no
+                # sorry i realized i made a mistake", "actually no", "sorry
+                # wrong"), the correction IS unambiguously about the
+                # location — there is no other topic in play.  Fire Case B
+                # without requiring a clinic anchor or near-miss.  We do
+                # NOT relax for NEW_OR_RETURNING because utterances like
+                # "no, this is my first time" are valid content answers
+                # with correction tokens that must not become clinic
+                # clarification turns.
+                _lc_askloc_context = (_lc_state == "ASK_LOCATION")
+                if _lc_ref_hit or _lc_near_miss or _lc_askloc_context:
                     _lc_cur_b = self.session.get("selected_location")
                     logger.info(
                         "[ms_flow] location_correction_context_unresolved "
@@ -6199,7 +6211,8 @@ class FlowEngine:
                         "reason=location_correction_context_unresolved"
                     )
                     _lc_clarify_q = (
-                        "No problem \u2014 did you mean Alcester or Redditch?"
+                        "No problem \u2014 which clinic did you mean, "
+                        "Alcester or Redditch?"
                     )
                     await self._tts.put(_lc_clarify_q)
                     self.session.setdefault(
@@ -6357,6 +6370,54 @@ class FlowEngine:
             "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
         }:
             _is_repair = False
+        # Correction-in-progress suppression — defence in depth.  The
+        # location-correction interceptor above (Case A / Case B) is the
+        # primary handler and returns for these turns; this guard ensures
+        # that even if neither fires (very short / very noisy utterance
+        # that did not trigger Case B's anchor or near-miss tests), the
+        # global repair path cannot hijack early-booking correction turns
+        # with "Sorry about that — what was your question?" and stack a
+        # watchdog apology on top.  In ASK_LOCATION the correction is
+        # unambiguously about the clinic; in NEW_OR_RETURNING we still
+        # require a clinic-reference anchor so "no, this is my first
+        # time" is not stolen as a correction.
+        if _is_repair and self.session.get("needs_location"):
+            _cip_tx = text
+            _CIP_CORRECTION_TOKENS = (
+                " no ", " no,", "no,", "nope", " not ",
+                "meant", "mistake", "mistaken", "wrong",
+                "sorry", "error", "actually", "apolog",
+                "never mind", "nevermind", "hang on",
+                "correct it", "correction", "realized", "realised",
+            )
+            if any(p in " " + _cip_tx + " " for p in _CIP_CORRECTION_TOKENS):
+                logger.info(
+                    "[ms_flow] repair_intercept suppressed "
+                    "reason=correction_in_progress state=ASK_LOCATION text=%r",
+                    transcript[:80],
+                )
+                _is_repair = False
+        elif _is_repair and step and step.get("state") == "NEW_OR_RETURNING":
+            _cip_tx = text
+            _CIP_CORRECTION_TOKENS = (
+                "meant", "mistake", "mistaken", "wrong clinic",
+                "wrong location", "actually", "apolog",
+                "never mind", "nevermind",
+                "correct it", "correction", "realized", "realised",
+            )
+            _CIP_ANCHOR = (
+                "clinic", "location", "the other", "other one",
+                "wrong one", "branch", "site", "practice",
+            )
+            _cip_hit  = any(p in _cip_tx for p in _CIP_CORRECTION_TOKENS)
+            _cip_anch = any(p in _cip_tx for p in _CIP_ANCHOR)
+            if _cip_hit and _cip_anch:
+                logger.info(
+                    "[ms_flow] repair_intercept suppressed "
+                    "reason=correction_in_progress state=NEW_OR_RETURNING text=%r",
+                    transcript[:80],
+                )
+                _is_repair = False
         if _is_repair:
             # Strong repair — stale child-policy / service-fit branches must not
             # keep controlling the turn (Rule 3). Clear pending routing state
@@ -8138,6 +8199,14 @@ class FlowEngine:
                 "then", "and", "so", "but",
                 "um", "uh", "er", "err", "hmm", "mmm", "mhm",
                 "okay", "ok", "right", "yeah",
+                # Bare single-word social filler / politeness tokens —
+                # "please" / "hello" / "hi" / "sorry" on their own are not
+                # clinic answers; treat them like stray tails so the retry
+                # ladder is not consumed and the watchdog's approved copy
+                # can carry the turn.
+                "please", "hello", "hi", "hey",
+                "sorry", "thanks", "thank", "cheers",
+                "yep", "nope", "huh", "eh",
             })
             _loc_frag_words = text.strip().split()
             if (
@@ -8149,6 +8218,35 @@ class FlowEngine:
                     "[ms_flow] ASK_LOCATION: tail-fragment %r suppressed "
                     "(state=ASK_LOCATION, retry not consumed, watchdog preserved)",
                     text[:20],
+                )
+                return
+            # Ultra-weak multi-word fragments — clipped garbage like
+            # "s to clinic" / "to the" / "at the" carry no clinic signal
+            # yet are short enough that the resolver may prefix-fallback
+            # to a clinic by accident.  If the utterance is ≤3 tokens and
+            # contains zero alphanumeric token ≥4 chars AND none of the
+            # known clinic names / aliases as a substring, treat it as a
+            # tail fragment.  This mirrors the single-word suppression:
+            # retry not consumed, watchdog carries the turn with its
+            # approved-copy ladder.
+            _loc_weak_tx = text.strip().lower()
+            _loc_weak_toks = _loc_weak_tx.split()
+            if (
+                1 < len(_loc_weak_toks) <= 3
+                and not any(len(t) >= 4 and t.isalpha() for t in _loc_weak_toks)
+                and not any(
+                    n in _loc_weak_tx
+                    for n in (
+                        "alcester", "redditch", "alcest", "reddit",
+                        "first", "second", "one", "two", "1", "2",
+                    )
+                )
+            ):
+                self.session["fragment_suppressed"] = True
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: weak-fragment %r suppressed "
+                    "(state=ASK_LOCATION, retry not consumed, watchdog preserved)",
+                    text[:40],
                 )
                 return
 
