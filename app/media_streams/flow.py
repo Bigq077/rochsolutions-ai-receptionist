@@ -6327,6 +6327,9 @@ class FlowEngine:
                     "reset", "clear", "start again", "start over",
                     "redo", "restart", "made a mistake", "made an error",
                     "wrong number", "wrong digits", "wrong one",
+                    # Natural "i messed up" variants that trigger global repair
+                    # but weren't caught by the original list:
+                    "messed up", "mess up",
                 )
                 if (self.session.get("rc_kp_phone_pending")
                         and any(p in text for p in _LOOKUP_KP_RESET_SIGS)):
@@ -16262,6 +16265,9 @@ class FlowEngine:
                             "start again", "start over", "let me start", "begin again",
                             "wrong number", "wrong digits", "made a mistake", "got it wrong",
                             "redo", "restart", "scratch that",
+                            # Informal variants that bypass global repair but mean reset:
+                            "messed up", "messed it up", "mess up",
+                            "please reset", "just reset", "could you reset",
                         )
                         if any(p in (text or "") for p in _RC_KP_RESET_SIGS):
                             # Clear ALL digit buffers; keep rc_kp_phone_pending armed
