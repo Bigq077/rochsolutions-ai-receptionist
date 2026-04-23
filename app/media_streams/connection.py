@@ -1007,9 +1007,9 @@ class SilenceHandler:
             _wait = max(_wait, 8.0)
             logger.info("[ms_watchdog] FAQ offer state — extended wait to %.1fs", _wait)
         # Greeting states: caller needs time to process the greeting and respond naturally.
-        # 3 s fires too quickly when TTS finishes right at the natural response window.
+        # 6 s post-TTS is generous without feeling abandoned on no-answer calls.
         if (_sess_faq_w or {}).get("state") in ("GREETING", "DETECT_INTENT", ""):
-            _wait = max(_wait, 8.0)
+            _wait = max(_wait, 6.0)
             logger.info("[ms_watchdog] greeting_grace=%.1fs", _wait)
         # Caller-choice states: the AI has just asked a question that requires
         # the caller to parse spoken content and make a decision between multiple
@@ -1024,13 +1024,20 @@ class SilenceHandler:
         # deadline is anchored to final tts_finished (see _watchdog_grace_until
         # update in on_tts_finished), so 4.5 s post-audio is the true window.
         _CHOICE_GRACE_STATES = (
-            "ASK_LOCATION",
             "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
             "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
         )
         _sess_state_w = (_sess_faq_w or {}).get("state", "")
         _sess_rc_stage = (_sess_faq_w or {}).get("rc_stage", "")
-        if _sess_state_w in _CHOICE_GRACE_STATES:
+        # ASK_LOCATION: binary choice between two named clinics — 5.5 s is
+        # sufficient deliberation time without over-patience on dead air.
+        if _sess_state_w == "ASK_LOCATION":
+            _wait = max(_wait, 5.5)
+            logger.info(
+                "[ms_watchdog] choice_grace state=%s wait=%.1fs",
+                _sess_state_w, _wait,
+            )
+        elif _sess_state_w in _CHOICE_GRACE_STATES:
             _wait = max(_wait, 8.0)
             logger.info(
                 "[ms_watchdog] choice_grace state=%s wait=%.1fs",
