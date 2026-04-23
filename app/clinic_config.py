@@ -299,7 +299,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "new_patient_threshold_years": 2,        # 2+ years since last visit = treated as new
             "different_injury_requires_new_assessment": True,
             "records_follow_patient_across_locations": True,
-            "no_children": True,                     # Adults only — no paediatric patients
+            # Authoritative age policy: clinic sees patients aged 15+.
+            # 15, 16, 17 allowed; under 15 disallowed.
+            "no_children": False,
+            "min_patient_age": 15,
         },
 
         # Payment
@@ -784,10 +787,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Do you see children? ───────────────────────────────────────────
             "children_policy": (
-                "We see adults only — we don't currently offer paediatric physiotherapy. "
-                "If you're looking for physiotherapy for a child, I'd recommend contacting your "
-                "GP who can refer to an NHS paediatric service, or searching for a private "
-                "paediatric physiotherapy clinic in your area."
+                "Yes — we see patients aged 15 and over. "
+                "For anyone under 15, we'd recommend speaking to your GP about a paediatric "
+                "physiotherapy referral."
             ),
 
             # ── What happens on my first visit? ───────────────────────────────

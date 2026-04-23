@@ -3238,6 +3238,41 @@ class FlowEngine:
         Called ONCE when the first caller utterance arrives — this starts
         the flow by playing step 0's booking-open question.
         """
+        # ── Phase 6: HARD BOOKING GATE ───────────────────────────────────────
+        # When eligibility_status is DISALLOWED, the booking flow must NEVER
+        # start — not even if some earlier handler enqueued a _switch_flow.
+        # Deliver the authoritative decline, reset state to idle, and return.
+        if self._active_flow is BOOKING_FLOW:
+            try:
+                from app.media_streams.authoritative_policy import (
+                    booking_allowed         as _ap_bk_allowed,
+                    booking_blocked_response as _ap_bk_blocked,
+                )
+                if not _ap_bk_allowed(self.session):
+                    from app.clinic_config import get_clinic as _ap_bk_gc
+                    _ap_bk_clinic = _ap_bk_gc(self.session.get("clinic_id") or "demo")
+                    _ap_bk_msg = _ap_bk_blocked(_ap_bk_clinic)
+                    await self._tts.put(_ap_bk_msg)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _ap_bk_msg}
+                    )
+                    self.session["last_question"]  = _ap_bk_msg
+                    self.session["last_faq_answer"] = _ap_bk_msg
+                    self.session["_last_handled_by"] = "booking_gate_blocked"
+                    self.session["_svc_fit_disallow_active"] = True
+                    # Reset to a neutral state — don't let BOOKING_FLOW steps run.
+                    self._active_flow = None
+                    self.session["flow_step"] = 0
+                    self.session["intent"] = None
+                    self.session["question_asked_this_turn"] = True
+                    logger.info(
+                        "[ms_flow] booking_gate: eligibility=%s BLOCKED booking",
+                        self.session.get("eligibility_status"),
+                    )
+                    return
+            except Exception as _bg_exc:  # pragma: no cover — defensive
+                logger.debug("[ms_flow] booking_gate error: %s", _bg_exc)
+
         # ── Multi-location: ask which clinic before starting the flow ─────────
         # Fires for theorem_v2 bookings/reschedules/cancels until caller names a clinic.
         # No LLM call — pure TTS, same pattern as every other static question.
@@ -6681,12 +6716,18 @@ class FlowEngine:
             _cap_threshold = int(
                 _cap_policies.get("min_patient_age")
                 or _cap_policies.get("adult_age_threshold")
-                or 16
+                or 15
             )
             self.session.pop("_child_age_pending",      None)
             self.session.pop("_child_age_relationship", None)
             self.session.pop("_child_age_reask_count",  None)
 
+            from app.media_streams.authoritative_policy import (
+                set_lock                as _ap_set_lock_cap,
+                TOPIC_CHILDREN_AGE      as _AP_TOPIC_CAP,
+                ELIGIBILITY_ALLOWED     as _AP_ELIG_ALLOW_CAP,
+                ELIGIBILITY_DISALLOWED  as _AP_ELIG_DISALLOW_CAP,
+            )
             if _cap_age < _cap_threshold:
                 _cap_decline = (
                     f"I\u2019m sorry \u2014 we only see patients aged {_cap_threshold} "
@@ -6696,6 +6737,11 @@ class FlowEngine:
                 self.session["last_question"]  = "Is there anything else I can help with?"
                 self.session["last_faq_answer"] = _cap_decline
                 self.session.pop("_pre_age_gate_transcript", None)
+                _ap_set_lock_cap(
+                    self.session, _AP_TOPIC_CAP, _AP_ELIG_DISALLOW_CAP,
+                    min_age=_cap_threshold, last_age=_cap_age,
+                )
+                self.session["_svc_fit_disallow_active"] = True
                 logger.info(
                     "[ms_flow] child_age_pending: age=%s < threshold=%s → declined",
                     _cap_age, _cap_threshold,
@@ -6714,6 +6760,10 @@ class FlowEngine:
                 # through COLLECT_REASON fragment rejection or LLM fallback.
                 self.session["_post_age_confirm_pending"] = True
                 self.session["_post_age_confirm_reask_count"] = 0
+                _ap_set_lock_cap(
+                    self.session, _AP_TOPIC_CAP, _AP_ELIG_ALLOW_CAP,
+                    min_age=_cap_threshold, last_age=_cap_age,
+                )
                 logger.info(
                     "[ms_flow] child_age_pending: age=%s >= threshold=%s → allowed "
                     "(_post_age_confirm_pending armed)",
@@ -6806,6 +6856,47 @@ class FlowEngine:
                 _pa_tx[:40],
             )
             return
+
+        # ── AUTHORITATIVE POLICY CLARIFICATION INTERCEPTOR ────────────────────────
+        # Phase 3/5/7: after a deterministic age-eligibility answer has been
+        # delivered, clarifying follow-ups ("even for 16?", "what about my
+        # son?", "so can I book?") must be answered from the SAME authoritative
+        # source — never routed to the LLM, never quietly dropped into DETECT_
+        # INTENT.  The lock is short-lived (see authoritative_policy.py) so
+        # unrelated later topics are unaffected.
+        try:
+            from app.media_streams.authoritative_policy import (
+                get_active_lock         as _ap_get_lock,
+                answer_age_clarification as _ap_answer_clar,
+                is_age_clarification    as _ap_is_clar,
+                is_clinic_critical_age_topic as _ap_is_critical,
+                TOPIC_CHILDREN_AGE      as _AP_TOPIC_CHILDREN,
+            )
+            from app.clinic_config import get_clinic as _ap_gc
+            _ap_lock = _ap_get_lock(self.session)
+            if _ap_lock and _ap_lock.get("topic") == _AP_TOPIC_CHILDREN:
+                # Only intercept when the utterance is plausibly about the
+                # locked topic — otherwise the caller has genuinely moved on.
+                if _ap_is_clar(text) or _ap_is_critical(text):
+                    _ap_clinic = _ap_gc(self.session.get("clinic_id") or "demo")
+                    _ap_resp = _ap_answer_clar(text, _ap_clinic, self.session)
+                    if _ap_resp:
+                        await self._tts.put(_ap_resp)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _ap_resp}
+                        )
+                        self.session["last_faq_answer"] = _ap_resp
+                        self.session["_last_handled_by"] = (
+                            "authoritative_policy_clarification"
+                        )
+                        logger.info(
+                            "[ms_flow] authoritative_policy: clarification "
+                            "intercepted text=%r elig=%s",
+                            text[:60], self.session.get("eligibility_status"),
+                        )
+                        return
+        except Exception as _ap_exc:  # pragma: no cover — defensive
+            logger.debug("[ms_flow] authoritative_policy interceptor error: %s", _ap_exc)
 
         # ── GLOBAL FRAGMENT SUPPRESSION (Bug 9) ─────────────────────────────────
         # Very short / noisy transcripts must not drive a full response.
@@ -8881,6 +8972,17 @@ class FlowEngine:
                         )
                         # Latch: subsequent polite closeouts must not reopen booking.
                         self.session["_svc_fit_disallow_active"] = True
+                        from app.media_streams.authoritative_policy import (
+                            set_lock                as _ap_set_lock_re,
+                            TOPIC_CHILDREN_AGE      as _AP_TOPIC_RE,
+                            ELIGIBILITY_DISALLOWED  as _AP_ELIG_DISALLOW_RE,
+                            resolve_min_age         as _ap_min_age_re,
+                        )
+                        _ap_set_lock_re(
+                            self.session, _AP_TOPIC_RE, _AP_ELIG_DISALLOW_RE,
+                            min_age=_ap_min_age_re(_pg_re_clinic),
+                            last_age=_fu_age,
+                        )
                         logger.info(
                             "[ms_flow] first_turn_policy_gate: age=%s "
                             "clinic_policy=disallow_children -> SERVICE_FIT_DISALLOW",
@@ -9292,12 +9394,27 @@ class FlowEngine:
                     self.session.get("first_turn_age"),
                     _pg_ft_result.action,
                 )
+                from app.media_streams.authoritative_policy import (
+                    set_lock                as _ap_set_lock_ft,
+                    TOPIC_CHILDREN_AGE      as _AP_TOPIC_FT,
+                    ELIGIBILITY_ALLOWED     as _AP_ELIG_ALLOW_FT,
+                    ELIGIBILITY_DISALLOWED  as _AP_ELIG_DISALLOW_FT,
+                    ELIGIBILITY_PENDING_AGE as _AP_ELIG_PEND_FT,
+                    resolve_min_age         as _ap_min_age_ft,
+                )
+                _ap_ft_min = _ap_min_age_ft(_pg_ft_clinic)
                 if _pg_ft_result.action == _PG_DISALLOW_FT:
                     await self._tts.put(_pg_ft_result.response_text)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _pg_ft_result.response_text}
                     )
                     self.session["_last_handled_by"] = "first_turn_policy_gate_disallow"
+                    self.session["_svc_fit_disallow_active"] = True
+                    _ap_set_lock_ft(
+                        self.session, _AP_TOPIC_FT, _AP_ELIG_DISALLOW_FT,
+                        min_age=_ap_ft_min,
+                        last_age=self.session.get("first_turn_age"),
+                    )
                     logger.info(
                         "[ms_flow] first_turn_policy_gate: age=%s "
                         "clinic_policy=disallow_children -> SERVICE_FIT_DISALLOW",
@@ -9315,12 +9432,21 @@ class FlowEngine:
                     self.session["_last_handled_by"] = (
                         "first_turn_policy_gate_ask_age"
                     )
+                    _ap_set_lock_ft(
+                        self.session, _AP_TOPIC_FT, _AP_ELIG_PEND_FT,
+                        min_age=_ap_ft_min,
+                    )
                     logger.info(
                         "[ms_flow] first_turn_policy_gate: child_related service_fit "
                         "age_missing -> ASK_CHILD_AGE",
                     )
                     return
                 if _pg_ft_result.action == _PG_ALLOW_FT:
+                    _ap_set_lock_ft(
+                        self.session, _AP_TOPIC_FT, _AP_ELIG_ALLOW_FT,
+                        min_age=_ap_ft_min,
+                        last_age=self.session.get("first_turn_age"),
+                    )
                     logger.info(
                         "[ms_flow] first_turn_policy_gate: age=%s "
                         "clinic_policy=allow -> SERVICE_FIT_ALLOW",
@@ -9419,6 +9545,13 @@ class FlowEngine:
                         _sfp_result.action,
                     )
 
+                    from app.media_streams.authoritative_policy import (
+                        set_lock                as _ap_set_lock_sfp,
+                        TOPIC_CHILDREN_AGE      as _AP_TOPIC_SFP,
+                        ELIGIBILITY_DISALLOWED  as _AP_ELIG_DISALLOW_SFP,
+                        ELIGIBILITY_PENDING_AGE as _AP_ELIG_PEND_SFP,
+                        resolve_min_age         as _ap_min_age_sfp,
+                    )
                     if _sfp_result.action == _SFP_DISALLOW:
                         await self._tts.put(_sfp_result.response_text)
                         self.session.setdefault("conversation_history", []).append(
@@ -9427,6 +9560,12 @@ class FlowEngine:
                         self.session["_last_handled_by"] = "service_fit_policy_disallow"
                         # Latch: subsequent polite closeouts must not reopen booking.
                         self.session["_svc_fit_disallow_active"] = True
+                        if _sfp_child:
+                            _ap_set_lock_sfp(
+                                self.session, _AP_TOPIC_SFP, _AP_ELIG_DISALLOW_SFP,
+                                min_age=_ap_min_age_sfp(_sfp_clinic),
+                                last_age=self.session.get("first_turn_age"),
+                            )
                         logger.info(
                             "service_fit_policy: response_template=policy_disallow "
                             "child=%s age=%s",
@@ -9441,6 +9580,10 @@ class FlowEngine:
                         )
                         self.session["pending_first_turn_followup"] = "child_age"
                         self.session["_last_handled_by"] = "service_fit_policy_ask_age"
+                        _ap_set_lock_sfp(
+                            self.session, _AP_TOPIC_SFP, _AP_ELIG_PEND_SFP,
+                            min_age=_ap_min_age_sfp(_sfp_clinic),
+                        )
                         logger.info(
                             "service_fit_policy: child_detected age_missing -> ASK_CHILD_AGE"
                         )
@@ -18800,6 +18943,48 @@ class FlowEngine:
         the caller knows where we are in the booking.
         Does NOT change flow_step or _active_flow.
         """
+        # ── Phase 7: NO-LLM GUARD FOR CLINIC-CRITICAL FACTS ──────────────────
+        # If the caller's mid-flow question is clearly about child/age
+        # eligibility AND we have a fresh authoritative lock, answer from the
+        # authoritative source instead of routing through the LLM fallback.
+        try:
+            from app.media_streams.authoritative_policy import (
+                get_active_lock              as _mfi_get_lock,
+                is_clinic_critical_age_topic as _mfi_is_critical,
+                answer_age_clarification     as _mfi_answer_clar,
+                TOPIC_CHILDREN_AGE           as _MFI_AP_TOPIC,
+            )
+            _mfi_lock = _mfi_get_lock(self.session)
+            if (
+                _mfi_lock
+                and _mfi_lock.get("topic") == _MFI_AP_TOPIC
+                and _mfi_is_critical(transcript)
+            ):
+                from app.clinic_config import get_clinic as _mfi_gc_ap
+                _mfi_clinic_ap = _mfi_gc_ap(self.session.get("clinic_id") or "demo")
+                _mfi_ap_resp = _mfi_answer_clar(
+                    transcript, _mfi_clinic_ap, self.session,
+                )
+                if _mfi_ap_resp:
+                    await self._tts.put(_mfi_ap_resp)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _mfi_ap_resp}
+                    )
+                    self.session["last_faq_answer"] = _mfi_ap_resp
+                    self.session["_last_handled_by"] = (
+                        "authoritative_policy_mid_flow_guard"
+                    )
+                    logger.info(
+                        "[ms_flow] _handle_mid_flow_interrupt: authoritative "
+                        "guard intercepted intent=%s text=%r",
+                        intent, transcript[:60],
+                    )
+                    return
+        except Exception as _mfi_ap_exc:  # pragma: no cover — defensive
+            logger.debug(
+                "[ms_flow] authoritative mid_flow guard error: %s", _mfi_ap_exc,
+            )
+
         # Precompute whether we're currently at an FAQ/general offer state so
         # fast-path answers can be combined with the re-anchor into ONE TTS turn.
         _mfi_cur_step  = self.current_step()
@@ -19357,6 +19542,23 @@ class FlowEngine:
             # reason context is promoted into session["reason"] and the flow skips
             # re-asking COLLECT_REASON.  Cleared on decline / abandon / consumption.
             self.session["_pre_age_gate_transcript"] = transcript
+            # Arm the authoritative-policy lock so clarifications ("even for 16?")
+            # arriving before the age is captured are still handled deterministically.
+            try:
+                from app.clinic_config import get_clinic as _ap_cp_gc
+                from app.media_streams.authoritative_policy import (
+                    set_lock                as _ap_cp_set_lock,
+                    TOPIC_CHILDREN_AGE      as _AP_CP_TOPIC,
+                    ELIGIBILITY_PENDING_AGE as _AP_CP_ELIG_PEND,
+                    resolve_min_age         as _ap_cp_min,
+                )
+                _ap_cp_clinic = _ap_cp_gc(self.session.get("clinic_id") or "demo")
+                _ap_cp_set_lock(
+                    self.session, _AP_CP_TOPIC, _AP_CP_ELIG_PEND,
+                    min_age=_ap_cp_min(_ap_cp_clinic),
+                )
+            except Exception:  # pragma: no cover — defensive
+                pass
             logger.info(
                 "[ms_flow] _handle_mid_flow_interrupt: faq_child_policy → age-gate "
                 "(rel=%s)", _cp_rel,
