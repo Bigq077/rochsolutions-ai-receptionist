@@ -14063,39 +14063,114 @@ class FlowEngine:
                 ]
                 if _pt_other:
                     from app.vagueness_detector import _time_to_speech as _t2s_pt
-                    _pt_other_label = _pt_other[0].get("day_label", "another day")
-                    _pt_other_times = _pt_other[0].get("slot_times", [])[:3]
-                    if _pt_other_times:
-                        _pt_spoken = [_t2s_pt(t) for t in _pt_other_times]
-                        if len(_pt_spoken) == 1:
-                            _pt_alt = (
-                                f"No problem \u2014 I also have {_pt_spoken[0]} on "
-                                f"{_pt_other_label}. Would that work?"
+                    _pt_other_label      = _pt_other[0].get("day_label", "another day")
+                    _pt_other_times_full = _pt_other[0].get("slot_times", [])
+                    _pt_other_slots_full = _pt_other[0].get("slots", [])
+                    # ── Time-filter intercept ───────────────────────────────────
+                    # Compound utterance: "that day doesn't work, do you have 9 o'clock
+                    # on the next date?" → check next day for that specific hour first.
+                    _pt_none_hour = _extract_hour_from_text(text)
+                    if _pt_none_hour is not None and _pt_other_times_full:
+                        _pt_none_req_sp = _t2s_pt(f"{_pt_none_hour:02d}:00")
+                        _pt_none_match_idx: Optional[int] = None
+                        for _pt_ni, _pt_nt in enumerate(_pt_other_times_full):
+                            try:
+                                if int(_pt_nt.split(":")[0]) == _pt_none_hour:
+                                    _pt_none_match_idx = _pt_ni
+                                    break
+                            except (ValueError, IndexError):
+                                pass
+                        if _pt_none_match_idx is not None:
+                            # Exact hour found on next day → offer as pending confirmation
+                            _pt_none_sp  = _t2s_pt(_pt_other_times_full[_pt_none_match_idx])
+                            _pt_none_iso = (
+                                _pt_other_slots_full[_pt_none_match_idx].get("start", "")
+                                if _pt_none_match_idx < len(_pt_other_slots_full) else ""
                             )
-                        elif len(_pt_spoken) == 2:
                             _pt_alt = (
-                                f"No problem \u2014 on {_pt_other_label} I have "
-                                f"{_pt_spoken[0]} or {_pt_spoken[1]}. Would either of those work?"
+                                f"Yes \u2014 I do have {_pt_none_sp} on {_pt_other_label}. "
+                                "Would you like to book that?"
+                            )
+                            self.session["chosen_day"] = _pt_other_label
+                            self.session.setdefault("collected", {})["chosen_day"] = _pt_other_label
+                            if _pt_none_iso:
+                                self.session["selected_slot"]             = _pt_none_iso
+                                self.session["selected_slot_speech"]      = f"{_pt_other_label} at {_pt_none_sp}"
+                                self.session["slot_pending_confirmation"] = True
+                            self.session.pop("offered_constrained_times", None)
+                            self.session.pop("offered_constrained_slots", None)
+                            logger.info(
+                                "[ms_flow] %s _PT_NONE+time_filter: next_day=%r "
+                                "hour=%d slot=%r → pending_confirmation",
+                                step["state"], _pt_other_label, _pt_none_hour, _pt_none_iso,
                             )
                         else:
-                            _pt_alt = (
-                                f"No problem \u2014 on {_pt_other_label} I have "
-                                f"{', '.join(_pt_spoken[:-1])}, or {_pt_spoken[-1]}. "
-                                "Would any of those work?"
+                            # Requested hour not on next day → list what IS available there
+                            _pt_none_spk = [_t2s_pt(t) for t in _pt_other_times_full[:3]]
+                            if len(_pt_none_spk) == 1:
+                                _pt_alt = (
+                                    f"I don\u2019t have {_pt_none_req_sp} on {_pt_other_label} \u2014 "
+                                    f"the only slot I have there is {_pt_none_spk[0]}. "
+                                    "Would that work?"
+                                )
+                            elif len(_pt_none_spk) == 2:
+                                _pt_alt = (
+                                    f"I don\u2019t have {_pt_none_req_sp} on {_pt_other_label} \u2014 "
+                                    f"I have {_pt_none_spk[0]} or {_pt_none_spk[1]}. "
+                                    "Would either suit you?"
+                                )
+                            else:
+                                _pt_alt = (
+                                    f"I don\u2019t have {_pt_none_req_sp} on {_pt_other_label} \u2014 "
+                                    f"I have {', '.join(_pt_none_spk[:-1])}, or {_pt_none_spk[-1]}. "
+                                    "Which of those works?"
+                                )
+                            self.session["chosen_day"] = _pt_other_label
+                            self.session.setdefault("collected", {})["chosen_day"] = _pt_other_label
+                            self.session.pop("selected_slot", None)
+                            self.session.pop("selected_slot_speech", None)
+                            self.session.pop("slot_pending_confirmation", None)
+                            self.session.pop("offered_constrained_times", None)
+                            self.session.pop("offered_constrained_slots", None)
+                            logger.info(
+                                "[ms_flow] %s _PT_NONE+time_filter: next_day=%r "
+                                "requested_hour=%d no_match → listed %d slots",
+                                step["state"], _pt_other_label, _pt_none_hour, len(_pt_none_spk),
                             )
                     else:
-                        _pt_alt = (
-                            f"No problem \u2014 I also have availability on "
-                            f"{_pt_other_label}. Would that day work for you?"
-                        )
-                    # Update chosen day so next confirmation binds correctly
-                    self.session["chosen_day"] = _pt_other_label
-                    self.session.setdefault("collected", {})["chosen_day"] = _pt_other_label
-                    self.session.pop("selected_slot", None)
-                    self.session.pop("selected_slot_speech", None)
-                    self.session.pop("slot_pending_confirmation", None)
-                    self.session.pop("offered_constrained_times", None)
-                    self.session.pop("offered_constrained_slots", None)
+                        # No time filter — original behavior: list next day's first 3 slots
+                        _pt_other_times = _pt_other_times_full[:3]
+                        if _pt_other_times:
+                            _pt_spoken = [_t2s_pt(t) for t in _pt_other_times]
+                            if len(_pt_spoken) == 1:
+                                _pt_alt = (
+                                    f"No problem \u2014 I also have {_pt_spoken[0]} on "
+                                    f"{_pt_other_label}. Would that work?"
+                                )
+                            elif len(_pt_spoken) == 2:
+                                _pt_alt = (
+                                    f"No problem \u2014 on {_pt_other_label} I have "
+                                    f"{_pt_spoken[0]} or {_pt_spoken[1]}. Would either of those work?"
+                                )
+                            else:
+                                _pt_alt = (
+                                    f"No problem \u2014 on {_pt_other_label} I have "
+                                    f"{', '.join(_pt_spoken[:-1])}, or {_pt_spoken[-1]}. "
+                                    "Would any of those work?"
+                                )
+                        else:
+                            _pt_alt = (
+                                f"No problem \u2014 I also have availability on "
+                                f"{_pt_other_label}. Would that day work for you?"
+                            )
+                        # Update chosen day so next confirmation binds correctly
+                        self.session["chosen_day"] = _pt_other_label
+                        self.session.setdefault("collected", {})["chosen_day"] = _pt_other_label
+                        self.session.pop("selected_slot", None)
+                        self.session.pop("selected_slot_speech", None)
+                        self.session.pop("slot_pending_confirmation", None)
+                        self.session.pop("offered_constrained_times", None)
+                        self.session.pop("offered_constrained_slots", None)
                 else:
                     _pt_alt = (
                         "I\u2019m afraid those are the only times I have available. "
@@ -20703,6 +20778,141 @@ class FlowEngine:
                     )
                     await self.ask_current_question()
                     return
+                # ── CASE C: compound navigation — day-advance + optional time filter ──
+                # e.g. "no i can't do that what about the next available date"
+                # e.g. "no nothing on that day do you have anything at 9 o'clock"
+                # Covers: explicit next-day requests AND whole-day rejection combos.
+                _SC_ADV_SIGS = (
+                    # Explicit next-day navigation
+                    "next available", "next date", "next day",
+                    "another day", "any other day", "other day",
+                    "a different day", "different day",
+                    "move on", "move to next",
+                    # Whole-day rejections embedded in compound utterance
+                    "can't do that day", "can't make that day", "can't make it that day",
+                    "nothing on that day", "nothing works on that day",
+                    "that day doesn't work", "that day won't work",
+                    "busy that day", "not free that day",
+                    "can't do anything on that day",
+                    # Navigational question openers
+                    "what about the next", "what about another day",
+                    "what about a different day",
+                )
+                _sc_is_adv = any(p in text for p in _SC_ADV_SIGS)
+                if _sc_is_adv:
+                    _sc_adv_avail = self.session.get("available_days", [])
+                    _sc_adv_chosen = self.session.get("chosen_day", "")
+                    _sc_adv_cur_idx = next(
+                        (i for i, d in enumerate(_sc_adv_avail)
+                         if d.get("day_label", "") == _sc_adv_chosen),
+                        -1,
+                    )
+                    _sc_adv_next = (
+                        _sc_adv_avail[_sc_adv_cur_idx + 1]
+                        if 0 <= _sc_adv_cur_idx < len(_sc_adv_avail) - 1
+                        else None
+                    )
+                    if _sc_adv_next:
+                        _sc_adv_label = _sc_adv_next.get("day_label", "")
+                        _sc_adv_slots = _sc_adv_next.get("slots", [])
+                        _sc_adv_times = _sc_adv_next.get("slot_times", [])
+                        from app.vagueness_detector import _time_to_speech as _t2s_adv
+                        if _sc_adv_chosen:
+                            self.session["_pt_rejected_day"] = _sc_adv_chosen
+                        _sc_adv_hour = _extract_hour_from_text(text)
+                        if _sc_adv_hour is not None and _sc_adv_times:
+                            # Find matching slot on next day
+                            _sc_adv_match_idx: Optional[int] = None
+                            for _sc_ai, _sc_at in enumerate(_sc_adv_times):
+                                try:
+                                    if int(_sc_at.split(":")[0]) == _sc_adv_hour:
+                                        _sc_adv_match_idx = _sc_ai
+                                        break
+                                except (ValueError, IndexError):
+                                    pass
+                            if _sc_adv_match_idx is not None:
+                                # Exact match → offer as pending confirmation
+                                _sc_adv_sp  = _t2s_adv(_sc_adv_times[_sc_adv_match_idx])
+                                _sc_adv_iso = _sc_adv_slots[_sc_adv_match_idx].get("start", "")
+                                _sc_adv_speech = f"{_sc_adv_label} at {_sc_adv_sp}"
+                                _sc_adv_phrase = (
+                                    f"Yes \u2014 I do have {_sc_adv_sp} on {_sc_adv_label}. "
+                                    "Would you like to book that?"
+                                )
+                                self.session["chosen_day"] = _sc_adv_label
+                                self.session.setdefault("collected", {})["chosen_day"] = _sc_adv_label
+                                self.session["selected_slot"]             = _sc_adv_iso
+                                self.session["selected_slot_speech"]      = _sc_adv_speech
+                                self.session["slot_pending_confirmation"] = True
+                                self.session.pop("offered_constrained_times", None)
+                                self.session.pop("offered_constrained_slots", None)
+                                await self._tts.put(_sc_adv_phrase)
+                                _store_last_question(
+                                    self.session, _sc_adv_phrase,
+                                    force=True, source="slot_confirm_compound_nav_hit",
+                                )
+                                logger.info(
+                                    "[ms_flow] slot_confirm NO+compound_nav: next_day=%r "
+                                    "hour=%d slot=%r → pending_confirmation",
+                                    _sc_adv_label, _sc_adv_hour, _sc_adv_iso,
+                                )
+                                return
+                            else:
+                                # Time filter not available on next day — list what IS there
+                                _sc_adv_req_sp = _t2s_adv(f"{_sc_adv_hour:02d}:00")
+                                _sc_adv_spk = [_t2s_adv(t) for t in _sc_adv_times[:3]]
+                                if len(_sc_adv_spk) == 1:
+                                    _sc_adv_phrase = (
+                                        f"I don\u2019t have {_sc_adv_req_sp} on {_sc_adv_label} \u2014 "
+                                        f"the only slot I have there is {_sc_adv_spk[0]}. "
+                                        "Would that work?"
+                                    )
+                                elif len(_sc_adv_spk) == 2:
+                                    _sc_adv_phrase = (
+                                        f"I don\u2019t have {_sc_adv_req_sp} on {_sc_adv_label} \u2014 "
+                                        f"I have {_sc_adv_spk[0]} or {_sc_adv_spk[1]}. "
+                                        "Would either suit you?"
+                                    )
+                                else:
+                                    _sc_adv_phrase = (
+                                        f"I don\u2019t have {_sc_adv_req_sp} on {_sc_adv_label} \u2014 "
+                                        f"I have {', '.join(_sc_adv_spk[:-1])}, or {_sc_adv_spk[-1]}. "
+                                        "Which of those works?"
+                                    )
+                                self.session["chosen_day"] = _sc_adv_label
+                                self.session.setdefault("collected", {})["chosen_day"] = _sc_adv_label
+                                self.session.pop("selected_slot", None)
+                                self.session.pop("selected_slot_speech", None)
+                                self.session.pop("slot_pending_confirmation", None)
+                                self.session.pop("offered_constrained_times", None)
+                                self.session.pop("offered_constrained_slots", None)
+                                await self._tts.put(_sc_adv_phrase)
+                                _store_last_question(
+                                    self.session, _sc_adv_phrase,
+                                    force=True, source="slot_confirm_compound_nav_miss",
+                                )
+                                logger.info(
+                                    "[ms_flow] slot_confirm NO+compound_nav: next_day=%r "
+                                    "requested_hour=%d no_match → listed %d slots",
+                                    _sc_adv_label, _sc_adv_hour, len(_sc_adv_spk),
+                                )
+                                return
+                        else:
+                            # No time filter — advance to next day and relist
+                            self.session["chosen_day"] = _sc_adv_label
+                            self.session.setdefault("collected", {})["chosen_day"] = _sc_adv_label
+                            self.session.pop("selected_slot", None)
+                            self.session.pop("selected_slot_speech", None)
+                            self.session.pop("slot_pending_confirmation", None)
+                            self.session.pop("offered_constrained_times", None)
+                            self.session.pop("offered_constrained_slots", None)
+                            logger.info(
+                                "[ms_flow] slot_confirm NO+compound_nav: next_day=%r "
+                                "no time filter → ask_current_question",
+                                _sc_adv_label,
+                            )
+                            await self.ask_current_question()
+                            return
                 # No day correction — stay at PRESENT_TIMES for caller to pick again.
                 phrase = "No problem — which slot would you prefer?"
                 await self._tts.put(phrase)
