@@ -6338,6 +6338,7 @@ class FlowEngine:
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     self.session.pop("location_awaiting_dtmf", None)
                     self.session.pop("location_fallback_unconfirmed", None)
                     # Neutralise any repair / fallback routing for this turn.
@@ -6709,6 +6710,7 @@ class FlowEngine:
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     self.session.pop("location_awaiting_dtmf", None)
                     logger.info(
                         "[ms_flow] repair: needs_location cleared (FAQ answer "
@@ -6736,6 +6738,7 @@ class FlowEngine:
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     self.session.pop("location_awaiting_dtmf", None)
                     logger.info(
                         "[ms_flow] repair: needs_location cleared (general_query "
@@ -8317,6 +8320,7 @@ class FlowEngine:
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     logger.info(
                         "[ms_flow] ASK_LOCATION forced-confirm: yes → %s", _loc_pending_guess
                     )
@@ -8329,6 +8333,7 @@ class FlowEngine:
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     logger.info(
                         "[ms_flow] ASK_LOCATION forced-confirm: no → opposite %s", _fc_opposite
                     )
@@ -8390,21 +8395,48 @@ class FlowEngine:
                     self.session["needs_location"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     logger.info(
                         "[ms_flow] ASK_LOCATION forced-confirm: explicit clinic override — %s", loc
                     )
                     await self.ask_current_question()
                     return
-                # Neither yes/no nor explicit clinic name → final DTMF fallback
-                self.session.pop("location_pending_guess", None)
-                self.session["location_awaiting_dtmf"] = True
-                _fc_dtmf = "Just to make sure, press 1 for Alcester or 2 for Redditch."
-                await self._tts.put(_fc_dtmf)
-                self.session.setdefault("conversation_history", []).append(
-                    {"role": "assistant", "content": _fc_dtmf}
-                )
-                self.session["last_question"] = _fc_dtmf
-                logger.info("[ms_flow] ASK_LOCATION forced-confirm: unclear → DTMF fallback")
+                # Neither yes/no nor explicit clinic name.
+                # First unclear turn: give the caller a more explicit re-ask with
+                # a hint on how to confirm before escalating to DTMF.
+                # Second unclear turn: switch to DTMF keypad.
+                _fc_clinic_name = "Alcester" if _loc_pending_guess == "alcester" else "Redditch"
+                if not self.session.get("location_pending_guess_reask"):
+                    self.session["location_pending_guess_reask"] = True
+                    _fc_reask = (
+                        f"Just to confirm \u2014 did you mean the {_fc_clinic_name} clinic? "
+                        f"You can say \u201cyes, that\u2019s the right clinic\u201d "
+                        f"for {_fc_clinic_name}, or \u201cno\u201d for the other one."
+                    )
+                    await self._tts.put(_fc_reask)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _fc_reask}
+                    )
+                    self.session["last_question"] = _fc_reask
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION forced-confirm: unclear → verbose re-ask "
+                        "(guess=%s)", _loc_pending_guess,
+                    )
+                else:
+                    # Still unclear after re-ask → DTMF
+                    self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
+                    self.session["location_awaiting_dtmf"] = True
+                    _fc_dtmf = "Just to make sure, press 1 for Alcester or 2 for Redditch."
+                    await self._tts.put(_fc_dtmf)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _fc_dtmf}
+                    )
+                    self.session["last_question"] = _fc_dtmf
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION forced-confirm: still unclear → DTMF fallback "
+                        "(guess=%s)", _loc_pending_guess,
+                    )
                 return
 
             # ── DTMF MODE: waiting for keypad press (final fallback) ──────────────
@@ -8469,6 +8501,7 @@ class FlowEngine:
                     self.session["location_awaiting_dtmf"] = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     self._switch_flow(_dtmf_escape_intent)
                     logger.info(
                         "[ms_flow] ASK_LOCATION DTMF: explicit intent-switch escape "
@@ -8608,8 +8641,16 @@ class FlowEngine:
             _loc_has_clinic_word = "clinic" in _loc_text_lower
             _loc_has_location_name = any(
                 n in _loc_text_lower
-                for n in ("alcester", "redditch", "kinwarton", "bromsgrove",
-                          "alces", "reddit", "reditch",)
+                for n in (
+                    # Canonical and near-canonical forms
+                    "alcester", "redditch", "kinwarton", "bromsgrove",
+                    "alces", "reddit", "reditch",
+                    # Hard-alias stems that appear before "clinic" in "X clinic" phrases.
+                    # Without these, "sister clinic" / "sester clinic" (confirmed Alcester
+                    # STT aliases) pass the guard and get suppressed instead of resolved.
+                    "sister", "sester", "alster", "alca", "alkest",
+                    "redich", "reddich", "red itch", "read itch",
+                )
             )
             _loc_meaningful_clinic_phrase = any(
                 p in _loc_text_lower
@@ -8623,13 +8664,44 @@ class FlowEngine:
                 and not _loc_meaningful_clinic_phrase
                 and len(_loc_text_lower.split()) <= 5
             ):
-                self.session["fragment_suppressed"] = True
-                logger.info(
-                    "[ms_flow] ASK_LOCATION: generic-clinic-mention fragment %r "
-                    "suppressed (no location name, ≤5 words, retry preserved)",
-                    text[:40],
-                )
-                return
+                # Run the resolver before suppressing — a clipped fragment like
+                # "ister clinic" may still score meaningfully (shares character
+                # runs with "alcester") and could hit score-bind or pending-guess.
+                # Only suppress when the resolver truly has nothing to work with.
+                _gc_result = _resolve_clinic(text, context="ask_location")
+                _gc_status = _gc_result.get("status", "unknown")
+                _gc_conf   = _gc_result.get("confidence", 0.0)
+                if _gc_status == "resolved" or (_gc_status == "ambiguous" and _gc_conf >= 0.50):
+                    # Resolver found a usable signal — fall through to the normal
+                    # extraction / score-bind path rather than suppressing.
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: generic-clinic-mention guard "
+                        "bypassed (resolver=%s conf=%.2f) — falling through for %r",
+                        _gc_status, _gc_conf, text[:40],
+                    )
+                else:
+                    # Low/no signal — suppress, but first store as a stitch
+                    # candidate so an imminent tail fragment can combine with
+                    # it and the resolver gets a second chance on the merged text.
+                    if not self.session.get("_loc_stitch_from_merge"):
+                        self.session["_loc_stitch_pending"] = {
+                            "text": text,
+                            "transcript": transcript,
+                            "ts": time.monotonic(),
+                        }
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: generic-clinic-mention fragment %r "
+                            "suppressed + stored as stitch_candidate (resolver=%s conf=%.2f)",
+                            text[:40], _gc_status, _gc_conf,
+                        )
+                    else:
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: generic-clinic-mention fragment %r "
+                            "suppressed (stitch_from_merge active — not re-storing)",
+                            text[:40],
+                        )
+                    self.session["fragment_suppressed"] = True
+                    return
 
             # ── Non-location corrective escape ────────────────────────────────
             # "I said I had a few questions first" / "I was asking about parking"
@@ -8679,6 +8751,7 @@ class FlowEngine:
                 )
                 self.session.pop("location_retry_count", None)
                 self.session.pop("location_pending_guess", None)
+                self.session.pop("location_pending_guess_reask", None)
                 self.session["needs_location"] = False
                 self._switch_flow("general_query")
                 await self.ask_current_question()
@@ -8711,6 +8784,7 @@ class FlowEngine:
                     )
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     self.session["needs_location"] = False
                     self._switch_flow(_reroute_intent)
                     await self.ask_current_question()
@@ -9056,6 +9130,7 @@ class FlowEngine:
                 self.session["needs_location"] = False
                 self.session.pop("location_retry_count", None)
                 self.session.pop("location_pending_guess", None)
+                self.session.pop("location_pending_guess_reask", None)
                 # Successful bind clears any pending stitch candidate.
                 if self.session.get("_loc_stitch_from_merge"):
                     logger.info(
@@ -9174,6 +9249,7 @@ class FlowEngine:
                     self.session["needs_location"]    = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     logger.info(
                         "[ms_flow] ASK_LOCATION: score-bind (alc=%d red=%d conf=%.2f → %s) for %r",
                         _sl_alc, _sl_red, _sl_conf, _sl_bind, text[:40],
@@ -9201,6 +9277,7 @@ class FlowEngine:
                         self.session["needs_location"]    = False
                         self.session.pop("location_retry_count", None)
                         self.session.pop("location_pending_guess", None)
+                        self.session.pop("location_pending_guess_reask", None)
                         logger.info(
                             "[ms_flow] ASK_LOCATION: dominance-bind "
                             "(alc=%d red=%d margin=%d → %s) for %r",
@@ -9837,6 +9914,7 @@ class FlowEngine:
                         self.session["selected_location"] = _cc_loc
                         self.session["needs_location"]    = False
                         self.session.pop("location_pending_guess", None)
+                        self.session.pop("location_pending_guess_reask", None)
                         # Do NOT disarm phone_confirm_armed — caller never
                         # answered the phone question.  Re-ask it so the NO
                         # handler cannot consume the same utterance.
@@ -21599,8 +21677,24 @@ class FlowEngine:
                     _ctx_loc,
                 )
             else:
-                self.session["needs_location"] = True
-                self.session.pop("selected_location", None)   # clear stale greeting-phase default
+                # Before falling back to ASK_LOCATION, check whether the caller
+                # already named a clinic in their very first utterance.
+                # first_turn_location_clue is set by extract_first_turn_signals()
+                # but deliberately left out of selected_location (extraction is not
+                # routing).  Here — when the booking flow is about to ask — it is
+                # safe to trust it and skip the question entirely.
+                _ft_clue = self.session.get("first_turn_location_clue")
+                if _ft_clue:
+                    self.session["needs_location"]    = False
+                    self.session["selected_location"] = _ft_clue
+                    logger.info(
+                        "[ms_flow] _switch_flow: needs_location pre-resolved from "
+                        "first_turn_location_clue → %s (ASK_LOCATION skipped)",
+                        _ft_clue,
+                    )
+                else:
+                    self.session["needs_location"] = True
+                    self.session.pop("selected_location", None)   # clear stale greeting-phase default
         else:
             self.session["needs_location"] = False
             self.session["selected_location"] = "alcester"
