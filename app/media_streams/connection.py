@@ -625,8 +625,8 @@ class SilenceHandler:
         elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING", "RETURNING_PLAN_CONFIRM_PHONE"):
             phrase = (
                 "Sorry, I didn't quite catch that — "
-                "please say yes if I can use this number, "
-                "or no if you'd like to use a different one."
+                "please say: use this number — "
+                "or: do not use this number."
             )
         elif (_sess or {}).get("phone_awaiting_dtmf"):
             phrase = (
@@ -1377,8 +1377,8 @@ class SilenceHandler:
                     phrase = _prefix + " \u2014 please say: my first name is\u2026"
             elif _state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING", "RETURNING_PLAN_CONFIRM_PHONE"):
                 phrase = (
-                    _prefix + " — please say yes if I can use this number, "
-                    "or no if you'd like to use a different one."
+                    _prefix + " — please say: use this number — "
+                    "or: do not use this number."
                 )
             elif _state in (
                 "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
@@ -1752,8 +1752,8 @@ class SilenceHandler:
         elif self.current_state in ("CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING"):
             _reask1 = (
                 "Sorry, I didn't quite catch that — "
-                "please say yes if I can use this number, "
-                "or no if you'd like to use a different one."
+                "please say: use this number — "
+                "or: do not use this number."
             )
         elif self.current_state in (
             "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE"

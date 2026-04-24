@@ -2391,8 +2391,8 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
         "step": 3,
         "state": "RETURNING_PLAN_CONFIRM_PHONE",
         "question": (
-            "Is the number you're calling on the same one you used for your last "
-            "appointment? If you're not sure, we can just book a new set of appointments."
+            "Is the number you're calling on the same one you used for your last appointment? "
+            "Say: use this number — or: do not use this number."
         ),
         "answer_field": "phone_confirmed",
         "use_llm": False,
@@ -2443,7 +2443,7 @@ BOOKING_FLOW: List[Dict[str, Any]] = [
     {
         "step": 8,
         "state": "CONFIRM_PHONE_RETURNING",
-        "question": "And is this the same number we'd normally have for you?",
+        "question": "And is this the same number we'd normally have for you? If so, say: use this number — or say: do not use this number.",
         "answer_field": "phone_confirmed",
         "use_llm": False,
         "extract": "phone_confirm",
@@ -5435,8 +5435,8 @@ class FlowEngine:
                     # last appointment. "Not sure" → fall back to normal booking.
                     question_text = (
                         "Is the number you're calling on the same one you used for "
-                        "your last appointment? If you're not sure, we can just "
-                        "book a new set of appointments."
+                        "your last appointment? "
+                        "Say: use this number — or: do not use this number."
                     )
                 else:
                     # Booking (new patient): ask whether to use the caller-ID
@@ -9968,36 +9968,31 @@ class FlowEngine:
             # phrase-level variants ("that's right", "that's ok") kept because
             # they require explicit phone-adjacent context.
             _HG_YES = (
-                "yes", "yeah", "yep", "yup", "yeh", "ya",
+                # explicit commanded phrases only — bare "yes"/"yeah" removed
                 "that's right", "thats right",
-                "that is right",                    # "that is" variant of "that's right"
+                "that is right",
                 "that's correct", "thats correct",
-                "that is correct",                  # "that is" variant of "that's correct"
+                "that is correct",
                 "that's fine", "thats fine", "that's ok", "thats ok",
                 "use this number", "yes use this number", "yeah use this number",
                 "use my number", "yes use my number",
                 "same number", "use my current number",
-                "this number", "this one",          # bare "this number" / "this one"
-                "the number i'm calling on",        # literal restatement of the question
+                "this number", "this one",
+                "the number i'm calling on",
                 "number i'm calling on",
                 "the number i am calling on",
-                # PART 2: additional strong affirmatives from live calls
-                "correct",                          # standalone "correct" (safe: gate is armed)
+                "correct",
                 "correct number",
-                "yes please", "yeah please",
-                # Partial / scaffold-like affirmatives where STT finalises before
-                # the caller finishes the sentence — treat as YES immediately.
+                # Partial / scaffold-like affirmatives
                 "you can use this", "can use this", "use this",
                 "go ahead", "that's the one", "thats the one",
-                # Implicit/contextual affirmatives: in response to "Is this the number
-                # on your booking?" these mean YES without the word 'yes'.
-                # Only safe here because phone_confirm_armed = True gates the context.
                 "it is", "yes it is", "yeah it is",
                 "you should", "yes you should", "yeah you should",
                 "it should", "it should be", "should be",
             )
             _HG_NO_PHRASES = (
                 "nope", "nah",
+                "do not use this number", "don't use this number",
                 "no use a different number", "different number",
                 "use a different number", "another number",
                 "no different number", "give you another number",
@@ -16027,14 +16022,15 @@ class FlowEngine:
                 _cp_yes, _cp_no = True, False
             else:
                 _CP_YES = (
-                    "yes", "yeah", "yep", "yup",
-                    "yes use this number", "use this number",
+                    # explicit commanded phrases only — bare "yes"/"yeah" removed
+                    "use this number", "yes use this number", "yeah use this number",
                     "same number", "yes that's fine", "yes thats fine",
                     "use my current number", "yes use my number", "use my number",
                     "that's fine", "thats fine", "correct",
                 )
                 _CP_NO = (
-                    "no", "nope", "no use a different number", "different number",
+                    "no", "nope", "do not use this number", "don't use this number",
+                    "no use a different number", "different number",
                     "another number", "no i'll give you another one",
                     "no i'll give you another", "use a different number",
                     "wrong number", "not the right number",
@@ -22499,8 +22495,8 @@ class FlowEngine:
                     "FAQ_BOOKING_OFFER":           "Anything else you'd like to ask?",
                     "GENERAL_BOOKING_OFFER":       "Anything else you'd like to ask?",
                     "COLLECT_REASON":              "What is it that's bringing you in?",
-                    "CONFIRM_PHONE":               "Is that number correct?",
-                    "CONFIRM_PHONE_RETURNING":     "Is that number correct?",
+                    "CONFIRM_PHONE":               "To confirm — say: use this number — or: do not use this number.",
+                    "CONFIRM_PHONE_RETURNING":     "To confirm — say: use this number — or: do not use this number.",
                 }
                 _int_anchor = _ANCHOR_DEFAULTS.get(
                     _int_state or "",

@@ -241,7 +241,7 @@ SILENCE_RESPONSES: dict = {
     # Phone capture: structured prompts mirror the name-state fast-recovery style.
     # connection.py _run() W1 overrides these with DTMF-vs-speech variants.
     "ask_phone":     "Sorry, I didn't quite catch that — please say the phone number slowly.",
-    "confirm_phone": "Sorry, I didn't quite catch that — please say yes if I can use this number, or no if you'd like to use a different one.",
+    "confirm_phone": "Sorry, I didn't quite catch that — please say: use this number — or: do not use this number.",
     # NC-managed name collection (COLLECT_NAME*): W1 overrides this in
     # connection.py with a substate-aware scaffold prompt (first-name vs surname).
     # This entry is only the W2 fallback (fires ~20 s after W1).
