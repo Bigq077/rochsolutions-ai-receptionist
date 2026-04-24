@@ -1130,6 +1130,44 @@ class SilenceHandler:
         if asyncio.current_task() is not self._no_input_watchdog_task:
             return  # a newer task took ownership — exit silently
 
+        # ── Pre-watchdog start delay ─────────────────────────────────────
+        # Global 1.0 s buffer between end of prompt TTS and the start of the
+        # normal watchdog countdown.  Prevents re-asking over a caller who
+        # naturally takes a beat before speaking.  State-specific _wait values
+        # are UNCHANGED — this only shifts the first re-ask by 1.0 s.  Any
+        # partial/final transcript during this window cancels the task via
+        # the existing cancel paths (on_speech_started / _mark_prompt_speech_detected
+        # / on_transcript_received), so delayed_start naturally aborts.
+        _START_DELAY = 1.0
+        _delay_state = (_sess_faq_w or {}).get("state", "")
+        logger.info(
+            "[ms_watchdog] delayed_start scheduled delay=%.1fs state=%s",
+            _START_DELAY, _delay_state,
+        )
+        try:
+            await asyncio.sleep(_START_DELAY)
+        except asyncio.CancelledError:
+            logger.info(
+                "[ms_watchdog] delayed_start cancelled reason=caller_speech_or_cleanup state=%s",
+                _delay_state,
+            )
+            return
+        # Re-check ownership and speech guard after the delay — a newer task
+        # may have taken over, or a partial may have flipped the guard without
+        # its cancel being delivered yet.
+        if asyncio.current_task() is not self._no_input_watchdog_task:
+            return
+        if self.prompt_speech_detected:
+            logger.info(
+                "[ms_watchdog] delayed_start cancelled reason=caller_speech_or_cleanup state=%s",
+                _delay_state,
+            )
+            return
+        logger.info(
+            "[ms_watchdog] delayed_start elapsed -> starting normal watchdog wait=%.1fs state=%s",
+            _wait, _delay_state,
+        )
+
         logger.info("[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs", q_gen, _wait)
 
         while True:
