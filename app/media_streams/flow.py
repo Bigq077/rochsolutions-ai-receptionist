@@ -4342,23 +4342,28 @@ class FlowEngine:
             _cc_loc_speech = _cc_loc.capitalize() if _cc_loc else ""
             _cc_appt_id = self.session.get("reschedule_appt_id") or ""
 
-            # Task 10: final cancel-confirmation prompt. Must be natural,
-            # include human-readable appointment details (NEVER raw ISO), and
-            # ask the caller to say the exact fixed phrase "cancel appointment".
-            if _cc_when_speech and _cc_loc_speech:
+            # Task 10/12: final cancel-confirmation prompt. Natural phrasing
+            # with human-readable date/time (NEVER raw ISO) and patient name.
+            # Ends with the fixed trigger: "Please say: cancel appointment."
+            if _cc_when_speech and _cc_full:
                 _cc_q = (
-                    f"Just to confirm, I'm going to cancel your appointment for "
-                    f"{_cc_when_speech} in {_cc_loc_speech}. "
+                    f"Just to confirm, I am going to cancel your appointment on "
+                    f"{_cc_when_speech} under {_cc_full}. "
                     "Please say: cancel appointment."
                 )
             elif _cc_when_speech:
                 _cc_q = (
-                    f"Just to confirm, I'm going to cancel your appointment for "
+                    f"Just to confirm, I am going to cancel your appointment on "
                     f"{_cc_when_speech}. Please say: cancel appointment."
+                )
+            elif _cc_full:
+                _cc_q = (
+                    f"Just to confirm, I am going to cancel your upcoming "
+                    f"appointment under {_cc_full}. Please say: cancel appointment."
                 )
             else:
                 _cc_q = (
-                    "Just to confirm, I'm going to cancel your upcoming appointment. "
+                    "Just to confirm, I am going to cancel your upcoming appointment. "
                     "Please say: cancel appointment."
                 )
 
