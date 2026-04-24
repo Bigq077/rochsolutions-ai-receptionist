@@ -12226,6 +12226,10 @@ class FlowEngine:
                 "can you do", "could you do", "do you have", "do you do",
                 "is there", "are there any", "have you got",
                 "is that possible", "would that be",
+                # Vague availability queries — re-offer days, never auto-bind
+                "your availability", "what's available", "what is available",
+                "what have you got available", "what do you have available",
+                "any availability", "what's your availability",
             )
             _WEEKDAY_WORDS_EXP = {
                 "monday", "tuesday", "wednesday", "thursday", "friday",
@@ -13685,6 +13689,10 @@ class FlowEngine:
                 "forget that", "forget it",
                 "any other availability", "any other day",
                 "another day", "different day",
+                "other dates", "any other dates",
+                "other days", "any other days",
+                "a different day", "different date",
+                "do you have any other",
                 "go back", "back to dates", "back to days",
                 "other options", "other days",
                 # "day after" / "the day after" — step back to day selection so
@@ -22690,11 +22698,51 @@ class FlowEngine:
               (does NOT re-run LLM/check_availability — slots are still offered)
         no match → re-ask the confirmation phrase
         """
+        # ── ESCAPE VETO: day-change / other-dates intent beats any yes-like word ──
+        # Phrases like "another day please" or "any other dates" contain escape
+        # intent that must win over polite fillers ("please", "ok") that appear
+        # in yes_patterns.  Route straight to PRESENT_DAYS without scanning yes.
+        _SC_DAY_ESCAPE = (
+            "other dates", "any other dates",
+            "another day", "any other day", "other days", "any other days",
+            "a different day", "different day", "different date",
+            "do you have any other", "could you offer",
+            "can i have a different day", "i need another day",
+            "can't do any of those", "cant do any of those",
+            "can't do those", "cant do those",
+            "none of those", "none of them work", "none of those work",
+            "other availability", "any other availability",
+            "other options", "any other options",
+        )
+        _sc_day_escape = any(p in text for p in _SC_DAY_ESCAPE)
+        if _sc_day_escape:
+            self.session["slot_pending_confirmation"] = False
+            self.session.pop("selected_slot", None)
+            self.session.pop("selected_slot_speech", None)
+            self.session.pop("offered_constrained_times", None)
+            self.session.pop("offered_constrained_slots", None)
+            _sc_esc_step = self.current_step()
+            _sc_pd_idx = next(
+                (i for i, s in enumerate(self._active_flow)
+                 if s["state"] in ("PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE")),
+                max(0, (_sc_esc_step["step"] - 1) if _sc_esc_step else 0),
+            )
+            self.session["flow_step"] = _sc_pd_idx
+            self.session["state"]     = self._active_flow[_sc_pd_idx]["state"]
+            logger.info(
+                "[ms_flow] slot_confirm escape-veto: day-change intent %r → PRESENT_DAYS",
+                text[:60],
+            )
+            await self.ask_current_question()
+            return
+
         yes_patterns = [
             "yes", "yeah", "yeh", "ya", "yep", "yup", "correct",
             "that's right", "thats right", "perfect",
             "sounds good", "that works", "go ahead",
-            "please", "ok", "okay", "sure", "fine",
+            # "please" removed — polite filler, never a standalone YES signal;
+            # "yes please" is caught by "yes" above
+            "ok", "okay", "sure", "fine",
             "that one", "confirmed", "alright", "aye",
             # Natural spoken confirmations:
             "it does", "yes it does", "it would", "it will",
@@ -22826,6 +22874,7 @@ class FlowEngine:
                     "next available", "next date", "next day",
                     "another day", "any other day", "other day",
                     "a different day", "different day",
+                    "other dates", "any other dates", "other days", "any other days",
                     "move on", "move to next",
                     # "day after" / "the day after" — caller wants the next calendar day
                     "day after", "the day after",
@@ -22840,6 +22889,7 @@ class FlowEngine:
                     "what about the next", "what about another day",
                     "what about a different day",
                     "what about the day after",
+                    "do you have any other",
                 )
                 _sc_is_adv = any(p in text for p in _SC_ADV_SIGS)
                 if _sc_is_adv:
