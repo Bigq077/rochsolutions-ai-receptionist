@@ -621,6 +621,32 @@ def _is_incomplete_scaffold(text: str) -> bool:
     return False
 
 
+# ── Negative-prefix guard (first-name substates only) ───────────────────────
+# Conversational negation/correction openers like "no vessel", "no quentin",
+# "nope james", "no actually david" must NEVER be accepted as a first-name
+# capture — the caller is negating/recovering, not supplying a name.  The
+# leading-token extractor would otherwise grab the trailing token and store
+# e.g. "Vessel" as the first name.  Applied ONLY to first-name substates;
+# surname handling is unaffected.
+_NEGATIVE_PREFIX_PATTERNS: tuple[str, ...] = (
+    "no ", "nope ", "nah ", "no actually", "no thanks",
+    "no thank", "no wait", "no sorry",
+)
+
+
+def _starts_with_negative_prefix(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    # Bare "no" / "nope" / "nah" alone is handled elsewhere (yes/no routing);
+    # this guard targets "no <token>" where the trailing token would otherwise
+    # be grabbed as a name.
+    for _p in _NEGATIVE_PREFIX_PATTERNS:
+        if t.startswith(_p):
+            return True
+    return False
+
+
 # ── NameCollector class ───────────────────────────────────────────────────────
 
 class NameCollector:
@@ -788,6 +814,19 @@ class NameCollector:
         # Global repair gate — fires in every substate.
         if _is_repair_request(text):
             return ("repair", self._question())
+
+        # ── First-name negative-prefix guard ────────────────────────────
+        # "no vessel", "no quentin", "nope james", "no actually david" — the
+        # caller is negating / recovering, not supplying a name.  Short-circuit
+        # before ANY extraction so the trailing token is never stored as a
+        # first name.  First-name substates only — surname unaffected.
+        if ss in (NC_FN_NORMAL, NC_FN_REASK, NC_FN_CONFIRM):
+            if _starts_with_negative_prefix(text):
+                logger.info(
+                    "[NameCollector] reject_name_from_negative_prefix text=%r",
+                    text[:60],
+                )
+                return ("repair", self._question())
 
         if ss == NC_FN_NORMAL:
             return self._fn_normal(text, raw)

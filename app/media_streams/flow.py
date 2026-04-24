@@ -22708,6 +22708,23 @@ class FlowEngine:
                 and self.session.get("name_readback_pending")
             ):
                 _int_anchor = "Sorry — was that yes, or did you want to correct the name?"
+            elif _int_state in (
+                "COLLECT_NAME", "COLLECT_NAME_RETURNING",
+                "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
+            ):
+                # COLLECT_NAME faq-return override: after a mid-flow FAQ
+                # interrupt, re-anchor DIRECTLY to first-name collection.
+                # Never read stale last_question (which may contain a prior
+                # "Anything else you'd like to ask?" from an earlier FAQ
+                # offer turn) and never attach a generic FAQ closer.
+                _int_anchor = (
+                    "I still need your first name to continue — "
+                    "could you say your first name please?"
+                )
+                _cn_faq_return_override = True
+                logger.info(
+                    "[ms_flow] COLLECT_NAME faq-return override applied"
+                )
             elif _int_state in ("FAQ_BOOKING_OFFER", "GENERAL_BOOKING_OFFER"):
                 # Multi-question FAQ floor: always use a fresh neutral follow-up.
                 # Do NOT read last_question here — it may contain an old FAQ answer
@@ -22774,6 +22791,7 @@ class FlowEngine:
             _defer_reanchor = (
                 _int_state == "COLLECT_REASON" and intent == "faq_services"
             )
+            _cn_faq_return_override = locals().get("_cn_faq_return_override", False)
             if _int_state in _offer_states:
                 _faq_reanchor_text = "Anything else you'd like to ask?"
                 # Prompt 8 Bug 1 fix: only store the deferred prompt when last_question
@@ -22800,6 +22818,25 @@ class FlowEngine:
                         "[ms_flow] faq_reanchor_empty_guard_hit: state=%s anchor=%r",
                         _int_state, _int_anchor,
                     )
+                # COLLECT_NAME faq-return override: speak the deterministic
+                # first-name re-anchor verbatim (no "Anyway —" opener, no
+                # "Anything else…" closer).  last_question is stored to the
+                # same phrase so silence re-asks replay it.
+                if _cn_faq_return_override:
+                    _anchor_spoken = _int_anchor
+                    self.session["last_question"] = _int_anchor
+                    await self._tts.put(_anchor_spoken)
+                    self.session.setdefault("conversation_history", []).append(
+                        {"role": "assistant", "content": _anchor_spoken}
+                    )
+                    logger.info(
+                        "[ms_flow] COLLECT_NAME re-anchor after faq interrupt"
+                    )
+                    logger.info(
+                        "[ms_flow] mid-flow interrupt: step re-anchor %s → %r",
+                        _int_state, _anchor_spoken[:80],
+                    )
+                    return
                 # Bug 1 fix: for ASK_LOCATION, use a booking-aligned opener that
                 # ties naturally to the service-fit answer rather than snapping back
                 # with a disconnected "Anyway —".
