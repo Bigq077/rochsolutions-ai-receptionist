@@ -607,10 +607,12 @@ class STTStream:
                     )
                     if connection_ready is not None:
                         connection_ready.set()
-                    # Send word boost immediately after Begin so AssemblyAI
-                    # applies domain vocabulary (clinic names, physio terms)
-                    # for the entire session.  Non-fatal if v3 ignores it.
-                    await _send_word_boost(ws)
+                    # NOTE: _send_word_boost(ws) was called here but AssemblyAI
+                    # v3 rejects the post-Begin JSON message with close code 3006
+                    # (invalid message type), killing the STT connection.  Word
+                    # boost for v3 must be configured via URL query parameters
+                    # at connection time — not as a WebSocket message.
+                    # See _WORD_BOOST_TERMS and ASSEMBLYAI_WS_URL in config.py.
 
                 # ── v2 compat: SessionBegins ───────────────────────────────────
                 elif msg_type in ("SessionBegins", "session_begins"):
