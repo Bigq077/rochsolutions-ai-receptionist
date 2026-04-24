@@ -1584,6 +1584,78 @@ _GLOBAL_REPEAT_PHRASES = (
     "what did you say", "what did you just say",
 )
 
+# ── CONFIRM_RESCHEDULE strict-confirmation gate (Task 8) ──────────────────────
+# Exploratory / availability / clarifying language that MUST NOT be treated as
+# a reschedule confirmation. If any of these is present we route the caller
+# back to slot exploration instead of executing the reschedule.
+_CR_EXPLORATORY_PHRASES = (
+    "what slots", "what times", "what time",
+    "what do you have", "what do you have available",
+    "what else", "what else is available",
+    "anything else", "any other", "any other times", "any other slots",
+    "other times", "other slots",
+    "available on that day", "on that day", "that day",
+    "earlier", "later", "latest", "earliest",
+    "before that", "after that",
+    "slots do you have", "times do you have",
+    "do you have anything", "got anything",
+    "what's available", "whats available",
+    "something else", "a different",
+    "how about",
+)
+# Question-shape markers — if the utterance is a question and not a bare yes,
+# treat it as exploratory / unclear rather than confirmation.
+_CR_QUESTION_MARKERS = (
+    "what", "which", "when", "how", "do you", "have you",
+    "could you", "can you", "is there", "are there",
+)
+# Explicit confirmation phrases — ONLY these (or a bare yes-family token)
+# may trigger reschedule execution.
+_CR_EXPLICIT_CONFIRM = (
+    "yes", "yes please", "yes thanks", "yes thank you",
+    "yeah", "yep", "yup", "yes go ahead",
+    "go ahead", "please go ahead",
+    "that works", "that works for me",
+    "move me to that", "move me to that slot",
+    "move it to that", "move it to that slot",
+    "book that", "book that one", "take that one",
+    "yes move it", "yes move me", "yes move me to that slot",
+    "confirm", "confirmed", "please do", "do it",
+    "sounds good", "that's fine", "thats fine",
+    "perfect", "great", "sure", "okay", "ok",
+)
+
+
+def _cr_classify_reschedule_utterance(text: str) -> str:
+    """
+    Classify a transcript at CONFIRM_RESCHEDULE as one of:
+      - "exploratory"  → re-present slots, DO NOT execute
+      - "confirm"      → explicit confirmation, execute
+      - "unclear"      → re-ask the confirmation question, DO NOT execute
+    """
+    t = (text or "").strip().lower().rstrip(".?!,;:")
+    if not t:
+        return "unclear"
+    # Explicit negatives — handled by existing no-path; treat as not-confirm here
+    if t in ("no", "nope", "nah", "not yet", "don't", "do not", "cancel"):
+        return "unclear"
+    # Exploratory phrase match → never execute
+    if any(p in t for p in _CR_EXPLORATORY_PHRASES):
+        return "exploratory"
+    # Question-shape → never execute
+    if "?" in (text or "") or any(t.startswith(m + " ") or (" " + m + " ") in (" " + t + " ")
+                                  for m in _CR_QUESTION_MARKERS):
+        return "exploratory"
+    # Strict explicit-confirm match
+    # Bare exact match
+    if t in _CR_EXPLICIT_CONFIRM:
+        return "confirm"
+    # Phrase-contains match — but only if no exploratory/question content
+    if any(p == t or t.startswith(p + " ") or t.endswith(" " + p) or (" " + p + " ") in (" " + t + " ")
+           for p in _CR_EXPLICIT_CONFIRM):
+        return "confirm"
+    return "unclear"
+
 # ── Fragment suppression (Bug 9) ────────────────────────────────────────────
 # Single words / short phrases that must never drive a full response.
 _FRAGMENT_STRONG_INTENTS = frozenset({
@@ -5675,7 +5747,25 @@ class FlowEngine:
             ):
                 text = transcript.strip().lower()
                 yes_patterns = ("yes", "yeah", "yep", "go ahead", "sure", "ok", "okay", "please", "correct")
+                # Task 8: strict-confirmation gate on the safety-net path too.
+                # Even if a yes-token substring is present, an exploratory /
+                # question utterance must NOT trigger execution.
+                _sn_cls = _cr_classify_reschedule_utterance(transcript)
+                if _sn_cls != "confirm":
+                    logger.info(
+                        "[ms_flow] CONFIRM_RESCHEDULE execution_blocked reason=exploratory_or_unclear "
+                        "(safety-net) cls=%s transcript=%r",
+                        _sn_cls, transcript[:120],
+                    )
+                    # Let the normal flow pick this up (exploratory re-present or
+                    # clarifying re-ask is handled by the primary handler).
+                    return
                 if any(p in text for p in yes_patterns):
+                    logger.info(
+                        "[ms_flow] CONFIRM_RESCHEDULE explicit_confirm_detected -> executing "
+                        "(safety-net) transcript=%r",
+                        transcript[:120],
+                    )
                     from app.tools.receptionist_tools import _exec_reschedule_appointment
                     phone_val = _to_e164_uk(
                         self.session.get("phone_number")
@@ -20866,6 +20956,70 @@ class FlowEngine:
 
         # ── CONFIRM_RESCHEDULE: patient just confirmed "yes" → execute reschedule ──
         if step["state"] == "CONFIRM_RESCHEDULE" and answer:
+            # Task 8: strict-confirmation gate. Exploratory / clarifying /
+            # availability questions must NEVER trigger execution even if an
+            # upstream extractor/LLM produced a truthy `answer`.
+            _cr_cls = _cr_classify_reschedule_utterance(transcript)
+            if _cr_cls == "exploratory":
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE exploratory_question_detected -> no execute "
+                    "transcript=%r",
+                    transcript[:120],
+                )
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE execution_blocked reason=exploratory_or_unclear"
+                )
+                # Route back to slot exploration: clear the pending selection so
+                # PRESENT_TIMES_RESCHEDULE re-presents options, do NOT set
+                # reschedule_confirmed, do NOT advance flow_step past this state.
+                self.session["reschedule_confirmed"] = None
+                # Move flow_step back to PRESENT_TIMES_RESCHEDULE if present
+                try:
+                    for _i, _s in enumerate(self._active_flow):
+                        if _s.get("state") == "PRESENT_TIMES_RESCHEDULE":
+                            self.session["flow_step"] = _i
+                            self.session["state"] = "PRESENT_TIMES_RESCHEDULE"
+                            # Clear prior selection so slots are re-offered
+                            self.session["selected_slot"] = ""
+                            self.session["selected_slot_speech"] = ""
+                            self.session["slot_confirmed"] = False
+                            break
+                except Exception:
+                    pass
+                await self.ask_current_question()
+                return
+            if _cr_cls != "confirm":
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE execution_blocked reason=exploratory_or_unclear "
+                    "cls=%s transcript=%r",
+                    _cr_cls, transcript[:120],
+                )
+                # Re-ask the confirmation question rather than execute.
+                _slot_speech = (
+                    self.session.get("selected_slot_speech")
+                    or self.session.get("selected_slot", "the selected time")
+                )
+                _reask = (
+                    f"Just to confirm — shall I go ahead and move you to {_slot_speech}? "
+                    "Please say yes to confirm, or no to pick a different time."
+                )
+                await self._tts.put(_reask)
+                _store_last_question(self.session, _reask, force=True,
+                                     source="flow_step:CONFIRM_RESCHEDULE:reask")
+                self.session["question_asked_this_turn"] = True
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _reask}
+                )
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE asked_final_confirmation slot=%r",
+                    _slot_speech,
+                )
+                return
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE explicit_confirm_detected -> executing "
+                "transcript=%r",
+                transcript[:120],
+            )
             from app.tools.receptionist_tools import _exec_reschedule_appointment
             phone_val = _to_e164_uk(
                 self.session.get("phone_number")
