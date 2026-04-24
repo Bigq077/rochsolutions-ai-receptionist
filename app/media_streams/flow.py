@@ -819,6 +819,77 @@ def _is_booking_state_faq_interrupt(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+# ── COLLECT_NAME side-question intercept (first-name-only, deterministic) ────
+# Callers occasionally fire a booking-clarification question while we're
+# asking for their first name ("did you book me in for a physiotherapy
+# assessment?", "what exactly did you book?", "how much is it?").  These
+# contain strong booking verbs ("book"), so _is_booking_state_faq_interrupt
+# early-returns `strong_book_verb` and skips them — and NameCollector then
+# tries to extract a fake first name ("Quick", "Book", ...).
+#
+# This deterministic helper catches those side-questions for FIRST-NAME
+# states ONLY, returns a short canned answer, and lets the call site emit
+# it together with a re-anchor to the first-name prompt.  No LLM.  Plausible
+# name utterances ("Quentin", "my first name is Quentin", "it's Quentin")
+# are protected and fall through to NameCollector unchanged.
+_FIRST_NAME_PLAUSIBLE_NAME_PREFIXES: tuple[str, ...] = (
+    "my name", "my first name", "first name is", "my surname",
+    "it's ", "its ", "i'm ", "i am ", "name's ", "names ",
+    "this is ", "call me ",
+)
+_FIRST_NAME_SIDE_Q_TOPICS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Booking-clarification: what did you book / what sort of appointment
+    (
+        (
+            "book me in for", "booked me in for", "book me in as",
+            "what did you book", "what exactly did you book",
+            "what have you booked", "what have you got me",
+            "did you book", "what kind of appointment",
+            "what sort of appointment", "what type of appointment",
+            "is that an assessment", "is it an assessment",
+        ),
+        "That would be the initial assessment appointment.",
+    ),
+    # Price / cost
+    (
+        ("how much", " price", "cost ", "what's the cost",
+         "whats the cost", "what does it cost", "what does that cost"),
+        "I can share the price right after we've got your details.",
+    ),
+    # Includes / duration
+    (
+        ("what does that include", "what does it include",
+         "what's included", "whats included",
+         "how long is the", "how long does the",
+         "how long will it take"),
+        "That's the initial assessment appointment — we'll cover the details once we confirm.",
+    ),
+)
+
+
+def _is_first_name_side_question(text: str) -> tuple[bool, str]:
+    """Return (hit, short_answer).  hit=True only for obvious booking
+    clarification / price / includes side-questions that are NOT plausible
+    first-name answers.  Used in COLLECT_NAME states to bypass NameCollector
+    and emit a deterministic one-liner plus a re-anchor to the name prompt.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False, ""
+    # Plausible-name protection: fall through to NameCollector.
+    for _p in _FIRST_NAME_PLAUSIBLE_NAME_PREFIXES:
+        if t.startswith(_p):
+            return False, ""
+    # Bare single token (e.g. "Quentin", "Quentin please") — let NameCollector handle.
+    # A side question always has >=3 tokens in practice.
+    if len(t.split()) <= 2 and "?" not in t and "how much" not in t:
+        return False, ""
+    for _phrases, _answer in _FIRST_NAME_SIDE_Q_TOPICS:
+        if any(_p in t for _p in _phrases):
+            return True, _answer
+    return False, ""
+
+
 # ── Mid-booking FAQ ellipsis follow-up detector ──────────────────────────────
 # After a mid-booking FAQ answer (e.g. acupuncture fear), the caller's next
 # utterance often omits the service noun: "do you think that would be a
@@ -19411,6 +19482,35 @@ class FlowEngine:
             "COLLECT_NAME_RESCHEDULE", "COLLECT_NAME_CANCEL",
         })
         if step["state"] in _COLLECT_NAME_STATES_ALL:
+            # ── COLLECT_NAME: side-question deterministic intercept ──────
+            # Catches booking-clarification / price / includes questions
+            # that contain booking verbs ("did you book me in for a
+            # physiotherapy assessment?", "how much is it?").  These are
+            # missed by _is_booking_state_faq_interrupt's strong-book-verb
+            # early-return and would otherwise be parsed as a fake first
+            # name.  Deterministic phrase map, no LLM, no retry-counter
+            # side effects.  Plausible-name utterances are protected inside
+            # _is_first_name_side_question and fall through untouched.
+            _cn_side_hit, _cn_side_ans = _is_first_name_side_question(text)
+            if _cn_side_hit:
+                logger.info(
+                    "[ms_flow] COLLECT_NAME side-question intercept: transcript=%r",
+                    transcript[:80],
+                )
+                logger.info(
+                    "[ms_flow] COLLECT_NAME bypassing NameCollector due to side-question"
+                )
+                _cn_side_reanchor = (
+                    "I still need your first name to continue. "
+                    "Could you say your first name please?"
+                )
+                _cn_side_combined = f"{_cn_side_ans} {_cn_side_reanchor}"
+                await self._tts.put(_cn_side_combined)
+                self.session["last_question"] = _cn_side_reanchor
+                logger.info(
+                    "[ms_flow] COLLECT_NAME side-question answered — staying in COLLECT_NAME"
+                )
+                return
             # ── COLLECT_NAME: FAQ-shape utterance defensive guard ────────
             # Backup for the handle_transcript mid-flow upgrade.  Caller may
             # fire an FAQ question while we're asking for their name
