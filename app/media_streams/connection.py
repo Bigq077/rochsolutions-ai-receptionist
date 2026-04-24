@@ -330,6 +330,41 @@ class SilenceHandler:
         # while Susie is already speaking, which was the root cause of prompts
         # playing on top of long PRESENT_DAYS / FAQ TTS responses.
         self._tts_playing: bool = False
+        # Per-prompt caller-speech guard: True once ANY partial or final
+        # transcript arrives for the currently active assistant prompt.
+        # Reset in on_question_asked() when a genuinely new question is stored.
+        # Watchdog checks this just before emitting a re-ask: if the caller has
+        # started speaking, suppress the re-ask (don't talk over them).
+        self.prompt_speech_detected: bool = False
+        self.prompt_last_speech_ts: Optional[float] = None
+
+    # ── per-prompt speech guard helpers ────────────────────────────────────
+
+    def _reset_prompt_speech_guard_for_new_prompt(self) -> None:
+        """Called when a genuinely new assistant prompt is being emitted."""
+        self.prompt_speech_detected = False
+        self.prompt_last_speech_ts = None
+        logger.info(
+            "[turn_taking] reset prompt speech guard state=%s flow_step=%d",
+            self.current_state, self._replay_flow_step,
+        )
+
+    def _mark_prompt_speech_detected(self, source: str, text: str = "") -> None:
+        """Record that the caller has started speaking for the current prompt.
+        Also cancels any live watchdog task immediately so a re-ask in flight
+        does not talk over the caller."""
+        if not self.prompt_speech_detected:
+            logger.info(
+                "[turn_taking] prompt speech detected source=%s text=%r",
+                source, (text or "")[:40],
+            )
+        self.prompt_speech_detected = True
+        self.prompt_last_speech_ts = time.monotonic()
+        if self._no_input_watchdog_task and not self._no_input_watchdog_task.done():
+            self._no_input_watchdog_task.cancel()
+
+    def _prompt_speech_started(self) -> bool:
+        return self.prompt_speech_detected
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -715,6 +750,10 @@ class SilenceHandler:
             self._no_input_reask_count = 0  # new question — reset dead-air watchdog counter
             self._last_question_set_at = time.time()
             self._q_gen               += 1   # new question = new silence generation
+            # Reset per-prompt caller-speech guard: this is a genuinely new
+            # assistant question, so the next watchdog arm should fire normally
+            # on true silence but suppress if the caller starts speaking first.
+            self._reset_prompt_speech_guard_for_new_prompt()
             _session = self._get_session() if self._get_session else None
             self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
 
@@ -1272,6 +1311,20 @@ class SilenceHandler:
                     logger.info("[ms_watchdog] WATCHDOG_CANCEL q_gen=%d", q_gen)
                     return
                 continue
+
+            # ── Per-prompt caller-speech suppression ──────────────────────
+            # If the caller has started speaking (any partial or final
+            # transcript) for this prompt, do NOT re-ask over them. True
+            # silence still fires normally because this flag is only set by
+            # real transcript events.
+            if self.prompt_speech_detected:
+                _state_dbg = (_sess or {}).get("state", "")
+                logger.info(
+                    "[turn_taking] watchdog suppressed because caller already "
+                    "started speaking state=%s q_gen=%d",
+                    _state_dbg, q_gen,
+                )
+                return
 
             # ── Phase 4: Fire ─────────────────────────────────────────────
             self._no_input_reask_count += 1
@@ -3333,6 +3386,9 @@ class WebSocketCallHandler:
         # Always cancel the silence timer — caller is speaking.
         # on_transcript_received() handles the full reset when the utterance ends.
         self._silence_handler.on_speech_started()
+        # Per-prompt speech guard: mark that the caller has started speaking
+        # for the current prompt so any in-flight watchdog suppresses its re-ask.
+        self._silence_handler._mark_prompt_speech_detected("partial", text)
 
         # Only perform barge-in teardown if TTS is actually playing.
         # When the caller speaks after Susie has already finished (e.g. right after
@@ -3519,6 +3575,12 @@ class WebSocketCallHandler:
         if self._barge_in_pending and self._barge_in_ts > 0:
             self._barge_in_duration = time.monotonic() - self._barge_in_ts
         self._clearing = False  # always reset — even garbage finals end the barge-in window
+
+        # Per-prompt speech guard: a final transcript is the strongest signal
+        # that the caller has spoken for this prompt. Mark BEFORE any downstream
+        # logic so a watchdog re-ask cannot slip through.
+        if (text or "").strip():
+            self._silence_handler._mark_prompt_speech_detected("final", text)
 
         # Fix: if a watchdog repair phrase was queued/in-flight, kill it before
         # on_transcript_received() resets currently_reasking — otherwise the stale
