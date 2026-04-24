@@ -170,6 +170,30 @@ _NOISE_FRAGMENTS = frozenset({
     "ic", "ck", "ng", "nk", "uh", "um", "er", "ah", "hm", "mm", "eh",
 })
 
+# Body-part, symptom, and service-term tokens that must NEVER be stored as
+# a first name, even when they are ≥5 chars and pass all other validity
+# checks.  This second semantic layer exists because the strong-single-token
+# path can cherry-pick e.g. "ankle" from "so for my ankle" after all
+# function words are filtered, producing first_name='Ankle'.
+_NC_SEMANTIC_DENYLIST: frozenset = frozenset({
+    # Body parts (shorter ones are already blocked by _FN_STRONG_LEN < 5)
+    "ankle", "ankles", "shoulder", "shoulders", "elbow", "elbows",
+    "wrist", "wrists", "hamstring", "hamstrings", "muscle", "muscles",
+    "tendon", "tendons", "ligament", "ligaments", "spinal", "lumbar",
+    "spine", "sacrum", "groin", "thumb", "finger", "fingers",
+    "heel", "heels",
+    # Injury / symptom terms
+    "injury", "injuries", "strain", "sprain", "fracture",
+    "swelling", "bruise", "bruising", "aching",
+    # Service / treatment terms not already in _DOMAIN_WORDS
+    "acupuncture", "shockwave", "massage", "pilates",
+    # Sport / activity context words
+    "football", "rugby", "tennis", "cricket", "swimming",
+    # Conversational/discourse tokens that tokenise to ≥5-char survivors
+    "question", "questions", "wondered", "wondering", "problem",
+    "things", "started", "honestly",
+})
+
 # Minimum token length (chars) considered "strong" for direct-accept without
 # a confirmation turn.  Applies in fn_normal and fn_reask.
 _FN_STRONG_LEN: int = 5
@@ -488,6 +512,22 @@ _FN_NON_NAME_SUBSTRINGS: tuple = (
     "for a moment",
     "for a sec",
     "for a second",
+    # Post-FAQ injury-context follow-ups ("so for my ankle" etc.)
+    "so for my",
+    "for my ankle", "for my knee", "for my shoulder",
+    "for my back", "for my hip", "for my neck",
+    "for my wrist", "for my elbow", "for my leg",
+    "for my arm", "for my foot", "for my heel",
+    # Uncertainty / ambiguous follow-ups
+    "i'm not sure what", "im not sure what",
+    "not sure what i should", "not sure what to",
+    "but i'm not sure", "but im not sure",
+    "what should i do", "what do you think",
+    "what would you recommend", "what would you suggest",
+    # Question openers that are never a name
+    "i had a quick question", "i have a quick question",
+    "i had a question", "i have a question",
+    "quick question",
 )
 
 # Whole-utterance filler (after lowercasing + trimming trailing punctuation).
@@ -496,6 +536,12 @@ _FN_NON_NAME_WHOLE: frozenset = frozenset({
     "i think", "i guess", "i mean", "you know",
     "just for now", "for now",
     "um", "uh", "er", "erm",
+    # Whole-utterance question openers / fragments
+    "quick question", "one question", "one quick question",
+    "a question", "i was wondering", "just wondering",
+    "but i'm not sure", "but im not sure",
+    "i'm not sure", "im not sure",
+    "what should i do",
 })
 
 
@@ -772,7 +818,8 @@ class NameCollector:
         # filler turn does not escalate the collector into SMS fallback.
         if _is_non_name_filler(text):
             logger.info(
-                "[NameCollector] fn_normal: non-name filler %r → repair (no retry counted)",
+                "[NameCollector] collect_name_blocked_non_name_utterance "
+                "reason=non_name_filler text=%r",
                 text[:80],
             )
             return (
@@ -868,8 +915,48 @@ class NameCollector:
         if len(tokens) == 1:
             _tok = tokens[0].title()
             if len(_tok) >= _FN_STRONG_LEN:
+                # Semantic safety: body parts, service terms, and discourse
+                # tokens must never be stored as first names regardless of
+                # length.  E.g. "ankle" (from "so for my ankle") is 5 chars
+                # and passes all earlier token checks but is not a name.
+                if _tok.lower() in _NC_SEMANTIC_DENYLIST:
+                    logger.info(
+                        "[NameCollector] collect_name_single_token_rejected "
+                        "token=%r reason=semantic_denylist",
+                        _tok,
+                    )
+                    logger.info(
+                        "[NameCollector] collect_name_blocked_semantic_guard "
+                        "token=%r",
+                        _tok,
+                    )
+                    return self._fn_fail(
+                        "Sorry — I just need your first name. "
+                        "Could you say it on its own please?"
+                    )
+                # Context-aware safety: if the session carries an active
+                # mid-booking FAQ context or a held FAQ intro, route to
+                # fn_confirm (readback + yes/no) instead of auto-accepting.
+                # One extra confirmation turn is acceptable to prevent a
+                # misheard service/injury word from being stored as the name.
+                _has_faq_ctx = bool(
+                    self._s.get("_mid_booking_faq_ctx")
+                    or self._s.get("_faq_pending_intro")
+                )
+                if _has_faq_ctx:
+                    logger.info(
+                        "[NameCollector] fn_normal: post-faq context — "
+                        "routing strong single token %r to fn_confirm",
+                        _tok,
+                    )
+                    return self._enter_fn_confirm(_tok)
                 logger.info(
-                    "[NameCollector] fn_normal: strong single token %r (len=%d) → sn_normal (skip confirm)",
+                    "[NameCollector] collect_name_direct_accept token=%r",
+                    _tok,
+                )
+                logger.info(
+                    "[NameCollector] fn_normal: strong single token %r "
+                    "(len=%d) → sn_normal (skip confirm)",
                     _tok, len(_tok),
                 )
                 return self._store_fn_direct(_tok)
@@ -887,6 +974,17 @@ class NameCollector:
             fn_tok = tokens[0].title()
             sn_tok = tokens[1].title()
             if len(fn_tok) >= _FN_STRONG_LEN:
+                # Semantic safety: block body-part / service terms as first name
+                if fn_tok.lower() in _NC_SEMANTIC_DENYLIST:
+                    logger.info(
+                        "[NameCollector] collect_name_single_token_rejected "
+                        "token=%r reason=semantic_denylist (2-token first)",
+                        fn_tok,
+                    )
+                    return self._fn_fail(
+                        "Sorry — I just need your first name. "
+                        "Could you say it on its own please?"
+                    )
                 self._nc["pending_surname"] = sn_tok
                 logger.info(
                     "[NameCollector] fn_normal: strong 2-token first=%r → sn_confirm (skip fn_confirm) "
@@ -1034,6 +1132,21 @@ class NameCollector:
 
         if best:
             if len(best) >= _FN_STRONG_LEN:
+                # Semantic safety: never accept a body-part / service term
+                # even in repair mode (covers edge cases like caller saying
+                # "acupuncture" instead of their name in the reask turn).
+                if best.lower() in _NC_SEMANTIC_DENYLIST:
+                    logger.info(
+                        "[NameCollector] collect_name_single_token_rejected "
+                        "token=%r reason=semantic_denylist (fn_reask)",
+                        best,
+                    )
+                    # Give one more chance before SMS fallback
+                    return (
+                        "ask",
+                        "Sorry — I just need your first name. "
+                        "Could you say it on its own please?",
+                    )
                 # Caller in repair mode gave a strong, unambiguous name (≥5 chars).
                 # Skip fn_confirm AND surname collection — return ("accept", fn)
                 # immediately so the outer flow advances to its next step with
