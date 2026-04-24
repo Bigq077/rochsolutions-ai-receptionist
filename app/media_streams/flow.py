@@ -4026,15 +4026,39 @@ class FlowEngine:
 
         # ── Returning non-plan name+phone (steps 8-10): skip conditions ─────
         # Skip for new patients OR on-plan returning (on-plan gets name from lookup).
+        #
+        # CRITICAL GATE (existing_patient_verified): the returning-shortcut
+        # collection states must only run when the system has actually found
+        # and verified an existing patient / appointment record.  A caller's
+        # verbal claim ("I've been with you before", "it's been a little
+        # while") sets new_or_returning="returning" but does NOT by itself
+        # constitute a verified lookup — those callers must continue through
+        # the standard booking path (COLLECT_REASON → COLLECT_NAME →
+        # CONFIRM_PHONE / COLLECT_PHONE).  Only operationally verified
+        # returning callers (returning_plan_looked_up=True set by
+        # RETURNING_PLAN_LOOKUP, or an equivalent verified signal) may run
+        # these shortcut states.
         _non_plan_ret_states = {
             "COLLECT_NAME_RETURNING", "CONFIRM_PHONE_RETURNING", "COLLECT_PHONE_RETURNING",
         }
+        _existing_patient_verified = bool(
+            self.session.get("returning_plan_looked_up")
+            or self.session.get("existing_patient_verified")
+            or self.session.get("appointment_lookup_confirmed")
+        )
         if step["state"] in _non_plan_ret_states and (
             self.session.get("new_or_returning") == "new"
             or self.session.get("on_treatment_plan")
+            or not _existing_patient_verified
         ):
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] skipping %s — new patient or on-plan", step["state"])
+            logger.info(
+                "[ms_flow] skipping %s — new=%s on_plan=%s verified=%s",
+                step["state"],
+                self.session.get("new_or_returning") == "new",
+                bool(self.session.get("on_treatment_plan")),
+                _existing_patient_verified,
+            )
             await self.ask_current_question()
             return
 
@@ -4059,11 +4083,29 @@ class FlowEngine:
             return
 
         # ── New-patient name+phone (steps 11-13): skip for returning patients ──
+        # Paired gate with the returning-shortcut skip above: only skip the
+        # standard new-patient collection when the caller is returning AND a
+        # verified patient/appointment lookup exists (on_treatment_plan =>
+        # RETURNING_PLAN_LOOKUP already ran, or returning_plan_looked_up /
+        # existing_patient_verified is set elsewhere).  An unverified verbal
+        # "returning" claim must fall through to standard new-patient
+        # collection — otherwise both the returning shortcut (skipped above)
+        # and the new-patient path (skipped here) would be bypassed, leaving
+        # name and phone uncollected.
         if step["state"] in ("COLLECT_NAME", "CONFIRM_PHONE", "COLLECT_PHONE") and (
             self.session.get("new_or_returning") == "returning"
+            and (
+                self.session.get("on_treatment_plan")
+                or _existing_patient_verified
+            )
         ):
             self.session["flow_step"] = step["step"] + 1
-            logger.info("[ms_flow] skipping %s — returning patient", step["state"])
+            logger.info(
+                "[ms_flow] skipping %s — verified returning patient (on_plan=%s verified=%s)",
+                step["state"],
+                bool(self.session.get("on_treatment_plan")),
+                _existing_patient_verified,
+            )
             await self.ask_current_question()
             return
 
