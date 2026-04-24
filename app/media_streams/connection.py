@@ -1486,10 +1486,29 @@ class SilenceHandler:
                 return
             self.currently_reasking = False
 
-            # Cap audible re-asks at one per question generation: retire cleanly
-            # rather than looping and replaying the same prompt every few seconds.
-            # The next audible recovery only happens when a new question is asked
-            # (which arms a fresh watchdog) or real caller input arrives.
+            # Cap audible re-asks at one per question generation — EXCEPT for
+            # states that have a real escalation ladder where silence must
+            # advance through every rung (spoken reask → DTMF prompt) without
+            # needing a fresh question to re-arm the watchdog.
+            #
+            # ASK_LOCATION silence path: attempt #1 spoke the spoken reask
+            # (advancing location_retry_count 0→1).  If we retire here, the
+            # caller can sit in silence forever and never hear the DTMF
+            # keypad prompt because no new question will be asked to arm a
+            # fresh watchdog.  Instead, keep the loop alive: reset armed_at
+            # so the next silence tick fires attempt #2, which hits the
+            # DTMF branch (line ~1426) and emits the keypad prompt.  Phase 4
+            # still terminates cleanly at attempt #3 via the graceful-exit
+            # / transfer path so we never loop forever.
+            _ladder_states = {"ASK_LOCATION"}
+            if _state in _ladder_states and _attempt < 2:
+                armed_at = time.time()
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_LADDER_CONTINUE q_gen=%d state=%s "
+                    "attempt=#%d — deferring retire so DTMF can fire on next silence",
+                    q_gen, _state, _attempt,
+                )
+                continue
             logger.info(
                 "[ms_watchdog] WATCHDOG_RETIRE q_gen=%d reason=audible_reask_done",
                 q_gen,
