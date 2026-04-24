@@ -5493,6 +5493,7 @@ class FlowEngine:
         if (
             _sd_appt_iso
             and self._active_flow is RESCHEDULE_FLOW
+            and self.session.get("intent") != "cancel"  # cancel callers never need same-day slot search
             and _sd_state in ("LOOKUP_RESCHEDULE", "PRESENT_DAYS_RESCHEDULE")
         ):
             _SD_LATER_KW = (
