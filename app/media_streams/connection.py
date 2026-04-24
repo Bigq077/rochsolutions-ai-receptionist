@@ -337,6 +337,14 @@ class SilenceHandler:
         # started speaking, suppress the re-ask (don't talk over them).
         self.prompt_speech_detected: bool = False
         self.prompt_last_speech_ts: Optional[float] = None
+        # Per-q_gen anchor for the pre-watchdog 1.0 s start delay.
+        # Must be SET ONLY by on_tts_finished() for the CURRENT q_gen, and
+        # RESET by on_question_asked() on every new prompt.  Prevents the
+        # prior prompt's tts_finished timestamp from being reused as the
+        # anchor for the new prompt's watchdog (which caused actual_delay=3s/6s
+        # inherited from prior turns).  See _no_input_watchdog delayed_start.
+        self._delayed_start_anchor_ts: float = 0.0
+        self._delayed_start_anchor_q_gen: int = -1
 
     # ── per-prompt speech guard helpers ────────────────────────────────────
 
@@ -754,6 +762,16 @@ class SilenceHandler:
             # assistant question, so the next watchdog arm should fire normally
             # on true silence but suppress if the caller starts speaking first.
             self._reset_prompt_speech_guard_for_new_prompt()
+            # Reset delayed-start anchor for the new q_gen.  The anchor will be
+            # re-set ONLY by on_tts_finished() when a chunk for this new q_gen
+            # completes — never carried over from the prior prompt.
+            self._delayed_start_anchor_ts = 0.0
+            self._delayed_start_anchor_q_gen = self._q_gen
+            _s_dbg = self._get_session() if self._get_session else None
+            logger.info(
+                "[ms_watchdog] delayed_start pending q_gen=%d state=%s delay=1.0s",
+                self._q_gen, (_s_dbg or {}).get("state", ""),
+            )
             _session = self._get_session() if self._get_session else None
             self._replay_flow_step = (_session or {}).get("flow_step", -1) if _session else -1
 
@@ -938,6 +956,23 @@ class SilenceHandler:
                 self._q_gen, chunk_started_at, self._last_question_set_at,
                 self._watchdog_grace_until,
             )
+            # Delayed-start anchor: ONLY the CURRENT prompt's own tts_finished
+            # callback may set this.  on_question_asked clears it for every new
+            # q_gen, so the prior prompt's timestamp can never bleed into the
+            # new prompt's watchdog.  Multi-chunk naturally advances via max().
+            if self._delayed_start_anchor_q_gen == self._q_gen:
+                _now_ts = time.time()
+                self._delayed_start_anchor_ts = max(self._delayed_start_anchor_ts, _now_ts)
+                _s_dbg2 = self._get_session() if self._get_session else None
+                logger.info(
+                    "[ms_watchdog] delayed_start anchor_set q_gen=%d anchor=tts_finished state=%s",
+                    self._q_gen, (_s_dbg2 or {}).get("state", ""),
+                )
+            else:
+                logger.info(
+                    "[ms_watchdog] delayed_start stale callback ignored callback_q_gen=%d active_q_gen=%d",
+                    self._delayed_start_anchor_q_gen, self._q_gen,
+                )
         is_question = (
             t.endswith("?") or
             any(p in t.lower() for p in [
@@ -1157,18 +1192,25 @@ class SilenceHandler:
         _final_anchor = 0.0
         try:
             while True:
-                _grace = self._watchdog_grace_until
-                if _grace <= 0.0:
-                    # TTS has not finished yet — poll until on_tts_finished
-                    # sets the anchor.  Safety fallback: after 30 s with no
-                    # grace set, fall back to arm time so we don't hang.
+                # Use the PER-Q_GEN anchor — set only by on_tts_finished for
+                # this exact q_gen.  _watchdog_grace_until is NOT used here
+                # because it carries over from prior prompts.
+                if self._delayed_start_anchor_q_gen != q_gen:
+                    # A newer q_gen has superseded us — exit silently.
+                    return
+                _anchor = self._delayed_start_anchor_ts
+                if _anchor <= 0.0:
+                    # Current prompt's tts_finished has not fired yet — poll.
+                    # Safety fallback: after 30 s, abort to avoid hanging.
                     if time.time() - _arm_t > 30.0:
-                        _final_anchor = _arm_t
-                    else:
-                        await asyncio.sleep(0.05)
-                        continue
-                else:
-                    _final_anchor = _grace
+                        logger.info(
+                            "[ms_watchdog] delayed_start cancelled q_gen=%d reason=anchor_timeout",
+                            q_gen,
+                        )
+                        return
+                    await asyncio.sleep(0.05)
+                    continue
+                _final_anchor = _anchor
                 _remaining = (_final_anchor + _START_DELAY) - time.time()
                 if _remaining <= 0.02:
                     break
@@ -1192,8 +1234,8 @@ class SilenceHandler:
             return
         _actual_delay = time.time() - _final_anchor if _final_anchor > 0 else 0.0
         logger.info(
-            "[ms_watchdog] delayed_start elapsed actual_delay=%.2fs state=%s wait=%.1fs",
-            _actual_delay, _delay_state, _wait,
+            "[ms_watchdog] delayed_start elapsed q_gen=%d actual_delay=%.2fs state=%s wait=%.1fs",
+            q_gen, _actual_delay, _delay_state, _wait,
         )
 
         logger.info("[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs", q_gen, _wait)
