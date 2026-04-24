@@ -775,22 +775,40 @@ def _is_booking_state_faq_interrupt(text: str) -> tuple[bool, str]:
     if any(v in t for v in _BOOKING_FAQ_STRONG_BOOK_VERBS):
         return False, "strong_book_verb"
 
-    # Body-part + symptom compound → this is a genuine COLLECT_REASON answer.
-    if _BOOKING_FAQ_BODY_RE.search(t) and _BOOKING_FAQ_SYMP_RE.search(t):
-        return False, "body_symptom_compound"
-
     has_service     = any(s in t for s in _BOOKING_FAQ_SERVICE_TERMS)
     has_info_seek   = any(p in t for p in _BOOKING_FAQ_INFO_SEEKING)
     has_concern     = any(p in t for p in _BOOKING_FAQ_CONCERN)
     has_opener      = any(p in t for p in _BOOKING_FAQ_EXPLICIT_OPENERS)
+    # Uncertainty markers ("I'm not sure what I should do", "what would you
+    # recommend") — declared later as _FAQ_AMBIGUOUS_FOLLOWUP_SIGS; used here
+    # so a reason + service + uncertainty utterance is routed as FAQ rather
+    # than silently stored as the booking reason.
+    has_uncertainty = any(
+        p in t for p in _FAQ_AMBIGUOUS_FOLLOWUP_SIGS
+    )
 
-    # Primary: service mention AND (info-seeking OR concern).
-    if has_service and (has_info_seek or has_concern):
+    # Body-part + symptom compound → genuine COLLECT_REASON answer UNLESS
+    # the same utterance also names a service and asks about it / expresses
+    # concern / uncertainty.  In the mixed case the caller is asking about
+    # treatment fit for their injury and we should interrupt with FAQ.
+    body_symptom = bool(
+        _BOOKING_FAQ_BODY_RE.search(t) and _BOOKING_FAQ_SYMP_RE.search(t)
+    )
+    if body_symptom and not (
+        has_service and (has_info_seek or has_concern or has_uncertainty)
+    ):
+        return False, "body_symptom_compound"
+
+    # Primary: service mention AND (info-seeking OR concern OR uncertainty).
+    if has_service and (has_info_seek or has_concern or has_uncertainty):
         return True, "service+infoseek_or_concern"
 
-    # Secondary: explicit interrupt opener (e.g. "I had a question…").
-    if has_opener:
-        return True, "explicit_opener"
+    # Secondary: explicit interrupt opener (e.g. "I had a question…") —
+    # ONLY commits when paired with real content.  Bare openers ("I had a
+    # quick question") are held at the call site via _is_weak_faq_opener_only
+    # so the caller can finish the thought before we answer.
+    if has_opener and (has_service or has_info_seek or has_concern):
+        return True, "explicit_opener_with_content"
 
     # Tertiary: needle-fear phrasing without an explicit service word
     # ("I'm scared of needles", "I hate needles") — only treat as FAQ if
@@ -969,6 +987,114 @@ _BOOKING_RESUME_SIGS: tuple[str, ...] = (
 def _is_booking_resume_signal(text: str) -> bool:
     t = (text or "").strip().lower()
     return any(p in t for p in _BOOKING_RESUME_SIGS)
+
+
+# ── Weak / opener-only FAQ preface detector (premature-commit fix) ───────────
+# "I had a quick question", "I was wondering", "first off…" — caller has
+# signalled a side-question but has not yet landed the actual question.
+# Holding the turn (store as _faq_pending_intro) lets them finish the thought
+# before we commit to an FAQ answer.
+_WEAK_FAQ_OPENER_PHRASES: tuple[str, ...] = (
+    "i had a quick question", "i have a quick question",
+    "i had a question", "i have a question",
+    "i had one quick question", "i have one quick question",
+    "quick question",
+    "one quick question", "one question",
+    "one quick thing", "one thing first", "first a question",
+    "i was wondering", "i wondered", "just wondering",
+    "i wanted to ask", "i want to ask",
+    "can i ask", "could i ask", "may i ask",
+    "i wanted to know", "i want to know",
+    "i'd like to know", "id like to know",
+    "before we book", "before i book", "before booking",
+    "first off", "first of all",
+    "actually",
+)
+
+# Wh / auxiliary question starters that indicate real content has landed.
+_FAQ_CONTENT_INDICATORS: tuple[str, ...] = (
+    "?",
+    " how ", " what ", " why ", " when ", " where ", " which ",
+    " do you", " does ", " is it", " is that", " are you",
+    " are the", " are they", " can you", " could you", " would you",
+    " will ", " should ", " who ",
+)
+
+
+def _is_weak_faq_opener_only(text: str) -> bool:
+    """True when the utterance is a weak FAQ opener with no actual question
+    content yet.  Caller is clearly still forming the thought — we should
+    hold the turn rather than commit to an answer."""
+    raw = (text or "").strip().lower().rstrip(".,!?;: ")
+    if not raw:
+        return False
+    # Keep narrow — real questions run longer.
+    if len(raw.split()) > 9:
+        return False
+    # Must be dominated by a weak opener (starts-with or whole-text match).
+    _t_pad = " " + raw + " "
+    if not any(raw.startswith(op) or raw == op
+               or (" " + op + " ") in _t_pad
+               for op in _WEAK_FAQ_OPENER_PHRASES):
+        return False
+    # If any real content signal landed, it's NOT a weak opener.
+    if any(s in raw for s in _BOOKING_FAQ_SERVICE_TERMS):
+        return False
+    if any(p in raw for p in _BOOKING_FAQ_INFO_SEEKING):
+        return False
+    if any(p in raw for p in _BOOKING_FAQ_CONCERN):
+        return False
+    if any(ind in _t_pad for ind in _FAQ_CONTENT_INDICATORS):
+        return False
+    return True
+
+
+# ── Ambiguous post-FAQ follow-up detector (premature-commit fix) ─────────────
+# After a mid-booking FAQ answer, utterances like "but I'm not sure what I
+# should do", "so for my ankle", "what would you recommend" are neither a
+# clean booking resume nor a clean ellipsis follow-up.  They express
+# uncertainty about which treatment is appropriate.  Without this guard the
+# context gets cleared and the utterance is consumed as booking payload.
+_FAQ_AMBIGUOUS_FOLLOWUP_SIGS: tuple[str, ...] = (
+    "not sure what i should", "not sure what to do",
+    "not sure what would", "not sure which",
+    "not sure if", "not sure about",
+    "don't know what to", "dont know what to",
+    "don't know which", "dont know which",
+    "don't know if", "dont know if",
+    "what would you recommend", "what do you recommend",
+    "what would you suggest", "what do you suggest",
+    "any recommendation", "any recommendations",
+    "any suggestion", "any suggestions",
+    "which one would be best", "which would be best",
+    "which one is best", "which is best",
+    "which one should", "which should",
+    "what should i do", "what do you think i should",
+    "is that the right", "is that right for",
+    "right thing for me", "right for me",
+    "best for me", "best one for",
+    "so for my ankle", "so for my knee", "so for my back",
+    "so for my shoulder", "so for my hip", "so for my neck",
+    "so for my wrist", "so for my elbow",
+    "for my ankle then", "for my knee then", "for my back then",
+    "for my shoulder then", "for my hip then",
+    "but i'm not sure", "but im not sure",
+    "i'm still not sure", "im still not sure",
+)
+
+
+def _is_ambiguous_post_faq_followup(text: str) -> bool:
+    """True when the utterance expresses treatment-fit uncertainty after a
+    mid-booking FAQ answer.  Used to preserve FAQ context instead of
+    clearing it and consuming as booking payload."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    # Keep narrow: avoid very long utterances which are more likely to be
+    # a real booking reason or a different intent.
+    if len(t.split()) > 22:
+        return False
+    return any(p in t for p in _FAQ_AMBIGUOUS_FOLLOWUP_SIGS)
 
 
 # ── Mid-booking FAQ resolution detector ─────────────────────────────────────
@@ -16205,6 +16331,43 @@ class FlowEngine:
                         text[:80],
                     )
                 else:
+                    # ── Ambiguous-followup preservation (premature-commit fix)
+                    # "but I'm not sure what I should do", "so for my ankle",
+                    # "what would you recommend" — neither a clean booking
+                    # resume nor a clean FAQ ellipsis follow-up.  Keep FAQ
+                    # ctx alive and route back to the FAQ handler rather than
+                    # clearing and consuming as booking payload.
+                    _mbf_ambiguous = _is_ambiguous_post_faq_followup(text)
+                    if _mbf_ambiguous:
+                        _mbf_amb_topic = _mbf_ctx.get("topic") or ""
+                        _mbf_ctx["turns_left"] = max(
+                            1, int(_mbf_ctx.get("turns_left", 1)) - 1
+                        )
+                        self.session["_mid_booking_faq_ctx"] = _mbf_ctx
+                        if _mbf_amb_topic:
+                            self.session["_faq_active_service"] = _mbf_amb_topic
+                        _mbf_amb_synth = (
+                            f"{_mbf_amb_topic} {transcript}".strip()
+                            if _mbf_amb_topic else transcript
+                        )
+                        logger.info(
+                            "[ms_flow] faq_context_not_cleared "
+                            "reason=ambiguous_followup topic=%s text=%r",
+                            _mbf_amb_topic, text[:80],
+                        )
+                        logger.info(
+                            "[ms_flow] collect_reason_advance_blocked "
+                            "reason=faq_uncertainty text=%r", text[:80],
+                        )
+                        logger.info(
+                            "[ms_flow] booking_resume_suppressed "
+                            "reason=not_strong_enough text=%r", text[:80],
+                        )
+                        await self._handle_mid_flow_interrupt(
+                            "faq_services" if _mbf_amb_topic else "general_query",
+                            _mbf_amb_synth,
+                        )
+                        return
                     _mbf_match = _is_faq_ellipsis_followup(text, ctx_active=True)
                     _mbf_topic_log = _mbf_ctx.get("topic")
                     _mbf_reason = (
@@ -16268,6 +16431,23 @@ class FlowEngine:
                 and _mid_intent not in ("reschedule", "cancel", "booking")
                 and not _mbf_resolved
             ):
+                # ── Weak-opener hold (premature-commit fix) ──────────────
+                # "I had a quick question" / "I was wondering" with no
+                # content yet — hold the turn, don't commit an FAQ answer.
+                # On the next utterance the _faq_pending_intro prepend at
+                # the top of handle_transcript combines them so we classify
+                # and answer on the full thought.
+                if (
+                    step["state"] == "COLLECT_REASON"
+                    and _is_weak_faq_opener_only(text)
+                ):
+                    self.session["_faq_pending_intro"] = transcript.strip()
+                    logger.info(
+                        "[ms_flow] weak_faq_opener_suppressed "
+                        "text=%r — awaiting actual question",
+                        transcript[:80],
+                    )
+                    return
                 _bfi_hit, _bfi_reason = _is_booking_state_faq_interrupt(text)
                 if _bfi_hit:
                     # ── Incomplete-intro hold (Bug B) ────────────────────────
@@ -16288,7 +16468,7 @@ class FlowEngine:
                         )
                         return
                     logger.info(
-                        "[ms_flow] booking_state_faq_interrupt at=%s reason=%s "
+                        "[ms_flow] faq_interrupt_committed at=%s reason=%s "
                         "prior_intent=%s transcript=%r — upgrading to faq_services",
                         step["state"], _bfi_reason, _mid_intent, transcript[:80],
                     )
