@@ -1858,6 +1858,80 @@ def _format_slot_for_speech(label: str) -> str:
         return label  # fallback to raw label unchanged
 
 
+def _format_datetime_for_speech(value: str) -> str:
+    """
+    Convert an appointment datetime string into a natural spoken form:
+      e.g. "the 14th of February at 5:00 PM".
+    Accepts ISO ("2026-02-14T17:00:00..."), "dd/mm/yyyy HH:MM",
+    "yyyy-mm-dd HH:MM", or the short label used elsewhere. Falls back to
+    the raw input if nothing parses.
+    """
+    import re as _re
+    from datetime import datetime as _dt
+    _MONTHS_FULL = (
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+    _ORD = {
+        1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th", 6: "6th",
+        7: "7th", 8: "8th", 9: "9th", 10: "10th", 11: "11th", 12: "12th",
+        13: "13th", 14: "14th", 15: "15th", 16: "16th", 17: "17th",
+        18: "18th", 19: "19th", 20: "20th", 21: "21st", 22: "22nd",
+        23: "23rd", 24: "24th", 25: "25th", 26: "26th", 27: "27th",
+        28: "28th", 29: "29th", 30: "30th", 31: "31st",
+    }
+    if not value:
+        return ""
+    s = value.strip()
+    parsed = None
+    # ISO 8601 (allow optional timezone)
+    try:
+        parsed = _dt.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        parsed = None
+    # yyyy-mm-dd HH:MM
+    if parsed is None:
+        m = _re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})', s)
+        if m:
+            try:
+                parsed = _dt(int(m[1]), int(m[2]), int(m[3]), int(m[4]), int(m[5]))
+            except Exception:
+                parsed = None
+    # dd/mm/yyyy HH:MM (UK)
+    if parsed is None:
+        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})', s)
+        if m:
+            try:
+                parsed = _dt(int(m[3]), int(m[2]), int(m[1]), int(m[4]), int(m[5]))
+            except Exception:
+                parsed = None
+    # dd/mm/yyyy (no time)
+    if parsed is None:
+        m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})\s*$', s)
+        if m:
+            try:
+                parsed = _dt(int(m[3]), int(m[2]), int(m[1]))
+            except Exception:
+                parsed = None
+    if parsed is None:
+        # Try the short-label speech formatter as a last resort.
+        formatted = _format_slot_for_speech(s)
+        return formatted if formatted != s else s
+    day = parsed.day
+    month = _MONTHS_FULL[parsed.month - 1]
+    ord_str = _ORD.get(day, f"{day}th")
+    h = parsed.hour
+    minute = parsed.minute
+    # Build a 12-hour clock with AM/PM
+    has_time = (h, minute) != (0, 0)
+    if has_time:
+        suffix = "AM" if h < 12 else "PM"
+        h12 = h % 12 or 12
+        time_str = f"{h12}:{minute:02d} {suffix}"
+        return f"the {ord_str} of {month} at {time_str}"
+    return f"the {ord_str} of {month}"
+
+
 def _fuzzy_match(text: str, patterns: list, threshold: int = 80) -> bool:
     """
     Return True if any pattern fuzzy-matches the text at or above threshold.
@@ -4337,7 +4411,7 @@ class FlowEngine:
             ).strip()
             _cc_full = (self.session.get("full_name") or f"{_cc_fn} {_cc_ln}").strip()
             _cc_when_iso = (self.session.get("reschedule_appt_datetime") or "").strip()
-            _cc_when_speech = _format_slot_for_speech(_cc_when_iso) if _cc_when_iso else ""
+            _cc_when_speech = _format_datetime_for_speech(_cc_when_iso) if _cc_when_iso else ""
             _cc_loc = (self.session.get("selected_location") or "").strip()
             _cc_loc_speech = _cc_loc.capitalize() if _cc_loc else ""
             _cc_appt_id = self.session.get("reschedule_appt_id") or ""
