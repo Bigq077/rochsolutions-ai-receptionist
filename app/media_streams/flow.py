@@ -1626,20 +1626,25 @@ _CR_EXPLICIT_CONFIRM = (
 )
 
 
-# ── CONFIRM_CANCEL strict-confirmation gate (Task 9) ─────────────────────────
-# Only these phrases (or a bare yes-family token in context) may trigger
-# actual cancellation. Everything else must NOT same-turn cancel.
+# ── CONFIRM_CANCEL strict-confirmation gate (Task 9 + Task 10) ───────────────
+# FINAL cancel-confirm state only executes on the exact fixed phrase
+# "cancel appointment" (and near-identical variants). Weaker phrases such as
+# "cancel it", "I'd like to cancel it", "cancel please" MUST NOT execute.
 _CC_EXPLICIT_CONFIRM = (
-    "yes", "yes please", "yes thanks", "yes thank you",
-    "yeah", "yep", "yup",
-    "cancel it", "cancel that", "cancel that one", "cancel the appointment",
-    "cancel my appointment", "please cancel it", "please cancel",
-    "yes cancel it", "yes cancel that", "yes cancel",
-    "go ahead", "yes go ahead", "please go ahead",
-    "that's right cancel it", "thats right cancel it",
-    "that's the one cancel it", "thats the one cancel it",
-    "confirm", "confirmed", "please do", "do it",
-    "correct", "that's correct", "thats correct",
+    "cancel appointment",
+    "cancel the appointment",
+    "cancel my appointment",
+    "yes cancel appointment",
+    "yes cancel the appointment",
+    "yes cancel my appointment",
+    "please cancel appointment",
+    "please cancel the appointment",
+    "please cancel my appointment",
+    "confirm cancel appointment",
+)
+# Short fixed watchdog re-ask for the final cancel-confirm state.
+_CC_FINAL_WATCHDOG_REASK = (
+    "Sorry, I didn't catch that — please say: cancel appointment."
 )
 _CC_REJECT_PHRASES = (
     "no", "nope", "nah", "not that one", "not that appointment",
@@ -4337,26 +4342,32 @@ class FlowEngine:
             _cc_loc_speech = _cc_loc.capitalize() if _cc_loc else ""
             _cc_appt_id = self.session.get("reschedule_appt_id") or ""
 
-            if _cc_full and _cc_when_speech and _cc_loc_speech:
+            # Task 10: final cancel-confirmation prompt. Must be natural,
+            # include human-readable appointment details (NEVER raw ISO), and
+            # ask the caller to say the exact fixed phrase "cancel appointment".
+            if _cc_when_speech and _cc_loc_speech:
                 _cc_q = (
-                    f"I found an appointment under {_cc_full} for {_cc_when_speech} "
-                    f"in {_cc_loc_speech}. Would you like me to cancel that appointment?"
+                    f"Just to confirm, I'm going to cancel your appointment for "
+                    f"{_cc_when_speech} in {_cc_loc_speech}. "
+                    "Please say: cancel appointment."
                 )
             elif _cc_when_speech:
                 _cc_q = (
-                    f"I found your appointment for {_cc_when_speech}. "
-                    "Would you like me to cancel that appointment?"
+                    f"Just to confirm, I'm going to cancel your appointment for "
+                    f"{_cc_when_speech}. Please say: cancel appointment."
                 )
             else:
                 _cc_q = (
-                    "Just to confirm — would you like me to cancel your upcoming "
-                    "appointment? Please say yes to confirm or no to keep it."
+                    "Just to confirm, I'm going to cancel your upcoming appointment. "
+                    "Please say: cancel appointment."
                 )
 
             await self._tts.put(_cc_q)
+            # Store the SHORT fixed re-ask as last_question so any watchdog
+            # replay speaks the short form rather than the long readback.
             _store_last_question(
-                self.session, _cc_q, force=True,
-                source="flow_step:CONFIRM_CANCEL:prompt",
+                self.session, _CC_FINAL_WATCHDOG_REASK, force=True,
+                source="flow_step:CONFIRM_CANCEL:watchdog_short_reask",
             )
             self.session["question_asked_this_turn"] = True
             self.session["cancel_prompt_pending"] = True
@@ -4365,14 +4376,15 @@ class FlowEngine:
                 {"role": "assistant", "content": _cc_q}
             )
             logger.info(
-                "[ms_flow] cancel_intent_detected -> entering CONFIRM_CANCEL no_execute "
-                "appt_id=%r when=%r",
-                _cc_appt_id, _cc_when_iso,
-            )
-            logger.info(
-                "[ms_flow] CONFIRM_CANCEL asked_final_confirmation appt_id=%r",
+                "[ms_flow] cancel_choice_detected -> entering final cancel confirmation "
+                "appt_id=%r",
                 _cc_appt_id,
             )
+            logger.info(
+                "[ms_flow] final_cancel_prompt_when=%r",
+                _cc_when_speech or _cc_when_iso,
+            )
+            logger.info("[ms_flow] final_cancel_watchdog_short_reask enabled")
             return
 
         # ── PRESENT_DAYS: direct tool call — no LLM text in TTS path ────────────
@@ -6014,35 +6026,12 @@ class FlowEngine:
                 return
             if _cc_cls != "confirm":
                 logger.info(
-                    "[ms_flow] CONFIRM_CANCEL execution_blocked reason=not_fresh_explicit_confirm "
+                    "[ms_flow] final_cancel_execution_blocked reason='non_explicit_confirmation' "
                     "cls=%s transcript=%r",
                     _cc_cls, transcript[:120],
                 )
-                # Re-ask confirmation cleanly.
-                _cc_fn2 = (
-                    self.session.get("lookup_appt_first_name")
-                    or self.session.get("reschedule_appt_first_name") or ""
-                ).strip()
-                _cc_ln2 = (
-                    self.session.get("lookup_appt_last_name")
-                    or self.session.get("reschedule_appt_last_name") or ""
-                ).strip()
-                _cc_full2 = (self.session.get("full_name")
-                             or f"{_cc_fn2} {_cc_ln2}").strip()
-                _cc_when2 = _format_slot_for_speech(
-                    self.session.get("reschedule_appt_datetime", "") or ""
-                )
-                if _cc_full2 and _cc_when2:
-                    _reask = (
-                        f"Just to confirm — would you like me to cancel the appointment "
-                        f"for {_cc_full2} on {_cc_when2}? Please say yes to cancel or "
-                        "no to keep it."
-                    )
-                else:
-                    _reask = (
-                        "Just to confirm — would you like me to cancel that appointment? "
-                        "Please say yes to cancel or no to keep it."
-                    )
+                # Short fixed re-ask — never replay the long readback sentence.
+                _reask = _CC_FINAL_WATCHDOG_REASK
                 await self._tts.put(_reask)
                 _store_last_question(
                     self.session, _reask, force=True,
@@ -6054,6 +6043,11 @@ class FlowEngine:
                 )
                 return
             # Explicit confirm → execute cancel now.
+            logger.info(
+                "[ms_flow] final_cancel_confirm matched explicit phrase "
+                "transcript=%r",
+                transcript[:120],
+            )
             logger.info(
                 "[ms_flow] CONFIRM_CANCEL explicit_confirm_detected -> executing cancel "
                 "transcript=%r",
