@@ -8413,6 +8413,8 @@ class FlowEngine:
                     "yes", "yeah", "yep", "yup", "correct",
                     "that's right", "thats right", "that's it", "thats it",
                     "absolutely", "definitely", "sure", "confirmed",
+                    # Phrase surfaced by the verbose re-ask ("say 'use this clinic'")
+                    "use this clinic", "use this one", "this clinic",
                 )
                 _FC_NO = (
                     "no", "nope", "nah", "not that", "not right",
@@ -8512,12 +8514,13 @@ class FlowEngine:
                 # a hint on how to confirm before escalating to DTMF.
                 # Second unclear turn: switch to DTMF keypad.
                 _fc_clinic_name = "Alcester" if _loc_pending_guess == "alcester" else "Redditch"
+                _fc_other_name  = "Redditch" if _loc_pending_guess == "alcester" else "Alcester"
                 if not self.session.get("location_pending_guess_reask"):
                     self.session["location_pending_guess_reask"] = True
                     _fc_reask = (
-                        f"Just to confirm \u2014 did you mean the {_fc_clinic_name} clinic? "
-                        f"You can say \u201cyes, that\u2019s the right clinic\u201d "
-                        f"for {_fc_clinic_name}, or \u201cno\u201d for the other one."
+                        f"If you mean the {_fc_clinic_name} clinic, say "
+                        f"\u201cuse this clinic\u201d. "
+                        f"Otherwise say \u201cno\u201d for the {_fc_other_name} clinic."
                     )
                     await self._tts.put(_fc_reask)
                     self.session.setdefault("conversation_history", []).append(
@@ -9321,20 +9324,11 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
-                # ── Score-based silent bind: conf ≥ 0.60 WITH prefix or soft-alias evidence ──
-                # The resolver already computed both scores.  If the winning clinic
-                # cleared the threshold AND has positive prefix/soft-alias evidence
-                # (not pure similarity), the signal is strong enough to commit
-                # without asking again — the next question names the clinic aloud
-                # so the caller can correct mid-flow via the global correction handler.
-                #
-                # Pure-similarity-only ambiguous results are REJECTED here: words
-                # like "please" / "alright" happen to share enough characters with
-                # "alcester" to score 50–60 on similarity alone, but carry zero
-                # clinic signal.  Requiring prefix or soft-alias evidence
-                # eliminates that entire false-bind class without weakening
-                # genuine noisy location capture (which always contributes a
-                # prefix score via the first word).
+                # ── Score-bind: high confidence + signal + clear margin ──────────
+                # Silent bind when the resolver returns ambiguous but the winning
+                # clinic has strong score, has prefix/soft-alias signal, AND leads
+                # the loser by a safe margin.  Requiring signal keeps pure-
+                # similarity noise ("please", "alright") out of this path.
                 _sl_result = _resolve_clinic(text, context="ask_location")
                 _sl_conf   = _sl_result.get("confidence", 0)
                 _sl_reason = _sl_result.get("reason", "")
@@ -9342,84 +9336,52 @@ class FlowEngine:
                     "prefix" in _sl_reason
                     or "soft_alias" in _sl_reason
                 )
+                _sl_dbg_full  = _sl_result.get("debug", {})
+                _sl_alc_full  = _sl_dbg_full.get("alcester_score", 0)
+                _sl_red_full  = _sl_dbg_full.get("redditch_score", 0)
+                _sl_margin_full = abs(_sl_alc_full - _sl_red_full)
                 if (
                     _sl_result["status"] == "ambiguous"
-                    and _sl_conf >= 0.60
+                    and _sl_conf >= 0.65
                     and _sl_has_signal
+                    and _sl_margin_full >= 18
                 ):
-                    _sl_dbg  = _sl_result.get("debug", {})
-                    _sl_alc  = _sl_dbg.get("alcester_score", 0)
-                    _sl_red  = _sl_dbg.get("redditch_score", 0)
-                    _sl_bind = "alcester" if _sl_alc >= _sl_red else "redditch"
+                    _sl_bind = "alcester" if _sl_alc_full >= _sl_red_full else "redditch"
                     self.session["selected_location"] = _sl_bind
                     self.session["needs_location"]    = False
                     self.session.pop("location_retry_count", None)
                     self.session.pop("location_pending_guess", None)
                     self.session.pop("location_pending_guess_reask", None)
                     logger.info(
-                        "[ms_flow] ASK_LOCATION: score-bind (alc=%d red=%d conf=%.2f → %s) for %r",
-                        _sl_alc, _sl_red, _sl_conf, _sl_bind, text[:40],
+                        "[ms_flow] ASK_LOCATION: score-bind "
+                        "(alc=%d red=%d conf=%.2f margin=%d → %s) for %r",
+                        _sl_alc_full, _sl_red_full, _sl_conf, _sl_margin_full,
+                        _sl_bind, text[:40],
                     )
                     await self.ask_current_question()
                     return
 
-                # ── ASK_LOCATION-only clear-dominance bind ───────────────────────
-                # Some obvious STT variants ("you access the clinic") produce
-                # ambiguous status with pure-similarity evidence, so the bind
-                # above skips them.  When one clinic score is clearly dominant
-                # (winner ≥ 55 AND lead ≥ 30 over the loser) AND the caller has
-                # not landed a filler (already filtered above), commit the
-                # winner silently.  Scoped to ASK_LOCATION only — does NOT
-                # relax the global resolver or weaken other states.
+                # ── Pending-guess: WIDE clarify zone → single confirm question ──
+                # When the resolver returns ambiguous with any real directional
+                # lean, offer a natural binary confirmation ("Did you mean our
+                # Alcester clinic?") rather than forcing the caller into the
+                # retry ladder.  Zone is [46, 65) raw winner, lead ≥ 12 — wide
+                # enough that almost every genuine but noisy attempt lands here.
+                # Forced-confirm block (line ~8285) handles the next turn:
+                # yes → bind, no → opposite, explicit name → override,
+                # unclear once → verbose re-ask, unclear twice → DTMF.
                 if _sl_result["status"] == "ambiguous":
-                    _sl_dbg2 = _sl_result.get("debug", {})
-                    _sl_alc2 = _sl_dbg2.get("alcester_score", 0)
-                    _sl_red2 = _sl_dbg2.get("redditch_score", 0)
-                    _sl_win2  = max(_sl_alc2, _sl_red2)
-                    _sl_lose2 = min(_sl_alc2, _sl_red2)
-                    if _sl_win2 >= 55 and (_sl_win2 - _sl_lose2) >= 30:
-                        _sl_bind2 = "alcester" if _sl_alc2 >= _sl_red2 else "redditch"
-                        self.session["selected_location"] = _sl_bind2
-                        self.session["needs_location"]    = False
-                        self.session.pop("location_retry_count", None)
-                        self.session.pop("location_pending_guess", None)
-                        self.session.pop("location_pending_guess_reask", None)
-                        logger.info(
-                            "[ms_flow] ASK_LOCATION: dominance-bind "
-                            "(alc=%d red=%d margin=%d → %s) for %r",
-                            _sl_alc2, _sl_red2, _sl_win2 - _sl_lose2,
-                            _sl_bind2, text[:40],
-                        )
-                        await self.ask_current_question()
-                        return
-
-                    # ── Pending-guess confirmation: 50–60 raw with ≥ 20 pt lead ──
-                    # The resolver has a directional opinion but not enough
-                    # confidence to bind silently (score-bind and dominance-bind
-                    # both missed).  Rather than retrying blindly, offer a single
-                    # binary confirmation — "Did you mean Alcester?" — so the
-                    # caller can confirm or correct with a simple yes/no.
-                    #
-                    # Fires when:
-                    #   • status == "ambiguous" (a leading candidate exists)
-                    #   • winning raw score is in [50, 60)
-                    #   • lead over the loser is ≥ 20 points
-                    #   • location_pending_guess not already set (no re-trigger)
-                    #
-                    # Does NOT increment location_retry_count — this is a
-                    # clarification, not a retry.  The existing forced-confirm
-                    # block (line ~7976) handles the next turn: yes → bind,
-                    # no → opposite clinic, explicit name → override,
-                    # neither → DTMF fallback.
+                    _sl_win2  = max(_sl_alc_full, _sl_red_full)
+                    _sl_lose2 = min(_sl_alc_full, _sl_red_full)
                     _pg_win  = _sl_win2
                     _pg_lead = _sl_win2 - _sl_lose2
                     if (
-                        50 <= _pg_win < 60
-                        and _pg_lead >= 20
+                        46 <= _pg_win < 65
+                        and _pg_lead >= 12
                         and not self.session.get("location_pending_guess")
                     ):
                         _pg_clinic = (
-                            "Alcester" if _sl_alc2 >= _sl_red2 else "Redditch"
+                            "Alcester" if _sl_alc_full >= _sl_red_full else "Redditch"
                         )
                         _pg_key = _pg_clinic.lower()
                         self.session["location_pending_guess"] = _pg_key
@@ -9432,7 +9394,7 @@ class FlowEngine:
                         logger.info(
                             "[ms_flow] ASK_LOCATION: pending-guess "
                             "(alc=%d red=%d win=%d lead=%d → asking %r) for %r",
-                            _sl_alc2, _sl_red2, _pg_win, _pg_lead,
+                            _sl_alc_full, _sl_red_full, _pg_win, _pg_lead,
                             _pg_q, text[:40],
                         )
                         return

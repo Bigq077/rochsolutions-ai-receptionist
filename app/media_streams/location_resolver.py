@@ -223,11 +223,42 @@ _PREFIX_RED: tuple = (
 
 # ---------------------------------------------------------------------------
 # Decision thresholds
+#
+# Asymmetric per-clinic design:
+#   Alcester has more false-positive risk from common English phonetics
+#   (ancestor, lester, words sharing "al-" / "est" runs), so it requires
+#   a higher score and larger margin to direct-bind.
+#   Redditch is phonetically more distinctive ("redd") so can bind
+#   slightly earlier.
+#
+# Three tiers for the soft-score path:
+#   1. Direct bind   — high confidence, clear dominant score
+#   2. Lean-accept   — decent signal but not dominant; binds at capped confidence
+#   3. Clarify       — directional lean only; feeds pending-guess in the flow
+#   4. Suppress      — no useful signal; unknown returned
 # ---------------------------------------------------------------------------
-_SOFT_ALIAS_BONUS    = 40    # points added when a soft alias matches
-_RESOLVE_THRESHOLD   = 65    # winner score needed when prefix or soft alias supports
-_SIM_ONLY_THRESHOLD  = 82    # winner score needed with similarity evidence only
-_RESOLVE_MARGIN      = 25    # minimum gap between winner and loser scores
+_SOFT_ALIAS_BONUS            = 40   # points added when a soft alias matches
+
+# Tier 1 — direct bind (requires prefix or soft-alias signal)
+_RESOLVE_THRESHOLD_ALC       = 65   # Alcester score must reach this
+_RESOLVE_MARGIN_ALC          = 18   # and beat Redditch by at least this
+_RESOLVE_THRESHOLD_RED       = 62   # Redditch score must reach this
+_RESOLVE_MARGIN_RED          = 15   # and beat Alcester by at least this
+
+# Tier 1b — sim-only bind (no prefix/soft alias; both clinics same threshold)
+_SIM_ONLY_THRESHOLD          = 85   # higher bar when no prefix/soft-alias signal
+_SIM_ONLY_MARGIN             = 22
+
+# Tier 2 — lean-accept (requires signal; binds at confidence ≤ 0.72)
+_LEAN_THRESHOLD_ALC          = 57   # Alcester lean floor
+_LEAN_MARGIN_ALC             = 22   # minimum gap for lean Alcester
+_LEAN_THRESHOLD_RED          = 54   # Redditch lean floor
+_LEAN_MARGIN_RED             = 20   # minimum gap for lean Redditch
+_LEAN_CONFIDENCE_CAP         = 0.72 # confidence is capped here (not 1.0)
+
+# Tier 3 — clarify zone (feeds pending-guess in the flow)
+_CLARIFY_THRESHOLD           = 46   # minimum winner score for any clarify signal
+_CLARIFY_MARGIN              = 10   # minimum gap for any clarify signal
 
 # ---------------------------------------------------------------------------
 # Regex helpers
@@ -548,35 +579,34 @@ def resolve_clinic_location(
     margin = winner_score - loser_score
     reason = _build_reason(has_soft, has_prefix, winner_sim)
 
-    # Effective threshold: pure similarity wins require stricter evidence
-    # to guard against false positives (e.g. "lester" → alcester via sim alone).
-    # If prefix or soft alias contributed, the lower threshold applies.
-    if context == "ask_location":
-        threshold = _RESOLVE_THRESHOLD if (has_soft or has_prefix) else _SIM_ONLY_THRESHOLD
-        margin_needed = _RESOLVE_MARGIN
-    else:
-        # Stricter mode for any non-explicit context (defensive default)
-        threshold     = _SIM_ONLY_THRESHOLD
-        margin_needed = 35
-
     # Confidence: scale winner score, never 1.0 on scoring path (reserved for hard alias)
     confidence = round(min(winner_score, 99) / 100, 2)
 
-    if winner_score >= threshold and margin >= margin_needed:
-        return _resolve("resolved", winner, confidence, reason)
+    # ── 5. Tier-1: direct bind ────────────────────────────────────────────────
+    # Asymmetric per-clinic thresholds + margins.
+    # Requires prefix or soft-alias signal — pure similarity is not enough here.
+    # Non-ask_location contexts use the stricter sim-only threshold for safety.
+    if context == "ask_location" and (has_soft or has_prefix):
+        _t1_threshold = _RESOLVE_THRESHOLD_ALC if winner == "alcester" else _RESOLVE_THRESHOLD_RED
+        _t1_margin    = _RESOLVE_MARGIN_ALC    if winner == "alcester" else _RESOLVE_MARGIN_RED
+        if winner_score >= _t1_threshold and margin >= _t1_margin:
+            return _resolve("resolved", winner, confidence, reason)
+    elif not (has_soft or has_prefix):
+        # Sim-only path: same threshold for both clinics, higher bar
+        _t1_sim_margin = _SIM_ONLY_MARGIN if context == "ask_location" else 35
+        if winner_score >= _SIM_ONLY_THRESHOLD and margin >= _t1_sim_margin:
+            return _resolve("resolved", winner, confidence, reason)
+    else:
+        # Non-ask_location with signal: use the stricter sim-only threshold
+        if winner_score >= _SIM_ONLY_THRESHOLD and margin >= 35:
+            return _resolve("resolved", winner, confidence, reason)
 
-    # ── 5. ASK_LOCATION-only prefix fallback ──────────────────────────────────
-    # After scoring fails to meet the resolution threshold, inspect the first
-    # meaningful token's prefix as a last-resort lean in explicit clinic-
-    # selection context.  Only fires when the opposing clinic has weak evidence
-    # (< 40 pts) so it cannot override a genuinely competitive score.
-    # Confidence is capped at 0.55 to signal low certainty; the flow opens a
-    # one-turn correction window so the caller can immediately override.
+    # ── 5b. ASK_LOCATION-only prefix fallback ────────────────────────────────
+    # Last-resort lean when scoring missed.  Only fires in explicit clinic-
+    # selection context, requires unambiguous prefix and weak opposing score.
+    # Confidence capped at 0.55; the flow opens a one-turn correction window.
     if context == "ask_location":
         _first = candidate.split()[0]
-        # Skip prefix_fallback entirely for discourse/filler words — these
-        # share an opener letter with a clinic prefix but are never location
-        # references.  Without this guard "actually" → fallback:alcester.
         if _first not in _PREFIX_FALLBACK_BLOCKLIST:
             _alc_pfx = any(_first.startswith(p) for p, _ in _PREFIX_ALC)
             _red_pfx = any(_first.startswith(p) for p, _ in _PREFIX_RED)
@@ -587,14 +617,14 @@ def resolve_clinic_location(
                 debug["prefix_hit"] = f"fallback:redditch:{_first}"
                 return _resolve("resolved", "redditch", 0.55, "prefix_fallback")
 
-    # ── 5b. ASK_LOCATION lean-accept tier ────────────────────────────────────
-    # Fires when the full threshold was not met but there is still a clear
-    # positive signal (prefix OR soft alias) and a comfortable margin.
-    # Prevents "you'll access the clinic" (alcester_score=63, margin=40) from
-    # being kicked back as ambiguous when the caller's intent is obvious.
-    # Thresholds kept conservative: score ≥ 55, margin ≥ 30.
+    # ── 5c. ASK_LOCATION lean-accept tier ────────────────────────────────────
+    # Fires when full threshold missed but there is clear signal + comfortable
+    # margin.  Per-clinic asymmetric floors keep Alcester harder to lean-bind.
+    # Confidence capped at _LEAN_CONFIDENCE_CAP (0.72).
     if context == "ask_location" and (has_prefix or has_soft):
-        if winner_score >= 55 and margin >= 30:
+        _t2_threshold = _LEAN_THRESHOLD_ALC if winner == "alcester" else _LEAN_THRESHOLD_RED
+        _t2_margin    = _LEAN_MARGIN_ALC    if winner == "alcester" else _LEAN_MARGIN_RED
+        if winner_score >= _t2_threshold and margin >= _t2_margin:
             logger.info(
                 "[location_resolver] ASK_LOCATION: lean-accept → %s "
                 "(score=%d margin=%d reason=%s)",
@@ -602,12 +632,15 @@ def resolve_clinic_location(
             )
             return _resolve(
                 "resolved", winner,
-                round(min(winner_score, 75) / 100, 2),
+                round(min(winner_score * _LEAN_CONFIDENCE_CAP, _LEAN_CONFIDENCE_CAP * 100) / 100, 2),
                 reason + "+lean",
             )
 
-    if winner_score >= 40 and margin >= 15:
-        # Some signal but not enough to auto-resolve — ask for clarification
+    # ── 6. Clarify zone → ambiguous ───────────────────────────────────────────
+    # Any directional signal above the clarify floor returns ambiguous so the
+    # flow can offer a pending-guess ("Did you mean Alcester?") rather than
+    # burning a retry or going straight to DTMF.
+    if winner_score >= _CLARIFY_THRESHOLD and margin >= _CLARIFY_MARGIN:
         return _resolve("ambiguous", None, confidence, reason)
 
     return _resolve("unknown", None, 0.0, "low_signal")
