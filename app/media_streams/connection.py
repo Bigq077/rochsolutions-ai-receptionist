@@ -1132,24 +1132,51 @@ class SilenceHandler:
 
         # ── Pre-watchdog start delay ─────────────────────────────────────
         # Global 1.0 s buffer between end of prompt TTS and the start of the
-        # normal watchdog countdown.  Prevents re-asking over a caller who
-        # naturally takes a beat before speaking.  State-specific _wait values
-        # are UNCHANGED — this only shifts the first re-ask by 1.0 s.  Any
-        # partial/final transcript during this window cancels the task via
-        # the existing cancel paths (on_speech_started / _mark_prompt_speech_detected
-        # / on_transcript_received), so delayed_start naturally aborts.
+        # normal watchdog countdown.  ANCHORED to _watchdog_grace_until — set
+        # by on_tts_finished() with max(grace_until, now) on every completed
+        # chunk — so multi-chunk prompts (empathy + question) correctly anchor
+        # to the FINAL chunk's completion, not the first.
+        #
+        # Why a simple `await asyncio.sleep(1.0)` was wrong: the watchdog task
+        # is created by _restart_timer() from on_question_asked BEFORE TTS
+        # finishes, so the sleep started elapsing during prompt playback and
+        # the real post-TTS delay was whatever remained (as little as ~0.5 s).
+        #
+        # The loop re-reads _watchdog_grace_until every iteration; if a later
+        # chunk advances it, remaining recomputes and we wait longer.
+        # State-specific _wait values are UNCHANGED.  Partial/final transcripts
+        # during the window still cancel via existing paths (on_speech_started
+        # / _mark_prompt_speech_detected / on_transcript_received).
         _START_DELAY = 1.0
         _delay_state = (_sess_faq_w or {}).get("state", "")
+        _arm_t = time.time()
         logger.info(
-            "[ms_watchdog] delayed_start scheduled delay=%.1fs state=%s",
-            _START_DELAY, _delay_state,
+            "[ms_watchdog] delayed_start armed anchor=tts_finished q_gen=%d state=%s delay=%.1fs",
+            q_gen, _delay_state, _START_DELAY,
         )
+        _final_anchor = 0.0
         try:
-            await asyncio.sleep(_START_DELAY)
+            while True:
+                _grace = self._watchdog_grace_until
+                if _grace <= 0.0:
+                    # TTS has not finished yet — poll until on_tts_finished
+                    # sets the anchor.  Safety fallback: after 30 s with no
+                    # grace set, fall back to arm time so we don't hang.
+                    if time.time() - _arm_t > 30.0:
+                        _final_anchor = _arm_t
+                    else:
+                        await asyncio.sleep(0.05)
+                        continue
+                else:
+                    _final_anchor = _grace
+                _remaining = (_final_anchor + _START_DELAY) - time.time()
+                if _remaining <= 0.02:
+                    break
+                await asyncio.sleep(_remaining)
         except asyncio.CancelledError:
             logger.info(
-                "[ms_watchdog] delayed_start cancelled reason=caller_speech_or_cleanup state=%s",
-                _delay_state,
+                "[ms_watchdog] delayed_start cancelled q_gen=%d reason=caller_speech_or_cleanup",
+                q_gen,
             )
             return
         # Re-check ownership and speech guard after the delay — a newer task
@@ -1159,13 +1186,14 @@ class SilenceHandler:
             return
         if self.prompt_speech_detected:
             logger.info(
-                "[ms_watchdog] delayed_start cancelled reason=caller_speech_or_cleanup state=%s",
-                _delay_state,
+                "[ms_watchdog] delayed_start cancelled q_gen=%d reason=caller_speech",
+                q_gen,
             )
             return
+        _actual_delay = time.time() - _final_anchor if _final_anchor > 0 else 0.0
         logger.info(
-            "[ms_watchdog] delayed_start elapsed -> starting normal watchdog wait=%.1fs state=%s",
-            _wait, _delay_state,
+            "[ms_watchdog] delayed_start elapsed actual_delay=%.2fs state=%s wait=%.1fs",
+            _actual_delay, _delay_state, _wait,
         )
 
         logger.info("[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs", q_gen, _wait)
