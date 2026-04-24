@@ -9416,30 +9416,44 @@ class FlowEngine:
                     )
                     return
 
-                # ── Retry ladder: escalate wording then switch to DTMF ───────────
-                # retry 0 → spoken re-ask with explicit clinic names
+                # ── Retry ladder: biased binary confirm then switch to DTMF ──
+                # retry 0 → biased binary "did you mean our Alcester clinic?"
+                #           (Alcester is the majority booking destination, so
+                #           guessing it is a 70/30 bet rather than a coin flip).
+                #           Sets location_pending_guess="alcester" so the next
+                #           turn routes through the forced-confirm block:
+                #             yes / "that's right" / "use this clinic" → Alcester
+                #             no / "no, I meant Redditch" → Redditch (instant)
+                #             "actually Redditch" → explicit override → Redditch
                 # retry 1+ → DTMF keypad fallback
                 _loc_retry = self.session.get("location_retry_count", 0)
                 if _loc_retry == 0:
-                    # Second ask: polite re-ask with explicit names
                     _retry2_q = (
-                        "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "Sorry, I didn't quite catch that \u2014 "
+                        "did you mean our Alcester clinic? "
+                        "If not, just say: no, I meant Redditch."
                     )
-                    self.session["location_retry_count"] = 1
+                    self.session["location_retry_count"]  = 1
+                    self.session["location_pending_guess"] = "alcester"
                     await self._tts.put(_retry2_q)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _retry2_q}
                     )
                     self.session["last_question"] = _retry2_q
                     logger.info(
-                        "[ms_flow] ASK_LOCATION retry 2 emitted for %r", text[:40]
+                        "[ms_flow] ASK_LOCATION retry 2 biased-binary emitted "
+                        "(pending_guess=alcester) for %r",
+                        text[:40],
                     )
                 else:
-                    # Third ask: switch to DTMF keypad entry
+                    # Third ask: switch to DTMF keypad entry.  Clear any stale
+                    # pending-guess state so the DTMF-mode extractor owns the
+                    # next turn cleanly.
                     self.session["location_awaiting_dtmf"] = True
+                    self.session.pop("location_pending_guess", None)
+                    self.session.pop("location_pending_guess_reask", None)
                     _dtmf_q = (
-                        "Sorry, I didn't quite catch that — "
+                        "Sorry, I didn't quite catch that \u2014 "
                         "could you please press 1 on your keypad for the Alcester clinic "
                         "or 2 on your keypad for the Redditch clinic."
                     )

@@ -1407,12 +1407,19 @@ class SilenceHandler:
                 # the initial prompt forever.  Drive escalation off the
                 # same `location_retry_count` that flow.py uses so voice
                 # retries and silence retries share one ladder.
+                # Retry rung 1 is a biased binary — bet on Alcester being the
+                # majority destination so the caller can say "yes" once.  If
+                # they actually wanted Redditch, "no" / "no, I meant Redditch"
+                # binds Redditch instantly via the forced-confirm block in
+                # flow.py.  Setting location_pending_guess routes the next
+                # spoken turn there.  Rung 2 is the DTMF keypad fallback.
                 _APPROVED_LOC_RETRY = (
-                    "Sorry, I didn't quite catch that — "
-                    "could you say the Alcester clinic or the Redditch clinic?"
+                    "Sorry, I didn't quite catch that \u2014 "
+                    "did you mean our Alcester clinic? "
+                    "If not, just say: no, I meant Redditch."
                 )
                 _APPROVED_LOC_DTMF = (
-                    "Sorry, I didn't quite catch that — "
+                    "Sorry, I didn't quite catch that \u2014 "
                     "could you please press 1 on your keypad for the Alcester clinic "
                     "or 2 on your keypad for the Redditch clinic."
                 )
@@ -1420,12 +1427,15 @@ class SilenceHandler:
                 if _lrc_w == 0:
                     phrase = _APPROVED_LOC_RETRY
                     if _sess is not None:
-                        _sess["location_retry_count"] = 1
+                        _sess["location_retry_count"]  = 1
+                        _sess["location_pending_guess"] = "alcester"
                         _sess["last_question"] = phrase
                 else:
                     phrase = _APPROVED_LOC_DTMF
                     if _sess is not None:
                         _sess["location_awaiting_dtmf"] = True
+                        _sess.pop("location_pending_guess", None)
+                        _sess.pop("location_pending_guess_reask", None)
                         _sess["location_retry_count"] = max(_lrc_w + 1, 2)
                         _sess["last_question"] = phrase
             elif _state in (
