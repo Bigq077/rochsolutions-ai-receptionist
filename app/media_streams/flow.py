@@ -8881,23 +8881,14 @@ class FlowEngine:
             )
             if any(p in text.strip().lower() for p in _LOC_COMPARISON_SIGNALS):
                 _cmp_ans = (
-                    "Both clinics offer the same core physiotherapy and "
-                    "rehabilitation services. The main practical difference is "
-                    "location and opening hours \u2014 the Alcester clinic is on "
-                    "Kinwarton Road and is open Monday to Friday, eight thirty "
-                    "until nine in the evening. The Redditch clinic is on "
-                    "Bromsgrove Road and is open Monday to Saturday, closing at "
-                    "five most days and seven on Wednesdays and Thursdays. It "
-                    "usually just comes down to which is most convenient for you. "
-                    "Would you like to book at our Alcester or Redditch clinic?"
+                    "Both clinics offer the same core service \u2014 "
+                    "would you like Alcester or Redditch?"
                 )
                 await self._tts.put(_cmp_ans)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _cmp_ans}
                 )
-                self.session["last_question"] = (
-                    "Would you like to book at our Alcester or Redditch clinic?"
-                )
+                self.session["last_question"] = _cmp_ans
                 logger.info(
                     "[ms_flow] ASK_LOCATION: info_interrupt detected %r "
                     "(clinic_comparison_question=True, retry_count unchanged, "
