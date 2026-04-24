@@ -7888,9 +7888,15 @@ class FlowEngine:
 
         # ── MID-FLOW PATH SWITCH ─────────────────────────────────────────────────
         # Caller can switch between reschedule and cancel at any point mid-flow.
-        # Reschedule → cancel: detected here for PRESENT_DAYS/TIMES/CONFIRM_RESCHEDULE.
+        # Reschedule → cancel: detected here for LOOKUP/PRESENT_DAYS/TIMES/CONFIRM_RESCHEDULE.
+        # LOOKUP_RESCHEDULE is included so that when the caller corrects the
+        # system *after* the appointment has been found but *before* times are
+        # presented (the real-call failure mode), they are routed to
+        # CONFIRM_CANCEL and the existing reschedule_appt_* session keys are
+        # reused rather than thrown away.
         # Cancel → reschedule: already handled by CONFIRM_RESCHEDULE_OR_CANCEL handler.
         _MID_CANCEL_STATES = {
+            "LOOKUP_RESCHEDULE",
             "PRESENT_DAYS_RESCHEDULE", "PRESENT_TIMES_RESCHEDULE", "CONFIRM_RESCHEDULE",
         }
         if current_state in _MID_CANCEL_STATES:
@@ -7898,16 +7904,35 @@ class FlowEngine:
                 "cancel", "cancel it", "cancel the appointment", "cancel my appointment",
                 "want to cancel", "i'd like to cancel", "id like to cancel",
                 "actually cancel", "just cancel", "please cancel",
+                "wanted to cancel", "wanting to cancel",
+                "cancel instead", "rather cancel",
                 "don't want to reschedule", "dont want to reschedule",
+                "don't want to move", "dont want to move",
                 "not reschedule", "no reschedule", "no longer reschedule",
+                "i don't want to reschedule", "i dont want to reschedule",
+                "not moving it", "not move it",
             )
             if any(p in text for p in _MID_CANCEL_PHRASES):
+                # If a reschedule lookup has already bound an appointment, log
+                # the context reuse so we can verify in production that the
+                # cancel path inherits the found appointment instead of
+                # re-doing the lookup work.
+                _appt_id_found = self.session.get("reschedule_appt_id")
+                if _appt_id_found:
+                    logger.info(
+                        "[ms_flow] lookup_context_reused_for_cancel: "
+                        "appt_id=%s datetime=%r type=%r — jumping to CONFIRM_CANCEL",
+                        _appt_id_found,
+                        self.session.get("reschedule_appt_datetime"),
+                        self.session.get("reschedule_appt_type"),
+                    )
                 self.session["intent"] = "cancel"
                 self.session["flow_step"] = _CONFIRM_CANCEL_INDEX
                 self.session["question_asked_this_turn"] = False
                 logger.info(
-                    "[ms_flow] mid-flow cancel switch from %s → CONFIRM_CANCEL (idx=%d)",
-                    current_state, _CONFIRM_CANCEL_INDEX,
+                    "[ms_flow] reschedule_to_cancel_correction: from %s → "
+                    "CONFIRM_CANCEL (idx=%d) text=%r",
+                    current_state, _CONFIRM_CANCEL_INDEX, text[:80],
                 )
                 await self.ask_current_question()
                 return
@@ -20851,6 +20876,38 @@ class FlowEngine:
             "shockwave", "acupuncture", "laser", "massage", "pilates",
             "biomechanical", "biomechanics", "sports therapy", "physio assessment",
         )
+        # ── Cancel-beats-reschedule precedence guard ──────────────────────────
+        # If the utterance contains BOTH reschedule and cancel evidence, the
+        # explicit cancel wins.  Examples that used to incorrectly route to
+        # reschedule:
+        #   "i need to cancel, not reschedule"
+        #   "don't reschedule it, cancel the appointment"
+        #   "cancel instead of rescheduling"
+        # Also fires for a stronger cancel lexicon ("cancel my appointment",
+        # "cancel instead", "not reschedule", "wanted to cancel") even without
+        # both matches — these are unambiguous cancel intents that the
+        # reschedule_p list would otherwise steal if STT fragmented the text.
+        _CANCEL_EXPLICIT = (
+            "cancel my appointment", "cancel the appointment",
+            "cancel my booking", "cancel the booking",
+            "cancel it", "cancel instead", "want to cancel",
+            "need to cancel", "i'd like to cancel", "id like to cancel",
+            "going to cancel", "have to cancel",
+            "not reschedule", "no reschedule", "instead of reschedul",
+            "rather cancel", "just cancel",
+            "wanted to cancel", "wanting to cancel",
+        )
+        _has_cancel_explicit = any(p in text for p in _CANCEL_EXPLICIT)
+        _has_cancel_any      = any(p in text for p in cancel_p)
+        _has_reschedule_any  = any(p in text for p in reschedule_p)
+        if _has_cancel_explicit or (_has_cancel_any and _has_reschedule_any):
+            logger.info(
+                "[ms_flow] cancel_intent_wins_over_reschedule: "
+                "explicit=%s cancel_any=%s reschedule_any=%s text=%r",
+                _has_cancel_explicit, _has_cancel_any, _has_reschedule_any,
+                text[:80],
+            )
+            return "cancel"
         if any(p in text for p in reschedule_p): return "reschedule"
         if any(p in text for p in cancel_p):     return "cancel"
         if any(p in text for p in insurance_p):  return "faq_insurance"
