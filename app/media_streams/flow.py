@@ -8699,7 +8699,7 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_loc_intent, transcript)
                     return
 
-                # ── Score-based silent bind: winner ≥ 60 pts WITH prefix or soft-alias evidence ──
+                # ── Score-based silent bind: conf ≥ 0.60 WITH prefix or soft-alias evidence ──
                 # The resolver already computed both scores.  If the winning clinic
                 # cleared the threshold AND has positive prefix/soft-alias evidence
                 # (not pure similarity), the signal is strong enough to commit
@@ -8722,7 +8722,7 @@ class FlowEngine:
                 )
                 if (
                     _sl_result["status"] == "ambiguous"
-                    and _sl_conf >= 0.57
+                    and _sl_conf >= 0.60
                     and _sl_has_signal
                 ):
                     _sl_dbg  = _sl_result.get("debug", {})
@@ -8740,7 +8740,7 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
 
-                # ── ASK_LOCATION-only clear-dominance bind (Bug A) ───────────────
+                # ── ASK_LOCATION-only clear-dominance bind ───────────────────────
                 # Some obvious STT variants ("you access the clinic") produce
                 # ambiguous status with pure-similarity evidence, so the bind
                 # above skips them.  When one clinic score is clearly dominant
@@ -8754,7 +8754,7 @@ class FlowEngine:
                     _sl_red2 = _sl_dbg2.get("redditch_score", 0)
                     _sl_win2  = max(_sl_alc2, _sl_red2)
                     _sl_lose2 = min(_sl_alc2, _sl_red2)
-                    if _sl_win2 >= 53 and (_sl_win2 - _sl_lose2) >= 30:
+                    if _sl_win2 >= 55 and (_sl_win2 - _sl_lose2) >= 30:
                         _sl_bind2 = "alcester" if _sl_alc2 >= _sl_red2 else "redditch"
                         self.session["selected_location"] = _sl_bind2
                         self.session["needs_location"]    = False
@@ -8767,6 +8767,50 @@ class FlowEngine:
                             _sl_bind2, text[:40],
                         )
                         await self.ask_current_question()
+                        return
+
+                    # ── Pending-guess confirmation: 50–60 raw with ≥ 20 pt lead ──
+                    # The resolver has a directional opinion but not enough
+                    # confidence to bind silently (score-bind and dominance-bind
+                    # both missed).  Rather than retrying blindly, offer a single
+                    # binary confirmation — "Did you mean Alcester?" — so the
+                    # caller can confirm or correct with a simple yes/no.
+                    #
+                    # Fires when:
+                    #   • status == "ambiguous" (a leading candidate exists)
+                    #   • winning raw score is in [50, 60)
+                    #   • lead over the loser is ≥ 20 points
+                    #   • location_pending_guess not already set (no re-trigger)
+                    #
+                    # Does NOT increment location_retry_count — this is a
+                    # clarification, not a retry.  The existing forced-confirm
+                    # block (line ~7976) handles the next turn: yes → bind,
+                    # no → opposite clinic, explicit name → override,
+                    # neither → DTMF fallback.
+                    _pg_win  = _sl_win2
+                    _pg_lead = _sl_win2 - _sl_lose2
+                    if (
+                        50 <= _pg_win < 60
+                        and _pg_lead >= 20
+                        and not self.session.get("location_pending_guess")
+                    ):
+                        _pg_clinic = (
+                            "Alcester" if _sl_alc2 >= _sl_red2 else "Redditch"
+                        )
+                        _pg_key = _pg_clinic.lower()
+                        self.session["location_pending_guess"] = _pg_key
+                        _pg_q = f"Did you mean our {_pg_clinic} clinic?"
+                        await self._tts.put(_pg_q)
+                        self.session.setdefault("conversation_history", []).append(
+                            {"role": "assistant", "content": _pg_q}
+                        )
+                        self.session["last_question"] = _pg_q
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: pending-guess "
+                            "(alc=%d red=%d win=%d lead=%d → asking %r) for %r",
+                            _sl_alc2, _sl_red2, _pg_win, _pg_lead,
+                            _pg_q, text[:40],
+                        )
                         return
 
                 # ── Clipped-fragment keep-listening guard ────────────────────────
