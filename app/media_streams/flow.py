@@ -989,6 +989,79 @@ def _is_booking_resume_signal(text: str) -> bool:
     return any(p in t for p in _BOOKING_RESUME_SIGS)
 
 
+# ── Incomplete-turn continuation guard ───────────────────────────────────
+# Trailing tokens that strongly signal the caller has not finished their
+# sentence: connectors, prepositions, auxiliaries, bare pronouns.  An STT
+# final ending on one of these is almost always a premature finalization
+# of a longer utterance still being spoken.  Holding the floor briefly
+# avoids misclassifying these fragments as full answers and prevents the
+# watchdog / retry path from firing on top of them.
+_INCOMPLETE_TRAILING_TOKENS: frozenset = frozenset({
+    "i", "i'd", "id", "i'm", "im", "i've", "ive",
+    "to", "for", "at", "on", "in", "of", "with", "from", "about", "by",
+    "and", "or", "but", "so", "because", "if", "that",
+    "the", "a", "an", "my", "our", "your",
+    "like", "want", "wanted", "would", "could", "should",
+    "need", "needed", "trying",
+    "is", "was", "are", "were", "am",
+    "not", "never",
+    "wondering", "thinking",
+})
+
+# Trailing bigrams that read as unfinished even when the last token would
+# otherwise be considered complete.
+_INCOMPLETE_TRAILING_BIGRAMS: tuple = (
+    "not sure", "i'm not", "im not",
+    "never mind i", "actually i",
+)
+
+# States whose own answer space is tiny / deterministic (binary yes-no,
+# digits, menu choice).  The hold must not engage inside them — they have
+# their own sophisticated tail handling and short answers there are never
+# structurally unfinished.
+_INCOMPLETE_HOLD_SKIP_STATES: frozenset = frozenset({
+    "CONFIRM_PHONE", "CONFIRM_PHONE_RETURNING",
+    "RETURNING_PLAN_CONFIRM_PHONE",
+    "CONFIRM_BOOKING",
+    "CONFIRM_ASSESSMENT",
+    "PRESENT_DAYS", "PRESENT_DAYS_RESCHEDULE",
+    "PRESENT_TIMES", "PRESENT_TIMES_RESCHEDULE",
+    "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
+    "COLLECT_PHONE_RESCHEDULE",
+    "RETURNING_PLAN_COLLECT_PHONE",
+})
+
+_INCOMPLETE_HOLD_WINDOW_SEC = 2.5
+
+
+def _looks_incomplete_turn(text: str) -> bool:
+    """Deterministic check: does this STT final look like an unfinished
+    fragment the caller is about to extend?  Narrow by design — fragments
+    ending on a structural connector / auxiliary / bare pronoun, or short
+    bare purpose-clauses ("to cancel"), qualify.  Complete short answers
+    ("yes", "no", clinic names, "use this number", explicit corrections
+    / intent-switches) intentionally fall through as False.
+    """
+    t = (text or "").strip().lower().rstrip(".?!,;:")
+    if not t:
+        return False
+    words = [w.strip(".,!?;:'\"") for w in t.split()]
+    words = [w for w in words if w]
+    if not words or len(words) > 8:
+        return False
+    if words[-1] in _INCOMPLETE_TRAILING_TOKENS:
+        return True
+    if len(words) >= 2:
+        tail2 = " ".join(words[-2:])
+        if tail2 in _INCOMPLETE_TRAILING_BIGRAMS:
+            return True
+    # Bare purpose-clause fragment: "to cancel" / "to book" / "to
+    # reschedule" — the main-clause verb never arrived.
+    if words[0] == "to" and len(words) <= 3:
+        return True
+    return False
+
+
 # ── Weak / opener-only FAQ preface detector (premature-commit fix) ───────────
 # "I had a quick question", "I was wondering", "first off…" — caller has
 # signalled a side-question but has not yet landed the actual question.
@@ -5550,6 +5623,52 @@ class FlowEngine:
                     )
                     return
             logger.info("[ms_flow] flow complete — ignoring transcript: %r", transcript[:60])
+            return
+
+        # ── Incomplete-turn continuation hold ─────────────────────────────
+        # Deterministic guard against premature-recovery / incomplete-turn
+        # handling.  When STT finalizes on an obviously unfinished fragment
+        # (e.g. "i'd like", "yeah i'd like to", "to cancel") we must NOT
+        # classify intent, advance state, refresh last_question, append to
+        # conversation_history, or emit a retry prompt.  Instead we stash
+        # the fragment and hold the floor open for a bounded window.  If a
+        # continuation arrives inside the window we stitch the two and
+        # process the combined utterance; if the window expires the
+        # watchdog owns the single recovery (connection.py reads
+        # `_incomplete_hold_until` and defers while it is live).
+        _ic_now = time.time()
+        _ic_state = step["state"] if step else ""
+        _ic_pending = self.session.get("_incomplete_hold_text")
+        _ic_until   = float(self.session.get("_incomplete_hold_until") or 0.0)
+        if _ic_pending and _ic_now <= _ic_until:
+            _ic_combined = f"{_ic_pending} {transcript}".strip()
+            self.session.pop("_incomplete_hold_text", None)
+            self.session.pop("_incomplete_hold_until", None)
+            logger.info(
+                "[ms_flow] incomplete_hold: continuation stitched prev=%r new=%r combined=%r",
+                str(_ic_pending)[:60], transcript[:60], _ic_combined[:120],
+            )
+            transcript = _ic_combined
+        elif _ic_pending:
+            self.session.pop("_incomplete_hold_text", None)
+            self.session.pop("_incomplete_hold_until", None)
+            logger.info(
+                "[ms_flow] incomplete_hold: stale pending cleared (expired) prev=%r",
+                str(_ic_pending)[:60],
+            )
+
+        if (
+            _ic_state not in _INCOMPLETE_HOLD_SKIP_STATES
+            and not self.session.get("_incomplete_hold_text")
+            and _looks_incomplete_turn(transcript)
+        ):
+            self.session["_incomplete_hold_text"]  = transcript
+            self.session["_incomplete_hold_until"] = _ic_now + _INCOMPLETE_HOLD_WINDOW_SEC
+            logger.info(
+                "[ms_flow] incomplete_hold: holding floor text=%r state=%s window=%.1fs "
+                "(no state advance, no retry, no last_question refresh)",
+                transcript[:80], _ic_state, _INCOMPLETE_HOLD_WINDOW_SEC,
+            )
             return
 
         # Reset per-turn guard so ask_current_question() can fire exactly once this turn

@@ -480,6 +480,25 @@ class SilenceHandler:
             )
             return
 
+        # Guard -0.5: incomplete-turn continuation hold — flow is holding
+        # the floor open for a fragment finalization.  Suppress this
+        # recovery prompt so it does not speak on top of the caller; the
+        # watchdog owns the single recovery once the hold window expires.
+        _sess_ich = self._get_session() if self._get_session else {}
+        _ich_until = float((_sess_ich or {}).get("_incomplete_hold_until") or 0.0)
+        if time.time() < _ich_until:
+            logger.info(
+                "[ms_silence] recovery: incomplete-turn hold active (until=%.3f) — suppressing",
+                _ich_until,
+            )
+            _wdg_live = (
+                self._no_input_watchdog_task is not None
+                and not self._no_input_watchdog_task.done()
+            )
+            if not _wdg_live and not self._cancelled and not self._tts_playing and not self._llm_busy:
+                self._restart_timer()
+            return
+
         # Guard 0: TTS is currently playing — never fire while Susie is speaking.
         # on_tts_started() sets _tts_playing=True; on_tts_finished() clears it.
         # This is the primary fix for energy VAD triggering recovery during long
@@ -1183,6 +1202,24 @@ class SilenceHandler:
                     "(grace_until=%.3f)",
                     q_gen, self._watchdog_grace_until,
                 )
+                continue
+
+            # Incomplete-turn continuation hold — flow has stashed an
+            # unfinished STT final and is waiting for the caller to finish
+            # their sentence.  Defer the re-ask until the hold window
+            # expires so we never speak on top of an in-progress utterance.
+            # Takes precedence over the normal grace / engagement checks.
+            _ic_hold_until = float((_sess or {}).get("_incomplete_hold_until") or 0.0)
+            if time.time() < _ic_hold_until:
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_INCOMPLETE_HOLD q_gen=%d defer_until=%.3f",
+                    q_gen, _ic_hold_until,
+                )
+                try:
+                    await asyncio.sleep(max(0.1, _ic_hold_until - time.time() + 0.05))
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    return
                 continue
 
             # Risk-1 / fire-time enforcement: honour _watchdog_grace_until as the
