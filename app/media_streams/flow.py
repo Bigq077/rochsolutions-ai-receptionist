@@ -7020,6 +7020,47 @@ class FlowEngine:
             logger.info("[ms_flow] global repair intercept (state=%s): %r", _repair_state, transcript[:60])
             return
 
+        # ── GREETING-state repeat / greeting-echo intercept ──────────────────────
+        # At flow_step=0 / state=GREETING the canonical prompt is NOT stored in
+        # last_question (it's empty) — it lives in session["last_bot_prompt"]
+        # because _inject_greeting() speaks the greeting directly, not via
+        # ask_current_question().  Without this intercept, "hi there could you
+        # repeat that please" or pure greetings like "hi"/"hello" at GREETING
+        # hit the generic repeat path and fall back to the empty-last_question
+        # guard phrase "Sorry, could you say that again?" in connection.py.
+        # Replay the original greeting instead, and do not advance state.
+        _gs_state = (step.get("state") if step else "") or self.session.get("state", "")
+        if _gs_state == "GREETING":
+            _gs_is_repeat = any(p in text for p in _GLOBAL_REPEAT_PHRASES)
+            _GS_GREET_ONLY = {
+                "hi", "hello", "hey", "hiya", "yo",
+                "hi there", "hello there", "hey there",
+                "good morning", "good afternoon", "good evening",
+                "sorry", "pardon", "pardon?",
+            }
+            _gs_tnorm = text.strip().rstrip(".?!,;:")
+            _gs_is_greet_only = _gs_tnorm in _GS_GREET_ONLY
+            if _gs_is_repeat or _gs_is_greet_only:
+                _gs_greeting = (
+                    self.session.get("last_bot_prompt")
+                    or "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
+                )
+                while not self._tts.empty():
+                    try:
+                        self._tts.get_nowait()
+                    except Exception:
+                        break
+                await self._tts.put(_gs_greeting)
+                self.session["last_bot_prompt"] = _gs_greeting
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _gs_greeting}
+                )
+                logger.info(
+                    "[ms_flow] GREETING replay intercept (repeat=%s greet_only=%s): %r",
+                    _gs_is_repeat, _gs_is_greet_only, transcript[:60],
+                )
+                return
+
         # ── LOOKUP_RESCHEDULE repeat intercept ───────────────────────────────────
         # If the caller asks to repeat after the confirm fires, speak the short
         # version directly rather than replaying the full "I found an appointment..."
