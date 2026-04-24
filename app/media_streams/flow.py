@@ -11126,14 +11126,60 @@ class FlowEngine:
         _is_returning_qual_answer = step is not None and step.get("state") in {
             "RETURNING_RECENCY", "RETURNING_TREATMENT_PLAN",
         }
+        # Task 11: CONFIRM_RESCHEDULE_OR_CANCEL choice-parse-before-abandonment.
+        # "I want to cancel the appointment" / "I'd like to cancel it" etc.
+        # are direct answers to the binary choice — never abandonment here.
+        _ROC_CHOICE_CANCEL_SIGNALS = (
+            "cancel", "cancel it", "cancel the appointment",
+            "cancel my appointment", "cancel altogether", "cancel it altogether",
+            "just cancel", "please cancel", "cancel please",
+            "want to cancel", "wanna cancel",
+            "i want to cancel", "i'd like to cancel", "id like to cancel",
+            "like to cancel",
+            "can we cancel", "could we cancel",
+            "go ahead and cancel",
+        )
+        _ROC_CHOICE_RESCHEDULE_SIGNALS = (
+            "reschedule", "reschedule it", "move it", "change it",
+            "change the appointment", "change my appointment",
+            "move the appointment", "move the time",
+            "book another", "book another time",
+            "another time", "another day", "another slot",
+            "different time", "different day", "different slot",
+            "rearrange", "move to", "pick another", "find another",
+            "can we move", "could we move",
+            "i want to reschedule", "i'd like to reschedule", "id like to reschedule",
+            "want to reschedule", "like to reschedule",
+        )
+        _is_roc_state = step is not None and step.get("state") == "CONFIRM_RESCHEDULE_OR_CANCEL"
+        _is_roc_cancel_choice = _is_roc_state and any(
+            p in text for p in _ROC_CHOICE_CANCEL_SIGNALS
+        )
+        _is_roc_reschedule_choice = _is_roc_state and any(
+            p in text for p in _ROC_CHOICE_RESCHEDULE_SIGNALS
+        )
+        if _is_roc_cancel_choice:
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL cancel_choice matched before abandonment"
+            )
+        elif _is_roc_reschedule_choice:
+            logger.info(
+                "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL reschedule_choice matched before abandonment"
+            )
         if (
             step["state"] != "DETECT_INTENT"
             and not _is_active_nav
             and not _is_sched_nav_ambiguous
             and not _is_phone_reversal
             and not _is_returning_qual_answer
+            and not _is_roc_cancel_choice
+            and not _is_roc_reschedule_choice
             and any(sig in text for sig in _ABANDON_SIGNALS)
         ):
+            if _is_roc_state:
+                logger.info(
+                    "[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL abandonment allowed after no choice match"
+                )
             # Insertion point 2 — name usage tracker (final sign-off)
             _sign_off_name = self._name_tracker.get_name_if_available()
             self.session["name_tracker_uses"] = self._name_tracker._uses_remaining
