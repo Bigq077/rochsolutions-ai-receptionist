@@ -7111,10 +7111,45 @@ class FlowEngine:
                 "hi there", "hello there", "hey there",
                 "good morning", "good afternoon", "good evening",
                 "sorry", "pardon", "pardon?",
+                # Short clarification / confusion signals that are not in
+                # _GLOBAL_REPEAT_PHRASES but clearly mean "I didn't get
+                # what you just said" at the greeting stage.
+                "hello?", "hi?", "hey?", "sorry?", "what?", "huh",
             }
+            # Greeting-stage extension: clarification / confusion phrases
+            # that are NOT globally treated as repeat requests.  Scoped to
+            # GREETING only so non-greeting states are unaffected.
+            _GS_CLARIFY_PHRASES = (
+                "i didn't understand", "didn't understand",
+                "i dont understand", "don't understand",
+                "what do you mean", "what does that mean",
+                "i didn't hear", "didn't hear you",
+                "i can't hear", "cant hear you",
+                "you're breaking up", "youre breaking up",
+            )
+            _gs_is_clarify = any(p in text for p in _GS_CLARIFY_PHRASES)
             _gs_tnorm = text.strip().rstrip(".?!,;:")
             _gs_is_greet_only = _gs_tnorm in _GS_GREET_ONLY
-            if _gs_is_repeat or _gs_is_greet_only:
+            # Booking-intent protection: never intercept when the caller is
+            # clearly starting a real request.  Narrow signal list so the
+            # guard doesn't over-match on normal greeting utterances.
+            _GS_BOOKING_INTENT_SIGS = (
+                "book", "appointment", "cancel", "reschedule",
+                "change my appointment", "move my appointment",
+                "need to see", "need an appointment",
+            )
+            _gs_booking_intent = any(p in text for p in _GS_BOOKING_INTENT_SIGS)
+            if (_gs_is_repeat or _gs_is_greet_only or _gs_is_clarify) and not _gs_booking_intent:
+                logger.info(
+                    "[ms_flow] greeting_repeat_intercept: replaying intro for transcript=%r",
+                    transcript[:60],
+                )
+            elif _gs_booking_intent:
+                logger.info(
+                    "[ms_flow] greeting_repeat_intercept: generic path preserved for transcript=%r",
+                    transcript[:60],
+                )
+            if (_gs_is_repeat or _gs_is_greet_only or _gs_is_clarify) and not _gs_booking_intent:
                 _gs_greeting = (
                     self.session.get("last_bot_prompt")
                     or "Hi there, I'm Susie, Theorem Health's AI receptionist — how can I help you today?"
