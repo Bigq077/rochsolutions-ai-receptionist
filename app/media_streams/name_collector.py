@@ -192,6 +192,8 @@ _NC_SEMANTIC_DENYLIST: frozenset = frozenset({
     # Conversational/discourse tokens that tokenise to ≥5-char survivors
     "question", "questions", "wondered", "wondering", "problem",
     "things", "started", "honestly",
+    # Common English adjectives/adverbs that are never first names
+    "quick", "quickly", "briefly", "simply",
 })
 
 # Minimum token length (chars) considered "strong" for direct-accept without
@@ -528,6 +530,22 @@ _FN_NON_NAME_SUBSTRINGS: tuple = (
     "i had a quick question", "i have a quick question",
     "i had a question", "i have a question",
     "quick question",
+    # Truncated question-opener fragments (when "question" is filtered by denylist)
+    "just had a quick",    # "i just had a quick" (STT truncation of longer question)
+    "just a quick",        # "just a quick one/call/thing"
+    "had a quick",         # "i had a quick"
+    "i just had",          # "i just had a ..." prefix
+    "i've just had",       # "i've just had a ..."
+    "i was just",          # "i was just wondering/calling"
+    "just calling",        # "i'm just calling to ..."
+    "calling about",       # "i'm calling about ..."
+    # Information-seek phrases that are clearly not names
+    "how much is",         # "how much is an assessment"
+    "how much do",         # "how much do you charge"
+    "how much does",       # "how much does it cost"
+    "can i ask",           # "can i ask something"
+    "i'd like to ask",     # "i'd like to ask a question"
+    "id like to ask",
 )
 
 # Whole-utterance filler (after lowercasing + trimming trailing punctuation).
@@ -934,6 +952,22 @@ class NameCollector:
                         "Sorry — I just need your first name. "
                         "Could you say it on its own please?"
                     )
+                # Structural multi-word guard: if the cleaned text has ≥ 4 words
+                # but collapsed to 1 valid token, the utterance is very likely a
+                # sentence fragment ("i just had a quick", "just briefly wondered")
+                # rather than a pure name response.  Require fn_confirm so the
+                # caller can explicitly confirm or deny — avoids silently storing
+                # e.g. "Quick" from "i just had a quick".  Genuine name intros
+                # ("my name is Quentin") collapse to 1 cleaned word after prefix
+                # stripping, so they are unaffected.
+                _mw_count = len([w for w in cleaned.split() if len(w) >= 2])
+                if _mw_count >= 4:
+                    logger.info(
+                        "[NameCollector] fn_normal: multi-word→single-token guard "
+                        "token=%r cleaned_words=%d → fn_confirm",
+                        _tok, _mw_count,
+                    )
+                    return self._enter_fn_confirm(_tok)
                 # Context-aware safety: if the session carries an active
                 # mid-booking FAQ context or a held FAQ intro, route to
                 # fn_confirm (readback + yes/no) instead of auto-accepting.

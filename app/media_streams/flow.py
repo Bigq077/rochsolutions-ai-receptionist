@@ -9892,6 +9892,14 @@ class FlowEngine:
                 "the name is", "it should be under", "it's under",
                 "name should be", "my surname is", "my first name is",
                 "actually it's", "no it's",
+                # Bug Family 2: additional natural correction phrases
+                "my name is",              # "you made a mistake, my name is Quentin"
+                "name is not right",       # "my name is not right"
+                "name's not right",
+                "you made a mistake",      # "you made a mistake with my name"
+                "you've made a mistake",
+                "there's been a mistake",
+                "not the right name",
             )
             if any(p in text for p in _NAME_REPAIR):
                 # Locate COLLECT_NAME step in the active flow (works for all flows)
@@ -18854,9 +18862,23 @@ class FlowEngine:
             _is_correction = any(p in text for p in _cb_corr_phrases)
 
             # Also treat name-repair phrases as corrections (reuses CONFIRM_PHONE logic)
+            # Bug Family 3: extended to route all name-correction signals specifically
+            # to COLLECT_NAME rather than the generic "what would you like to change?"
+            # response.  These are checked before _is_correction in the elif chain.
             _cb_name_fix_phrases = (
                 "my name is", "my surname is", "my first name is",
                 "it should be under", "the name should be",
+                # Explicit name-correction signals
+                "that's not my name", "thats not my name",
+                "that is not my name",
+                "the name is wrong", "name is wrong", "name's wrong",
+                "wrong name",
+                "surname is wrong", "first name is wrong",
+                "you made a mistake",
+                "you've made a mistake",
+                "made a mistake with",
+                "name is not right", "name's not right",
+                "not the right name",
             )
             _is_name_fix = any(p in text for p in _cb_name_fix_phrases)
             if _is_name_fix:
