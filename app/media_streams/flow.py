@@ -1626,6 +1626,73 @@ _CR_EXPLICIT_CONFIRM = (
 )
 
 
+# ── CONFIRM_CANCEL strict-confirmation gate (Task 9) ─────────────────────────
+# Only these phrases (or a bare yes-family token in context) may trigger
+# actual cancellation. Everything else must NOT same-turn cancel.
+_CC_EXPLICIT_CONFIRM = (
+    "yes", "yes please", "yes thanks", "yes thank you",
+    "yeah", "yep", "yup",
+    "cancel it", "cancel that", "cancel that one", "cancel the appointment",
+    "cancel my appointment", "please cancel it", "please cancel",
+    "yes cancel it", "yes cancel that", "yes cancel",
+    "go ahead", "yes go ahead", "please go ahead",
+    "that's right cancel it", "thats right cancel it",
+    "that's the one cancel it", "thats the one cancel it",
+    "confirm", "confirmed", "please do", "do it",
+    "correct", "that's correct", "thats correct",
+)
+_CC_REJECT_PHRASES = (
+    "no", "nope", "nah", "not that one", "not that appointment",
+    "wrong one", "wrong appointment", "not the right one",
+    "different one", "a different appointment", "different appointment",
+    "that's not it", "thats not it", "that is not it",
+    "don't cancel", "dont cancel", "do not cancel",
+    "keep it", "leave it", "never mind", "nevermind",
+)
+_CC_QUESTION_MARKERS = (
+    "what", "which", "when", "how", "why",
+    "do you", "have you", "could you", "can you",
+    "is there", "are there",
+)
+
+
+def _cc_classify_cancel_utterance(text: str) -> str:
+    """
+    Classify a transcript at CONFIRM_CANCEL (with cancel_prompt_pending set)
+    into: "confirm" | "reject" | "unclear".
+    Exploratory / question-shape utterances are treated as "unclear" so the
+    confirmation prompt is re-asked rather than triggering cancellation.
+    """
+    t = (text or "").strip().lower().rstrip(".?!,;:")
+    if not t:
+        return "unclear"
+    # Reject first — wins over any yes-substring
+    if t in _CC_REJECT_PHRASES:
+        return "reject"
+    if any(
+        t == p or t.startswith(p + " ") or t.endswith(" " + p)
+        or (" " + p + " ") in (" " + t + " ")
+        for p in _CC_REJECT_PHRASES
+    ):
+        return "reject"
+    # Question-shape → never execute
+    if "?" in (text or "") or any(
+        t.startswith(m + " ") or (" " + m + " ") in (" " + t + " ")
+        for m in _CC_QUESTION_MARKERS
+    ):
+        return "unclear"
+    # Strict explicit-confirm match
+    if t in _CC_EXPLICIT_CONFIRM:
+        return "confirm"
+    if any(
+        t == p or t.startswith(p + " ") or t.endswith(" " + p)
+        or (" " + p + " ") in (" " + t + " ")
+        for p in _CC_EXPLICIT_CONFIRM
+    ):
+        return "confirm"
+    return "unclear"
+
+
 def _cr_classify_reschedule_utterance(text: str) -> str:
     """
     Classify a transcript at CONFIRM_RESCHEDULE as one of:
@@ -4245,46 +4312,66 @@ class FlowEngine:
             logger.info("[ms_flow] CONFIRM_RESCHEDULE_OR_CANCEL — asked binary choice")
             return
 
-        # ── CONFIRM_CANCEL: directly execute via Acuity API (no LLM / no extra
-        # patient turn needed).  Cancel intent + name + phone is sufficient.
+        # ── CONFIRM_CANCEL: STRICT two-phase confirmation gate (Task 9) ────────
+        # Entering this state NO LONGER executes the cancel. Instead we read
+        # back the looked-up appointment and ask for an explicit, fresh
+        # confirmation. Execution is performed in the NEXT transcript turn by
+        # the CONFIRM_CANCEL intercept at the top of handle_transcript — and
+        # only when the caller gives an explicit confirm phrase.
         if step["state"] == "CONFIRM_CANCEL":
-            from app.tools.receptionist_tools import _exec_cancel_appointment
-            phone_val = (
-                self.session.get("phone_number")
-                or self.session.get("twilio_from_local")
-                or self.session.get("twilio_from", "")
-            )
-            cancel_args = {
-                "patient_name": self.session.get("full_name", ""),
-                "phone":        phone_val,
-                "location":     self.session.get("selected_location", "alcester"),
-            }
-            logger.info("[ms_flow] CONFIRM_CANCEL — calling _exec_cancel_appointment directly")
-            # Patient intent confirmed by reaching this step — record regardless of Acuity result
-            self.session["cancel_confirmed"] = True
-            cancel_result = await _exec_cancel_appointment(cancel_args, self.session)
-            if cancel_result.get("success"):
-                response = (
-                    "That's all sorted — your appointment's been cancelled. "
-                    "You'll get a confirmation text shortly. "
-                    "Is there anything else I can help with?"
+            # Build a spoken readback of the found appointment, when available.
+            _cc_fn = (
+                self.session.get("lookup_appt_first_name")
+                or self.session.get("reschedule_appt_first_name")
+                or ""
+            ).strip()
+            _cc_ln = (
+                self.session.get("lookup_appt_last_name")
+                or self.session.get("reschedule_appt_last_name")
+                or ""
+            ).strip()
+            _cc_full = (self.session.get("full_name") or f"{_cc_fn} {_cc_ln}").strip()
+            _cc_when_iso = (self.session.get("reschedule_appt_datetime") or "").strip()
+            _cc_when_speech = _format_slot_for_speech(_cc_when_iso) if _cc_when_iso else ""
+            _cc_loc = (self.session.get("selected_location") or "").strip()
+            _cc_loc_speech = _cc_loc.capitalize() if _cc_loc else ""
+            _cc_appt_id = self.session.get("reschedule_appt_id") or ""
+
+            if _cc_full and _cc_when_speech and _cc_loc_speech:
+                _cc_q = (
+                    f"I found an appointment under {_cc_full} for {_cc_when_speech} "
+                    f"in {_cc_loc_speech}. Would you like me to cancel that appointment?"
+                )
+            elif _cc_when_speech:
+                _cc_q = (
+                    f"I found your appointment for {_cc_when_speech}. "
+                    "Would you like me to cancel that appointment?"
                 )
             else:
-                response = (
-                    "I wasn't able to find an upcoming appointment under those details — "
-                    "it's worth giving us a call directly on 0\u20097\u20098\u20097\u20090"
-                    "\u20091\u20096\u20096\u20098\u20096\u20091 and the team will be happy "
-                    "to sort it. Is there anything else I can help with?"
+                _cc_q = (
+                    "Just to confirm — would you like me to cancel your upcoming "
+                    "appointment? Please say yes to confirm or no to keep it."
                 )
-                self.session["acuity_error"] = cancel_result.get("error")
-            await self._tts.put(response)
-            self.session.setdefault("conversation_history", []).append(
-                {"role": "assistant", "content": response}
+
+            await self._tts.put(_cc_q)
+            _store_last_question(
+                self.session, _cc_q, force=True,
+                source="flow_step:CONFIRM_CANCEL:prompt",
             )
-            self.session["flow_step"] = len(self._active_flow)
+            self.session["question_asked_this_turn"] = True
+            self.session["cancel_prompt_pending"] = True
+            # Ensure we do not set cancel_confirmed here — execution only on fresh confirm.
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": _cc_q}
+            )
             logger.info(
-                "[ms_flow] CONFIRM_CANCEL complete — cancel_confirmed=%s",
-                self.session["cancel_confirmed"],
+                "[ms_flow] cancel_intent_detected -> entering CONFIRM_CANCEL no_execute "
+                "appt_id=%r when=%r",
+                _cc_appt_id, _cc_when_iso,
+            )
+            logger.info(
+                "[ms_flow] CONFIRM_CANCEL asked_final_confirmation appt_id=%r",
+                _cc_appt_id,
             )
             return
 
@@ -5883,6 +5970,158 @@ class FlowEngine:
         )
 
         text = transcript.strip().lower()
+
+        # ── CONFIRM_CANCEL strict-confirmation gate (Task 9) ──────────────────
+        # If a cancel confirmation prompt has been spoken and we're awaiting the
+        # caller's explicit yes/no, handle that here BEFORE any other state-
+        # machine logic can treat the utterance as an extracted "answer" and
+        # advance into the (legacy) execute block.
+        _cc_step = step if step else None
+        _cc_state = (_cc_step.get("state") if _cc_step else "") or self.session.get("state", "")
+        if _cc_state == "CONFIRM_CANCEL" and self.session.get("cancel_prompt_pending"):
+            _cc_cls = _cc_classify_cancel_utterance(transcript)
+            if _cc_cls == "reject":
+                logger.info(
+                    "[ms_flow] CONFIRM_CANCEL execution_blocked reason=not_fresh_explicit_confirm "
+                    "cls=reject transcript=%r",
+                    transcript[:120],
+                )
+                # Clear pending and route back to lookup repair.
+                self.session["cancel_prompt_pending"] = False
+                self.session["cancel_confirmed"] = False
+                # Rewind to LOOKUP_RESCHEDULE so the caller can correct / retry.
+                try:
+                    for _i, _s in enumerate(self._active_flow):
+                        if _s.get("state") == "LOOKUP_RESCHEDULE":
+                            self.session["flow_step"] = _i
+                            self.session["state"] = "LOOKUP_RESCHEDULE"
+                            break
+                except Exception:
+                    pass
+                _msg = (
+                    "No problem — could you tell me a bit more about the appointment "
+                    "you'd like to cancel, such as the day or time?"
+                )
+                await self._tts.put(_msg)
+                _store_last_question(
+                    self.session, _msg, force=True,
+                    source="flow_step:CONFIRM_CANCEL:reject",
+                )
+                self.session["question_asked_this_turn"] = True
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _msg}
+                )
+                return
+            if _cc_cls != "confirm":
+                logger.info(
+                    "[ms_flow] CONFIRM_CANCEL execution_blocked reason=not_fresh_explicit_confirm "
+                    "cls=%s transcript=%r",
+                    _cc_cls, transcript[:120],
+                )
+                # Re-ask confirmation cleanly.
+                _cc_fn2 = (
+                    self.session.get("lookup_appt_first_name")
+                    or self.session.get("reschedule_appt_first_name") or ""
+                ).strip()
+                _cc_ln2 = (
+                    self.session.get("lookup_appt_last_name")
+                    or self.session.get("reschedule_appt_last_name") or ""
+                ).strip()
+                _cc_full2 = (self.session.get("full_name")
+                             or f"{_cc_fn2} {_cc_ln2}").strip()
+                _cc_when2 = _format_slot_for_speech(
+                    self.session.get("reschedule_appt_datetime", "") or ""
+                )
+                if _cc_full2 and _cc_when2:
+                    _reask = (
+                        f"Just to confirm — would you like me to cancel the appointment "
+                        f"for {_cc_full2} on {_cc_when2}? Please say yes to cancel or "
+                        "no to keep it."
+                    )
+                else:
+                    _reask = (
+                        "Just to confirm — would you like me to cancel that appointment? "
+                        "Please say yes to cancel or no to keep it."
+                    )
+                await self._tts.put(_reask)
+                _store_last_question(
+                    self.session, _reask, force=True,
+                    source="flow_step:CONFIRM_CANCEL:reask",
+                )
+                self.session["question_asked_this_turn"] = True
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _reask}
+                )
+                return
+            # Explicit confirm → execute cancel now.
+            logger.info(
+                "[ms_flow] CONFIRM_CANCEL explicit_confirm_detected -> executing cancel "
+                "transcript=%r",
+                transcript[:120],
+            )
+            from app.tools.receptionist_tools import _exec_cancel_appointment
+            _cc_phone = (
+                self.session.get("phone_number")
+                or self.session.get("twilio_from_local")
+                or self.session.get("twilio_from", "")
+            )
+            _cc_name_exec = (self.session.get("full_name") or "").strip()
+            if not _cc_name_exec:
+                _cc_name_exec = (
+                    (self.session.get("lookup_appt_first_name") or "").strip()
+                    + " "
+                    + (self.session.get("lookup_appt_last_name") or "").strip()
+                ).strip()
+            _cc_args = {
+                "patient_name": _cc_name_exec,
+                "phone":        _cc_phone,
+                "location":     self.session.get("selected_location", "alcester"),
+            }
+            self.session["cancel_confirmed"] = True
+            self.session["cancel_prompt_pending"] = False
+            cancel_result = await _exec_cancel_appointment(_cc_args, self.session)
+            _cc_ok = bool(cancel_result.get("success"))
+            _cc_has_ctx = bool(
+                self.session.get("reschedule_appt_id")
+                or self.session.get("reschedule_appt_datetime")
+            )
+            if _cc_ok:
+                response = (
+                    "That's all sorted — your appointment's been cancelled. "
+                    "You'll get a confirmation text shortly. "
+                    "Is there anything else I can help with?"
+                )
+            elif _cc_has_ctx:
+                # Lookup context WAS present — do NOT speak the generic
+                # "couldn't find an appointment" fallback. Give an honest
+                # cancel-failed message instead.
+                logger.info(
+                    "[ms_flow] CONFIRM_CANCEL fallback_blocked reason=lookup_context_present"
+                )
+                response = (
+                    "I'm sorry — I wasn't able to complete that cancellation just now. "
+                    "Please give us a call directly and the team will get it sorted for you. "
+                    "Is there anything else I can help with?"
+                )
+                self.session["acuity_error"] = cancel_result.get("error")
+            else:
+                response = (
+                    "I wasn't able to find an upcoming appointment under those details — "
+                    "it's worth giving us a call directly on 0\u20097\u20098\u20097\u20090"
+                    "\u20091\u20096\u20096\u20098\u20096\u20091 and the team will be happy "
+                    "to sort it. Is there anything else I can help with?"
+                )
+                self.session["acuity_error"] = cancel_result.get("error")
+            await self._tts.put(response)
+            self.session.setdefault("conversation_history", []).append(
+                {"role": "assistant", "content": response}
+            )
+            self.session["flow_step"] = len(self._active_flow)
+            logger.info(
+                "[ms_flow] CONFIRM_CANCEL complete — cancel_confirmed=%s success=%s",
+                self.session["cancel_confirmed"], _cc_ok,
+            )
+            return
 
         # ── POST-NEARBY-ESCALATION TAIL-FRAGMENT SUPPRESSION ─────────────
         # Narrow guard: once the nearby-day handler has spoken a constrained
