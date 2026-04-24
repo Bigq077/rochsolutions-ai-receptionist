@@ -607,6 +607,10 @@ class STTStream:
                     )
                     if connection_ready is not None:
                         connection_ready.set()
+                    # Send word boost immediately after Begin so AssemblyAI
+                    # applies domain vocabulary (clinic names, physio terms)
+                    # for the entire session.  Non-fatal if v3 ignores it.
+                    await _send_word_boost(ws)
 
                 # ── v2 compat: SessionBegins ───────────────────────────────────
                 elif msg_type in ("SessionBegins", "session_begins"):
