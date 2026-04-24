@@ -8275,6 +8275,75 @@ class FlowEngine:
                 )
                 return
 
+            # ── Pure-correction-only gate ──────────────────────────────────────
+            # SURGICAL FIX (regression family A): Utterances that are ONLY correction
+            # language with no new intent ("i made a mistake", "i realize i made an
+            # error") currently fall through to the intent-reroute gate which requires
+            # a booking/cancel/reschedule intent. When `_detect_intent` returns
+            # general_query, the reroute fails and the utterance reaches the extractor
+            # — where it consumes a retry and can trigger DTMF escalation.
+            #
+            # These phrases must give a natural repair bridge WITHOUT consuming a retry
+            # counter and WITHOUT routing away from the current flow.
+            _ASK_LOC_CORRECTION_ONLY = (
+                "i made a mistake", "i've made a mistake", "ive made a mistake",
+                "i realize i made an error", "i realise i made an error",
+                "i made an error", "made an error",
+                "i got confused", "i got it wrong",
+                "i was wrong about", "i said the wrong thing",
+                "let me start again", "can i start again", "start over please",
+                "i got muddled", "i got mixed up",
+            )
+            if any(p in text for p in _ASK_LOC_CORRECTION_ONLY):
+                _loc_corr_bridge = (
+                    "No problem \u2014 just let me know whether it\u2019s "
+                    "the Alcester clinic or the Redditch clinic."
+                )
+                await self._tts.put(_loc_corr_bridge)
+                self.session["last_question"] = _loc_corr_bridge
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _loc_corr_bridge}
+                )
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: correction-only language %r "
+                    "→ repair bridge (retry NOT consumed)", text[:60],
+                )
+                return
+
+            # ── Generic-clinic-mention fragment guard ─────────────────────────
+            # SURGICAL FIX (regression family C): fragments like "of clinic",
+            # "it was a clinic", "the clinic" contain the word "clinic" but no
+            # actual location name. The ultra-weak guard above misses them because
+            # "clinic" is a 6-char alpha token. These are STT noise / truncated
+            # tail speech — suppress them as fragments so the retry counter is not
+            # consumed and the extractor doesn't false-bind.
+            _loc_text_lower = text.strip().lower()
+            _loc_has_clinic_word = "clinic" in _loc_text_lower
+            _loc_has_location_name = any(
+                n in _loc_text_lower
+                for n in ("alcester", "redditch", "kinwarton", "bromsgrove",
+                          "alces", "reddit", "reditch",)
+            )
+            _loc_meaningful_clinic_phrase = any(
+                p in _loc_text_lower
+                for p in ("which clinic", "both clinic", "either clinic",
+                          "any clinic", "your clinic", "the clinic at",
+                          "a clinic near", "clinic near", "clinic in",)
+            )
+            if (
+                _loc_has_clinic_word
+                and not _loc_has_location_name
+                and not _loc_meaningful_clinic_phrase
+                and len(_loc_text_lower.split()) <= 5
+            ):
+                self.session["fragment_suppressed"] = True
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: generic-clinic-mention fragment %r "
+                    "suppressed (no location name, ≤5 words, retry preserved)",
+                    text[:40],
+                )
+                return
+
             # ── Non-location corrective escape ────────────────────────────────
             # "I said I had a few questions first" / "I was asking about parking"
             # arriving inside the ASK_LOCATION block — caller is correcting the
@@ -8295,6 +8364,28 @@ class FlowEngine:
                 "im asking about",
             )
             if any(p in text for p in _LOC_NON_LOCATION_ESCAPE):
+                # SURGICAL FIX (regression family B): before routing away from the
+                # booking flow, check whether the utterance is actually an FAQ question
+                # (e.g. "first off i had a question how much is a physiotherapy
+                # assessment in your clinic"). If it is, use _handle_mid_flow_interrupt
+                # which answers the FAQ and re-anchors back to the location question —
+                # keeping needs_location=True so the booking continues.
+                # Only call _switch_flow("general_query") when there is genuinely no
+                # specific FAQ intent (caller is correcting routing, not asking a question).
+                _nle_intent = self._detect_intent(text)
+                _nle_faq_intents = {
+                    "faq_prices", "faq_insurance", "faq_hours",
+                    "faq_location", "faq_services", "faq_capability",
+                }
+                if _nle_intent in _nle_faq_intents:
+                    logger.info(
+                        "[ms_flow] ASK_LOCATION: non-location escape resolved as FAQ "
+                        "(%s) → mid_flow_interrupt (needs_location preserved, "
+                        "retry NOT consumed) text=%r",
+                        _nle_intent, text[:60],
+                    )
+                    await self._handle_mid_flow_interrupt(_nle_intent, transcript)
+                    return
                 logger.info(
                     "[ms_flow] ASK_LOCATION: non-location escape %r → general_query",
                     text[:60],
@@ -8337,6 +8428,28 @@ class FlowEngine:
                     self._switch_flow(_reroute_intent)
                     await self.ask_current_question()
                     return
+                # SURGICAL FIX (regression family A): reroute signal matched
+                # (e.g. "never mind i realize i made an error") but the detected
+                # intent is not a new booking/cancel/reschedule destination —
+                # this is pure correction / change-of-mind language.
+                # Give a natural repair bridge WITHOUT consuming the retry counter
+                # and WITHOUT routing away from the current flow. The caller is
+                # correcting themselves, not switching to a different intent.
+                _loc_reroute_bridge = (
+                    "No problem \u2014 just let me know whether it\u2019s "
+                    "the Alcester clinic or the Redditch clinic."
+                )
+                await self._tts.put(_loc_reroute_bridge)
+                self.session["last_question"] = _loc_reroute_bridge
+                self.session.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": _loc_reroute_bridge}
+                )
+                logger.info(
+                    "[ms_flow] ASK_LOCATION: reroute signal matched but intent=%s "
+                    "(not booking/cancel/reschedule) → repair bridge, retry NOT "
+                    "consumed, text=%r", _reroute_intent, text[:60],
+                )
+                return
 
             # ── FAQ-first gate: detect question intent BEFORE extracting location ──
             # "is there parking at alcester?" / "first is there any parking at your
@@ -8686,16 +8799,41 @@ class FlowEngine:
                 # cleared on any successful bind (above) or on stitched
                 # re-entry (below) to prevent infinite stitching.
                 if not self.session.get("_loc_stitch_from_merge"):
-                    self.session["_loc_stitch_pending"] = {
-                        "text": text,
-                        "transcript": transcript,
-                        "ts": time.monotonic(),
-                    }
-                    logger.info(
-                        "[ms_flow] ASK_LOCATION: stitch_candidate stored "
-                        "text=%r (awaiting adjacent tail within window)",
-                        text[:60],
+                    # SURGICAL FIX (regression family C/D — stitch hardening):
+                    # Only store a stitch candidate when the text genuinely looks
+                    # like a partial / phonetically-garbled location attempt.
+                    # Do NOT stitch correction language, FAQ language, or generic
+                    # reroute utterances — these are not partial clinic names and
+                    # stitching them would combine garbage with the next turn.
+                    _STITCH_EXCLUDE_PHRASES = (
+                        "i made a mistake", "made an error", "i realize", "i realise",
+                        "never mind", "actually never mind", "forget it",
+                        "i want to cancel", "i want to reschedule", "i want to book",
+                        "had a question", "have a question", "how much", "how long",
+                        "a few questions", "some questions",
+                        "i was asking", "i'm asking", "im asking",
+                        "of clinic", "it was a clinic", "the clinic",
+                        "my mistake", "i meant", "i was wrong",
                     )
+                    _stitch_ok = not any(
+                        p in text.strip().lower() for p in _STITCH_EXCLUDE_PHRASES
+                    )
+                    if _stitch_ok:
+                        self.session["_loc_stitch_pending"] = {
+                            "text": text,
+                            "transcript": transcript,
+                            "ts": time.monotonic(),
+                        }
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: stitch_candidate stored "
+                            "text=%r (awaiting adjacent tail within window)",
+                            text[:60],
+                        )
+                    else:
+                        logger.info(
+                            "[ms_flow] ASK_LOCATION: stitch_candidate NOT stored "
+                            "(text matched stitch exclusion list) text=%r", text[:60],
+                        )
                 else:
                     # Stitched re-entry still failed — drop the marker so a
                     # fresh pair can be tracked next turn.
