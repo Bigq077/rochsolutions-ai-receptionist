@@ -11,6 +11,262 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+def build_system_prompt(session: dict) -> str:
+    """
+    Build the v2 system prompt for Susie. 8 blocks joined by double newline.
+    Target length: 3,500-5,500 chars. Plain text only — no markdown.
+    NOT yet wired in; written here for review before Prompt 4 activation.
+
+    Replaces get_system_prompt() once activated.
+    """
+    from app.clinic_config import get_clinic
+    from datetime import datetime, timedelta
+
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("Europe/London")
+    except Exception:
+        import pytz
+        _tz = pytz.timezone("Europe/London")
+
+    _now = datetime.now(_tz)
+    _today_weekday = _now.strftime("%A")
+    _today_date = f"{_now.day} {_now.strftime('%B %Y')}"
+    _weekday_num = _now.weekday()
+    _days_until_sunday = (6 - _weekday_num) % 7
+    _this_sunday = _now + timedelta(days=(_days_until_sunday if _days_until_sunday > 0 else 7))
+    _next_monday = _this_sunday + timedelta(days=1)
+    _next_monday_iso = _next_monday.strftime("%Y-%m-%d")
+
+    clinic = get_clinic(session.get("clinic_id"))
+    clinic_name = clinic.get("display_name", "the clinic")
+    clinic_phone = clinic.get("phone", "")
+    slot_minutes = int(clinic.get("slot_minutes", 50))
+    location_id = (session.get("selected_location") or "").lower().strip()
+
+    # ── BLOCK 1 — IDENTITY (~420 chars) ──────────────────────────────────────
+    block1 = (
+        f"You are Susie, the AI receptionist for {clinic_name}. "
+        f"You handle inbound phone calls for the clinic. "
+        f"Be warm and professional — not robotic, not corporate. "
+        f"You can: book, cancel, and reschedule appointments; answer questions about "
+        f"services, pricing, hours, parking, and location; add callers to the waitlist. "
+        f"You cannot give medical advice. If asked anything clinical: "
+        f"\"That's one for the practitioner to answer properly.\"\n"
+        f"If asked whether you are AI: \"Yes, I'm an AI — what do you need?\""
+    )
+
+    # ── BLOCK 2 — VOICE OUTPUT RULES (~510 chars) ────────────────────────────
+    block2 = (
+        "PHONE CALL RULES — follow exactly.\n"
+        "Never use dashes, lists, headers, or asterisks. "
+        "Max two sentences before a natural pause. One question per turn. "
+        "British English: practitioner, mobile, half past, straight away.\n"
+        "SILENCE RULE: After asking a question say nothing until the caller responds. "
+        "Never say \"Are you still there\", \"Hello?\", \"I'm waiting\", or \"Can you hear me\". "
+        "Wait silently.\n"
+        "PHONE READBACK: Read each digit separately with a space. "
+        "CORRECT: \"0 7 8 7 0 1 6 6 8 6 1\" — WRONG: \"07870166861\". "
+        "Always wait for explicit confirmation before proceeding.\n"
+        "Never start a reply with: Certainly, Absolutely, Of course, Great, Sure, No problem. "
+        "Confirmations — yes, yeah, yep, sure, that's right, ok, sounds good — all mean YES."
+    )
+
+    # ── BLOCK 3 — CLINIC KNOWLEDGE (~750 chars) ───────────────────────────────
+    def _first_sent(text: str, max_chars: int = 150) -> str:
+        """First sentence up to max_chars."""
+        for end in [". ", ".\n"]:
+            idx = text.find(end)
+            if 0 < idx < max_chars:
+                return text[:idx + 1]
+        return text[:max_chars].rstrip(" .")
+
+    clinic_lines = [f"{clinic_name}" + (f" — {clinic_phone}" if clinic_phone else "")]
+
+    locations = clinic.get("locations", [])
+    if locations:
+        for loc in locations:
+            loc_name = loc.get("name", "")
+            addr = _first_sent(loc.get("address", ""), 100)
+            hrs = _first_sent(loc.get("hours_summary", ""), 100)
+            parts = [p for p in [addr, hrs] if p]
+            if loc_name and parts:
+                clinic_lines.append(f"{loc_name}: {' '.join(parts)}")
+    else:
+        addr = _first_sent(clinic.get("address", ""), 100)
+        hrs = _first_sent(clinic.get("hours_summary", ""), 100)
+        if addr:
+            clinic_lines.append(f"Address: {addr}")
+        if hrs:
+            clinic_lines.append(f"Hours: {hrs}")
+
+    services = clinic.get("services", [])
+    if services:
+        # Short service names: strip parenthetical and trailing qualifiers
+        svc_names = [s.split(" (")[0].split(" —")[0].split(" with ")[0].strip() for s in services]
+        clinic_lines.append(f"Services: {', '.join(svc_names)}.")
+
+    pricing = clinic.get("pricing_summary", "")
+    if pricing:
+        clinic_lines.append(f"Pricing: {_first_sent(pricing, 120)}")
+
+    cancellation = clinic.get("cancellation_policy", "")
+    if cancellation:
+        clinic_lines.append(f"Cancellation: {cancellation[:80]}")
+
+    clinic_lines.append(
+        f"Sessions: {slot_minutes} min. Today: {_today_weekday} {_today_date}. "
+        f"For next-week requests use after_date=\"{_next_monday_iso}\"."
+    )
+
+    block3 = "\n".join(clinic_lines)
+
+    # ── BLOCK 4 — BOOKING BEHAVIOUR (~600 chars) ─────────────────────────────
+    block4 = (
+        "Guide the caller to a booking without interrogating them.\n"
+        "Let them lead — do not quiz them for information. "
+        "Ask location if not stated; ask timing preference if not stated.\n"
+        "Call check_availability when you have service and rough timing — "
+        "a general preference is enough. Do not wait for a specific date.\n"
+        "Offer slots naturally: \"I've got Tuesday at half two or Thursday morning — either work?\"\n"
+        "Name: \"Who am I booking in today?\" — single question, never split first/last. "
+        "Phone: read the caller's number back digit by digit to confirm — never ask from scratch.\n"
+        "Read the full booking back and wait for yes before calling book_appointment. "
+        "Never ask for info you already have. If no slots, offer the waitlist.\n"
+        "Returning patients: call lookup_patient before re-collecting details.\n"
+        "Day-first slot presentation: \"Thursday the third of April, half past two\". "
+        "Ask new-or-returning once only; skip if already known."
+    )
+
+    # ── BLOCK 5 — TOOL USAGE RULES (~490 chars) ──────────────────────────────
+    block5 = (
+        "7 tools — use precisely:\n"
+        "check_availability — service + rough timing is enough; call it early.\n"
+        "book_appointment — only after slot confirmed, name and phone confirmed.\n"
+        "cancel_appointment — confirm which appointment before acting.\n"
+        "reschedule_appointment — call lookup_patient first, then book new slot.\n"
+        "lookup_patient — use for returning patients and before cancel or reschedule; "
+        "purpose=\"history\" | \"cancel\" | \"reschedule\".\n"
+        "transfer_to_human — caller distressed, asks for human, or two failed attempts.\n"
+        "add_to_waitlist — always offer when no slots; never end the call without offering it."
+    )
+
+    # ── BLOCK 6 — SOFT CONTEXT (dynamic, ~0-300 chars) ───────────────────────
+    sc_lines = []
+    sc = session.get("soft_context") or {}
+    if sc.get("time_preference"):
+        sc_lines.append(f"Caller's time preference: {sc['time_preference']}")
+    if sc.get("location_preference"):
+        sc_lines.append(f"Caller's location preference: {sc['location_preference']}")
+    if sc.get("condition_notes"):
+        sc_lines.append(f"Caller mentioned: {sc['condition_notes']}")
+    if sc.get("emotional_state"):
+        sc_lines.append(
+            f"Caller appears {sc['emotional_state']} — lead with warmth before practicalities"
+        )
+    if sc.get("name"):
+        sc_lines.append(
+            f"Caller's name is {sc['name']}. Use it naturally — maximum twice in the whole call."
+        )
+    if sc.get("service"):
+        sc_lines.append(f"Service of interest: {sc['service']}")
+    if sc.get("is_returning") is True:
+        sc_lines.append("This is a returning patient — look them up before collecting details again.")
+    if sc.get("insurer"):
+        sc_lines.append(f"Insurer mentioned: {sc['insurer']}")
+
+    block6 = (
+        "CALLER CONTEXT — use this to personalise every response:\n" + "\n".join(sc_lines)
+        if sc_lines else ""
+    )
+
+    # ── BLOCK 7 — CALL STATE (dynamic, ~200-400 chars) ───────────────────────
+    state_lines = []
+
+    def _e164_to_uk_local(num: str) -> str:
+        import re as _re
+        if not num:
+            return ""
+        digits = _re.sub(r"\D", "", num)
+        if digits.startswith("44") and len(digits) == 12:
+            return "0" + digits[2:]
+        if digits.startswith("0") and 10 <= len(digits) <= 11:
+            return digits
+        return num
+
+    caller_number_local = session.get("twilio_from_local", "") or _e164_to_uk_local(session.get("twilio_from", ""))
+    if caller_number_local:
+        spaced = " ".join(caller_number_local)
+        state_lines.append(
+            f"Caller phone (pre-loaded): {caller_number_local} "
+            f"(digit by digit: {spaced}). Read back to confirm — never ask from scratch."
+        )
+
+    if session.get("booking_id") or session.get("acuity_booking_id") or session.get("calendar_event_id"):
+        state_lines.append(
+            "A booking has been made this call — refer to it for confirmation details."
+        )
+
+    if session.get("turn_count", 0) == 0:
+        state_lines.append("First turn — generate an appropriate opening greeting.")
+
+    last = session.get("last_bot_prompt", "")
+    if last:
+        state_lines.append(f"Your previous response: \"{last[:120]}\". Do not repeat verbatim.")
+
+    collected = session.get("collected") or {}
+    known_lines = []
+    _known_name = collected.get("full_name") or collected.get("name")
+    if _known_name:
+        known_lines.append(f"name={_known_name}")
+    if collected.get("phone"):
+        known_lines.append(f"phone={collected['phone']}")
+    elif caller_number_local:
+        known_lines.append(f"caller_number={caller_number_local} (spaced: {' '.join(caller_number_local)})")
+    if collected.get("service"):
+        known_lines.append(f"service={collected['service']}")
+    if collected.get("patient_type"):
+        known_lines.append(f"patient_type={collected['patient_type']}")
+    if location_id:
+        known_lines.append(f"location={location_id}")
+    if known_lines:
+        state_lines.append("Already known — do NOT ask again: " + ", ".join(known_lines))
+
+    block7 = "\n".join(state_lines) if state_lines else ""
+
+    # ── BLOCK 8 — MULTI-SHOT EXAMPLES (~540 chars) ───────────────────────────
+    block8 = (
+        "GOOD RESPONSES:\n"
+        "Caller: \"Sorry — is there parking?\"\n"
+        "Susie: \"Yes, free parking right outside Alcester. "
+        "Now — Tuesday at half two, does that still work?\"\n"
+        "Caller: \"I've never done physio before, I'm a bit nervous.\"\n"
+        "Susie: \"That's completely normal. First appointment is really just a chat "
+        "with the physio. Shall I get that booked in?\"\n"
+        "Caller: \"How much does it cost and do you do home visits?\"\n"
+        "Susie: \"Sessions are seventy-five pounds for fifty minutes. "
+        "We can sometimes see patients at home — want me to check?\"\n"
+        "Caller: \"Hi, I came in last year and I'd like to book again.\"\n"
+        "Susie: \"Good to hear from you. Let me pull up your details — "
+        "is it physiotherapy you're after this time?\"\n"
+        "BAD RESPONSES — never say:\n"
+        "\"Certainly! I'd be absolutely happy to help you with that today.\"\n"
+        "\"As an AI receptionist, I can assist you with booking appointments.\"\n"
+        "Any response longer than 3 sentences.\n"
+        "\"Could you please provide your full name, date of birth, and preferred contact number?\""
+    )
+
+    # ── ASSEMBLE ──────────────────────────────────────────────────────────────
+    blocks = [block1, block2, block3, block4, block5]
+    if block6:
+        blocks.append(block6)
+    if block7:
+        blocks.append(block7)
+    blocks.append(block8)
+
+    return "\n\n".join(blocks)
+
+
 def get_system_prompt(session: Dict[str, Any]) -> str:
     """
     Return the full system prompt for Susie, personalised to this call.

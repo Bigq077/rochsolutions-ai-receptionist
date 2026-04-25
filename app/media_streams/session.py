@@ -282,6 +282,13 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     "prof_callback":   None,    # callback phone number
     "prof_message":    None,    # message to pass on
 
+    # ── Returning patient shortcut ────────────────────────────────────────
+    # Detected on first utterance via analyze_opening_intent() (intent_analyzer.py).
+    # When True + high confidence, COLLECT_REASON is skipped and the flow
+    # jumps straight to PRESENT_DAYS with a "welcome back" greeting.
+    "is_returning_patient":    False,   # True if returning-patient intent detected
+    "requested_practitioner":  None,    # name of practitioner requested (or None)
+
     # ── Vague availability handling ───────────────────────────────────────
     # Set True when a vague availability response (e.g. "whenever") is detected
     # at PRESENT_DAYS and 2 concrete options have been presented to the caller.
@@ -315,6 +322,24 @@ DEFAULT_MS_SESSION: Dict[str, Any] = {
     # reconstructed if the FlowEngine is re-created mid-call.
     "name_tracker_name":  None,  # validated first name (str or None)
     "name_tracker_uses":  2,     # remaining uses (int, starts at MAX_USES=2)
+
+    # ── Soft context (pre-booking signals extracted from opening utterance) ─
+    # Populated by the LLM / intent analysis on the first turn.
+    # All values start as None; system prompt assembler skips None entries.
+    "soft_context": {
+        "time_preference":     None,   # e.g. "evenings", "after 6pm"
+        "location_preference": None,   # e.g. "oldbury", "west bromwich"
+        "condition_notes":     None,   # e.g. "knee pain three weeks"
+        "emotional_state":     None,   # e.g. "nervous", "in pain"
+        "name":                None,   # caller's first name if mentioned
+        "service":             None,   # e.g. "physiotherapy", "acupuncture"
+        "is_returning":        None,   # True/False/None
+        "insurer":             None,
+    },
+
+    # ── Call-level counters and outcome ───────────────────────────────────
+    "turn_count":   0,      # incremented each time run_turn() is called
+    "call_outcome": None,   # "booked" | "transferred" | "no_action"
 }
 
 

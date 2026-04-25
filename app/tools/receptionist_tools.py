@@ -382,42 +382,27 @@ TOOL_CHECK_AVAILABILITY = {
     "input_schema": {
         "type": "object",
         "properties": {
+            "service": {
+                "type": "string",
+                "description": (
+                    "Type of appointment to check, e.g. 'physiotherapy assessment', "
+                    "'physiotherapy follow-up', 'acupuncture'."
+                ),
+            },
             "location": {
                 "type": "string",
                 "enum": ["alcester", "redditch"],
                 "description": "Which clinic location to check availability for.",
             },
-            "duration_minutes": {
-                "type": "integer",
-                "description": "Appointment length in minutes (50 for Theorem physio, 30 for demo clinic).",
-            },
-            "preference": {
-                "type": "string",
-                "description": "Optional time preference from the patient e.g. 'morning', 'Thursday afternoon', 'next week'.",
-            },
-            "day_window": {
-                "type": "integer",
-                "description": "Number of days ahead to search. Defaults to 7.",
-            },
-            "service": {
+            "date_hint": {
                 "type": "string",
                 "description": (
-                    "Type of appointment to check, e.g. 'physiotherapy assessment', "
-                    "'physiotherapy follow-up', 'acupuncture'. Required for Acuity clinics."
-                ),
-            },
-            "after_date": {
-                "type": "string",
-                "description": (
-                    "Optional ISO date string (YYYY-MM-DD). Only return slots on or after this date. "
-                    "Pass this when the caller says they are unavailable before a specific date — "
-                    "e.g. 'not available this week' → pass next Monday's date; "
-                    "'next week' → pass the coming Monday's date. "
-                    "This is the ONLY guaranteed way to prevent excluded dates being offered."
+                    "Optional time/date preference from the patient, "
+                    "e.g. 'evenings', 'Thursday afternoon', 'next week', 'any'."
                 ),
             },
         },
-        "required": ["location", "duration_minutes"],
+        "required": ["service"],
     },
 }
 
@@ -448,25 +433,10 @@ TOOL_BOOK_APPOINTMENT = {
             },
             "duration_minutes": {
                 "type": "integer",
-                "description": "Appointment length in minutes.",
-            },
-            "is_new_patient": {
-                "type": "boolean",
-                "description": "True if this is the patient's first visit.",
-            },
-            "insurer_name": {
-                "type": "string",
-                "description": "Insurance company name if applicable.",
-            },
-            "policy_number": {
-                "type": "string",
-                "description": "Insurance policy number if applicable.",
+                "description": "Appointment length in minutes. Defaults to 50.",
             },
         },
-        "required": [
-            "patient_name", "phone", "location", "service",
-            "slot_iso", "duration_minutes", "is_new_patient",
-        ],
+        "required": ["patient_name", "phone", "location", "service", "slot_iso"],
     },
 }
 
@@ -726,6 +696,37 @@ TOOL_GET_PATIENT_HISTORY = {
     },
 }
 
+TOOL_LOOKUP_PATIENT = {
+    "name": "lookup_patient",
+    "description": (
+        "Look up a patient by name or phone number. "
+        "Use before cancel or reschedule to confirm the appointment exists and share details with the patient. "
+        "Use purpose='history' to retrieve their recent treatment history."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Patient's full name.",
+            },
+            "phone": {
+                "type": "string",
+                "description": "Patient's phone number (optional — helps disambiguate).",
+            },
+            "purpose": {
+                "type": "string",
+                "enum": ["cancel", "reschedule", "history"],
+                "description": (
+                    "'cancel' or 'reschedule' — look up an upcoming appointment. "
+                    "'history' — retrieve the patient's recent treatment history."
+                ),
+            },
+        },
+        "required": ["purpose"],
+    },
+}
+
 TOOL_ADD_TO_WAITLIST = {
     "name": "add_to_waitlist",
     "description": (
@@ -797,15 +798,8 @@ TOOL_SCHEMAS = [
     TOOL_BOOK_APPOINTMENT,
     TOOL_CANCEL_APPOINTMENT,
     TOOL_RESCHEDULE_APPOINTMENT,
-    TOOL_LOOKUP_APPOINTMENT,
-    TOOL_CONFIRM_APPOINTMENT_FOUND,
-    TOOL_GET_CLINIC_INFO,
-    TOOL_LOOKUP_RECENT_APPOINTMENT,
-    TOOL_COLLECT_AND_STORE,
+    TOOL_LOOKUP_PATIENT,
     TOOL_TRANSFER_TO_HUMAN,
-    TOOL_SEND_FOLLOWUP_SMS,
-    TOOL_LOG_CALL_OUTCOME,
-    TOOL_GET_PATIENT_HISTORY,
     TOOL_ADD_TO_WAITLIST,
 ]
 
@@ -1280,7 +1274,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         }
 
     service = (args.get("service") or "physiotherapy assessment").strip()
-    preference = (args.get("preference") or "").strip()
+    preference = (args.get("date_hint") or args.get("preference") or "").strip()
 
     # Explicit day_window from the LLM bypasses progressive search
     explicit_window = args.get("day_window")
@@ -3566,19 +3560,83 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Executor: lookup_patient
+# Consolidates: lookup_appointment + lookup_recent_appointment + get_patient_history
+# ---------------------------------------------------------------------------
+
+async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Routes based on purpose:
+      history   → _exec_get_patient_history (treatment history)
+      cancel / reschedule → find upcoming appointment in Acuity by name or phone
+    """
+    purpose = args.get("purpose", "history")
+
+    if purpose == "history":
+        return await _exec_get_patient_history(args, session)
+
+    # cancel / reschedule: look up upcoming appointment
+    if session.get("clinic_id") != "theorem":
+        return {"found": False, "message": "Appointment lookup only available for Theorem clinic"}
+
+    adapter = _get_acuity_adapter()
+    if not adapter:
+        return {"found": False, "message": "Scheduling system not configured"}
+
+    name = (args.get("name") or "").strip()
+    phone = (args.get("phone") or "").strip()
+
+    if not name and not phone:
+        return {"found": False, "message": "Provide name or phone to look up an appointment"}
+
+    today = datetime.now(LONDON_TZ).date()
+    end = today + timedelta(days=60)
+
+    try:
+        appointments = await adapter.list_appointments(min_date=today, max_date=end)
+    except Exception as exc:
+        logger.warning("_exec_lookup_patient: list_appointments failed: %r", exc)
+        return {"found": False, "message": "Could not retrieve appointments"}
+
+    name_lower = name.lower()
+    found = None
+    for appt in appointments:
+        full = f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip().lower()
+        if name_lower and name_lower in full:
+            found = appt
+            break
+        if phone and phone in (appt.get("phone") or ""):
+            found = appt
+            break
+
+    if not found:
+        return {
+            "found": False,
+            "message": f"No upcoming appointment found for {name or phone}",
+        }
+
+    return {
+        "found": True,
+        "patient_name": f"{found.get('firstName', '')} {found.get('lastName', '')}".strip(),
+        "appointment_type": found.get("type", ""),
+        "appointment_time": found.get("datetime", ""),
+        "appointment_id": str(found.get("id", "")),
+    }
+
+
 TOOL_EXECUTORS: Dict[str, Any] = {
-    "check_availability":       _exec_check_availability,
-    "book_appointment":         _exec_book_appointment,
-    "cancel_appointment":       _exec_cancel_appointment,
-    "reschedule_appointment":   _exec_reschedule_appointment,
-    "lookup_appointment":       _exec_lookup_appointment,
-    "confirm_appointment_found": _exec_confirm_appointment_found,
-    "get_clinic_info":          _exec_get_clinic_info,
-    "collect_and_store":        _exec_collect_and_store,
-    "transfer_to_human":        _exec_transfer_to_human,
-    "send_followup_sms":        _exec_send_followup_sms,
-    "log_call_outcome":         _exec_log_call_outcome,
-    "get_patient_history":           _exec_get_patient_history,
-    "lookup_recent_appointment":     _exec_lookup_recent_appointment,
-    "add_to_waitlist":               _exec_add_to_waitlist,
+    "check_availability":     _exec_check_availability,
+    "book_appointment":       _exec_book_appointment,
+    "cancel_appointment":     _exec_cancel_appointment,
+    "reschedule_appointment": _exec_reschedule_appointment,
+    "lookup_patient":         _exec_lookup_patient,
+    "transfer_to_human":      _exec_transfer_to_human,
+    "add_to_waitlist":        _exec_add_to_waitlist,
+    # Internal executors — not in TOOL_SCHEMAS but called by state machine / other executors
+    "get_clinic_info":        _exec_get_clinic_info,
+    "collect_and_store":      _exec_collect_and_store,
+    "send_followup_sms":      _exec_send_followup_sms,
+    "log_call_outcome":       _exec_log_call_outcome,
+    "get_patient_history":    _exec_get_patient_history,
 }

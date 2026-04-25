@@ -45,7 +45,6 @@ from .config import (
     ANTHROPIC_API_KEY,
     OPENAI_API_KEY,
     SONNET,
-    HAIKU,
     GPT_MODEL,
     CLAUDE_MAX_TOKENS,
     CLAUDE_TEMPERATURE,
@@ -58,22 +57,10 @@ from .config import (
     F_LAST_BOT_PROMPT,
     F_LAST_QUESTION,
     F_COLLECTED,
-    F_FAST_PATH_LAST_RESOLVED,
-    F_PHONE_COLLECTED_FROM_TWILIO,
-    SILENCE_RULE,
-    BOOKING_OPEN,
-    BOOKING_INTENT_KEYWORDS,
-    AVAILABILITY_FLOW_RULE,
-    NAME_COLLECTION_RULE,
-    NEW_OR_RETURNING_RULE,
-    PHONE_READBACK_RULE,
-    INFORMAL_SPEECH_RULE,
-    LLM_STATE_INSTRUCTIONS,
-    Q_CHECKING,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
-from .session import save_session, advance_state, CallState
+from .session import save_session
 from .turn_handler import sanitise_response
 
 logger = logging.getLogger(__name__)
@@ -130,26 +117,8 @@ def _build_openai_tools() -> list:
 # ---------------------------------------------------------------------------
 
 def _pick_model(session: Dict[str, Any]) -> str:
-    """
-    Return SONNET for active booking steps, HAIKU for everything else.
-
-    SONNET triggers:
-      - First patient turn (GREETING state) — needs full reasoning for vague openers
-      - Slots have been offered (last_offered_slots is non-empty)
-      - Booking is being confirmed (acuity_booking_id pending)
-      - Name or phone collection is in progress
-    """
-    from .session import get_call_state, CallState
-    if get_call_state(session) == CallState.GREETING:
-        return SONNET  # First patient utterance: vague health complaints need SONNET
-    collected = session.get(F_COLLECTED) or {}
-    if session.get("last_offered_slots"):
-        return SONNET
-    if session.get("acuity_booking_id"):
-        return SONNET
-    if collected.get("full_name") and not collected.get("phone"):
-        return SONNET   # mid-phone-collection
-    return HAIKU
+    """Always use Sonnet — free-form loop requires consistent reasoning."""
+    return SONNET
 
 
 # ---------------------------------------------------------------------------
@@ -217,28 +186,6 @@ class LLMStream:
           8. GPT-4.1-mini fallback on Claude 529/500
           9. Update conversation history and session
         """
-        # ── Step 0: Booking-intent fast-path ────────────────────────────
-        # When the caller expresses booking intent, play BOOKING_OPEN directly
-        # (no LLM round-trip) so the wording is always deterministic.
-        from .session import get_call_state, CallState, advance_state
-        _state_now = get_call_state(session)
-        if _state_now in (CallState.GREETING, CallState.NEW_OR_RETURNING):
-            _norm = user_text.lower()
-            _has_intent = any(kw in _norm for kw in BOOKING_INTENT_KEYWORDS)
-            if _has_intent:
-                logger.info(
-                    "[ms_llm] booking intent detected — injecting BOOKING_OPEN "
-                    "transcript=%r", user_text[:80],
-                )
-                await tts_text_queue.put(BOOKING_OPEN)
-                session[F_LAST_BOT_PROMPT] = BOOKING_OPEN
-                session[F_LAST_QUESTION]   = BOOKING_OPEN
-                # Advance to NEW_OR_RETURNING — BOOKING_OPEN asks new/returning
-                advance_state(session, CallState.NEW_OR_RETURNING)
-                _append_history(session, user_text, BOOKING_OPEN)
-                await save_session(call_sid, session)
-                return
-
         # ── Step 1-3: Fast-path ──────────────────────────────────────────
         fp_result = try_fast_path(session, user_text)
         if fp_result is not None:
@@ -258,99 +205,8 @@ class LLMStream:
         model = _pick_model(session)
 
         # ── Step 5: System prompt ────────────────────────────────────────
-        from app.prompts.susie_system_prompt import get_system_prompt
-        date_prefix = _build_date_prefix()
-
-        # Inject current call state so Claude knows exactly where we are
-        # and never re-asks something already answered.
-        # ~100 tokens prepended; cached via cache_control=ephemeral after first call.
-        call_state = session.get("state", "GREETING")
-        collected  = session.get("collected") or {}
-        known_lines: List[str] = []
-        if session.get("reason"):
-            known_lines.append(f"- Reason for visit: {session['reason']}")
-        if session.get("duration"):
-            known_lines.append(f"- Duration: {session['duration']}")
-        if collected.get("patient_type"):
-            known_lines.append(f"- New/returning: {collected['patient_type']}")
-        if session.get("availability_preference"):
-            known_lines.append(f"- Availability: {session['availability_preference']}")
-        if session.get("selected_slot"):
-            known_lines.append(f"- Selected slot: {session['selected_slot']}")
-        if collected.get("full_name") or collected.get("name"):
-            known_lines.append(f"- Name: {collected.get('full_name') or collected.get('name')}")
-        if session.get("phone_number"):
-            known_lines.append(f"- Phone: {session['phone_number']}")
-        elif collected.get("phone"):
-            if session.get("phone_from_twilio"):
-                known_lines.append(
-                    f"- Phone (auto-detected from caller-ID — do NOT ask for it): {collected['phone']}"
-                )
-            else:
-                known_lines.append(f"- Phone: {collected['phone']}")
-        if session.get("selected_location"):
-            known_lines.append(f"- Location: {session['selected_location']}")
-        if session.get("last_offered_slots"):
-            known_lines.append(f"- Slots offered: {session['last_offered_slots']}")
-        phone_rule = (
-            "\n[PHONE ALREADY KNOWN via caller-ID: Do NOT ask for the caller's phone number. "
-            "When you reach that step, say 'I have your number from this call — "
-            "I'll use that for the booking.' and move straight on.]"
-            if session.get("phone_from_twilio") else ""
-        )
-        # Inject per-state LLM instructions (only for the 3 states that use LLM)
-        state_instruction = LLM_STATE_INSTRUCTIONS.get(call_state, "")
-        if state_instruction:
-            state_instruction = "\n" + state_instruction
-
-        state_ctx = (
-            f"[CALL STATE: {call_state} — greeting already delivered. "
-            f"Do not re-introduce yourself or re-ask anything already answered.]\n"
-            + ("\n".join(known_lines) if known_lines else "")
-            + phone_rule
-            + state_instruction
-            + "\n[TRANSFER RULE: Never say 'I'll put you through', 'let me transfer you', "
-            "'I'll pass you to the team', or any transfer/handoff phrase in your spoken "
-            "response UNLESS the caller has explicitly asked to speak to a person OR "
-            "mentioned a medical emergency. If you are unsure what the caller wants, "
-            "ask a single clarifying question instead of offering a transfer.]"
-        )
-        # Rules are prepended in priority order so Claude reads them first.
-        # SILENCE_RULE is first (most critical), then content rules, then main prompt.
-        system_prompt = (
-            # Hard banned-phrase rule — must appear first so it overrides everything
-            "ABSOLUTE RULE — TEXT-TO-SPEECH OUTPUT:\n"
-            "Every single word you generate is read aloud directly to the caller by "
-            "text-to-speech. There is NO private space. Output ONLY what Susie says "
-            "aloud. NEVER include reasoning, internal notes, preamble, meta-commentary, "
-            "or 'since this is their first visit...' type sentences before your response. "
-            "Start directly with Susie's spoken words — nothing else.\n\n"
-            "ABSOLUTE RULE — NO EXCEPTIONS:\n"
-            "Never begin any response with: Absolutely, Certainly, Of course, Sure thing, "
-            "Great, Wonderful, Fantastic, Perfect, Exactly, Indeed, Definitely, Totally, "
-            "Obviously, Clearly, Right so, Of Course, Sure, Lovely.\n"
-            "NEVER say 'Lovely' anywhere in a response — not as a filler, not as an "
-            "acknowledgement, not after collecting a name. It sounds patronising.\n"
-            "When a caller gives their name: do NOT repeat or echo the name back. "
-            "Ask immediately for their phone number.\n\n"
-            f"{SILENCE_RULE}\n\n"
-            f"{AVAILABILITY_FLOW_RULE}\n\n"
-            f"{NAME_COLLECTION_RULE}\n\n"
-            f"{NEW_OR_RETURNING_RULE}\n\n"
-            f"{PHONE_READBACK_RULE}\n\n"
-            f"{INFORMAL_SPEECH_RULE}\n\n"
-            f"{date_prefix}\n\n"
-            f"{state_ctx}\n\n"
-            f"{get_system_prompt(session)}"
-        )
-
-        # Bug 3: if we're in COLLECT_AVAILABILITY state, block check_availability
-        # on THIS turn so Claude cannot call it on the same turn it asked the question.
-        # The flag is read and consumed in _execute_tools.
-        if get_call_state(session) == CallState.COLLECT_AVAILABILITY:
-            if not session.get("_availability_response_received"):
-                session["block_check_availability"] = True
-                logger.debug("[ms_llm] block_check_availability set for this turn")
+        from app.prompts.susie_system_prompt import build_system_prompt
+        system_prompt = build_system_prompt(session)
 
         # ── Step 6-8: LLM streaming with tool loop ───────────────────────
         history: List[dict] = session.setdefault("conversation_history", [])
@@ -396,13 +252,14 @@ class LLMStream:
 
         if not transfer_initiated:
             _append_history(session, user_text, full_reply)
-            session[F_LAST_BOT_PROMPT] = full_reply
+            session[F_LAST_BOT_PROMPT] = full_reply[:200]
             # Store only the question portion in F_LAST_QUESTION.
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question
             # sentence so the re-ask watchdog only replays real questions.
             session[F_LAST_QUESTION] = _question_from_response(full_reply)
 
+        session["turn_count"] = session.get("turn_count", 0) + 1
         await save_session(call_sid, session)
 
     # -----------------------------------------------------------------------
@@ -877,6 +734,7 @@ class LLMStream:
         _FILLER_TOOLS = {
             "check_availability": THINKING_FILLERS_PRIMARY,
             "book_appointment":   BOOKING_WRITE_FILLERS,
+            "lookup_patient":     THINKING_FILLERS_PRIMARY,
         }
 
         result_blocks: List[dict] = []
@@ -1079,25 +937,8 @@ class LLMStream:
 # ---------------------------------------------------------------------------
 
 def _advance_fp_state(session: Dict[str, Any], turn_type: Any) -> None:
-    """Advance call state after a fast-path resolution."""
-    from .config import FastPathTurnType
-
-    # ── FULL_NAME: always advance to CONFIRM_PHONE so the LLM knows to handle
-    # the caller's next utterance as phone confirmation.  The phone readback
-    # question is now always asked (even when caller-ID is known) so
-    # number_confirmed_verbally can fire correctly.
-    if turn_type == FastPathTurnType.FULL_NAME:
-        advance_state(session, CallState.CONFIRM_PHONE)
-        return
-
-    # ── Static transitions ────────────────────────────────────────────────────
-    _MAP = {
-        FastPathTurnType.NEW_RETURNING:  CallState.COLLECT_NAME,
-        FastPathTurnType.SLOT_SELECTION: CallState.CONFIRM_BOOKING,
-    }
-    next_state = _MAP.get(turn_type)
-    if next_state:
-        advance_state(session, next_state)
+    """No-op: free-form loop no longer uses the state machine."""
+    pass
 
 
 def _append_history(
