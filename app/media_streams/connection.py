@@ -2587,6 +2587,17 @@ class WebSocketCallHandler:
         """
         await self._wait_for_start("llm_loop")
 
+        clinic_id = self.session.get("clinic_id", "")
+
+        if clinic_id == "theorem_v3":
+            # Free-form LLM loop — implemented in Prompt 5 main steps
+            # PLACEHOLDER — do not implement yet
+            raise NotImplementedError(
+                "theorem_v3 free-form loop not yet implemented"
+            )
+
+        # FlowEngine path — theorem and theorem_v2
+        # DO NOT CHANGE ANYTHING INSIDE THIS BLOCK
         from .llm_stream import LLMStream
         from .flow import FlowEngine
 
