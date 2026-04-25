@@ -22405,7 +22405,7 @@ class FlowEngine:
         # conversation_history for messages that mention exactly ONE clinic name.
         # Messages that mention BOTH clinics (the initial offer question) are skipped.
         if (
-            self.session.get("twilio_to") == "+447366530580"
+            self.session.get("twilio_to") in ("+447366530580", "+447380841468")
             and intent in {"booking", "reschedule", "cancel"}
         ):
             _hist_sf = self.session.get("conversation_history", [])

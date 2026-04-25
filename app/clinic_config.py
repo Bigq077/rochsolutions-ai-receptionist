@@ -22,6 +22,7 @@ TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447367002651": "theorem",       # Theorem Health and Wellness (legacy pipeline)
     "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
+    "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
 
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE
@@ -1023,6 +1024,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 # Mapped to test number +447366530580. Switch live number here once verified.
 CLINICS["theorem_v2"] = _copy.deepcopy(CLINICS["theorem"])
 
+# theorem_v3: identical to theorem_v2 — mapped to +447380841468.
+CLINICS["theorem_v3"] = _copy.deepcopy(CLINICS["theorem_v2"])
+
 
 # ============================================================================
 # BOOKING SUBSYSTEM CONFIGURATION
@@ -1044,6 +1048,7 @@ ACUITY_CONFIG = {
 }
 
 ACUITY_CONFIG["theorem_v2"] = ACUITY_CONFIG["theorem"]
+ACUITY_CONFIG["theorem_v3"] = ACUITY_CONFIG["theorem"]
 
 # Location definitions for Theorem
 THEOREM_LOCATIONS = {

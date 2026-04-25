@@ -541,7 +541,7 @@ On success: "Your appointment has been moved to [DATE] at [TIME]." Call log_call
     _reschedule_line_std  = _cancel_reschedule_block
     _cancel_line_std      = ""   # consolidated into block above
 
-    if session.get("twilio_to") == "+447366530580" and locations:
+    if session.get("twilio_to") in ("+447366530580", "+447380841468") and locations:
         _location_blocker = """
 \u26a0\ufe0f LOCATION BLOCKER \u2014 NO EXCEPTIONS:
 You MUST collect location (Alcester or Redditch) via collect_and_store(field="location", value="alcester" OR "redditch") BEFORE calling check_availability, book_appointment, reschedule_appointment, cancel_appointment, or lookup_appointment.
