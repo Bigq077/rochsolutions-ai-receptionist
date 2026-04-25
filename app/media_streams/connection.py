@@ -47,12 +47,16 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+import anthropic
+
 from .config import (
     TWILIO_STARTED_TIMEOUT_SEC,
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
     BOOKING_OPEN,
     BARGE_IN_THRESHOLD_MS,
+    ANTHROPIC_API_KEY,
+    HAIKU,
 )
 
 # ---------------------------------------------------------------------------
@@ -96,6 +100,95 @@ def _drain_queue(q: asyncio.Queue) -> int:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _update_soft_context(session: dict, user_text: str, bot_text: str) -> None:
+    """
+    Use Haiku to extract caller context signals from a single turn and merge
+    them into session["soft_context"].  Existing non-None values are never
+    overwritten — the first reliable signal for each key wins.
+
+    Keys extracted: time_preference, location_preference, condition_notes,
+                    emotional_state, name, service, is_returning, insurer.
+
+    theorem_v3 only — called via asyncio.create_task() from the free-form
+    loop. Never raises; all errors are swallowed and debug-logged so a bad
+    Haiku call cannot break a live call.
+    """
+    call_sid = session.get("call_sid", "")
+    soft = session.setdefault("soft_context", {})
+
+    null_keys = [k for k, v in soft.items() if v is None]
+    if not null_keys:
+        return  # Nothing left to fill in
+
+    system_prompt = (
+        "You extract caller context signals from a single conversation turn. "
+        "Return ONLY a JSON object with the keys listed below. "
+        "For each key, return the extracted value as a concise string, "
+        "or null if the turn contains no clear signal for that key. "
+        "Never invent information; only use what is explicitly stated or "
+        "strongly implied.\n\n"
+        f"Keys to extract: {', '.join(null_keys)}\n\n"
+        "Definitions:\n"
+        "  time_preference   – preferred appointment time/day (e.g. 'evenings', 'Monday mornings')\n"
+        "  location_preference – preferred clinic branch or area\n"
+        "  condition_notes   – brief description of the caller's complaint or condition\n"
+        "  emotional_state   – caller's apparent emotional state (e.g. 'anxious', 'calm')\n"
+        "  name              – caller's first name or full name\n"
+        "  service           – the treatment or service they want to book\n"
+        "  is_returning      – 'yes' if they mention being a returning patient, 'no' if new\n"
+        "  insurer           – health insurance provider name if mentioned\n\n"
+        "Return exactly one JSON object, no markdown, no extra keys."
+    )
+
+    user_message = (
+        f"Caller said: {user_text!r}\n"
+        f"Bot replied: {bot_text!r}"
+    )
+
+    try:
+        # Read key at call time so it picks up whatever load_dotenv() set in
+        # os.environ, even if config.ANTHROPIC_API_KEY was evaluated before
+        # dotenv loaded (test contexts).
+        import os as _os
+        api_key = _os.environ.get("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=2.0)
+        response = await client.messages.create(
+            model=HAIKU,
+            max_tokens=256,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        raw = response.content[0].text.strip()
+        # Strip markdown code fences if the model wrapped the JSON
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            if "```" in raw:
+                raw = raw[: raw.index("```")]
+        extracted: dict = json.loads(raw.strip())
+    except Exception:
+        logger.debug(
+            "soft_context extraction failed for %s",
+            call_sid,
+            exc_info=True,
+        )
+        return
+
+    changed = False
+    for key in null_keys:
+        value = extracted.get(key)
+        if value is not None and soft.get(key) is None:
+            soft[key] = value
+            changed = True
+
+    if changed:
+        try:
+            await save_session(call_sid, session)
+        except Exception:
+            logger.debug("save_session failed after soft_context update for %s", call_sid)
 
 
 # ---------------------------------------------------------------------------
@@ -2590,11 +2683,136 @@ class WebSocketCallHandler:
         clinic_id = self.session.get("clinic_id", "")
 
         if clinic_id == "theorem_v3":
-            # Free-form LLM loop — implemented in Prompt 5 main steps
-            # PLACEHOLDER — do not implement yet
-            raise NotImplementedError(
-                "theorem_v3 free-form loop not yet implemented"
-            )
+            # ────────────────────────────────────────────────────────────────
+            # theorem_v3 — free-form LLM loop (Prompt 5)
+            # No FlowEngine. Every utterance is handed straight to run_turn(),
+            # which streams TTS, fires tools, and appends conversation_history
+            # internally.  This branch returns at the end so execution NEVER
+            # falls through to the FlowEngine code below.
+            # ────────────────────────────────────────────────────────────────
+            from .llm_stream import LLMStream
+
+            llm = LLMStream()
+
+            try:
+                while not self._stop_event.is_set():
+                    try:
+                        utterance = await asyncio.wait_for(
+                            self.transcript_queue.get(),
+                            timeout=1.0,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+
+                    if not utterance or not utterance.strip():
+                        continue
+
+                    # Drop overlapping utterances while a turn is generating
+                    if self._llm_busy:
+                        logger.info(
+                            "[ms_conn v3] busy — dropping utterance: %r",
+                            utterance[:80],
+                        )
+                        continue
+
+                    # Barge-in resolution: false triggers resume TTS without
+                    # entering the LLM; confirmed barge-ins queue an ack and
+                    # wait for the next utterance.
+                    if await self._resolve_barge_in(utterance):
+                        continue
+
+                    self._in_barge_in_recovery = False
+                    self._llm_busy = True
+                    self._silence_handler.on_llm_started()
+                    self._last_audio_at = time.monotonic()
+                    self.session["llm_generation_active"] = True
+                    self.session["tts_inhibit"] = False
+                    await save_session(self.call_sid, self.session)
+
+                    logger.info(
+                        "[ms_conn v3] transcript: %r", utterance[:120],
+                    )
+
+                    try:
+                        # Run free-form LLM turn — handles TTS streaming,
+                        # tool calls, and conversation_history append
+                        # internally. Returns None.
+                        await llm.run_turn(
+                            user_text=utterance,
+                            session=self.session,
+                            call_sid=self.call_sid,
+                            stream_sid=self.stream_sid,
+                            tts_text_queue=self.tts_text_queue,
+                            audio_out_queue=self.audio_out_queue,
+                            websocket=self.websocket,
+                            on_transfer=self._on_transfer_request,
+                        )
+
+                        # Persist session — save_session takes (call_sid, session)
+                        await save_session(self.call_sid, self.session)
+
+                        # Soft-context extraction — fire-and-forget, never raises.
+                        # Pull the most recent assistant message from history
+                        # (run_turn appended it).
+                        _last_bot = ""
+                        for _msg in reversed(
+                            self.session.get("conversation_history", [])
+                        ):
+                            if _msg.get("role") == "assistant":
+                                _last_bot = _msg.get("content", "") or ""
+                                break
+                        asyncio.create_task(
+                            _update_soft_context(
+                                self.session, utterance, _last_bot
+                            )
+                        )
+
+                        # Re-arm watchdog with the latest stored question so
+                        # silence recovery has something to replay.
+                        _last_q = self.session.get("last_question", "")
+                        if _last_q and self.session.get("call_outcome") is None:
+                            self._silence_handler.set_state(
+                                self.session.get("state", "default")
+                            )
+                            self._silence_handler.on_question_asked(_last_q)
+
+                        if not self._call_stable:
+                            self._call_stable = True
+                            logger.info(
+                                "[ms_conn v3] call reached stable state"
+                            )
+
+                        # If a tool call set call_outcome (booked/transferred),
+                        # the call is winding down — exit the loop cleanly.
+                        if self.session.get("call_outcome") is not None:
+                            logger.info(
+                                "[ms_conn v3] call_outcome set (%s) — "
+                                "loop exiting",
+                                self.session.get("call_outcome"),
+                            )
+                            break
+
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "[ms_conn v3] turn error: %r\n%s",
+                            exc, traceback.format_exc(),
+                        )
+                        await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
+                    finally:
+                        self._last_turn_done_at = time.monotonic()
+                        self._llm_busy = False
+                        self._silence_handler.on_llm_finished()
+                        self.session["llm_generation_active"] = False
+                        await save_session(self.call_sid, self.session)
+
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error("[ms_conn v3] _llm_loop fatal: %r", exc)
+
+            return  # CRITICAL: do not fall through to FlowEngine path
 
         # FlowEngine path — theorem and theorem_v2
         # DO NOT CHANGE ANYTHING INSIDE THIS BLOCK
@@ -3685,6 +3903,45 @@ class WebSocketCallHandler:
             logger.info("[ms_conn] greeting already delivered — skipping")
             return
 
+        # ────────────────────────────────────────────────────────────────────
+        # theorem_v3 — LLM-generated greeting via run_turn() (Prompt 5)
+        # The system prompt's Block 7 instructs the LLM to produce an opening
+        # greeting on the first turn.  run_turn() handles TTS streaming and
+        # appends both user_text + assistant response to conversation_history
+        # internally — do NOT pre-append history here.
+        # ────────────────────────────────────────────────────────────────────
+        if self.session.get("clinic_id") == "theorem_v3":
+            from .llm_stream import LLMStream
+            llm = LLMStream()
+            try:
+                await llm.run_turn(
+                    user_text="[call connected — patient is on the line]",
+                    session=self.session,
+                    call_sid=self.call_sid,
+                    stream_sid=self.stream_sid,
+                    tts_text_queue=self.tts_text_queue,
+                    audio_out_queue=self.audio_out_queue,
+                    websocket=self.websocket,
+                    on_transfer=self._on_transfer_request,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[ms_conn v3] LLM greeting failed: %r — falling back",
+                    exc,
+                )
+                # Last-resort fallback so the caller never hears silence.
+                await self.tts_text_queue.put(
+                    "Hello, this is Susie. How can I help you today?"
+                )
+
+            self.session["greeting_delivered"] = True
+            self.session["turn_count"] = 1  # Prevents re-trigger of greeting
+            await save_session(self.call_sid, self.session)
+            return
+
+        # ────────────────────────────────────────────────────────────────────
+        # theorem / theorem_v2 — existing build_greeting() path UNCHANGED
+        # ────────────────────────────────────────────────────────────────────
         from app.greeting_builder import build_greeting
         greeting = build_greeting()
         logger.info("[ms_conn] greeting: %r", greeting[:80])
@@ -3819,6 +4076,16 @@ class WebSocketCallHandler:
                 await call_logger.flush()
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
+
+        # Persist final call outcome to session for post-call reporting.
+        # Additive — used by theorem_v3 free-form loop and any downstream
+        # reporting; legacy FlowEngine paths are unaffected.
+        if self.session.get("booking_confirmed"):
+            self.session["call_outcome"] = "booked"
+        elif self.session.get("transfer_attempted"):
+            self.session["call_outcome"] = "transferred"
+        else:
+            self.session["call_outcome"] = "no_action"
 
         try:
             await save_session(self.call_sid, self.session)
