@@ -47,16 +47,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-import anthropic
-
 from .config import (
     TWILIO_STARTED_TIMEOUT_SEC,
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
     BOOKING_OPEN,
     BARGE_IN_THRESHOLD_MS,
-    ANTHROPIC_API_KEY,
-    HAIKU,
 )
 
 # ---------------------------------------------------------------------------
@@ -78,7 +74,6 @@ from .session import (
 from .audio_in import AudioInputProcessor
 from .audio_out import AudioOutputProcessor
 from .stt_stream import STTStream
-from .llm_stream import LLMStream
 
 logger = logging.getLogger(__name__)
 
@@ -101,91 +96,6 @@ def _drain_queue(q: asyncio.Queue) -> int:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-async def _update_soft_context(session: dict, user_text: str, bot_text: str) -> None:
-    """
-    Use Haiku to extract caller context signals from a single turn and merge
-    them into session["soft_context"].  Existing non-None values are never
-    overwritten — the first reliable signal for each key wins.
-
-    Keys extracted: time_preference, location_preference, condition_notes,
-                    emotional_state, name, service, is_returning, insurer.
-    """
-    call_sid = session.get("call_sid", "")
-    soft = session.setdefault("soft_context", {})
-
-    # Build the list of keys that still need a value so the prompt is lean
-    null_keys = [k for k, v in soft.items() if v is None]
-    if not null_keys:
-        return  # Nothing left to fill in
-
-    system_prompt = (
-        "You extract caller context signals from a single conversation turn. "
-        "Return ONLY a JSON object with the keys listed below. "
-        "For each key, return the extracted value as a concise string, "
-        "or null if the turn contains no clear signal for that key. "
-        "Never invent information; only use what is explicitly stated or "
-        "strongly implied.\n\n"
-        f"Keys to extract: {', '.join(null_keys)}\n\n"
-        "Definitions:\n"
-        "  time_preference   – preferred appointment time/day (e.g. 'evenings', 'Monday mornings')\n"
-        "  location_preference – preferred clinic branch or area\n"
-        "  condition_notes   – brief description of the caller's complaint or condition\n"
-        "  emotional_state   – caller's apparent emotional state (e.g. 'anxious', 'calm')\n"
-        "  name              – caller's first name or full name\n"
-        "  service           – the treatment or service they want to book\n"
-        "  is_returning      – 'yes' if they mention being a returning patient, 'no' if new\n"
-        "  insurer           – health insurance provider name if mentioned\n\n"
-        "Return exactly one JSON object, no markdown, no extra keys."
-    )
-
-    user_message = (
-        f"Caller said: {user_text!r}\n"
-        f"Bot replied: {bot_text!r}"
-    )
-
-    try:
-        # Read key at call time so it picks up whatever load_dotenv() set in os.environ,
-        # even if config.ANTHROPIC_API_KEY was evaluated before dotenv loaded.
-        import os as _os
-        api_key = _os.environ.get("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
-        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=2.0)
-        response = await client.messages.create(
-            model=HAIKU,
-            max_tokens=256,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        raw = response.content[0].text.strip()
-        # Strip markdown code fences if the model wrapped the JSON
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]  # drop opening fence line
-            if raw.startswith("json"):
-                raw = raw[4:]             # drop "json" language tag
-            if "```" in raw:
-                raw = raw[: raw.index("```")]
-        extracted: dict = json.loads(raw.strip())
-    except Exception:
-        logger.debug(
-            "soft_context extraction failed for %s",
-            call_sid,
-            exc_info=True,
-        )
-        return
-
-    changed = False
-    for key in null_keys:
-        value = extracted.get(key)
-        if value is not None and soft.get(key) is None:
-            soft[key] = value
-            changed = True
-
-    if changed:
-        try:
-            await save_session(call_sid, session)
-        except Exception:
-            logger.debug("save_session failed after soft_context update for %s", call_sid)
 
 
 # ---------------------------------------------------------------------------
@@ -2122,7 +2032,6 @@ class WebSocketCallHandler:
         self._audio_in_proc  = AudioInputProcessor()
         self._audio_out_proc = AudioOutputProcessor()
         self._stt_stream     = STTStream()
-        self.llm_stream      = LLMStream()
 
         # ── Control events ─────────────────────────────────────────────────
         self._stop_event    = asyncio.Event()  # set when "stop" received or WS closes
@@ -2663,18 +2572,53 @@ class WebSocketCallHandler:
             logger.error("[ms_conn] _stt_loop error: %r", exc)
 
     # ========================================================================
-    # LLM loop  (free-form, run_turn() drives every turn)
+    # LLM loop  (FlowEngine-driven — single point of decision)
     # ========================================================================
 
     async def _llm_loop(self) -> None:
         """
-        Wait for the "start" event, then drive the conversation.
+        Wait for the "start" event, then drive the booking flow.
 
-        Every caller utterance → self.llm_stream.run_turn(...) which streams
-        Claude through ResponseChunker → tts_text_queue and appends to
-        conversation_history internally.  No state machine.
+        First caller utterance → flow.ask_current_question()  (starts the flow)
+        Every subsequent utterance → flow.handle_transcript()  (advances the flow)
+
+        That is the entire conversation logic.  Nothing else here makes
+        a decision about what Susie says.
         """
         await self._wait_for_start("llm_loop")
+
+        from .llm_stream import LLMStream
+        from .flow import FlowEngine
+
+        llm = LLMStream()
+
+        # Build the LLM callable the flow engine will use for LLM steps.
+        # It streams output directly to tts_text_queue and returns full text.
+        async def _llm_fn(instruction: str, allow_tools: bool = True, error_phrase: str = None) -> str:
+            result = await llm.run_instruction(
+                instruction=instruction,
+                session=self.session,
+                tts_text_queue=self.tts_text_queue,
+                call_sid=self.call_sid,
+                stream_sid=self.stream_sid,
+                audio_out_queue=self.audio_out_queue,
+                websocket=self.websocket,
+                on_transfer=self._on_transfer_request,
+                allow_tools=allow_tools,
+                error_phrase=error_phrase,
+            )
+            # Mark that LLM produced audible speech this turn so the global
+            # hard-fallback in the outer loop does not fire a duplicate response.
+            if result and result.strip():
+                self.session["_turn_speech_emitted"] = True
+            return result
+
+        flow = FlowEngine(
+            session=self.session,
+            tts_queue=self.tts_text_queue,
+            llm_fn=_llm_fn,
+        )
+        self._flow = flow
 
         try:
             while not self._stop_event.is_set():
@@ -2846,34 +2790,19 @@ class WebSocketCallHandler:
                         # Reset per-turn speech-emission flag.  _TrackedQueue and _llm_fn
                         # both set this True whenever audible text is enqueued.
                         self.session["_turn_speech_emitted"] = False
-                        logger.info("[ms_conn] transcript: %r", utterance[:80])
-                        await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
-                        # Run free-form LLM turn
-                        # run_turn() handles: TTS streaming, tool calls, history appending
-                        await self.llm_stream.run_turn(
-                            user_text=utterance,
-                            session=self.session,
-                            call_sid=self.call_sid,
-                            stream_sid=self.stream_sid,
-                            tts_text_queue=self.tts_text_queue,
-                            audio_out_queue=self.audio_out_queue,
-                            websocket=self.websocket,
-                            on_transfer=self._on_transfer_request,
-                        )
-
-                        # Persist session — save_session takes TWO args: call_sid then session
-                        await save_session(self.call_sid, self.session)
-
-                        # Update soft context — async, non-blocking, never raises
-                        # Get last assistant message from history (run_turn appended it)
-                        _last_bot = ""
-                        for _msg in reversed(self.session.get("conversation_history", [])):
-                            if _msg["role"] == "assistant":
-                                _last_bot = _msg["content"]
-                                break
-                        asyncio.create_task(
-                            _update_soft_context(self.session, utterance, _last_bot)
-                        )
+                        if not self.session.get("flow_started"):
+                            # First caller utterance — detect intent then kick off the flow.
+                            self.session["flow_started"] = True
+                            logger.info("[ms_conn] flow start — first utterance: %r", utterance[:80])
+                            await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
+                            await flow.handle_transcript(utterance)
+                        else:
+                            logger.info(
+                                "[ms_conn] flow transcript: %r  step=%s",
+                                utterance[:80], self.session.get("flow_step", 0),
+                            )
+                            await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
+                            await flow.handle_transcript(utterance)
 
                         # ── GLOBAL HARD FALLBACK ──────────────────────────────────────
                         # If handle_transcript completed without producing any audible
@@ -2912,6 +2841,7 @@ class WebSocketCallHandler:
                             and not self.session.get("fragment_suppressed")
                             and not self.session.get("request_transfer")
                             and not self.session.get("graceful_exit")
+                            and not flow.is_complete()
                             and _turn_state not in _STRUCTURED_STATES_NO_FB
                         )
                         if _turn_silent:
@@ -2951,7 +2881,7 @@ class WebSocketCallHandler:
                     _last_q = self.session.get("last_question", "")
                     if _last_q:
                         logger.info("[ms_conn] last_question stored: %r", _last_q[:120])
-                        if self.session.get("call_outcome") is not None:
+                        if flow.is_complete():
                             # Flow is done — do NOT re-arm silence handler.
                             # Also zero the handler's stored question so the silence
                             # timer cannot fire a stale re-ask after the flow completes.
@@ -3090,7 +3020,7 @@ class WebSocketCallHandler:
                     # in silence after the technical blip — but only if flow is still
                     # active; replaying a stale question after completion is wrong.
                     _lq = self.session.get("last_question", "")
-                    if _lq:
+                    if _lq and not flow.is_complete():
                         await self.tts_text_queue.put(_lq)
                 finally:
                     self._last_turn_done_at               = time.monotonic()
@@ -3458,8 +3388,8 @@ class WebSocketCallHandler:
             # ends with "?") re-arms the timer and causes a spurious CONFIRM_PHONE
             # re-ask after booking is confirmed, failing no_question_asked_twice /
             # no_state_corruption checks (seen in tests 2.7 and 6.4).
-            if self.session.get("call_outcome") is not None:
-                logger.debug("[ms_silence] call_outcome set — skipping tts_finished")
+            if hasattr(self, "_flow") and self._flow.is_complete():
+                logger.debug("[ms_silence] flow complete — skipping tts_finished")
                 return
             self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
@@ -3731,26 +3661,46 @@ class WebSocketCallHandler:
     # ========================================================================
 
     async def _inject_greeting(self) -> None:
+        """
+        Speak Susie's opening greeting directly via ElevenLabs TTS without
+        an LLM round-trip — saves ~500ms on the first word of the call.
+
+        Guards against double-fire (Twilio reconnect / duplicate start events).
+        Advances state from GREETING → CLINIC_SELECTION so the LLM never
+        sees GREETING state and tries to re-introduce itself.
+        """
+        # Guard: only fire once per call
         if self.session.get("greeting_delivered"):
+            logger.info("[ms_conn] greeting already delivered — skipping")
             return
 
-        # run_turn handles TTS streaming AND appends both user_text + assistant
-        # response to conversation_history via _append_history() internally.
-        # Do NOT pre-append to history here — that would create a duplicate.
-        await self.llm_stream.run_turn(
-            user_text="[call connected — patient is on the line]",
-            session=self.session,
-            call_sid=self.call_sid,
-            stream_sid=self.stream_sid,
-            tts_text_queue=self.tts_text_queue,
-            audio_out_queue=self.audio_out_queue,
-            websocket=self.websocket,
-            on_transfer=self._on_transfer_request,
-        )
+        from app.greeting_builder import build_greeting
+        greeting = build_greeting()
+        logger.info("[ms_conn] greeting: %r", greeting[:80])
 
-        self.session["greeting_delivered"] = True
-        self.session["turn_count"] = 1  # Prevents Block 7 re-triggering greeting
+        self.session.setdefault("turns", []).append({"role": "assistant", "text": greeting})
+        history = self.session.setdefault("conversation_history", [])
+        history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
+        history.append({"role": "assistant", "content": greeting})
+        self.session["last_bot_prompt"]    = greeting
+        # Clear any stale last_question that may have been loaded from Redis
+        # for this call_sid (e.g. previous call left "Just to confirm — shall I
+        # use the number..." and the session was reloaded).  The silence handler
+        # is also zeroed so no cross-call question can leak into the re-ask path.
+        self.session["last_question"]       = ""
+        self.session.pop("_last_question_not_reaskable", None)
+        self._silence_handler.last_question = ""
+        self.session["greeting_delivered"]  = True
+
+        # State stays at GREETING after the initial greeting plays.
+        # The first caller utterance triggers DETECT_INTENT → booking flow.
+        # (No state advance here — keep GREETING until caller speaks.)
+
         await save_session(self.call_sid, self.session)
+
+        await self.tts_text_queue.put(greeting)
+        # The silence timer is armed automatically by _tts_loop's on_tts_finished()
+        # hook once the greeting audio finishes playing.  No explicit call needed here.
 
     # ========================================================================
     # Transfer callback
@@ -3858,14 +3808,6 @@ class WebSocketCallHandler:
                 await call_logger.flush()
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
-
-        # Persist final call outcome to session for post-call reporting
-        if self.session.get("booking_confirmed"):
-            self.session["call_outcome"] = "booked"
-        elif self.session.get("transfer_attempted"):
-            self.session["call_outcome"] = "transferred"
-        else:
-            self.session["call_outcome"] = "no_action"
 
         try:
             await save_session(self.call_sid, self.session)
