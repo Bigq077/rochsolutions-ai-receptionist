@@ -47,12 +47,16 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+import anthropic
+
 from .config import (
     TWILIO_STARTED_TIMEOUT_SEC,
     PIPELINE_FAILURE_PHRASE,
     CLAUDE_ERROR_PHRASE,
     BOOKING_OPEN,
     BARGE_IN_THRESHOLD_MS,
+    ANTHROPIC_API_KEY,
+    HAIKU,
 )
 
 # ---------------------------------------------------------------------------
@@ -100,7 +104,88 @@ def _iso_now() -> str:
 
 
 async def _update_soft_context(session: dict, user_text: str, bot_text: str) -> None:
-    pass  # Implemented in Prompt 6
+    """
+    Use Haiku to extract caller context signals from a single turn and merge
+    them into session["soft_context"].  Existing non-None values are never
+    overwritten — the first reliable signal for each key wins.
+
+    Keys extracted: time_preference, location_preference, condition_notes,
+                    emotional_state, name, service, is_returning, insurer.
+    """
+    call_sid = session.get("call_sid", "")
+    soft = session.setdefault("soft_context", {})
+
+    # Build the list of keys that still need a value so the prompt is lean
+    null_keys = [k for k, v in soft.items() if v is None]
+    if not null_keys:
+        return  # Nothing left to fill in
+
+    system_prompt = (
+        "You extract caller context signals from a single conversation turn. "
+        "Return ONLY a JSON object with the keys listed below. "
+        "For each key, return the extracted value as a concise string, "
+        "or null if the turn contains no clear signal for that key. "
+        "Never invent information; only use what is explicitly stated or "
+        "strongly implied.\n\n"
+        f"Keys to extract: {', '.join(null_keys)}\n\n"
+        "Definitions:\n"
+        "  time_preference   – preferred appointment time/day (e.g. 'evenings', 'Monday mornings')\n"
+        "  location_preference – preferred clinic branch or area\n"
+        "  condition_notes   – brief description of the caller's complaint or condition\n"
+        "  emotional_state   – caller's apparent emotional state (e.g. 'anxious', 'calm')\n"
+        "  name              – caller's first name or full name\n"
+        "  service           – the treatment or service they want to book\n"
+        "  is_returning      – 'yes' if they mention being a returning patient, 'no' if new\n"
+        "  insurer           – health insurance provider name if mentioned\n\n"
+        "Return exactly one JSON object, no markdown, no extra keys."
+    )
+
+    user_message = (
+        f"Caller said: {user_text!r}\n"
+        f"Bot replied: {bot_text!r}"
+    )
+
+    try:
+        # Read key at call time so it picks up whatever load_dotenv() set in os.environ,
+        # even if config.ANTHROPIC_API_KEY was evaluated before dotenv loaded.
+        import os as _os
+        api_key = _os.environ.get("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=2.0)
+        response = await client.messages.create(
+            model=HAIKU,
+            max_tokens=256,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        raw = response.content[0].text.strip()
+        # Strip markdown code fences if the model wrapped the JSON
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]  # drop opening fence line
+            if raw.startswith("json"):
+                raw = raw[4:]             # drop "json" language tag
+            if "```" in raw:
+                raw = raw[: raw.index("```")]
+        extracted: dict = json.loads(raw.strip())
+    except Exception:
+        logger.debug(
+            "soft_context extraction failed for %s",
+            call_sid,
+            exc_info=True,
+        )
+        return
+
+    changed = False
+    for key in null_keys:
+        value = extracted.get(key)
+        if value is not None and soft.get(key) is None:
+            soft[key] = value
+            changed = True
+
+    if changed:
+        try:
+            await save_session(call_sid, session)
+        except Exception:
+            logger.debug("save_session failed after soft_context update for %s", call_sid)
 
 
 # ---------------------------------------------------------------------------
