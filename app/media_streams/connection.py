@@ -2851,23 +2851,28 @@ class WebSocketCallHandler:
                                 )
 
                             else:
-                                # No location signal — let LLM clarify
-                                await llm.run_turn(
-                                    user_text=utterance,
-                                    session=self.session,
-                                    call_sid=self.call_sid,
-                                    stream_sid=self.stream_sid,
-                                    tts_text_queue=self.tts_text_queue,
-                                    audio_out_queue=self.audio_out_queue,
-                                    websocket=self.websocket,
-                                    on_transfer=self._on_transfer_request,
+                                # No location signal in utterance — the
+                                # location question is still in flight.
+                                # Do NOT call run_turn here: the LLM would
+                                # generate a second location question on top
+                                # of the one already queued.  Instead, play
+                                # the same short clarifier used for the
+                                # ambiguous case.  v3_location_asked stays
+                                # True so the next turn is still intercepted.
+                                _clarify = (
+                                    "Sorry, I didn't quite catch that — "
+                                    "was that Alcester or Redditch?"
                                 )
+                                await self.tts_text_queue.put(_clarify)
+                                self.session["last_bot_prompt"] = _clarify
+                                self.session["last_question"] = _clarify
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
-                                    "[ms_conn v3] location answer unknown"
-                                    " — passed to run_turn: %r",
+                                    "[ms_conn v3] location Q in flight, "
+                                    "no location signal — clarifying "
+                                    "instead of run_turn: %r",
                                     utterance[:60],
                                 )
 
