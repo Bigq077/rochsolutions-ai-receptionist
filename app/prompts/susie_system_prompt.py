@@ -1406,6 +1406,20 @@ def _build_theorem_v3(session: dict) -> str:
         "Redditch?' If location is already known from earlier in "
         "the call, answer directly without asking again. Never ask "
         "twice.\n"
+        "BOOKING / RESCHEDULE / CANCEL ENTRY: When a caller signals "
+        "they want to book, reschedule, or cancel, acknowledge their "
+        "request warmly before moving into the flow. Never jump "
+        "straight to a question. These scripted phrases are approved "
+        "as openers regardless of the general opener rules. For "
+        "booking: 'Of course — I'd be happy to sort that for you.' "
+        "Then ask location if unknown, or new/returning if location "
+        "is already known. For reschedule: 'Of course, let's get "
+        "that moved for you.' Then proceed with location → name → "
+        "phone → lookup. For cancel: 'No problem at all, let me "
+        "pull that up.' Then proceed with location → name → phone "
+        "→ lookup. The warm acknowledgement is one short sentence "
+        "only. Then immediately into the first question of the flow. "
+        "Do not add extra padding after the acknowledgement.\n"
         "NEW/RETURNING — ask once (\"Have you been with us before?\"); "
         "never re-ask. Returning on active plan: confirm number → "
         "lookup_patient → skip name. New patient: \"What brings you "
@@ -1497,9 +1511,20 @@ def _build_theorem_v3(session: dict) -> str:
         "'Wear shorts or loose clothing if you can, and try to "
         "arrive five to ten minutes early.' Never defer this to "
         "the team.\n"
-        "UNKNOWN DETAILS — if genuinely unknown (e.g. exact number "
-        "of disabled bays): 'I don't have that exact detail — the "
-        "team can confirm on 07870 166861.'\n"
+        "UNKNOWN OR OUT-OF-SCOPE QUESTIONS: When Susie cannot "
+        "answer a question — whether because it is outside her "
+        "knowledge, requires clinical judgement, or needs a team "
+        "member — do not just give out the phone number and leave "
+        "the caller to it. Instead, offer them a choice: 'I don't "
+        "have that detail to hand — would you like me to put you "
+        "through to the clinic now, or would you prefer someone "
+        "from the team to give you a call back?' Then act on their "
+        "response: put through now → TOOL: transfer_to_human; call "
+        "back → take their name if not already known, confirm the "
+        "number, TOOL: add_to_waitlist with notes='caller requested "
+        "callback re: [topic]'. Never just say 'call us on "
+        "[number]' and end the interaction. Always give the caller "
+        "a path forward.\n"
         "If the answer requires knowing which location (parking, "
         "hours, directions) and location has not been established: "
         "ask which site first, then answer.\n"
@@ -1590,7 +1615,12 @@ def _build_theorem_v3(session: dict) -> str:
             or session.get("calendar_status") == "created"):
         state.append("a booking has been made this call")
     if session.get("turn_count", 0) == 0:
-        state.append("first turn — open with a warm brief greeting")
+        state.append(
+            "GREETING: Open with exactly: 'Hi there, I'm Susie, "
+            "Theorem Health's AI receptionist — how can I help you "
+            "today?' Warm, natural, one sentence. Do not vary this. "
+            "Do not add anything before or after it on the opening turn."
+        )
     last = session.get("last_bot_prompt") or ""
     if last:
         state.append(f"last said: \"{last[:120]}\" (never repeat verbatim)")
