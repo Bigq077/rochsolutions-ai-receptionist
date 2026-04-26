@@ -2741,12 +2741,45 @@ class WebSocketCallHandler:
                         # where both sides wait after a pure acknowledgement
                         # turn (Susie said ack, caller waits for question,
                         # LLM waits for transcript — nobody moves).
+                        # ── Helper: extract location from caller utterance ──
+                        def _v3_extract_location(utt: str) -> str:
+                            """Return 'alcester', 'redditch', or ''."""
+                            u = utt.lower()
+                            if "alcester" in u:
+                                return "alcester"
+                            if (
+                                "redditch" in u
+                                or "reddich" in u
+                                or "red itch" in u
+                            ):
+                                return "redditch"
+                            # Number variants: "one"/"first" → alcester,
+                            # "two"/"second" → redditch
+                            import re as _re
+                            words = _re.sub(r"[^a-z\s]", "", u).split()
+                            if words in (
+                                ["one"], ["the", "first"], ["first"]
+                            ):
+                                return "alcester"
+                            if words in (
+                                ["two"], ["the", "second"], ["second"]
+                            ):
+                                return "redditch"
+                            return ""
+
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
                                 "v3_location_asked", False
                             )
                         )
+                        # Caller is answering the location question we just
+                        # asked — intercept to guarantee only the ack plays
+                        # (no bundled next question from the LLM).
+                        _v3_loc_answering = self.session.get(
+                            "v3_location_asked", False
+                        )
+
                         if _v3_gate_fired:
                             _loc_q = (
                                 "Which clinic were you thinking of — "
@@ -2762,6 +2795,53 @@ class WebSocketCallHandler:
                                 "skipping run_turn for utterance: %r",
                                 utterance[:60],
                             )
+
+                        elif _v3_loc_answering:
+                            # ── LOCATION ANSWER INTERCEPT ─────────────────
+                            # Try to extract the location from the utterance.
+                            # If found: play only the ack phrase and set flags.
+                            # If not found: let run_turn handle clarification.
+                            _confirmed_loc = _v3_extract_location(utterance)
+                            if _confirmed_loc:
+                                _loc_label = _confirmed_loc.capitalize()
+                                _ack = f"{_loc_label}, perfect."
+                                await self.tts_text_queue.put(_ack)
+                                self.session["last_bot_prompt"] = _ack
+                                self.session["selected_location"] = (
+                                    _confirmed_loc
+                                )
+                                self.session["v3_location_confirmed"] = True
+                                self.session["v3_booking_intent"] = False
+                                self.session["v3_location_asked"] = False
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] location answer intercepted"
+                                    " — ack-only, no run_turn: %s",
+                                    _confirmed_loc,
+                                )
+                            else:
+                                # Utterance unclear — let LLM ask again
+                                await llm.run_turn(
+                                    user_text=utterance,
+                                    session=self.session,
+                                    call_sid=self.call_sid,
+                                    stream_sid=self.stream_sid,
+                                    tts_text_queue=self.tts_text_queue,
+                                    audio_out_queue=self.audio_out_queue,
+                                    websocket=self.websocket,
+                                    on_transfer=self._on_transfer_request,
+                                )
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] location answer unclear"
+                                    " — passed to run_turn: %r",
+                                    utterance[:60],
+                                )
+
                         else:
                             # ── Normal path: run free-form LLM turn ─────────
                             # Handles TTS streaming, tool calls, and
@@ -2798,11 +2878,14 @@ class WebSocketCallHandler:
                                 )
                             )
 
-                            # ── BOOKING ACK DETECTION + AUTO-QUEUE (STEPS 3+4)
+                            # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
                             # acknowledgement (no question), immediately queue
                             # the location question so it plays right after
                             # the ack audio drains — no caller input needed.
+                            # Guard: only fire if location has NOT already been
+                            # confirmed this call (prevents re-asking when the
+                            # caller switches from one flow to another).
                             _V3_ACK_PHRASES = (
                                 "of course — i'd be happy to sort that",
                                 "of course, let's get that moved",
@@ -2815,6 +2898,9 @@ class WebSocketCallHandler:
                                 )
                                 and not self.session.get(
                                     "v3_location_asked", False
+                                )
+                                and not self.session.get(
+                                    "v3_location_confirmed", False
                                 )
                             )
                             if _is_booking_ack:
@@ -2833,27 +2919,6 @@ class WebSocketCallHandler:
                                 logger.info(
                                     "[ms_conn v3] booking ack detected — "
                                     "location Q auto-queued after run_turn"
-                                )
-
-                            # ── LOCATION CONFIRMED (STEP 5) ──────────────────
-                            # The caller answered the location question and
-                            # run_turn processed it.  Clear the gate flags so
-                            # subsequent turns flow normally.
-                            elif (
-                                self.session.get("v3_location_asked", False)
-                                and not self.session.get(
-                                    "v3_location_confirmed", False
-                                )
-                            ):
-                                self.session["v3_location_confirmed"] = True
-                                self.session["v3_booking_intent"] = False
-                                self.session["v3_location_asked"] = False
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] location confirmed — "
-                                    "v3 gate flags cleared"
                                 )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
