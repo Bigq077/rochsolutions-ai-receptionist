@@ -2734,41 +2734,130 @@ class WebSocketCallHandler:
                     )
 
                     try:
-                        # Run free-form LLM turn — handles TTS streaming,
-                        # tool calls, and conversation_history append
-                        # internally. Returns None.
-                        await llm.run_turn(
-                            user_text=utterance,
-                            session=self.session,
-                            call_sid=self.call_sid,
-                            stream_sid=self.stream_sid,
-                            tts_text_queue=self.tts_text_queue,
-                            audio_out_queue=self.audio_out_queue,
-                            websocket=self.websocket,
-                            on_transfer=self._on_transfer_request,
-                        )
-
-                        # Persist session — save_session takes (call_sid, session)
-                        await save_session(self.call_sid, self.session)
-
-                        # Soft-context extraction — fire-and-forget, never raises.
-                        # Pull the most recent assistant message from history
-                        # (run_turn appended it).
-                        _last_bot = ""
-                        for _msg in reversed(
-                            self.session.get("conversation_history", [])
-                        ):
-                            if _msg.get("role") == "assistant":
-                                _last_bot = _msg.get("content", "") or ""
-                                break
-                        asyncio.create_task(
-                            _update_soft_context(
-                                self.session, utterance, _last_bot
+                        # ── THEOREM_V3 LOCATION GATE (FIX 1) ────────────────
+                        # If booking intent was flagged but the location
+                        # question has not been asked yet, queue it directly
+                        # and skip run_turn entirely.  Prevents the deadlock
+                        # where both sides wait after a pure acknowledgement
+                        # turn (Susie said ack, caller waits for question,
+                        # LLM waits for transcript — nobody moves).
+                        _v3_gate_fired = (
+                            self.session.get("v3_booking_intent", False)
+                            and not self.session.get(
+                                "v3_location_asked", False
                             )
                         )
+                        if _v3_gate_fired:
+                            _loc_q = (
+                                "Which clinic were you thinking of — "
+                                "Alcester or Redditch?"
+                            )
+                            await self.tts_text_queue.put(_loc_q)
+                            self.session["last_bot_prompt"] = _loc_q
+                            self.session["last_question"] = _loc_q
+                            self.session["v3_location_asked"] = True
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] location gate fired — "
+                                "skipping run_turn for utterance: %r",
+                                utterance[:60],
+                            )
+                        else:
+                            # ── Normal path: run free-form LLM turn ─────────
+                            # Handles TTS streaming, tool calls, and
+                            # conversation_history append internally.
+                            await llm.run_turn(
+                                user_text=utterance,
+                                session=self.session,
+                                call_sid=self.call_sid,
+                                stream_sid=self.stream_sid,
+                                tts_text_queue=self.tts_text_queue,
+                                audio_out_queue=self.audio_out_queue,
+                                websocket=self.websocket,
+                                on_transfer=self._on_transfer_request,
+                            )
 
-                        # Re-arm watchdog with the latest stored question so
-                        # silence recovery has something to replay.
+                            # Persist session
+                            await save_session(self.call_sid, self.session)
+
+                            # Soft-context extraction — fire-and-forget,
+                            # never raises.  Pull the most recent assistant
+                            # message from history (run_turn appended it).
+                            _last_bot = ""
+                            for _msg in reversed(
+                                self.session.get("conversation_history", [])
+                            ):
+                                if _msg.get("role") == "assistant":
+                                    _last_bot = (
+                                        _msg.get("content", "") or ""
+                                    )
+                                    break
+                            asyncio.create_task(
+                                _update_soft_context(
+                                    self.session, utterance, _last_bot
+                                )
+                            )
+
+                            # ── BOOKING ACK DETECTION + AUTO-QUEUE (STEPS 3+4)
+                            # If the LLM generated a warm booking
+                            # acknowledgement (no question), immediately queue
+                            # the location question so it plays right after
+                            # the ack audio drains — no caller input needed.
+                            _V3_ACK_PHRASES = (
+                                "of course — i'd be happy to sort that",
+                                "of course, let's get that moved",
+                                "no problem at all",
+                            )
+                            _is_booking_ack = (
+                                any(
+                                    p in _last_bot.lower()
+                                    for p in _V3_ACK_PHRASES
+                                )
+                                and not self.session.get(
+                                    "v3_location_asked", False
+                                )
+                            )
+                            if _is_booking_ack:
+                                self.session["v3_booking_intent"] = True
+                                _loc_q = (
+                                    "Which clinic were you thinking of — "
+                                    "Alcester or Redditch?"
+                                )
+                                await self.tts_text_queue.put(_loc_q)
+                                self.session["last_bot_prompt"] = _loc_q
+                                self.session["last_question"] = _loc_q
+                                self.session["v3_location_asked"] = True
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] booking ack detected — "
+                                    "location Q auto-queued after run_turn"
+                                )
+
+                            # ── LOCATION CONFIRMED (STEP 5) ──────────────────
+                            # The caller answered the location question and
+                            # run_turn processed it.  Clear the gate flags so
+                            # subsequent turns flow normally.
+                            elif (
+                                self.session.get("v3_location_asked", False)
+                                and not self.session.get(
+                                    "v3_location_confirmed", False
+                                )
+                            ):
+                                self.session["v3_location_confirmed"] = True
+                                self.session["v3_booking_intent"] = False
+                                self.session["v3_location_asked"] = False
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] location confirmed — "
+                                    "v3 gate flags cleared"
+                                )
+
+                        # ── Watchdog re-arm (both gate-fired and normal) ─────
+                        # Silence recovery needs last_question in all cases.
                         _last_q = self.session.get("last_question", "")
                         if _last_q and self.session.get("call_outcome") is None:
                             self._silence_handler.set_state(
