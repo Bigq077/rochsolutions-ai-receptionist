@@ -3353,7 +3353,7 @@ class WebSocketCallHandler:
         await self._wait_for_start("tts_loop")
 
         from .tts_stream import TTSStream
-        tts = TTSStream()
+        tts = TTSStream(clinic_id=self.session.get("clinic_id", ""))
         _last_tts_chunk: str = ""  # BUG 2: dedup — track last synthesised text chunk
 
         try:

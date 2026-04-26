@@ -103,7 +103,8 @@ class TTSStream:
     Secondary interface: start_ws() (MODE B, persistent WebSocket).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clinic_id: str = "") -> None:
+        self._clinic_id = clinic_id       # Used for TTS_BYPASS_CLINIC gate
         self._ws: Optional[Any] = None   # WebSocket connection (MODE B only)
 
     # =========================================================================
@@ -134,6 +135,18 @@ class TTSStream:
         audio_out_processor : Stateful AudioOutputProcessor (maintains 4-byte alignment)
         """
         if not text or not text.strip():
+            return
+
+        # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
+        # the OpenAI TTS fallback instead of ElevenLabs (cheaper for testing).
+        import os
+        _bypass_clinic = os.getenv("TTS_BYPASS_CLINIC", "")
+        if _bypass_clinic and _bypass_clinic == self._clinic_id:
+            logger.info(
+                "[ms_tts] TTS_BYPASS_CLINIC=%r matches clinic_id — using OpenAI fallback",
+                _bypass_clinic,
+            )
+            await self._synthesise_openai_fallback(text, audio_out_queue)
             return
 
         # Fast-path: ElevenLabs known-exhausted → use OpenAI TTS directly
