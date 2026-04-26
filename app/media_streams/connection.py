@@ -2743,29 +2743,32 @@ class WebSocketCallHandler:
                         # LLM waits for transcript — nobody moves).
                         # ── Helper: extract location from caller utterance ──
                         def _v3_extract_location(utt: str) -> str:
-                            """Return 'alcester', 'redditch', or ''."""
-                            u = utt.lower()
-                            if "alcester" in u:
-                                return "alcester"
-                            if (
-                                "redditch" in u
-                                or "reddich" in u
-                                or "red itch" in u
-                            ):
-                                return "redditch"
-                            # Number variants: "one"/"first" → alcester,
-                            # "two"/"second" → redditch
-                            import re as _re
-                            words = _re.sub(r"[^a-z\s]", "", u).split()
-                            if words in (
-                                ["one"], ["the", "first"], ["first"]
-                            ):
-                                return "alcester"
-                            if words in (
-                                ["two"], ["the", "second"], ["second"]
-                            ):
-                                return "redditch"
-                            return ""
+                            """
+                            Delegates to the full weighted location resolver
+                            (location_resolver.py) to interpret STT transcript.
+
+                            resolve_clinic_location() is synchronous — safe
+                            to call from async context without await.
+
+                            Returns:
+                              'alcester'  — confident match for Alcester
+                              'redditch'  — confident match for Redditch
+                              'ambiguous' — resolver has a directional lean
+                                            but not confident enough to bind;
+                                            caller should be re-asked
+                              ''          — no location signal; let LLM handle
+                            """
+                            from app.media_streams.location_resolver import (
+                                resolve_clinic_location as _rcl,
+                            )
+                            _res = _rcl(utt, context="ask_location")
+                            _status   = _res["status"]    # resolved|ambiguous|unknown
+                            _location = _res["location"]  # alcester|redditch|None
+                            if _status == "resolved" and _location:
+                                return _location           # 'alcester' or 'redditch'
+                            if _status == "ambiguous":
+                                return "ambiguous"
+                            return ""                      # unknown / low signal
 
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
@@ -2798,11 +2801,16 @@ class WebSocketCallHandler:
 
                         elif _v3_loc_answering:
                             # ── LOCATION ANSWER INTERCEPT ─────────────────
-                            # Try to extract the location from the utterance.
-                            # If found: play only the ack phrase and set flags.
-                            # If not found: let run_turn handle clarification.
+                            # Run the full weighted resolver against the
+                            # caller's utterance.
+                            # • resolved → play ack, set flags, skip run_turn
+                            # • ambiguous → re-ask once with short clarifier
+                            # • '' (unknown) → fall through to run_turn so
+                            #   the LLM can handle clarification naturally
                             _confirmed_loc = _v3_extract_location(utterance)
-                            if _confirmed_loc:
+
+                            if _confirmed_loc in ("alcester", "redditch"):
+                                # Confident match — play ack only, set flags
                                 _loc_label = _confirmed_loc.capitalize()
                                 _ack = f"{_loc_label}, perfect."
                                 await self.tts_text_queue.put(_ack)
@@ -2821,8 +2829,29 @@ class WebSocketCallHandler:
                                     " — ack-only, no run_turn: %s",
                                     _confirmed_loc,
                                 )
+
+                            elif _confirmed_loc == "ambiguous":
+                                # Resolver has directional signal but not
+                                # enough confidence to bind.  Re-ask once
+                                # with a short focused clarifier.
+                                _clarify = (
+                                    "Sorry, I didn't quite catch that — "
+                                    "was that Alcester or Redditch?"
+                                )
+                                await self.tts_text_queue.put(_clarify)
+                                self.session["last_bot_prompt"] = _clarify
+                                self.session["last_question"] = _clarify
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] location answer ambiguous"
+                                    " — re-asking: %r",
+                                    utterance[:60],
+                                )
+
                             else:
-                                # Utterance unclear — let LLM ask again
+                                # No location signal — let LLM clarify
                                 await llm.run_turn(
                                     user_text=utterance,
                                     session=self.session,
@@ -2837,7 +2866,7 @@ class WebSocketCallHandler:
                                     self.call_sid, self.session
                                 )
                                 logger.info(
-                                    "[ms_conn v3] location answer unclear"
+                                    "[ms_conn v3] location answer unknown"
                                     " — passed to run_turn: %r",
                                     utterance[:60],
                                 )
