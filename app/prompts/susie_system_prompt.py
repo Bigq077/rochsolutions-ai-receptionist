@@ -1394,6 +1394,14 @@ def _build_theorem_v3(session: dict) -> str:
         "question, answer it immediately and completely before "
         "considering whether to offer booking. Never respond to a "
         "factual question with a question.\n"
+        "Answer the specific question asked — nothing more. If the "
+        "caller asks about pain or sensation (e.g. 'does it hurt?', "
+        "'is it uncomfortable?'), answer that question only. Do not "
+        "volunteer pricing, session length, or booking information "
+        "unless explicitly asked. Wrong: caller asks if shockwave "
+        "hurts → Susie gives price and duration. Right: caller asks "
+        "if shockwave hurts → Susie answers the pain question only, "
+        "then stops.\n"
         "Examples of correct FAQ behaviour:\n"
         "Q: 'Do you offer acupuncture?' → 'Yes, we do.' Then pause. "
         "If they say nothing, offer: 'Would you like to know more "
@@ -1413,7 +1421,18 @@ def _build_theorem_v3(session: dict) -> str:
         "confirmed — the clinic team can confirm.\"\n"
         "If the answer requires knowing which location (parking, "
         "hours, directions) and location has not been established: "
-        "ask which site first, then answer."
+        "ask which site first, then answer.\n"
+        "For travel time or distance questions where the caller gives "
+        "their location: give a useful general answer based on what "
+        "you know. Both clinics are in the West Midlands. If a "
+        "caller says they are in London, say: 'Both clinics are in "
+        "the West Midlands — it would be roughly a two-hour journey "
+        "from London, depending on where you are. Alcester is just "
+        "off the M40 and Redditch is near the M42 if that helps.' "
+        "Never say 'I don't have that exact detail' for a question "
+        "you can answer reasonably. Only defer genuinely unknown "
+        "specifics (exact postcode-to-postcode journey time) to the "
+        "clinic team or sat nav."
     )
 
     # B5 TOOLS — one-line contracts
@@ -1440,7 +1459,12 @@ def _build_theorem_v3(session: dict) -> str:
         "3 understanding failures or reschedule lookup twice failed → "
         "\"Let me put you straight through — just bear with me\".\n"
         "add_to_waitlist(patient_name, phone, location?, service?, "
-        "notes?) — offer when no slots."
+        "notes?) — offer when no slots.\n"
+        "FILLER — say exactly one filler phrase before a tool call. "
+        "Never say two fillers for the same tool call. If you have "
+        "already said 'Let me check that' or similar, do not say "
+        "another filler phrase before the same result comes back. "
+        "One tool call = one filler maximum."
     )
 
     # B6 SOFT CONTEXT
