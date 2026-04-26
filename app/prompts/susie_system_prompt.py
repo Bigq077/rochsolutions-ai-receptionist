@@ -1651,14 +1651,29 @@ def _build_theorem_v3(session: dict) -> str:
     if collected.get("phone"): known.append(f"phone={collected['phone']}")
     pt = collected.get("patient_type") or session.get("new_or_returning")
     if pt: known.append(f"patient_type={pt}")
-    loc = (session.get("selected_location") or "").lower().strip()
-    if loc: known.append(f"location={loc}")
+    # Only surface location if caller has explicitly confirmed it this call.
+    # selected_location defaults to "alcester" in session.py — never treat
+    # that default as a caller-confirmed location.
+    if session.get("v3_location_confirmed", False):
+        loc = (session.get("selected_location") or "").lower().strip()
+        if loc:
+            known.append(f"location={loc}")
     if known:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
     b7 = ("CALL STATE: " + "; ".join(state)) if state else ""
 
     b_crit = (
         "CRITICAL RULES — THESE OVERRIDE ALL OTHER INSTRUCTIONS.\n"
+        "0. LOCATION IS UNKNOWN UNTIL THE CALLER STATES IT. At the "
+        "start of every call, location is completely unknown — do "
+        "NOT assume, imply, or reference any clinic unless location "
+        "appears in the CALL STATE block under 'already known'. "
+        "Susie has no prior knowledge of which site the caller "
+        "uses. Do not say 'We've already got Alcester noted' or "
+        "anything similar unless location is in CALL STATE. When "
+        "any question requires knowing the location (parking, hours, "
+        "directions, booking, reschedule, cancel), ask: 'Are you "
+        "thinking of Alcester or Redditch?' before answering.\n"
         "1. LOCATION IS ALWAYS THE FIRST QUESTION IN ANY FLOW. "
         "The very first question in every booking, reschedule, and "
         "cancel flow is always location. Before new/returning. "
