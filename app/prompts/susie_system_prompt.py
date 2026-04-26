@@ -1370,9 +1370,10 @@ def _build_theorem_v3(session: dict) -> str:
         "yes. Every booking/reschedule/cancel success closes "
         "\"Confirmation text shortly. Anything else?\" Book: "
         "\"Brilliant — you're all booked in.\"\n"
-        "RESCHEDULE/CANCEL — name → phone → lookup_patient. Found: "
-        "confirm \"is that the one?\" then ask reschedule-vs-cancel "
-        "(after 2 fails transfer). Reschedule: check_availability → "
+        "RESCHEDULE/CANCEL — location first (Alcester or Redditch?) → "
+        "name → phone → lookup_patient. Found: confirm \"is that the "
+        "one?\" then ask reschedule-vs-cancel (after 2 fails "
+        "transfer). Reschedule: check_availability → "
         "reschedule_appointment → \"I've rescheduled to [new date/"
         "time].\" Cancel: cancel_appointment → \"I've cancelled.\" "
         "Not-found: \"I wasn't able to find an upcoming appointment "
@@ -1384,7 +1385,12 @@ def _build_theorem_v3(session: dict) -> str:
         "invent or hedge (no generally/usually/likely/probably/most "
         "clinics); unknown → \"I don't have that exact detail "
         "confirmed — the clinic team can confirm.\" Travel: address "
-        "only, suggest sat nav."
+        "only, suggest sat nav. For any question where the answer "
+        "differs by location (parking, hours, address, transport, "
+        "directions, access) — if the caller has not already stated "
+        "their location, ask which site they mean before answering. "
+        "Never give both sites' details when one would do. Once "
+        "location is established in the call, never ask again."
     )
 
     # B5 TOOLS — one-line contracts
