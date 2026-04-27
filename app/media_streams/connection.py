@@ -2784,6 +2784,44 @@ class WebSocketCallHandler:
                                 return "ambiguous"
                             return ""                      # unknown / low signal
 
+                        # Pre-detect booking/reschedule/cancel intent from the
+                        # caller's own utterance.  Used below as a fallback
+                        # signal for the location gate so it fires even when
+                        # the LLM's ack phrase doesn't match the hard-coded
+                        # list exactly.
+                        _V3_BOOKING_ACTION_PHRASES = (
+                            "i'd like to book",
+                            "i want to book",
+                            "book me in",
+                            "make an appointment",
+                            "book an appointment",
+                            "want an appointment",
+                            "like an appointment",
+                            "i'd like an appointment",
+                            "need to book",
+                            "need an appointment",
+                            "reschedule",
+                            "rearrange",
+                            "move my appointment",
+                            "cancel my",
+                            "need to cancel",
+                        )
+                        _v3_caller_booking_signal = (
+                            any(
+                                p in utterance.lower()
+                                for p in _V3_BOOKING_ACTION_PHRASES
+                            )
+                            and not self.session.get(
+                                "v3_location_asked", False
+                            )
+                            and not self.session.get(
+                                "v3_booking_intent", False
+                            )
+                            and not self.session.get(
+                                "_v3_new_returning_asked", False
+                            )
+                        )
+
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
@@ -3104,9 +3142,15 @@ class WebSocketCallHandler:
                                 "no problem at all",
                             )
                             _is_booking_ack = (
-                                any(
-                                    p in _last_bot.lower()
-                                    for p in _V3_ACK_PHRASES
+                                (
+                                    any(
+                                        p in _last_bot.lower()
+                                        for p in _V3_ACK_PHRASES
+                                    )
+                                    # Fallback: caller's own utterance had a
+                                    # clear booking signal — fire gate even if
+                                    # LLM phrased the ack differently.
+                                    or _v3_caller_booking_signal
                                 )
                                 and not self.session.get(
                                     "v3_location_asked", False

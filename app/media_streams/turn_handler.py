@@ -60,6 +60,7 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             logger.info("[ms_gate5] removed banned phrase (%s)", desc)
             result = cleaned
 
+    result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)
     result = _LEADING_JUNK_RE.sub("", result)
     return result.strip()

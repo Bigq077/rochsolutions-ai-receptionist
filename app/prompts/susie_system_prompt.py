@@ -1590,6 +1590,14 @@ def _build_theorem_v3(session: dict) -> str:
         loc = (session.get("selected_location") or "").lower().strip()
         if loc:
             known.append(f"location={loc}")
+            _loc_label = loc.capitalize()
+            _other = "Redditch" if loc == "alcester" else "Alcester"
+            state.append(
+                f"CLINIC CONFIRMED — {_loc_label.upper()}: The caller has "
+                f"confirmed {_loc_label}. Every location-specific answer "
+                f"(parking, hours, address, directions, access) must be for "
+                f"{_loc_label} ONLY. Do not mention or describe {_other}."
+            )
     if known:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
     b7 = ("CALL STATE: " + "; ".join(state)) if state else ""
