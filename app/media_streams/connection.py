@@ -2837,7 +2837,10 @@ class WebSocketCallHandler:
                                 # booking ack path before clearing the flag —
                                 # used below to gate the new/returning Q so
                                 # FAQ-only callers don't get it.
-                                self.session["_v3_was_booking"] = True
+                                self.session["_v3_was_booking"] = (
+                                    self.session.get("v3_booking_intent", False)
+                                    is True
+                                )
                                 self.session["v3_booking_intent"] = False
                                 self.session["v3_location_asked"] = False
                                 await save_session(
