@@ -2843,6 +2843,11 @@ class WebSocketCallHandler:
                                 )
                                 self.session["v3_booking_intent"] = False
                                 self.session["v3_location_asked"] = False
+                                # Always pop here so the key never leaks into
+                                # the booking path or across ambiguous retries.
+                                _pending_faq = self.session.pop(
+                                    "_v3_pending_faq", None
+                                )
                                 await save_session(
                                     self.call_sid, self.session
                                 )
@@ -2872,9 +2877,7 @@ class WebSocketCallHandler:
                                     # FAQ path — location now confirmed;
                                     # answer the original question the caller
                                     # asked before the location gate fired.
-                                    _pending_faq = self.session.pop(
-                                        "_v3_pending_faq", None
-                                    )
+                                    # (_pending_faq already popped above)
                                     if _pending_faq:
                                         # Inject the location exchange into
                                         # conversation_history so the LLM
