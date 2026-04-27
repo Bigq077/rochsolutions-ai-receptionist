@@ -2715,20 +2715,6 @@ class WebSocketCallHandler:
                         )
                         continue
 
-                    # New/returning Q was in flight — caller has now answered.
-                    # Clear the guard flags and fall through to run_turn so
-                    # the LLM processes the answer naturally.
-                    if self.session.get("_v3_new_returning_asked"):
-                        self.session["_v3_new_returning_asked"] = False
-                        self.session["_v3_was_booking"] = False
-                        await save_session(self.call_sid, self.session)
-                        logger.info(
-                            "[ms_conn v3] new/returning answered — "
-                            "flags cleared, passing to run_turn: %r",
-                            utterance[:80],
-                        )
-                        # fall through to run_turn — do NOT continue
-
                     # Barge-in resolution: false triggers resume TTS without
                     # entering the LLM; confirmed barge-ins queue an ack and
                     # wait for the next utterance.
@@ -2757,70 +2743,29 @@ class WebSocketCallHandler:
                         # LLM waits for transcript — nobody moves).
                         # ── Helper: extract location from caller utterance ──
                         def _v3_extract_location(utt: str) -> str:
-                            """
-                            Delegates to the full weighted location resolver
-                            (location_resolver.py) to interpret STT transcript.
-
-                            resolve_clinic_location() is synchronous — safe
-                            to call from async context without await.
-
-                            Returns:
-                              'alcester'  — confident match for Alcester
-                              'redditch'  — confident match for Redditch
-                              'ambiguous' — resolver has a directional lean
-                                            but not confident enough to bind;
-                                            caller should be re-asked
-                              ''          — no location signal; let LLM handle
-                            """
-                            from app.media_streams.location_resolver import (
-                                resolve_clinic_location as _rcl,
-                            )
-                            _res = _rcl(utt, context="ask_location")
-                            _status   = _res["status"]    # resolved|ambiguous|unknown
-                            _location = _res["location"]  # alcester|redditch|None
-                            if _status == "resolved" and _location:
-                                return _location           # 'alcester' or 'redditch'
-                            if _status == "ambiguous":
-                                return "ambiguous"
-                            return ""                      # unknown / low signal
-
-                        # Pre-detect booking/reschedule/cancel intent from the
-                        # caller's own utterance.  Used below as a fallback
-                        # signal for the location gate so it fires even when
-                        # the LLM's ack phrase doesn't match the hard-coded
-                        # list exactly.
-                        _V3_BOOKING_ACTION_PHRASES = (
-                            "i'd like to book",
-                            "i want to book",
-                            "book me in",
-                            "make an appointment",
-                            "book an appointment",
-                            "want an appointment",
-                            "like an appointment",
-                            "i'd like an appointment",
-                            "need to book",
-                            "need an appointment",
-                            "reschedule",
-                            "rearrange",
-                            "move my appointment",
-                            "cancel my",
-                            "need to cancel",
-                        )
-                        _v3_caller_booking_signal = (
-                            any(
-                                p in utterance.lower()
-                                for p in _V3_BOOKING_ACTION_PHRASES
-                            )
-                            and not self.session.get(
-                                "v3_location_asked", False
-                            )
-                            and not self.session.get(
-                                "v3_booking_intent", False
-                            )
-                            and not self.session.get(
-                                "_v3_new_returning_asked", False
-                            )
-                        )
+                            """Return 'alcester', 'redditch', or ''."""
+                            u = utt.lower()
+                            if "alcester" in u:
+                                return "alcester"
+                            if (
+                                "redditch" in u
+                                or "reddich" in u
+                                or "red itch" in u
+                            ):
+                                return "redditch"
+                            # Number variants: "one"/"first" → alcester,
+                            # "two"/"second" → redditch
+                            import re as _re
+                            words = _re.sub(r"[^a-z\s]", "", u).split()
+                            if words in (
+                                ["one"], ["the", "first"], ["first"]
+                            ):
+                                return "alcester"
+                            if words in (
+                                ["two"], ["the", "second"], ["second"]
+                            ):
+                                return "redditch"
+                            return ""
 
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
@@ -2853,16 +2798,11 @@ class WebSocketCallHandler:
 
                         elif _v3_loc_answering:
                             # ── LOCATION ANSWER INTERCEPT ─────────────────
-                            # Run the full weighted resolver against the
-                            # caller's utterance.
-                            # • resolved → play ack, set flags, skip run_turn
-                            # • ambiguous → re-ask once with short clarifier
-                            # • '' (unknown) → fall through to run_turn so
-                            #   the LLM can handle clarification naturally
+                            # Try to extract the location from the utterance.
+                            # If found: play only the ack phrase and set flags.
+                            # If not found: let run_turn handle clarification.
                             _confirmed_loc = _v3_extract_location(utterance)
-
-                            if _confirmed_loc in ("alcester", "redditch"):
-                                # Confident match — play ack only, set flags
+                            if _confirmed_loc:
                                 _loc_label = _confirmed_loc.capitalize()
                                 _ack = f"{_loc_label}, perfect."
                                 await self.tts_text_queue.put(_ack)
@@ -2871,21 +2811,8 @@ class WebSocketCallHandler:
                                     _confirmed_loc
                                 )
                                 self.session["v3_location_confirmed"] = True
-                                # Record that this caller came through the
-                                # booking ack path before clearing the flag —
-                                # used below to gate the new/returning Q so
-                                # FAQ-only callers don't get it.
-                                self.session["_v3_was_booking"] = (
-                                    self.session.get("v3_booking_intent", False)
-                                    is True
-                                )
                                 self.session["v3_booking_intent"] = False
                                 self.session["v3_location_asked"] = False
-                                # Always pop here so the key never leaks into
-                                # the booking path or across ambiguous retries.
-                                _pending_faq = self.session.pop(
-                                    "_v3_pending_faq", None
-                                )
                                 await save_session(
                                     self.call_sid, self.session
                                 )
@@ -2894,160 +2821,31 @@ class WebSocketCallHandler:
                                     " — ack-only, no run_turn: %s",
                                     _confirmed_loc,
                                 )
-
-                                # Auto-advance: queue new/returning question
-                                # after location ack — only for callers who
-                                # went through the booking ack path.
-                                if self.session.get("_v3_was_booking", False):
-                                    _new_ret_q = "Have you been with us before?"
-                                    await self.tts_text_queue.put(_new_ret_q)
-                                    self.session["last_bot_prompt"] = _new_ret_q
-                                    self.session["last_question"] = _new_ret_q
-                                    self.session["_v3_new_returning_asked"] = True
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] new/returning Q "
-                                        "auto-queued after location confirm"
-                                    )
-                                else:
-                                    # FAQ path — location now confirmed;
-                                    # answer the original question the caller
-                                    # asked before the location gate fired.
-                                    # (_pending_faq already popped above)
-                                    if _pending_faq:
-                                        # Inject the location exchange into
-                                        # conversation_history so the LLM
-                                        # knows the clinic is already settled
-                                        # and won't re-ask.
-                                        _loc_label = _confirmed_loc.capitalize()
-                                        _ch = self.session.setdefault(
-                                            "conversation_history", []
-                                        )
-                                        _ch.append({
-                                            "role": "assistant",
-                                            "content": (
-                                                "Which clinic were you thinking"
-                                                " of — Alcester or Redditch?"
-                                            ),
-                                        })
-                                        _ch.append({
-                                            "role": "user",
-                                            "content": utterance,
-                                        })
-                                        _ch.append({
-                                            "role": "assistant",
-                                            "content": f"{_loc_label}, perfect.",
-                                        })
-                                        await llm.run_turn(
-                                            user_text=_pending_faq,
-                                            session=self.session,
-                                            call_sid=self.call_sid,
-                                            stream_sid=self.stream_sid,
-                                            tts_text_queue=self.tts_text_queue,
-                                            audio_out_queue=self.audio_out_queue,
-                                            websocket=self.websocket,
-                                            on_transfer=self._on_transfer_request,
-                                        )
-                                        await save_session(
-                                            self.call_sid, self.session
-                                        )
-                                        logger.info(
-                                            "[ms_conn v3] FAQ answered after "
-                                            "location confirm: %r",
-                                            _pending_faq[:60],
-                                        )
-
-                            elif _confirmed_loc == "ambiguous":
-                                # Resolver has directional signal but not
-                                # enough confidence to bind.  Re-ask once
-                                # with a short focused clarifier.
-                                _clarify = (
-                                    "Sorry, I didn't quite catch that — "
-                                    "was that Alcester or Redditch?"
-                                )
-                                await self.tts_text_queue.put(_clarify)
-                                self.session["last_bot_prompt"] = _clarify
-                                self.session["last_question"] = _clarify
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] location answer ambiguous"
-                                    " — re-asking: %r",
-                                    utterance[:60],
-                                )
-
                             else:
-                                # No location signal in utterance — the
-                                # location question is still in flight.
-                                # Do NOT call run_turn here: the LLM would
-                                # generate a second location question on top
-                                # of the one already queued.  Instead, play
-                                # the same short clarifier used for the
-                                # ambiguous case.  v3_location_asked stays
-                                # True so the next turn is still intercepted.
-                                _clarify = (
-                                    "Sorry, I didn't quite catch that — "
-                                    "was that Alcester or Redditch?"
+                                # Utterance unclear — let LLM ask again
+                                await llm.run_turn(
+                                    user_text=utterance,
+                                    session=self.session,
+                                    call_sid=self.call_sid,
+                                    stream_sid=self.stream_sid,
+                                    tts_text_queue=self.tts_text_queue,
+                                    audio_out_queue=self.audio_out_queue,
+                                    websocket=self.websocket,
+                                    on_transfer=self._on_transfer_request,
                                 )
-                                await self.tts_text_queue.put(_clarify)
-                                self.session["last_bot_prompt"] = _clarify
-                                self.session["last_question"] = _clarify
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
-                                    "[ms_conn v3] location Q in flight, "
-                                    "no location signal — clarifying "
-                                    "instead of run_turn: %r",
+                                    "[ms_conn v3] location answer unclear"
+                                    " — passed to run_turn: %r",
                                     utterance[:60],
                                 )
-
-                        elif (
-                            any(
-                                kw in utterance.lower()
-                                for kw in (
-                                    "park", "parking", "hour", "hours",
-                                    "open", "close", "address",
-                                    "direction", "get to", "find you",
-                                    "where are", "station", "train",
-                                    "bus", "access", "wheelchair",
-                                )
-                            )
-                            and not self.session.get(
-                                "v3_location_confirmed", False
-                            )
-                        ):
-                            # ── FAQ LOCATION GATE ────────────────────────────
-                            # Location-dependent FAQ arrived but no clinic
-                            # confirmed yet — ask which site before passing
-                            # to LLM so the answer is clinic-specific.
-                            _loc_q = (
-                                "Which clinic were you thinking of — "
-                                "Alcester or Redditch?"
-                            )
-                            await self.tts_text_queue.put(_loc_q)
-                            self.session["last_bot_prompt"] = _loc_q
-                            self.session["last_question"] = _loc_q
-                            self.session["v3_location_asked"] = True
-                            self.session["_v3_pending_faq"] = utterance
-                            await save_session(self.call_sid, self.session)
-                            logger.info(
-                                "[ms_conn v3] FAQ location gate fired — "
-                                "transcript: %r",
-                                utterance[:80],
-                            )
 
                         else:
                             # ── Normal path: run free-form LLM turn ─────────
                             # Handles TTS streaming, tool calls, and
                             # conversation_history append internally.
-                            # Clear new/returning guard — caller's answer has
-                            # arrived and is about to be handled by the LLM.
-                            self.session["_v3_new_returning_asked"] = False
-                            self.session["_v3_was_booking"] = False
                             await llm.run_turn(
                                 user_text=utterance,
                                 session=self.session,
@@ -3061,54 +2859,6 @@ class WebSocketCallHandler:
 
                             # Persist session
                             await save_session(self.call_sid, self.session)
-
-                            # ── FAQ LOCATION INFERENCE ───────────────────────
-                            # If the LLM just answered a clinic-specific FAQ
-                            # and the answer names exactly one site, silently
-                            # bind that as the confirmed location so we never
-                            # ask again on this call.
-                            if not self.session.get(
-                                "v3_location_confirmed", False
-                            ):
-                                _faq_resp = (
-                                    self.session.get(
-                                        "last_bot_prompt", ""
-                                    ) or ""
-                                ).lower()
-                                if (
-                                    "alcester" in _faq_resp
-                                    and "redditch" not in _faq_resp
-                                ):
-                                    self.session["selected_location"] = (
-                                        "alcester"
-                                    )
-                                    self.session[
-                                        "v3_location_confirmed"
-                                    ] = True
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] location inferred "
-                                        "from FAQ answer: alcester"
-                                    )
-                                elif (
-                                    "redditch" in _faq_resp
-                                    and "alcester" not in _faq_resp
-                                ):
-                                    self.session["selected_location"] = (
-                                        "redditch"
-                                    )
-                                    self.session[
-                                        "v3_location_confirmed"
-                                    ] = True
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] location inferred "
-                                        "from FAQ answer: redditch"
-                                    )
 
                             # Soft-context extraction — fire-and-forget,
                             # never raises.  Pull the most recent assistant
@@ -3142,57 +2892,34 @@ class WebSocketCallHandler:
                                 "no problem at all",
                             )
                             _is_booking_ack = (
-                                (
-                                    any(
-                                        p in _last_bot.lower()
-                                        for p in _V3_ACK_PHRASES
-                                    )
-                                    # Fallback: caller's own utterance had a
-                                    # clear booking signal — fire gate even if
-                                    # LLM phrased the ack differently.
-                                    or _v3_caller_booking_signal
+                                any(
+                                    p in _last_bot.lower()
+                                    for p in _V3_ACK_PHRASES
                                 )
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
+                                and not self.session.get(
+                                    "v3_location_confirmed", False
+                                )
                             )
                             if _is_booking_ack:
-                                if not self.session.get(
-                                    "v3_location_confirmed", False
-                                ):
-                                    self.session["v3_booking_intent"] = True
-                                    _loc_q = (
-                                        "Which clinic were you thinking of — "
-                                        "Alcester or Redditch?"
-                                    )
-                                    await self.tts_text_queue.put(_loc_q)
-                                    self.session["last_bot_prompt"] = _loc_q
-                                    self.session["last_question"] = _loc_q
-                                    self.session["v3_location_asked"] = True
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] booking ack detected — "
-                                        "location Q auto-queued after run_turn"
-                                    )
-                                else:
-                                    # Location already confirmed (e.g. caller
-                                    # asked an FAQ first) — skip location gate,
-                                    # go straight to new/returning question.
-                                    _new_ret_q = "Have you been with us before?"
-                                    await self.tts_text_queue.put(_new_ret_q)
-                                    self.session["last_bot_prompt"] = _new_ret_q
-                                    self.session["last_question"] = _new_ret_q
-                                    self.session["_v3_new_returning_asked"] = True
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] booking ack detected — "
-                                        "location already confirmed, "
-                                        "new/returning Q auto-queued"
-                                    )
+                                self.session["v3_booking_intent"] = True
+                                _loc_q = (
+                                    "Which clinic were you thinking of — "
+                                    "Alcester or Redditch?"
+                                )
+                                await self.tts_text_queue.put(_loc_q)
+                                self.session["last_bot_prompt"] = _loc_q
+                                self.session["last_question"] = _loc_q
+                                self.session["v3_location_asked"] = True
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] booking ack detected — "
+                                    "location Q auto-queued after run_turn"
+                                )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
                         # Silence recovery needs last_question in all cases.
