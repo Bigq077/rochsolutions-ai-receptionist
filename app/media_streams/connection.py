@@ -2909,6 +2909,40 @@ class WebSocketCallHandler:
                                     utterance[:60],
                                 )
 
+                        elif (
+                            any(
+                                kw in utterance.lower()
+                                for kw in (
+                                    "park", "parking", "hour", "hours",
+                                    "open", "close", "address",
+                                    "direction", "get to", "find you",
+                                    "where are", "station", "train",
+                                    "bus", "access", "wheelchair",
+                                )
+                            )
+                            and not self.session.get(
+                                "v3_location_confirmed", False
+                            )
+                        ):
+                            # ── FAQ LOCATION GATE ────────────────────────────
+                            # Location-dependent FAQ arrived but no clinic
+                            # confirmed yet — ask which site before passing
+                            # to LLM so the answer is clinic-specific.
+                            _loc_q = (
+                                "Which clinic were you thinking of — "
+                                "Alcester or Redditch?"
+                            )
+                            await self.tts_text_queue.put(_loc_q)
+                            self.session["last_bot_prompt"] = _loc_q
+                            self.session["last_question"] = _loc_q
+                            self.session["v3_location_asked"] = True
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] FAQ location gate fired — "
+                                "transcript: %r",
+                                utterance[:80],
+                            )
+
                         else:
                             # ── Normal path: run free-form LLM turn ─────────
                             # Handles TTS streaming, tool calls, and
@@ -2929,6 +2963,54 @@ class WebSocketCallHandler:
 
                             # Persist session
                             await save_session(self.call_sid, self.session)
+
+                            # ── FAQ LOCATION INFERENCE ───────────────────────
+                            # If the LLM just answered a clinic-specific FAQ
+                            # and the answer names exactly one site, silently
+                            # bind that as the confirmed location so we never
+                            # ask again on this call.
+                            if not self.session.get(
+                                "v3_location_confirmed", False
+                            ):
+                                _faq_resp = (
+                                    self.session.get(
+                                        "last_bot_prompt", ""
+                                    ) or ""
+                                ).lower()
+                                if (
+                                    "alcester" in _faq_resp
+                                    and "redditch" not in _faq_resp
+                                ):
+                                    self.session["selected_location"] = (
+                                        "alcester"
+                                    )
+                                    self.session[
+                                        "v3_location_confirmed"
+                                    ] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] location inferred "
+                                        "from FAQ answer: alcester"
+                                    )
+                                elif (
+                                    "redditch" in _faq_resp
+                                    and "alcester" not in _faq_resp
+                                ):
+                                    self.session["selected_location"] = (
+                                        "redditch"
+                                    )
+                                    self.session[
+                                        "v3_location_confirmed"
+                                    ] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] location inferred "
+                                        "from FAQ answer: redditch"
+                                    )
 
                             # Soft-context extraction — fire-and-forget,
                             # never raises.  Pull the most recent assistant
