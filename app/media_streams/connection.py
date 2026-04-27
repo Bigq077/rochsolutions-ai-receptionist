@@ -2715,18 +2715,19 @@ class WebSocketCallHandler:
                         )
                         continue
 
-                    # Drop concurrent transcripts while new/returning Q is
-                    # in flight — prevents noise from triggering run_turn
-                    # before the caller has had a chance to answer.
-                    # Flag is cleared in the normal run_turn path (else branch)
-                    # so the caller's real answer passes through cleanly.
+                    # New/returning Q was in flight — caller has now answered.
+                    # Clear the guard flags and fall through to run_turn so
+                    # the LLM processes the answer naturally.
                     if self.session.get("_v3_new_returning_asked"):
+                        self.session["_v3_new_returning_asked"] = False
+                        self.session["_v3_was_booking"] = False
+                        await save_session(self.call_sid, self.session)
                         logger.info(
-                            "[ms_conn v3] new/returning Q in flight — "
-                            "discarding transcript: %r",
+                            "[ms_conn v3] new/returning answered — "
+                            "flags cleared, passing to run_turn: %r",
                             utterance[:80],
                         )
-                        continue
+                        # fall through to run_turn — do NOT continue
 
                     # Barge-in resolution: false triggers resume TTS without
                     # entering the LLM; confirmed barge-ins queue an ack and
@@ -2832,6 +2833,11 @@ class WebSocketCallHandler:
                                     _confirmed_loc
                                 )
                                 self.session["v3_location_confirmed"] = True
+                                # Record that this caller came through the
+                                # booking ack path before clearing the flag —
+                                # used below to gate the new/returning Q so
+                                # FAQ-only callers don't get it.
+                                self.session["_v3_was_booking"] = True
                                 self.session["v3_booking_intent"] = False
                                 self.session["v3_location_asked"] = False
                                 await save_session(
@@ -2844,12 +2850,9 @@ class WebSocketCallHandler:
                                 )
 
                                 # Auto-advance: queue new/returning question
-                                # after location ack so the booking flow
-                                # continues without waiting for the watchdog.
-                                # v3_booking_intent was just cleared to False
-                                # above — condition confirms we're in a
-                                # booking/reschedule/cancel flow.
-                                if self.session.get("v3_booking_intent") is False:
+                                # after location ack — only for callers who
+                                # went through the booking ack path.
+                                if self.session.get("_v3_was_booking", False):
                                     _new_ret_q = "Have you been with us before?"
                                     await self.tts_text_queue.put(_new_ret_q)
                                     self.session["last_bot_prompt"] = _new_ret_q
@@ -2950,6 +2953,7 @@ class WebSocketCallHandler:
                             # Clear new/returning guard — caller's answer has
                             # arrived and is about to be handled by the LLM.
                             self.session["_v3_new_returning_asked"] = False
+                            self.session["_v3_was_booking"] = False
                             await llm.run_turn(
                                 user_text=utterance,
                                 session=self.session,
