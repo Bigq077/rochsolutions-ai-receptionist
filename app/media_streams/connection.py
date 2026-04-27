@@ -2876,6 +2876,29 @@ class WebSocketCallHandler:
                                         "_v3_pending_faq", None
                                     )
                                     if _pending_faq:
+                                        # Inject the location exchange into
+                                        # conversation_history so the LLM
+                                        # knows the clinic is already settled
+                                        # and won't re-ask.
+                                        _loc_label = _confirmed_loc.capitalize()
+                                        _ch = self.session.setdefault(
+                                            "conversation_history", []
+                                        )
+                                        _ch.append({
+                                            "role": "assistant",
+                                            "content": (
+                                                "Which clinic were you thinking"
+                                                " of — Alcester or Redditch?"
+                                            ),
+                                        })
+                                        _ch.append({
+                                            "role": "user",
+                                            "content": utterance,
+                                        })
+                                        _ch.append({
+                                            "role": "assistant",
+                                            "content": f"{_loc_label}, perfect.",
+                                        })
                                         await llm.run_turn(
                                             user_text=_pending_faq,
                                             session=self.session,
