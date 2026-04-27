@@ -2868,6 +2868,32 @@ class WebSocketCallHandler:
                                         "[ms_conn v3] new/returning Q "
                                         "auto-queued after location confirm"
                                     )
+                                else:
+                                    # FAQ path — location now confirmed;
+                                    # answer the original question the caller
+                                    # asked before the location gate fired.
+                                    _pending_faq = self.session.pop(
+                                        "_v3_pending_faq", None
+                                    )
+                                    if _pending_faq:
+                                        await llm.run_turn(
+                                            user_text=_pending_faq,
+                                            session=self.session,
+                                            call_sid=self.call_sid,
+                                            stream_sid=self.stream_sid,
+                                            tts_text_queue=self.tts_text_queue,
+                                            audio_out_queue=self.audio_out_queue,
+                                            websocket=self.websocket,
+                                            on_transfer=self._on_transfer_request,
+                                        )
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] FAQ answered after "
+                                            "location confirm: %r",
+                                            _pending_faq[:60],
+                                        )
 
                             elif _confirmed_loc == "ambiguous":
                                 # Resolver has directional signal but not
@@ -2942,6 +2968,7 @@ class WebSocketCallHandler:
                             self.session["last_bot_prompt"] = _loc_q
                             self.session["last_question"] = _loc_q
                             self.session["v3_location_asked"] = True
+                            self.session["_v3_pending_faq"] = utterance
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] FAQ location gate fired — "
@@ -3058,27 +3085,44 @@ class WebSocketCallHandler:
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
-                                and not self.session.get(
-                                    "v3_location_confirmed", False
-                                )
                             )
                             if _is_booking_ack:
-                                self.session["v3_booking_intent"] = True
-                                _loc_q = (
-                                    "Which clinic were you thinking of — "
-                                    "Alcester or Redditch?"
-                                )
-                                await self.tts_text_queue.put(_loc_q)
-                                self.session["last_bot_prompt"] = _loc_q
-                                self.session["last_question"] = _loc_q
-                                self.session["v3_location_asked"] = True
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] booking ack detected — "
-                                    "location Q auto-queued after run_turn"
-                                )
+                                if not self.session.get(
+                                    "v3_location_confirmed", False
+                                ):
+                                    self.session["v3_booking_intent"] = True
+                                    _loc_q = (
+                                        "Which clinic were you thinking of — "
+                                        "Alcester or Redditch?"
+                                    )
+                                    await self.tts_text_queue.put(_loc_q)
+                                    self.session["last_bot_prompt"] = _loc_q
+                                    self.session["last_question"] = _loc_q
+                                    self.session["v3_location_asked"] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] booking ack detected — "
+                                        "location Q auto-queued after run_turn"
+                                    )
+                                else:
+                                    # Location already confirmed (e.g. caller
+                                    # asked an FAQ first) — skip location gate,
+                                    # go straight to new/returning question.
+                                    _new_ret_q = "Have you been with us before?"
+                                    await self.tts_text_queue.put(_new_ret_q)
+                                    self.session["last_bot_prompt"] = _new_ret_q
+                                    self.session["last_question"] = _new_ret_q
+                                    self.session["_v3_new_returning_asked"] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] booking ack detected — "
+                                        "location already confirmed, "
+                                        "new/returning Q auto-queued"
+                                    )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
                         # Silence recovery needs last_question in all cases.
