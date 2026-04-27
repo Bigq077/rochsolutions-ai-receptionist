@@ -2715,6 +2715,19 @@ class WebSocketCallHandler:
                         )
                         continue
 
+                    # Drop concurrent transcripts while new/returning Q is
+                    # in flight — prevents noise from triggering run_turn
+                    # before the caller has had a chance to answer.
+                    # Flag is cleared in the normal run_turn path (else branch)
+                    # so the caller's real answer passes through cleanly.
+                    if self.session.get("_v3_new_returning_asked"):
+                        logger.info(
+                            "[ms_conn v3] new/returning Q in flight — "
+                            "discarding transcript: %r",
+                            utterance[:80],
+                        )
+                        continue
+
                     # Barge-in resolution: false triggers resume TTS without
                     # entering the LLM; confirmed barge-ins queue an ack and
                     # wait for the next utterance.
@@ -2830,6 +2843,26 @@ class WebSocketCallHandler:
                                     _confirmed_loc,
                                 )
 
+                                # Auto-advance: queue new/returning question
+                                # after location ack so the booking flow
+                                # continues without waiting for the watchdog.
+                                # v3_booking_intent was just cleared to False
+                                # above — condition confirms we're in a
+                                # booking/reschedule/cancel flow.
+                                if self.session.get("v3_booking_intent") is False:
+                                    _new_ret_q = "Have you been with us before?"
+                                    await self.tts_text_queue.put(_new_ret_q)
+                                    self.session["last_bot_prompt"] = _new_ret_q
+                                    self.session["last_question"] = _new_ret_q
+                                    self.session["_v3_new_returning_asked"] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] new/returning Q "
+                                        "auto-queued after location confirm"
+                                    )
+
                             elif _confirmed_loc == "ambiguous":
                                 # Resolver has directional signal but not
                                 # enough confidence to bind.  Re-ask once
@@ -2880,6 +2913,9 @@ class WebSocketCallHandler:
                             # ── Normal path: run free-form LLM turn ─────────
                             # Handles TTS streaming, tool calls, and
                             # conversation_history append internally.
+                            # Clear new/returning guard — caller's answer has
+                            # arrived and is about to be handled by the LLM.
+                            self.session["_v3_new_returning_asked"] = False
                             await llm.run_turn(
                                 user_text=utterance,
                                 session=self.session,
