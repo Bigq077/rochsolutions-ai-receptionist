@@ -2947,6 +2947,7 @@ class WebSocketCallHandler:
                                     await save_session(
                                         self.call_sid, self.session
                                     )
+                                    self.session["v3_booking_intent"] = False
                                     logger.info(
                                         "[ms_conn v3] booking ack — location "
                                         "already known (%s), queued new/returning Q",
