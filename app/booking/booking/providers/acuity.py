@@ -329,7 +329,7 @@ class AcuityAdapter:
             except Exception as day_err:
                 logger.warning("Acuity per-day query failed for %s: %r", day_str, day_err)
                 slots = []
-            print(f"{day_str}: {len(slots)} slots")
+            logger.debug("Acuity per-day: %s — %d slot(s)", day_str, len(slots))
             return slots
 
         results = await asyncio.gather(*(_fetch_day(d) for d in days))

@@ -749,34 +749,33 @@ class LLMStream:
             )
 
             try:
-                # Bug 3: block check_availability if it was called on the same
-                # turn the availability question was asked — force Claude to wait
-                # for the caller's response on a subsequent turn.
-                if tool_name == "check_availability" and session.get("block_check_availability"):
+                # Dedup guard: block check_availability if slots were already
+                # retrieved this turn (last_offered_slots populated).  The LLM
+                # must use the data already returned rather than re-fetching.
+                # Allows a second call only if the session key was cleared
+                # upstream (e.g. caller explicitly asked for a new date range
+                # and connection.py cleared last_offered_slots).
+                if tool_name == "check_availability" and session.get("last_offered_slots"):
                     logger.warning(
-                        "[ms_llm] check_availability BLOCKED — same turn as availability "
-                        "question; caller has not yet responded call_sid=%s", call_sid,
+                        "[ms_llm] check_availability BLOCKED — slots already retrieved "
+                        "this turn (last_offered_slots present); returning cached result "
+                        "call_sid=%s", call_sid,
                     )
-                    session.pop("block_check_availability", None)
                     result = {
-                        "status": "blocked",
+                        "status": "already_retrieved",
                         "message": (
-                            "You asked the caller about their availability on this same turn. "
-                            "Do not check slots yet — wait for the caller to tell you their "
-                            "preferred days or times, then call check_availability."
+                            "check_availability has already returned slot data. "
+                            "Use the data in available_days that was already returned. "
+                            "Do NOT call check_availability again — present the existing "
+                            "slots to the caller."
                         ),
+                        "available_days": session.get("available_days", {}),
                     }
                 elif tool_name == "escalate_to_claude":
                     result = await self._exec_escalate(args, session)
                 else:
                     executor = TOOL_EXECUTORS.get(tool_name)
                     if executor:
-                        # If check_availability is called and succeeds, mark that
-                        # availability has been collected so the block doesn't re-fire.
-                        if tool_name == "check_availability":
-                            session.pop("block_check_availability", None)
-                            session["_availability_response_received"] = True
-
                         # Filler phrases: play concurrently for slow API tools
                         _filler_list = _FILLER_TOOLS.get(tool_name)
                         if _filler_list and tts_text_queue is not None:
@@ -791,7 +790,7 @@ class LLMStream:
                         else:
                             result = await executor(args, session)
 
-                        # Fix 2: mark slots as presented the moment check_availability
+                        # Mark slots as presented the moment check_availability
                         # returns slots so the LLM knows not to re-present them.
                         if tool_name == "check_availability" and session.get("last_offered_slots"):
                             session["slots_presented"] = True
