@@ -2767,6 +2767,37 @@ class WebSocketCallHandler:
                                 return "redditch"
                             return ""
 
+                        # ── Short-fragment guard ─────────────────────
+                        # Split transcripts ("ic", "then", "think") of
+                        # 3 chars or fewer are STT noise from the tail
+                        # of a previous utterance. Drop them silently
+                        # during active location/booking flows to prevent
+                        # spurious LLM turns and double questions.
+                        _in_active_flow = (
+                            self.session.get("v3_booking_intent", False)
+                            or self.session.get("v3_location_asked", False)
+                            or self.session.get("v3_location_confirmed", False)
+                        )
+                        if _in_active_flow and len(utterance.strip()) <= 3:
+                            logger.info(
+                                "[ms_conn v3] short-fragment dropped "
+                                "(%r, %d chars) — active flow",
+                                utterance,
+                                len(utterance.strip()),
+                            )
+                            # Skip all processing for this fragment.
+                            # Re-arm watchdog with last question so
+                            # silence recovery still works.
+                            _last_q = self.session.get("last_question", "")
+                            if _last_q:
+                                self._silence_handler.set_state(
+                                    self.session.get("state", "default")
+                                )
+                                self._silence_handler.on_question_asked(
+                                    _last_q
+                                )
+                            continue
+
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
