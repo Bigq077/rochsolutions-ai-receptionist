@@ -2926,27 +2926,49 @@ class WebSocketCallHandler:
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
-                                and not self.session.get(
-                                    "v3_location_confirmed", False
-                                )
                             )
                             if _is_booking_ack:
                                 self.session["v3_booking_intent"] = True
-                                _loc_q = (
-                                    "Which clinic were you thinking of — "
-                                    "Alcester or Redditch?"
-                                )
-                                await self.tts_text_queue.put(_loc_q)
-                                self.session["last_bot_prompt"] = _loc_q
-                                self.session["last_question"] = _loc_q
-                                self.session["v3_location_asked"] = True
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] booking ack detected — "
-                                    "location Q auto-queued after run_turn"
-                                )
+                                # Booking ack detected — advance to next question.
+                                # If location already confirmed, skip location Q
+                                # and go straight to new/returning.
+                                if self.session.get("v3_location_confirmed"):
+                                    _loc = self.session.get(
+                                        "selected_location", "alcester"
+                                    )
+                                    _loc_display = _loc.capitalize()
+                                    _next_q = (
+                                        f"Have you been with us at "
+                                        f"{_loc_display} before?"
+                                    )
+                                    await self.tts_text_queue.put(_next_q)
+                                    self.session["last_bot_prompt"] = _next_q
+                                    self.session["last_question"] = _next_q
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] booking ack — location "
+                                        "already known (%s), queued new/returning Q",
+                                        _loc,
+                                    )
+                                else:
+                                    # Location unknown — queue location question
+                                    _loc_q = (
+                                        "Which clinic were you thinking of — "
+                                        "Alcester or Redditch?"
+                                    )
+                                    await self.tts_text_queue.put(_loc_q)
+                                    self.session["last_bot_prompt"] = _loc_q
+                                    self.session["last_question"] = _loc_q
+                                    self.session["v3_location_asked"] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] booking ack detected — "
+                                        "location Q auto-queued after run_turn"
+                                    )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
                         # Silence recovery needs last_question in all cases.
