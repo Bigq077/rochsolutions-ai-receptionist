@@ -2927,6 +2927,55 @@ class WebSocketCallHandler:
                             # Guard: only fire if location has NOT already been
                             # confirmed this call (prevents re-asking when the
                             # caller switches from one flow to another).
+                            # ── Inline location detection on booking turn ──
+                            # If the caller's transcript names exactly one
+                            # site, capture it now before the booking ack
+                            # branch runs — prevents unnecessary location Q.
+                            if not self.session.get("v3_location_confirmed"):
+                                _transcript_lower = utterance.lower()
+                                _has_alcester = any(
+                                    alias in _transcript_lower
+                                    for alias in (
+                                        "alcester", "alcestre", "alcestic",
+                                        "alcest", "ancestor",
+                                    )
+                                )
+                                _has_redditch = any(
+                                    alias in _transcript_lower
+                                    for alias in (
+                                        "redditch", "reditch", "reddich",
+                                        "redich",
+                                    )
+                                )
+                                if _has_alcester and not _has_redditch:
+                                    self.session["selected_location"] = (
+                                        "alcester"
+                                    )
+                                    self.session["v3_location_confirmed"] = (
+                                        True
+                                    )
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] location inferred "
+                                        "from booking transcript: alcester"
+                                    )
+                                elif _has_redditch and not _has_alcester:
+                                    self.session["selected_location"] = (
+                                        "redditch"
+                                    )
+                                    self.session["v3_location_confirmed"] = (
+                                        True
+                                    )
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] location inferred "
+                                        "from booking transcript: redditch"
+                                    )
+
                             _V3_ACK_PHRASES = (
                                 "of course — i'd be happy to sort that",
                                 "of course, let's get that moved",
