@@ -2811,8 +2811,22 @@ class WebSocketCallHandler:
                                     _confirmed_loc
                                 )
                                 self.session["v3_location_confirmed"] = True
+                                _was_booking = self.session.get(
+                                    "v3_booking_intent", False
+                                )
                                 self.session["v3_booking_intent"] = False
                                 self.session["v3_location_asked"] = False
+                                # If this location was captured during a booking
+                                # flow, queue new/returning question immediately
+                                # (mirrors booking ack confirmed-location branch)
+                                if _was_booking:
+                                    _loc_display = _confirmed_loc.capitalize()
+                                    _new_ret_q = (
+                                        f"Have you been with us at "
+                                        f"{_loc_display} before?"
+                                    )
+                                    await self.tts_text_queue.put(_new_ret_q)
+                                    self.session["last_bot_prompt"] = _new_ret_q
                                 await save_session(
                                     self.call_sid, self.session
                                 )
