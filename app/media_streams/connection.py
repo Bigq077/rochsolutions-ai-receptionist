@@ -2860,6 +2860,33 @@ class WebSocketCallHandler:
                             # Persist session
                             await save_session(self.call_sid, self.session)
 
+                            # Infer location from FAQ answer if not yet confirmed
+                            # If the LLM just answered a location-specific question
+                            # naming one site only, store it as confirmed location
+                            if not self.session.get("v3_location_confirmed"):
+                                _reply_lower = (
+                                    self.session.get("last_bot_prompt", "")
+                                    .lower()
+                                )
+                                if "alcester" in _reply_lower \
+                                        and "redditch" not in _reply_lower:
+                                    self.session["selected_location"] = "alcester"
+                                    self.session["v3_location_confirmed"] = True
+                                    await save_session(self.call_sid, self.session)
+                                    logger.info(
+                                        "[ms_conn v3] location inferred from "
+                                        "LLM reply: alcester"
+                                    )
+                                elif "redditch" in _reply_lower \
+                                        and "alcester" not in _reply_lower:
+                                    self.session["selected_location"] = "redditch"
+                                    self.session["v3_location_confirmed"] = True
+                                    await save_session(self.call_sid, self.session)
+                                    logger.info(
+                                        "[ms_conn v3] location inferred from "
+                                        "LLM reply: redditch"
+                                    )
+
                             # Soft-context extraction — fire-and-forget,
                             # never raises.  Pull the most recent assistant
                             # message from history (run_turn appended it).
