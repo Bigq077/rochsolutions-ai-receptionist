@@ -2886,6 +2886,15 @@ class WebSocketCallHandler:
                                     )
                                     await self.tts_text_queue.put(_new_ret_q)
                                     self.session["last_bot_prompt"] = _new_ret_q
+                                    # Inject into conversation_history so the
+                                    # LLM has context when processing the
+                                    # caller's answer on the next turn.
+                                    self.session.setdefault(
+                                        "conversation_history", []
+                                    ).append({
+                                        "role": "assistant",
+                                        "content": _new_ret_q,
+                                    })
                                 await save_session(
                                     self.call_sid, self.session
                                 )
@@ -3066,6 +3075,15 @@ class WebSocketCallHandler:
                                     await self.tts_text_queue.put(_next_q)
                                     self.session["last_bot_prompt"] = _next_q
                                     self.session["last_question"] = _next_q
+                                    # Inject into conversation_history so the
+                                    # LLM has context when processing the
+                                    # caller's answer on the next turn.
+                                    self.session.setdefault(
+                                        "conversation_history", []
+                                    ).append({
+                                        "role": "assistant",
+                                        "content": _next_q,
+                                    })
                                     await save_session(
                                         self.call_sid, self.session
                                     )
