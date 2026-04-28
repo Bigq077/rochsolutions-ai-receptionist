@@ -1402,60 +1402,7 @@ def _build_theorem_v3(session: dict) -> str:
         "roughly two hours depending on where you are. Alcester is "
         "just off the M40, Redditch near the M42.\n\n"
 
-        "LOCATION RULE\n"
-        "Before answering anything that depends on which site "
-        "(parking, hours, address, directions, access), ask which "
-        "clinic — Alcester or Redditch. Once a caller has stated "
-        "their location in this call, never ask again. Exception: "
-        "if the caller explicitly asks for a comparison or asks "
-        "about both sites by name ('what are the hours at both "
-        "clinics', 'do both locations have parking', 'which clinic "
-        "is closer'), answer both without asking. Casual plural "
-        "language alone ('your clinics', 'any of your clinics', "
-        "'your practices') does not trigger this exception — ask "
-        "which site first.\n\n"
 
-        "BOOKING FLOW\n"
-        "1. Caller signals booking intent. Acknowledge warmly: \"Of "
-        "course — I'd be happy to sort that for you.\" Stop. Wait. "
-        "This turn has no question.\n"
-        "2. Ask location: \"Which clinic were you thinking of — "
-        "Alcester or Redditch?\" Wait. Accept name variants and "
-        "one/two.\n"
-        "3. Acknowledge location simply: \"Alcester, perfect.\" or "
-        "\"Great — Redditch.\" Never reference prior context. Stop. "
-        "The next question is its own turn.\n"
-        "4. Ask new or returning: \"Have you been with us "
-        "before?\" Returning: confirm caller number → call "
-        "lookup_patient → skip name. New: continue to step 5.\n"
-        "5. Ask reason: \"What brings you in today?\"\n"
-        "6. One empathy sentence then immediately ask timing in "
-        "the same turn: \"That sounds uncomfortable — do you have "
-        "a preference for mornings or afternoons?\" Never give "
-        "empathy and stop.\n"
-        "7. Once timing is known, say one filler (\"Just a moment "
-        "while I check what's available\") then call "
-        "check_availability. Never call availability the same turn "
-        "timing was asked.\n"
-        "8. Present days first, maximum three per batch, in spoken "
-        "form. If caller's preferred period is not in the data, "
-        "say so first, then offer what is. If caller rejects all "
-        "offered days, immediately present the next batch — never "
-        "ask an open question. When all data is exhausted, offer "
-        "callback.\n"
-        "9. Ask for first name only. Read it back to confirm. "
-        "Never ask for surname.\n"
-        "10. Offer pre-loaded number: \"If you'd like me to use "
-        "the number you're calling on, just say use this number.\" "
-        "When confirmed, read every digit back individually, then "
-        "wait for confirmation.\n"
-        "11. Warm summary: first name, physiotherapy assessment, "
-        "ordinal date, spoken time, clinic. Wait for explicit yes. "
-        "If caller corrects anything, re-state the corrected "
-        "summary and wait for yes again before booking.\n"
-        "12. Call book_appointment. Then: \"Brilliant — you're "
-        "all booked in. Confirmation text shortly. Anything "
-        "else?\"\n\n"
 
         "RESCHEDULE FLOW\n"
         "\"Of course, let's get that moved for you.\" [stop, "
@@ -1505,6 +1452,21 @@ def _build_theorem_v3(session: dict) -> str:
         "check_availability(service, location, date_hint?) — once "
         "service+location+timing known. Not twice unless caller "
         "asks for different dates.\n"
+        "Once check_availability has returned slot data for a date, "
+        "use that data to answer all follow-up questions about that "
+        "date. Do NOT call check_availability again for the same "
+        "date or a date already in the returned data. Call "
+        "check_availability again ONLY if the caller explicitly "
+        "asks for a different date not yet retrieved.\n"
+        "Wrong: caller picks Thursday from the day list → call "
+        "check_availability for Thursday again.\n"
+        "Right: caller picks Thursday from the day list → present "
+        "the times already returned for Thursday from the previous "
+        "check_availability result.\n"
+        "Wrong: caller says 'twelve in the afternoon works' → call "
+        "check_availability again to verify.\n"
+        "Right: caller says 'twelve in the afternoon works' → "
+        "confirm the slot and move to name collection.\n"
         "book_appointment(patient_name, phone, location, service, "
         "slot_iso, duration_minutes?) — only after readback yes. "
         "SMS automatic.\n"
@@ -1527,6 +1489,89 @@ def _build_theorem_v3(session: dict) -> str:
         "callback.\n\n"
 
         "One filler phrase per tool call maximum."
+    )
+
+    # LOCATION RULE — conditional on whether clinic is already confirmed
+    _loc_confirmed = session.get("v3_location_confirmed", False)
+    _sel_loc = (session.get("selected_location") or "").lower().strip()
+    if _loc_confirmed and _sel_loc:
+        _loc_label = _sel_loc.capitalize()
+        location_rule = (
+            f"LOCATION RULE\n"
+            f"Location is confirmed as {_loc_label} — answer all "
+            f"location questions for this site directly. "
+            f"Do not ask which clinic."
+        )
+    else:
+        location_rule = (
+            "LOCATION RULE\n"
+            "Before answering anything that depends on which site "
+            "(parking, hours, address, directions, access), ask which "
+            "clinic — Alcester or Redditch. Once a caller has stated "
+            "their location in this call, never ask again. Exception: "
+            "if the caller explicitly asks for a comparison or asks "
+            "about both sites by name ('what are the hours at both "
+            "clinics', 'do both locations have parking', 'which clinic "
+            "is closer'), answer both without asking. Casual plural "
+            "language alone ('your clinics', 'any of your clinics', "
+            "'your practices') does not trigger this exception — ask "
+            "which site first."
+        )
+
+    # BOOKING FLOW — step 2 (ask location) omitted when location already confirmed
+    _booking_step2 = (
+        f"2. Location already confirmed as {_sel_loc.capitalize()} — "
+        f"skip to step 3.\n"
+        if (_loc_confirmed and _sel_loc)
+        else (
+            "2. Ask location: \"Which clinic were you thinking of — "
+            "Alcester or Redditch?\" Wait. Accept name variants and "
+            "one/two.\n"
+        )
+    )
+    booking_flow = (
+        "BOOKING FLOW\n"
+        "1. Caller signals booking intent. Acknowledge warmly: \"Of "
+        "course — I'd be happy to sort that for you.\" Stop. Wait. "
+        "This turn has no question.\n"
+        + _booking_step2 +
+        "3. Acknowledge location simply: \"Alcester, perfect.\" or "
+        "\"Right — Redditch.\" Never reference prior context. Stop. "
+        "The next question is its own turn.\n"
+        "4. Ask new or returning: \"Have you been with us "
+        "before?\" Returning: confirm caller number → call "
+        "lookup_patient → skip name. New: continue to step 5.\n"
+        "5. Ask reason: \"What brings you in today?\"\n"
+        "6. One empathy sentence then immediately ask timing in "
+        "the same turn: \"That sounds uncomfortable — do you have "
+        "a preference for mornings or afternoons?\" Never give "
+        "empathy and stop.\n"
+        "7. Once timing is known, say one filler (\"Just a moment "
+        "while I check what's available\") then call "
+        "check_availability. Never call availability the same turn "
+        "timing was asked.\n"
+        "8. Present days first, maximum three per batch, in spoken "
+        "form. If caller's preferred period is not in the data, "
+        "say so first, then offer what is. If caller rejects all "
+        "offered days, immediately present the next batch — never "
+        "ask an open question. When all data is exhausted, offer "
+        "callback.\n"
+        "9. Ask for first name only. Read it back to confirm. "
+        "Never ask for surname.\n"
+        "10. Offer pre-loaded number: \"If you'd like me to use "
+        "the number you're calling on, just say use this number.\" "
+        "When confirmed, read every digit back individually, then "
+        "wait for confirmation.\n"
+        "11. Warm summary: first name, physiotherapy assessment, "
+        "ordinal date, spoken time, clinic. Wait for explicit yes. "
+        "If caller corrects anything, re-state the corrected "
+        "summary and wait for yes again before booking. "
+        "Never start the readback summary with: Perfect, Great, "
+        "Brilliant, Wonderful, Excellent, Fantastic. "
+        "Start with: 'So that's...' or 'Right, so...' or "
+        "'Just to confirm...'\n"
+        "12. Call book_appointment. Then: \"You're all booked in. "
+        "Confirmation text shortly. Anything else?\""
     )
 
     # B6 SOFT CONTEXT
@@ -1602,7 +1647,7 @@ def _build_theorem_v3(session: dict) -> str:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
     b7 = ("CALL STATE: " + "; ".join(state)) if state else ""
 
-    blocks = [static]
+    blocks = [static, location_rule, booking_flow]
     if b6: blocks.append(b6)
     if b7: blocks.append(b7)
     return "\n\n".join(blocks)
