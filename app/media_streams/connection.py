@@ -1421,12 +1421,40 @@ class SilenceHandler:
             # real transcript events.
             if self.prompt_speech_detected:
                 _state_dbg = (_sess or {}).get("state", "")
-                logger.info(
-                    "[turn_taking] watchdog suppressed because caller already "
-                    "started speaking state=%s q_gen=%d",
-                    _state_dbg, q_gen,
-                )
-                return
+                # How long since we last saw real speech?
+                _since_speech = time.time() - self.last_engagement_at
+                if _since_speech < 4.0:
+                    # Caller is actively speaking — suppress
+                    # and loop back to wait for their response
+                    logger.info(
+                        "[turn_taking] watchdog suppressed because caller already "
+                        "started speaking state=%s q_gen=%d",
+                        _state_dbg, q_gen,
+                    )
+                    try:
+                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        return
+                    continue
+                else:
+                    # Speech was detected but no transcript
+                    # arrived in 4s — STT likely dropped it.
+                    # Clear the flag and allow watchdog to fire
+                    # so caller is not left in permanent silence.
+                    logger.info(
+                        "[turn_taking] watchdog suppression expired — "
+                        "no transcript after %.1fs, re-arming "
+                        "state=%s q_gen=%d",
+                        _since_speech, _state_dbg, q_gen,
+                    )
+                    self.prompt_speech_detected = False
+                    try:
+                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        return
+                    continue
 
             # ── Phase 4: Fire ─────────────────────────────────────────────
             self._no_input_reask_count += 1
