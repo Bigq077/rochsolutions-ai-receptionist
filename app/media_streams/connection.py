@@ -2977,6 +2977,39 @@ class WebSocketCallHandler:
                                     " resolution: %r",
                                     utterance[:60],
                                 )
+                                # ── Post-run location check (GAP 2 fix) ──────
+                                # If the LLM confirmed a location in its reply
+                                # (e.g. "Alcester, perfect — have you been…"),
+                                # apply the same alias logic to last_bot_prompt.
+                                # Without this, v3_location_asked stays True and
+                                # the next caller turn re-enters this intercept
+                                # block, causing a clarification loop.
+                                _llm_reply = self.session.get(
+                                    "last_bot_prompt", ""
+                                )
+                                _reply_loc = _v3_extract_location(
+                                    _llm_reply
+                                )
+                                if _reply_loc:
+                                    self.session["selected_location"] = (
+                                        _reply_loc
+                                    )
+                                    self.session[
+                                        "v3_location_confirmed"
+                                    ] = True
+                                    self.session[
+                                        "v3_location_asked"
+                                    ] = False
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] post-run location"
+                                        " resolved from LLM reply: %s"
+                                        " (reply=%r)",
+                                        _reply_loc,
+                                        _llm_reply[:60],
+                                    )
 
                         else:
                             # ── Normal path: run free-form LLM turn ─────────
