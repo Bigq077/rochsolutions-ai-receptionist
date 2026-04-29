@@ -1529,7 +1529,15 @@ class SilenceHandler:
                 _prefix = "I'm sorry, I'm still not hearing you clearly. Let's try again"
 
             if _state in ("GREETING", "DETECT_INTENT", ""):
-                phrase = _prefix + " — how can I help today?"
+                # v3 bypasses the FlowEngine state machine so state stays
+                # GREETING even after asking location / new-returning questions.
+                # Use last_question when it's a real question (not the greeting
+                # itself); fall back to generic only for the initial greeting.
+                _lq_g = (_sess or {}).get("last_question") or self.last_question
+                if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
+                    phrase = _prefix + ". " + _lq_g.strip()
+                else:
+                    phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
                 # Approved-copy watchdog with tier escalation.  Never invent
                 # or shorten ASK_LOCATION wording.  Each watchdog fire must
