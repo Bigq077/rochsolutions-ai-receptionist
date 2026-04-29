@@ -993,14 +993,24 @@ class SilenceHandler:
         t = text.strip()
         if t.startswith("Sorry,") or t.startswith("Sorry about") or "didn't quite catch" in t:
             return  # Never restart timer for re-ask phrases
-        # Guard: if a transcript arrived AFTER the last question was set,
-        # on_transcript_received() already cancelled the timer for this turn.
-        # A late TTS-done callback (audio still playing when caller spoke) must
-        # not re-arm the timer — doing so would cause a spurious re-ask ~26s later.
-        if self.last_audio_received_at > self._last_question_set_at:
+        # Guard: if the caller spoke more than 1 s after the last question was
+        # set, on_transcript_received() already cancelled the timer for this
+        # turn.  A late TTS-done callback (audio still playing when caller
+        # spoke) must not re-arm the timer — doing so causes a spurious re-ask
+        # ~26 s later.
+        #
+        # The 1 s floor prevents the energy VAD from poisoning this guard.
+        # When on_question_asked() arms the watchdog, the audio-input loop
+        # can fire on_speech_started() (energy VAD) within the same asyncio
+        # tick — updating last_audio_received_at by ~1 ms.  Without the
+        # floor, that 1 ms is > 0 and the guard fires incorrectly, preventing
+        # on_tts_finished from ever re-arming the timer.  No human responds
+        # within 1 s of on_question_asked (the question TTS hasn't even
+        # started playing yet), so the floor is safe.
+        if self.last_audio_received_at > self._last_question_set_at + 1.0:
             logger.debug(
                 "[ms_silence] on_tts_finished: late TTS callback "
-                "(transcript received after question set) — suppressing timer restart"
+                "(audio received >1 s after question set) — suppressing timer restart"
             )
             return
         # ── Anchor the watchdog deadline to final audible completion ─────────
