@@ -2953,26 +2953,28 @@ class WebSocketCallHandler:
                                     _confirmed_loc,
                                 )
                             else:
-                                # Utterance unclear — re-queue the same
-                                # location question directly (no LLM call).
-                                # Keeps phrasing consistent and avoids
-                                # run_turn generating a verbose re-ask that
-                                # then poisons last_question / watchdog.
-                                _retry_loc_q = (
-                                    "Which clinic were you thinking of"
-                                    " — Alcester or Redditch?"
+                                # Code gate couldn't resolve the utterance
+                                # (phonetic variant, ambiguous phrasing, etc.)
+                                # — pass to run_turn so the LLM can resolve it.
+                                # v3_location_asked stays True so the next
+                                # answer is still intercepted by this block.
+                                await llm.run_turn(
+                                    user_text=utterance,
+                                    session=self.session,
+                                    call_sid=self.call_sid,
+                                    stream_sid=self.stream_sid,
+                                    tts_text_queue=self.tts_text_queue,
+                                    audio_out_queue=self.audio_out_queue,
+                                    websocket=self.websocket,
+                                    on_transfer=self._on_transfer_request,
                                 )
-                                await self.tts_text_queue.put(_retry_loc_q)
-                                self.session["last_bot_prompt"] = _retry_loc_q
-                                self.session["last_question"] = _retry_loc_q
-                                # v3_location_asked stays True — still
-                                # intercepting the next answer.
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
                                     "[ms_conn v3] location answer unclear"
-                                    " — re-queuing location Q directly: %r",
+                                    " — passed to run_turn for LLM"
+                                    " resolution: %r",
                                     utterance[:60],
                                 )
 
