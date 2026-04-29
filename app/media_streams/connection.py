@@ -2799,17 +2799,47 @@ class WebSocketCallHandler:
                                 or "red itch" in u
                             ):
                                 return "redditch"
-                            # Number variants: "one"/"first" → alcester,
-                            # "two"/"second" → redditch
+                            # Ordinal / number variants — both word orders
+                            # ("option one" and "first option" etc.).
+                            # Membership test on the full word tuple: O(1),
+                            # easy to audit, and easy to extend.
                             import re as _re
-                            words = _re.sub(r"[^a-z\s]", "", u).split()
-                            if words in (
-                                ["one"], ["the", "first"], ["first"]
-                            ):
+                            words = tuple(
+                                _re.sub(r"[^a-z\s]", "", u).split()
+                            )
+                            _alcester_variants = {
+                                ("one",),
+                                ("first",),
+                                ("the", "first"),
+                                ("first", "one"),
+                                ("the", "first", "one"),
+                                ("number", "one"),
+                                ("option", "one"),
+                                ("one", "please"),
+                                ("first", "option"),
+                                ("first", "one", "please"),
+                                ("number", "one", "please"),
+                                ("option", "one", "please"),
+                                ("first", "option", "please"),
+                            }
+                            _redditch_variants = {
+                                ("two",),
+                                ("second",),
+                                ("the", "second"),
+                                ("second", "one"),
+                                ("the", "second", "one"),
+                                ("number", "two"),
+                                ("option", "two"),
+                                ("two", "please"),
+                                ("second", "option"),
+                                ("second", "one", "please"),
+                                ("number", "two", "please"),
+                                ("option", "two", "please"),
+                                ("second", "option", "please"),
+                            }
+                            if words in _alcester_variants:
                                 return "alcester"
-                            if words in (
-                                ["two"], ["the", "second"], ["second"]
-                            ):
+                            if words in _redditch_variants:
                                 return "redditch"
                             return ""
 
