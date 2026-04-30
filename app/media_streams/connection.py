@@ -2956,10 +2956,28 @@ class WebSocketCallHandler:
                                 if _confirmed:
                                     _disp = _confirmed.capitalize()
                                     _ack = f"{_disp}, perfect."
-                                    _next_q = (
-                                        f"Have you been with us at "
-                                        f"{_disp} before?"
+                                    _intent = self.session.get(
+                                        "v3_caller_intent", "booking"
                                     )
+                                    if _intent == "reschedule":
+                                        _next_q = (
+                                            f"No problem — could I take "
+                                            f"your first name so I can "
+                                            f"pull up your appointment "
+                                            f"at {_disp}?"
+                                        )
+                                    elif _intent == "cancel":
+                                        _next_q = (
+                                            f"Of course — could I take "
+                                            f"your first name so I can "
+                                            f"find your booking at "
+                                            f"{_disp}?"
+                                        )
+                                    else:
+                                        _next_q = (
+                                            f"Have you been with us at "
+                                            f"{_disp} before?"
+                                        )
                                     self.session[
                                         "selected_location"
                                     ] = _confirmed
@@ -3042,15 +3060,33 @@ class WebSocketCallHandler:
                                         "v3_location_asked"
                                     ] = False
                                     # If captured during a booking flow, queue
-                                    # new/returning question immediately.
+                                    # next question based on caller intent.
                                     if _was_booking:
                                         _loc_display = (
                                             _confirmed_loc.capitalize()
                                         )
-                                        _new_ret_q = (
-                                            f"Have you been with us at "
-                                            f"{_loc_display} before?"
+                                        _intent = self.session.get(
+                                            "v3_caller_intent", "booking"
                                         )
+                                        if _intent == "reschedule":
+                                            _new_ret_q = (
+                                                f"No problem — could I take "
+                                                f"your first name so I can "
+                                                f"pull up your appointment "
+                                                f"at {_loc_display}?"
+                                            )
+                                        elif _intent == "cancel":
+                                            _new_ret_q = (
+                                                f"Of course — could I take "
+                                                f"your first name so I can "
+                                                f"find your booking at "
+                                                f"{_loc_display}?"
+                                            )
+                                        else:
+                                            _new_ret_q = (
+                                                f"Have you been with us at "
+                                                f"{_loc_display} before?"
+                                            )
                                         await self.tts_text_queue.put(
                                             _new_ret_q
                                         )
@@ -3152,10 +3188,28 @@ class WebSocketCallHandler:
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
                                         _ack = f"{_disp}, perfect."
-                                        _next_q = (
-                                            f"Have you been with us at "
-                                            f"{_disp} before?"
+                                        _intent = self.session.get(
+                                            "v3_caller_intent", "booking"
                                         )
+                                        if _intent == "reschedule":
+                                            _next_q = (
+                                                f"No problem — could I take "
+                                                f"your first name so I can "
+                                                f"pull up your appointment "
+                                                f"at {_disp}?"
+                                            )
+                                        elif _intent == "cancel":
+                                            _next_q = (
+                                                f"Of course — could I take "
+                                                f"your first name so I can "
+                                                f"find your booking at "
+                                                f"{_disp}?"
+                                            )
+                                        else:
+                                            _next_q = (
+                                                f"Have you been with us at "
+                                                f"{_disp} before?"
+                                            )
                                         self.session[
                                             "selected_location"
                                         ] = _resolved
@@ -3414,6 +3468,15 @@ class WebSocketCallHandler:
                             )
                             if _is_booking_ack:
                                 self.session["v3_booking_intent"] = True
+                                # Store which intent triggered the ack
+                                if "let's get that moved" in _last_bot.lower():
+                                    self.session["v3_caller_intent"] = (
+                                        "reschedule"
+                                    )
+                                elif "no problem at all" in _last_bot.lower():
+                                    self.session["v3_caller_intent"] = "cancel"
+                                else:
+                                    self.session["v3_caller_intent"] = "booking"
                                 # Booking ack detected — advance to next question.
                                 # If location already confirmed, skip location Q
                                 # and go straight to new/returning.
@@ -3422,10 +3485,26 @@ class WebSocketCallHandler:
                                         "selected_location", "alcester"
                                     )
                                     _loc_display = _loc.capitalize()
-                                    _next_q = (
-                                        f"Have you been with us at "
-                                        f"{_loc_display} before?"
+                                    _intent = self.session.get(
+                                        "v3_caller_intent", "booking"
                                     )
+                                    if _intent == "reschedule":
+                                        _next_q = (
+                                            f"No problem — could I take your "
+                                            f"first name so I can pull up your "
+                                            f"appointment at {_loc_display}?"
+                                        )
+                                    elif _intent == "cancel":
+                                        _next_q = (
+                                            f"Of course — could I take your "
+                                            f"first name so I can find your "
+                                            f"booking at {_loc_display}?"
+                                        )
+                                    else:
+                                        _next_q = (
+                                            f"Have you been with us at "
+                                            f"{_loc_display} before?"
+                                        )
                                     await self.tts_text_queue.put(_next_q)
                                     self.session["last_bot_prompt"] = _next_q
                                     self.session["last_question"] = _next_q
@@ -3444,8 +3523,9 @@ class WebSocketCallHandler:
                                     self.session["v3_booking_intent"] = False
                                     logger.info(
                                         "[ms_conn v3] booking ack — location "
-                                        "already known (%s), queued new/returning Q",
+                                        "known (%s), intent=%s, queued next Q",
                                         _loc,
+                                        _intent,
                                     )
                                 else:
                                     # Location unknown — queue location question
