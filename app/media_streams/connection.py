@@ -2888,6 +2888,59 @@ class WebSocketCallHandler:
                                 )
                             continue
 
+                        # ── Reschedule/cancel phone confirm ──────────────────
+                        # Fires when the caller responds to the phone-first
+                        # question queued after location is confirmed for
+                        # reschedule/cancel intents.
+                        if self.session.get("v3_awaiting_phone_confirm"):
+                            self.session["v3_awaiting_phone_confirm"] = False
+                            _utt_lower = utterance.lower()
+                            _calling_number = self.session.get(
+                                "twilio_from_local", ""
+                            )
+                            if (
+                                "use this" in _utt_lower
+                                or "yes" in _utt_lower
+                                or "yeah" in _utt_lower
+                                or "yep" in _utt_lower
+                                or "yup" in _utt_lower
+                            ):
+                                # Caller confirmed → use calling number
+                                self.session["lookup_phone"] = _calling_number
+                                _filler = (
+                                    "Let me have a look at what we've"
+                                    " got…"
+                                )
+                                await self.tts_text_queue.put(_filler)
+                                self.session["last_bot_prompt"] = _filler
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] phone confirm — using"
+                                    " calling number for lookup: %s",
+                                    _calling_number,
+                                )
+                                # Fall through — gate/loc checks will be False,
+                                # run_turn will fire and LLM calls lookup_appointment
+                            else:
+                                # Caller wants a different number
+                                _diff_q = (
+                                    "Of course — go ahead with the "
+                                    "number whenever you're ready."
+                                )
+                                await self.tts_text_queue.put(_diff_q)
+                                self.session["last_bot_prompt"] = _diff_q
+                                self.session["last_question"] = _diff_q
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] phone confirm — caller"
+                                    " using different number"
+                                )
+                                continue  # Skip run_turn; wait for number
+
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
@@ -2905,10 +2958,19 @@ class WebSocketCallHandler:
                         )
 
                         if _v3_gate_fired:
-                            _loc_q = (
-                                "Which clinic were you thinking of — "
-                                "Alcester or Redditch?"
+                            _gate_intent = self.session.get(
+                                "v3_caller_intent", "booking"
                             )
+                            if _gate_intent in ("reschedule", "cancel"):
+                                _loc_q = (
+                                    "Was your original appointment at "
+                                    "our Alcester or Redditch clinic?"
+                                )
+                            else:
+                                _loc_q = (
+                                    "Which clinic were you thinking of "
+                                    "— Alcester or Redditch?"
+                                )
                             await self.tts_text_queue.put(_loc_q)
                             self.session["last_bot_prompt"] = _loc_q
                             self.session["last_question"] = _loc_q
@@ -2916,7 +2978,8 @@ class WebSocketCallHandler:
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] location gate fired — "
-                                "skipping run_turn for utterance: %r",
+                                "intent=%s, skipping run_turn for: %r",
+                                _gate_intent,
                                 utterance[:60],
                             )
 
@@ -2959,19 +3022,12 @@ class WebSocketCallHandler:
                                     _intent = self.session.get(
                                         "v3_caller_intent", "booking"
                                     )
-                                    if _intent == "reschedule":
+                                    if _intent in ("reschedule", "cancel"):
                                         _next_q = (
-                                            f"No problem — could I take "
-                                            f"your first name so I can "
-                                            f"pull up your appointment "
-                                            f"at {_disp}?"
-                                        )
-                                    elif _intent == "cancel":
-                                        _next_q = (
-                                            f"Of course — could I take "
-                                            f"your first name so I can "
-                                            f"find your booking at "
-                                            f"{_disp}?"
+                                            "Is the number you're calling "
+                                            "on the one associated with "
+                                            "your booking? If so, just "
+                                            "say 'use this number'."
                                         )
                                     else:
                                         _next_q = (
@@ -2990,6 +3046,10 @@ class WebSocketCallHandler:
                                     self.session[
                                         "v3_booking_intent"
                                     ] = False
+                                    if _intent in ("reschedule", "cancel"):
+                                        self.session[
+                                            "v3_awaiting_phone_confirm"
+                                        ] = True
                                     await self.tts_text_queue.put(_ack)
                                     await self.tts_text_queue.put(_next_q)
                                     self.session[
@@ -3009,8 +3069,9 @@ class WebSocketCallHandler:
                                     )
                                     logger.info(
                                         "[ms_conn v3] use-this-clinic"
-                                        " confirmed: %s",
+                                        " confirmed: %s, intent=%s",
                                         _confirmed,
+                                        _intent,
                                     )
                                 else:
                                     # Genuinely unresolvable — transfer
@@ -3068,20 +3129,17 @@ class WebSocketCallHandler:
                                         _intent = self.session.get(
                                             "v3_caller_intent", "booking"
                                         )
-                                        if _intent == "reschedule":
+                                        if _intent in ("reschedule", "cancel"):
                                             _new_ret_q = (
-                                                f"No problem — could I take "
-                                                f"your first name so I can "
-                                                f"pull up your appointment "
-                                                f"at {_loc_display}?"
+                                                "Is the number you're "
+                                                "calling on the one "
+                                                "associated with your "
+                                                "booking? If so, just "
+                                                "say 'use this number'."
                                             )
-                                        elif _intent == "cancel":
-                                            _new_ret_q = (
-                                                f"Of course — could I take "
-                                                f"your first name so I can "
-                                                f"find your booking at "
-                                                f"{_loc_display}?"
-                                            )
+                                            self.session[
+                                                "v3_awaiting_phone_confirm"
+                                            ] = True
                                         else:
                                             _new_ret_q = (
                                                 f"Have you been with us at "
@@ -3191,19 +3249,13 @@ class WebSocketCallHandler:
                                         _intent = self.session.get(
                                             "v3_caller_intent", "booking"
                                         )
-                                        if _intent == "reschedule":
+                                        if _intent in ("reschedule", "cancel"):
                                             _next_q = (
-                                                f"No problem — could I take "
-                                                f"your first name so I can "
-                                                f"pull up your appointment "
-                                                f"at {_disp}?"
-                                            )
-                                        elif _intent == "cancel":
-                                            _next_q = (
-                                                f"Of course — could I take "
-                                                f"your first name so I can "
-                                                f"find your booking at "
-                                                f"{_disp}?"
+                                                "Is the number you're "
+                                                "calling on the one "
+                                                "associated with your "
+                                                "booking? If so, just "
+                                                "say 'use this number'."
                                             )
                                         else:
                                             _next_q = (
@@ -3222,6 +3274,10 @@ class WebSocketCallHandler:
                                         self.session[
                                             "v3_booking_intent"
                                         ] = False
+                                        if _intent in ("reschedule", "cancel"):
+                                            self.session[
+                                                "v3_awaiting_phone_confirm"
+                                            ] = True
                                         await self.tts_text_queue.put(_ack)
                                         await self.tts_text_queue.put(
                                             _next_q
@@ -3243,8 +3299,10 @@ class WebSocketCallHandler:
                                         )
                                         logger.info(
                                             "[ms_conn v3] Haiku resolved"
-                                            " location: %s from %r",
+                                            " location: %s, intent=%s,"
+                                            " from %r",
                                             _resolved,
+                                            _intent,
                                             utterance[:60],
                                         )
                                     else:
@@ -3488,18 +3546,16 @@ class WebSocketCallHandler:
                                     _intent = self.session.get(
                                         "v3_caller_intent", "booking"
                                     )
-                                    if _intent == "reschedule":
+                                    if _intent in ("reschedule", "cancel"):
                                         _next_q = (
-                                            f"No problem — could I take your "
-                                            f"first name so I can pull up your "
-                                            f"appointment at {_loc_display}?"
+                                            "Is the number you're calling "
+                                            "on the one associated with "
+                                            "your booking? If so, just "
+                                            "say 'use this number'."
                                         )
-                                    elif _intent == "cancel":
-                                        _next_q = (
-                                            f"Of course — could I take your "
-                                            f"first name so I can find your "
-                                            f"booking at {_loc_display}?"
-                                        )
+                                        self.session[
+                                            "v3_awaiting_phone_confirm"
+                                        ] = True
                                     else:
                                         _next_q = (
                                             f"Have you been with us at "
@@ -3528,11 +3584,22 @@ class WebSocketCallHandler:
                                         _intent,
                                     )
                                 else:
-                                    # Location unknown — queue location question
-                                    _loc_q = (
-                                        "Which clinic were you thinking of — "
-                                        "Alcester or Redditch?"
+                                    # Location unknown — queue intent-aware
+                                    # location question
+                                    _loc_intent = self.session.get(
+                                        "v3_caller_intent", "booking"
                                     )
+                                    if _loc_intent in ("reschedule", "cancel"):
+                                        _loc_q = (
+                                            "Was your original appointment "
+                                            "at our Alcester or Redditch "
+                                            "clinic?"
+                                        )
+                                    else:
+                                        _loc_q = (
+                                            "Which clinic were you thinking "
+                                            "of — Alcester or Redditch?"
+                                        )
                                     await self.tts_text_queue.put(_loc_q)
                                     self.session["last_bot_prompt"] = _loc_q
                                     self.session["last_question"] = _loc_q
@@ -3542,7 +3609,8 @@ class WebSocketCallHandler:
                                     )
                                     logger.info(
                                         "[ms_conn v3] booking ack detected — "
-                                        "location Q auto-queued after run_turn"
+                                        "intent=%s, location Q queued",
+                                        _loc_intent,
                                     )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
