@@ -2879,6 +2879,9 @@ class WebSocketCallHandler:
                             and not self.session.get(
                                 "v3_location_asked", False
                             )
+                            and not self.session.get(
+                                "v3_location_confirmed", False
+                            )
                         )
                         # Caller is answering the location question we just
                         # asked — intercept to guarantee only the ack plays
@@ -2905,110 +2908,160 @@ class WebSocketCallHandler:
 
                         elif _v3_loc_answering:
                             # ── LOCATION ANSWER INTERCEPT ─────────────────
-                            # Try to extract the location from the utterance.
-                            # If found: play only the ack phrase and set flags.
-                            # If not found: let run_turn handle clarification.
-                            _confirmed_loc = _v3_extract_location(utterance)
-                            if _confirmed_loc:
-                                _loc_label = _confirmed_loc.capitalize()
-                                _ack = f"{_loc_label}, perfect."
-                                await self.tts_text_queue.put(_ack)
-                                self.session["last_bot_prompt"] = _ack
-                                self.session["selected_location"] = (
-                                    _confirmed_loc
+                            # Check biased-confirm flag first (set when a
+                            # prior turn couldn't resolve the alias). Then
+                            # try code-gate alias matching. If neither
+                            # resolves, queue a biased confirm question.
+                            if self.session.get(
+                                "v3_awaiting_alcester_confirm"
+                            ):
+                                # ── Biased confirm response handler ────────
+                                # Caller answered "Did you say Alcester?".
+                                # Any redditch signal → redditch.
+                                # Everything else defaults to alcester.
+                                self.session[
+                                    "v3_awaiting_alcester_confirm"
+                                ] = False
+                                _utt_lower = utterance.lower()
+                                _said_redditch = any(
+                                    r in _utt_lower for r in (
+                                        "redditch", "reditch",
+                                        "reddich", "redich", "no",
+                                    )
                                 )
-                                self.session["v3_location_confirmed"] = True
+                                _confirmed = (
+                                    "redditch"
+                                    if _said_redditch
+                                    else "alcester"
+                                )
+                                _disp = _confirmed.capitalize()
                                 _was_booking = self.session.get(
                                     "v3_booking_intent", False
                                 )
-                                self.session["v3_booking_intent"] = False
+                                self.session["selected_location"] = (
+                                    _confirmed
+                                )
+                                self.session[
+                                    "v3_location_confirmed"
+                                ] = True
                                 self.session["v3_location_asked"] = False
-                                # If this location was captured during a booking
-                                # flow, queue new/returning question immediately
-                                # (mirrors booking ack confirmed-location branch)
-                                if _was_booking:
-                                    _loc_display = _confirmed_loc.capitalize()
-                                    _new_ret_q = (
-                                        f"Have you been with us at "
-                                        f"{_loc_display} before?"
-                                    )
-                                    await self.tts_text_queue.put(_new_ret_q)
-                                    self.session["last_bot_prompt"] = _new_ret_q
-                                    self.session["last_question"] = _new_ret_q
-                                    # Inject into conversation_history so the
-                                    # LLM has context when processing the
-                                    # caller's answer on the next turn.
-                                    self.session.setdefault(
-                                        "conversation_history", []
-                                    ).append({
-                                        "role": "assistant",
-                                        "content": _new_ret_q,
-                                    })
+                                self.session["v3_booking_intent"] = False
+                                _ack = (
+                                    "Redditch — got it."
+                                    if _confirmed == "redditch"
+                                    else "Alcester — got it."
+                                )
+                                _next_q = (
+                                    f"Have you been with us at "
+                                    f"{_disp} before?"
+                                )
+                                await self.tts_text_queue.put(_ack)
+                                await self.tts_text_queue.put(_next_q)
+                                self.session["last_bot_prompt"] = _next_q
+                                self.session["last_question"] = _next_q
+                                self.session.setdefault(
+                                    "conversation_history", []
+                                ).append({
+                                    "role": "assistant",
+                                    "content": _next_q,
+                                })
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
-                                    "[ms_conn v3] location answer intercepted"
-                                    " — ack-only, no run_turn: %s",
-                                    _confirmed_loc,
-                                )
-                            else:
-                                # Code gate couldn't resolve the utterance
-                                # (phonetic variant, ambiguous phrasing, etc.)
-                                # — pass to run_turn so the LLM can resolve it.
-                                # v3_location_asked stays True so the next
-                                # answer is still intercepted by this block.
-                                await llm.run_turn(
-                                    user_text=utterance,
-                                    session=self.session,
-                                    call_sid=self.call_sid,
-                                    stream_sid=self.stream_sid,
-                                    tts_text_queue=self.tts_text_queue,
-                                    audio_out_queue=self.audio_out_queue,
-                                    websocket=self.websocket,
-                                    on_transfer=self._on_transfer_request,
-                                )
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] location answer unclear"
-                                    " — passed to run_turn for LLM"
-                                    " resolution: %r",
+                                    "[ms_conn v3] biased confirm resolved:"
+                                    " %s from %r",
+                                    _confirmed,
                                     utterance[:60],
                                 )
-                                # ── Post-run location check (GAP 2 fix) ──────
-                                # If the LLM confirmed a location in its reply
-                                # (e.g. "Alcester, perfect — have you been…"),
-                                # apply the same alias logic to last_bot_prompt.
-                                # Without this, v3_location_asked stays True and
-                                # the next caller turn re-enters this intercept
-                                # block, causing a clarification loop.
-                                _llm_reply = self.session.get(
-                                    "last_bot_prompt", ""
+                            else:
+                                # ── Code-gate alias matching ───────────────
+                                # If found: play only the ack phrase and set
+                                # flags. If not found: queue a biased confirm.
+                                _confirmed_loc = _v3_extract_location(
+                                    utterance
                                 )
-                                _reply_loc = _v3_extract_location(
-                                    _llm_reply
-                                )
-                                if _reply_loc:
+                                if _confirmed_loc:
+                                    _loc_label = _confirmed_loc.capitalize()
+                                    _ack = f"{_loc_label}, perfect."
+                                    await self.tts_text_queue.put(_ack)
+                                    self.session["last_bot_prompt"] = _ack
                                     self.session["selected_location"] = (
-                                        _reply_loc
+                                        _confirmed_loc
                                     )
                                     self.session[
                                         "v3_location_confirmed"
                                     ] = True
+                                    _was_booking = self.session.get(
+                                        "v3_booking_intent", False
+                                    )
+                                    self.session[
+                                        "v3_booking_intent"
+                                    ] = False
                                     self.session[
                                         "v3_location_asked"
                                     ] = False
+                                    # If captured during a booking flow, queue
+                                    # new/returning question immediately.
+                                    if _was_booking:
+                                        _loc_display = (
+                                            _confirmed_loc.capitalize()
+                                        )
+                                        _new_ret_q = (
+                                            f"Have you been with us at "
+                                            f"{_loc_display} before?"
+                                        )
+                                        await self.tts_text_queue.put(
+                                            _new_ret_q
+                                        )
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _new_ret_q
+                                        self.session[
+                                            "last_question"
+                                        ] = _new_ret_q
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _new_ret_q,
+                                        })
                                     await save_session(
                                         self.call_sid, self.session
                                     )
                                     logger.info(
-                                        "[ms_conn v3] post-run location"
-                                        " resolved from LLM reply: %s"
-                                        " (reply=%r)",
-                                        _reply_loc,
-                                        _llm_reply[:60],
+                                        "[ms_conn v3] location answer"
+                                        " intercepted — ack-only, no"
+                                        " run_turn: %s",
+                                        _confirmed_loc,
+                                    )
+                                else:
+                                    # ── Biased confirm — Alcester assumption ──
+                                    # Code gate couldn't resolve. Queue a
+                                    # biased confirm question — most traffic
+                                    # is Alcester. Next turn handled by the
+                                    # v3_awaiting_alcester_confirm branch.
+                                    # No run_turn, no LLM latency.
+                                    _confirm_q = "Did you say Alcester?"
+                                    await self.tts_text_queue.put(
+                                        _confirm_q
+                                    )
+                                    self.session[
+                                        "last_bot_prompt"
+                                    ] = _confirm_q
+                                    self.session[
+                                        "last_question"
+                                    ] = _confirm_q
+                                    self.session[
+                                        "v3_awaiting_alcester_confirm"
+                                    ] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] location unclear — "
+                                        "biased confirm queued: %r",
+                                        utterance[:60],
                                     )
 
                         else:
@@ -3130,6 +3183,60 @@ class WebSocketCallHandler:
                                         "[ms_conn v3] location inferred "
                                         "from booking transcript: redditch"
                                     )
+
+                            # ── First-turn date/time extraction ──────────
+                            # Capture time/date preference from this
+                            # utterance so the booking flow can skip the
+                            # timing question entirely if it was stated
+                            # up front.  Only runs before booking starts.
+                            if not self.session.get("v3_location_confirmed"):
+                                _utt_lower = utterance.lower()
+                                _time_pref = None
+
+                                # Day preferences
+                                if "monday" in _utt_lower:
+                                    _time_pref = "Monday"
+                                elif "tuesday" in _utt_lower:
+                                    _time_pref = "Tuesday"
+                                elif "wednesday" in _utt_lower:
+                                    _time_pref = "Wednesday"
+                                elif "thursday" in _utt_lower:
+                                    _time_pref = "Thursday"
+                                elif "friday" in _utt_lower:
+                                    _time_pref = "Friday"
+                                elif "tomorrow" in _utt_lower:
+                                    _time_pref = "tomorrow"
+                                elif "next week" in _utt_lower:
+                                    _time_pref = "next week"
+                                elif "this week" in _utt_lower:
+                                    _time_pref = "this week"
+
+                                # Time of day — appended to day if present
+                                _tod = None
+                                if "morning" in _utt_lower:
+                                    _tod = "morning"
+                                elif "afternoon" in _utt_lower:
+                                    _tod = "afternoon"
+                                elif "evening" in _utt_lower:
+                                    _tod = "evening"
+
+                                if _time_pref and _tod:
+                                    _time_pref = f"{_time_pref} {_tod}"
+                                elif _tod and not _time_pref:
+                                    _time_pref = _tod
+
+                                if _time_pref:
+                                    _sc = (
+                                        self.session.get("soft_context") or {}
+                                    )
+                                    if not _sc.get("time_preference"):
+                                        _sc["time_preference"] = _time_pref
+                                        self.session["soft_context"] = _sc
+                                        logger.info(
+                                            "[ms_conn v3] time_preference"
+                                            " extracted: %s",
+                                            _time_pref,
+                                        )
 
                             _V3_ACK_PHRASES = (
                                 "of course — i'd be happy to sort that",
