@@ -2392,7 +2392,21 @@ class WebSocketCallHandler:
             return
 
         digit = (msg.get("dtmf") or {}).get("digit", "")
-        if not digit or digit in ("#", "*"):
+        if not digit or digit == "#":
+            return
+
+        # Star clears the buffer for theorem_v3 phone collection
+        if digit == "*":
+            if self.session.get("v3_phone_dtmf_active"):
+                self.session["phone_dtmf_buffer"] = ""
+                _clear_msg = (
+                    "No problem — buffer cleared. "
+                    "Go ahead and type the number again."
+                )
+                await self.tts_text_queue.put(_clear_msg)
+                self.session["last_bot_prompt"] = _clear_msg
+                await save_session(self.call_sid, self.session)
+                logger.info("[ms_conn v3] DTMF * — buffer cleared")
             return
 
         # First real keypad press: cancel any leftover speech watchdog / W1-W3
@@ -2416,13 +2430,15 @@ class WebSocketCallHandler:
                 await self.transcript_queue.put("redditch")
             return
 
-        # Only accumulate DTMF while in phone-collection state or keypad lookup recovery
+        # Only accumulate DTMF while in phone-collection state, keypad lookup
+        # recovery, or theorem_v3 DTMF phone collection.
         if (
             self.session.get("state") not in (
                 "COLLECT_PHONE", "COLLECT_PHONE_RETURNING",
                 "RETURNING_PLAN_COLLECT_PHONE",
             )
             and not self.session.get("rc_kp_phone_pending")
+            and not self.session.get("v3_phone_dtmf_active")
         ):
             return
 
@@ -2452,8 +2468,11 @@ class WebSocketCallHandler:
             complete = buf[:11]
             self.session["phone_dtmf_buffer"]   = ""
             self.session["phone_awaiting_dtmf"] = False
+            self.session["v3_phone_dtmf_active"] = False
             logger.info("[ms_conn] DTMF buffer complete → synthetic transcript %r", complete)
             await self.transcript_queue.put(complete)
+            await save_session(self.call_sid, self.session)
+            logger.info("[ms_conn v3] DTMF phone collection complete")
         elif len(buf) >= 10:
             # Plausibly complete (UK 10-digit without leading 0).  Wait a short
             # idle window for further digits; if none arrive, finalize.
@@ -2484,7 +2503,8 @@ class WebSocketCallHandler:
         if self.session.get("state") not in (
             "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE",
             "RETURNING_PLAN_COLLECT_PHONE",
-        ) and not self.session.get("rc_kp_phone_pending"):
+        ) and not self.session.get("rc_kp_phone_pending") \
+          and not self.session.get("v3_phone_dtmf_active"):
             return
         if len(buf) < 10:
             return
@@ -2493,11 +2513,14 @@ class WebSocketCallHandler:
         complete = ("0" + buf) if len(buf) == 10 else buf[:11]
         self.session["phone_dtmf_buffer"]   = ""
         self.session["phone_awaiting_dtmf"] = False
+        self.session["v3_phone_dtmf_active"] = False
         logger.info(
             "[ms_conn] DTMF idle-finalize after %.1fs → synthetic transcript %r",
             _KEYPAD_IDLE_FINALIZE_SEC, complete,
         )
         await self.transcript_queue.put(complete)
+        await save_session(self.call_sid, self.session)
+        logger.info("[ms_conn v3] DTMF phone collection complete (idle-finalize)")
 
     async def _handle_start(self, msg: Dict[str, Any]) -> None:
         """
@@ -2924,22 +2947,29 @@ class WebSocketCallHandler:
                                 # Fall through — gate/loc checks will be False,
                                 # run_turn will fire and LLM calls lookup_appointment
                             else:
-                                # Caller wants a different number
-                                _diff_q = (
-                                    "Of course — go ahead with the "
-                                    "number whenever you're ready."
+                                # Caller wants a different number — switch
+                                # to DTMF keypad collection
+                                _dtmf_prompt = (
+                                    "No problem — please type the number "
+                                    "on your keypad now. Press star to "
+                                    "start over if you make a mistake."
                                 )
-                                await self.tts_text_queue.put(_diff_q)
-                                self.session["last_bot_prompt"] = _diff_q
-                                self.session["last_question"] = _diff_q
+                                await self.tts_text_queue.put(_dtmf_prompt)
+                                self.session[
+                                    "last_bot_prompt"
+                                ] = _dtmf_prompt
+                                self.session[
+                                    "last_question"
+                                ] = _dtmf_prompt
+                                self.session["v3_phone_dtmf_active"] = True
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
-                                    "[ms_conn v3] phone confirm — caller"
-                                    " using different number"
+                                    "[ms_conn v3] DTMF phone collection"
+                                    " active"
                                 )
-                                continue  # Skip run_turn; wait for number
+                                continue  # Skip run_turn; wait for digits
 
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
