@@ -3015,9 +3015,63 @@ class WebSocketCallHandler:
 
                         elif _v3_loc_answering:
                             # ── LOCATION ANSWER INTERCEPT ─────────────────
-                            # 1. use-this-clinic confirm handler (top)
+                            # 0. Intent pivot detection (must be first)
+                            # 1. use-this-clinic confirm handler
                             # 2. code-gate alias matching
                             # 3. Haiku resolver for anything the gate misses
+
+                            # ── Intent pivot detection ────────────────────
+                            # If the caller changes their mind while the
+                            # location gate is active, detect the new
+                            # intent and re-route immediately.
+                            _RESCHEDULE_PIVOTS = {
+                                "reschedule", "rearrange", "move my",
+                                "change my",
+                            }
+                            _CANCEL_PIVOTS = {
+                                "cancel", "cancellation",
+                            }
+                            _utt_pivot = utterance.lower()
+                            _pivot_intent = None
+                            if any(
+                                w in _utt_pivot for w in _RESCHEDULE_PIVOTS
+                            ):
+                                _pivot_intent = "reschedule"
+                            elif any(
+                                w in _utt_pivot for w in _CANCEL_PIVOTS
+                            ):
+                                _pivot_intent = "cancel"
+
+                            if _pivot_intent:
+                                self.session["v3_caller_intent"] = (
+                                    _pivot_intent
+                                )
+                                self.session["v3_booking_intent"] = False
+                                self.session["v3_location_asked"] = False
+                                self.session[
+                                    "v3_awaiting_use_this_clinic"
+                                ] = False
+                                _pivot_loc_q = (
+                                    "Was your original appointment at "
+                                    "our Alcester or Redditch clinic?"
+                                )
+                                await self.tts_text_queue.put(_pivot_loc_q)
+                                self.session[
+                                    "last_bot_prompt"
+                                ] = _pivot_loc_q
+                                self.session[
+                                    "last_question"
+                                ] = _pivot_loc_q
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] intent pivot in loc"
+                                    " gate: %s from %r",
+                                    _pivot_intent, utterance[:60],
+                                )
+                                return
+
                             if self.session.get(
                                 "v3_awaiting_use_this_clinic"
                             ):
@@ -3029,6 +3083,47 @@ class WebSocketCallHandler:
                                 self.session[
                                     "v3_awaiting_use_this_clinic"
                                 ] = False
+
+                                # ── Trailing fragment guard ───────────────
+                                # STT sometimes splits a long utterance and
+                                # sends a trailing single word as a second
+                                # final transcript. A one-word fragment that
+                                # isn't a known response word must not be
+                                # treated as a definitive answer.
+                                _DEFINITIVE_WORDS = {
+                                    "use", "this", "clinic", "yes",
+                                    "yeah", "yep", "yup", "redditch",
+                                    "reditch", "no", "nope", "alcester",
+                                }
+                                _fragment_words = (
+                                    utterance.strip().lower().split()
+                                )
+                                _is_definitive = (
+                                    len(_fragment_words) >= 2
+                                    or (
+                                        len(_fragment_words) == 1
+                                        and _fragment_words[0]
+                                        in _DEFINITIVE_WORDS
+                                    )
+                                )
+                                if not _is_definitive:
+                                    # Single unrecognised word — likely a
+                                    # trailing STT fragment. Restore flag
+                                    # and wait for the next turn.
+                                    self.session[
+                                        "v3_awaiting_use_this_clinic"
+                                    ] = True
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] trailing fragment"
+                                        " ignored in use-this-clinic"
+                                        " handler: %r",
+                                        utterance,
+                                    )
+                                    return
+
                                 _utt_lower = utterance.lower()
                                 if (
                                     "use this" in _utt_lower
@@ -3105,6 +3200,20 @@ class WebSocketCallHandler:
                                     )
                                 else:
                                     # Genuinely unresolvable — transfer
+                                    # ── Transfer suppression guard ────────
+                                    # If a biased confirm is already active
+                                    # (re-set by the trailing fragment guard
+                                    # above), don't also transfer — the
+                                    # confirm must play out first.
+                                    if self.session.get(
+                                        "v3_awaiting_use_this_clinic"
+                                    ):
+                                        logger.info(
+                                            "[ms_conn v3] transfer"
+                                            " suppressed — use-this-"
+                                            "clinic confirm already active"
+                                        )
+                                        return
                                     _transfer_msg = (
                                         "I'm having a little trouble "
                                         "with the line — let me get "
