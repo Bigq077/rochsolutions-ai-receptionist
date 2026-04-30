@@ -2908,76 +2908,102 @@ class WebSocketCallHandler:
 
                         elif _v3_loc_answering:
                             # ── LOCATION ANSWER INTERCEPT ─────────────────
-                            # Check biased-confirm flag first (set when a
-                            # prior turn couldn't resolve the alias). Then
-                            # try code-gate alias matching. If neither
-                            # resolves, queue a biased confirm question.
+                            # 1. use-this-clinic confirm handler (top)
+                            # 2. code-gate alias matching
+                            # 3. Haiku resolver for anything the gate misses
                             if self.session.get(
-                                "v3_awaiting_alcester_confirm"
+                                "v3_awaiting_use_this_clinic"
                             ):
-                                # ── Biased confirm response handler ────────
-                                # Caller answered "Did you say Alcester?".
-                                # Any redditch signal → redditch.
-                                # Everything else defaults to alcester.
+                                # ── use-this-clinic confirm handler ────────
+                                # Caller answered the "did you say Alcester?"
+                                # fallback. Affirmative → alcester.
+                                # Redditch signal / "no" → redditch.
+                                # Genuinely unresolvable → transfer.
                                 self.session[
-                                    "v3_awaiting_alcester_confirm"
+                                    "v3_awaiting_use_this_clinic"
                                 ] = False
                                 _utt_lower = utterance.lower()
-                                _said_redditch = any(
+                                if (
+                                    "use this" in _utt_lower
+                                    or "yes" in _utt_lower
+                                    or "yeah" in _utt_lower
+                                ):
+                                    _confirmed = "alcester"
+                                elif any(
                                     r in _utt_lower for r in (
                                         "redditch", "reditch",
-                                        "reddich", "redich", "no",
+                                        "reddich", "no", "other",
                                     )
-                                )
-                                _confirmed = (
-                                    "redditch"
-                                    if _said_redditch
-                                    else "alcester"
-                                )
-                                _disp = _confirmed.capitalize()
-                                _was_booking = self.session.get(
-                                    "v3_booking_intent", False
-                                )
-                                self.session["selected_location"] = (
-                                    _confirmed
-                                )
-                                self.session[
-                                    "v3_location_confirmed"
-                                ] = True
-                                self.session["v3_location_asked"] = False
-                                self.session["v3_booking_intent"] = False
-                                _ack = (
-                                    "Redditch — got it."
-                                    if _confirmed == "redditch"
-                                    else "Alcester — got it."
-                                )
-                                _next_q = (
-                                    f"Have you been with us at "
-                                    f"{_disp} before?"
-                                )
-                                await self.tts_text_queue.put(_ack)
-                                await self.tts_text_queue.put(_next_q)
-                                self.session["last_bot_prompt"] = _next_q
-                                self.session["last_question"] = _next_q
-                                self.session.setdefault(
-                                    "conversation_history", []
-                                ).append({
-                                    "role": "assistant",
-                                    "content": _next_q,
-                                })
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
-                                logger.info(
-                                    "[ms_conn v3] biased confirm resolved:"
-                                    " %s from %r",
-                                    _confirmed,
-                                    utterance[:60],
-                                )
+                                ):
+                                    _confirmed = "redditch"
+                                else:
+                                    _confirmed = None
+
+                                if _confirmed:
+                                    _disp = _confirmed.capitalize()
+                                    _ack = f"{_disp}, perfect."
+                                    _next_q = (
+                                        f"Have you been with us at "
+                                        f"{_disp} before?"
+                                    )
+                                    self.session[
+                                        "selected_location"
+                                    ] = _confirmed
+                                    self.session[
+                                        "v3_location_confirmed"
+                                    ] = True
+                                    self.session[
+                                        "v3_location_asked"
+                                    ] = False
+                                    self.session[
+                                        "v3_booking_intent"
+                                    ] = False
+                                    await self.tts_text_queue.put(_ack)
+                                    await self.tts_text_queue.put(_next_q)
+                                    self.session[
+                                        "last_bot_prompt"
+                                    ] = _next_q
+                                    self.session[
+                                        "last_question"
+                                    ] = _next_q
+                                    self.session.setdefault(
+                                        "conversation_history", []
+                                    ).append({
+                                        "role": "assistant",
+                                        "content": _next_q,
+                                    })
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] use-this-clinic"
+                                        " confirmed: %s",
+                                        _confirmed,
+                                    )
+                                else:
+                                    # Genuinely unresolvable — transfer
+                                    _transfer_msg = (
+                                        "I'm having a little trouble "
+                                        "with the line — let me get "
+                                        "someone to help you."
+                                    )
+                                    await self.tts_text_queue.put(
+                                        _transfer_msg
+                                    )
+                                    self.session["call_outcome"] = (
+                                        "transfer"
+                                    )
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] location"
+                                        " unresolvable — transferring"
+                                    )
                             else:
                                 # ── Code-gate alias matching ───────────────
-                                # If found: play only the ack phrase and set
-                                # flags. If not found: queue a biased confirm.
+                                # Fast path: known alias in utterance.
+                                # If not found: Haiku resolver.
                                 _confirmed_loc = _v3_extract_location(
                                     utterance
                                 )
@@ -3036,33 +3062,153 @@ class WebSocketCallHandler:
                                         _confirmed_loc,
                                     )
                                 else:
-                                    # ── Biased confirm — Alcester assumption ──
-                                    # Code gate couldn't resolve. Queue a
-                                    # biased confirm question — most traffic
-                                    # is Alcester. Next turn handled by the
-                                    # v3_awaiting_alcester_confirm branch.
-                                    # No run_turn, no LLM latency.
-                                    _confirm_q = "Did you say Alcester?"
-                                    await self.tts_text_queue.put(
-                                        _confirm_q
-                                    )
-                                    self.session[
-                                        "last_bot_prompt"
-                                    ] = _confirm_q
-                                    self.session[
-                                        "last_question"
-                                    ] = _confirm_q
-                                    self.session[
-                                        "v3_awaiting_alcester_confirm"
-                                    ] = True
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] location unclear — "
-                                        "biased confirm queued: %r",
-                                        utterance[:60],
-                                    )
+                                    # ── Haiku location resolver ───────────
+                                    # Dedicated small-model call — faster and
+                                    # more accurate than string matching or
+                                    # full LLM inference for this task.
+                                    # Uses the same client pattern as line 156.
+                                    try:
+                                        import os as _os
+                                        _h_key = _os.environ.get(
+                                            "ANTHROPIC_API_KEY",
+                                            ANTHROPIC_API_KEY,
+                                        )
+                                        _haiku_client = (
+                                            anthropic.AsyncAnthropic(
+                                                api_key=_h_key,
+                                                timeout=8.0,
+                                            )
+                                        )
+                                        _loc_resp = await (
+                                            _haiku_client.messages.create(
+                                                model=HAIKU,
+                                                max_tokens=20,
+                                                system=(
+                                                    "Extract clinic location"
+                                                    " from caller speech. "
+                                                    "Theorem Health has"
+                                                    " exactly two clinics:"
+                                                    " Alcester and Redditch."
+                                                    " Reply with JSON only"
+                                                    " — one of these three:"
+                                                    ' {"location":'
+                                                    ' "alcester"}'
+                                                    ' {"location":'
+                                                    ' "redditch"}'
+                                                    ' {"location":'
+                                                    ' "unknown"}'
+                                                    " Be generous: ancestor,"
+                                                    " sports centre, leisure"
+                                                    " centre, near me ="
+                                                    " alcester. Only return"
+                                                    " unknown if genuinely"
+                                                    " ambiguous."
+                                                ),
+                                                messages=[{
+                                                    "role": "user",
+                                                    "content": utterance,
+                                                }],
+                                            )
+                                        )
+                                        _loc_raw = (
+                                            _loc_resp.content[0].text
+                                            .strip().lower()
+                                        )
+                                        if (
+                                            "alcester" in _loc_raw
+                                            and "redditch" not in _loc_raw
+                                        ):
+                                            _resolved = "alcester"
+                                        elif (
+                                            "redditch" in _loc_raw
+                                            and "alcester" not in _loc_raw
+                                        ):
+                                            _resolved = "redditch"
+                                        else:
+                                            _resolved = "unknown"
+                                    except Exception as _loc_err:
+                                        logger.warning(
+                                            "[ms_conn v3] Haiku location"
+                                            " resolver failed: %s"
+                                            " — defaulting to unknown",
+                                            _loc_err,
+                                        )
+                                        _resolved = "unknown"
+
+                                    if _resolved != "unknown":
+                                        _disp = _resolved.capitalize()
+                                        _ack = f"{_disp}, perfect."
+                                        _next_q = (
+                                            f"Have you been with us at "
+                                            f"{_disp} before?"
+                                        )
+                                        self.session[
+                                            "selected_location"
+                                        ] = _resolved
+                                        self.session[
+                                            "v3_location_confirmed"
+                                        ] = True
+                                        self.session[
+                                            "v3_location_asked"
+                                        ] = False
+                                        self.session[
+                                            "v3_booking_intent"
+                                        ] = False
+                                        await self.tts_text_queue.put(_ack)
+                                        await self.tts_text_queue.put(
+                                            _next_q
+                                        )
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _next_q
+                                        self.session[
+                                            "last_question"
+                                        ] = _next_q
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _next_q,
+                                        })
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] Haiku resolved"
+                                            " location: %s from %r",
+                                            _resolved,
+                                            utterance[:60],
+                                        )
+                                    else:
+                                        # Haiku returned unknown — use-this-
+                                        # clinic biased confirm as last resort
+                                        _confirm_q = (
+                                            "Sorry, I didn't quite catch"
+                                            " that — did you say the"
+                                            " Alcester clinic? If so,"
+                                            " just say 'use this clinic'."
+                                        )
+                                        self.session[
+                                            "v3_awaiting_use_this_clinic"
+                                        ] = True
+                                        await self.tts_text_queue.put(
+                                            _confirm_q
+                                        )
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _confirm_q
+                                        self.session[
+                                            "last_question"
+                                        ] = _confirm_q
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] Haiku unknown —"
+                                            " use-this-clinic confirm"
+                                            " queued: %r",
+                                            utterance[:60],
+                                        )
 
                         else:
                             # ── Normal path: run free-form LLM turn ─────────
