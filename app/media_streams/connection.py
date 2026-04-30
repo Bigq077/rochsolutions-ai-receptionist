@@ -2845,16 +2845,30 @@ class WebSocketCallHandler:
 
                         # ── Short-fragment guard ─────────────────────
                         # Split transcripts ("ic", "then", "think") of
-                        # 3 chars or fewer are STT noise from the tail
+                        # 2 chars or fewer are STT noise from the tail
                         # of a previous utterance. Drop them silently
                         # during active location/booking flows to prevent
                         # spurious LLM turns and double questions.
+                        # Threshold is <=2 (not <=3) so that 3-char words
+                        # like "yes", "no", "ok" pass naturally.
                         _in_active_flow = (
                             self.session.get("v3_booking_intent", False)
                             or self.session.get("v3_location_asked", False)
                             or self.session.get("v3_location_confirmed", False)
                         )
-                        if _in_active_flow and len(utterance.strip()) <= 3:
+                        # Words that must never be dropped — they are
+                        # meaningful single-word responses regardless
+                        # of length.
+                        _ALWAYS_PASS = {
+                            "yes", "no", "ok", "yep", "nope", "yeah",
+                            "yup", "nah",
+                        }
+                        _stripped = utterance.strip().lower()
+                        if (
+                            _in_active_flow
+                            and len(_stripped) <= 2
+                            and _stripped not in _ALWAYS_PASS
+                        ):
                             logger.info(
                                 "[ms_conn v3] short-fragment dropped "
                                 "(%r, %d chars) — active flow",
