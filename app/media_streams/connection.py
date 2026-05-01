@@ -2430,6 +2430,21 @@ class WebSocketCallHandler:
                 await self.transcript_queue.put("redditch")
             return
 
+        # theorem_v3 booking path: the LLM can ask the caller to "type on your
+        # keypad" from run_turn() without any structured handler having set
+        # v3_phone_dtmf_active.  Auto-activate on the first digit when
+        # last_bot_prompt contains "keypad" so digits are not silently dropped.
+        if (
+            self.session.get("clinic_id") == "theorem_v3"
+            and not self.session.get("v3_phone_dtmf_active")
+            and "keypad" in self.session.get("last_bot_prompt", "").lower()
+        ):
+            logger.info(
+                "[ms_conn] theorem_v3: auto-activating v3_phone_dtmf_active "
+                "(last_bot_prompt contains 'keypad')"
+            )
+            self.session["v3_phone_dtmf_active"] = True
+
         # Only accumulate DTMF while in phone-collection state, keypad lookup
         # recovery, or theorem_v3 DTMF phone collection.
         if (
