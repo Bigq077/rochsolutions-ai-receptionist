@@ -306,30 +306,43 @@ _DTMF_EXPECTED_FLAGS = (
     "v3_slot_dtmf_active",   # theorem_v3: numbered slot / time selection
 )
 
-# Regex for parsing numbered slot options from LLM responses.
-# Matches fragments like "1 — Monday the 5th" or "2 — nine in the morning".
-_V3_SLOT_OPTION_RE = re.compile(r"^([1-9])\s*[—–\-]\s*(.+)$")
+# Regex to locate each "N — " anchor in an LLM slot-presentation response.
+# Handles em-dash (—), en-dash (–), and plain hyphen (-).
+_V3_SLOT_ANCHOR_RE = re.compile(r"(?<!\d)([1-9])\s*[—–\-]\s*")
 
 
 def _parse_v3_slot_options(text: str) -> dict:
     """
     Extract a {digit: label} map from an LLM slot-presentation response.
 
-    Expects the LLM to use the format:
-        "1 — Monday the 5th, 2 — Wednesday the 7th, 3 — Friday the 9th"
-    or for times:
-        "1 — nine in the morning, 2 — two in the afternoon, 3 — half past three"
+    Scans for "N — " anchors in the full response text, then for each
+    anchor takes the text up to the next anchor (or end of string) and
+    trims at the first comma to isolate just the day/time label.
 
-    Splits on ", " / ". " boundaries then looks for the N — prefix.
+    Example inputs handled correctly:
+      "1 — Thursday the 7th of May, I've got nine ... 2 — Monday ..."
+      "1 — nine in the morning, 2 — two in the afternoon, 3 — half past three"
+
     Returns the map only when 2+ entries are found (single match is
-    ambiguous and should not arm DTMF).
+    ambiguous and must not arm DTMF).
     """
+    anchors = [
+        (m.start(), m.end(), m.group(1))
+        for m in _V3_SLOT_ANCHOR_RE.finditer(text)
+    ]
+    if len(anchors) < 2:
+        return {}
+
     result: dict = {}
-    for fragment in re.split(r"[,\.]\s+", text):
-        m = _V3_SLOT_OPTION_RE.match(fragment.strip())
-        if m:
-            label = m.group(2).strip().rstrip(".,;")
-            result[m.group(1)] = label
+    for i, (start, label_start, digit) in enumerate(anchors):
+        # Text between this anchor's label start and the next anchor start
+        next_start = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
+        label_full = text[label_start:next_start]
+        # Trim at first comma — keeps just the day/time name, drops the times detail
+        label = label_full.split(",")[0].strip().rstrip(".,;")
+        if label:
+            result[digit] = label
+
     return result if len(result) >= 2 else {}
 
 
@@ -3236,8 +3249,8 @@ class WebSocketCallHandler:
                                         )
                                     else:
                                         _next_q = (
-                                            f"Have you been with us at "
-                                            f"{_disp} before?"
+                                            "Is there a particular day or "
+                                            "time that works best for you?"
                                         )
                                     self.session[
                                         "selected_location"
@@ -3361,8 +3374,8 @@ class WebSocketCallHandler:
                                             ] = True
                                         else:
                                             _new_ret_q = (
-                                                f"Have you been with us at "
-                                                f"{_loc_display} before?"
+                                                "Is there a particular day or "
+                                                "time that works best for you?"
                                             )
                                         await self.tts_text_queue.put(
                                             _new_ret_q
@@ -3478,8 +3491,8 @@ class WebSocketCallHandler:
                                             )
                                         else:
                                             _next_q = (
-                                                f"Have you been with us at "
-                                                f"{_disp} before?"
+                                                "Is there a particular day or "
+                                                "time that works best for you?"
                                             )
                                         self.session[
                                             "selected_location"
@@ -3797,8 +3810,8 @@ class WebSocketCallHandler:
                                         ] = True
                                     else:
                                         _next_q = (
-                                            f"Have you been with us at "
-                                            f"{_loc_display} before?"
+                                            "Is there a particular day or "
+                                            "time that works best for you?"
                                         )
                                     await self.tts_text_queue.put(_next_q)
                                     self.session["last_bot_prompt"] = _next_q
