@@ -137,6 +137,13 @@ class TTSStream:
         if not text or not text.strip():
             return
 
+        # Phonetic correction: "Alcester" is pronounced "Awlster" (/ˈɔːlstər/).
+        # Replace before any TTS engine sees the text so both ElevenLabs and
+        # the OpenAI fallback produce the correct sound.  Case-preserving replace
+        # is unnecessary here — TTS ignores capitalisation of phonetic spellings.
+        import re as _re
+        text = _re.sub(r"\bAlcester\b", "Awlster", text, flags=_re.IGNORECASE)
+
         # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
         # the OpenAI TTS fallback instead of ElevenLabs (cheaper for testing).
         import os

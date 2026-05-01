@@ -3464,11 +3464,12 @@ class WebSocketCallHandler:
                                                     ' {"location":'
                                                     ' "unknown"}'
                                                     " Be generous: ancestor,"
-                                                    " sports centre, leisure"
-                                                    " centre, near me ="
-                                                    " alcester. Only return"
-                                                    " unknown if genuinely"
-                                                    " ambiguous."
+                                                    " awlster, olster,"
+                                                    " allster, sports centre,"
+                                                    " leisure centre, near"
+                                                    " me = alcester. Only"
+                                                    " return unknown if"
+                                                    " genuinely ambiguous."
                                                 ),
                                                 messages=[{
                                                     "role": "user",
@@ -3697,6 +3698,10 @@ class WebSocketCallHandler:
                                     for alias in (
                                         "alcester", "alcestre", "alcestic",
                                         "alcest", "ancestor",
+                                        # Phonetic variants callers say after
+                                        # hearing the corrected TTS "Awlster"
+                                        "awlster", "olster", "allster",
+                                        "awlsta", "olsta",
                                     )
                                 )
                                 _has_redditch = any(
