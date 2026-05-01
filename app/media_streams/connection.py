@@ -40,6 +40,7 @@ import base64
 import json
 import logging
 import random
+import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -302,7 +303,34 @@ _DTMF_EXPECTED_FLAGS = (
     "location_awaiting_dtmf",
     "_faq_loc_awaiting_dtmf",
     "rc_kp_phone_pending",
+    "v3_slot_dtmf_active",   # theorem_v3: numbered slot / time selection
 )
+
+# Regex for parsing numbered slot options from LLM responses.
+# Matches fragments like "1 — Monday the 5th" or "2 — nine in the morning".
+_V3_SLOT_OPTION_RE = re.compile(r"^([1-9])\s*[—–\-]\s*(.+)$")
+
+
+def _parse_v3_slot_options(text: str) -> dict:
+    """
+    Extract a {digit: label} map from an LLM slot-presentation response.
+
+    Expects the LLM to use the format:
+        "1 — Monday the 5th, 2 — Wednesday the 7th, 3 — Friday the 9th"
+    or for times:
+        "1 — nine in the morning, 2 — two in the afternoon, 3 — half past three"
+
+    Splits on ", " / ". " boundaries then looks for the N — prefix.
+    Returns the map only when 2+ entries are found (single match is
+    ambiguous and should not arm DTMF).
+    """
+    result: dict = {}
+    for fragment in re.split(r"[,\.]\s+", text):
+        m = _V3_SLOT_OPTION_RE.match(fragment.strip())
+        if m:
+            label = m.group(2).strip().rstrip(".,;")
+            result[m.group(1)] = label
+    return result if len(result) >= 2 else {}
 
 
 def _is_dtmf_expected(session: Optional[Dict[str, Any]]) -> bool:
@@ -2434,6 +2462,29 @@ class WebSocketCallHandler:
                 await self._on_transfer_request()
             return
 
+        # theorem_v3 slot / time selection via keypad.
+        # Active after the LLM presents numbered options ("1 — X, 2 — Y...").
+        # Digit maps to the stored label and is injected as a synthetic
+        # transcript so the LLM processes it identically to a spoken choice.
+        if self.session.get("v3_slot_dtmf_active") and digit in "123456789":
+            _slot_map = self.session.get("v3_dtmf_slot_map", {})
+            _label    = _slot_map.get(digit)
+            # Disarm regardless — one press = one selection
+            self.session.pop("v3_slot_dtmf_active", None)
+            self.session.pop("v3_dtmf_slot_map",    None)
+            if _label:
+                logger.info(
+                    "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r",
+                    digit, _label,
+                )
+                await self.transcript_queue.put(_label)
+            else:
+                logger.info(
+                    "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
+                    digit,
+                )
+            return
+
         # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
         if self.session.get("state") == "ASK_LOCATION":
             if digit == "1":
@@ -3521,6 +3572,26 @@ class WebSocketCallHandler:
 
                             # Persist session
                             await save_session(self.call_sid, self.session)
+
+                            # theorem_v3 slot DTMF: detect numbered options in
+                            # the LLM reply and arm/disarm the selection flag.
+                            # The flag stays armed until the caller picks a slot
+                            # (via DTMF or speech); the next LLM response that
+                            # contains no numbered options clears it.
+                            _v3_slot_map = _parse_v3_slot_options(
+                                self.session.get("last_bot_prompt", "")
+                            )
+                            if _v3_slot_map:
+                                self.session["v3_dtmf_slot_map"]   = _v3_slot_map
+                                self.session["v3_slot_dtmf_active"] = True
+                                logger.info(
+                                    "[ms_conn v3] slot DTMF armed: %r",
+                                    _v3_slot_map,
+                                )
+                            else:
+                                # No numbered options — disarm to avoid stale state
+                                self.session.pop("v3_slot_dtmf_active", None)
+                                self.session.pop("v3_dtmf_slot_map",   None)
 
                             # Infer location from FAQ answer if not yet confirmed
                             # If the LLM just answered a location-specific question
