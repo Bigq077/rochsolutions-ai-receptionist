@@ -2963,6 +2963,14 @@ class WebSocketCallHandler:
                                 ("number", "one", "please"),
                                 ("option", "one", "please"),
                                 ("first", "option", "please"),
+                                # Phonetic variants after TTS says "Awlster"
+                                ("awlster",),
+                                ("olster",),
+                                ("allster",),
+                                ("awlsta",),
+                                ("olsta",),
+                                ("awlster", "please"),
+                                ("olster", "please"),
                             }
                             _redditch_variants = {
                                 ("two",),
