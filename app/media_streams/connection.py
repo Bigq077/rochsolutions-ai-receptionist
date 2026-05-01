@@ -2420,6 +2420,20 @@ class WebSocketCallHandler:
                 logger.info("[ms_conn] DTMF digit received — cancelling speech watchdog")
                 self._silence_handler._cancel_timer()
 
+        # theorem_v3 intro: digit 1 → transfer to Mark; any other digit is
+        # swallowed (caller mis-pressed).  Clears the flag regardless so it
+        # never leaks into subsequent turns.
+        if self.session.get("v3_intro_dtmf_active"):
+            self.session["v3_intro_dtmf_active"] = False
+            if digit == "1":
+                logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
+                await self.tts_text_queue.put(
+                    "Of course — transferring you to Mark now, one moment."
+                )
+                self.session["transfer_requested_by_caller"] = True
+                await self._on_transfer_request()
+            return
+
         # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
         if self.session.get("state") == "ASK_LOCATION":
             if digit == "1":
@@ -4904,39 +4918,29 @@ class WebSocketCallHandler:
             return
 
         # ────────────────────────────────────────────────────────────────────
-        # theorem_v3 — LLM-generated greeting via run_turn() (Prompt 5)
-        # The system prompt's Block 7 instructs the LLM to produce an opening
-        # greeting on the first turn.  run_turn() handles TTS streaming and
-        # appends both user_text + assistant response to conversation_history
-        # internally — do NOT pre-append history here.
+        # theorem_v3 — hardcoded greeting with intro DTMF (digit 1 → Mark)
         # ────────────────────────────────────────────────────────────────────
         if self.session.get("clinic_id") == "theorem_v3":
-            from .llm_stream import LLMStream
-            llm = LLMStream()
-            try:
-                await llm.run_turn(
-                    user_text="[call connected — patient is on the line]",
-                    session=self.session,
-                    call_sid=self.call_sid,
-                    stream_sid=self.stream_sid,
-                    tts_text_queue=self.tts_text_queue,
-                    audio_out_queue=self.audio_out_queue,
-                    websocket=self.websocket,
-                    on_transfer=self._on_transfer_request,
-                )
-            except Exception as exc:
-                logger.error(
-                    "[ms_conn v3] LLM greeting failed: %r — falling back",
-                    exc,
-                )
-                # Last-resort fallback so the caller never hears silence.
-                await self.tts_text_queue.put(
-                    "Hello, this is Susie. How can I help you today?"
-                )
+            _v3_greeting = (
+                "Hi there, I'm Susie, Theorem Health's AI receptionist. "
+                "If you're an existing patient and want to speak to Mark "
+                "directly, press 1 on your keypad — otherwise, how can "
+                "I help you?"
+            )
+            logger.info("[ms_conn v3] greeting: %r", _v3_greeting[:80])
 
+            history = self.session.setdefault("conversation_history", [])
+            history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
+            history.append({"role": "assistant",  "content": _v3_greeting})
+            self.session["last_bot_prompt"]  = _v3_greeting
+            self.session["last_question"]    = ""
             self.session["greeting_delivered"] = True
-            self.session["turn_count"] = 1  # Prevents re-trigger of greeting
+            self.session["turn_count"]       = 1
+            # Arm intro DTMF: digit 1 → transfer to Mark
+            self.session["v3_intro_dtmf_active"] = True
+
             await save_session(self.call_sid, self.session)
+            await self.tts_text_queue.put(_v3_greeting)
             return
 
         # ────────────────────────────────────────────────────────────────────
