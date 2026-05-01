@@ -2475,13 +2475,28 @@ class WebSocketCallHandler:
                 await self._on_transfer_request()
             return
 
-        # theorem_v3 slot / time selection via keypad.
-        # Active after the LLM presents numbered options ("1 — X, 2 — Y...").
-        # Digit maps to the stored label and is injected as a synthetic
-        # transcript so the LLM processes it identically to a spoken choice.
+        # theorem_v3 slot / time selection — fallback DTMF only.
+        # DTMF is armed here (not at slot-presentation time) when:
+        #   1. A slot map exists from a previous presentation turn, AND
+        #   2. The LLM just re-asked with a "keypad" suggestion (indicating
+        #      it could not understand the caller's spoken slot choice).
+        # On the first digit after arming, inject the mapped label as a
+        # synthetic transcript so the LLM processes it as a spoken choice.
+        _slot_map = self.session.get("v3_dtmf_slot_map", {})
+        if (
+            _slot_map
+            and not self.session.get("v3_slot_dtmf_active")
+            and "keypad" in self.session.get("last_bot_prompt", "").lower()
+        ):
+            logger.info(
+                "[ms_conn] theorem_v3: slot DTMF fallback armed "
+                "(last_bot_prompt contains 'keypad', map=%r)",
+                _slot_map,
+            )
+            self.session["v3_slot_dtmf_active"] = True
+
         if self.session.get("v3_slot_dtmf_active") and digit in "123456789":
-            _slot_map = self.session.get("v3_dtmf_slot_map", {})
-            _label    = _slot_map.get(digit)
+            _label = _slot_map.get(digit)
             # Disarm regardless — one press = one selection
             self.session.pop("v3_slot_dtmf_active", None)
             self.session.pop("v3_dtmf_slot_map",    None)
@@ -2510,11 +2525,12 @@ class WebSocketCallHandler:
 
         # theorem_v3 booking path: the LLM can ask the caller to "type on your
         # keypad" from run_turn() without any structured handler having set
-        # v3_phone_dtmf_active.  Auto-activate on the first digit when
-        # last_bot_prompt contains "keypad" so digits are not silently dropped.
+        # v3_phone_dtmf_active.  Only fires when no slot map exists (slot map
+        # takes priority for keypad detection above).
         if (
             self.session.get("clinic_id") == "theorem_v3"
             and not self.session.get("v3_phone_dtmf_active")
+            and not self.session.get("v3_dtmf_slot_map")
             and "keypad" in self.session.get("last_bot_prompt", "").lower()
         ):
             logger.info(
@@ -3586,25 +3602,26 @@ class WebSocketCallHandler:
                             # Persist session
                             await save_session(self.call_sid, self.session)
 
-                            # theorem_v3 slot DTMF: detect numbered options in
-                            # the LLM reply and arm/disarm the selection flag.
-                            # The flag stays armed until the caller picks a slot
-                            # (via DTMF or speech); the next LLM response that
-                            # contains no numbered options clears it.
+                            # theorem_v3 slot DTMF: parse numbered options from
+                            # the LLM reply and store the map for later use.
+                            # DTMF is NOT armed here — it fires as a fallback
+                            # only when the LLM re-asks and mentions "keypad"
+                            # (detected in _handle_dtmf). Clear stale map when
+                            # no numbered options are present.
                             _v3_slot_map = _parse_v3_slot_options(
                                 self.session.get("last_bot_prompt", "")
                             )
                             if _v3_slot_map:
-                                self.session["v3_dtmf_slot_map"]   = _v3_slot_map
-                                self.session["v3_slot_dtmf_active"] = True
+                                self.session["v3_dtmf_slot_map"] = _v3_slot_map
                                 logger.info(
-                                    "[ms_conn v3] slot DTMF armed: %r",
+                                    "[ms_conn v3] slot map stored (DTMF standby): %r",
                                     _v3_slot_map,
                                 )
                             else:
-                                # No numbered options — disarm to avoid stale state
+                                # No numbered options — clear stale map so phone
+                                # DTMF auto-activate is not blocked
+                                self.session.pop("v3_dtmf_slot_map",    None)
                                 self.session.pop("v3_slot_dtmf_active", None)
-                                self.session.pop("v3_dtmf_slot_map",   None)
 
                             # Infer location from FAQ answer if not yet confirmed
                             # If the LLM just answered a location-specific question
