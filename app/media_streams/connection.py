@@ -306,28 +306,36 @@ _DTMF_EXPECTED_FLAGS = (
     "v3_slot_dtmf_active",   # theorem_v3: numbered slot / time selection
 )
 
-# Regex to locate each "N — " anchor in an LLM slot-presentation response.
-# Handles em-dash (—), en-dash (–), and plain hyphen (-).
-_V3_SLOT_ANCHOR_RE = re.compile(r"(?<!\d)([1-9])\s*[—–\-]\s*")
+# Regex to locate each slot anchor in an LLM slot-presentation response.
+# Matches both "Number N" (new preferred format) and legacy "N —" dash form.
+# Two capture groups: group(1) for "Number N", group(2) for "N —".
+_V3_SLOT_ANCHOR_RE = re.compile(
+    r"Number\s+([1-9])\b|(?<!\d)([1-9])\s*[—–\-]\s*",
+    re.IGNORECASE,
+)
 
 
 def _parse_v3_slot_options(text: str) -> dict:
     """
     Extract a {digit: label} map from an LLM slot-presentation response.
 
-    Scans for "N — " anchors in the full response text, then for each
-    anchor takes the text up to the next anchor (or end of string) and
-    trims at the first comma to isolate just the day/time label.
+    Supports both the preferred "Number N, label" format and the legacy
+    "N — label" dash format.
+
+    For each anchor the label is the text between the anchor end and the
+    next anchor start, stripped of leading punctuation and trimmed at the
+    first em-dash or full-stop (isolating just the day or time name).
 
     Example inputs handled correctly:
+      "Number 1, Thursday the 7th — nine or two. Number 2, Monday..."
+      "Number 1, nine in the morning. Number 2, two in the afternoon."
       "1 — Thursday the 7th of May, I've got nine ... 2 — Monday ..."
-      "1 — nine in the morning, 2 — two in the afternoon, 3 — half past three"
 
     Returns the map only when 2+ entries are found (single match is
     ambiguous and must not arm DTMF).
     """
     anchors = [
-        (m.start(), m.end(), m.group(1))
+        (m.start(), m.end(), m.group(1) or m.group(2))
         for m in _V3_SLOT_ANCHOR_RE.finditer(text)
     ]
     if len(anchors) < 2:
@@ -338,8 +346,10 @@ def _parse_v3_slot_options(text: str) -> dict:
         # Text between this anchor's label start and the next anchor start
         next_start = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
         label_full = text[label_start:next_start]
-        # Trim at first comma — keeps just the day/time name, drops the times detail
-        label = label_full.split(",")[0].strip().rstrip(".,;")
+        # Strip leading comma/space (e.g. ", Thursday..." after "Number 1")
+        label_full = label_full.lstrip(", ")
+        # Trim at the first em-dash (separates day from times) or full-stop
+        label = re.split(r"[—–\.]", label_full)[0].strip().rstrip(".,;- ")
         if label:
             result[digit] = label
 
