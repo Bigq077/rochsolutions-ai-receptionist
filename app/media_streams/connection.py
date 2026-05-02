@@ -1806,6 +1806,15 @@ class SilenceHandler:
 
             logger.info("[ms_watchdog] WATCHDOG_FIRE prompt=%r attempt=#%d", phrase[:80], _attempt)
             self.currently_reasking = True
+            # ── Clear tts_inhibit before watchdog re-ask ──────────────────────
+            # A barge-in sets tts_inhibit=True.  If the LLM turn never started
+            # (transcript was dropped while _llm_busy=True), the flag is never
+            # cleared by the normal "new turn begins" path, so the re-ask is
+            # silently discarded by the _tts_loop inhibit check (line ~4713).
+            # Clearing it here ensures the watchdog phrase always plays.
+            if _sess:
+                _sess["tts_inhibit"] = False
+                logger.info("[ms_watchdog] cleared tts_inhibit before re-ask")
             # Tag with watchdog-reask marker so _tts_loop bypasses dedup for this
             # one chunk (a deliberate silence recovery is not an accidental dup).
             await self._tts_text_queue.put(_WATCHDOG_REASK_MARKER + phrase)
@@ -2365,6 +2374,9 @@ class WebSocketCallHandler:
         self._tts_task:  Optional[asyncio.Task] = None  # current TTS chunk task
         self._clearing   = False   # True while Twilio buffer is draining after barge-in
         self._llm_busy   = False   # True while Claude is generating
+        # Barge-in transcript received while _llm_busy=True.  Stored here instead
+        # of being dropped so it can be re-queued once the current turn finishes.
+        self._pending_barge_in_utt: Optional[str] = None
 
         # Barge-in timing/state — used for false-trigger gate and ack injection
         self._current_tts_text:    str   = ""    # text being synthesised right now
@@ -3029,10 +3041,14 @@ class WebSocketCallHandler:
                     if not utterance or not utterance.strip():
                         continue
 
-                    # Drop overlapping utterances while a turn is generating
+                    # Queue overlapping utterances while a turn is generating.
+                    # Previously these were dropped; storing them instead means
+                    # the caller's answer survives a barge-in that lands mid-LLM.
+                    # Only one utterance is held (newer overwrites older).
                     if self._llm_busy:
+                        self._pending_barge_in_utt = utterance
                         logger.info(
-                            "[ms_conn v3] busy — dropping utterance: %r",
+                            "[ms_conn v3] barge-in queued (llm busy): %r",
                             utterance[:80],
                         )
                         continue
@@ -4128,6 +4144,18 @@ class WebSocketCallHandler:
                         self._silence_handler.on_llm_finished()
                         self.session["llm_generation_active"] = False
                         await save_session(self.call_sid, self.session)
+                        # ── Re-queue any barge-in transcript that arrived while busy ──
+                        # Putting it back on transcript_queue lets the next loop
+                        # iteration pick it up cleanly (with _llm_busy=False) and
+                        # process it through the normal barge-in resolution path.
+                        if self._pending_barge_in_utt:
+                            _queued_utt = self._pending_barge_in_utt
+                            self._pending_barge_in_utt = None
+                            logger.info(
+                                "[ms_conn v3] re-queuing barge-in transcript: %r",
+                                _queued_utt[:60],
+                            )
+                            await self.transcript_queue.put(_queued_utt)
 
             except asyncio.CancelledError:
                 pass
