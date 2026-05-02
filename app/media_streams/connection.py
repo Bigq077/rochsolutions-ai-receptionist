@@ -1357,6 +1357,16 @@ class SilenceHandler:
         if (_sess_faq_w or {}).get("v3_location_q_active"):
             _wait = max(_wait, 8.0)
             logger.info("[ms_watchdog] location_q_grace=%.1fs (v3_location_q_active)", _wait)
+        # theorem_v3 slot selection: the LLM just read out 2-3 dated options
+        # (up to 12 s of audio).  The caller must process the options, mentally
+        # compare them, and choose — cognitively heavier than the binary
+        # location question.  10 s post-TTS is the minimum comfortable window.
+        if (_sess_faq_w or {}).get("v3_awaiting_slot_selection"):
+            _wait = max(_wait, 10.0)
+            logger.info(
+                "[ms_watchdog] slot_selection_grace=%.1fs (v3_awaiting_slot_selection)",
+                _wait,
+            )
         # Caller-choice states: the AI has just asked a question that requires
         # the caller to parse spoken content and make a decision between multiple
         # options (pick a clinic, pick a day, pick a slot, confirm which
@@ -2654,8 +2664,9 @@ class WebSocketCallHandler:
         if self.session.get("v3_slot_dtmf_active") and digit in "123456789":
             _label = _slot_map.get(digit)
             # Disarm regardless — one press = one selection
-            self.session.pop("v3_slot_dtmf_active", None)
-            self.session.pop("v3_dtmf_slot_map",    None)
+            self.session.pop("v3_slot_dtmf_active",        None)
+            self.session.pop("v3_dtmf_slot_map",           None)
+            self.session.pop("v3_awaiting_slot_selection", None)
             if _label:
                 logger.info(
                     "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r",
@@ -3065,6 +3076,8 @@ class WebSocketCallHandler:
                     self._last_audio_at = time.monotonic()
                     self.session["llm_generation_active"] = True
                     self.session["tts_inhibit"] = False
+                    # Caller is responding — slot selection window has closed.
+                    self.session.pop("v3_awaiting_slot_selection", None)
                     await save_session(self.call_sid, self.session)
 
                     logger.info(
@@ -3831,6 +3844,11 @@ class WebSocketCallHandler:
                             )
                             if _v3_slot_map:
                                 self.session["v3_dtmf_slot_map"] = _v3_slot_map
+                                # Flag that we are now waiting for a slot selection.
+                                # Watchdog uses this to grant 10 s instead of 6 s —
+                                # the caller must process up to 12 s of audio and
+                                # then choose between 2-3 dated options.
+                                self.session["v3_awaiting_slot_selection"] = True
                                 logger.info(
                                     "[ms_conn v3] slot map stored (DTMF standby): %r",
                                     _v3_slot_map,
@@ -3838,8 +3856,9 @@ class WebSocketCallHandler:
                             else:
                                 # No numbered options — clear stale map so phone
                                 # DTMF auto-activate is not blocked
-                                self.session.pop("v3_dtmf_slot_map",    None)
-                                self.session.pop("v3_slot_dtmf_active", None)
+                                self.session.pop("v3_dtmf_slot_map",            None)
+                                self.session.pop("v3_slot_dtmf_active",         None)
+                                self.session.pop("v3_awaiting_slot_selection",  None)
 
                             # Infer location from FAQ answer if not yet confirmed
                             # If the LLM just answered a location-specific question
