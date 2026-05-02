@@ -356,6 +356,134 @@ def _parse_v3_slot_options(text: str) -> dict:
     return result if len(result) >= 2 else {}
 
 
+# ---------------------------------------------------------------------------
+# theorem_v3 location alias matching
+# ---------------------------------------------------------------------------
+
+def _normalise_location_text(text: str) -> str:
+    """
+    Normalise STT output before location alias matching.
+    Lowercases, strips punctuation, collapses spaces.
+    "al-chester", "al chester", "alchester" → "al chester" / "alchester"
+    all resolve to the same form so a single alias covers them.
+    """
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s]", "", text)   # remove punctuation except spaces
+    text = re.sub(r"\s+", " ", text)       # collapse multiple spaces
+    return text.strip()
+
+
+# Alcester alias set — 60+ entries covering phonetic variants, STT artefacts,
+# vowel-shift forms, suffix variants, and confirmed call-log transcripts.
+# Applied via substring scan on the normalised utterance (not exact-match),
+# so "I'd like awlster please" hits "awlster" without a separate entry.
+_ALCESTER_ALIASES: frozenset[str] = frozenset({
+    # ── Exact and near-exact ────────────────────────────────────────────────
+    "alcester",
+    "alcester clinic",
+    "the alcester",
+    "the alcester clinic",
+    "our alcester",
+    "your alcester",
+
+    # ── ch-insertion variants ────────────────────────────────────────────────
+    "alchester",
+    "al chester",
+    "all chester",
+    "the alchester",
+    "our alchester",
+    "alchester clinic",
+    "awlchester",
+    "olchester",
+    "allchester",
+    "orlchester",
+
+    # ── Ulster family (/ɔː/ → /ʌ/) ─────────────────────────────────────────
+    "ulster",
+    "ulster clinic",
+    "the ulster",
+    "our ulster",
+
+    # ── Vowel-shift variants ────────────────────────────────────────────────
+    "olster",
+    "orlster",
+    "oldster",
+    "holster",
+    "awlster",
+    "awster",
+    "allster",
+    "alster",
+    "orster",
+    "orchester",
+
+    # ── Suffix variants ─────────────────────────────────────────────────────
+    "alcestar",
+    "alcesta",
+    "alcestre",
+    "alcestir",
+    "alsester",
+    "alseter",
+    "alceser",
+    "alcestere",
+
+    # ── Confirmed call-log transcripts ──────────────────────────────────────
+    "alcestra",
+    "ausesta",
+    "your alcestra",
+    "our alcestra",
+    "the clinic",
+
+    # ── Non-native / mispronounced variants ─────────────────────────────────
+    "al ses ter",
+    "al sis ter",
+    "alcister",
+    "alkester",
+    "oalster",
+    "aolster",
+    "aulster",
+    "oister",
+    "alces",
+
+    # ── Two-word splits ──────────────────────────────────────────────────────
+    "al ster",
+    "ol ster",
+    "all ster",
+    "aul ster",
+    "aul chester",
+
+    # ── Clipped / schwa-final forms ──────────────────────────────────────────
+    "awlsta",
+    "olsta",
+    "orlsta",
+
+    # ── Possessive / with article ────────────────────────────────────────────
+    "alcester s",
+    "the alcester s",
+})
+
+# Redditch alias set — covers common STT mishearings.
+_REDDITCH_ALIASES: frozenset[str] = frozenset({
+    "redditch",
+    "redditch clinic",
+    "the redditch",
+    "the redditch clinic",
+    "our redditch",
+    "your redditch",
+    "reditch",
+    "reddich",
+    "redich",
+    "reddidge",
+    "reddige",
+    "reddish",
+    "red ditch",
+    "red itch",
+    "readitch",
+    "ridditch",
+    "reddich clinic",
+})
+
+
+
 def _is_dtmf_expected(session: Optional[Dict[str, Any]]) -> bool:
     if not session:
         return False
@@ -2932,24 +3060,30 @@ class WebSocketCallHandler:
                         # ── Helper: extract location from caller utterance ──
                         def _v3_extract_location(utt: str) -> str:
                             """Return 'alcester', 'redditch', or ''."""
-                            u = utt.lower()
-                            if "alcester" in u:
+                            # Normalise: lowercase, strip punctuation, collapse spaces.
+                            # This means "al-chester", "al chester", "alchester"
+                            # all resolve identically before alias matching.
+                            _n = _normalise_location_text(utt)
+
+                            # ── Alias substring scan ─────────────────────────
+                            # Module-level _ALCESTER_ALIASES / _REDDITCH_ALIASES
+                            # cover 60+ phonetic variants, STT artefacts, and
+                            # confirmed call-log transcripts.  Substring (not
+                            # exact) so "I'd like awlster please" hits "awlster"
+                            # without a dedicated entry.
+                            if any(a in _n for a in _ALCESTER_ALIASES):
                                 return "alcester"
-                            if (
-                                "redditch" in u
-                                or "reddich" in u
-                                or "red itch" in u
-                            ):
+                            if any(a in _n for a in _REDDITCH_ALIASES):
                                 return "redditch"
-                            # Ordinal / number variants — both word orders
-                            # ("option one" and "first option" etc.).
-                            # Membership test on the full word tuple: O(1),
-                            # easy to audit, and easy to extend.
-                            import re as _re
-                            words = tuple(
-                                _re.sub(r"[^a-z\s]", "", u).split()
-                            )
-                            _alcester_variants = {
+
+                            # ── Ordinal / number variants ────────────────────
+                            # Word-tuple exact-match for standalone ordinals
+                            # ("one", "first", "two", "second", etc.).
+                            # Kept separate from aliases because "one" as a
+                            # substring would false-positive on "only", "money"
+                            # etc. if used in a substring scan.
+                            words = tuple(_n.split())
+                            _alcester_ordinals = {
                                 ("one",),
                                 ("first",),
                                 ("the", "first"),
@@ -2963,16 +3097,8 @@ class WebSocketCallHandler:
                                 ("number", "one", "please"),
                                 ("option", "one", "please"),
                                 ("first", "option", "please"),
-                                # Phonetic variants after TTS says "Awlster"
-                                ("awlster",),
-                                ("olster",),
-                                ("allster",),
-                                ("awlsta",),
-                                ("olsta",),
-                                ("awlster", "please"),
-                                ("olster", "please"),
                             }
-                            _redditch_variants = {
+                            _redditch_ordinals = {
                                 ("two",),
                                 ("second",),
                                 ("the", "second"),
@@ -2987,9 +3113,9 @@ class WebSocketCallHandler:
                                 ("option", "two", "please"),
                                 ("second", "option", "please"),
                             }
-                            if words in _alcester_variants:
+                            if words in _alcester_ordinals:
                                 return "alcester"
-                            if words in _redditch_variants:
+                            if words in _redditch_ordinals:
                                 return "redditch"
                             return ""
 
