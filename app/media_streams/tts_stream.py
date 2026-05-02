@@ -37,6 +37,9 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import re as _re
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -66,6 +69,58 @@ logger = logging.getLogger(__name__)
 # All subsequent synthesise_chunk() calls skip ElevenLabs and go straight
 # to the OpenAI TTS fallback.
 _ELEVENLABS_EXHAUSTED: bool = False
+
+# ---------------------------------------------------------------------------
+# ElevenLabs pronunciation dictionary locator (loaded once at startup)
+# ---------------------------------------------------------------------------
+
+_PRON_DICT_LOCATOR: Optional[dict] = None   # populated by _get_pron_dict_locator()
+_PRON_DICT_LOADED: bool = False              # True once we've attempted the load
+
+
+def _get_pron_dict_locator() -> Optional[dict]:
+    """
+    Return the pronunciation_dictionary_locators entry for the shared
+    ElevenLabs pronunciation dictionary, or None if the config file has
+    not been created yet (run scripts/setup_pronunciation_dictionary.py).
+
+    Loaded once and cached in _PRON_DICT_LOCATOR.  The file is at
+    config/pronunciation_dict.json relative to the project root.
+
+    Returns a single-element list suitable for the API body field, e.g.:
+        [{"pronunciation_dictionary_id": "...", "version_id": "..."}]
+    or None if the file is missing / malformed.
+    """
+    global _PRON_DICT_LOCATOR, _PRON_DICT_LOADED
+    if _PRON_DICT_LOADED:
+        return _PRON_DICT_LOCATOR
+
+    _PRON_DICT_LOADED = True
+    config_path = Path(__file__).resolve().parent.parent.parent / "config" / "pronunciation_dict.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        pid  = data.get("pronunciation_dictionary_id")
+        vid  = data.get("version_id")
+        if pid and vid:
+            _PRON_DICT_LOCATOR = [{"pronunciation_dictionary_id": pid, "version_id": vid}]
+            logger.info(
+                "[ms_tts] Pronunciation dictionary loaded: id=%s version=%s", pid, vid
+            )
+        else:
+            logger.warning(
+                "[ms_tts] pronunciation_dict.json missing id/version_id — "
+                "run scripts/setup_pronunciation_dictionary.py"
+            )
+    except FileNotFoundError:
+        logger.info(
+            "[ms_tts] config/pronunciation_dict.json not found — "
+            "ElevenLabs pronunciation dictionary not active"
+        )
+    except Exception as exc:
+        logger.warning("[ms_tts] Could not load pronunciation_dict.json: %r", exc)
+
+    return _PRON_DICT_LOCATOR
+
 
 _elevenlabs_client: Optional[httpx.AsyncClient] = None
 
@@ -137,16 +192,8 @@ class TTSStream:
         if not text or not text.strip():
             return
 
-        # Phonetic correction: "Alcester" is pronounced "Awlster" (/ˈɔːlstər/).
-        # Replace before any TTS engine sees the text so both ElevenLabs and
-        # the OpenAI fallback produce the correct sound.  Case-preserving replace
-        # is unnecessary here — TTS ignores capitalisation of phonetic spellings.
-        import re as _re
-        text = _re.sub(r"\bAlcester\b", "Awlster", text, flags=_re.IGNORECASE)
-
         # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
         # the OpenAI TTS fallback instead of ElevenLabs (cheaper for testing).
-        import os
         _bypass_clinic = os.getenv("TTS_BYPASS_CLINIC", "")
         if _bypass_clinic and _bypass_clinic == self._clinic_id:
             logger.info(
@@ -170,7 +217,7 @@ class TTSStream:
             "xi-api-key":    ELEVENLABS_API_KEY,
             "Content-Type":  "application/json",
         }
-        body = {
+        body: dict = {
             "text":       text,
             "model_id":   ELEVENLABS_MODEL_ID,
             "voice_settings": {
@@ -178,6 +225,9 @@ class TTSStream:
                 "similarity_boost": ELEVENLABS_SIMILARITY_BOOST,
             },
         }
+        _pron_locator = _get_pron_dict_locator()
+        if _pron_locator:
+            body["pronunciation_dictionary_locators"] = _pron_locator
 
         logger.info(
             "[ms_tts] synthesise_chunk: model=%s len=%d text=%r",
@@ -295,6 +345,11 @@ class TTSStream:
         except ImportError:
             logger.error("[ms_tts_openai] audioop not available — cannot convert OpenAI PCM")
             return
+
+        # Phonetic correction for OpenAI TTS: "Alcester" → "Awlster" (/ˈɔːlstər/).
+        # ElevenLabs uses its pronunciation dictionary instead; this substitution
+        # is only needed for the OpenAI fallback which has no such mechanism.
+        text = _re.sub(r"\bAlcester\b", "Awlster", text, flags=_re.IGNORECASE)
 
         url = "https://api.openai.com/v1/audio/speech"
         headers = {
