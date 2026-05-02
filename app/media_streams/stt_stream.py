@@ -46,6 +46,7 @@ import logging
 import re
 import time
 from typing import Any, Callable, Coroutine, Optional
+from urllib.parse import quote as _url_quote
 
 import websockets
 import websockets.exceptions
@@ -285,6 +286,13 @@ class STTStream:
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
         # ?token= in the URL is for *temporary* browser tokens — NOT the raw key.
         url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
+        # keyterms_prompt: JSON-encoded array boosted at the STT session level.
+        # Improves recognition of proper nouns not in the standard vocabulary.
+        # v3 only — v2 does not support this parameter.
+        if not ASSEMBLYAI_USE_V2:
+            url += "&keyterms_prompt=" + _url_quote(
+                json.dumps(["Alcester", "Redditch"])
+            )
         ws_headers = {"Authorization": ASSEMBLYAI_API_KEY}
 
         masked_url = _mask_key(url, ASSEMBLYAI_API_KEY)
