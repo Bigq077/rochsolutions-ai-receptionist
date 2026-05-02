@@ -294,7 +294,7 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     _today_weekday = _now.strftime("%A")          # e.g. "Saturday"
     _today_date    = _now.strftime("%-d %B %Y")   # e.g. "14 March 2026"
 
-    # Compute this week's Sunday and next week's Monday for date-filter injection
+    # Compute this week's Sunday and next week's Monday/Sunday for date-filter injection
     from datetime import timedelta as _td
     _weekday_num = _now.weekday()  # Mon=0 … Sun=6
     _days_until_sunday = (6 - _weekday_num) % 7
@@ -303,6 +303,8 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     _next_monday = _this_sunday + _td(days=1)
     _next_monday_date = _next_monday.strftime("%-d %B %Y")
     _next_monday_iso = _next_monday.strftime("%Y-%m-%d")
+    _next_sunday = _next_monday + _td(days=6)   # last day of next week
+    _next_sunday_date = _next_sunday.strftime("%-d %B %Y")
 
     clinic = get_clinic(session.get("clinic_id"))
     clinic_name = clinic.get("display_name", "the clinic")
@@ -914,11 +916,11 @@ Never guess at facts. Use get_clinic_info for anything not listed here.
 
 ## 5. Date and time awareness
 
-Today is {_today_weekday}, {_today_date} (London time). This week runs until Sunday {_this_sunday_date}. Next week starts on Monday {_next_monday_date}. This is injected fresh on every call.
+Today is {_today_weekday}, {_today_date} (London time). This week runs until Sunday {_this_sunday_date}. Next week runs Monday {_next_monday_date} to Sunday {_next_sunday_date}. This is injected fresh on every call.
 
 Strict date-filter rules — apply BEFORE offering any slot:
 - "Not available this week" / "not this week" / "busy this week" → NO slots before next Monday ({_next_monday_date}). Pass after_date="{_next_monday_iso}" to check_availability.
-- "Next week" / "from next week" → slots from Monday {_next_monday_date} onwards ONLY. Pass after_date="{_next_monday_iso}" to check_availability.
+- "Next week" / "from next week" / "anytime next week" → slots from Monday {_next_monday_date} to Sunday {_next_sunday_date} ONLY. Pass after_date="{_next_monday_iso}" AND day_window=7 to check_availability. NEVER offer a slot dated after {_next_sunday_date} when the caller said "next week".
 - "Not available until Monday" / "starting from Monday" → if the coming Monday is {_next_monday_date}, pass after_date="{_next_monday_iso}".
 - "After Monday" → Tuesday or later of the relevant week. Compute and pass the correct after_date.
 - "This Monday" = the Monday of the current week if it has not yet passed; otherwise next Monday ({_next_monday_date}).
@@ -1269,6 +1271,28 @@ def _build_theorem_v3(session: dict) -> str:
     soft_context{...}, turn_count, last_bot_prompt, acuity_booking_id,
     calendar_status, collected, selected_location, new_or_returning.
     """
+
+    # Date computation — injected fresh on every call so LLM knows today's date
+    # and exact Monday–Sunday bounds for "next week" / "this week" requests.
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _tz = _ZI("Europe/London")
+    except Exception:
+        import pytz
+        _tz = pytz.timezone("Europe/London")
+    _now = _dt.now(_tz)
+    _today_weekday    = _now.strftime("%A")           # e.g. "Saturday"
+    _today_date       = _now.strftime("%-d %B %Y")   # e.g. "2 May 2026"
+    _weekday_num      = _now.weekday()                # Mon=0 … Sun=6
+    _days_until_sunday = (6 - _weekday_num) % 7
+    _this_sunday      = _now + _td(days=(_days_until_sunday if _days_until_sunday > 0 else 7))
+    _this_sunday_date = _this_sunday.strftime("%-d %B %Y")
+    _next_monday      = _this_sunday + _td(days=1)
+    _next_monday_date = _next_monday.strftime("%-d %B %Y")
+    _next_monday_iso  = _next_monday.strftime("%Y-%m-%d")
+    _next_sunday      = _next_monday + _td(days=6)   # last day of next week
+    _next_sunday_date = _next_sunday.strftime("%-d %B %Y")
 
     # SINGLE STATIC BLOCK — clean rewrite (replaces former b1/b_crit/b2/b3/b4/b5).
     # No section appears twice; no contradictions across sections.
@@ -1871,7 +1895,39 @@ def _build_theorem_v3(session: dict) -> str:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
     b7 = ("CALL STATE: " + "; ".join(state)) if state else ""
 
-    blocks = [static, location_rule, booking_flow]
+    # DATE AWARENESS — injected fresh every call so the LLM can correctly
+    # filter slots for "next week", "this week", "not until Monday", etc.
+    date_awareness = (
+        f"DATE AWARENESS\n"
+        f"Today is {_today_weekday}, {_today_date} (London time). "
+        f"This week runs until Sunday {_this_sunday_date}. "
+        f"Next week runs Monday {_next_monday_date} to Sunday "
+        f"{_next_sunday_date}. This is injected fresh on every call.\n\n"
+        f"Strict date-filter rules — apply BEFORE offering any slot:\n"
+        f"- \"Not available this week\" / \"not this week\" / \"busy this week\" "
+        f"→ NO slots before next Monday ({_next_monday_date}). "
+        f"Pass after_date=\"{_next_monday_iso}\" to check_availability.\n"
+        f"- \"Next week\" / \"from next week\" / \"anytime next week\" "
+        f"→ slots from Monday {_next_monday_date} to Sunday {_next_sunday_date} ONLY. "
+        f"Pass after_date=\"{_next_monday_iso}\" AND day_window=7 to check_availability. "
+        f"NEVER offer a slot dated after {_next_sunday_date} when the caller said \"next week\".\n"
+        f"- \"Not available until Monday\" / \"starting from Monday\" "
+        f"→ if the coming Monday is {_next_monday_date}, pass after_date=\"{_next_monday_iso}\".\n"
+        f"- \"After Monday\" → Tuesday or later of the relevant week. "
+        f"Compute and pass the correct after_date.\n"
+        f"- \"This Monday\" = the Monday of the current week if it has not yet passed; "
+        f"otherwise next Monday ({_next_monday_date}).\n"
+        f"- Never offer a date that has already passed today ({_today_date}).\n"
+        f"- If the caller's availability window is ambiguous, confirm once: "
+        f"\"Just to check — did you mean from Monday the {_next_monday_date}?\"\n\n"
+        f"Always pass after_date to check_availability when the caller has said they "
+        f"cannot be seen before a certain date. Format: YYYY-MM-DD. Never rely on the "
+        f"LLM to filter slots after the fact — always pass the filter to the tool.\n"
+        f"If the caller gives a narrow window (for example \"in the next 2 days\"), "
+        f"also pass day_window=2 so the search range is scoped correctly."
+    )
+
+    blocks = [static, location_rule, date_awareness, booking_flow]
     if b6: blocks.append(b6)
     if b7: blocks.append(b7)
     return "\n\n".join(blocks)
