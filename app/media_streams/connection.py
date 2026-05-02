@@ -1351,6 +1351,12 @@ class SilenceHandler:
         if (_sess_faq_w or {}).get("state") in ("GREETING", "DETECT_INTENT", ""):
             _wait = max(_wait, 6.0)
             logger.info("[ms_watchdog] greeting_grace=%.1fs", _wait)
+        # theorem_v3 location question: callers need extra time to process an
+        # unfamiliar place name ("Awlster" / Alcester) before responding.
+        # 8 s gives comfortable deliberation without feeling abandoned.
+        if (_sess_faq_w or {}).get("v3_location_q_active"):
+            _wait = max(_wait, 8.0)
+            logger.info("[ms_watchdog] location_q_grace=%.1fs (v3_location_q_active)", _wait)
         # Caller-choice states: the AI has just asked a question that requires
         # the caller to parse spoken content and make a decision between multiple
         # options (pick a clinic, pick a day, pick a slot, confirm which
@@ -3258,6 +3264,7 @@ class WebSocketCallHandler:
                             self.session["last_bot_prompt"] = _loc_q
                             self.session["last_question"] = _loc_q
                             self.session["v3_location_asked"] = True
+                            self.session["v3_location_q_active"] = True
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] location gate fired — "
@@ -3315,6 +3322,9 @@ class WebSocketCallHandler:
                                 self.session[
                                     "last_question"
                                 ] = _pivot_loc_q
+                                self.session[
+                                    "v3_location_q_active"
+                                ] = True
                                 await save_session(
                                     self.call_sid, self.session
                                 )
@@ -3419,6 +3429,9 @@ class WebSocketCallHandler:
                                         "v3_location_confirmed"
                                     ] = True
                                     self.session[
+                                        "v3_location_q_active"
+                                    ] = False
+                                    self.session[
                                         "v3_location_asked"
                                     ] = False
                                     self.session[
@@ -3503,6 +3516,9 @@ class WebSocketCallHandler:
                                     self.session[
                                         "v3_location_confirmed"
                                     ] = True
+                                    self.session[
+                                        "v3_location_q_active"
+                                    ] = False
                                     _was_booking = self.session.get(
                                         "v3_booking_intent", False
                                     )
@@ -3699,6 +3715,9 @@ class WebSocketCallHandler:
                                         self.session[
                                             "v3_location_confirmed"
                                         ] = True
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
                                         self.session[
                                             "v3_location_asked"
                                         ] = False
@@ -4060,6 +4079,7 @@ class WebSocketCallHandler:
                                     self.session["last_bot_prompt"] = _loc_q
                                     self.session["last_question"] = _loc_q
                                     self.session["v3_location_asked"] = True
+                                    self.session["v3_location_q_active"] = True
                                     await save_session(
                                         self.call_sid, self.session
                                     )
