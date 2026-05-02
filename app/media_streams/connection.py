@@ -3589,21 +3589,59 @@ class WebSocketCallHandler:
                                                     "Theorem Health has"
                                                     " exactly two clinics:"
                                                     " Alcester and Redditch."
-                                                    " Reply with JSON only"
-                                                    " — one of these three:"
-                                                    ' {"location":'
-                                                    ' "alcester"}'
-                                                    ' {"location":'
-                                                    ' "redditch"}'
-                                                    ' {"location":'
-                                                    ' "unknown"}'
-                                                    " Be generous: ancestor,"
-                                                    " awlster, olster,"
-                                                    " allster, sports centre,"
-                                                    " leisure centre, near"
-                                                    " me = alcester. Only"
-                                                    " return unknown if"
-                                                    " genuinely ambiguous."
+                                                    "\n\n"
+                                                    "IMPORTANT PHONETIC"
+                                                    " CONTEXT:\n"
+                                                    "Alcester is pronounced"
+                                                    " AWL-stuh /ˈɔːlstər/."
+                                                    " Callers will NOT say"
+                                                    " 'al-chess-ter'."
+                                                    " They say something"
+                                                    " like: alcester,"
+                                                    " ulster, awlster,"
+                                                    " olster, alchester,"
+                                                    " al chester,"
+                                                    " allchester, alcestra,"
+                                                    " ausesta, oldster,"
+                                                    " holster, orlster,"
+                                                    " oalster, aulster."
+                                                    " ALL of these mean"
+                                                    " Alcester. Be very"
+                                                    " generous with"
+                                                    " Alcester"
+                                                    " matching.\n\n"
+                                                    "Redditch is pronounced"
+                                                    " RED-itch. Variants:"
+                                                    " redditch, reditch,"
+                                                    " reddich, reddidge,"
+                                                    " reddish, red"
+                                                    " ditch.\n\n"
+                                                    "Reply with JSON only"
+                                                    " — one of exactly"
+                                                    " these three: "
+                                                    '{"location":'
+                                                    ' "alcester"} '
+                                                    '{"location":'
+                                                    ' "redditch"} '
+                                                    '{"location":'
+                                                    ' "unknown"} '
+                                                    "Only return unknown"
+                                                    " if the caller is"
+                                                    " genuinely asking a"
+                                                    " question, changing"
+                                                    " their mind, or"
+                                                    " saying something"
+                                                    " completely unrelated"
+                                                    " to a clinic"
+                                                    " location. If there"
+                                                    " is ANY phonetic"
+                                                    " resemblance to"
+                                                    " either clinic name,"
+                                                    " return that clinic."
+                                                    " Default to alcester"
+                                                    " when ambiguous —"
+                                                    " it receives more"
+                                                    " calls."
                                                 ),
                                                 messages=[{
                                                     "role": "user",
