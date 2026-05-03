@@ -991,10 +991,7 @@ class SilenceHandler:
                         else "Sorry, I didn't quite catch that. Which clinic were you thinking of — Alcester or Redditch?"
                     )
                 else:
-                    phrase = (
-                        "Sorry — did you say the Alcester clinic? "
-                        "Just say yes, or no if you meant Redditch."
-                    )
+                    phrase = "Did you say the Alcester clinic?"
                     if _sr_sess:
                         _sr_sess["v3_awaiting_use_this_clinic"] = True
                         _sr_sess["last_question"] = phrase
@@ -1777,10 +1774,7 @@ class SilenceHandler:
                             phrase = _prefix + ". Which clinic were you thinking of — Alcester or Redditch?"
                     else:
                         # 2nd+ re-ask: bias toward Alcester, set confirmation flag
-                        phrase = (
-                            "Sorry — did you say the Alcester clinic? "
-                            "Just say yes, or no if you meant Redditch."
-                        )
+                        phrase = "Did you say the Alcester clinic?"
                         if _sess is not None:
                             _sess["v3_awaiting_use_this_clinic"] = True
                             _sess["last_question"] = phrase
