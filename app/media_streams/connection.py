@@ -5259,7 +5259,19 @@ class WebSocketCallHandler:
         # the greeting), there is nothing to interrupt — skip drain/clear/_clearing
         # and do NOT set _barge_in_pending so _resolve_barge_in() won't fire an
         # ack phrase and discard the utterance.
-        if not (self._tts_task and not self._tts_task.done()):
+        #
+        # IMPORTANT: Check BOTH synthesis and playback windows.
+        # _tts_task tracks synthesis only (OpenAI HTTP stream, completes in ~1-2s).
+        # _silence_handler._tts_playing tracks the full playback window (entire
+        # audio duration, e.g. 8-10s for greeting). Without the playback check,
+        # the 6-9s gap after synthesis-done-but-still-playing causes barge-in to
+        # return early — Twilio `clear` never fires, Susie keeps talking.
+        _synthesis_active = bool(self._tts_task and not self._tts_task.done())
+        _playback_active  = bool(
+            hasattr(self._silence_handler, "_tts_playing")
+            and self._silence_handler._tts_playing
+        )
+        if not (_synthesis_active or _playback_active):
             return
 
         # Record barge-in start time (only once per barge-in event)
@@ -5275,11 +5287,16 @@ class WebSocketCallHandler:
             # the barge-in until the new turn completes (Bug 5 — stale output).
             self.session["tts_inhibit"] = True
             logger.info(
-                "[ms_conn] barge-in start: interrupted_text=%r tts_gen=%d",
+                "[ms_conn] barge-in start: synthesis_active=%s playback_active=%s "
+                "interrupted_text=%r tts_gen=%d",
+                _synthesis_active, _playback_active,
                 self._current_tts_text[:60], self._tts_gen,
             )
 
-        self._tts_task.cancel()
+        # Cancel synthesis only if still running — it may already be done
+        # while audio is still draining through send_loop.
+        if _synthesis_active:
+            self._tts_task.cancel()
 
         drained_text  = _drain_queue(self.tts_text_queue)
         drained_audio = _drain_queue(self.audio_out_queue)
