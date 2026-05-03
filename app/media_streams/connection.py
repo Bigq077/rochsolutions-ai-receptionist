@@ -2400,6 +2400,10 @@ class WebSocketCallHandler:
         self._barge_in_pending:    bool  = False  # True between partial and final transcript
         self._barge_in_ts:         float = 0.0   # monotonic time when barge-in first fired
         self._barge_in_duration:   float = 0.0   # elapsed seconds (set by _on_final_transcript_clear)
+        # Stale-transcript flush: set to time.monotonic() at each confirmed
+        # barge-in. Any transcript enqueued BEFORE this timestamp is discarded
+        # at dequeue time to prevent phantom LLM calls from stale STT finals.
+        self._barge_in_flush_before: float = 0.0
         # Recovery flag: True after we've already played a barge-in ack and are
         # waiting for the caller's actual utterance.  Prevents ack-loop when the
         # caller's continued speech triggers a second barge-in before the first
@@ -2679,7 +2683,7 @@ class WebSocketCallHandler:
                     "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r",
                     digit, _label,
                 )
-                await self.transcript_queue.put(_label)
+                await self.transcript_queue.put((time.monotonic(), _label))
             else:
                 logger.info(
                     "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
@@ -2691,10 +2695,10 @@ class WebSocketCallHandler:
         if self.session.get("state") == "ASK_LOCATION":
             if digit == "1":
                 logger.info("[ms_conn] DTMF digit=1 → synthetic transcript 'alcester'")
-                await self.transcript_queue.put("alcester")
+                await self.transcript_queue.put((time.monotonic(), "alcester"))
             elif digit == "2":
                 logger.info("[ms_conn] DTMF digit=2 → synthetic transcript 'redditch'")
-                await self.transcript_queue.put("redditch")
+                await self.transcript_queue.put((time.monotonic(), "redditch"))
             return
 
         # theorem_v3 booking path: the LLM can ask the caller to "type on your
@@ -2753,7 +2757,7 @@ class WebSocketCallHandler:
             self.session["phone_awaiting_dtmf"] = False
             self.session["v3_phone_dtmf_active"] = False
             logger.info("[ms_conn] DTMF buffer complete → synthetic transcript %r", complete)
-            await self.transcript_queue.put(complete)
+            await self.transcript_queue.put((time.monotonic(), complete))
             await save_session(self.call_sid, self.session)
             logger.info("[ms_conn v3] DTMF phone collection complete")
         elif len(buf) >= 10:
@@ -2801,7 +2805,7 @@ class WebSocketCallHandler:
             "[ms_conn] DTMF idle-finalize after %.1fs → synthetic transcript %r",
             _KEYPAD_IDLE_FINALIZE_SEC, complete,
         )
-        await self.transcript_queue.put(complete)
+        await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (idle-finalize)")
 
@@ -3049,11 +3053,27 @@ class WebSocketCallHandler:
             try:
                 while not self._stop_event.is_set():
                     try:
-                        utterance = await asyncio.wait_for(
+                        _raw_item = await asyncio.wait_for(
                             self.transcript_queue.get(),
                             timeout=1.0,
                         )
                     except asyncio.TimeoutError:
+                        continue
+
+                    # Unpack timestamped item from queue
+                    if isinstance(_raw_item, tuple):
+                        _enqueue_ts, utterance = _raw_item
+                    else:
+                        _enqueue_ts, utterance = 0.0, _raw_item  # legacy safety
+
+                    # Discard stale transcripts enqueued before the last confirmed
+                    # barge-in — these are phantom STT finals from a burst that
+                    # fired before the caller finished interrupting.
+                    if _enqueue_ts < self._barge_in_flush_before:
+                        logger.info(
+                            "[ms_conn] stale transcript discarded (pre-barge-in): %r",
+                            utterance[:80],
+                        )
                         continue
 
                     if not utterance or not utterance.strip():
@@ -3606,7 +3626,7 @@ class WebSocketCallHandler:
                                                 # again.
                                                 await (
                                                     self.transcript_queue
-                                                    .put(_existing_tp)
+                                                    .put((time.monotonic(), _existing_tp))
                                                 )
                                                 logger.info(
                                                     "[ms_conn v3] time_pref"
@@ -4169,7 +4189,7 @@ class WebSocketCallHandler:
                                             # skip Q, re-queue pref
                                             await (
                                                 self.transcript_queue
-                                                .put(_existing_tp2)
+                                                .put((time.monotonic(), _existing_tp2))
                                             )
                                             _next_q = None
                                             logger.info(
@@ -4312,7 +4332,10 @@ class WebSocketCallHandler:
                                 "[ms_conn v3] re-queuing barge-in transcript: %r",
                                 _queued_utt[:60],
                             )
-                            await self.transcript_queue.put(_queued_utt)
+                            # Fresh timestamp so it's never discarded by the
+                            # stale-transcript flush (it arrived after the LLM
+                            # turn started, i.e. after any prior barge-in).
+                            await self.transcript_queue.put((time.monotonic(), _queued_utt))
 
             except asyncio.CancelledError:
                 pass
@@ -4359,11 +4382,27 @@ class WebSocketCallHandler:
         try:
             while not self._stop_event.is_set():
                 try:
-                    utterance = await asyncio.wait_for(
+                    _raw_item = await asyncio.wait_for(
                         self.transcript_queue.get(),
                         timeout=1.0,
                     )
                 except asyncio.TimeoutError:
+                    continue
+
+                # Unpack timestamped item from queue
+                if isinstance(_raw_item, tuple):
+                    _enqueue_ts, utterance = _raw_item
+                else:
+                    _enqueue_ts, utterance = 0.0, _raw_item  # legacy safety
+
+                # Discard stale transcripts enqueued before the last confirmed
+                # barge-in — these are phantom STT finals from a burst that
+                # fired before the caller finished interrupting.
+                if _enqueue_ts < self._barge_in_flush_before:
+                    logger.info(
+                        "[ms_conn] stale transcript discarded (pre-barge-in): %r",
+                        utterance[:80],
+                    )
                     continue
 
                 if not utterance or not utterance.strip():
@@ -5127,6 +5166,10 @@ class WebSocketCallHandler:
             if hasattr(self, "_flow") and self._flow.is_complete():
                 logger.debug("[ms_silence] flow complete — skipping tts_finished")
                 return
+            logger.info(
+                "[ms_tts] tts_finished fired: chunk_text=%r q_size=%d",
+                text[:60], self._tts_text_queue.qsize(),
+            )
             self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
@@ -5315,6 +5358,9 @@ class WebSocketCallHandler:
         )
         if not _is_barge_noise:
             self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
+            # Flush stale pre-barge-in transcripts — any item enqueued before
+            # this moment will be discarded at dequeue time.
+            self._barge_in_flush_before = time.monotonic()
             logger.info(
                 "[ms_conn] barge-in #%d confirmed (%.0fms) — real transcript %r, "
                 "processing directly instead of ack+drop (state=%s)",
@@ -5329,6 +5375,9 @@ class WebSocketCallHandler:
         self._in_barge_in_recovery = True
         self.session["barge_in_count"] = self.session.get("barge_in_count", 0) + 1
         _state = self.session.get("state", "unknown")
+        # Flush stale pre-barge-in transcripts — any item enqueued before
+        # this moment will be discarded at dequeue time.
+        self._barge_in_flush_before = time.monotonic()
         logger.info(
             "[ms_conn] barge-in #%d confirmed (%.0fms) ack=%r state=%s",
             self.session["barge_in_count"], dur * 1000, ack, _state,

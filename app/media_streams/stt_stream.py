@@ -718,15 +718,16 @@ class STTStream:
 
     @staticmethod
     def _put_transcript(q: asyncio.Queue, text: str) -> None:
-        """Put text onto transcript_queue; discard oldest if full."""
+        """Put (enqueue_timestamp, text) onto transcript_queue; discard oldest if full."""
+        item = (time.monotonic(), text)
         try:
-            q.put_nowait(text)
+            q.put_nowait(item)
         except asyncio.QueueFull:
             try:
                 q.get_nowait()
             except asyncio.QueueEmpty:
                 pass
-            q.put_nowait(text)
+            q.put_nowait(item)
             logger.warning("[ms_stt] transcript_queue full -- discarded oldest")
 
 
