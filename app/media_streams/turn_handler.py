@@ -36,10 +36,47 @@ _BANNED_SENTENCE_RE = [
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),
     ("lookup_already_ran",    re.compile(r"[^.!?]*\blookup(?:_appointment)? already ran\b[^.!?]*[.!?]?",    re.IGNORECASE)),
     ("rc_stage_leak",         re.compile(r"[^.!?]*\brc_stage\b[^.!?]*[.!?]?",                               re.IGNORECASE)),
+
+    # ── LLM internal reasoning narration ────────────────────────────────────
+    # These patterns match full sentences containing internal chain-of-thought
+    # that the LLM occasionally speaks aloud instead of acting silently.
+    # Each strips the entire offending sentence, leaving surrounding text intact.
+    #
+    # "The caller said/is/was/has/mentioned..." — state narration
+    ("reasoning_the_caller",
+     re.compile(
+         r"[^.!?]*\bThe caller (?:said|is|was|has|mentioned|seems|appears|told me|wants|would like|appears to)\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
+    # "The results within/show/are..." — tool-output narration
+    ("reasoning_the_results",
+     re.compile(
+         r"[^.!?]*\bThe results? (?:within|show|shows|are|that|from|of the)\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
+    # "I'll pick/choose/select/present three/give them..." — selection narration
+    ("reasoning_ill_select",
+     re.compile(
+         r"[^.!?]*\bI'?ll (?:pick|choose|select|present three|give them three|note that|flag)\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
+    # "I should..." — intention narration
+    ("reasoning_i_should",
+     re.compile(
+         r"[^.!?]*\bI should\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
+    # "(N slots)" annotation — raw slot-count parentheticals from tool result
+    # narration (e.g. "Tuesday 12th (4 slots)"). Strip inline without removing
+    # surrounding text so the day/time label survives.
+    ("slot_count_annotation",
+     re.compile(r"\s*\(\d+\s*slots?\)", re.IGNORECASE)),
 ]
 
 _MULTI_SPACE_RE  = re.compile(r" {2,}")
-_LEADING_JUNK_RE = re.compile(r"^[\s,—–\-]+")
+# Also strips leading ': ' colon artefacts left when a reasoning sentence that
+# ended with a colon is removed and the continuation chunk starts with ": ".
+_LEADING_JUNK_RE = re.compile(r"^[\s:,—–\-]+")
 
 
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:

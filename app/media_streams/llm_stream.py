@@ -252,12 +252,22 @@ class LLMStream:
 
         if not transfer_initiated:
             _append_history(session, user_text, full_reply)
-            session[F_LAST_BOT_PROMPT] = full_reply[:200]
+            # Sanitize full_reply before extracting last_bot_prompt / last_question.
+            # sanitise_response strips internal reasoning sentences that the LLM
+            # sometimes narrates aloud (e.g. "The caller said...", "I'll pick the
+            # three with the most slots...").  These sentences are already stripped
+            # per-chunk before reaching TTS, but full_reply is assembled from raw
+            # tokens — without this step, reasoning text fills last_bot_prompt[:200]
+            # before the actual spoken response, causing _parse_v3_slot_options to
+            # miss numbered options and v3_awaiting_slot_selection to stay unset,
+            # which in turn fires the watchdog 4.5 s after TTS ends instead of 10 s.
+            _display_reply = sanitise_response(full_reply, session)
+            session[F_LAST_BOT_PROMPT] = _display_reply[:200]
             # Store only the question portion in F_LAST_QUESTION.
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question
             # sentence so the re-ask watchdog only replays real questions.
-            session[F_LAST_QUESTION] = _question_from_response(full_reply)
+            session[F_LAST_QUESTION] = _question_from_response(_display_reply)
 
         session["turn_count"] = session.get("turn_count", 0) + 1
         await save_session(call_sid, session)
