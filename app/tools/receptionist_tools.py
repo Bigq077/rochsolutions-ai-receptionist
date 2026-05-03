@@ -3577,7 +3577,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         return await _exec_get_patient_history(args, session)
 
     # cancel / reschedule: look up upcoming appointment
-    if session.get("clinic_id") != "theorem":
+    if session.get("clinic_id") not in ("theorem", "theorem_v2", "theorem_v3"):
         return {"found": False, "message": "Appointment lookup only available for Theorem clinic"}
 
     adapter = _get_acuity_adapter()
