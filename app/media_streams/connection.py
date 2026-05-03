@@ -435,6 +435,10 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     # STT mishears of "Alcester" as "alter" or "host" + clinic
     # Observed across calls 5–9; substring match covers "your alter clinic",
     # "your host clinic", "your alter clin" (split transcript) etc.
+    # Bare "alter" added: when asking which clinic, a single-word "alter"
+    # is unambiguously Alcester — the caller cannot be using "alter" to mean
+    # "change" because no change-request context is active at this point.
+    "alter",
     "alter clinic",
     "alter clin",
     "host clinic",

@@ -1843,7 +1843,7 @@ def _build_theorem_v3(session: dict) -> str:
         "booking or for a lookup — always ask the caller to type "
         "it on their keypad, not say it aloud. This ensures "
         "accuracy. Say: 'Could you type the number on your "
-        "keypad? Press star if you need to start over.' The only "
+        "keypad? You can press the hashtag key to reset at any time.' The only "
         "exception is when the caller confirms they want to use "
         "the number they are calling from — in that case use the "
         "calling number directly from CALL STATE without asking "
