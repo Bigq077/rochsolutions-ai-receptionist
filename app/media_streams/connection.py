@@ -3240,7 +3240,7 @@ class WebSocketCallHandler:
                                 _dtmf_prompt = (
                                     "No problem — please type the number "
                                     "on your keypad now. You can press the "
-                                    "hash key to reset at any time."
+                                    "hashtag key to reset at any time."
                                 )
                                 await self.tts_text_queue.put(_dtmf_prompt)
                                 self.session[
