@@ -432,6 +432,13 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     "your alcestra",
     "our alcestra",
     "the clinic",
+    # STT mishears of "Alcester" as "alter" or "host" + clinic
+    # Observed across calls 5–9; substring match covers "your alter clinic",
+    # "your host clinic", "your alter clin" (split transcript) etc.
+    "alter clinic",
+    "alter clin",
+    "host clinic",
+    "your host",
 
     # ── Non-native / mispronounced variants ─────────────────────────────────
     "al ses ter",
