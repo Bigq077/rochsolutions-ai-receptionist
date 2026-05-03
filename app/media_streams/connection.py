@@ -3587,25 +3587,50 @@ class WebSocketCallHandler:
                                                 "v3_awaiting_phone_confirm"
                                             ] = True
                                         else:
-                                            _new_ret_q = (
-                                                "Is there a particular day or "
-                                                "time that works best for you?"
+                                            _existing_tp = (
+                                                self.session.get(
+                                                    "soft_context"
+                                                ) or {}
+                                            ).get("time_preference")
+                                            if _existing_tp:
+                                                # Caller already stated
+                                                # preference — re-queue so
+                                                # LLM fires without asking
+                                                # again.
+                                                await (
+                                                    self.transcript_queue
+                                                    .put(_existing_tp)
+                                                )
+                                                logger.info(
+                                                    "[ms_conn v3] time_pref"
+                                                    " already known (%r) —"
+                                                    " timing Q skipped,"
+                                                    " re-queued pref",
+                                                    _existing_tp,
+                                                )
+                                                _new_ret_q = None
+                                            else:
+                                                _new_ret_q = (
+                                                    "Is there a particular"
+                                                    " day or time that works"
+                                                    " best for you?"
+                                                )
+                                        if _new_ret_q is not None:
+                                            await self.tts_text_queue.put(
+                                                _new_ret_q
                                             )
-                                        await self.tts_text_queue.put(
-                                            _new_ret_q
-                                        )
-                                        self.session[
-                                            "last_bot_prompt"
-                                        ] = _new_ret_q
-                                        self.session[
-                                            "last_question"
-                                        ] = _new_ret_q
-                                        self.session.setdefault(
-                                            "conversation_history", []
-                                        ).append({
-                                            "role": "assistant",
-                                            "content": _new_ret_q,
-                                        })
+                                            self.session[
+                                                "last_bot_prompt"
+                                            ] = _new_ret_q
+                                            self.session[
+                                                "last_question"
+                                            ] = _new_ret_q
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).append({
+                                                "role": "assistant",
+                                                "content": _new_ret_q,
+                                            })
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -4029,7 +4054,14 @@ class WebSocketCallHandler:
                                 _time_pref = None
 
                                 # Day preferences
-                                if "monday" in _utt_lower:
+                                if "today" in _utt_lower:
+                                    _time_pref = "today"
+                                elif "as soon as possible" in _utt_lower \
+                                        or "asap" in _utt_lower \
+                                        or "soonest" in _utt_lower \
+                                        or "earliest" in _utt_lower:
+                                    _time_pref = "as soon as possible"
+                                elif "monday" in _utt_lower:
                                     _time_pref = "Monday"
                                 elif "tuesday" in _utt_lower:
                                     _time_pref = "Tuesday"
@@ -4120,22 +4152,47 @@ class WebSocketCallHandler:
                                             "v3_awaiting_phone_confirm"
                                         ] = True
                                     else:
-                                        _next_q = (
-                                            "Is there a particular day or "
-                                            "time that works best for you?"
-                                        )
-                                    await self.tts_text_queue.put(_next_q)
-                                    self.session["last_bot_prompt"] = _next_q
-                                    self.session["last_question"] = _next_q
-                                    # Inject into conversation_history so the
-                                    # LLM has context when processing the
-                                    # caller's answer on the next turn.
-                                    self.session.setdefault(
-                                        "conversation_history", []
-                                    ).append({
-                                        "role": "assistant",
-                                        "content": _next_q,
-                                    })
+                                        _existing_tp2 = (
+                                            self.session.get(
+                                                "soft_context"
+                                            ) or {}
+                                        ).get("time_preference")
+                                        if _existing_tp2:
+                                            # Caller already stated timing —
+                                            # skip Q, re-queue pref
+                                            await (
+                                                self.transcript_queue
+                                                .put(_existing_tp2)
+                                            )
+                                            _next_q = None
+                                            logger.info(
+                                                "[ms_conn v3] timing pref"
+                                                " known (%r) at ack — Q"
+                                                " skipped, re-queued",
+                                                _existing_tp2,
+                                            )
+                                        else:
+                                            _next_q = (
+                                                "Is there a particular day"
+                                                " or time that works best"
+                                                " for you?"
+                                            )
+                                    if _next_q is not None:
+                                        await self.tts_text_queue.put(_next_q)
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _next_q
+                                        self.session[
+                                            "last_question"
+                                        ] = _next_q
+                                        # Inject into conversation_history so
+                                        # the LLM has context on next turn.
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _next_q,
+                                        })
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -4163,7 +4220,25 @@ class WebSocketCallHandler:
                                             "Which clinic were you thinking "
                                             "of — Alcester or Redditch?"
                                         )
-                                    await self.tts_text_queue.put(_loc_q)
+                                    # Only queue to TTS if the LLM didn't
+                                    # already ask the location question in
+                                    # its reply — prevents double-ask when
+                                    # the model ignores the "stop after ack"
+                                    # instruction and includes the question.
+                                    _llm_asked_loc = any(
+                                        kw in _last_bot.lower()
+                                        for kw in (
+                                            "which clinic",
+                                            "alcester or redditch",
+                                            "alcester or reditch",
+                                            "original appointment at",
+                                        )
+                                    )
+                                    if not _llm_asked_loc:
+                                        await self.tts_text_queue.put(_loc_q)
+                                    # Always set session flags so the
+                                    # location gate arms correctly
+                                    # regardless of whether we queued TTS.
                                     self.session["last_bot_prompt"] = _loc_q
                                     self.session["last_question"] = _loc_q
                                     self.session["v3_location_asked"] = True
@@ -4172,9 +4247,12 @@ class WebSocketCallHandler:
                                         self.call_sid, self.session
                                     )
                                     logger.info(
-                                        "[ms_conn v3] booking ack detected — "
-                                        "intent=%s, location Q queued",
+                                        "[ms_conn v3] booking ack detected —"
+                                        " intent=%s, loc Q %s",
                                         _loc_intent,
+                                        "suppressed (LLM already asked)"
+                                        if _llm_asked_loc
+                                        else "queued",
                                     )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
