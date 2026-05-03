@@ -978,7 +978,30 @@ class SilenceHandler:
                 "please say the phone number slowly."
             )
         elif _state in ("GREETING", "DETECT_INTENT", ""):
-            phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
+            # v3 location re-ask ladder: when the location question is active,
+            # escalate to "Did you say the Alcester clinic?" on the 2nd attempt.
+            _sr_sess = self._get_session() if self._get_session else {}
+            if (_sr_sess or {}).get("v3_location_q_active"):
+                _sr_lrc = int((_sr_sess or {}).get("v3_location_reask_count", 0))
+                if _sr_lrc == 0:
+                    _sr_lq = (_sr_sess or {}).get("last_question", "")
+                    phrase = (
+                        "Sorry, I didn't quite catch that. " + _sr_lq.strip()
+                        if _sr_lq and "how can i help" not in _sr_lq.lower()
+                        else "Sorry, I didn't quite catch that. Which clinic were you thinking of — Alcester or Redditch?"
+                    )
+                else:
+                    phrase = (
+                        "Sorry — did you say the Alcester clinic? "
+                        "Just say yes, or no if you meant Redditch."
+                    )
+                    if _sr_sess:
+                        _sr_sess["v3_awaiting_use_this_clinic"] = True
+                        _sr_sess["last_question"] = phrase
+                if _sr_sess:
+                    _sr_sess["v3_location_reask_count"] = _sr_lrc + 1
+            else:
+                phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
         elif _state == "ASK_LOCATION":
             phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — the Alcester clinic or the Redditch clinic?"
         else:
@@ -1737,13 +1760,39 @@ class SilenceHandler:
             if _state in ("GREETING", "DETECT_INTENT", ""):
                 # v3 bypasses the FlowEngine state machine so state stays
                 # GREETING even after asking location / new-returning questions.
-                # Use last_question when it's a real question (not the greeting
-                # itself); fall back to generic only for the initial greeting.
-                _lq_g = (_sess or {}).get("last_question") or self.last_question
-                if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
-                    phrase = _prefix + ". " + _lq_g.strip()
+                # ── v3 location retry ladder ──────────────────────────────────
+                # When the location question is active, escalate on the 2nd
+                # re-ask to "Did you say the Alcester clinic?" — a biased binary
+                # that lets the caller say yes once rather than repeating the
+                # place name.  The v3_awaiting_use_this_clinic flag routes their
+                # next response to the existing yes/no confirmation handler.
+                if (_sess or {}).get("v3_location_q_active"):
+                    _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
+                    if _v3_lrc == 0:
+                        # 1st re-ask: repeat the original question
+                        _lq_g = (_sess or {}).get("last_question") or self.last_question
+                        if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
+                            phrase = _prefix + ". " + _lq_g.strip()
+                        else:
+                            phrase = _prefix + ". Which clinic were you thinking of — Alcester or Redditch?"
+                    else:
+                        # 2nd+ re-ask: bias toward Alcester, set confirmation flag
+                        phrase = (
+                            "Sorry — did you say the Alcester clinic? "
+                            "Just say yes, or no if you meant Redditch."
+                        )
+                        if _sess is not None:
+                            _sess["v3_awaiting_use_this_clinic"] = True
+                            _sess["last_question"] = phrase
+                    if _sess is not None:
+                        _sess["v3_location_reask_count"] = _v3_lrc + 1
                 else:
-                    phrase = _prefix + " — how can I help today?"
+                    # Non-location GREETING re-ask: use last_question or generic
+                    _lq_g = (_sess or {}).get("last_question") or self.last_question
+                    if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
+                        phrase = _prefix + ". " + _lq_g.strip()
+                    else:
+                        phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
                 # Approved-copy watchdog with tier escalation.  Never invent
                 # or shorten ASK_LOCATION wording.  Each watchdog fire must
