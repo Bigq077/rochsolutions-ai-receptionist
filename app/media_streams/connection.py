@@ -5168,7 +5168,7 @@ class WebSocketCallHandler:
                 return
             logger.info(
                 "[ms_tts] tts_finished fired: chunk_text=%r q_size=%d",
-                text[:60], self._tts_text_queue.qsize(),
+                text[:60], self.tts_text_queue.qsize(),
             )
             self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
