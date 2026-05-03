@@ -3354,12 +3354,21 @@ class WebSocketCallHandler:
                                 self.session[
                                     "v3_location_q_active"
                                 ] = True
+                                # Re-arm location gate: we temporarily cleared
+                                # v3_location_asked above so the gate-fired
+                                # check (which reads it) is not confused, but
+                                # we immediately restore it so the NEXT
+                                # transcript correctly enters _v3_loc_answering.
+                                # Without this, the caller's location answer
+                                # after the pivot question falls through to the
+                                # free-form LLM path and is never intercepted.
+                                self.session["v3_location_asked"] = True
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
                                     "[ms_conn v3] intent pivot in loc"
-                                    " gate: %s from %r",
+                                    " gate: %s from %r — loc gate restored",
                                     _pivot_intent, utterance[:60],
                                 )
                                 return
@@ -3607,6 +3616,50 @@ class WebSocketCallHandler:
                                         _confirmed_loc,
                                     )
                                 else:
+                                    # ── Pre-Haiku echo guard ──────────────
+                                    # _v3_extract_location already checked the
+                                    # full alias set and found nothing.  Short
+                                    # utterances (≤ 3 words) with no alias match
+                                    # are almost certainly TTS echoes that slipped
+                                    # through the 2-word echo-suppression gate in
+                                    # _on_final_transcript_clear (e.g. "at your
+                                    # house", "the clinic please").  Calling Haiku
+                                    # for these causes two problems:
+                                    #   1. ~1-2 s API latency resets the silence
+                                    #      timer and delays the real re-ask.
+                                    #   2. When Haiku returns "unknown" it queues
+                                    #      a spurious "Did you say Alcester?"
+                                    #      confirm that confuses the caller.
+                                    # Guard: if the utterance is ≤ 3 words AND
+                                    # no alias matched, treat it as noise —
+                                    # re-arm the silence timer with the current
+                                    # location question and skip to the next turn.
+                                    # 4+ word utterances always go to Haiku
+                                    # because they are likely real caller speech.
+                                    _utt_words_pre = utterance.strip().split()
+                                    if len(_utt_words_pre) <= 3:
+                                        _last_q_loc = self.session.get(
+                                            "last_question", ""
+                                        )
+                                        if _last_q_loc:
+                                            self._silence_handler.set_state(
+                                                self.session.get(
+                                                    "state", "default"
+                                                )
+                                            )
+                                            self._silence_handler.on_question_asked(
+                                                _last_q_loc
+                                            )
+                                        logger.info(
+                                            "[ms_conn v3] short non-alias"
+                                            " utterance %r (%d word(s))"
+                                            " — Haiku skipped, silence"
+                                            " timer re-armed",
+                                            utterance[:60],
+                                            len(_utt_words_pre),
+                                        )
+                                        continue
+
                                     # ── Haiku location resolver ───────────
                                     # Dedicated small-model call — faster and
                                     # more accurate than string matching or
@@ -5251,6 +5304,46 @@ class WebSocketCallHandler:
                 _fc_text, _fc_since,
                 time.time() - self._tts_last_start_ts,
             )
+        # ── theorem_v3 TTS-echo suppression ─────────────────────────────────
+        # During the location question the phone line often echoes the bot's
+        # own TTS audio back through the mic.  AssemblyAI transcribes single
+        # words like "clinic", "alter", "hello" as FINAL transcripts, which
+        # normally cancel the W1/W2/W3 silence timer — resetting the 22 s
+        # sleep every ~5 s so a re-ask never fires.
+        #
+        # Guard: when v3_location_asked is active AND the transcript is ≤ 2
+        # words AND none of those words is a meaningful location/yes/no token,
+        # treat it as a TTS echo: skip on_transcript_received so the silence
+        # timer is preserved.  The main transcript loop still receives the
+        # text and will discard it via its own short-fragment guard.
+        #
+        # Meaningful tokens that must always pass through:
+        #   • clinic names / phonetic variants  → _v3_extract_location handles
+        #   • yes / no / yeah / nope / yep / yup (binary answers)
+        #   • "use" / "this"  (start of "use this clinic")
+        elif self.session.get("v3_location_asked", False):
+            _v3_echo_words = _fc_text.lower().split()
+            _V3_LOC_PASS = frozenset({
+                "yes", "no", "yeah", "nope", "yep", "yup", "nah",
+                "use", "this",
+                # single-word clinic name variants most likely to reach here
+                # (the full alias set is checked by _v3_extract_location)
+                "alcester", "redditch", "reditch", "reddich",
+                "ulster", "olster", "awlster", "alchester",
+                "one", "two", "first", "second",
+            })
+            _v3_echo_candidate = (
+                1 <= len(_v3_echo_words) <= 2
+                and not any(w in _V3_LOC_PASS for w in _v3_echo_words)
+            )
+            if _v3_echo_candidate:
+                logger.info(
+                    "[ms_conn v3] TTS-echo candidate %r (%d word(s)) "
+                    "— on_transcript_received suppressed, silence timer preserved",
+                    _fc_text, len(_v3_echo_words),
+                )
+            else:
+                self._silence_handler.on_transcript_received(text)
         else:
             self._silence_handler.on_transcript_received(text)
 
