@@ -3239,8 +3239,8 @@ class WebSocketCallHandler:
                                 # to DTMF keypad collection
                                 _dtmf_prompt = (
                                     "No problem — please type the number "
-                                    "on your keypad now. Press star to "
-                                    "start over if you make a mistake."
+                                    "on your keypad now. You can press the "
+                                    "hash key to reset at any time."
                                 )
                                 await self.tts_text_queue.put(_dtmf_prompt)
                                 self.session[
