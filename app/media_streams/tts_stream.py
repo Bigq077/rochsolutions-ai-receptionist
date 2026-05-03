@@ -58,6 +58,38 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# TTS phonetic substitution table
+# ---------------------------------------------------------------------------
+# Applied to ALL text before it reaches any TTS engine (ElevenLabs or OpenAI).
+# The LLM and routing logic always use the canonical spelling; only the audio
+# synthesis layer receives the phonetic form.
+#
+# Alcester: British English /ˈɔːlstə/ — "AWL-stuh".
+#   "Awlstuh" guides both ElevenLabs and OpenAI TTS to the correct sounds:
+#     - "Awl"  → /ɔːl/ (rhymes with "ball")
+#     - "stuh" → /stə/ (schwa — no hard trailing r)
+#   Previous OpenAI-only attempt "Awlster" added a distinct /r/ sound and
+#   was ElevenLabs-blind.  This replaces it for both engines.
+_TTS_SUBSTITUTIONS: list[tuple] = [
+    # (compiled_pattern, replacement)
+    (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
+]
+
+
+def _apply_tts_substitutions(text: str) -> str:
+    """
+    Apply pronunciation substitutions to text before TTS synthesis.
+
+    Called once at the entry point of each TTS engine so every code path
+    (ElevenLabs HTTP, ElevenLabs WS, OpenAI fallback) gets consistent
+    pronunciation without duplicating substitution logic.
+    """
+    for pattern, replacement in _TTS_SUBSTITUTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Shared httpx client singleton
 # ---------------------------------------------------------------------------
 
@@ -191,6 +223,9 @@ class TTSStream:
         """
         if not text or not text.strip():
             return
+
+        # Apply phonetic substitutions before synthesis (e.g. Alcester → Awlstuh)
+        text = _apply_tts_substitutions(text)
 
         # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
         # the OpenAI TTS fallback instead of ElevenLabs (cheaper for testing).
@@ -346,10 +381,10 @@ class TTSStream:
             logger.error("[ms_tts_openai] audioop not available — cannot convert OpenAI PCM")
             return
 
-        # Phonetic correction for OpenAI TTS: "Alcester" → "Awlster" (/ˈɔːlstər/).
-        # ElevenLabs uses its pronunciation dictionary instead; this substitution
-        # is only needed for the OpenAI fallback which has no such mechanism.
-        text = _re.sub(r"\bAlcester\b", "Awlster", text, flags=_re.IGNORECASE)
+        # Phonetic substitutions (shared with ElevenLabs path via _apply_tts_substitutions).
+        # synthesise_chunk() already calls this, but _synthesise_openai_fallback can
+        # also be called directly, so apply here too for safety.
+        text = _apply_tts_substitutions(text)
 
         url = "https://api.openai.com/v1/audio/speech"
         headers = {
@@ -524,6 +559,8 @@ class TTSStream:
                 if not chunk_text or not chunk_text.strip():
                     continue
 
+                # Apply phonetic substitutions before sending to ElevenLabs WS
+                chunk_text = _apply_tts_substitutions(chunk_text)
                 await ws.send(json.dumps({"text": chunk_text, "flush": False}))
                 logger.debug("[ms_tts_ws] sent text: %r", chunk_text[:40])
 
