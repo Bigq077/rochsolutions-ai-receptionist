@@ -1,10 +1,22 @@
 """
 One-time setup script: create an ElevenLabs pronunciation dictionary
-for Alcester (/ˈɔːlstər/) and Redditch, then write the returned IDs to
+using ALIAS tags (compatible with ALL models including eleven_flash_v2_5)
+for Alcester and Redditch, then write the returned IDs to
 config/pronunciation_dict.json so tts_stream.py can load them at startup.
+
+Alias approach:
+  ElevenLabs substitutes the alias string internally before synthesis.
+  "Alcester" → "AWL-stuh" produces /ˈɔːlstər/ (correct British English).
+  "Redditch" → "Reditch" removes the doubled-d artefact.
+
+NOTE: Phoneme/CMU-Arpabet tags are NOT used here because eleven_flash_v2_5
+does not support them. Alias tags work on all models.
 
 Run once:
     python scripts/setup_pronunciation_dictionary.py
+
+The hook in app/media_streams/tts_stream.py (_get_pron_dict_locator) will
+automatically load the written IDs and inject them into every TTS request.
 """
 import json
 import os
@@ -31,37 +43,36 @@ if not ELEVENLABS_API_KEY:
     sys.exit("ERROR: ELEVENLABS_API_KEY is not set. Export it or add it to .env")
 
 # ---------------------------------------------------------------------------
-# Pronunciation rules
+# Pronunciation rules — ALIAS type (works on eleven_flash_v2_5 and all models)
 # ---------------------------------------------------------------------------
 RULES = [
+    # Alcester — both capitalisation forms
     {
         "string_to_replace": "Alcester",
-        "type": "phoneme",
-        "alphabet": "cmu-arpabet",
-        "phoneme": "AO1 L S T ER0",
+        "type":              "alias",
+        "alias":             "AWL-stuh",
     },
     {
         "string_to_replace": "alcester",
-        "type": "phoneme",
-        "alphabet": "cmu-arpabet",
-        "phoneme": "AO1 L S T ER0",
+        "type":              "alias",
+        "alias":             "AWL-stuh",
     },
+    # Redditch — both capitalisation forms
+    # "Reditch" removes the doubled-d and is closer to /ˈrɛdɪtʃ/
     {
         "string_to_replace": "Redditch",
-        "type": "phoneme",
-        "alphabet": "cmu-arpabet",
-        "phoneme": "R EH1 D IH0 CH",
+        "type":              "alias",
+        "alias":             "Reditch",
     },
     {
         "string_to_replace": "redditch",
-        "type": "phoneme",
-        "alphabet": "cmu-arpabet",
-        "phoneme": "R EH1 D IH0 CH",
+        "type":              "alias",
+        "alias":             "reditch",
     },
 ]
 
 # ---------------------------------------------------------------------------
-# Create the dictionary
+# Create the dictionary via ElevenLabs REST API
 # ---------------------------------------------------------------------------
 url = "https://api.elevenlabs.io/v1/pronunciation-dictionaries/add-from-rules"
 headers = {
@@ -70,33 +81,42 @@ headers = {
 }
 payload = {
     "name":        "theorem_health_places",
-    "description": "Alcester (/ˈɔːlstər/) and Redditch pronunciation corrections",
+    "description": (
+        "Alcester and Redditch pronunciation corrections "
+        "for Susie AI receptionist (eleven_flash_v2_5, alias rules)"
+    ),
     "rules":       RULES,
 }
 
 print("Creating pronunciation dictionary...")
 print(f"  Endpoint : {url}")
 print(f"  Rules    : {len(RULES)}")
+print(f"  Body     :\n{json.dumps(payload, indent=2)}")
+print()
 
 response = httpx.post(url, json=payload, headers=headers, timeout=30.0)
 
-print(f"\nHTTP status: {response.status_code}")
+print(f"HTTP status: {response.status_code}")
 print(f"Response body:\n{json.dumps(response.json(), indent=2)}")
+print()
 
 if response.status_code not in (200, 201):
-    sys.exit(f"ERROR: API returned {response.status_code}")
+    sys.exit(f"ERROR: API returned {response.status_code} — dictionary NOT created.")
 
 data = response.json()
+
+# ---------------------------------------------------------------------------
+# Extract IDs — ElevenLabs returns "id" not "pronunciation_dictionary_id"
+# ---------------------------------------------------------------------------
 pronunciation_dictionary_id = data.get("id") or data.get("pronunciation_dictionary_id")
-version_id = data.get("version_id")
+version_id                  = data.get("version_id")
 
 if not pronunciation_dictionary_id or not version_id:
-    sys.exit(
-        f"ERROR: could not extract IDs from response.\n"
-        f"Keys returned: {list(data.keys())}"
-    )
+    print(f"ERROR: could not extract IDs. Keys returned: {list(data.keys())}", file=sys.stderr)
+    print(f"Full response: {json.dumps(data, indent=2)}", file=sys.stderr)
+    sys.exit(1)
 
-print(f"\npronunciation_dictionary_id : {pronunciation_dictionary_id}")
+print(f"pronunciation_dictionary_id : {pronunciation_dictionary_id}")
 print(f"version_id                  : {version_id}")
 
 # ---------------------------------------------------------------------------
@@ -106,8 +126,10 @@ out_path = PROJECT_ROOT / "config" / "pronunciation_dict.json"
 out_path.parent.mkdir(parents=True, exist_ok=True)
 out_data = {
     "pronunciation_dictionary_id": pronunciation_dictionary_id,
-    "version_id": version_id,
+    "version_id":                  version_id,
 }
-out_path.write_text(json.dumps(out_data, indent=2) + "\n")
-print(f"\nWritten to: {out_path}")
-print(json.dumps(out_data, indent=2))
+out_path.write_text(json.dumps(out_data, indent=2) + "\n", encoding="utf-8")
+
+print(f"\nWritten to config/pronunciation_dict.json")
+print(f"ID:      {pronunciation_dictionary_id}")
+print(f"Version: {version_id}")

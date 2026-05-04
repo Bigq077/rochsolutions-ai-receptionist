@@ -224,8 +224,11 @@ class TTSStream:
         if not text or not text.strip():
             return
 
-        # Apply phonetic substitutions before synthesis (e.g. Alcester → Awlstuh)
-        text = _apply_tts_substitutions(text)
+        # NOTE: No text substitution here — ElevenLabs handles Alcester/Redditch
+        # pronunciation natively via the pronunciation dictionary
+        # (config/pronunciation_dict.json, loaded by _get_pron_dict_locator()).
+        # The OpenAI fallback path (_synthesise_openai_fallback) applies its own
+        # _apply_tts_substitutions() independently since it has no dictionary.
 
         # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
         # the OpenAI TTS fallback instead of ElevenLabs (cheaper for testing).
@@ -381,9 +384,9 @@ class TTSStream:
             logger.error("[ms_tts_openai] audioop not available — cannot convert OpenAI PCM")
             return
 
-        # Phonetic substitutions (shared with ElevenLabs path via _apply_tts_substitutions).
-        # synthesise_chunk() already calls this, but _synthesise_openai_fallback can
-        # also be called directly, so apply here too for safety.
+        # Phonetic substitutions for OpenAI TTS — this path has no pronunciation
+        # dictionary, so text substitution is the only mechanism available.
+        # ElevenLabs handles the same words natively via its dictionary instead.
         text = _apply_tts_substitutions(text)
 
         url = "https://api.openai.com/v1/audio/speech"
@@ -559,8 +562,8 @@ class TTSStream:
                 if not chunk_text or not chunk_text.strip():
                     continue
 
-                # Apply phonetic substitutions before sending to ElevenLabs WS
-                chunk_text = _apply_tts_substitutions(chunk_text)
+                # NOTE: No substitution here — ElevenLabs WS path uses the
+                # pronunciation dictionary natively (same as HTTP path).
                 await ws.send(json.dumps({"text": chunk_text, "flush": False}))
                 logger.debug("[ms_tts_ws] sent text: %r", chunk_text[:40])
 
