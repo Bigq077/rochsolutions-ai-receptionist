@@ -1737,7 +1737,7 @@ class SilenceHandler:
             # skip that rung entirely and drop the caller into a silent dead end.
             _v3_rung3_pending = (
                 (_sess or {}).get("v3_location_q_active")
-                and int((_sess or {}).get("v3_location_reask_count", 0)) >= 2
+                and int((_sess or {}).get("v3_location_reask_count", 0)) >= 1
             )
             if _attempt >= 3 and not _v3_rung3_pending:
                 # Don't transfer if the caller engaged recently — a missed STT on
@@ -1795,15 +1795,8 @@ class SilenceHandler:
                             phrase = _prefix + ". " + _lq_g.strip()
                         else:
                             phrase = _prefix + ". Which clinic were you thinking of — Alcester or Redditch?"
-                    elif _v3_lrc == 1:
-                        # Rung 2: biased binary — bet on Alcester so caller can say "yes".
-                        # "No" / Redditch signal are handled by v3_awaiting_use_this_clinic.
-                        phrase = "Did you say the Alcester clinic?"
-                        if _sess is not None:
-                            _sess["v3_awaiting_use_this_clinic"] = True
-                            _sess["last_question"] = phrase
                     else:
-                        # Rung 3: DTMF keypad fallback — completely deterministic, no STT.
+                        # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
                         # Clear v3_location_q_active so the ladder stops here.
                         phrase = (
                             "No problem — press 1 on your keypad for Alcester "
@@ -5871,9 +5864,8 @@ class WebSocketCallHandler:
         if self.session.get("clinic_id") == "theorem_v3":
             _v3_greeting = (
                 "Hi there, I'm Susie, Theorem Health's AI receptionist. "
-                "If you're an existing patient and want to speak to Mark "
-                "directly, press 1 on your keypad — otherwise, how can "
-                "I help you?"
+                "If you'd like to speak to Mark directly, press 1 on your keypad. "
+                "How can I help you today?"
             )
             logger.info("[ms_conn v3] greeting: %r", _v3_greeting[:80])
 
