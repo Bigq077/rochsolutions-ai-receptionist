@@ -1789,12 +1789,11 @@ class SilenceHandler:
                 if (_sess or {}).get("v3_location_q_active"):
                     _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
                     if _v3_lrc == 0:
-                        # Rung 1: repeat the original location question verbatim
-                        _lq_g = (_sess or {}).get("last_question") or self.last_question
-                        if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
-                            phrase = _prefix + ". " + _lq_g.strip()
-                        else:
-                            phrase = _prefix + ". Which clinic were you thinking of — Alcester or Redditch?"
+                        # Rung 1: biased confirm — lets the caller say yes/no once.
+                        phrase = "Did you say the Alcester clinic?"
+                        if _sess is not None:
+                            _sess["v3_awaiting_use_this_clinic"] = True
+                            _sess["last_question"] = phrase
                     else:
                         # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
                         # Clear v3_location_q_active so the ladder stops here.
@@ -5865,7 +5864,7 @@ class WebSocketCallHandler:
             _v3_greeting = (
                 "Hi there, I'm Susie, Theorem Health's AI receptionist. "
                 "If you'd like to speak to Mark directly, press 1 on your keypad. "
-                "How can I help you today?"
+                "Otherwise, how can I help you today?"
             )
             logger.info("[ms_conn v3] greeting: %r", _v3_greeting[:80])
 
