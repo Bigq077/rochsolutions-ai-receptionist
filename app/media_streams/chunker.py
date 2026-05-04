@@ -186,6 +186,34 @@ _DECIMAL_RE = re.compile(r"\d\.\d")  # e.g. 10.30, £7.50 — don't split on the
 _SPLIT_MIN_LEFT  = 40  # left fragment must be ≥ this to be a valid split point
 _SPLIT_MIN_RIGHT = 20  # trailing fragment kept separate only if ≥ this length
 
+_CLAUSE_BOUNDARIES = frozenset(".?!,;—–")
+
+
+def _find_split_point(text: str, max_chars: int) -> int:
+    """
+    Find the best split position at or before max_chars.
+
+    Never splits mid-word. Search order:
+      1. Clause/sentence boundary (.?!,;—) followed by a space — best prosody
+      2. Any space — word boundary fallback
+      3. max_chars — last resort (only if no space exists at all)
+    """
+    if len(text) <= max_chars:
+        return len(text)
+
+    # 1. Clause boundary: scan backwards from max_chars for punct+space
+    for i in range(max_chars, 0, -1):
+        if text[i - 1] in _CLAUSE_BOUNDARIES and i < len(text) and text[i] == " ":
+            return i
+
+    # 2. Word boundary: scan backwards for any space
+    for i in range(max_chars, 0, -1):
+        if text[i - 1] == " ":
+            return i
+
+    # 3. Last resort — character limit (no spaces found)
+    return max_chars
+
 
 def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
     """
@@ -203,6 +231,7 @@ def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
          Only when left fragment ≥ _SPLIT_MIN_LEFT (avoids splitting "Just to confirm —")
       2. "? " / "! " / ". " — sentence boundaries (abbreviation + decimal guards)
       3. ", " — only when left fragment already ≥ max_chars // 2 chars
+      4. _find_split_point() — word-boundary fallback; never splits mid-word
 
     Trailing fragments under _SPLIT_MIN_RIGHT chars are merged into the
     preceding sub-chunk (avoids unnatural TTS prosody on very short inputs).
@@ -247,8 +276,11 @@ def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
             if idx != -1 and idx >= max_chars // 2:
                 split_at = idx + len(", ")
 
-        if split_at == -1 or split_at >= len(remaining):
-            # No usable split point — emit the whole remainder as-is
+        # Priority 4: word-boundary fallback — never split mid-word
+        if split_at == -1:
+            split_at = _find_split_point(remaining, max_chars)
+
+        if split_at >= len(remaining):
             break
 
         parts.append(remaining[:split_at].strip())

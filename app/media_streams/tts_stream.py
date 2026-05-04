@@ -60,23 +60,18 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # TTS phonetic substitution table
 # ---------------------------------------------------------------------------
-# Applied to ALL text before it reaches any TTS engine (ElevenLabs or OpenAI).
 # The LLM and routing logic always use the canonical spelling; only the audio
-# synthesis layer receives the phonetic form.
+# synthesis layer receives the phonetic form where needed.
 #
-# Alcester: British English /ˈɔːlstə/ — "AWL-stuh".
-#   "Awlstuh" guides both ElevenLabs and OpenAI TTS to the correct sounds:
-#     - "Awl"  → /ɔːl/ (rhymes with "ball")
-#     - "stuh" → /stə/ (schwa — no hard trailing r)
-#   Previous OpenAI-only attempt "Awlster" added a distinct /r/ sound and
-#   was ElevenLabs-blind.  This replaces it for both engines.
-# ElevenLabs path: pronunciation dictionary not active in production,
-# so use the same phonetic substitution as the OpenAI path.
-_TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = [
-    (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
-]
+# ElevenLabs path: no substitutions — ElevenLabs is a British-trained model
+# and pronounces "Alcester" correctly (/ˈɔːlstə/) without guidance.
+# Do NOT add phonetic spellings here; they cause unnatural speech artefacts.
+_TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = []
 
 # OpenAI fallback path.
+# Alcester: British English /ˈɔːlstə/ — "AWL-stuh".
+#   OpenAI TTS has no pronunciation dictionary so needs the phonetic form.
+#   "Awlstuh": "Awl" → /ɔːl/ (rhymes with "ball"), "stuh" → /stə/ (schwa).
 _TTS_SUBSTITUTIONS_OPENAI: list[tuple] = [
     (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
 ]
@@ -571,7 +566,7 @@ class TTSStream:
                 if not chunk_text or not chunk_text.strip():
                     continue
 
-                # Apply ElevenLabs-specific substitutions (no Awlstuh — pron dict handles it).
+                # Apply ElevenLabs-specific substitutions (list is intentionally empty).
                 chunk_text = _apply_tts_substitutions_elevenlabs(chunk_text)
                 await ws.send(json.dumps({"text": chunk_text, "flush": False}))
                 logger.debug("[ms_tts_ws] sent text: %r", chunk_text[:40])
