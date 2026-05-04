@@ -592,6 +592,12 @@ class SilenceHandler:
         # state.  Used by the watchdog Phase 3 guard to suppress firing during
         # active keypad entry even if phone_dtmf_buffer has been cleared by a race.
         self.last_dtmf_at: float = 0.0
+        # Set True when the no-input watchdog retires after exhausting re-asks
+        # for a given question generation.  on_tts_finished suppresses timer
+        # re-arm while this is True so a late TTS callback cannot re-trigger
+        # the watchdog cycle after it has already concluded.  Reset on every
+        # new question (q_gen increment in on_question_asked).
+        self._watchdog_has_retired: bool = False
         # Timestamp when the last question's TTS audio finished playing (set in
         # on_tts_finished just before _restart_timer).  Used by _speech_recovery to
         # enforce a minimum response window so energy VAD noise before the caller
@@ -1054,6 +1060,7 @@ class SilenceHandler:
             self._no_input_reask_count = 0  # new question — reset dead-air watchdog counter
             self._last_question_set_at = time.time()
             self._q_gen               += 1   # new question = new silence generation
+            self._watchdog_has_retired = False  # new question — watchdog may fire again
             # Reset per-prompt caller-speech guard: this is a genuinely new
             # assistant question, so the next watchdog arm should fire normally
             # on true silence but suppress if the caller starts speaking first.
@@ -1200,6 +1207,13 @@ class SilenceHandler:
             # prevent W2 / W3 from ever triggering.
             # reask_count is reset to 0 by on_transcript_received, so this
             # guard is lifted as soon as the caller speaks again.
+            return
+        if self._watchdog_has_retired:
+            # The no-input watchdog has already exhausted re-asks for this
+            # question generation.  A late TTS callback must not re-arm the
+            # silence timer and restart the watchdog cycle — that would loop
+            # indefinitely.  The flag is reset on the next on_question_asked().
+            logger.debug("[ms_silence] on_tts_finished: watchdog retired — suppressing timer")
             return
         t = text.strip()
         if t.startswith("Sorry,") or t.startswith("Sorry about") or "didn't quite catch" in t:
@@ -1767,17 +1781,30 @@ class SilenceHandler:
                 if (_sess or {}).get("v3_location_q_active"):
                     _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
                     if _v3_lrc == 0:
-                        # 1st re-ask: repeat the original question
+                        # Rung 1: repeat the original location question verbatim
                         _lq_g = (_sess or {}).get("last_question") or self.last_question
                         if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
                             phrase = _prefix + ". " + _lq_g.strip()
                         else:
                             phrase = _prefix + ". Which clinic were you thinking of — Alcester or Redditch?"
-                    else:
-                        # 2nd+ re-ask: bias toward Alcester, set confirmation flag
+                    elif _v3_lrc == 1:
+                        # Rung 2: biased binary — bet on Alcester so caller can say "yes".
+                        # "No" / Redditch signal are handled by v3_awaiting_use_this_clinic.
                         phrase = "Did you say the Alcester clinic?"
                         if _sess is not None:
                             _sess["v3_awaiting_use_this_clinic"] = True
+                            _sess["last_question"] = phrase
+                    else:
+                        # Rung 3: DTMF keypad fallback — completely deterministic, no STT.
+                        # Clear v3_location_q_active so the ladder stops here.
+                        phrase = (
+                            "No problem — press 1 on your keypad for Alcester "
+                            "or 2 for Redditch."
+                        )
+                        if _sess is not None:
+                            _sess["v3_awaiting_location_dtmf"] = True
+                            _sess["v3_awaiting_use_this_clinic"] = False
+                            _sess["v3_location_q_active"] = False
                             _sess["last_question"] = phrase
                     if _sess is not None:
                         _sess["v3_location_reask_count"] = _v3_lrc + 1
@@ -1908,6 +1935,27 @@ class SilenceHandler:
             # DTMF branch (line ~1426) and emits the keypad prompt.  Phase 4
             # still terminates cleanly at attempt #3 via the graceful-exit
             # / transfer path so we never loop forever.
+            #
+            # theorem_v3 GREETING path: v3 never enters a named FlowEngine
+            # state so state stays "GREETING" throughout.  The location retry
+            # ladder (v3_location_reask_count 0→1→2) mirrors the ASK_LOCATION
+            # escalation: rung 1 repeats question, rung 2 fires biased confirm,
+            # rung 3 fires DTMF and clears v3_location_q_active.  Once
+            # v3_location_q_active is cleared the check below is False and
+            # the watchdog retires cleanly after the DTMF prompt.
+            if (
+                _state in ("GREETING", "DETECT_INTENT", "")
+                and bool((_sess or {}).get("v3_location_q_active"))
+            ):
+                armed_at = time.time()
+                logger.info(
+                    "[ms_watchdog] WATCHDOG_LADDER_CONTINUE q_gen=%d state=%s "
+                    "attempt=#%d v3_lrc=%d — v3 location ladder active",
+                    q_gen, _state, _attempt,
+                    int((_sess or {}).get("v3_location_reask_count", 0)),
+                )
+                continue
+
             _ladder_states = {"ASK_LOCATION"}
             if _state in _ladder_states and _attempt < 2:
                 armed_at = time.time()
@@ -1921,6 +1969,7 @@ class SilenceHandler:
                 "[ms_watchdog] WATCHDOG_RETIRE q_gen=%d reason=audible_reask_done",
                 q_gen,
             )
+            self._watchdog_has_retired = True
             return
 
     def _restart_timer(self) -> None:
@@ -2509,6 +2558,12 @@ class WebSocketCallHandler:
         self._tts_pending_chunk_seq: int = 0
         self._current_chunk_seq: int = 0
 
+        # ── Global 10-second silence safety net ───────────────────────────
+        # _last_audio_or_transcript_ts is updated at TTS start and on every
+        # accepted transcript so _silence_safety_net() can detect genuine
+        # dead-air periods where the entire pipeline has stalled.
+        self._last_audio_or_transcript_ts: float = 0.0
+
         # ── Silence handler (4-second re-ask) ─────────────────────────────
         # Created eagerly so _handle_media can call on_audio_received() before
         # the LLM loop starts.  tts_text_queue exists from __init__ so it's
@@ -2572,12 +2627,13 @@ class WebSocketCallHandler:
         await self.websocket.accept()
 
         tasks = [
-            asyncio.create_task(self._receive_loop(),  name="ms_receive"),
-            asyncio.create_task(self._audio_in_loop(), name="ms_audio_in"),
-            asyncio.create_task(self._stt_loop(),      name="ms_stt"),
-            asyncio.create_task(self._llm_loop(),      name="ms_llm"),
-            asyncio.create_task(self._tts_loop(),      name="ms_tts"),
-            asyncio.create_task(self._send_loop(),     name="ms_send"),
+            asyncio.create_task(self._receive_loop(),       name="ms_receive"),
+            asyncio.create_task(self._audio_in_loop(),      name="ms_audio_in"),
+            asyncio.create_task(self._stt_loop(),           name="ms_stt"),
+            asyncio.create_task(self._llm_loop(),           name="ms_llm"),
+            asyncio.create_task(self._tts_loop(),           name="ms_tts"),
+            asyncio.create_task(self._send_loop(),          name="ms_send"),
+            asyncio.create_task(self._silence_safety_net(), name="ms_safety_net"),
             # _silence_reask_loop replaced by SilenceHandler (event-driven)
         ]
 
@@ -3192,6 +3248,9 @@ class WebSocketCallHandler:
 
                     if not utterance or not utterance.strip():
                         continue
+
+                    # Safety net anchor: accepted transcript keeps dead-air guard at bay.
+                    self._last_audio_or_transcript_ts = time.monotonic()
 
                     # Queue overlapping utterances while a turn is generating.
                     # Previously these were dropped; storing them instead means
@@ -4625,6 +4684,9 @@ class WebSocketCallHandler:
                 if not utterance or not utterance.strip():
                     continue
 
+                # Safety net anchor: accepted transcript keeps dead-air guard at bay.
+                self._last_audio_or_transcript_ts = time.monotonic()
+
                 # Drop if the previous turn is still generating
                 if self._llm_busy:
                     logger.info(
@@ -5192,6 +5254,8 @@ class WebSocketCallHandler:
                 # Capture the timestamp set by on_tts_started() so _delayed_tts_finished
                 # can pass it to on_tts_finished() for the multi-chunk stale check.
                 _chunk_tts_start_ts = self._silence_handler._tts_last_start_ts
+                # Safety net anchor: TTS activity keeps the 10s dead-air guard at bay.
+                self._last_audio_or_transcript_ts = time.monotonic()
 
                 for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
@@ -5905,6 +5969,88 @@ class WebSocketCallHandler:
             pass
         finally:
             self._stop_event.set()
+
+    # ========================================================================
+    # Global 10-second silence safety net
+    # ========================================================================
+
+    async def _silence_safety_net(self) -> None:
+        """Last-resort 10-second dead-air backstop.
+
+        Wakes every 10 seconds and emits a soft re-ask phrase when ALL of the
+        following conditions hold simultaneously (meaning nothing else is going
+        to break the silence):
+
+          1. No TTS has started and no transcript has arrived for ≥ 10 s
+             (_last_audio_or_transcript_ts is the anchor).
+          2. LLM is not busy (_llm_busy is False).
+          3. SilenceHandler is not actively playing TTS (_tts_playing is False).
+          4. No DTMF input is expected (_is_dtmf_expected returns False).
+          5. The no-input watchdog is not already running.
+
+        When all five pass we enqueue a minimal "Are you still there?" prompt
+        using the _WATCHDOG_REASK_MARKER so _tts_loop bypasses dedup, then
+        reset the anchor so we don't loop immediately.
+
+        This is intentionally narrow — it never fires during normal call flow
+        because at least one of conditions 2–5 is always true then.  It only
+        triggers in genuine edge-case stalls (e.g. SilenceHandler suppressed by
+        a bug, watchdog task leaked, or pipeline deadlock).
+        """
+        _INTERVAL = 10.0
+        _PHRASE = "Sorry, I didn't quite catch that — are you still there?"
+
+        await self._wait_for_start("silence_safety_net")
+        # Seed timestamp so we don't fire in the first 10 s of the call.
+        self._last_audio_or_transcript_ts = time.monotonic()
+
+        try:
+            while not self._stop_event.is_set():
+                await asyncio.sleep(_INTERVAL)
+                if self._stop_event.is_set():
+                    break
+
+                _now = time.monotonic()
+                _since = _now - self._last_audio_or_transcript_ts
+
+                # 1. Dead-air window
+                if _since < _INTERVAL:
+                    continue
+
+                # 2. LLM currently generating
+                if self._llm_busy:
+                    continue
+
+                # 3. TTS currently playing
+                if getattr(self._silence_handler, "_tts_playing", False):
+                    continue
+
+                # 4. DTMF expected — watchdog stands down in keypad mode
+                if _is_dtmf_expected(self.session):
+                    continue
+
+                # 5. No-input watchdog is already active
+                _wd = self._silence_handler._no_input_watchdog_task
+                if _wd and not _wd.done():
+                    continue
+
+                logger.warning(
+                    "[ms_safety_net] 10s dead-air — emitting safety re-ask "
+                    "(since=%.1fs llm_busy=%s tts_playing=%s)",
+                    _since,
+                    self._llm_busy,
+                    getattr(self._silence_handler, "_tts_playing", False),
+                )
+                # Clear tts_inhibit in case a stale barge-in flag is blocking TTS.
+                self.session["tts_inhibit"] = False
+                await self.tts_text_queue.put(_WATCHDOG_REASK_MARKER + _PHRASE)
+                # Reset anchor to avoid immediate re-fire on next wake.
+                self._last_audio_or_transcript_ts = time.monotonic()
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error("[ms_safety_net] fatal: %r", exc)
 
     # ========================================================================
     # Cleanup
