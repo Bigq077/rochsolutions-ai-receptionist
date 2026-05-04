@@ -70,14 +70,14 @@ logger = logging.getLogger(__name__)
 #     - "stuh" → /stə/ (schwa — no hard trailing r)
 #   Previous OpenAI-only attempt "Awlster" added a distinct /r/ sound and
 #   was ElevenLabs-blind.  This replaces it for both engines.
-# ElevenLabs path: the pronunciation dictionary alias handles Alcester
-# natively, so "Awlstuh" must NOT be sent — it would double-convert.
-_TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = []
+# ElevenLabs path: pronunciation dictionary not active in production,
+# so use the same phonetic substitution as the OpenAI path.
+_TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = [
+    (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
+]
 
-# OpenAI fallback path: no pronunciation dictionary is available, so
-# the phonetic spelling is the only mechanism.
+# OpenAI fallback path.
 _TTS_SUBSTITUTIONS_OPENAI: list[tuple] = [
-    # (compiled_pattern, replacement)
     (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
 ]
 
@@ -85,10 +85,6 @@ _TTS_SUBSTITUTIONS_OPENAI: list[tuple] = [
 def _apply_tts_substitutions_elevenlabs(text: str) -> str:
     """
     Apply ElevenLabs-specific substitutions before synthesis.
-
-    Alcester is intentionally NOT substituted here — the ElevenLabs
-    pronunciation dictionary alias handles it natively.  Sending "Awlstuh"
-    to ElevenLabs would cause a double-conversion artefact.
     """
     for pattern, replacement in _TTS_SUBSTITUTIONS_ELEVENLABS:
         text = pattern.sub(replacement, text)
@@ -242,8 +238,6 @@ class TTSStream:
         if not text or not text.strip():
             return
 
-        # Apply ElevenLabs-specific substitutions.  Alcester is NOT converted
-        # to "Awlstuh" here — the pronunciation dictionary alias handles it.
         text = _apply_tts_substitutions_elevenlabs(text)
 
         # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
