@@ -2494,6 +2494,20 @@ class WebSocketCallHandler:
         # older prompt cannot restart the silence timer / overwrite last_question
         # after the flow has advanced to a new question (stale-prompt ownership fix).
         self._tts_pending_q_gen: int = -1
+        # TTS chunk sequencing — used to identify the terminal chunk of each
+        # q_gen so stale tts_finished callbacks from non-terminal chunks cannot
+        # trigger the silence timer or watchdog incorrectly.
+        # _tts_chunk_seq    — monotonically increasing per sub-chunk synthesised.
+        # _tts_expected_final_seq — seq of the last sub-chunk queued; the terminal
+        #                           chunk guard uses this to suppress non-final callbacks.
+        # _tts_pending_chunk_seq  — seq snapshot captured at sentinel placement;
+        #                           forwarded through _send_loop to _delayed_tts_finished.
+        # _current_chunk_seq      — seq of the chunk whose tts_finished is currently
+        #                           being evaluated (set inside _delayed_tts_finished).
+        self._tts_chunk_seq: int = 0
+        self._tts_expected_final_seq: int = 0
+        self._tts_pending_chunk_seq: int = 0
+        self._current_chunk_seq: int = 0
 
         # ── Silence handler (4-second re-ask) ─────────────────────────────
         # Created eagerly so _handle_media can call on_audio_received() before
@@ -5183,6 +5197,15 @@ class WebSocketCallHandler:
                     # Track current sub-chunk so barge-in resume is accurate.
                     self._current_tts_text = sub_text
 
+                    # Sequence counter: increment for every sub-chunk so
+                    # _tts_expected_final_seq always equals the last sub-chunk
+                    # queued.  The terminal chunk guard in _delayed_tts_finished
+                    # uses this to suppress non-final tts_finished callbacks.
+                    self._tts_chunk_seq += 1
+                    _this_chunk_seq = self._tts_chunk_seq
+                    self._tts_expected_final_seq = self._tts_chunk_seq
+                    self._current_chunk_seq = _this_chunk_seq
+
                     self._tts_task = asyncio.create_task(
                         tts.synthesise_chunk(
                             text=sub_text,
@@ -5215,6 +5238,10 @@ class WebSocketCallHandler:
                     # callback whose owning prompt was superseded by a new question
                     # is rejected as stale (prevents old-prompt timer restarts).
                     self._tts_pending_q_gen = self._silence_handler._q_gen
+                    # Snapshot the chunk sequence number so _delayed_tts_finished
+                    # can compare against _tts_expected_final_seq and suppress
+                    # non-terminal callbacks from intermediate chunks.
+                    self._tts_pending_chunk_seq = self._tts_chunk_seq
                     await self.audio_out_queue.put(_TTS_DONE_SENTINEL)
 
         except asyncio.CancelledError:
@@ -5256,9 +5283,11 @@ class WebSocketCallHandler:
                     text = self._tts_text_pending
                     chunk_start_ts = self._tts_pending_chunk_start_ts
                     chunk_q_gen = self._tts_pending_q_gen
+                    chunk_seq = self._tts_pending_chunk_seq
                     self._tts_text_pending = ""
                     self._tts_pending_chunk_start_ts = 0.0
                     self._tts_pending_q_gen = -1
+                    self._tts_pending_chunk_seq = 0
                     play_secs = _tts_bytes_sent / 8000.0
                     _tts_bytes_sent = 0
                     # Only arm the silence timer if audio was actually delivered.
@@ -5272,7 +5301,7 @@ class WebSocketCallHandler:
                             play_secs, text[:60],
                         )
                         asyncio.create_task(
-                            self._delayed_tts_finished(play_secs, text, self._tts_gen, chunk_start_ts, chunk_q_gen),
+                            self._delayed_tts_finished(play_secs, text, self._tts_gen, chunk_start_ts, chunk_q_gen, chunk_seq),
                             name="ms_silence_tts_delay",
                         )
                     elif text:
@@ -5319,6 +5348,7 @@ class WebSocketCallHandler:
         gen: int = 0,
         chunk_started_at: float = 0.0,
         q_gen_at_start: int = -1,
+        chunk_seq: int = 0,
     ) -> None:
         """
         Fire on_tts_finished after `delay` seconds so the silence timer starts
@@ -5369,6 +5399,31 @@ class WebSocketCallHandler:
             if hasattr(self, "_flow") and self._flow.is_complete():
                 logger.debug("[ms_silence] flow complete — skipping tts_finished")
                 return
+            # ── Terminal chunk guard ──────────────────────────────────────────
+            # Only the final chunk of a q_gen may trigger the silence timer.
+            # Earlier chunks firing tts_finished must be swallowed.
+            # This prevents stale callbacks from non-terminal chunks re-triggering
+            # state machinery mid-response (e.g. FAQ answer chunk firing the
+            # silence timer before the re-anchor question chunk has played).
+            # chunk_seq was captured at sentinel placement time; _tts_expected_final_seq
+            # is the seq of the last sub-chunk queued — if chunk_seq is behind it,
+            # a newer chunk is already in-flight or has completed.
+            self._current_chunk_seq = chunk_seq
+            _fired_seq = getattr(self, "_current_chunk_seq", 0)
+            _expected_seq = getattr(self, "_tts_expected_final_seq", 0)
+            if _fired_seq < _expected_seq:
+                logger.info(
+                    "[ms_tts] tts_finished: non-terminal "
+                    "chunk %d (expected %d) — "
+                    "silence timer suppressed",
+                    _fired_seq, _expected_seq,
+                )
+                return
+            logger.info(
+                "[ms_tts] tts_finished: terminal "
+                "chunk %d — silence timer starting",
+                _fired_seq,
+            )
             logger.info(
                 "[ms_tts] tts_finished fired: chunk_text=%r q_size=%d",
                 text[:60], self.tts_text_queue.qsize(),
@@ -5454,6 +5509,10 @@ class WebSocketCallHandler:
             # Advance the prompt generation so any in-flight _delayed_tts_finished
             # tasks for the interrupted TTS are treated as stale and ignored.
             self._tts_gen += 1
+            # Reset chunk sequencing for the new q_gen so old sequence numbers
+            # from the interrupted response cannot match new ones.
+            self._tts_chunk_seq = 0
+            self._tts_expected_final_seq = 0
             # Inhibit _tts_loop from speaking any LLM chunks that arrive after
             # the barge-in until the new turn completes (Bug 5 — stale output).
             self.session["tts_inhibit"] = True
