@@ -303,7 +303,8 @@ _DTMF_EXPECTED_FLAGS = (
     "location_awaiting_dtmf",
     "_faq_loc_awaiting_dtmf",
     "rc_kp_phone_pending",
-    "v3_slot_dtmf_active",   # theorem_v3: numbered slot / time selection
+    "v3_slot_dtmf_active",          # theorem_v3: numbered slot / time selection
+    "v3_awaiting_location_dtmf",    # theorem_v3: keypad fallback for location resolution
 )
 
 # Regex to locate each slot anchor in an LLM slot-presentation response.
@@ -2685,6 +2686,58 @@ class WebSocketCallHandler:
                 logger.info("[ms_conn] DTMF digit received — cancelling speech watchdog")
                 self._silence_handler._cancel_timer()
 
+        # ── theorem_v3 location DTMF fallback ────────────────────────────────
+        # Fires when two rounds of voice resolution failed and the caller
+        # was asked to press 1 (Alcester) or 2 (Redditch) on their keypad.
+        if self.session.get("v3_awaiting_location_dtmf"):
+            if digit == "1":
+                _loc_dtmf = "alcester"
+            elif digit == "2":
+                _loc_dtmf = "redditch"
+            else:
+                # Invalid key — re-prompt once
+                _invalid_msg = (
+                    "Press 1 for Alcester "
+                    "or 2 for Redditch."
+                )
+                await self.tts_text_queue.put(_invalid_msg)
+                self.session["last_bot_prompt"] = _invalid_msg
+                await save_session(self.call_sid, self.session)
+                return
+
+            # Valid digit — resolve location
+            self.session["v3_awaiting_location_dtmf"] = False
+            self.session["selected_location"] = _loc_dtmf
+            self.session["v3_location_confirmed"] = True
+            self.session["v3_location_asked"] = False
+            self.session["v3_location_q_active"] = False
+            _disp = _loc_dtmf.capitalize()
+            _ack = f"{_disp}, perfect."
+            _intent = self.session.get("v3_caller_intent", "booking")
+            if _intent in ("reschedule", "cancel"):
+                _next_q = (
+                    "Is the number you're calling on "
+                    "the one associated with your "
+                    "booking? If so, just say "
+                    "'use this number'."
+                )
+                self.session["v3_awaiting_phone_confirm"] = True
+            else:
+                _next_q = (
+                    f"Have you been with us at "
+                    f"{_disp} before?"
+                )
+            await self.tts_text_queue.put(_ack)
+            await self.tts_text_queue.put(_next_q)
+            self.session["last_bot_prompt"] = _next_q
+            self.session["last_question"] = _next_q
+            await save_session(self.call_sid, self.session)
+            logger.info(
+                "[ms_conn v3] DTMF location resolved: "
+                "%s (digit=%s)", _loc_dtmf, digit,
+            )
+            return
+
         # theorem_v3 intro: digit 1 → transfer to Mark; any other digit is
         # swallowed (caller mis-pressed).  Clears the flag regardless so it
         # never leaks into subsequent turns.
@@ -3378,10 +3431,56 @@ class WebSocketCallHandler:
 
                         elif _v3_loc_answering:
                             # ── LOCATION ANSWER INTERCEPT ─────────────────
-                            # 0. Intent pivot detection (must be first)
-                            # 1. use-this-clinic confirm handler
-                            # 2. code-gate alias matching
-                            # 3. Haiku resolver for anything the gate misses
+                            # 0. FAQ / question detection (must be first)
+                            # 1. Intent pivot detection
+                            # 2. use-this-clinic confirm handler
+                            # 3. code-gate alias matching
+                            # 4. Haiku resolver for anything the gate misses
+
+                            # ── FAQ / question detection ──────────────────
+                            # If the caller is asking a question rather than
+                            # answering the location prompt, route to run_turn
+                            # so the LLM can answer it.  The location question
+                            # stays pending (v3_location_asked remains True)
+                            # and will be re-asked after the LLM responds.
+                            _FAQ_SIGNALS = {
+                                "where are you", "where is", "where's",
+                                "what is", "what's", "how do", "how much",
+                                "how far", "do you", "are you", "is there",
+                                "is it", "can you", "could you", "would you",
+                                "have you", "did you", "when do", "when are",
+                                "what time", "how long", "how many",
+                                "what address", "what's the address",
+                            }
+                            _utt_lower_faq = utterance.lower().strip()
+                            _is_faq = any(
+                                _utt_lower_faq.startswith(sig)
+                                or sig in _utt_lower_faq
+                                for sig in _FAQ_SIGNALS
+                            )
+                            if _is_faq:
+                                logger.info(
+                                    "[ms_conn v3] FAQ detected in loc gate "
+                                    "— routing to run_turn: %r",
+                                    utterance[:60],
+                                )
+                                # Do NOT clear v3_location_asked — the
+                                # location question remains pending and will
+                                # be re-asked after the LLM responds.
+                                await llm.run_turn(
+                                    user_text=utterance,
+                                    session=self.session,
+                                    call_sid=self.call_sid,
+                                    stream_sid=self.stream_sid,
+                                    tts_text_queue=self.tts_text_queue,
+                                    audio_out_queue=self.audio_out_queue,
+                                    websocket=self.websocket,
+                                    on_transfer=self._on_transfer_request,
+                                )
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                continue
 
                             # ── Intent pivot detection ────────────────────
                             # If the caller changes their mind while the
@@ -3454,7 +3553,7 @@ class WebSocketCallHandler:
                                 # Caller answered the "did you say Alcester?"
                                 # fallback. Affirmative → alcester.
                                 # Redditch signal / "no" → redditch.
-                                # Genuinely unresolvable → transfer.
+                                # Genuinely unresolvable → DTMF keypad fallback.
                                 self.session[
                                     "v3_awaiting_use_this_clinic"
                                 ] = False
@@ -3577,38 +3676,52 @@ class WebSocketCallHandler:
                                         _intent,
                                     )
                                 else:
-                                    # Genuinely unresolvable — transfer
+                                    # Genuinely unresolvable after two voice
+                                    # rounds — fall back to DTMF keypad
+                                    # selection (completely deterministic,
+                                    # no STT ambiguity possible).
                                     # ── Transfer suppression guard ────────
                                     # If a biased confirm is already active
                                     # (re-set by the trailing fragment guard
-                                    # above), don't also transfer — the
-                                    # confirm must play out first.
+                                    # above), don't fire DTMF fallback yet —
+                                    # the confirm must play out first.
                                     if self.session.get(
                                         "v3_awaiting_use_this_clinic"
                                     ):
                                         logger.info(
-                                            "[ms_conn v3] transfer"
+                                            "[ms_conn v3] DTMF fallback"
                                             " suppressed — use-this-"
                                             "clinic confirm already active"
                                         )
                                         return
-                                    _transfer_msg = (
-                                        "I'm having a little trouble "
-                                        "with the line — let me get "
-                                        "someone to help you."
+                                    # ── DTMF location fallback ────────────
+                                    _dtmf_loc_q = (
+                                        "No problem — press 1 for "
+                                        "Alcester or press 2 for "
+                                        "Redditch on your keypad."
                                     )
+                                    self.session[
+                                        "v3_awaiting_location_dtmf"
+                                    ] = True
+                                    self.session[
+                                        "v3_awaiting_use_this_clinic"
+                                    ] = False
                                     await self.tts_text_queue.put(
-                                        _transfer_msg
+                                        _dtmf_loc_q
                                     )
-                                    self.session["call_outcome"] = (
-                                        "transfer"
-                                    )
+                                    self.session[
+                                        "last_bot_prompt"
+                                    ] = _dtmf_loc_q
+                                    self.session[
+                                        "last_question"
+                                    ] = _dtmf_loc_q
                                     await save_session(
                                         self.call_sid, self.session
                                     )
                                     logger.info(
                                         "[ms_conn v3] location"
-                                        " unresolvable — transferring"
+                                        " unresolvable — DTMF"
+                                        " fallback queued"
                                     )
                             else:
                                 # ── Code-gate alias matching ───────────────
@@ -4178,6 +4291,49 @@ class WebSocketCallHandler:
                                             " extracted: %s",
                                             _time_pref,
                                         )
+
+                            # ── First-turn name extraction ────────────────
+                            # If the caller introduces themselves in their
+                            # first utterance, capture the name so we don't
+                            # ask for it again later.
+                            # Patterns: "it's [name]", "I'm [name]",
+                            # "my name is [name]", "this is [name]",
+                            # "[name] here", "hello it's [name]"
+                            # re is already imported at module level (line 43).
+                            _name_patterns = [
+                                r"(?:it['’]?s|this is|i['’]?m|"
+                                r"hello[,\s]+(?:it['’]?s)?)\s+"
+                                r"([A-Za-z][a-z]{1,20})\b",
+                                r"my name is ([A-Za-z][a-z]{1,20})\b",
+                                r"^([A-Za-z][a-z]{1,20}) here\b",
+                            ]
+                            _NOT_NAMES = {
+                                "Like", "To", "An", "The", "A",
+                                "And", "Book", "Please", "Just",
+                                "Really", "Very", "Some", "My",
+                                "Your", "Our", "Hi", "Hello",
+                                "Yeah", "Yes", "No", "Ok", "Okay",
+                            }
+                            _name_found = None
+                            for _pat in _name_patterns:
+                                _nm = re.search(_pat, utterance, re.I)
+                                if _nm:
+                                    _candidate = _nm.group(1).capitalize()
+                                    if _candidate not in _NOT_NAMES:
+                                        _name_found = _candidate
+                                        break
+
+                            if _name_found:
+                                _sc = (
+                                    self.session.get("soft_context") or {}
+                                )
+                                if not _sc.get("name"):
+                                    _sc["name"] = _name_found
+                                    self.session["soft_context"] = _sc
+                                    logger.info(
+                                        "[ms_conn v3] first-turn name"
+                                        " extracted: %s", _name_found,
+                                    )
 
                             _V3_ACK_PHRASES = (
                                 "of course — i'd be happy to sort that",
@@ -5273,6 +5429,21 @@ class WebSocketCallHandler:
         )
         if not (_synthesis_active or _playback_active):
             return
+
+        # Log when barge-in fires during the playback-only window — synthesis
+        # complete but audio still playing. Previously this would have been
+        # silently missed (the guard returned early before this point existed).
+        if (
+            self._silence_handler._tts_playing
+            and not (
+                self._tts_task
+                and not self._tts_task.done()
+            )
+        ):
+            logger.info(
+                "[ms_conn] barge-in: playback-only window — "
+                "synthesis done but audio still playing"
+            )
 
         # Record barge-in start time (only once per barge-in event)
         if not self._barge_in_pending:
