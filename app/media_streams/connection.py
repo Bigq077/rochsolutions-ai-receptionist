@@ -1730,8 +1730,16 @@ class SilenceHandler:
                 )
                 continue
 
-            # Graceful exit on 3rd+ attempt
-            if _attempt >= 3:
+            # Graceful exit on 3rd+ attempt — but let v3 location DTMF rung through.
+            # The v3 ladder has 3 rungs (repeat → biased-confirm → DTMF keypad).
+            # Rung 3 fires at _attempt == 3 but needs to reach the phrase-selection
+            # block (line ~1781) to emit the DTMF prompt; intercepting it here would
+            # skip that rung entirely and drop the caller into a silent dead end.
+            _v3_rung3_pending = (
+                (_sess or {}).get("v3_location_q_active")
+                and int((_sess or {}).get("v3_location_reask_count", 0)) >= 2
+            )
+            if _attempt >= 3 and not _v3_rung3_pending:
                 # Don't transfer if the caller engaged recently — a missed STT on
                 # the 3rd attempt should not end the call while the caller is still
                 # actively speaking.  Roll back the counter and wait for either a
