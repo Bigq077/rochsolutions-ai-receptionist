@@ -1809,8 +1809,24 @@ class SilenceHandler:
                     if _sess is not None:
                         _sess["v3_location_reask_count"] = _v3_lrc + 1
                 else:
-                    # Non-location GREETING re-ask: use last_question or generic
+                    # Non-location GREETING re-ask: use last_question or generic.
+                    # Strip any slot/time confirmation prefix that precedes the
+                    # actual question — e.g. "Eleven on the 21st — could I get
+                    # your first name?" becomes "could I get your first name?"
+                    # so the re-ask doesn't replay the booking confirmation.
                     _lq_g = (_sess or {}).get("last_question") or self.last_question
+                    if _lq_g and " — " in _lq_g:
+                        _lq_parts = _lq_g.rsplit(" — ", 1)
+                        _lq_tail = _lq_parts[-1].strip()
+                        # Use trailing part if it's a question and the prefix
+                        # looks like a date/time confirmation (contains a digit
+                        # or ordinal suffix).
+                        if (
+                            _lq_tail.endswith("?")
+                            and len(_lq_tail) >= 10
+                            and re.search(r"\d|st\b|nd\b|rd\b|th\b", _lq_parts[0])
+                        ):
+                            _lq_g = _lq_tail
                     if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
                         phrase = _prefix + ". " + _lq_g.strip()
                     else:
@@ -4374,10 +4390,10 @@ class WebSocketCallHandler:
                             # "[name] here", "hello it's [name]"
                             # re is already imported at module level (line 43).
                             _name_patterns = [
-                                r"(?:it['’]?s|this is|i['’]?m|"
-                                r"hello[,\s]+(?:it['’]?s)?)\s+"
+                                r"\b(?:it[‘’]?s|this is|i[‘’]?m|"
+                                r"hello[,\s]+(?:it[‘’]?s)?)\s+"
                                 r"([A-Za-z][a-z]{1,20})\b",
-                                r"my name is ([A-Za-z][a-z]{1,20})\b",
+                                r"\bmy name is ([A-Za-z][a-z]{1,20})\b",
                                 r"^([A-Za-z][a-z]{1,20}) here\b",
                             ]
                             _NOT_NAMES = {
@@ -4386,6 +4402,10 @@ class WebSocketCallHandler:
                                 "Really", "Very", "Some", "My",
                                 "Your", "Our", "Hi", "Hello",
                                 "Yeah", "Yes", "No", "Ok", "Okay",
+                                # common false-positive words
+                                "Me", "It", "He", "She", "We",
+                                "Be", "Do", "Go", "At", "In",
+                                "On", "Up", "If", "As", "Is",
                             }
                             _name_found = None
                             for _pat in _name_patterns:
@@ -5522,6 +5542,10 @@ class WebSocketCallHandler:
 
         logger.info("[ms_conn] barge-in: partial=%r", text[:60])
 
+        # Reset safety-net dead-air anchor on every partial so the 10s backstop
+        # never fires while the caller is mid-sentence.
+        self._last_audio_or_transcript_ts = time.monotonic()
+
         # Always cancel the silence timer — caller is speaking.
         # on_transcript_received() handles the full reset when the utterance ends.
         self._silence_handler.on_speech_started()
@@ -5862,9 +5886,9 @@ class WebSocketCallHandler:
         # ────────────────────────────────────────────────────────────────────
         if self.session.get("clinic_id") == "theorem_v3":
             _v3_greeting = (
-                "Hi there, I'm Susie, Theorem Health's AI receptionist. "
-                "If you'd like to speak to Mark directly, press 1 on your keypad. "
-                "Otherwise, how can I help you today?"
+                "Hi there, I'm Susie, Theorem Health's AI receptionist — "
+                "to speak to Mark directly press 1, "
+                "otherwise how can I help you today?"
             )
             logger.info("[ms_conn v3] greeting: %r", _v3_greeting[:80])
 
