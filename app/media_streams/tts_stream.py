@@ -224,11 +224,11 @@ class TTSStream:
         if not text or not text.strip():
             return
 
-        # NOTE: No text substitution here — ElevenLabs handles Alcester/Redditch
-        # pronunciation natively via the pronunciation dictionary
-        # (config/pronunciation_dict.json, loaded by _get_pron_dict_locator()).
-        # The OpenAI fallback path (_synthesise_openai_fallback) applies its own
-        # _apply_tts_substitutions() independently since it has no dictionary.
+        # Apply phonetic substitutions before sending to ElevenLabs.
+        # The pronunciation dictionary approach was tried but caused 404 errors
+        # because the dictionary was created under a different API account.
+        # Text substitution works on all API keys and all models.
+        text = _apply_tts_substitutions(text)
 
         # Dev bypass: TTS_BYPASS_CLINIC env var routes a specific clinic to
         # the OpenAI TTS fallback instead of ElevenLabs (cheaper for testing).
@@ -562,8 +562,8 @@ class TTSStream:
                 if not chunk_text or not chunk_text.strip():
                     continue
 
-                # NOTE: No substitution here — ElevenLabs WS path uses the
-                # pronunciation dictionary natively (same as HTTP path).
+                # Apply phonetic substitutions before sending (same as HTTP path).
+                chunk_text = _apply_tts_substitutions(chunk_text)
                 await ws.send(json.dumps({"text": chunk_text, "flush": False}))
                 logger.debug("[ms_tts_ws] sent text: %r", chunk_text[:40])
 
