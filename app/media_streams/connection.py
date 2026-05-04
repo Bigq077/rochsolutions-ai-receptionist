@@ -2529,6 +2529,11 @@ class WebSocketCallHandler:
         # buffer as a synthetic transcript so the flow gate can readback.
         self._dtmf_idle_task: Optional[asyncio.Task] = None
 
+        # Name-collection debounce: prevents split STT finals ("my name is" +
+        # "James") from firing two simultaneous LLM calls.
+        self._name_collection_pending: bool = False
+        self._name_collection_timer: Optional[asyncio.Task] = None
+
         # Prompt generation counter — monotonically increasing.
         # Incremented whenever a confirmed barge-in clears the active TTS.
         # Each _delayed_tts_finished task captures the generation at creation
@@ -2744,7 +2749,21 @@ class WebSocketCallHandler:
             return
 
         digit = (msg.get("dtmf") or {}).get("digit", "")
-        if not digit or digit == "#":
+        if not digit:
+            return
+
+        if digit == "#":
+            if self.session.get("v3_phone_dtmf_active"):
+                self.session["phone_dtmf_buffer"] = ""
+                _reset_msg = (
+                    "No problem — buffer cleared. "
+                    "Go ahead and type the number "
+                    "again from the beginning."
+                )
+                await self.tts_text_queue.put(_reset_msg)
+                self.session["last_bot_prompt"] = _reset_msg
+                await save_session(self.call_sid, self.session)
+                logger.info("[ms_conn] DTMF # — buffer cleared and announced")
             return
 
         # Star clears the buffer for theorem_v3 phone collection
@@ -2994,6 +3013,33 @@ class WebSocketCallHandler:
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (idle-finalize)")
+
+    async def _fire_name_reask(self) -> None:
+        """
+        Fires 800 ms after an incomplete name utterance ("my name is…") if no
+        follow-up final transcript arrived to complete it.  Asks the caller to
+        repeat their name rather than letting two overlapping LLM calls both
+        respond at once.
+        """
+        try:
+            await asyncio.sleep(0.8)
+        except asyncio.CancelledError:
+            return
+        if not self._name_collection_pending:
+            return  # follow-up arrived in time — already resolved
+        self._name_collection_pending = False
+        self._name_collection_timer = None
+        if not self.session:
+            return
+        _reask = (
+            "Sorry, I didn't quite catch your name — "
+            "could you say it again?"
+        )
+        await self.tts_text_queue.put(_reask)
+        self.session["last_bot_prompt"] = _reask
+        self.session["last_question"]   = _reask
+        await save_session(self.call_sid, self.session)
+        logger.info("[ms_conn v3] name re-ask fired after 800ms timeout")
 
     async def _handle_start(self, msg: Dict[str, Any]) -> None:
         """
@@ -3285,6 +3331,84 @@ class WebSocketCallHandler:
                     # wait for the next utterance.
                     if await self._resolve_barge_in(utterance):
                         continue
+
+                    # A2: verbal reset while keypad phone collection is active.
+                    # Intercept BEFORE _llm_busy is set so a simple continue
+                    # is sufficient to skip run_turn entirely.
+                    if self.session.get("v3_phone_dtmf_active"):
+                        _reset_words = {
+                            "reset", "clear", "start over", "start again",
+                            "wrong", "mistake", "again", "restart",
+                        }
+                        if any(w in utterance.lower() for w in _reset_words):
+                            self.session["phone_dtmf_buffer"] = ""
+                            _verbal_reset_msg = (
+                                "No problem — buffer cleared. "
+                                "Go ahead and type the number "
+                                "again from the beginning."
+                            )
+                            await self.tts_text_queue.put(_verbal_reset_msg)
+                            self.session["last_bot_prompt"] = _verbal_reset_msg
+                            self.session["last_question"]   = _verbal_reset_msg
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] verbal reset — DTMF buffer cleared: %r",
+                                utterance[:40],
+                            )
+                            continue
+
+                    # ── CHANGE B: Name collection debounce ───────────────────
+                    # STT often splits "my name is [name]" into two finals that
+                    # arrive ~700 ms apart.  If the first final is just a prefix
+                    # pattern with no actual name, park it and wait 800 ms for
+                    # the real name to arrive.  If it does, cancel the re-ask.
+                    # If it doesn't, _fire_name_reask plays a gentle re-prompt.
+                    _is_name_collection = (
+                        "name" in self.session.get(
+                            "last_question", ""
+                        ).lower()
+                    )
+                    if _is_name_collection:
+                        _utt_stripped = utterance.strip().lower()
+                        _INCOMPLETE_PATTERNS = (
+                            "my name is",
+                            "my name's",
+                            "it's",
+                            "it is",
+                            "this is",
+                            "i'm",
+                            "its",
+                        )
+                        _is_incomplete = any(
+                            _utt_stripped == p or _utt_stripped.endswith(p)
+                            for p in _INCOMPLETE_PATTERNS
+                        )
+                        if _is_incomplete:
+                            # Incomplete prefix — park and wait for full name.
+                            self._name_collection_pending = True
+                            if self._name_collection_timer:
+                                self._name_collection_timer.cancel()
+                            self._name_collection_timer = asyncio.create_task(
+                                self._fire_name_reask()
+                            )
+                            logger.info(
+                                "[ms_conn v3] incomplete name utterance — "
+                                "waiting 800ms: %r",
+                                utterance,
+                            )
+                            continue
+                        elif self._name_collection_pending:
+                            # Follow-up arrived within 800 ms — cancel re-ask.
+                            self._name_collection_pending = False
+                            if self._name_collection_timer:
+                                self._name_collection_timer.cancel()
+                                self._name_collection_timer = None
+                            logger.info(
+                                "[ms_conn v3] name follow-up received — "
+                                "timer cancelled, passing to run_turn: %r",
+                                utterance,
+                            )
+                            # fall through — process normally
 
                     self._in_barge_in_recovery = False
                     self._llm_busy = True
