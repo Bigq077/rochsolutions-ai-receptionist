@@ -292,19 +292,19 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         _tz = pytz.timezone("Europe/London")
     _now = datetime.now(_tz)
     _today_weekday = _now.strftime("%A")          # e.g. "Saturday"
-    _today_date    = _now.strftime("%-d %B %Y")   # e.g. "14 March 2026"
+    _today_date    = str(_now.day) + _now.strftime(" %B %Y")   # e.g. "14 March 2026"
 
     # Compute this week's Sunday and next week's Monday/Sunday for date-filter injection
     from datetime import timedelta as _td
     _weekday_num = _now.weekday()  # Mon=0 … Sun=6
     _days_until_sunday = (6 - _weekday_num) % 7
     _this_sunday = _now + _td(days=(_days_until_sunday if _days_until_sunday > 0 else 7))
-    _this_sunday_date = _this_sunday.strftime("%-d %B %Y")
+    _this_sunday_date = str(_this_sunday.day) + _this_sunday.strftime(" %B %Y")
     _next_monday = _this_sunday + _td(days=1)
-    _next_monday_date = _next_monday.strftime("%-d %B %Y")
+    _next_monday_date = str(_next_monday.day) + _next_monday.strftime(" %B %Y")
     _next_monday_iso = _next_monday.strftime("%Y-%m-%d")
     _next_sunday = _next_monday + _td(days=6)   # last day of next week
-    _next_sunday_date = _next_sunday.strftime("%-d %B %Y")
+    _next_sunday_date = str(_next_sunday.day) + _next_sunday.strftime(" %B %Y")
 
     clinic = get_clinic(session.get("clinic_id"))
     clinic_name = clinic.get("display_name", "the clinic")
@@ -1283,16 +1283,16 @@ def _build_theorem_v3(session: dict) -> str:
         _tz = pytz.timezone("Europe/London")
     _now = _dt.now(_tz)
     _today_weekday    = _now.strftime("%A")           # e.g. "Saturday"
-    _today_date       = _now.strftime("%-d %B %Y")   # e.g. "2 May 2026"
+    _today_date       = str(_now.day) + _now.strftime(" %B %Y")  # e.g. "2 May 2026"
     _weekday_num      = _now.weekday()                # Mon=0 … Sun=6
     _days_until_sunday = (6 - _weekday_num) % 7
     _this_sunday      = _now + _td(days=(_days_until_sunday if _days_until_sunday > 0 else 7))
-    _this_sunday_date = _this_sunday.strftime("%-d %B %Y")
+    _this_sunday_date = str(_this_sunday.day) + _this_sunday.strftime(" %B %Y")
     _next_monday      = _this_sunday + _td(days=1)
-    _next_monday_date = _next_monday.strftime("%-d %B %Y")
+    _next_monday_date = str(_next_monday.day) + _next_monday.strftime(" %B %Y")
     _next_monday_iso  = _next_monday.strftime("%Y-%m-%d")
     _next_sunday      = _next_monday + _td(days=6)   # last day of next week
-    _next_sunday_date = _next_sunday.strftime("%-d %B %Y")
+    _next_sunday_date = str(_next_sunday.day) + _next_sunday.strftime(" %B %Y")
 
     # SINGLE STATIC BLOCK — clean rewrite (replaces former b1/b_crit/b2/b3/b4/b5).
     # No section appears twice; no contradictions across sections.
