@@ -2585,6 +2585,13 @@ class WebSocketCallHandler:
         # dead-air periods where the entire pipeline has stalled.
         self._last_audio_or_transcript_ts: float = 0.0
 
+        # ── Per-turn LLM task reference ───────────────────────────────────
+        # Stored so that if a newer transcript arrives while an LLM call is
+        # already in-flight (edge-case race: two rapid STT finals both pass
+        # the _llm_busy guard before it is set), the stale task is cancelled
+        # before the new one starts.  Reset to None in the turn finally block.
+        self._current_llm_task: Optional[asyncio.Task] = None
+
         # ── Silence handler (4-second re-ask) ─────────────────────────────
         # Created eagerly so _handle_media can call on_audio_received() before
         # the LLM loop starts.  tts_text_queue exists from __init__ so it's
@@ -2754,7 +2761,14 @@ class WebSocketCallHandler:
 
         if digit == "#":
             if self.session.get("v3_phone_dtmf_active"):
+                # Ordering guarantee: clear the buffer and persist it BEFORE
+                # queuing TTS.  The await asyncio.sleep(0) yields to the event
+                # loop so the dict mutation is visible to any concurrent reader
+                # before the TTS coroutine starts consuming the queue.
                 self.session["phone_dtmf_buffer"] = ""
+                logger.info("[ms_conn] DTMF # — buffer cleared")
+                await asyncio.sleep(0)          # yield: clear resolves before TTS
+                await save_session(self.call_sid, self.session)  # persist before TTS
                 _reset_msg = (
                     "No problem — buffer cleared. "
                     "Go ahead and type the number "
@@ -2762,22 +2776,24 @@ class WebSocketCallHandler:
                 )
                 await self.tts_text_queue.put(_reset_msg)
                 self.session["last_bot_prompt"] = _reset_msg
-                await save_session(self.call_sid, self.session)
-                logger.info("[ms_conn] DTMF # — buffer cleared and announced")
+                logger.info("[ms_conn] DTMF # — reset announced (ordering: clear→save→TTS)")
             return
 
         # Star clears the buffer for theorem_v3 phone collection
         if digit == "*":
             if self.session.get("v3_phone_dtmf_active"):
+                # Same ordering guarantee as # handler above.
                 self.session["phone_dtmf_buffer"] = ""
+                logger.info("[ms_conn v3] DTMF * — buffer cleared")
+                await asyncio.sleep(0)          # yield: clear resolves before TTS
+                await save_session(self.call_sid, self.session)  # persist before TTS
                 _clear_msg = (
                     "No problem — buffer cleared. "
                     "Go ahead and type the number again."
                 )
                 await self.tts_text_queue.put(_clear_msg)
                 self.session["last_bot_prompt"] = _clear_msg
-                await save_session(self.call_sid, self.session)
-                logger.info("[ms_conn v3] DTMF * — buffer cleared")
+                logger.info("[ms_conn v3] DTMF * — reset announced (ordering: clear→save→TTS)")
             return
 
         # First real keypad press: cancel any leftover speech watchdog / W1-W3
@@ -3680,19 +3696,45 @@ class WebSocketCallHandler:
                                 # Do NOT clear v3_location_asked — the
                                 # location question remains pending and will
                                 # be re-asked after the LLM responds.
-                                await llm.run_turn(
-                                    user_text=utterance,
-                                    session=self.session,
-                                    call_sid=self.call_sid,
-                                    stream_sid=self.stream_sid,
-                                    tts_text_queue=self.tts_text_queue,
-                                    audio_out_queue=self.audio_out_queue,
-                                    websocket=self.websocket,
-                                    on_transfer=self._on_transfer_request,
+                                if self._current_llm_task and not self._current_llm_task.done():
+                                    logger.warning(
+                                        "[ms_conn v3] stale LLM task at FAQ "
+                                        "path — cancelling, new transcript wins"
+                                    )
+                                    self._current_llm_task.cancel()
+                                    try:
+                                        await self._current_llm_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                    self._current_llm_task = None
+                                self._current_llm_task = asyncio.create_task(
+                                    llm.run_turn(
+                                        user_text=utterance,
+                                        session=self.session,
+                                        call_sid=self.call_sid,
+                                        stream_sid=self.stream_sid,
+                                        tts_text_queue=self.tts_text_queue,
+                                        audio_out_queue=self.audio_out_queue,
+                                        websocket=self.websocket,
+                                        on_transfer=self._on_transfer_request,
+                                    ),
+                                    name="ms_llm_turn",
                                 )
-                                await save_session(
-                                    self.call_sid, self.session
-                                )
+                                _faq_run_cancelled = False
+                                try:
+                                    await self._current_llm_task
+                                except asyncio.CancelledError:
+                                    logger.info(
+                                        "[ms_conn v3] FAQ run_turn cancelled"
+                                        " — newer transcript wins"
+                                    )
+                                    _faq_run_cancelled = True
+                                finally:
+                                    self._current_llm_task = None
+                                if not _faq_run_cancelled:
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
                                 continue
 
                             # ── Intent pivot detection ────────────────────
@@ -4297,16 +4339,52 @@ class WebSocketCallHandler:
                             # ── Normal path: run free-form LLM turn ─────────
                             # Handles TTS streaming, tool calls, and
                             # conversation_history append internally.
-                            await llm.run_turn(
-                                user_text=utterance,
-                                session=self.session,
-                                call_sid=self.call_sid,
-                                stream_sid=self.stream_sid,
-                                tts_text_queue=self.tts_text_queue,
-                                audio_out_queue=self.audio_out_queue,
-                                websocket=self.websocket,
-                                on_transfer=self._on_transfer_request,
+                            #
+                            # Per-turn in-flight lock: cancel any stale LLM
+                            # task before starting a new one so two rapid STT
+                            # finals cannot produce concurrent Anthropic calls.
+                            if self._current_llm_task and not self._current_llm_task.done():
+                                logger.warning(
+                                    "[ms_conn v3] stale LLM task at normal "
+                                    "path — cancelling, new transcript wins"
+                                )
+                                self._current_llm_task.cancel()
+                                try:
+                                    await self._current_llm_task
+                                except asyncio.CancelledError:
+                                    pass
+                                self._current_llm_task = None
+
+                            self._current_llm_task = asyncio.create_task(
+                                llm.run_turn(
+                                    user_text=utterance,
+                                    session=self.session,
+                                    call_sid=self.call_sid,
+                                    stream_sid=self.stream_sid,
+                                    tts_text_queue=self.tts_text_queue,
+                                    audio_out_queue=self.audio_out_queue,
+                                    websocket=self.websocket,
+                                    on_transfer=self._on_transfer_request,
+                                ),
+                                name="ms_llm_turn",
                             )
+                            _run_turn_cancelled = False
+                            try:
+                                await self._current_llm_task
+                            except asyncio.CancelledError:
+                                logger.info(
+                                    "[ms_conn v3] run_turn task cancelled "
+                                    "— newer transcript wins"
+                                )
+                                _run_turn_cancelled = True
+                            finally:
+                                self._current_llm_task = None
+
+                            if _run_turn_cancelled:
+                                # Skip all post-turn processing — outer finally
+                                # at line ~4800 still clears _llm_busy before
+                                # this continue reaches the while-loop top.
+                                continue
 
                             # Persist session
                             await save_session(self.call_sid, self.session)
