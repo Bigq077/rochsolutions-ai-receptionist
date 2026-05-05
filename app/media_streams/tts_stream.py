@@ -63,10 +63,14 @@ logger = logging.getLogger(__name__)
 # The LLM and routing logic always use the canonical spelling; only the audio
 # synthesis layer receives the phonetic form where needed.
 #
-# ElevenLabs path: no substitutions — ElevenLabs is a British-trained model
-# and pronounces "Alcester" correctly (/ˈɔːlstə/) without guidance.
-# Do NOT add phonetic spellings here; they cause unnatural speech artefacts.
-_TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = []
+# ElevenLabs path: belt-and-suspenders phonetic substitution.
+# Even though ElevenLabs may handle British place names, call logs confirmed
+# it was mispronouncing "Alcester" without this rule active.  All hardcoded
+# TTS strings also use "Awlstuh" directly, so this catches any LLM-generated
+# "Alcester" that slips through.
+_TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = [
+    (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
+]
 
 # OpenAI fallback path.
 # Alcester: British English /ˈɔːlstə/ — "AWL-stuh".

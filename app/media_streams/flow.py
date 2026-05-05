@@ -3830,9 +3830,9 @@ class FlowEngine:
         if self.session.get("needs_location"):
             self.session["state"] = "ASK_LOCATION"
             if self._active_flow is RESCHEDULE_FLOW:
-                _loc_q = "Was your original appointment at our Alcester or Redditch clinic?"
+                _loc_q = "Was your original appointment at our Awlstuh or Redditch clinic?"
             else:
-                _loc_q = "Are you looking to book at our Alcester or Redditch clinic?"
+                _loc_q = "Are you looking to book at our Awlstuh or Redditch clinic?"
             await self._tts.put(_loc_q)
             self.session.setdefault("conversation_history", []).append(
                 {"role": "assistant", "content": _loc_q}
@@ -3950,7 +3950,7 @@ class FlowEngine:
                 or self.session.get("caller_name")
             )
             _loc_cb     = (self.session.get("selected_location") or "alcester").lower()
-            _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
+            _clinic_name = "Redditch" if "redditch" in _loc_cb else "Awlstuh"
             _name_part  = f"{_name_cb}, " if _name_cb else ""
             _cb_prompt = (
                 f"So that's {_name_part}{_slot_cb} at {_clinic_name} — shall I go ahead?"
@@ -5504,7 +5504,7 @@ class FlowEngine:
                         if _loc == "alcester":
                             _other = "Redditch"
                         elif _loc == "redditch":
-                            _other = "Alcester"
+                            _other = "Awlstuh"
                         else:
                             _other = None
                         if _other:
@@ -5515,7 +5515,7 @@ class FlowEngine:
                         else:
                             _fail_msg = (
                                 "I still can't find that booking. "
-                                "Is it at the Alcester or Redditch clinic?"
+                                "Is it at the Awlstuh or Redditch clinic?"
                             )
                     else:  # phone
                         _fail_msg = (
@@ -5707,7 +5707,7 @@ class FlowEngine:
                 )
                 _name_part = f"{_name_cb}, " if _name_cb else ""
                 _loc_cb = (self.session.get("selected_location") or "alcester").lower()
-                _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
+                _clinic_name = "Redditch" if "redditch" in _loc_cb else "Awlstuh"
 
                 # Make the actual Acuity booking now that the caller has confirmed
                 from app.tools.receptionist_tools import _exec_book_appointment as _do_book
@@ -5782,7 +5782,7 @@ class FlowEngine:
                 if self._active_flow is RESCHEDULE_FLOW or self._active_flow is CANCEL_FLOW:
                     _cp_dyn_loc = self.session.get("selected_location")
                     if _cp_dyn_loc:
-                        _cp_dyn_loc_name = "Redditch" if "redditch" in _cp_dyn_loc else "Alcester"
+                        _cp_dyn_loc_name = "Redditch" if "redditch" in _cp_dyn_loc else "Awlstuh"
                         question_text = (
                             f"For your {_cp_dyn_loc_name} appointment, "
                             "if the number you're calling on is the one associated with it, "
@@ -5813,7 +5813,7 @@ class FlowEngine:
                 # Embed resolved clinic location into the new-or-returning question
                 _nor_dyn_loc = self.session.get("selected_location")
                 if _nor_dyn_loc:
-                    _nor_dyn_loc_name = "Redditch" if "redditch" in _nor_dyn_loc else "Alcester"
+                    _nor_dyn_loc_name = "Redditch" if "redditch" in _nor_dyn_loc else "Awlstuh"
                     question_text = (
                         f"At our {_nor_dyn_loc_name} clinic, "
                         "have you been with us before, or is this your first time?"
@@ -5828,7 +5828,7 @@ class FlowEngine:
                 # Embed resolved clinic location into the reason question
                 _cr_loc = self.session.get("selected_location")
                 if _cr_loc:
-                    _cr_loc_name = "Redditch" if "redditch" in _cr_loc else "Alcester"
+                    _cr_loc_name = "Redditch" if "redditch" in _cr_loc else "Awlstuh"
                     question_text = f"What brings you in today at our {_cr_loc_name} clinic?"
                     logger.info(
                         "[ms_flow] embedded_location_bind flow=booking location=%s", _cr_loc_name
@@ -5839,7 +5839,7 @@ class FlowEngine:
                 # Embed resolved clinic location into the first reschedule/cancel question
                 _cnr_loc = self.session.get("selected_location")
                 if _cnr_loc:
-                    _cnr_loc_name = "Redditch" if "redditch" in _cnr_loc else "Alcester"
+                    _cnr_loc_name = "Redditch" if "redditch" in _cnr_loc else "Awlstuh"
                     _cnr_intent = self.session.get("intent", "reschedule")
                     if _cnr_intent == "cancel":
                         question_text = (
@@ -6765,7 +6765,7 @@ class FlowEngine:
                 _pf_new = self._extract("location_selection", text, transcript)
                 if _pf_new and _pf_new != _pf_cur:
                     self.session["selected_location"] = _pf_new
-                    _pf_name = "Alcester" if _pf_new == "alcester" else "Redditch"
+                    _pf_name = "Awlstuh" if _pf_new == "alcester" else "Redditch"
                     logger.info(
                         "[ms_flow] prefix_fallback corrected: %s → %s via %r",
                         _pf_cur, _pf_new, text[:40],
@@ -6774,7 +6774,7 @@ class FlowEngine:
                     # Bare "no" / "the other one" — flip to the other clinic
                     _pf_new = "redditch" if _pf_cur == "alcester" else "alcester"
                     self.session["selected_location"] = _pf_new
-                    _pf_name = "Alcester" if _pf_new == "alcester" else "Redditch"
+                    _pf_name = "Awlstuh" if _pf_new == "alcester" else "Redditch"
                     logger.info(
                         "[ms_flow] prefix_fallback flipped: %s → %s via %r",
                         _pf_cur, _pf_new, text[:40],
@@ -6876,7 +6876,7 @@ class FlowEngine:
                         "reason=location_correction_or_repair_prompt"
                     )
                     _lc_name = (
-                        "Redditch" if _lc_new == "redditch" else "Alcester"
+                        "Redditch" if _lc_new == "redditch" else "Awlstuh"
                     )
                     await self._tts.put(
                         f"No problem \u2014 {_lc_name} clinic. "
@@ -6974,7 +6974,7 @@ class FlowEngine:
                     )
                     _lc_clarify_q = (
                         "No problem \u2014 which clinic did you mean, "
-                        "Alcester or Redditch?"
+                        "Awlstuh or Redditch?"
                     )
                     await self._tts.put(_lc_clarify_q)
                     self.session.setdefault(
@@ -7013,7 +7013,7 @@ class FlowEngine:
                 _glc_new = _glc_result["location"]
                 if _glc_new and _glc_new != _glc_cur:
                     self.session["selected_location"] = _glc_new
-                    _glc_display = "Redditch" if _glc_new == "redditch" else "Alcester"
+                    _glc_display = "Redditch" if _glc_new == "redditch" else "Awlstuh"
                     logger.info(
                         "[ms_flow] embedded_location_corrected from=%s to=%s via %r",
                         _glc_cur, _glc_new, text[:60],
@@ -7838,7 +7838,7 @@ class FlowEngine:
                     await self._handle_mid_flow_interrupt(_gp_pending_loc, _gp_synth_tx)
                     self.session["last_question"] = _faq_topic_reanchor(self.session)
                     return
-                _gp_dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                _gp_dtmf_re = "Press 1 for Awlstuh or 2 for Redditch."
                 await self._tts.put(_gp_dtmf_re)
                 self.session["last_question"] = _gp_dtmf_re
                 return
@@ -7877,7 +7877,7 @@ class FlowEngine:
                         _gp_reconfirm = (
                             "Just to confirm \u2014 was that Redditch?"
                             if _gp_pending_guess == "redditch"
-                            else "Just to confirm \u2014 was that Alcester?"
+                            else "Just to confirm \u2014 was that Awlstuh?"
                         )
                         await self._tts.put(_gp_reconfirm)
                         self.session["last_question"] = _gp_reconfirm
@@ -7927,7 +7927,7 @@ class FlowEngine:
                     "accessibility"
                 )
                 self.session["_faq_loc_pending_sub"] = _gp_detected_sub
-                _gp_sub_reask = "Of course — is that for our Alcester or Redditch clinic?"
+                _gp_sub_reask = "Of course — is that for our Awlstuh or Redditch clinic?"
                 await self._tts.put(_gp_sub_reask)
                 self.session["last_question"] = _gp_sub_reask
                 logger.info(
@@ -7988,7 +7988,7 @@ class FlowEngine:
                     self.session["_faq_loc_retry_count"] = _gp_retry_n + 1
                     _gp_reask = (
                         "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Awlstuh clinic or the Redditch clinic?"
                     )
                     await self._tts.put(_gp_reask)
                     self.session["last_question"] = _gp_reask
@@ -7998,7 +7998,7 @@ class FlowEngine:
                     return
                 # Retry exhausted — switch to DTMF loop (never ends call)
                 self.session["_faq_loc_awaiting_dtmf"] = True
-                _gp_dtmf = "Press 1 for Alcester or 2 for Redditch."
+                _gp_dtmf = "Press 1 for Awlstuh or 2 for Redditch."
                 await self._tts.put(_gp_dtmf)
                 self.session["last_question"] = _gp_dtmf
                 logger.info("[ms_flow] faq_pending: ambiguous → DTMF mode")
@@ -8010,7 +8010,7 @@ class FlowEngine:
                     self.session["_faq_loc_retry_count"] = _gp_retry_n + 1
                     _gp_reask = (
                         "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Awlstuh clinic or the Redditch clinic?"
                     )
                     await self._tts.put(_gp_reask)
                     self.session["last_question"] = _gp_reask
@@ -8020,7 +8020,7 @@ class FlowEngine:
                     return
                 # Retry exhausted — switch to DTMF loop (never ends call)
                 self.session["_faq_loc_awaiting_dtmf"] = True
-                _gp_dtmf = "Press 1 for Alcester or 2 for Redditch."
+                _gp_dtmf = "Press 1 for Awlstuh or 2 for Redditch."
                 await self._tts.put(_gp_dtmf)
                 self.session["last_question"] = _gp_dtmf
                 logger.info("[ms_flow] faq_pending: unknown → DTMF mode")
@@ -8705,7 +8705,7 @@ class FlowEngine:
                 for t in ("the other clinic", "other one", "the other one", "other location")
             )
             if _cc_has_negation and (_cc_has_opposite or _cc_has_other):
-                _cc_display = "Redditch" if _cc_opposite == "redditch" else "Alcester"
+                _cc_display = "Redditch" if _cc_opposite == "redditch" else "Awlstuh"
                 # Rebind selected_location atomically
                 self.session["selected_location"] = _cc_opposite
                 # Re-ask the current step question so the prompt reflects the
@@ -8896,7 +8896,7 @@ class FlowEngine:
                 # clinic guess should get a triage answer, not a DTMF prompt.
                 if _is_sfit_utt(text):
                     _fc_sfit_clinic = (
-                        "Redditch" if _loc_pending_guess == "redditch" else "Alcester"
+                        "Redditch" if _loc_pending_guess == "redditch" else "Awlstuh"
                     )
                     _fc_sfit_ans = (
                         "For something like that, the clinic would usually start with "
@@ -8921,7 +8921,7 @@ class FlowEngine:
                 # generic extractor and then the DTMF fallback unnecessarily.
                 if _is_repair_utt(text):
                     _fc_clinic = (
-                        "Redditch" if _loc_pending_guess == "redditch" else "Alcester"
+                        "Redditch" if _loc_pending_guess == "redditch" else "Awlstuh"
                     )
                     _fc_repair_q = (
                         f"Sorry \u2014 I was just checking whether you meant our "
@@ -8957,8 +8957,8 @@ class FlowEngine:
                 # First unclear turn: give the caller a more explicit re-ask with
                 # a hint on how to confirm before escalating to DTMF.
                 # Second unclear turn: switch to DTMF keypad.
-                _fc_clinic_name = "Alcester" if _loc_pending_guess == "alcester" else "Redditch"
-                _fc_other_name  = "Redditch" if _loc_pending_guess == "alcester" else "Alcester"
+                _fc_clinic_name = "Awlstuh" if _loc_pending_guess == "alcester" else "Redditch"
+                _fc_other_name  = "Redditch" if _loc_pending_guess == "alcester" else "Awlstuh"
                 if not self.session.get("location_pending_guess_reask"):
                     self.session["location_pending_guess_reask"] = True
                     _fc_reask = (
@@ -8980,7 +8980,7 @@ class FlowEngine:
                     self.session.pop("location_pending_guess", None)
                     self.session.pop("location_pending_guess_reask", None)
                     self.session["location_awaiting_dtmf"] = True
-                    _fc_dtmf = "Just to make sure, press 1 for Alcester or 2 for Redditch."
+                    _fc_dtmf = "Just to make sure, press 1 for Awlstuh or 2 for Redditch."
                     await self._tts.put(_fc_dtmf)
                     self.session.setdefault("conversation_history", []).append(
                         {"role": "assistant", "content": _fc_dtmf}
@@ -9074,7 +9074,7 @@ class FlowEngine:
                     await self.ask_current_question()
                     return
                 # Not resolved — re-prompt and keep waiting; never end the call
-                _dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                _dtmf_re = "Press 1 for Awlstuh or 2 for Redditch."
                 await self._tts.put(_dtmf_re)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _dtmf_re}
@@ -9170,7 +9170,7 @@ class FlowEngine:
             if any(p in text for p in _ASK_LOC_CORRECTION_ONLY):
                 _loc_corr_bridge = (
                     "No problem \u2014 just let me know whether it\u2019s "
-                    "the Alcester clinic or the Redditch clinic."
+                    "the Awlstuh clinic or the Redditch clinic."
                 )
                 await self._tts.put(_loc_corr_bridge)
                 self.session["last_question"] = _loc_corr_bridge
@@ -9351,7 +9351,7 @@ class FlowEngine:
                 # correcting themselves, not switching to a different intent.
                 _loc_reroute_bridge = (
                     "No problem \u2014 just let me know whether it\u2019s "
-                    "the Alcester clinic or the Redditch clinic."
+                    "the Awlstuh clinic or the Redditch clinic."
                 )
                 await self._tts.put(_loc_reroute_bridge)
                 self.session["last_question"] = _loc_reroute_bridge
@@ -9396,14 +9396,14 @@ class FlowEngine:
                     "a physiotherapy assessment \u2014 they\u2019ll look at what\u2019s "
                     "going on and advise on the best next steps. "
                     "If you\u2019d like to get that booked in, would that be at "
-                    "our Alcester or Redditch clinic?"
+                    "our Awlstuh or Redditch clinic?"
                 )
                 await self._tts.put(_sfit_loc_ans)
                 self.session.setdefault("conversation_history", []).append(
                     {"role": "assistant", "content": _sfit_loc_ans}
                 )
                 self.session["last_question"] = (
-                    "Would that be at our Alcester or Redditch clinic?"
+                    "Would that be at our Awlstuh or Redditch clinic?"
                 )
                 logger.info(
                     "[ms_flow] ASK_LOCATION: service_fit_interrupt %r "
@@ -9473,7 +9473,7 @@ class FlowEngine:
             _BRC_CLINIC_TOKENS = ("alcester", "redditch", "kinwarton", "bromsgrove")
             if _brc_match and not any(ct in _brc_text for ct in _BRC_CLINIC_TOKENS):
                 _brc_loc_q = (
-                    "Would you like to book at our Alcester or Redditch clinic?"
+                    "Would you like to book at our Awlstuh or Redditch clinic?"
                 )
                 _brc_resp = (
                     "Yes, exactly \u2014 an initial assessment is the best starting "
@@ -9550,7 +9550,7 @@ class FlowEngine:
             if any(p in text.strip().lower() for p in _LOC_COMPARISON_SIGNALS):
                 _cmp_ans = (
                     "Both clinics offer the same core service \u2014 "
-                    "would you like Alcester or Redditch?"
+                    "would you like Awlstuh or Redditch?"
                 )
                 await self._tts.put(_cmp_ans)
                 self.session.setdefault("conversation_history", []).append(
@@ -9573,7 +9573,7 @@ class FlowEngine:
                 _loc_reask = (
                     self.session.get("last_question")
                     or "Which clinic would you prefer \u2014 "
-                       "our Alcester or Redditch practice?"
+                       "our Awlstuh or Redditch practice?"
                 )
                 await self._tts.put(_loc_reask)
                 self.session.setdefault("conversation_history", []).append(
@@ -9637,19 +9637,19 @@ class FlowEngine:
                     # DTMF tier — keep DTMF wording stable.
                     _loc_tier_q = (
                         self.session.get("last_question")
-                        or "Press 1 for Alcester or 2 for Redditch."
+                        or "Press 1 for Awlstuh or 2 for Redditch."
                     )
                 elif _fil_count == 1:
                     # First filler — clean replay of current tier wording.
                     _loc_tier_q = (
                         self.session.get("last_question")
-                        or "Would that be at our Alcester or Redditch clinic?"
+                        or "Would that be at our Awlstuh or Redditch clinic?"
                     )
                 else:
                     # Subsequent filler — escalate to tier-2 wording and hold there.
                     _loc_tier_q = (
                         "Sorry, I didn't quite catch that \u2014 can you please say "
-                        "the Alcester clinic or the Redditch clinic?"
+                        "the Awlstuh clinic or the Redditch clinic?"
                     )
                     # Sync retry counter so downstream ladder stays consistent
                     # with the elevated wording, but do NOT push it past 1 here —
@@ -9825,7 +9825,7 @@ class FlowEngine:
                         and not self.session.get("location_pending_guess")
                     ):
                         _pg_clinic = (
-                            "Alcester" if _sl_alc_full >= _sl_red_full else "Redditch"
+                            "Awlstuh" if _sl_alc_full >= _sl_red_full else "Redditch"
                         )
                         _pg_key = _pg_clinic.lower()
                         self.session["location_pending_guess"] = _pg_key
@@ -9874,7 +9874,7 @@ class FlowEngine:
                 if _loc_retry == 0:
                     _retry2_q = (
                         "Sorry, I didn't quite catch that \u2014 "
-                        "did you mean our Alcester clinic? "
+                        "did you mean our Awlstuh clinic? "
                         "If not, just say: no, I meant Redditch."
                     )
                     self.session["location_retry_count"]  = 1
@@ -9898,7 +9898,7 @@ class FlowEngine:
                     self.session.pop("location_pending_guess_reask", None)
                     _dtmf_q = (
                         "Sorry, I didn't quite catch that \u2014 "
-                        "could you please press 1 on your keypad for the Alcester clinic "
+                        "could you please press 1 on your keypad for the Awlstuh clinic "
                         "or 2 on your keypad for the Redditch clinic."
                     )
                     await self._tts.put(_dtmf_q)
@@ -17425,7 +17425,7 @@ class FlowEngine:
                     )
                     await self._tts.put(
                         "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Awlstuh clinic or the Redditch clinic?"
                     )
                     return
                 else:
@@ -17438,7 +17438,7 @@ class FlowEngine:
                     )
                     await self._tts.put(
                         "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Awlstuh clinic or the Redditch clinic?"
                     )
                     return
 
@@ -18100,7 +18100,7 @@ class FlowEngine:
                     )
                     await self._tts.put(
                         "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Awlstuh clinic or the Redditch clinic?"
                     )
                     return
                 else:
@@ -18112,7 +18112,7 @@ class FlowEngine:
                     )
                     await self._tts.put(
                         "Sorry, I didn't quite catch that — "
-                        "could you say the Alcester clinic or the Redditch clinic?"
+                        "could you say the Awlstuh clinic or the Redditch clinic?"
                     )
                     return
 
@@ -18671,7 +18671,7 @@ class FlowEngine:
                         if _loc == "alcester":
                             _other = "Redditch"
                         elif _loc == "redditch":
-                            _other = "Alcester"
+                            _other = "Awlstuh"
                         else:
                             _other = None
                         if _other:
@@ -18679,7 +18679,7 @@ class FlowEngine:
                                 f"Could the booking be at {_other} rather than {_loc.title()}?"
                             )
                         else:
-                            _loc_q = "Is the booking at the Alcester or Redditch clinic?"
+                            _loc_q = "Is the booking at the Awlstuh or Redditch clinic?"
                         _flush_tts()
                         await self._tts.put(_loc_q)
                         self.session["last_question"] = _loc_q
@@ -18885,7 +18885,7 @@ class FlowEngine:
                             _flush_tts()
                             await self.ask_current_question()
                             return
-                        _rl_dtmf_re = "Press 1 for Alcester or 2 for Redditch."
+                        _rl_dtmf_re = "Press 1 for Awlstuh or 2 for Redditch."
                         _flush_tts()
                         await self._tts.put(_rl_dtmf_re)
                         self.session["last_question"] = _rl_dtmf_re
@@ -18938,7 +18938,7 @@ class FlowEngine:
                             self.session["_recovery_loc_retry_count"] = _rl_retry_n + 1
                             _reask = (
                                 "Sorry, I didn't quite catch that — "
-                                "could you say the Alcester clinic or the Redditch clinic?"
+                                "could you say the Awlstuh clinic or the Redditch clinic?"
                             )
                             _flush_tts()
                             await self._tts.put(_reask)
@@ -18949,7 +18949,7 @@ class FlowEngine:
                             return
                         # Retry exhausted — DTMF loop (never ends call)
                         self.session["_recovery_loc_awaiting_dtmf"] = True
-                        _reask = "Press 1 for Alcester or 2 for Redditch."
+                        _reask = "Press 1 for Awlstuh or 2 for Redditch."
                         _flush_tts()
                         await self._tts.put(_reask)
                         self.session["last_question"] = _reask
@@ -18962,7 +18962,7 @@ class FlowEngine:
                             self.session["_recovery_loc_retry_count"] = _rl_retry_n + 1
                             _reask = (
                                 "Sorry, I didn't quite catch that — "
-                                "could you say the Alcester clinic or the Redditch clinic?"
+                                "could you say the Awlstuh clinic or the Redditch clinic?"
                             )
                             _flush_tts()
                             await self._tts.put(_reask)
@@ -18973,7 +18973,7 @@ class FlowEngine:
                             return
                         # Retry exhausted — DTMF loop (never ends call)
                         self.session["_recovery_loc_awaiting_dtmf"] = True
-                        _reask = "Press 1 for Alcester or 2 for Redditch."
+                        _reask = "Press 1 for Awlstuh or 2 for Redditch."
                         _flush_tts()
                         await self._tts.put(_reask)
                         self.session["last_question"] = _reask
@@ -19678,7 +19678,7 @@ class FlowEngine:
                     or self.session.get("caller_name")
                 )
                 _loc_cb = (self.session.get("selected_location") or "alcester").lower()
-                _clinic_name = "Redditch" if "redditch" in _loc_cb else "Alcester"
+                _clinic_name = "Redditch" if "redditch" in _loc_cb else "Awlstuh"
                 _book_args = {
                     "patient_name": _name_cb or "",
                     "phone": _to_e164_uk(
@@ -21035,7 +21035,7 @@ class FlowEngine:
                 if step["state"] in _CONFIRM_PHONE_STATES_FG:
                     _cph_loc = self.session.get("selected_location")
                     _cph_loc_name = (
-                        ("Redditch" if "redditch" in _cph_loc else "Alcester")
+                        ("Redditch" if "redditch" in _cph_loc else "Awlstuh")
                         if _cph_loc else None
                     )
                     if (
@@ -22572,7 +22572,7 @@ class FlowEngine:
                 from app.media_streams.service_fit_policy import (
                     is_treatment_suitability_question as _mfi_is_ts_al,
                 )
-                _al_loc_q = "Would you like Alcester or Redditch?"
+                _al_loc_q = "Would you like Awlstuh or Redditch?"
                 if _mfi_is_ts_al(_svc_text):
                     _al_svc_ans = (
                         "Yes \u2014 an initial assessment is the right starting point "
@@ -22760,7 +22760,7 @@ class FlowEngine:
             self.session["last_faq_answer"] = _svc_answer
         elif intent == "faq_capability":
             if self.session.get("needs_location"):
-                _al_cap_anchor = "Would you like Alcester or Redditch?"
+                _al_cap_anchor = "Would you like Awlstuh or Redditch?"
                 _al_cap_ans = (
                     "Yes \u2014 an initial assessment is the right starting point for that. "
                     + _al_cap_anchor
@@ -23122,7 +23122,7 @@ class FlowEngine:
                     # parking, transport, or address for an unspecified clinic
                     # cannot be answered accurately.  Ask which clinic the caller
                     # means instead of guessing or combining both answers.
-                    _loc_clar = "Sure — is that for our Alcester or Redditch clinic?"
+                    _loc_clar = "Sure — is that for our Awlstuh or Redditch clinic?"
                     await self._tts.put(_loc_clar)
                     self.session["_faq_loc_pending_intent"] = intent
                     self.session["_faq_loc_pending_sub"] = (
@@ -23279,7 +23279,7 @@ class FlowEngine:
                 )
                 _gq_lower = _gq_text.lower()
                 if any(p in _gq_lower for p in _CMP_SIGS_GQ):
-                    _al_cmp_anchor = "Would you like Alcester or Redditch?"
+                    _al_cmp_anchor = "Would you like Awlstuh or Redditch?"
                     _al_cmp_ans = (
                         "They offer the same core services \u2014 "
                         "it mostly comes down to which location is more convenient for you. "
@@ -23401,7 +23401,7 @@ class FlowEngine:
                 # rather than pulling last_question (which may be the raw "Alcester
                 # or Redditch?" prompt that pairs badly with brittle openers).
                 _int_anchor = (
-                    "Would you like to book at our Alcester or Redditch clinic?"
+                    "Would you like to book at our Awlstuh or Redditch clinic?"
                 )
             else:
                 _int_anchor = self.session.get("last_question", "")
@@ -24043,7 +24043,7 @@ class FlowEngine:
         # Fix D: short readback — drop the verbose preamble and reason to reduce
         # interruption risk.
         _rb_loc = (self.session.get("selected_location") or "alcester").lower()
-        _rb_clinic = "Redditch" if "redditch" in _rb_loc else "Alcester"
+        _rb_clinic = "Redditch" if "redditch" in _rb_loc else "Awlstuh"
         phrase = (
             f"Just to confirm — {name}, you're booked in for {slot} "
             f"at our {_rb_clinic} clinic. Does that sound right?"

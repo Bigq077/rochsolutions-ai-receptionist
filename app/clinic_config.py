@@ -200,9 +200,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "id": "alcester",
                 "name": "Alcester",
                 "address": (
-                    "We're at The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD. "
+                    "We're at The Greig Leisure Centre, Kinwarton Road, Awlstuh, B49 6AD. "
                     "It's a large leisure centre — look for the Everyone Active signage and the big car park out front. "
-                    "Alcester sits at the junction of the A46 and the A435, so it's easy to reach from most directions. "
+                    "Awlstuh sits at the junction of the A46 and the A435, so it's easy to reach from most directions. "
                     "From Stratford-upon-Avon it's about 8 miles, roughly 15 minutes. "
                     "From Redditch about 9 miles, 15 to 20 minutes. "
                     "From Birmingham around 21 miles, roughly 35 to 40 minutes via the M42 and A435. "
@@ -211,7 +211,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                     "The postcode B49 6AD will take you straight there on any satnav."
                 ),
                 "hours_summary": (
-                    "The Alcester clinic is open Monday to Friday, "
+                    "The Awlstuh clinic is open Monday to Friday, "
                     "nine in the morning until seven in the evening. "
                     "Last appointment is at six. We're closed on weekends."
                 ),
@@ -221,12 +221,12 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                     "There are no time limits, and disabled bays are available close to the entrance."
                 ),
                 "transport": (
-                    "Alcester doesn't have its own train station. "
+                    "Awlstuh doesn't have its own train station. "
                     "The nearest stations are Redditch — about 9 miles away, roughly 15 minutes by car — "
                     "and Stratford-upon-Avon, about 8 miles, also around 15 minutes. "
-                    "By bus, Route 26 run by Stagecoach connects Stratford-upon-Avon, Alcester, and Redditch. "
-                    "Route 247 by Diamond Bus links Redditch, Alcester, and Evesham. "
-                    "Buses stop in Alcester town centre, which is a short walk from the Greig Leisure Centre."
+                    "By bus, Route 26 run by Stagecoach connects Stratford-upon-Avon, Awlstuh, and Redditch. "
+                    "Route 247 by Diamond Bus links Redditch, Awlstuh, and Evesham. "
+                    "Buses stop in Awlstuh town centre, which is a short walk from the Greig Leisure Centre."
                 ),
             },
             {
@@ -237,7 +237,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                     "We're on the main Bromsgrove Road — look for us next to Smile Dental Care. "
                     "Bromsgrove Road is the A448, the main road heading out of Redditch town centre toward Bromsgrove. "
                     "From Birmingham it's about 15 miles, roughly 30 minutes via the A441. "
-                    "From Alcester about 9 miles, 15 to 20 minutes. "
+                    "From Awlstuh about 9 miles, 15 to 20 minutes. "
                     "From Bromsgrove about 7 miles, around 10 minutes. "
                     "From Stratford-upon-Avon about 16 miles, 25 to 30 minutes. "
                     "From Worcester about 17 miles, roughly 30 minutes. "
@@ -259,7 +259,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                     "West Midlands Railway runs the Cross-City Line from Birmingham New Street to Redditch "
                     "roughly every 30 minutes, with a journey time of about 35 to 40 minutes from Birmingham. "
                     "Several bus routes serve Bromsgrove Road: Route 52A to Bromsgrove, "
-                    "Route 247 to Alcester and Evesham, Route 150 toward Birmingham, "
+                    "Route 247 to Awlstuh and Evesham, Route 150 toward Birmingham, "
                     "and Route 512 to Stratford-upon-Avon."
                 ),
             },
@@ -270,13 +270,13 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         ],
         "address": (
             "Theorem Health and Wellness has two locations: "
-            "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD; "
+            "The Greig Leisure Centre, Kinwarton Road, Awlstuh, B49 6AD; "
             "and 51 Bromsgrove Road, Redditch, B97 4RH."
         ),
 
         # Hours summary
         "hours_summary": (
-            "Our Alcester clinic is open Monday to Friday, nine in the morning until seven in the evening — "
+            "Our Awlstuh clinic is open Monday to Friday, nine in the morning until seven in the evening — "
             "last appointment at six. Closed weekends. "
             "Our Redditch clinic is open Mondays and Thursdays only, nine to two — last appointment at one. "
             "Both clinics are closed on all UK bank holidays."
@@ -673,10 +673,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "practitioners": (
                 "We have two chartered physiotherapists. "
                 "Mark Dyer is the founder — he holds an MSc and is HCPC-registered. "
-                "He works at Alcester on Mondays, Tuesdays, and Wednesdays, "
+                "He works at Awlstuh on Mondays, Tuesdays, and Wednesdays, "
                 "and at Redditch on Thursdays. "
                 "Leanne is also a chartered physiotherapist and HCPC-registered. "
-                "She works at Alcester on Thursdays and Fridays, "
+                "She works at Awlstuh on Thursdays and Fridays, "
                 "and at Redditch on Mondays. "
                 "Both are qualified prescribers. "
                 "If you'd like to see a specific practitioner, just let me know and I'll look for "
@@ -687,13 +687,13 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "location_comparison": (
                 "Both clinics offer exactly the same services and the same team. "
                 "The main differences are availability and access. "
-                "Alcester is open Monday to Friday, so you have a lot more choice of days. "
+                "Awlstuh is open Monday to Friday, so you have a lot more choice of days. "
                 "It's at the Greig Leisure Centre, which has free parking right outside — "
                 "around 80 spaces. "
                 "Redditch is only open Mondays and Thursdays, "
                 "but it's very convenient if you're near Redditch town centre — "
                 "the train station is about a 5 to 7 minute walk from the clinic. "
-                "If you just want the most availability, Alcester is the better bet. "
+                "If you just want the most availability, Awlstuh is the better bet. "
                 "If Redditch suits your location better and Monday or Thursday works for you, "
                 "that's a perfectly good option too."
             ),
@@ -781,7 +781,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Do you offer online or telephone consultations? ────────────────
             "online_consultations": (
-                "No — all our appointments are in-person only, at either our Alcester or "
+                "No — all our appointments are in-person only, at either our Awlstuh or "
                 "Redditch clinic. "
                 "We don't currently offer video or telephone consultations."
             ),
@@ -882,7 +882,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Accessibility ──────────────────────────────────────────────────
             "accessibility": (
-                "Both our Alcester and Redditch clinics are wheelchair accessible. "
+                "Both our Awlstuh and Redditch clinics are wheelchair accessible. "
                 "If you have any specific requirements or need to discuss access before your visit, "
                 "please let us know when you book."
             ),

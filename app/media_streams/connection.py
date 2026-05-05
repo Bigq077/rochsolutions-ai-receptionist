@@ -995,10 +995,10 @@ class SilenceHandler:
                     phrase = (
                         "Sorry, I didn't quite catch that. " + _sr_lq.strip()
                         if _sr_lq and "how can i help" not in _sr_lq.lower()
-                        else "Sorry, I didn't quite catch that. Which clinic were you thinking of — Alcester or Redditch?"
+                        else "Sorry, I didn't quite catch that. Which clinic were you thinking of — Awlstuh or Redditch?"
                     )
                 else:
-                    phrase = "Did you say the Alcester clinic?"
+                    phrase = "Did you say the Awlstuh clinic?"
                     if _sr_sess:
                         _sr_sess["v3_awaiting_use_this_clinic"] = True
                         _sr_sess["last_question"] = phrase
@@ -1007,7 +1007,7 @@ class SilenceHandler:
             else:
                 phrase = "Sorry, I didn't quite catch that. Are you calling to book, reschedule, or cancel an appointment?"
         elif _state == "ASK_LOCATION":
-            phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — the Alcester clinic or the Redditch clinic?"
+            phrase = "Sorry, I didn't catch that. Which of our locations were you looking for — the Awlstuh clinic or the Redditch clinic?"
         else:
             phrase = "Sorry — I'm having a little trouble hearing you. Could you say that again?"
 
@@ -1790,7 +1790,7 @@ class SilenceHandler:
                     _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
                     if _v3_lrc == 0:
                         # Rung 1: biased confirm — lets the caller say yes/no once.
-                        phrase = "Did you say the Alcester clinic?"
+                        phrase = "Did you say the Awlstuh clinic?"
                         if _sess is not None:
                             _sess["v3_awaiting_use_this_clinic"] = True
                             _sess["last_question"] = phrase
@@ -1798,7 +1798,7 @@ class SilenceHandler:
                         # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
                         # Clear v3_location_q_active so the ladder stops here.
                         phrase = (
-                            "No problem — press 1 on your keypad for Alcester "
+                            "No problem — press 1 on your keypad for Awlstuh "
                             "or 2 for Redditch."
                         )
                         if _sess is not None:
@@ -1847,12 +1847,12 @@ class SilenceHandler:
                 # spoken turn there.  Rung 2 is the DTMF keypad fallback.
                 _APPROVED_LOC_RETRY = (
                     "Sorry, I didn't quite catch that \u2014 "
-                    "did you mean our Alcester clinic? "
+                    "did you mean our Awlstuh clinic? "
                     "If not, just say: no, I meant Redditch."
                 )
                 _APPROVED_LOC_DTMF = (
                     "Sorry, I didn't quite catch that \u2014 "
-                    "could you please press 1 on your keypad for the Alcester clinic "
+                    "could you please press 1 on your keypad for the Awlstuh clinic "
                     "or 2 on your keypad for the Redditch clinic."
                 )
                 _lrc_w = int((_sess or {}).get("location_retry_count", 0))
@@ -2259,11 +2259,11 @@ class SilenceHandler:
         if self.current_state == "ASK_LOCATION":
             _APPROVED_LOC_RETRY_W1 = (
                 "Sorry, I didn't quite catch that — "
-                "could you say the Alcester clinic or the Redditch clinic?"
+                "could you say the Awlstuh clinic or the Redditch clinic?"
             )
             _APPROVED_LOC_DTMF_W1 = (
                 "Sorry, I didn't quite catch that — "
-                "could you please press 1 on your keypad for the Alcester clinic "
+                "could you please press 1 on your keypad for the Awlstuh clinic "
                 "or 2 on your keypad for the Redditch clinic."
             )
             _lrc_w1 = int((_session_now or {}).get("location_retry_count", 0))
@@ -2822,7 +2822,7 @@ class WebSocketCallHandler:
             else:
                 # Invalid key — re-prompt once
                 _invalid_msg = (
-                    "Press 1 for Alcester "
+                    "Press 1 for Awlstuh "
                     "or 2 for Redditch."
                 )
                 await self.tts_text_queue.put(_invalid_msg)
@@ -3681,12 +3681,12 @@ class WebSocketCallHandler:
                             if _gate_intent in ("reschedule", "cancel"):
                                 _loc_q = (
                                     "Was your original appointment at "
-                                    "our Alcester or Redditch clinic?"
+                                    "our Awlstuh or Redditch clinic?"
                                 )
                             else:
                                 _loc_q = (
                                     "Which clinic were you thinking of "
-                                    "— Alcester or Redditch?"
+                                    "— Awlstuh or Redditch?"
                                 )
                             await self.tts_text_queue.put(_loc_q)
                             self.session["last_bot_prompt"] = _loc_q
@@ -3813,7 +3813,7 @@ class WebSocketCallHandler:
                                 ] = False
                                 _pivot_loc_q = (
                                     "Was your original appointment at "
-                                    "our Alcester or Redditch clinic?"
+                                    "our Awlstuh or Redditch clinic?"
                                 )
                                 await self.tts_text_queue.put(_pivot_loc_q)
                                 self.session[
@@ -3995,7 +3995,7 @@ class WebSocketCallHandler:
                                     # ── DTMF location fallback ────────────
                                     _dtmf_loc_q = (
                                         "No problem — press 1 for "
-                                        "Alcester or press 2 for "
+                                        "Awlstuh or press 2 for "
                                         "Redditch on your keypad."
                                     )
                                     self.session[
@@ -4353,7 +4353,7 @@ class WebSocketCallHandler:
                                         _confirm_q = (
                                             "Sorry, I didn't quite catch"
                                             " that — did you say the"
-                                            " Alcester clinic? If so,"
+                                            " Awlstuh clinic? If so,"
                                             " just say 'use this clinic'."
                                         )
                                         self.session[
@@ -4845,13 +4845,13 @@ class WebSocketCallHandler:
                                     if _loc_intent in ("reschedule", "cancel"):
                                         _loc_q = (
                                             "Was your original appointment "
-                                            "at our Alcester or Redditch "
+                                            "at our Awlstuh or Redditch "
                                             "clinic?"
                                         )
                                     else:
                                         _loc_q = (
                                             "Which clinic were you thinking "
-                                            "of — Alcester or Redditch?"
+                                            "of — Awlstuh or Redditch?"
                                         )
                                     # Only queue to TTS if the LLM didn't
                                     # already ask the location question in
