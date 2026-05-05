@@ -211,6 +211,34 @@ _TAIL_FRAGMENT_SAFE: frozenset = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# theorem_v3 noise-fragment filter  (SPEC 3)
+# ---------------------------------------------------------------------------
+
+# Utterances that are clearly STT noise and should be silently dropped even
+# when longer than the short-fragment length threshold.
+_V3_NOISE_FRAGMENTS: frozenset = frozenset({
+    "um", "uh", "hmm", "hm", "mm", "er", "ah", "eh",
+    "mhm", "mmm", "uhh", "umm", "huh",
+})
+
+# Utterances that must always pass through regardless of any noise heuristic.
+_V3_PRESERVE: frozenset = frozenset({
+    "yes", "no", "ok", "okay", "yep", "nope", "yeah",
+    "yup", "nah", "one", "two", "three", "four", "five",
+    "six", "seven", "eight", "nine", "ten",
+})
+
+# A string is "all-vowel noise" when every alpha character is a vowel and the
+# total length is ≤ 4 (catches "oo", "ah", "ee", "ooh" etc. from STT).
+_V3_VOWELS: frozenset = frozenset("aeiou")
+
+# If a second transcript arrives within this many seconds of the previous
+# PROCESSED transcript, and the new one is a short/noise token, treat it
+# as a rapid-fire STT artifact and drop it.
+_V3_RAPID_ARRIVAL_SEC: float = 0.30
+
+# ---------------------------------------------------------------------------
 # Sentinel object placed on audio_out_queue AFTER the last audio chunk for a
 # TTS utterance.  send_loop detects it and fires on_tts_finished() only once
 # all audio for that utterance has actually been sent to Twilio.
@@ -2601,6 +2629,20 @@ class WebSocketCallHandler:
         # tts_text_queue.  Cleared when a subsequent name transcript drains
         # the phrase or when the normal run_turn path executes.
         self._name_clarification_queued: bool = False
+        # Set to True by _fire_name_reask() immediately before queueing the
+        # re-ask phrase.  Guards the normal run_turn path: the first non-name
+        # utterance that arrives while this is True is silently discarded
+        # (one-shot) so that noise cannot trigger a competing LLM response
+        # while the clarification phrase is still queued or playing.  Cleared
+        # by the name-drain/pending-cancel branches when the name arrives, or
+        # cleared (one-shot) by the guard itself for non-name utterances.
+        self._clarification_in_flight: bool = False
+
+        # Timestamp of the last transcript that was PASSED to the LLM (not
+        # dropped by any filter).  Used by the SPEC-3 rapid-arrival noise
+        # check: a very short token that arrives within _V3_RAPID_ARRIVAL_SEC
+        # of the previous accepted transcript is treated as an STT artifact.
+        self._v3_last_processed_ts: float = 0.0
 
         # Prompt generation counter — monotonically increasing.
         # Incremented whenever a confirmed barge-in clears the active TTS.
@@ -3122,6 +3164,10 @@ class WebSocketCallHandler:
         # Mark the clarification as queued BEFORE putting it on the queue.
         # If a name transcript arrives after this point the drain logic can
         # remove this phrase before TTS synthesis starts.
+        # Also set the in-flight guard so that the first noise utterance that
+        # arrives while the phrase is still queued/playing is discarded rather
+        # than triggering a competing LLM response.
+        self._clarification_in_flight = True
         self._name_clarification_queued = True
         await self.tts_text_queue.put(_reask)
         self.session["last_bot_prompt"] = _reask
@@ -3489,6 +3535,7 @@ class WebSocketCallHandler:
                             # Follow-up arrived within 800 ms — cancel re-ask.
                             self._name_collection_pending = False
                             self._name_clarification_queued = False
+                            self._clarification_in_flight = False
                             if self._name_collection_timer:
                                 self._name_collection_timer.cancel()
                                 self._name_collection_timer = None
@@ -3525,6 +3572,7 @@ class WebSocketCallHandler:
                             for _qi in _held_items:
                                 self.tts_text_queue.put_nowait(_qi)
                             self._name_clarification_queued = False
+                            self._clarification_in_flight = False
                             if _drained:
                                 logger.info(
                                     "[ms_conn] clarification cancelled — "
@@ -3617,50 +3665,73 @@ class WebSocketCallHandler:
                                 return "redditch"
                             return ""
 
-                        # ── Short-fragment guard ─────────────────────
-                        # Split transcripts ("ic", "then", "think") of
-                        # 2 chars or fewer are STT noise from the tail
-                        # of a previous utterance. Drop them silently
-                        # during active location/booking flows to prevent
-                        # spurious LLM turns and double questions.
-                        # Threshold is <=2 (not <=3) so that 3-char words
-                        # like "yes", "no", "ok" pass naturally.
-                        _in_active_flow = (
-                            self.session.get("v3_booking_intent", False)
-                            or self.session.get("v3_location_asked", False)
-                            or self.session.get("v3_location_confirmed", False)
-                        )
-                        # Words that must never be dropped — they are
-                        # meaningful single-word responses regardless
-                        # of length.
-                        _ALWAYS_PASS = {
-                            "yes", "no", "ok", "yep", "nope", "yeah",
-                            "yup", "nah",
-                        }
+                        # ── Noise-fragment guard (SPEC 3) ────────────────────
+                        # Drop utterances that are almost certainly STT noise
+                        # rather than meaningful caller speech.  Three checks:
+                        #
+                        # 1. KNOWN NOISE TOKEN — word is in _V3_NOISE_FRAGMENTS
+                        #    (e.g. "um", "uh", "hmm") regardless of active flow.
+                        # 2. SHORT-FRAGMENT — ≤2 chars while an active booking /
+                        #    location flow is in progress (original guard).
+                        # 3. ALL-VOWEL — ≤4 chars and every alpha char is a vowel
+                        #    (catches "oo", "ah", "ee", "ooh" from mouth noise).
+                        # 4. RAPID-ARRIVAL — ≤4 chars arriving within
+                        #    _V3_RAPID_ARRIVAL_SEC of the previous accepted
+                        #    transcript (STT duplicate / tail artifact).
+                        #
+                        # _V3_PRESERVE words always pass regardless of the above.
                         _stripped = utterance.strip().lower()
-                        if (
-                            _in_active_flow
-                            and len(_stripped) <= 2
-                            and _stripped not in _ALWAYS_PASS
-                        ):
-                            logger.info(
-                                "[ms_conn v3] short-fragment dropped "
-                                "(%r, %d chars) — active flow",
-                                utterance,
-                                len(utterance.strip()),
+                        _is_preserve = _stripped in _V3_PRESERVE
+                        if not _is_preserve:
+                            _drop_reason: str = ""
+                            _in_active_flow = (
+                                self.session.get("v3_booking_intent", False)
+                                or self.session.get("v3_location_asked", False)
+                                or self.session.get("v3_location_confirmed", False)
                             )
-                            # Skip all processing for this fragment.
-                            # Re-arm watchdog with last question so
-                            # silence recovery still works.
-                            _last_q = self.session.get("last_question", "")
-                            if _last_q:
-                                self._silence_handler.set_state(
-                                    self.session.get("state", "default")
+                            _alpha_only = "".join(
+                                c for c in _stripped if c.isalpha()
+                            )
+                            _is_all_vowel = (
+                                bool(_alpha_only)
+                                and len(_stripped) <= 4
+                                and all(c in _V3_VOWELS for c in _alpha_only)
+                            )
+                            _is_rapid = (
+                                len(_stripped) <= 4
+                                and _enqueue_ts - self._v3_last_processed_ts
+                                < _V3_RAPID_ARRIVAL_SEC
+                            )
+                            if _stripped in _V3_NOISE_FRAGMENTS:
+                                _drop_reason = "noise-token"
+                            elif _in_active_flow and len(_stripped) <= 2:
+                                _drop_reason = "short-fragment"
+                            elif _is_all_vowel:
+                                _drop_reason = "all-vowel"
+                            elif _is_rapid:
+                                _drop_reason = "rapid-arrival"
+
+                            if _drop_reason:
+                                logger.info(
+                                    "[ms_conn v3] noise-fragment dropped "
+                                    "(%r, reason=%s, gap=%.3fs)",
+                                    utterance[:60],
+                                    _drop_reason,
+                                    _enqueue_ts - self._v3_last_processed_ts,
                                 )
-                                self._silence_handler.on_question_asked(
-                                    _last_q
+                                # Re-arm watchdog with last question so
+                                # silence recovery still works.
+                                _last_q = self.session.get(
+                                    "last_question", ""
                                 )
-                            continue
+                                if _last_q:
+                                    self._silence_handler.set_state(
+                                        self.session.get("state", "default")
+                                    )
+                                    self._silence_handler.on_question_asked(
+                                        _last_q
+                                    )
+                                continue
 
                         # ── Reschedule/cancel phone confirm ──────────────────
                         # Fires when the caller responds to the phone-first
@@ -3814,6 +3885,21 @@ class WebSocketCallHandler:
                                     except asyncio.CancelledError:
                                         pass
                                     self._current_llm_task = None
+                                    # Flush any TTS the cancelled task had
+                                    # already queued — prevents stale audio
+                                    # playing over the new turn's response.
+                                    _faq_flushed = 0
+                                    try:
+                                        while True:
+                                            self.tts_text_queue.get_nowait()
+                                            _faq_flushed += 1
+                                    except asyncio.QueueEmpty:
+                                        pass
+                                    logger.info(
+                                        "[ms_llm] task cancelled and TTS "
+                                        "flushed: %d items (FAQ path)",
+                                        _faq_flushed,
+                                    )
                                 # Capture last_question before run_turn for
                                 # name-persistence check below (Bug 7).
                                 _faq_pre_q = self.session.get(
@@ -4480,6 +4566,21 @@ class WebSocketCallHandler:
                             # already drained above.
                             self._name_clarification_queued = False
                             #
+                            # SPEC 1B — clarification-in-flight guard.
+                            # If a clarification phrase is still queued/playing
+                            # (set by _fire_name_reask), discard this utterance
+                            # so it cannot produce a competing LLM response.
+                            # One-shot: clears the flag so the NEXT utterance
+                            # (the caller's actual name) is processed normally.
+                            if self._clarification_in_flight:
+                                self._clarification_in_flight = False
+                                logger.info(
+                                    "[ms_conn v3] clarification in-flight — "
+                                    "discarding noise utterance: %r",
+                                    utterance[:60],
+                                )
+                                continue
+                            #
                             # Capture last_question BEFORE run_turn in case the
                             # LLM updates it — used below for name persistence.
                             _pre_turn_last_q = self.session.get(
@@ -4500,6 +4601,25 @@ class WebSocketCallHandler:
                                 except asyncio.CancelledError:
                                     pass
                                 self._current_llm_task = None
+                                # Flush any TTS the cancelled task had already
+                                # queued — prevents stale audio playing over
+                                # the new turn's response.
+                                _norm_flushed = 0
+                                try:
+                                    while True:
+                                        self.tts_text_queue.get_nowait()
+                                        _norm_flushed += 1
+                                except asyncio.QueueEmpty:
+                                    pass
+                                logger.info(
+                                    "[ms_llm] task cancelled and TTS "
+                                    "flushed: %d items (normal path)",
+                                    _norm_flushed,
+                                )
+
+                            # Update rapid-arrival baseline — this transcript
+                            # is accepted, so the next one is measured from now.
+                            self._v3_last_processed_ts = _enqueue_ts
 
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(

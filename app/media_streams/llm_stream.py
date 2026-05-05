@@ -61,6 +61,7 @@ from .config import (
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
 from .session import save_session
+from .tts_stream import _apply_tts_substitutions_elevenlabs as _apply_tts_subs
 from .turn_handler import sanitise_response
 
 logger = logging.getLogger(__name__)
@@ -262,7 +263,12 @@ class LLMStream:
             # miss numbered options and v3_awaiting_slot_selection to stay unset,
             # which in turn fires the watchdog 4.5 s after TTS ends instead of 10 s.
             _display_reply = sanitise_response(full_reply, session)
-            session[F_LAST_BOT_PROMPT] = _display_reply[:200]
+            # SPEC 4: store the phonetic (TTS-substituted) form so that
+            # last_bot_prompt reflects what was actually spoken — used by the
+            # silence watchdog re-ask and logging.
+            session[F_LAST_BOT_PROMPT] = _apply_tts_subs(
+                _display_reply
+            )[:200]
             # Store only the question portion in F_LAST_QUESTION.
             # F_LAST_BOT_PROMPT keeps the full response for fast-path trigger
             # matching; F_LAST_QUESTION is narrowed to the actual question

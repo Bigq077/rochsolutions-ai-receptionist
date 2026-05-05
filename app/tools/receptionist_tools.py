@@ -123,7 +123,7 @@ def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
         if time_filtered:
             filtered = time_filtered
     elif "afternoon" in pref:
-        time_filtered = [(s, e) for s, e in filtered if 12 <= s.hour < 17]
+        time_filtered = [(s, e) for s, e in filtered if 14 <= s.hour < 17]
         if time_filtered:
             filtered = time_filtered
     elif "evening" in pref:
