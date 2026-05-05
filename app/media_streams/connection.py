@@ -358,6 +358,70 @@ def _parse_v3_slot_options(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# theorem_v3 name persistence helper (Bug 7)
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate the LLM just confirmed the caller's name.
+# Each captures the name in group(1).
+_V3_NAME_CONFIRM_PATTERNS = [
+    # "Thanks Sarah —" / "Thanks Sarah,"
+    re.compile(r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})[\s—–‒,.\-]'),
+    # "So that's Sarah," / "So that's Sarah —"  (readback)
+    re.compile(r"[Ss]o (?:that'?s|it'?s)\s+([A-Za-z][a-z]{1,25})[\s—–,\-]"),
+    # "Right Sarah —" / "Right Sarah,"
+    re.compile(r'[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
+    # "Sarah — got it" / "Sarah — noted" / "Sarah — perfect"
+    re.compile(r'^([A-Za-z][a-z]{1,25})\s*[—–\-]+\s*'
+               r'(?:got it|noted|perfect|right|could i|if you)'),
+    # "Of course Sarah," (mid-sentence acknowledgement)
+    re.compile(r'[Oo]f course\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
+    # "Just to confirm — that's Sarah," (alternate readback opening)
+    re.compile(r"[Jj]ust to confirm[^,—]*[,—]\s*(?:that'?s\s+)?([A-Za-z][a-z]{1,25})[\s—–,\-]"),
+]
+
+# Words that must never be treated as names even if a pattern matches them.
+_V3_NAME_FALSE_POSITIVES = frozenset({
+    "sorry", "right", "great", "perfect", "ok", "okay", "sure",
+    "yes", "no", "of", "course", "me", "you", "we", "it", "is",
+    "thanks", "thank", "hi", "hello", "hey", "now", "just", "that",
+    "this", "then", "so", "and", "but", "the", "a", "an",
+})
+
+
+def _v3_try_persist_name(session: dict, last_bot: str) -> bool:
+    """
+    Scan the LLM's last reply for a name-confirmation pattern and immediately
+    persist the name in session state if found and not already set.
+
+    Writes to both:
+      session["patient_name"]          — direct key for easy downstream reads
+      session["collected"]["name"]     — existing path read by summaries/Sheets
+
+    Returns True if a name was newly persisted, False if already set or not found.
+
+    Called after every run_turn() in the theorem_v3 path so the name is stored
+    at the moment of confirmation regardless of whether collect_and_store fired.
+    """
+    # Already persisted — nothing to do.
+    if session.get("patient_name") or session.get("collected", {}).get("name"):
+        return False
+
+    if not last_bot:
+        return False
+
+    for pattern in _V3_NAME_CONFIRM_PATTERNS:
+        m = pattern.search(last_bot)
+        if m:
+            candidate = m.group(1).capitalize()
+            if candidate.lower() not in _V3_NAME_FALSE_POSITIVES:
+                session.setdefault("collected", {})["name"] = candidate
+                session["patient_name"] = candidate
+                return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # theorem_v3 location alias matching
 # ---------------------------------------------------------------------------
 
@@ -3750,6 +3814,11 @@ class WebSocketCallHandler:
                                     except asyncio.CancelledError:
                                         pass
                                     self._current_llm_task = None
+                                # Capture last_question before run_turn for
+                                # name-persistence check below (Bug 7).
+                                _faq_pre_q = self.session.get(
+                                    "last_question", ""
+                                )
                                 self._current_llm_task = asyncio.create_task(
                                     llm.run_turn(
                                         user_text=utterance,
@@ -3775,6 +3844,29 @@ class WebSocketCallHandler:
                                 finally:
                                     self._current_llm_task = None
                                 if not _faq_run_cancelled:
+                                    # ── NAME PERSISTENCE (Bug 7, FAQ path) ──
+                                    # The normal post-turn block is skipped by
+                                    # the continue below, so we run the name
+                                    # check here before saving.
+                                    _faq_last_bot = ""
+                                    for _fm in reversed(
+                                        self.session.get(
+                                            "conversation_history", []
+                                        )
+                                    ):
+                                        if _fm.get("role") == "assistant":
+                                            _faq_last_bot = (
+                                                _fm.get("content", "") or ""
+                                            )
+                                            break
+                                    if _v3_try_persist_name(
+                                        self.session, _faq_last_bot
+                                    ):
+                                        logger.info(
+                                            "[ms_conn v3] name persisted "
+                                            "(FAQ path): %r",
+                                            self.session.get("patient_name"),
+                                        )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -4515,60 +4607,24 @@ class WebSocketCallHandler:
                                 )
                             )
 
-                            # ── NAME PERSISTENCE (Bug 2 fix) ─────────────────
-                            # The LLM confirms the caller's name verbally
-                            # ("Thanks Gloom — if you'd like to use the
-                            # number...") but collected["name"] is not written
-                            # until book_appointment runs.  If the call ends
-                            # before booking, name is lost.  Intercept the
-                            # name-confirmation turn and persist immediately.
-                            #
-                            # Conditions to fire:
-                            #   1. The question before this turn asked for name
-                            #   2. The LLM response contains a name confirmation
-                            #   3. collected["name"] is not already set
-                            if (
-                                "name" in _pre_turn_last_q.lower()
-                                and _last_bot
-                                and not self.session.get(
-                                    "collected", {}
-                                ).get("name")
-                            ):
-                                _n_patterns = [
-                                    # "Thanks Gloom —" / "Thanks Gloom,"
-                                    r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})'
-                                    r'[\s—–,. —]',
-                                    # "Gloom — could I get" / "Gloom, got it"
-                                    r'^([A-Za-z][a-z]{1,25})'
-                                    r'[\s—–—,]+'
-                                    r'(?:got it|noted|perfect|right'
-                                    r'|could i|if you)',
-                                ]
-                                _name_confirmed = None
-                                for _np in _n_patterns:
-                                    _nm = re.search(_np, _last_bot)
-                                    if _nm:
-                                        _candidate = _nm.group(1).capitalize()
-                                        # Skip common false-positives
-                                        if _candidate.lower() not in {
-                                            "sorry", "right", "great",
-                                            "perfect", "ok", "okay",
-                                            "sure", "yes", "no", "of",
-                                        }:
-                                            _name_confirmed = _candidate
-                                            break
-                                if _name_confirmed:
-                                    self.session.setdefault(
-                                        "collected", {}
-                                    )["name"] = _name_confirmed
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn] name persisted: %r",
-                                        _name_confirmed,
-                                    )
-
+                            # ── NAME PERSISTENCE (Bug 7) ─────────────────────
+                            # Persist name immediately when the LLM confirms it
+                            # verbally ("Thanks Sarah — if you'd like to use
+                            # the number...").  collected["name"] must not wait
+                            # until book_appointment; if the call ends before
+                            # booking the name would be lost.
+                            # _v3_try_persist_name also writes session["patient_name"]
+                            # as a direct key so summaries can find it even if
+                            # the collected dict path is not traversed.
+                            if _v3_try_persist_name(self.session, _last_bot):
+                                await save_session(
+                                    self.call_sid, self.session
+                                )
+                                logger.info(
+                                    "[ms_conn v3] name persisted "
+                                    "(normal path): %r",
+                                    self.session.get("patient_name"),
+                                )
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
                             # acknowledgement (no question), immediately queue

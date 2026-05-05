@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re as _re
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -118,7 +119,49 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
     outcome = summary.get("outcome", "unknown")
     booked  = "YES" if outcome in ("booked", "rescheduled") else "NO"
 
-    patient_name = collected.get("name") or patient_info.get("name") or ""
+    patient_name = (
+        raw_session.get("patient_name")          # direct key — set by _v3_try_persist_name
+        or collected.get("name")
+        or collected.get("full_name")
+        or patient_info.get("name")
+        or ""
+    )
+
+    # Fallback: scan conversation history for name-confirmation patterns.
+    # Fires only when the real-time persist hook missed the name (edge cases).
+    if not patient_name:
+        _history = raw_session.get("conversation_history", []) or []
+        _NAME_RE = _re.compile(
+            r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})[\s—–,.\-]'
+            r'|[Ss]o (?:that|it)\'?s\s+([A-Za-z][a-z]{1,25})[\s—–,]'
+            r'|[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,]'
+        )
+        _FP = frozenset({
+            "sorry", "right", "great", "perfect", "ok", "okay", "sure",
+            "yes", "no", "of", "course", "me", "you", "it", "that",
+        })
+        for _msg in _history:
+            if _msg.get("role") == "assistant":
+                _m = _NAME_RE.search(_msg.get("content", "") or "")
+                if _m:
+                    _cand = next(
+                        (g for g in _m.groups() if g), ""
+                    ).capitalize()
+                    if _cand and _cand.lower() not in _FP:
+                        patient_name = _cand
+                        logger.warning(
+                            "[actionable_summary] name recovered from "
+                            "history (persist hook missed it): %r",
+                            patient_name,
+                        )
+                        break
+
+    if not patient_name and summary.get("outcome") in ("booked", "rescheduled"):
+        logger.warning(
+            "[actionable_summary] name=None on a %s call — "
+            "check session persistence (Bug 7)",
+            summary.get("outcome"),
+        )
 
     phone = _get_confirmed_phone(raw_session)
 
