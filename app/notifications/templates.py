@@ -313,6 +313,25 @@ def format_abandoned_booking_sms(
 
 
 # ============================================================================
+# ⏸️ REACHED FINAL CONFIRMATION — CALL ENDED BEFORE CONFIRMING
+# ============================================================================
+
+def format_reached_confirmation_sms(
+    patient_name: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """⏸️ Caller reached 'shall I go ahead and book?' but call ended before confirming."""
+    phone = _cp(clinic_phone)
+    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    return (
+        f"Hi {_greeting}, it looks like we got cut off just before confirming your "
+        f"appointment. Call us back or reply to this message and we'll get it booked "
+        f"in for you straight away. {phone}"
+    )
+
+
+# ============================================================================
 # ⚠️ CONDITION MENTIONED — NO BOOKING MADE
 # ============================================================================
 

@@ -302,8 +302,8 @@ Return ONLY a JSON object with exactly these two keys — no markdown, no explan
 }}
 
 Rules for summary_text:
-- Start with ONE emoji: ✅ booked  🔄 rescheduled  ⚠️ abandoned mid-flow  ❌ hung up immediately
-  📞 needs callback  ❓ info only, no booking  🔧 technical failure
+- Start with ONE emoji: ✅ booked  🔄 rescheduled  ⏸️ reached_confirmation (got to "shall I book?" but call ended)
+  ⚠️ abandoned mid-flow  ❌ hung up immediately  📞 needs callback  ❓ info only, no booking  🔧 technical failure
 - Use the patient's first name (or "Caller" if unknown)
 - Include the specific condition/service if known
 - Include ONE key differentiator — e.g. "asked about Bupa", "price concern", "couldn't find a time",
@@ -410,6 +410,8 @@ def _build_summary_text(outcome: str, name: str, service: str, duration: Any) ->
         return f"📞 {n} – NEEDS CALLBACK"
     if outcome == "faq_only":
         return f"❓ {n} – asked about {service or 'general info'} but didn't book"
+    if outcome == "reached_confirmation":
+        return f"⏸️ {n} – reached final confirmation but hung up{' – ' + service if service else ''}"
     if outcome == "abandoned":
         try:
             dur = int(duration) if duration else 0

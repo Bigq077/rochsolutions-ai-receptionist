@@ -241,16 +241,18 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     High-level outcome label for dashboards and SMS routing.
 
     Possible values:
-      booked            — calendar event created (new booking)
-      rescheduled       — calendar event updated
-      human_requested   — caller explicitly asked for a human / live transfer
-      out_of_hours      — call received outside clinic opening hours
-      manual_followup   — booking attempted but needs manual intervention
-      faq_only          — caller only asked questions, no booking attempt
-      abandoned         — caller showed interest but didn't complete booking
-      failed            — technical failure
-      cancelled         — successful cancellation
-      reschedule_failed — reschedule reached transaction stage but backend failed
+      booked                — calendar event created (new booking)
+      rescheduled           — calendar event updated
+      reached_confirmation  — caller reached "shall I go ahead and book?" but
+                              hung up or went silent before saying yes
+      human_requested       — caller explicitly asked for a human / live transfer
+      out_of_hours          — call received outside clinic opening hours
+      manual_followup       — booking attempted but needs manual intervention
+      faq_only              — caller only asked questions, no booking attempt
+      abandoned             — caller showed interest but didn't complete booking
+      failed                — technical failure
+      cancelled             — successful cancellation
+      reschedule_failed     — reschedule reached transaction stage but backend failed
     """
     # Deterministic guard: reschedule reached transaction stage but backend explicitly failed.
     # Must precede LLM-logged check — prevents LLM "abandoned" from overriding a genuine
@@ -261,7 +263,7 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # Phase 3: the LLM explicitly logs the outcome via log_call_outcome tool.
     # Trust that first — it's more accurate than our heuristics.
     _logged = str(session.get("call_outcome_logged") or "").lower().strip()
-    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred", "reschedule_failed"):
+    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred", "reschedule_failed", "reached_confirmation"):
         return _logged
 
     cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
@@ -317,6 +319,22 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # Successful cancellation — must take precedence over abandoned fallthrough
     if session.get("cancel_confirmed"):
         return "cancelled"
+
+    # Reached final confirmation: caller got as far as "shall I go ahead and book?"
+    # but the call ended before they answered yes.  This is a stronger signal than
+    # generic "abandoned" — the slot was ready and the caller was one word away.
+    _last_prompt = str(session.get("last_bot_prompt") or "").lower()
+    _last_q      = str(session.get("last_question") or "").lower()
+    _at_readback = (
+        "shall i go ahead and book" in _last_prompt
+        or "shall i go ahead and book" in _last_q
+        or "shall i go ahead" in _last_prompt
+        or "shall i go ahead" in _last_q
+        or (session.get("readback_delivered") and session.get("readback_pending"))
+        or session.get("state") in ("BOOK_CONFIRM", "STATE_READBACK")
+    )
+    if _at_readback and cal_status != "created" and not session.get("booking_confirmed"):
+        return "reached_confirmation"
 
     # Deep-progress incomplete: caller reached a meaningful operational stage
     # (availability offered, slot pending, slot confirmed, reschedule/cancel

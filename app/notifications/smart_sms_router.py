@@ -410,7 +410,12 @@ def _choose_template(
         return templates.format_price_inquiry_sms(
             patient_name=patient_name, **ck)
 
-    # 10. ABANDONED — suppressed when caller already made substantial booking progress
+    # 10. REACHED CONFIRMATION — caller got to "shall I go ahead?" but dropped before saying yes
+    if outcome == "reached_confirmation":
+        return templates.format_reached_confirmation_sms(
+            patient_name=patient_name, **ck)
+
+    # 11. ABANDONED — suppressed when caller already made substantial booking progress
     if outcome == "abandoned" and _booking_has_progressed(session, collected):
         logger.info(
             "🛑 abandoned but booking progressed (name=%r reason=%r type=%r) "
@@ -419,7 +424,7 @@ def _choose_template(
         )
         return None
 
-    # 11. ABANDONED — with a clean condition label only (never raw speech)
+    # 12. ABANDONED — with a clean condition label only (never raw speech)
     if outcome == "abandoned" and condition_label:
         return templates.format_abandoned_booking_sms(
             patient_name    = patient_name,
@@ -427,22 +432,22 @@ def _choose_template(
             **ck,
         )
 
-    # 12. ABANDONED — general (no clean condition extracted)
+    # 13. ABANDONED — general (no clean condition extracted)
     if outcome == "abandoned":
         return templates.format_abandoned_booking_sms(
             patient_name=patient_name, **ck)
 
-    # 12. FAQ — GENERAL (no specific topic)
+    # 14. FAQ — GENERAL (no specific topic)
     if outcome == "faq_only":
         return templates.format_general_thankyou_sms(
             patient_name=patient_name, **ck)
 
-    # 13. TECHNICAL FAILURE
+    # 15. TECHNICAL FAILURE
     if outcome == "failed":
         return templates.format_technical_issue_sms(
             patient_name=patient_name, **ck)
 
-    # 14. FALLBACK
+    # 16. FALLBACK
     return templates.format_general_thankyou_sms(
         patient_name=patient_name, **ck)
 
