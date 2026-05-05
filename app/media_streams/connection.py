@@ -2533,6 +2533,10 @@ class WebSocketCallHandler:
         # "James") from firing two simultaneous LLM calls.
         self._name_collection_pending: bool = False
         self._name_collection_timer: Optional[asyncio.Task] = None
+        # Set to True when _fire_name_reask puts the clarification phrase on
+        # tts_text_queue.  Cleared when a subsequent name transcript drains
+        # the phrase or when the normal run_turn path executes.
+        self._name_clarification_queued: bool = False
 
         # Prompt generation counter — monotonically increasing.
         # Incremented whenever a confirmed barge-in clears the active TTS.
@@ -3051,6 +3055,10 @@ class WebSocketCallHandler:
             "Sorry, I didn't quite catch your name — "
             "could you say it again?"
         )
+        # Mark the clarification as queued BEFORE putting it on the queue.
+        # If a name transcript arrives after this point the drain logic can
+        # remove this phrase before TTS synthesis starts.
+        self._name_clarification_queued = True
         await self.tts_text_queue.put(_reask)
         self.session["last_bot_prompt"] = _reask
         self.session["last_question"]   = _reask
@@ -3416,6 +3424,7 @@ class WebSocketCallHandler:
                         elif self._name_collection_pending:
                             # Follow-up arrived within 800 ms — cancel re-ask.
                             self._name_collection_pending = False
+                            self._name_clarification_queued = False
                             if self._name_collection_timer:
                                 self._name_collection_timer.cancel()
                                 self._name_collection_timer = None
@@ -3424,6 +3433,40 @@ class WebSocketCallHandler:
                                 "timer cancelled, passing to run_turn: %r",
                                 utterance,
                             )
+                            # fall through — process normally
+
+                        elif self._name_clarification_queued:
+                            # The 800ms re-ask timer already fired and put the
+                            # clarification phrase on tts_text_queue, but the
+                            # name has now arrived anyway.  Drain the phrase from
+                            # the queue before TTS synthesis can consume it, then
+                            # process this transcript normally so the caller only
+                            # hears "Thanks [name]" — not both "Sorry, I didn't
+                            # catch your name" AND "Thanks [name]" back-to-back.
+                            _clarification_phrase = (
+                                "Sorry, I didn't quite catch your name — "
+                                "could you say it again?"
+                            )
+                            _held_items: list = []
+                            _drained = 0
+                            try:
+                                while True:
+                                    _qi = self.tts_text_queue.get_nowait()
+                                    if _qi == _clarification_phrase:
+                                        _drained += 1
+                                    else:
+                                        _held_items.append(_qi)
+                            except asyncio.QueueEmpty:
+                                pass
+                            for _qi in _held_items:
+                                self.tts_text_queue.put_nowait(_qi)
+                            self._name_clarification_queued = False
+                            if _drained:
+                                logger.info(
+                                    "[ms_conn] clarification cancelled — "
+                                    "superseded by transcript: %r",
+                                    utterance[:60],
+                                )
                             # fall through — process normally
 
                     self._in_barge_in_recovery = False
@@ -4340,6 +4383,17 @@ class WebSocketCallHandler:
                             # Handles TTS streaming, tool calls, and
                             # conversation_history append internally.
                             #
+                            # Clear name-collection guards — either the caller
+                            # answered directly or the clarification was
+                            # already drained above.
+                            self._name_clarification_queued = False
+                            #
+                            # Capture last_question BEFORE run_turn in case the
+                            # LLM updates it — used below for name persistence.
+                            _pre_turn_last_q = self.session.get(
+                                "last_question", ""
+                            )
+                            #
                             # Per-turn in-flight lock: cancel any stale LLM
                             # task before starting a new one so two rapid STT
                             # finals cannot produce concurrent Anthropic calls.
@@ -4460,6 +4514,60 @@ class WebSocketCallHandler:
                                     self.session, utterance, _last_bot
                                 )
                             )
+
+                            # ── NAME PERSISTENCE (Bug 2 fix) ─────────────────
+                            # The LLM confirms the caller's name verbally
+                            # ("Thanks Gloom — if you'd like to use the
+                            # number...") but collected["name"] is not written
+                            # until book_appointment runs.  If the call ends
+                            # before booking, name is lost.  Intercept the
+                            # name-confirmation turn and persist immediately.
+                            #
+                            # Conditions to fire:
+                            #   1. The question before this turn asked for name
+                            #   2. The LLM response contains a name confirmation
+                            #   3. collected["name"] is not already set
+                            if (
+                                "name" in _pre_turn_last_q.lower()
+                                and _last_bot
+                                and not self.session.get(
+                                    "collected", {}
+                                ).get("name")
+                            ):
+                                _n_patterns = [
+                                    # "Thanks Gloom —" / "Thanks Gloom,"
+                                    r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})'
+                                    r'[\s—–,. —]',
+                                    # "Gloom — could I get" / "Gloom, got it"
+                                    r'^([A-Za-z][a-z]{1,25})'
+                                    r'[\s—–—,]+'
+                                    r'(?:got it|noted|perfect|right'
+                                    r'|could i|if you)',
+                                ]
+                                _name_confirmed = None
+                                for _np in _n_patterns:
+                                    _nm = re.search(_np, _last_bot)
+                                    if _nm:
+                                        _candidate = _nm.group(1).capitalize()
+                                        # Skip common false-positives
+                                        if _candidate.lower() not in {
+                                            "sorry", "right", "great",
+                                            "perfect", "ok", "okay",
+                                            "sure", "yes", "no", "of",
+                                        }:
+                                            _name_confirmed = _candidate
+                                            break
+                                if _name_confirmed:
+                                    self.session.setdefault(
+                                        "collected", {}
+                                    )["name"] = _name_confirmed
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    logger.info(
+                                        "[ms_conn] name persisted: %r",
+                                        _name_confirmed,
+                                    )
 
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
