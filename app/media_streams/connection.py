@@ -212,30 +212,39 @@ _TAIL_FRAGMENT_SAFE: frozenset = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# theorem_v3 noise-fragment filter  (SPEC 3)
+# theorem_v3 noise-fragment filter  (SPEC 3 / Bug 5)
 # ---------------------------------------------------------------------------
+# All four conditions apply to SINGLE-WORD transcripts only.
+# Multi-word transcripts are NEVER discarded by this filter.
 
-# Utterances that are clearly STT noise and should be silently dropped even
-# when longer than the short-fragment length threshold.
+# Condition 3 — production STT noise fragments seen on live calls.
+# Single-word transcripts that exactly match any of these are silently
+# dropped regardless of length.
 _V3_NOISE_FRAGMENTS: frozenset = frozenset({
-    "um", "uh", "hmm", "hm", "mm", "er", "ah", "eh",
-    "mhm", "mmm", "uhh", "umm", "huh",
+    # spec-mandated list (production observations)
+    "ing", "ic", "terday", "reckon", "s", "er", "um", "uh",
+    # additional mouth-noise / stutter artefacts
+    "hmm", "hm", "mm", "ah", "eh", "mhm", "mmm", "uhh", "umm", "huh",
 })
 
-# Utterances that must always pass through regardless of any noise heuristic.
+# PRESERVE_LIST — single-word transcripts that must ALWAYS pass through
+# regardless of any noise heuristic (length, vowels, noise list, rapid).
 _V3_PRESERVE: frozenset = frozenset({
-    "yes", "no", "ok", "okay", "yep", "nope", "yeah",
-    "yup", "nah", "one", "two", "three", "four", "five",
+    # spec-mandated list
+    "yes", "no", "hi", "ok", "yeah", "nope", "sure", "fine", "good", "great",
+    # additional meaningful short words
+    "okay", "yep", "yup", "nah", "bye",
+    # spoken digit slot-selection words (callers say "one", "two", etc.)
+    "one", "two", "three", "four", "five",
     "six", "seven", "eight", "nine", "ten",
 })
 
-# A string is "all-vowel noise" when every alpha character is a vowel and the
-# total length is ≤ 4 (catches "oo", "ah", "ee", "ooh" etc. from STT).
+# Vowel set used by Conditions 2a (no-vowel) and 2b (all-vowel).
 _V3_VOWELS: frozenset = frozenset("aeiou")
 
-# If a second transcript arrives within this many seconds of the previous
-# PROCESSED transcript, and the new one is a short/noise token, treat it
-# as a rapid-fire STT artifact and drop it.
+# Condition 4 window — a single-word transcript arriving within this many
+# seconds of the PREVIOUS ACCEPTED transcript's enqueue timestamp is treated
+# as a rapid-continuation fragment and merged rather than discarded.
 _V3_RAPID_ARRIVAL_SEC: float = 0.30
 
 # ---------------------------------------------------------------------------
@@ -2643,6 +2652,10 @@ class WebSocketCallHandler:
         # check: a very short token that arrives within _V3_RAPID_ARRIVAL_SEC
         # of the previous accepted transcript is treated as an STT artifact.
         self._v3_last_processed_ts: float = 0.0
+        # Raw text of the last accepted transcript — used by Condition 4
+        # (rapid-continuation) to merge the fragment into a combined utterance
+        # instead of firing a second LLM call.
+        self._v3_last_transcript_text: str = ""
 
         # Prompt generation counter — monotonically increasing.
         # Incremented whenever a confirmed barge-in clears the active TTS.
@@ -3665,73 +3678,99 @@ class WebSocketCallHandler:
                                 return "redditch"
                             return ""
 
-                        # ── Noise-fragment guard (SPEC 3) ────────────────────
-                        # Drop utterances that are almost certainly STT noise
-                        # rather than meaningful caller speech.  Three checks:
+                        # ── Noise-fragment filter (SPEC 3 / Bug 5) ──────────
+                        # Applied to every FINAL transcript before the LLM.
+                        # Only single-word transcripts are evaluated — multi-
+                        # word transcripts always pass through immediately.
                         #
-                        # 1. KNOWN NOISE TOKEN — word is in _V3_NOISE_FRAGMENTS
-                        #    (e.g. "um", "uh", "hmm") regardless of active flow.
-                        # 2. SHORT-FRAGMENT — ≤2 chars while an active booking /
-                        #    location flow is in progress (original guard).
-                        # 3. ALL-VOWEL — ≤4 chars and every alpha char is a vowel
-                        #    (catches "oo", "ah", "ee", "ooh" from mouth noise).
-                        # 4. RAPID-ARRIVAL — ≤4 chars arriving within
-                        #    _V3_RAPID_ARRIVAL_SEC of the previous accepted
-                        #    transcript (STT duplicate / tail artifact).
+                        # Condition 1 — TOO SHORT: single word ≤ 3 chars.
+                        # Condition 2a — NO VOWELS: single word whose alpha
+                        #   chars contain no vowel (e.g. "ng", "rch", "sht").
+                        # Condition 2b — ALL VOWELS: ≤ 4 alpha chars, all
+                        #   vowels (e.g. "oo", "ah", "ee" — mouth noise).
+                        # Condition 3 — NOISE LIST: exact match in
+                        #   _V3_NOISE_FRAGMENTS regardless of length.
+                        # Condition 4 — RAPID CONTINUATION: single word
+                        #   arriving within _V3_RAPID_ARRIVAL_SEC of the
+                        #   previous ACCEPTED transcript (enqueue timestamp).
+                        #   Instead of discarding, the fragment is MERGED with
+                        #   the previous transcript and re-evaluated as a
+                        #   combined utterance (which is multi-word and
+                        #   therefore always passes Conditions 1-3).
                         #
-                        # _V3_PRESERVE words always pass regardless of the above.
+                        # _V3_PRESERVE words always bypass all conditions.
+                        # Log format: [ms_stt] fragment discarded (reason=…)
                         _stripped = utterance.strip().lower()
-                        _is_preserve = _stripped in _V3_PRESERVE
-                        if not _is_preserve:
-                            _drop_reason: str = ""
-                            _in_active_flow = (
-                                self.session.get("v3_booking_intent", False)
-                                or self.session.get("v3_location_asked", False)
-                                or self.session.get("v3_location_confirmed", False)
-                            )
+                        _utt_words = _stripped.split()
+                        _is_single_word = len(_utt_words) == 1
+
+                        # Multi-word transcripts are NEVER filtered.
+                        if _is_single_word and _stripped not in _V3_PRESERVE:
+                            _filter_reason: str = ""
                             _alpha_only = "".join(
                                 c for c in _stripped if c.isalpha()
                             )
-                            _is_all_vowel = (
-                                bool(_alpha_only)
-                                and len(_stripped) <= 4
-                                and all(c in _V3_VOWELS for c in _alpha_only)
+                            _gap_sec = (
+                                _enqueue_ts - self._v3_last_processed_ts
                             )
-                            _is_rapid = (
-                                len(_stripped) <= 4
-                                and _enqueue_ts - self._v3_last_processed_ts
-                                < _V3_RAPID_ARRIVAL_SEC
-                            )
-                            if _stripped in _V3_NOISE_FRAGMENTS:
-                                _drop_reason = "noise-token"
-                            elif _in_active_flow and len(_stripped) <= 2:
-                                _drop_reason = "short-fragment"
-                            elif _is_all_vowel:
-                                _drop_reason = "all-vowel"
-                            elif _is_rapid:
-                                _drop_reason = "rapid-arrival"
-
-                            if _drop_reason:
+                            # Condition 4 evaluated first — merges rather than
+                            # discards, so it has priority over the drop path.
+                            if _gap_sec < _V3_RAPID_ARRIVAL_SEC and self._v3_last_transcript_text:
+                                _merged = (
+                                    self._v3_last_transcript_text.strip()
+                                    + " "
+                                    + utterance.strip()
+                                )
                                 logger.info(
-                                    "[ms_conn v3] noise-fragment dropped "
-                                    "(%r, reason=%s, gap=%.3fs)",
-                                    utterance[:60],
-                                    _drop_reason,
-                                    _enqueue_ts - self._v3_last_processed_ts,
+                                    "[ms_stt] rapid-continuation fragment "
+                                    "merged (gap=%.3fs): %r + %r → %r",
+                                    _gap_sec,
+                                    self._v3_last_transcript_text,
+                                    utterance.strip(),
+                                    _merged,
                                 )
-                                # Re-arm watchdog with last question so
-                                # silence recovery still works.
-                                _last_q = self.session.get(
-                                    "last_question", ""
-                                )
-                                if _last_q:
-                                    self._silence_handler.set_state(
-                                        self.session.get("state", "default")
+                                utterance = _merged
+                                _stripped = utterance.strip().lower()
+                                # Merged utterance is multi-word — skip
+                                # remaining noise conditions and continue
+                                # normal processing below.
+                            else:
+                                # Conditions 1-3: drop path.
+                                if len(_stripped) <= 3:
+                                    _filter_reason = "too-short"
+                                elif _alpha_only and not any(
+                                    c in _V3_VOWELS for c in _alpha_only
+                                ):
+                                    _filter_reason = "no-vowels"
+                                elif _alpha_only and len(_stripped) <= 4 and all(
+                                    c in _V3_VOWELS for c in _alpha_only
+                                ):
+                                    _filter_reason = "all-vowels"
+                                elif _stripped in _V3_NOISE_FRAGMENTS:
+                                    _filter_reason = "noise-list"
+
+                                if _filter_reason:
+                                    logger.info(
+                                        "[ms_stt] fragment discarded "
+                                        "(reason=%s): %r",
+                                        _filter_reason,
+                                        utterance.strip(),
                                     )
-                                    self._silence_handler.on_question_asked(
-                                        _last_q
+                                    # Re-arm watchdog so silence recovery
+                                    # still fires after a discarded fragment.
+                                    _last_q = self.session.get(
+                                        "last_question", ""
                                     )
-                                continue
+                                    if _last_q:
+                                        self._silence_handler.set_state(
+                                            self.session.get(
+                                                "state", "default"
+                                            )
+                                        )
+                                        self._silence_handler.on_question_asked(
+                                            _last_q
+                                        )
+                                    continue
 
                         # ── Reschedule/cancel phone confirm ──────────────────
                         # Fires when the caller responds to the phone-first
@@ -4619,7 +4658,10 @@ class WebSocketCallHandler:
 
                             # Update rapid-arrival baseline — this transcript
                             # is accepted, so the next one is measured from now.
+                            # Store raw text for Condition 4 merge (fragment
+                            # continuation appends to this before re-eval).
                             self._v3_last_processed_ts = _enqueue_ts
+                            self._v3_last_transcript_text = utterance.strip()
 
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
