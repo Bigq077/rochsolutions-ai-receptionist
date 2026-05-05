@@ -5725,7 +5725,10 @@ class WebSocketCallHandler:
         """
         await self._wait_for_start("tts_loop")
 
-        from .tts_stream import TTSStream
+        from .tts_stream import (
+            TTSStream,
+            _apply_tts_substitutions_elevenlabs as _apply_tts_subs,
+        )
         tts = TTSStream(clinic_id=self.session.get("clinic_id", ""))
         _last_tts_chunk: str = ""  # BUG 2: dedup — track last synthesised text chunk
 
@@ -5758,6 +5761,15 @@ class WebSocketCallHandler:
                     chunk_text = chunk_text[len(_WATCHDOG_REASK_MARKER):]
                     if not chunk_text.strip():
                         continue
+
+                # SPEC 4 / Bug 1: apply phonetic substitution to chunk_text NOW
+                # so that every downstream tracking variable — dedup comparison,
+                # _last_tts_chunk, and _tts_text_pending (→ tts_finished log,
+                # watchdog re-ask prompt) — stores the substituted form ("Awlstuh")
+                # rather than the canonical spelling ("Alcester").
+                # synthesise_chunk applies the same substitution internally; the
+                # regex is idempotent so double-application is harmless.
+                chunk_text = _apply_tts_subs(chunk_text)
 
                 # Bug 5: discard stale LLM chunks that arrived after a confirmed barge-in.
                 # The flag is cleared in _llm_loop finally when the new turn starts.
