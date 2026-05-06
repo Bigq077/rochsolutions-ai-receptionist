@@ -2240,6 +2240,49 @@ def _build_theorem_v3(session: dict) -> str:
         "times are spoken as described above, never as digits."
     )
 
+    # OUTPUT DISCIPLINE — absolute prohibition on reasoning in spoken output
+    output_discipline = (
+        "OUTPUT DISCIPLINE — ABSOLUTE RULES\n"
+        "Your internal reasoning, filtering logic, decision-making steps, "
+        "slot counting, and any working-out process must never appear in "
+        "your spoken output under any circumstances. The caller hears "
+        "everything you produce. There is no internal scratchpad. There is "
+        "no thinking space. Every word you generate goes directly to a "
+        "human ear via text-to-speech.\n\n"
+        "The following are permanently banned from appearing in any "
+        "response:\n"
+        "Sentences beginning with: Filtering for, Checking, The rule says, "
+        "I'll need to, With only, Skipping, I should, Let me work out, "
+        "Looking at, Calculating, So I need to.\n"
+        "Tick or cross notation: ✓ ✗ or any equivalent check-mark "
+        "or cross symbol.\n"
+        "Any timestamp in HH:MM format appearing more than once in a single "
+        "response.\n"
+        "Numbered working-out steps or decision trees.\n"
+        "Any sentence that describes what you are about to do rather than "
+        "doing it.\n"
+        "Any sentence that explains your slot selection logic to the "
+        "caller.\n"
+        "Internal notes, flags, or labels such as: single-slot day, late "
+        "afternoon only, lead-time window.\n\n"
+        "The only thing that should ever appear in your response is the "
+        "final spoken answer — the words the caller needs to hear. Nothing "
+        "else. Not the process. Not the reasoning. Not the intermediate "
+        "steps. Filter slots silently and speak only the result. Check "
+        "availability silently and speak only the options.\n\n"
+        "Correct example — caller asks for late afternoons:\n"
+        "'I've got three options. Number 1, Thursday the 7th — five in "
+        "the evening. Number 2, Wednesday the 13th — five in the evening. "
+        "Number 3, Monday the 18th — five or six in the evening. Any of "
+        "those suit you?'\n\n"
+        "Banned example — never produce this:\n"
+        "'Filtering for slots at 5pm or later across the next two weeks... "
+        "The rule says skip single-slot days unless it is the only "
+        "option... I'll need to include Monday 11th...'\n"
+        "The banned example is internal reasoning. It must never reach the "
+        "caller. Produce only the correct example directly."
+    )
+
     blocks = [identity]
     if b7: blocks.append(b7)
     blocks.extend([
@@ -2247,6 +2290,7 @@ def _build_theorem_v3(session: dict) -> str:
         tools,
         reschedule_cancel,
         voice_rules,
+        output_discipline,
         acknowledgement_rule,
         name_confirmation_rules,
         banned_phrases,

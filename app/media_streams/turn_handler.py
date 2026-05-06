@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# sanitise_response — still used by llm_stream.py to clean LLM output
+# Gate 5b — sentence-level banned-phrase patterns
+# Each pattern strips the matching sentence from the chunk; surrounding text
+# is preserved.  Applied AFTER the chunk-drop check (Gate 5a).
 # ---------------------------------------------------------------------------
 
 _BANNED_SENTENCE_RE = [
@@ -79,16 +81,100 @@ _MULTI_SPACE_RE  = re.compile(r" {2,}")
 _LEADING_JUNK_RE = re.compile(r"^[\s:,—–\-]+")
 
 
+# ---------------------------------------------------------------------------
+# Gate 5a — chunk-level reasoning drop patterns
+# If ANY of these match, the ENTIRE chunk is discarded and never reaches TTS.
+# Applied BEFORE sentence-level stripping.  Matches internal reasoning output
+# that should never reach the spoken layer.
+# ---------------------------------------------------------------------------
+
+# ✓ ✗ check-mark / cross symbols — hallmark of reasoning tables
+_REASONING_TICK_CROSS_RE = re.compile(r"[✓✗]")
+
+# HH:MM timestamp — >1 in a single chunk indicates a reasoning timestamp table
+_REASONING_HH_MM_RE = re.compile(r"\d{2}:\d{2}")
+
+# Sentences that open with explicit reasoning narration openers.
+# Anchored to start-of-string OR after sentence-ending punctuation.
+_REASONING_OPENER_RE = re.compile(
+    r"(?:^|(?<=[.!?])\s*)"
+    r"(?:Filtering|Checking|Skipping|The rule says|I'?ll need to|With only|"
+    r"Let me work out|Looking at the|Calculating|So I need to|I should)\b",
+    re.IGNORECASE,
+)
+
+# Internal label / flag words that only appear in reasoning, never in speech
+_REASONING_LABEL_RE = re.compile(
+    r"\b(?:single-slot|lead-time|late afternoon only|working out|decision)\b",
+    re.IGNORECASE,
+)
+
+# High-density time references: >3 per chunk = a reasoning table, not speech.
+# Matches patterns like "5pm", "17:00", "five in the afternoon" etc.
+_TIME_DENSITY_RE = re.compile(
+    r"\d+(?::\d+)?\s*(?:am|pm|in the morning|in the afternoon|in the evening)",
+    re.IGNORECASE,
+)
+
+
+def _get_reasoning_drop_reason(text: str) -> str:
+    """
+    Returns a non-empty description string if `text` should be dropped
+    entirely as internal reasoning output.  Returns "" if the chunk is safe.
+
+    Called per-chunk in Gate 5a, before any sentence-level stripping.
+    """
+    if _REASONING_TICK_CROSS_RE.search(text):
+        return "tick_cross_symbol"
+    if len(_REASONING_HH_MM_RE.findall(text)) > 1:
+        return "multiple_hhmm_timestamps"
+    if _REASONING_OPENER_RE.search(text):
+        return "reasoning_sentence_opener"
+    if _REASONING_LABEL_RE.search(text):
+        return "internal_label_word"
+    if len(_TIME_DENSITY_RE.findall(text)) > 3:
+        return "high_time_density"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# sanitise_response — public API, called per-chunk from llm_stream.py
+# ---------------------------------------------------------------------------
+
 def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     """
     Clean LLM output before it reaches tts_text_queue.
 
-    Strips banned filler phrases and whitespace artefacts.
+    Gate 5a — chunk-level reasoning drop:
+      Discards the ENTIRE chunk when internal-reasoning patterns are detected.
+      Logs the drop and increments session["_gate5_reasoning_drops"].
+      The pipeline continues normally — only the individual chunk is gone.
+      Slot map, DTMF standby, and watchdog state are unaffected.
+
+    Gate 5b — sentence-level stripping:
+      Strips individual banned phrases / sentences while leaving surrounding
+      text intact (existing behaviour, unchanged).
+
     Called per-chunk so the pipeline stays streaming.
     """
     if not text or not text.strip():
         return text
 
+    # ── Gate 5a: whole-chunk reasoning drop ──────────────────────────────────
+    _drop_reason = _get_reasoning_drop_reason(text)
+    if _drop_reason:
+        _preview = (text[:50] + "...") if len(text) > 50 else text
+        logger.info(
+            "[ms_gate5] dropped reasoning chunk (%s): %r",
+            _drop_reason,
+            _preview,
+        )
+        session["_gate5_reasoning_drops"] = (
+            int(session.get("_gate5_reasoning_drops") or 0) + 1
+        )
+        return ""
+
+    # ── Gate 5b: sentence-level stripping ────────────────────────────────────
     result = text
 
     for desc, pattern in _BANNED_SENTENCE_RE:

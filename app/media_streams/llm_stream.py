@@ -687,6 +687,13 @@ class LLMStream:
                 if final_chunk:
                     await tts_text_queue.put(final_chunk)
 
+            # ── GATE 5: per-turn reasoning drop count ─────────────────────
+            _g5_drops = int(session.pop("_gate5_reasoning_drops", 0) or 0)
+            logger.info(
+                "[ms_gate5] turn complete: %d chunk(s) dropped as reasoning",
+                _g5_drops,
+            )
+
             # ── Collect tool uses from final message ──────────────────────
             final_message = await stream.get_final_message()
             stop_reason   = final_message.stop_reason
