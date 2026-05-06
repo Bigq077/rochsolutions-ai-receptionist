@@ -373,13 +373,20 @@ class LLMStream:
     ) -> None:
         """
         Drain the per-iteration slot presentation buffer and flush to the
-        real TTS queue, removing mid-stream self-corrections.
+        real TTS queue.  Two sequential passes:
 
-        Self-correction pattern: the LLM starts listing numbered options
-        ("Number 1, ...", "Number 2, ...") then backtracks with "Actually"
-        or similar.  Everything up to and including the correction marker
-        is discarded; only the corrected content that follows is flushed.
-        If no correction is found, all buffered chunks are flushed unchanged.
+        Pass 1 — sentinel strip (new):
+          Discard everything before the first chunk that contains a sentinel
+          phrase ("Number 1,", "I've got", "Any of those", "Does that").
+          Preamble chunks that arrived before the LLM committed to its final
+          slot framing are silently dropped — the caller never hears them.
+          If no sentinel is found (shouldn't occur in normal flow), all
+          chunks are kept as a fallback.
+
+        Pass 2 — self-correction strip (existing):
+          Within the sentinel-onwards chunks, look for "Actually" appearing
+          after a numbered option.  If found, discard everything up to and
+          including the correction marker and keep only the corrected tail.
 
         Chunks in the buffer are already gate5-filtered — no further
         sanitisation is needed here.
@@ -394,36 +401,69 @@ class LLMStream:
         if not chunks:
             return
 
-        # Scan for self-correction: "Actually" after a numbered slot option.
-        _had_numbered = False
-        _correction_idx: Optional[int] = None
+        # ── Pass 1: sentinel strip ────────────────────────────────────────────
+        _SENTINELS = ("number 1,", "i've got", "any of those", "does that")
+        _sentinel_idx: Optional[int] = None
         for i, c in enumerate(chunks):
-            cl = c.lower()
-            if any(f"number {n}" in cl for n in ("1", "2", "3", "4", "one", "two", "three")):
-                _had_numbered = True
-            if _had_numbered and (
-                cl.strip().startswith("actually")
-                or ", actually" in cl
-                or "— actually" in cl
-                or "- actually" in cl
-            ):
-                _correction_idx = i
-                # Don't break — keep scanning for the last correction
+            if any(s in c.lower() for s in _SENTINELS):
+                _sentinel_idx = i
+                break
 
-        if _correction_idx is not None and _correction_idx + 1 < len(chunks):
-            _pre  = chunks[:_correction_idx + 1]
-            _post = chunks[_correction_idx + 1:]
+        if _sentinel_idx is None:
+            # No sentinel — flush everything as-is (fallback)
             logger.info(
-                "[ms_gate5] slot self-correction removed: "
-                "%d chunk(s) discarded, %d kept; first_discarded=%r",
-                len(_pre), len(_post), (_pre[0][:50] if _pre else ""),
+                "[ms_gate5] slot buf: no sentinel found — flushing all %d chunk(s)",
+                len(chunks),
             )
-            session["_gate5_reasoning_drops"] = (
-                int(session.get("_gate5_reasoning_drops") or 0) + len(_pre)
-            )
-            to_flush = _post
-        else:
             to_flush = chunks
+        else:
+            if _sentinel_idx > 0:
+                _pre_sentinel = chunks[:_sentinel_idx]
+                logger.info(
+                    "[ms_gate5] slot buf: %d pre-sentinel chunk(s) discarded "
+                    "(sentinel=%r)",
+                    len(_pre_sentinel),
+                    chunks[_sentinel_idx][:60],
+                )
+                session["_gate5_reasoning_drops"] = (
+                    int(session.get("_gate5_reasoning_drops") or 0)
+                    + len(_pre_sentinel)
+                )
+            chunks = chunks[_sentinel_idx:]  # sentinel chunk is first to flush
+
+            # ── Pass 2: self-correction strip ─────────────────────────────────
+            _had_numbered = False
+            _correction_idx: Optional[int] = None
+            for i, c in enumerate(chunks):
+                cl = c.lower()
+                if any(
+                    f"number {n}" in cl
+                    for n in ("1", "2", "3", "4", "one", "two", "three")
+                ):
+                    _had_numbered = True
+                if _had_numbered and (
+                    cl.strip().startswith("actually")
+                    or ", actually" in cl
+                    or "— actually" in cl
+                    or "- actually" in cl
+                ):
+                    _correction_idx = i
+                    # Keep scanning — use the LAST correction marker found
+
+            if _correction_idx is not None and _correction_idx + 1 < len(chunks):
+                _pre  = chunks[:_correction_idx + 1]
+                _post = chunks[_correction_idx + 1:]
+                logger.info(
+                    "[ms_gate5] slot self-correction removed: "
+                    "%d chunk(s) discarded, %d kept; first_discarded=%r",
+                    len(_pre), len(_post), (_pre[0][:50] if _pre else ""),
+                )
+                session["_gate5_reasoning_drops"] = (
+                    int(session.get("_gate5_reasoning_drops") or 0) + len(_pre)
+                )
+                to_flush = _post
+            else:
+                to_flush = chunks
 
         for c in to_flush:
             await tts_queue.put(c)
