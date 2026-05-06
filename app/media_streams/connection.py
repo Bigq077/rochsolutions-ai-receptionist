@@ -1536,21 +1536,18 @@ class SilenceHandler:
                 "[ms_watchdog] slot_selection_grace=%.1fs (v3_awaiting_slot_selection)",
                 _wait,
             )
-        # theorem_v3 DTMF phone confirmation: the caller just heard 11 digits
-        # read back one by one and needs time to verify the number before
-        # responding "yes" or "no".  Apply 10 s grace (matching slot selection)
-        # whenever DTMF was received recently (within 90 s) and the collection
-        # phase has concluded (v3_phone_dtmf_active is cleared).
-        # This is the targeted fix for the persistent re-ask at phone
-        # confirmation — the watchdog was firing at 6 s (greeting grace) while
-        # the caller was still processing an 11-digit readback.
-        _dtmf_recency = time.time() - self.last_dtmf_at
-        if 0 < _dtmf_recency < 90.0 and not (_sess_faq_w or {}).get("v3_phone_dtmf_active"):
+        # theorem_v3 phone confirmation: the system has just read back a number
+        # (either DTMF-entered or the caller's own CLI number) and is waiting
+        # for a yes/no verification.  flow_step=0 is set at the moment the
+        # readback is spoken and is the sole reliable signal — it covers both
+        # the DTMF path and the "use this number" verbal-confirm path where no
+        # DTMF is entered at all.  10 s grace matches slot_selection_grace and
+        # gives the caller time to process the digit readback before responding.
+        if (_sess_faq_w or {}).get("flow_step") == 0:
             _wait = max(_wait, 10.0)
             logger.info(
-                "[ms_watchdog] phone_confirm_grace=%.1fs "
-                "(dtmf_recency=%.1fs ago)",
-                _wait, _dtmf_recency,
+                "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0)",
+                _wait,
             )
         # theorem_v3 preference question: the caller is being asked a binary
         # preference question ("mornings or afternoons?", "what works better for
