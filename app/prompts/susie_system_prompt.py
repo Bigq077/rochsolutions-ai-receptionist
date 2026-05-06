@@ -663,7 +663,7 @@ When the caller says yes / that works / go ahead / perfect → slot is locked in
 **Step F4 (slot confirmed → collect first name, then mobile number)** — Slot is locked in; now collect first name only.
 Ask: "Can I take your first name?"
 When the caller gives a name, confirm immediately: "Did you say [name] — is that right?" and wait for yes before proceeding.
-If the name was unclear or not confirmed: ask once — "Could you repeat that by saying 'my first name is...'?"
+If the name was unclear: follow the NAME CONFIRMATION RULES two-step clarification flow — never ask them to spell it or say it letter by letter.
 When confirmed: call collect_and_store(field="full_name", value="[first name as spoken]") immediately, then say "Perfect — so that's [name]." Then proceed.
 If full_name or name already in session: skip the name question — do NOT ask again.
 Do NOT ask for a surname — first name only is collected on the call.
@@ -775,7 +775,7 @@ When the caller says yes (or "yeah", "that's fine", "that works", "perfect", "go
 
 **Step 8** -- First name only: ask "Can I take your first name?"
 When the caller gives a name, confirm: "Did you say [name] — is that right?" and wait for yes before proceeding.
-If the name was unclear or not confirmed: ask once — "Could you repeat that by saying 'my first name is...'?"
+If the name was unclear: follow the NAME CONFIRMATION RULES two-step clarification flow — never ask them to spell it or say it letter by letter.
 When confirmed: say "Perfect — so that's [name]." then call collect_and_store(field="full_name", value="[first name as spoken]") immediately.
 If full_name or name already in session: skip immediately to Step 9.
 Do NOT ask for a surname — first name only is collected on the call.
@@ -2101,21 +2101,33 @@ def _build_theorem_v3(session: dict) -> str:
         "surrounding context — for example the caller said \"my "
         "first name is\" and the name came in a separate utterance "
         "— apply the same confirmation regardless. Do not treat "
-        "isolation as a reason to skip confirmation.\n"
-        "If the name is phonetically unusual, does not resemble a "
-        "common English given name, is a single syllable that could "
-        "easily be a mishear (examples: Gloom, Broom, Flute, "
-        "Crane), or is any word that is primarily known as a common "
-        "noun rather than a name — do not just confirm it, ask for "
-        "spelling as well: \"Just to make sure I've got that right "
-        "— could you spell that for me?\"\n"
-        "Never silently accept any name without confirmation. Never "
+        "isolation as a reason to skip confirmation.\n\n"
+        "WHEN YOU ARE NOT CONFIDENT YOU HEARD THE NAME CORRECTLY:\n"
+        "Use this exact two-step flow. Never deviate from it.\n\n"
+        "Step 1 — Confirm what you heard:\n"
+        "Repeat back what you think you heard as a simple yes/no "
+        "question. Examples: \"Did you say Gloom — is that right?\" "
+        "or \"Just to check — was that Gloom?\"\n"
+        "If the caller says yes: accept it and continue.\n"
+        "If the caller says no or corrects you: go to Step 2.\n\n"
+        "Step 2 — Ask for the name again simply:\n"
+        "Ask once, simply: \"Could you say your first name for me "
+        "again?\" or \"What's your first name?\"\n"
+        "If after Step 2 you still cannot resolve the name, say: "
+        "\"No problem — I'll make a note and the team will confirm "
+        "your name when they get in touch about the appointment.\" "
+        "Then continue the booking using a placeholder. Do not "
+        "block the booking on name resolution.\n\n"
+        "ABSOLUTE RULES — name clarification:\n"
+        "Never ask the caller to spell their name.\n"
+        "Never ask them to say it letter by letter.\n"
+        "Never repeat a clarification request more than twice in "
+        "total across the entire name exchange.\n"
+        "After two failed attempts, use a placeholder and move on.\n"
+        "Never silently accept a name without confirmation. Never "
         "move forward assuming the name is correct. The "
         "confirmation step is mandatory on every call without "
-        "exception.\n"
-        "After the caller spells or confirms their name, read it "
-        "back one final time before continuing: \"Perfect — so "
-        "that's [Name].\" Then proceed."
+        "exception."
     )
 
     # BANNED AS STANDALONE SENTENCE OPENERS — reframed, not global ban
