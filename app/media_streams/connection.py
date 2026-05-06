@@ -1538,15 +1538,21 @@ class SilenceHandler:
             )
         # theorem_v3 phone confirmation: the system has just read back a number
         # (either DTMF-entered or the caller's own CLI number) and is waiting
-        # for a yes/no verification.  flow_step=0 is set at the moment the
-        # readback is spoken and is the sole reliable signal — it covers both
-        # the DTMF path and the "use this number" verbal-confirm path where no
-        # DTMF is entered at all.  10 s grace matches slot_selection_grace and
-        # gives the caller time to process the digit readback before responding.
-        if (_sess_faq_w or {}).get("flow_step") == 0:
+        # for a yes/no verification.  10 s grace matches slot_selection_grace
+        # and gives the caller time to process the digit readback.
+        # Guard: BOTH flow_step=0 AND last_bot_prompt must contain a phone
+        # confirmation signal — this prevents the grace from firing on
+        # greeting/location/all other turns where flow_step=0 persists.
+        _lbp_pc = (_sess_faq_w or {}).get("last_bot_prompt", "").lower()
+        _phone_confirm_signals = (
+            "number you're calling from" in _lbp_pc
+            or "keypad" in _lbp_pc
+            or "use this number" in _lbp_pc
+        )
+        if (_sess_faq_w or {}).get("flow_step") == 0 and _phone_confirm_signals:
             _wait = max(_wait, 10.0)
             logger.info(
-                "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0)",
+                "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0 + phone signal)",
                 _wait,
             )
         # theorem_v3 preference question: the caller is being asked a binary
@@ -5715,6 +5721,13 @@ class WebSocketCallHandler:
                         self.session.get("state", "?"),
                         self.session.get("flow_step", 0),
                     )
+                    # Clear flow_step=0 after each turn so phone_confirm_grace
+                    # does not persist into subsequent turns (greeting, location
+                    # question, etc.).  Only reset the sentinel value (0); other
+                    # non-zero values are left for the flow engine to manage.
+                    if self.session.get("flow_step") == 0:
+                        self.session["flow_step"] = -1
+                        logger.debug("[ms_conn] flow_step reset to -1 after turn")
 
                     await save_session(self.call_sid, self.session)
 
