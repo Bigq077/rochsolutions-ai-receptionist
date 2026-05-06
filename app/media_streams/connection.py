@@ -766,8 +766,13 @@ class SilenceHandler:
         Does NOT update last_audio_received_at — use on_speech_started() for that."""
         pass
 
-    def on_speech_started(self) -> None:
+    def on_speech_started(self, stt_source: bool = False) -> None:
         """Call when STT detects actual speech (partial transcript or energy VAD).
+
+        stt_source — True when the call originates from a genuine STT event
+        (PartialTranscript or FinalTranscript from AssemblyAI).  False (default)
+        when the call comes from the energy VAD in _handle_media(), which fires on
+        any non-silence inbound audio including phone-line echo of Susie's own TTS.
 
         Cancels the W1/W2/W3 silence cascade timer so Susie doesn't re-ask while
         the caller is speaking.
@@ -781,6 +786,12 @@ class SilenceHandler:
         Only a real final transcript (on_transcript_received) or a flow advance
         (_restart_timer / on_question_asked) should cancel the watchdog via
         _cancel_timer().  This avoids spawn/cancel churn on every VAD event.
+
+        The barge_in_during_tts watchdog cancel is restricted to stt_source=True
+        callers.  Energy VAD alone cannot reliably distinguish the caller speaking
+        from phone-network sidetone of Susie's own TTS — allowing it to cancel the
+        watchdog was the root cause of persistent re-ask after slot presentation
+        (watchdog cancelled mid-TTS, restarted only from the terminal chunk).
         """
         _now = time.time()
         self.last_audio_received_at = _now
@@ -803,14 +814,15 @@ class SilenceHandler:
             self._recovery_task.cancel()
 
         # ── Barge-in during TTS: cancel the current-generation watchdog ──────
-        # When the caller starts speaking while Susie is mid-playback, the
-        # question context is now being interrupted.  The flow will arm a fresh
-        # watchdog after the next question's TTS finishes.  _speech_recovery
-        # (armed below) provides the STT-miss safety net for this utterance.
-        # We only cancel if TTS is still flagged as playing — that distinguishes
+        # Restricted to stt_source=True (STT partial/final) so that energy VAD
+        # from phone-line echo of Susie's TTS cannot falsely cancel the watchdog
+        # mid-playback.  Without this guard the watchdog was cancelled before the
+        # caller spoke, then restarted only at the terminal TTS chunk — too late
+        # for long slot-presentation responses.
+        # We also require TTS to still be flagged as playing — that distinguishes
         # a genuine barge-in (Susie was speaking) from a post-TTS speech event
         # where the rolling-deadline model should keep the watchdog alive.
-        if self._tts_playing:
+        if stt_source and self._tts_playing:
             if self._no_input_watchdog_task and not self._no_input_watchdog_task.done():
                 self._no_input_watchdog_task.cancel()
                 self._no_input_watchdog_task = None
@@ -830,9 +842,10 @@ class SilenceHandler:
             self._speech_recovery(_recovery_step, _my_q_gen), name="ms_silence_speech_recovery"
         )
         logger.debug(
-            "[ms_silence] speech started — W1 timer cancelled, recovery armed "
-            "(step=%d q_gen=%d); watchdog rolling deadline extended via last_engagement_at",
-            _recovery_step, _my_q_gen,
+            "[ms_silence] speech started stt_source=%s — W1 timer cancelled, "
+            "recovery armed (step=%d q_gen=%d); watchdog rolling deadline "
+            "extended via last_engagement_at",
+            stt_source, _recovery_step, _my_q_gen,
         )
 
     async def _speech_recovery(self, recovery_step: int = -1, q_gen: int = 0) -> None:
@@ -6113,7 +6126,9 @@ class WebSocketCallHandler:
 
         # Always cancel the silence timer — caller is speaking.
         # on_transcript_received() handles the full reset when the utterance ends.
-        self._silence_handler.on_speech_started()
+        # stt_source=True: this is a genuine PartialTranscript from AssemblyAI so
+        # the barge_in_during_tts watchdog cancel is permitted.
+        self._silence_handler.on_speech_started(stt_source=True)
         # Per-prompt speech guard: mark that the caller has started speaking
         # for the current prompt so any in-flight watchdog suppresses its re-ask.
         self._silence_handler._mark_prompt_speech_detected("partial", text)
