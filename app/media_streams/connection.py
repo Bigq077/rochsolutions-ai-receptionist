@@ -1536,6 +1536,22 @@ class SilenceHandler:
                 "[ms_watchdog] slot_selection_grace=%.1fs (v3_awaiting_slot_selection)",
                 _wait,
             )
+        # theorem_v3 DTMF phone confirmation: the caller just heard 11 digits
+        # read back one by one and needs time to verify the number before
+        # responding "yes" or "no".  Apply 10 s grace (matching slot selection)
+        # whenever DTMF was received recently (within 90 s) and the collection
+        # phase has concluded (v3_phone_dtmf_active is cleared).
+        # This is the targeted fix for the persistent re-ask at phone
+        # confirmation — the watchdog was firing at 6 s (greeting grace) while
+        # the caller was still processing an 11-digit readback.
+        _dtmf_recency = time.time() - self.last_dtmf_at
+        if 0 < _dtmf_recency < 90.0 and not (_sess_faq_w or {}).get("v3_phone_dtmf_active"):
+            _wait = max(_wait, 10.0)
+            logger.info(
+                "[ms_watchdog] phone_confirm_grace=%.1fs "
+                "(dtmf_recency=%.1fs ago)",
+                _wait, _dtmf_recency,
+            )
         # Caller-choice states: the AI has just asked a question that requires
         # the caller to parse spoken content and make a decision between multiple
         # options (pick a clinic, pick a day, pick a slot, confirm which
@@ -6828,6 +6844,12 @@ class WebSocketCallHandler:
         # reporting; legacy FlowEngine paths are unaffected.
         if self.session.get("booking_confirmed"):
             self.session["call_outcome"] = "booked"
+        elif (
+            self.session.get("cancel_confirmed")
+            or self.session.get("call_outcome_logged") == "cancelled"
+        ):
+            self.session["call_outcome"] = "cancelled"
+            logger.info("[ms_conn v3] call_outcome=cancelled")
         elif self.session.get("transfer_attempted"):
             self.session["call_outcome"] = "transferred"
         else:
