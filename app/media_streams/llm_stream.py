@@ -978,11 +978,77 @@ class LLMStream:
             await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
             return SAFE_FALLBACK_PHRASE
 
+        # ── Change 1: Phone-collection keypad hardcode ────────────────────────
+        # When the caller indicates they want to use a different number while
+        # the system is in the phone-collection phase (name confirmed, phone not
+        # yet stored), skip GPT entirely.  The verbatim keypad prompt contains
+        # the word "keypad" which arms v3_phone_dtmf_active in connection.py
+        # via the last_bot_prompt detection path — identical to the Claude path.
+        _KEYPAD_PROMPT = (
+            "Of course — could you type the number on your keypad? "
+            "You can press the hashtag key to reset at any time."
+        )
+        _collected = session.get("collected") or {}
+        _last_user_text = ""
+        for _m in reversed(messages):
+            if not isinstance(_m, dict):
+                continue
+            if _m.get("role") != "user":
+                continue
+            _mc = _m.get("content", "")
+            if isinstance(_mc, str):
+                _last_user_text = _mc.lower()
+            elif isinstance(_mc, list):
+                for _blk in _mc:
+                    if isinstance(_blk, dict) and _blk.get("type") == "text":
+                        _last_user_text = _blk.get("text", "").lower()
+                        break
+            break
+        _wants_different_number = any(
+            phrase in _last_user_text
+            for phrase in (
+                "different number", "another number", "wrong number",
+                "use a different", "different one", "not that number",
+                "change the number", "update the number", "type it",
+                "use my keypad", "use the keypad",
+            )
+        )
+        _in_phone_phase = (
+            bool(_collected.get("full_name") or _collected.get("name"))
+            and not _collected.get("phone")
+        )
+        if _wants_different_number and _in_phone_phase:
+            logger.info(
+                "[ms_llm] GPT fallback: phone-collection keypad hardcode "
+                "(name=%r, last_user=%r)",
+                _collected.get("full_name") or _collected.get("name"),
+                _last_user_text[:60],
+            )
+            await tts_text_queue.put(_KEYPAD_PROMPT)
+            session["last_bot_prompt"] = _KEYPAD_PROMPT
+            return _KEYPAD_PROMPT
+
+        # ── Change 2: GPT constraint prefix ──────────────────────────────────
+        # Prepend a brief voice-receptionist discipline block so that GPT
+        # output at minimum respects the banned phrase rules even when Claude
+        # is unavailable.  The prefix is invisible to the conversation history
+        # — it only modifies the system message sent to OpenAI.
+        _GPT_CONSTRAINT_PREFIX = (
+            "You are a voice receptionist. Keep responses under 2 sentences. "
+            "Never start with: Of course, Absolutely, Certainly, Sure, Great, "
+            "No problem, No worries. "
+            "Never say: take your time, no rush, bear with me, just a moment, "
+            "I'd be happy to, I'd be glad to, go ahead whenever you are ready. "
+            "Respond directly and naturally.\n\n"
+        )
+
         try:
             from openai import AsyncOpenAI
             gpt_client   = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=15.0)
             tools        = _build_openai_tools()
-            oai_messages = [{"role": "system", "content": system_prompt}] + list(messages)
+            oai_messages = [
+                {"role": "system", "content": _GPT_CONSTRAINT_PREFIX + system_prompt},
+            ] + list(messages)
             reply_text   = SAFE_FALLBACK_PHRASE
 
             from app.tools.receptionist_tools import TOOL_EXECUTORS
