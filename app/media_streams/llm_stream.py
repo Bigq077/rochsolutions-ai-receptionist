@@ -934,6 +934,43 @@ class LLMStream:
                         ),
                         "available_days": session.get("available_days", {}),
                     }
+                elif tool_name == "book_appointment" and not (
+                    "shall i go ahead" in (session.get("last_bot_prompt") or "").lower()
+                    or "book that in" in (session.get("last_bot_prompt") or "").lower()
+                ):
+                    # Booking confirmation guard.
+                    #
+                    # book_appointment must only fire after the system has
+                    # explicitly asked the booking confirmation question
+                    # ("Shall I go ahead and book that in?") AND received an
+                    # affirmative response to THAT specific question.
+                    #
+                    # The failure case this prevents: the summary readback is
+                    # barged in on mid-sentence and the barge-in contains "yes"
+                    # — the LLM can misconstrue that affirmative as booking
+                    # confirmation and immediately fire book_appointment.
+                    #
+                    # Guard: if last_bot_prompt does not contain the booking
+                    # confirmation phrases, block the call and instruct the LLM
+                    # to ask the confirmation question first.
+                    _lbp_preview = (session.get("last_bot_prompt") or "")[:80]
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — booking confirmation "
+                        "question not yet asked (last_bot_prompt=%r)",
+                        _lbp_preview,
+                    )
+                    result = {
+                        "status": "confirmation_required",
+                        "message": (
+                            "book_appointment cannot fire yet. The booking "
+                            "confirmation question has not been asked in the "
+                            "current turn. You MUST ask: "
+                            "\"Shall I go ahead and book that in?\" "
+                            "and wait for the caller to say yes before calling "
+                            "book_appointment. Do not book without this explicit "
+                            "confirmation."
+                        ),
+                    }
                 elif tool_name == "escalate_to_claude":
                     result = await self._exec_escalate(args, session)
                 else:
