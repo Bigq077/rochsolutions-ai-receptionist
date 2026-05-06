@@ -4135,6 +4135,7 @@ class WebSocketCallHandler:
                                     " gate: %s from %r — loc gate restored",
                                     _pivot_intent, utterance[:60],
                                 )
+                                self._last_audio_or_transcript_ts = time.monotonic()
                                 return
 
                             if self.session.get(
