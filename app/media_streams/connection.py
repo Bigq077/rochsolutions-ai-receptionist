@@ -644,6 +644,7 @@ class SilenceHandler:
         on_reask=None,
         on_transfer=None,
         get_session=None,
+        on_dead_air_ts_reset=None,
     ) -> None:
         self.reask_count:             int   = 0
         self.last_audio_received_at:  float = time.time()
@@ -669,6 +670,7 @@ class SilenceHandler:
         # from WebSocketCallHandler so it always reflects the live session after
         # the "start" event reassigns self.session).
         self._get_session                   = get_session   # () -> dict | None
+        self._on_dead_air_ts_reset          = on_dead_air_ts_reset  # optional async callback() — resets WebSocketCallHandler._last_audio_or_transcript_ts
         self._recovery_task: Optional[asyncio.Task] = None  # re-arms timer if STT misses audio
         self._stt_miss_count: int = 0  # consecutive STT misses since last successful transcript
         self._cancelled: bool = False  # set by cancel() — hard synchronous guard for _run()/_transfer()
@@ -2027,6 +2029,11 @@ class SilenceHandler:
             # Tag with watchdog-reask marker so _tts_loop bypasses dedup for this
             # one chunk (a deliberate silence recovery is not an accidental dup).
             await self._tts_text_queue.put(_WATCHDOG_REASK_MARKER + phrase)
+            if self._on_dead_air_ts_reset:
+                asyncio.create_task(self._on_dead_air_ts_reset())
+            logger.debug(
+                "[ms_watchdog] dead-air ts reset on re-ask fire"
+            )
             if self._on_reask:
                 asyncio.create_task(self._on_reask(phrase))
 
@@ -2085,6 +2092,11 @@ class SilenceHandler:
             logger.info(
                 "[ms_watchdog] WATCHDOG_RETIRE q_gen=%d reason=audible_reask_done",
                 q_gen,
+            )
+            if self._on_dead_air_ts_reset:
+                asyncio.create_task(self._on_dead_air_ts_reset())
+            logger.debug(
+                "[ms_watchdog] dead-air ts reset on retire"
             )
             self._watchdog_has_retired = True
             return
@@ -2744,6 +2756,15 @@ class WebSocketCallHandler:
             )
             await save_session(self.call_sid, self.session)
 
+        async def _silence_dead_air_ts_reset_fn() -> None:
+            """Reset the 10-second dead-air safety-net anchor when the watchdog
+            fires a re-ask or retires — prevents the safety net from seeing
+            the post-reask silence as a new dead-air stall."""
+            self._last_audio_or_transcript_ts = time.monotonic()
+            logger.debug(
+                "[ms_conn] dead-air ts reset via watchdog callback"
+            )
+
         self._silence_handler = SilenceHandler(
             tts_text_queue=self.tts_text_queue,
             trigger_transfer_fn=_silence_transfer_fn,
@@ -2752,6 +2773,7 @@ class WebSocketCallHandler:
             # Lambda captures self (not the dict) so it always returns the
             # current session even after self.session is reassigned on "start".
             get_session=lambda: self.session,
+            on_dead_air_ts_reset=_silence_dead_air_ts_reset_fn,
         )
 
         # ── Call stability ─────────────────────────────────────────────────
@@ -2968,8 +2990,8 @@ class WebSocketCallHandler:
                 self.session["v3_awaiting_phone_confirm"] = True
             else:
                 _next_q = (
-                    f"Have you been with us at "
-                    f"{_disp} before?"
+                    "Is there a particular day or time "
+                    "that works best for you?"
                 )
             await self.tts_text_queue.put(_ack)
             await self.tts_text_queue.put(_next_q)
@@ -3085,6 +3107,9 @@ class WebSocketCallHandler:
         self._silence_handler.last_dtmf_at           = _now_dtmf
 
         logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
+        # Reset safety-net dead-air anchor so the 10s backstop never fires
+        # mid-number even if the caller pauses between digits.
+        self._last_audio_or_transcript_ts = time.monotonic()
 
         # Cancel any pending idle-finalize task; a new digit just arrived so
         # the caller is still actively typing.  A fresh task is scheduled
@@ -6595,6 +6620,11 @@ class WebSocketCallHandler:
                 # 5. No-input watchdog is already active
                 _wd = self._silence_handler._no_input_watchdog_task
                 if _wd and not _wd.done():
+                    continue
+
+                # 6. v3 phone DTMF collection active — silence during keypad
+                #    entry is expected; safety net must not fire mid-number.
+                if self.session.get("v3_phone_dtmf_active"):
                     continue
 
                 logger.warning(
