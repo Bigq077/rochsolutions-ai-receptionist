@@ -68,6 +68,12 @@ _BANNED_SENTENCE_RE = [
          r"[^.!?]*\bI should\b[^.!?]*[.!?]?",
          re.IGNORECASE,
      )),
+    # "I'd be happy to..." — call-centre filler, banned in all output
+    ("id_be_happy_to",
+     re.compile(
+         r"[^.!?]*\bI'?d be happy to\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
     # "(N slots)" annotation — raw slot-count parentheticals from tool result
     # narration (e.g. "Tuesday 12th (4 slots)"). Strip inline without removing
     # surrounding text so the day/time label survives.

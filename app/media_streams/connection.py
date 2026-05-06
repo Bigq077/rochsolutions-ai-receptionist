@@ -1952,7 +1952,8 @@ class SilenceHandler:
                         ):
                             _lq_g = _lq_tail
                     if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
-                        phrase = _prefix + ". " + _lq_g.strip()
+                        _lq_body = _lq_g.strip()
+                        phrase = _prefix + ". " + (_lq_body[0].upper() + _lq_body[1:])
                     else:
                         phrase = _prefix + " — how can I help today?"
             elif _state == "ASK_LOCATION":
@@ -3754,7 +3755,32 @@ class WebSocketCallHandler:
                         _utt_words = _stripped.split()
                         _is_single_word = len(_utt_words) == 1
 
-                        # Multi-word transcripts are NEVER filtered.
+                        # Condition 1 extension — 2-word fragments with a
+                        # single-character word (e.g. "r clinic", "a there").
+                        # A single letter/digit among two words is hallmark STT
+                        # noise; discard before the location resolver and DTMF
+                        # fallback.  Uses the same re-arm pattern as single-word
+                        # drops so silence recovery still fires after the discard.
+                        if (
+                            len(_utt_words) == 2
+                            and any(len(w) == 1 for w in _utt_words)
+                            and _stripped not in _V3_PRESERVE
+                        ):
+                            logger.info(
+                                "[ms_stt] fragment discarded "
+                                "(reason=single_char_word): %r",
+                                utterance.strip(),
+                            )
+                            _last_q = self.session.get("last_question", "")
+                            if _last_q:
+                                self._silence_handler.set_state(
+                                    self.session.get("state", "default")
+                                )
+                                self._silence_handler.on_question_asked(_last_q)
+                            continue
+
+                        # Multi-word transcripts are NEVER filtered (beyond the
+                        # single-char-word extension above).
                         if _is_single_word and _stripped not in _V3_PRESERVE:
                             _filter_reason: str = ""
                             _alpha_only = "".join(

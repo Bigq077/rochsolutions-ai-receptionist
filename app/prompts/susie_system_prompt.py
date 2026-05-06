@@ -1708,8 +1708,8 @@ def _build_theorem_v3(session: dict) -> str:
     )
     booking_flow = (
         "BOOKING FLOW\n"
-        "1. Caller signals booking intent. Acknowledge warmly: \"Of "
-        "course — I'd be happy to sort that for you.\" Stop. Wait. "
+        "1. Caller signals booking intent. Acknowledge simply: \"Of "
+        "course — let me get that sorted for you.\" Stop. Wait. "
         "This turn has no question.\n"
         + _booking_step2 +
         "3. Acknowledge location simply: \"Awlstuh, perfect.\" or "
