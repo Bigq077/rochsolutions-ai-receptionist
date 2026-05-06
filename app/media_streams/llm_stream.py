@@ -362,6 +362,75 @@ class LLMStream:
         return full_reply
 
     # -----------------------------------------------------------------------
+    # Slot presentation self-correction filter
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    async def _flush_slot_buf(
+        buf_queue: asyncio.Queue,
+        tts_queue: asyncio.Queue,
+        session: Dict[str, Any],
+    ) -> None:
+        """
+        Drain the per-iteration slot presentation buffer and flush to the
+        real TTS queue, removing mid-stream self-corrections.
+
+        Self-correction pattern: the LLM starts listing numbered options
+        ("Number 1, ...", "Number 2, ...") then backtracks with "Actually"
+        or similar.  Everything up to and including the correction marker
+        is discarded; only the corrected content that follows is flushed.
+        If no correction is found, all buffered chunks are flushed unchanged.
+
+        Chunks in the buffer are already gate5-filtered — no further
+        sanitisation is needed here.
+        """
+        chunks: List[str] = []
+        while True:
+            try:
+                chunks.append(buf_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        if not chunks:
+            return
+
+        # Scan for self-correction: "Actually" after a numbered slot option.
+        _had_numbered = False
+        _correction_idx: Optional[int] = None
+        for i, c in enumerate(chunks):
+            cl = c.lower()
+            if any(f"number {n}" in cl for n in ("1", "2", "3", "4", "one", "two", "three")):
+                _had_numbered = True
+            if _had_numbered and (
+                cl.strip().startswith("actually")
+                or ", actually" in cl
+                or "— actually" in cl
+                or "- actually" in cl
+            ):
+                _correction_idx = i
+                # Don't break — keep scanning for the last correction
+
+        if _correction_idx is not None and _correction_idx + 1 < len(chunks):
+            _pre  = chunks[:_correction_idx + 1]
+            _post = chunks[_correction_idx + 1:]
+            logger.info(
+                "[ms_gate5] slot self-correction removed: "
+                "%d chunk(s) discarded, %d kept; first_discarded=%r",
+                len(_pre), len(_post), (_pre[0][:50] if _pre else ""),
+            )
+            session["_gate5_reasoning_drops"] = (
+                int(session.get("_gate5_reasoning_drops") or 0) + len(_pre)
+            )
+            to_flush = _post
+        else:
+            to_flush = chunks
+
+        for c in to_flush:
+            await tts_queue.put(c)
+
+        logger.info("[ms_gate5] slot buf flushed: %d chunk(s) to TTS", len(to_flush))
+
+    # -----------------------------------------------------------------------
     # Streaming tool loop
     # -----------------------------------------------------------------------
 
@@ -386,9 +455,31 @@ class LLMStream:
         full_reply = ""
         transfer_initiated = False
         filler_sent = False
+        # True when the previous iteration executed check_availability — arms the
+        # slot presentation buffer for the following iteration so mid-stream
+        # self-corrections ("Number 3... Actually... I've got two options") are
+        # removed before audio reaches TTS.
+        _last_check_avail: bool = False
 
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
             logger.info("[ms_llm] iteration=%d model=%s", iteration, model)
+
+            # ── Slot self-correction buffer ───────────────────────────────
+            # When the previous iteration executed check_availability the LLM
+            # may stream a partial/wrong slot list before self-correcting with
+            # "Actually".  Route this iteration's output through a temporary
+            # buffer; _flush_slot_buf strips pre-correction chunks before
+            # anything reaches TTS.
+            _slot_buf: Optional[asyncio.Queue] = None
+            _active_q = tts_text_queue
+            if _last_check_avail:
+                _slot_buf = asyncio.Queue()
+                _active_q = _slot_buf
+                logger.info(
+                    "[ms_llm] slot buffer active (post-check_availability) iter=%d",
+                    iteration,
+                )
+            _last_check_avail = False  # reset; re-armed below after tool execution
 
             # ── Try Claude streaming ──────────────────────────────────────
             try:
@@ -399,13 +490,17 @@ class LLMStream:
                     messages=messages,
                     tools=tools,
                     session=session,
-                    tts_text_queue=tts_text_queue,
+                    tts_text_queue=_active_q,
                     filler_sent=filler_sent,
                     # Only suppress on first iteration — subsequent iterations
                     # (after tool calls) generate genuinely new text.
                     interim_played=(interim_played and iteration == 1),
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
+
+                # ── Flush slot buffer with self-correction filtering ──────
+                if _slot_buf is not None:
+                    await self._flush_slot_buf(_slot_buf, tts_text_queue, session)
 
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
@@ -505,6 +600,11 @@ class LLMStream:
                 tool_uses, session, call_sid, tts_text_queue=tts_text_queue,
             )
             messages.append({"role": "user", "content": tool_result_blocks})
+
+            # Re-arm slot buffer for the next iteration if check_availability ran.
+            _last_check_avail = any(
+                tu.get("name") == "check_availability" for tu in tool_uses
+            )
 
             await save_session(call_sid, session)
 
