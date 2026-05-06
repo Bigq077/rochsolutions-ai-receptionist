@@ -5033,9 +5033,12 @@ class WebSocketCallHandler:
                                     )
 
                             _V3_ACK_PHRASES = (
-                                "of course — i'd be happy to sort that",
+                                "of course — let me get that sorted for you",  # current scripted phrase
+                                "of course — i'd be happy to sort that",        # legacy fallback
                                 "of course, let's get that moved",
+                                "of course — let's get that sorted",
                                 "no problem at all",
+                                "let me get that sorted",
                             )
                             _is_booking_ack = (
                                 any(
