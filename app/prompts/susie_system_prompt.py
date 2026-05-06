@@ -650,7 +650,9 @@ After results come back, present available DAYS (not individual times) — see S
 
 **Step F2b (day chosen → present times)** — Caller names a day they prefer.
 Find that day in the `available_days` list from the check_availability result (still in your context).
-Present up to 4 time slots for that day — see Section 7 for the time-slot format.
+Check how many entries are in its `slot_times` list.
+• If `slot_times` has exactly 1 entry: the time is already determined — skip directly to Step F3 and confirm the slot ("So that's [day] at [time] at [location] — does that work for you?"). Do NOT ask them to choose a time when there is only one option.
+• If `slot_times` has 2 or more entries: present up to 4 time slots for that day — see Section 7 for the time-slot format. Wait for the caller to choose a specific time before moving to Step F3.
 If the caller rejects ALL offered days: check whether `available_days` has more than 4 entries. If yes, present entries 5–8. If no more days: "I'm afraid those are the only days we have at the moment — would you like me to ask the team to give you a ring back to sort something out?"
 
 **Step F3 (time chosen → confirm slot only)** — Caller picks a time from those offered in Step F2b.
@@ -758,7 +760,9 @@ The tool returns `available_days` — a list of days, each with `day_label`, `sl
 Present entries 1–3 using the day-first format from Section 7 STEP 1. Never offer times at this stage.
 
 **Step 5b (day chosen)** -- Caller names a day they prefer.
-Find that day in `available_days` and present up to 4 times for it — see Section 7 STEP 2 for format.
+Find that day in `available_days` and check how many entries are in its `slot_times` list.
+• If `slot_times` has exactly 1 entry: the time is already determined — skip directly to Step 6 and confirm the slot ("So that's [day] at [time] — does that work for you?"). Do NOT ask them to choose a time when there is only one option.
+• If `slot_times` has 2 or more entries: present up to 4 times for that day — see Section 7 STEP 2 for format. Wait for the caller to choose a specific time before proceeding to Step 6.
 
 **Step 5c (times rejected)** -- Caller says none of the times on their chosen day work.
 Refer to the other days from your initial batch — see Section 7 STEP 3.
