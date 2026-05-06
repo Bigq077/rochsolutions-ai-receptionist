@@ -664,9 +664,11 @@ When the caller says yes / that works / go ahead / perfect → slot is locked in
 
 **Step F4 (slot confirmed → collect first name, then mobile number)** — Slot is locked in; now collect first name only.
 Ask: "Can I take your first name?"
-When the caller gives a name, confirm immediately: "Did you say [name] — is that right?" and wait for yes before proceeding.
-If the name was unclear: follow the NAME CONFIRMATION RULES two-step clarification flow — never ask them to spell it or say it letter by letter.
-When confirmed: call collect_and_store(field="full_name", value="[first name as spoken]") immediately, then say "Perfect — so that's [name]." Then proceed.
+When the caller gives a name, apply the NAME CONFIRMATION RULES plausibility check:
+• Common name → call collect_and_store(field="full_name", value="[name]") immediately, then continue with "Thanks [Name] —" and proceed to the mobile number step.
+• Unusual name → confirm: "Did you say [name] — is that right?" Wait for yes, then call collect_and_store and continue with "Thanks [Name] —".
+• Fragment only (no name) → ask: "Could you say your name again?" Do not proceed until a name is given.
+Never ask the caller to spell their name or say it letter by letter.
 If full_name or name already in session: skip the name question — do NOT ask again.
 Do NOT ask for a surname — first name only is collected on the call.
 After name confirmed, proceed to ask for the mobile number.
@@ -778,9 +780,11 @@ Confirm the exact slot: "So that's [full day] at [full time] — does that work 
 When the caller says yes (or "yeah", "that's fine", "that works", "perfect", "go ahead") → the slot is locked in. Move immediately to Step 8. Do NOT call check_availability again under any circumstances.
 
 **Step 8** -- First name only: ask "Can I take your first name?"
-When the caller gives a name, confirm: "Did you say [name] — is that right?" and wait for yes before proceeding.
-If the name was unclear: follow the NAME CONFIRMATION RULES two-step clarification flow — never ask them to spell it or say it letter by letter.
-When confirmed: say "Perfect — so that's [name]." then call collect_and_store(field="full_name", value="[first name as spoken]") immediately.
+When the caller gives a name, apply the NAME CONFIRMATION RULES plausibility check:
+• Common name → call collect_and_store(field="full_name", value="[name]") immediately, then continue with "Thanks [Name] —" and proceed to Step 9.
+• Unusual name → confirm: "Did you say [name] — is that right?" Wait for yes, then call collect_and_store and continue with "Thanks [Name] —".
+• Fragment only (no name) → ask: "Could you say your name again?" Do not proceed until a name is given.
+Never ask the caller to spell their name or say it letter by letter.
 If full_name or name already in session: skip immediately to Step 9.
 Do NOT ask for a surname — first name only is collected on the call.
 
@@ -2153,54 +2157,44 @@ def _build_theorem_v3(session: dict) -> str:
         f"also pass day_window=2 so the search range is scoped correctly."
     )
 
-    # NAME CONFIRMATION RULES — mandatory confirm-before-proceed pattern
+    # NAME CONFIRMATION RULES — plausibility-gated confirmation
     name_confirmation_rules = (
         "NAME CONFIRMATION RULES\n"
-        "When a caller provides their first name, never acknowledge it "
-        "and continue in the same response. Confirm the name in "
-        "isolation first before doing anything else.\n"
-        "The confirmation must always take this exact form: "
-        "\"Did you say [Name] — is that right?\" — then stop and "
-        "wait for a yes or no. Do not ask anything else in the "
-        "same turn.\n"
-        "Only after receiving an explicit yes confirmation may you "
-        "proceed to the next step in the booking flow.\n"
-        "The pattern \"Thanks [Name] — could I get your...\" is "
-        "permanently banned. Acknowledging a name and immediately "
-        "continuing is banned in every context without exception.\n"
-        "The correct pattern is always: confirm name → receive yes "
-        "→ next turn continue with the next question.\n"
-        "If the name arrives as a single isolated word with no "
-        "surrounding context — for example the caller said \"my "
-        "first name is\" and the name came in a separate utterance "
-        "— apply the same confirmation regardless. Do not treat "
-        "isolation as a reason to skip confirmation.\n\n"
-        "WHEN YOU ARE NOT CONFIDENT YOU HEARD THE NAME CORRECTLY:\n"
-        "Use this exact two-step flow. Never deviate from it.\n\n"
-        "Step 1 — Confirm what you heard:\n"
-        "Repeat back what you think you heard as a simple yes/no "
-        "question. Examples: \"Did you say Gloom — is that right?\" "
-        "or \"Just to check — was that Gloom?\"\n"
-        "If the caller says yes: accept it and continue.\n"
-        "If the caller says no or corrects you: go to Step 2.\n\n"
-        "Step 2 — Ask for the name again simply:\n"
-        "Ask once, simply: \"Could you say your first name for me "
-        "again?\" or \"What's your first name?\"\n"
-        "If after Step 2 you still cannot resolve the name, say: "
-        "\"No problem — I'll make a note and the team will confirm "
+        "When a caller provides their first name, apply a plausibility "
+        "check before deciding how to respond.\n\n"
+        "PATH 1 — Common English given name (Nathan, James, Sarah, Emma, "
+        "David, Laura, Michael, Sophie, and similar well-known first names):\n"
+        "Do NOT ask for confirmation. Proceed directly to the next step. "
+        "Begin the response with \"Thanks [Name] —\" followed immediately "
+        "by the next question. No separate confirmation turn is needed. "
+        "This is the correct, natural, warm pattern for common names.\n\n"
+        "PATH 2 — Phonetically unusual name, name that does not resemble a "
+        "common English given name, single syllable that could be a mishear "
+        "of a common word, or any word primarily known as a common noun "
+        "(examples of names requiring confirmation: Gloom, Gulum, Broom, Flute):\n"
+        "Confirm with: \"Did you say [Name] — is that right?\" and wait for "
+        "yes before continuing. After the caller confirms with yes, proceed "
+        "directly: \"Thanks [Name] —\" and continue. Do not read the name "
+        "back a second time. One confirmation is enough.\n\n"
+        "PATH 3 — Fragment only, no name present (caller said only "
+        "\"my first name is\" with nothing following):\n"
+        "Ask: \"Could you say your name again?\" Do not guess. Do not "
+        "proceed. Do not treat the fragment as a name.\n\n"
+        "The pattern \"Thanks [Name] —\" at the start of the next response "
+        "is the correct behaviour for Path 1 and after Path 2 confirmation. "
+        "It is warm, natural, and confirms the name was heard without "
+        "requiring a separate turn.\n\n"
+        "If after two full attempts the name still cannot be resolved: "
+        "say \"No problem — I'll make a note and the team will confirm "
         "your name when they get in touch about the appointment.\" "
-        "Then continue the booking using a placeholder. Do not "
-        "block the booking on name resolution.\n\n"
+        "Then continue the booking using a placeholder. Do not block "
+        "the booking on name resolution.\n\n"
         "ABSOLUTE RULES — name clarification:\n"
         "Never ask the caller to spell their name.\n"
         "Never ask them to say it letter by letter.\n"
         "Never repeat a clarification request more than twice in "
         "total across the entire name exchange.\n"
-        "After two failed attempts, use a placeholder and move on.\n"
-        "Never silently accept a name without confirmation. Never "
-        "move forward assuming the name is correct. The "
-        "confirmation step is mandatory on every call without "
-        "exception."
+        "After two failed attempts, use a placeholder and move on."
     )
 
     # BANNED AS STANDALONE SENTENCE OPENERS — reframed, not global ban
