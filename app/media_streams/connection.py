@@ -701,6 +701,13 @@ class SilenceHandler:
         # the watchdog cycle after it has already concluded.  Reset on every
         # new question (q_gen increment in on_question_asked).
         self._watchdog_has_retired: bool = False
+        # Set True when WATCHDOG_RETIRE fires with reason=audible_reask_done.
+        # The global silence safety net reads this flag and suppresses itself for
+        # the current q_gen when True — the watchdog already did the re-ask, so
+        # the safety net firing on top of it would be a duplicate.
+        # Reset to False on WATCHDOG_START (new q_gen arm) and when a new FINAL
+        # transcript is accepted and processed (caller spoke → fresh turn).
+        self._reask_completed: bool = False
         # Timestamp when the last question's TTS audio finished playing (set in
         # on_tts_finished just before _restart_timer).  Used by _speech_recovery to
         # enforce a minimum response window so energy VAD noise before the caller
@@ -1600,6 +1607,7 @@ class SilenceHandler:
             return  # a newer task took ownership — exit silently
 
         logger.info("[ms_watchdog] WATCHDOG_START q_gen=%d wait=%.1fs", q_gen, _wait)
+        self._reask_completed = False  # new q_gen — safety net may fire if needed
 
         while True:
             # ── Phase 1: Roll to deadline ─────────────────────────────────
@@ -2112,6 +2120,7 @@ class SilenceHandler:
                 "[ms_watchdog] dead-air ts reset on retire"
             )
             self._watchdog_has_retired = True
+            self._reask_completed = True   # safety net suppressed until new q_gen or transcript
             return
 
     def _restart_timer(self) -> None:
@@ -3498,6 +3507,9 @@ class WebSocketCallHandler:
 
                     # Safety net anchor: accepted transcript keeps dead-air guard at bay.
                     self._last_audio_or_transcript_ts = time.monotonic()
+                    # Caller spoke — reset watchdog reask_completed so safety net
+                    # can fire again if the next turn goes silent.
+                    self._silence_handler._reask_completed = False
 
                     # Queue overlapping utterances while a turn is generating.
                     # Previously these were dropped; storing them instead means
@@ -5272,6 +5284,9 @@ class WebSocketCallHandler:
 
                 # Safety net anchor: accepted transcript keeps dead-air guard at bay.
                 self._last_audio_or_transcript_ts = time.monotonic()
+                # Caller spoke — reset watchdog reask_completed so safety net
+                # can fire again if the next turn goes silent.
+                self._silence_handler._reask_completed = False
 
                 # Drop if the previous turn is still generating
                 if self._llm_busy:
@@ -6580,28 +6595,40 @@ class WebSocketCallHandler:
     async def _silence_safety_net(self) -> None:
         """Last-resort 10-second dead-air backstop.
 
-        Wakes every 10 seconds and emits a soft re-ask phrase when ALL of the
-        following conditions hold simultaneously (meaning nothing else is going
-        to break the silence):
+        Wakes every 10 seconds and emits a re-ask phrase when ALL of the
+        following conditions hold simultaneously:
 
-          1. No TTS has started and no transcript has arrived for ≥ 10 s
-             (_last_audio_or_transcript_ts is the anchor).
+          1. No TTS has started and no transcript has arrived for ≥ 10 s.
           2. LLM is not busy (_llm_busy is False).
           3. SilenceHandler is not actively playing TTS (_tts_playing is False).
           4. No DTMF input is expected (_is_dtmf_expected returns False).
           5. The no-input watchdog is not already running.
+          6. v3 phone DTMF collection is not active.
+          7. (Part A) The watchdog has NOT already completed a re-ask for this
+             q_gen (_reask_completed is False).  If it has, suppress entirely
+             and log — duplicate re-asks are unhelpful and confusing.
 
-        When all five pass we enqueue a minimal "Are you still there?" prompt
-        using the _WATCHDOG_REASK_MARKER so _tts_loop bypasses dedup, then
-        reset the anchor so we don't loop immediately.
+        Part B — maximum 2 fires per q_gen:
+          Fire 1: soft re-ask ("Sorry, I didn't quite catch that...")
+          Fire 2: graceful close phrase, wait for TTS, hang up cleanly.
+
+        Part C — on graceful close, sets session["no_audio_close"] = True so
+        the post-call SMS router sends a "connection issue" message rather than
+        an "abandoned booking" message.
 
         This is intentionally narrow — it never fires during normal call flow
-        because at least one of conditions 2–5 is always true then.  It only
-        triggers in genuine edge-case stalls (e.g. SilenceHandler suppressed by
-        a bug, watchdog task leaked, or pipeline deadlock).
+        because at least one of conditions 2–5 is always true then.
         """
         _INTERVAL = 10.0
-        _PHRASE = "Sorry, I didn't quite catch that — are you still there?"
+        _PHRASE_1 = "Sorry, I didn't quite catch that — are you still there?"
+        _PHRASE_2 = (
+            "I'm not able to hear you at the moment — "
+            "feel free to call back and we'll get that sorted for you."
+        )
+
+        # Per-q_gen safety-net state (local vars survive for the call lifetime).
+        _safety_net_count = 0
+        _tracked_q_gen    = -1
 
         await self._wait_for_start("silence_safety_net")
         # Seed timestamp so we don't fire in the first 10 s of the call.
@@ -6613,7 +6640,7 @@ class WebSocketCallHandler:
                 if self._stop_event.is_set():
                     break
 
-                _now = time.monotonic()
+                _now   = time.monotonic()
                 _since = _now - self._last_audio_or_transcript_ts
 
                 # 1. Dead-air window
@@ -6642,18 +6669,73 @@ class WebSocketCallHandler:
                 if self.session.get("v3_phone_dtmf_active"):
                     continue
 
-                logger.warning(
-                    "[ms_safety_net] 10s dead-air — emitting safety re-ask "
-                    "(since=%.1fs llm_busy=%s tts_playing=%s)",
-                    _since,
-                    self._llm_busy,
-                    getattr(self._silence_handler, "_tts_playing", False),
-                )
-                # Clear tts_inhibit in case a stale barge-in flag is blocking TTS.
-                self.session["tts_inhibit"] = False
-                await self.tts_text_queue.put(_WATCHDOG_REASK_MARKER + _PHRASE)
-                # Reset anchor to avoid immediate re-fire on next wake.
-                self._last_audio_or_transcript_ts = time.monotonic()
+                # ── Sync q_gen counter: reset count on new question generation ─
+                _current_q_gen = getattr(self._silence_handler, "_q_gen", 0)
+                if _current_q_gen != _tracked_q_gen:
+                    _safety_net_count = 0
+                    _tracked_q_gen    = _current_q_gen
+
+                # 7. Part A — watchdog already completed re-ask for this q_gen
+                if getattr(self._silence_handler, "_reask_completed", False):
+                    logger.info(
+                        "[ms_safety_net] suppressed — watchdog already completed "
+                        "reask for q_gen=%d",
+                        _current_q_gen,
+                    )
+                    continue
+
+                # ── Part B: count-bounded re-ask / graceful close ─────────────
+                _safety_net_count += 1
+
+                if _safety_net_count == 1:
+                    # First fire — standard soft re-ask
+                    logger.warning(
+                        "[ms_safety_net] 10s dead-air — emitting safety re-ask "
+                        "(since=%.1fs llm_busy=%s tts_playing=%s q_gen=%d)",
+                        _since,
+                        self._llm_busy,
+                        getattr(self._silence_handler, "_tts_playing", False),
+                        _current_q_gen,
+                    )
+                    # Clear tts_inhibit in case a stale barge-in flag is blocking TTS.
+                    self.session["tts_inhibit"] = False
+                    await self.tts_text_queue.put(_WATCHDOG_REASK_MARKER + _PHRASE_1)
+                    # Reset anchor to avoid immediate re-fire on next wake.
+                    self._last_audio_or_transcript_ts = time.monotonic()
+
+                else:
+                    # Second fire — graceful close then hangup.
+                    # Do NOT fire further re-asks after this point.
+                    logger.warning(
+                        "[ms_safety_net] max re-asks reached — executing graceful "
+                        "close (count=%d since=%.1fs q_gen=%d)",
+                        _safety_net_count - 1,
+                        _since,
+                        _current_q_gen,
+                    )
+                    # Part C: flag for post-call SMS routing (no_audio outcome)
+                    self.session["tts_inhibit"]    = False
+                    self.session["no_audio_close"] = True
+                    await self.tts_text_queue.put(_WATCHDOG_REASK_MARKER + _PHRASE_2)
+                    # Wait for TTS to finish (up to 5 s); brief start-delay then poll.
+                    _tts_deadline = time.monotonic() + 5.0
+                    await asyncio.sleep(0.5)   # give TTS a moment to start
+                    while (
+                        getattr(self._silence_handler, "_tts_playing", False)
+                        and time.monotonic() < _tts_deadline
+                    ):
+                        await asyncio.sleep(0.2)
+                    # Honour any remaining deadline regardless of _tts_playing state
+                    _remaining = _tts_deadline - time.monotonic()
+                    if _remaining > 0:
+                        await asyncio.sleep(_remaining)
+                    logger.info(
+                        "[ms_safety_net] graceful close executed after 2 safety "
+                        "re-asks q_gen=%d",
+                        _current_q_gen,
+                    )
+                    self._stop_event.set()
+                    return
 
         except asyncio.CancelledError:
             pass

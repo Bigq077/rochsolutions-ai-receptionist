@@ -410,12 +410,17 @@ def _choose_template(
         return templates.format_price_inquiry_sms(
             patient_name=patient_name, **ck)
 
-    # 10. REACHED CONFIRMATION — caller got to "shall I go ahead?" but dropped before saying yes
+    # 10. NO AUDIO — safety net graceful close (connection issue, not abandoned)
+    if outcome == "no_audio":
+        return templates.format_no_audio_sms(
+            patient_name=patient_name, **ck)
+
+    # 11. REACHED CONFIRMATION — caller got to "shall I go ahead?" but dropped before saying yes
     if outcome == "reached_confirmation":
         return templates.format_reached_confirmation_sms(
             patient_name=patient_name, **ck)
 
-    # 11. ABANDONED — suppressed when caller already made substantial booking progress
+    # 12. ABANDONED — suppressed when caller already made substantial booking progress
     if outcome == "abandoned" and _booking_has_progressed(session, collected):
         logger.info(
             "🛑 abandoned but booking progressed (name=%r reason=%r type=%r) "

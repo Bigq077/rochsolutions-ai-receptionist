@@ -263,7 +263,7 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # Phase 3: the LLM explicitly logs the outcome via log_call_outcome tool.
     # Trust that first — it's more accurate than our heuristics.
     _logged = str(session.get("call_outcome_logged") or "").lower().strip()
-    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred", "reschedule_failed", "reached_confirmation"):
+    if _logged in ("booked", "cancelled", "rescheduled", "faq_only", "abandoned", "transferred", "reschedule_failed", "reached_confirmation", "no_audio"):
         return _logged
 
     cal_status = (summary.get("appointment", {}) or {}).get("calendar", {}).get("status")
@@ -285,6 +285,12 @@ def infer_call_outcome(session: dict[str, Any], summary: dict[str, Any]) -> str:
     # Out-of-hours flag (set in voice route when call arrives outside business hours)
     if session.get("out_of_hours"):
         return "out_of_hours"
+
+    # No-audio graceful close — safety net exhausted two re-asks and hung up
+    # cleanly because the caller was genuinely inaudible.  Distinct from
+    # "abandoned" (caller chose to leave) and "failed" (technical error).
+    if session.get("no_audio_close"):
+        return "no_audio"
 
     handoff_needed = bool((summary.get("handoff", {}) or {}).get("manual_followup_needed"))
     if handoff_needed:

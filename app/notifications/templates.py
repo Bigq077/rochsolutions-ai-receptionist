@@ -332,6 +332,25 @@ def format_reached_confirmation_sms(
 
 
 # ============================================================================
+# 🔇 NO AUDIO — SYSTEM COULDN'T HEAR CALLER (GRACEFUL CLOSE)
+# ============================================================================
+
+def format_no_audio_sms(
+    patient_name: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """🔇 Safety net graceful close — call ended because system couldn't hear caller."""
+    phone = _cp(clinic_phone)
+    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    return (
+        f"Hi {_greeting}, we weren't able to hear you during your call — "
+        f"it may have been a connection issue on the line. Please call us back "
+        f"whenever you're ready and we'll get you sorted straight away. {phone}"
+    )
+
+
+# ============================================================================
 # ⚠️ CONDITION MENTIONED — NO BOOKING MADE
 # ============================================================================
 
