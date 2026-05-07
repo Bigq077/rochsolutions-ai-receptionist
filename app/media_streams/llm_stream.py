@@ -362,7 +362,7 @@ class LLMStream:
         return full_reply
 
     # -----------------------------------------------------------------------
-    # Slot presentation self-correction filter
+    # Slot presentation complete-response buffer
     # -----------------------------------------------------------------------
 
     @staticmethod
@@ -372,24 +372,25 @@ class LLMStream:
         session: Dict[str, Any],
     ) -> None:
         """
-        Drain the per-iteration slot presentation buffer and flush to the
-        real TTS queue.  Two sequential passes:
+        Drain the complete-response slot presentation buffer and flush all
+        chunks to the real TTS queue in order.
 
-        Pass 1 — sentinel strip (new):
-          Discard everything before the first chunk that contains a sentinel
-          phrase ("Number 1,", "I've got", "Any of those", "Does that").
-          Preamble chunks that arrived before the LLM committed to its final
-          slot framing are silently dropped — the caller never hears them.
-          If no sentinel is found (shouldn't occur in normal flow), all
-          chunks are kept as a fallback.
+        The buffer is filled by routing the post-check_availability LLM
+        streaming output through _slot_buf instead of directly to
+        tts_text_queue.  Because _one_streaming_call completes before this
+        method is called (the [ms_gate5] turn complete log fires first),
+        every chunk from the full LLM response is already in the buffer —
+        no sentinel guessing or partial-response trimming is needed.
 
-        Pass 2 — self-correction strip (existing):
-          Within the sentinel-onwards chunks, look for "Actually" appearing
-          after a numbered option.  If found, discard everything up to and
-          including the correction marker and keep only the corrected tail.
+        Gate5 filtering is applied per-chunk inside _one_streaming_call
+        before chunks enter the buffer, so the buffer contains only clean,
+        spoken-safe text.  Slot map extraction (last_offered_slots) runs
+        on the complete response via last_bot_prompt after the turn, NOT
+        on individual chunks here.
 
-        Chunks in the buffer are already gate5-filtered — no further
-        sanitisation is needed here.
+        The filler phrase ("Let me just check that for you…") is sent to
+        tts_text_queue directly during the tool call and is unaffected by
+        this buffer.
         """
         chunks: List[str] = []
         while True:
@@ -398,77 +399,16 @@ class LLMStream:
             except asyncio.QueueEmpty:
                 break
 
+        logger.info(
+            "[ms_gate5] slot buf complete-response flush: %d chunk(s) to TTS",
+            len(chunks),
+        )
+
         if not chunks:
             return
 
-        # ── Pass 1: sentinel strip ────────────────────────────────────────────
-        _SENTINELS = ("number 1,", "i've got", "any of those", "does that")
-        _sentinel_idx: Optional[int] = None
-        for i, c in enumerate(chunks):
-            if any(s in c.lower() for s in _SENTINELS):
-                _sentinel_idx = i
-                break
-
-        if _sentinel_idx is None:
-            # No sentinel — flush everything as-is (fallback)
-            logger.info(
-                "[ms_gate5] slot buf: no sentinel found — flushing all %d chunk(s)",
-                len(chunks),
-            )
-            to_flush = chunks
-        else:
-            if _sentinel_idx > 0:
-                _pre_sentinel = chunks[:_sentinel_idx]
-                logger.info(
-                    "[ms_gate5] slot buf: %d pre-sentinel chunk(s) discarded "
-                    "(sentinel=%r)",
-                    len(_pre_sentinel),
-                    chunks[_sentinel_idx][:60],
-                )
-                session["_gate5_reasoning_drops"] = (
-                    int(session.get("_gate5_reasoning_drops") or 0)
-                    + len(_pre_sentinel)
-                )
-            chunks = chunks[_sentinel_idx:]  # sentinel chunk is first to flush
-
-            # ── Pass 2: self-correction strip ─────────────────────────────────
-            _had_numbered = False
-            _correction_idx: Optional[int] = None
-            for i, c in enumerate(chunks):
-                cl = c.lower()
-                if any(
-                    f"number {n}" in cl
-                    for n in ("1", "2", "3", "4", "one", "two", "three")
-                ):
-                    _had_numbered = True
-                if _had_numbered and (
-                    cl.strip().startswith("actually")
-                    or ", actually" in cl
-                    or "— actually" in cl
-                    or "- actually" in cl
-                ):
-                    _correction_idx = i
-                    # Keep scanning — use the LAST correction marker found
-
-            if _correction_idx is not None and _correction_idx + 1 < len(chunks):
-                _pre  = chunks[:_correction_idx + 1]
-                _post = chunks[_correction_idx + 1:]
-                logger.info(
-                    "[ms_gate5] slot self-correction removed: "
-                    "%d chunk(s) discarded, %d kept; first_discarded=%r",
-                    len(_pre), len(_post), (_pre[0][:50] if _pre else ""),
-                )
-                session["_gate5_reasoning_drops"] = (
-                    int(session.get("_gate5_reasoning_drops") or 0) + len(_pre)
-                )
-                to_flush = _post
-            else:
-                to_flush = chunks
-
-        for c in to_flush:
+        for c in chunks:
             await tts_queue.put(c)
-
-        logger.info("[ms_gate5] slot buf flushed: %d chunk(s) to TTS", len(to_flush))
 
     # -----------------------------------------------------------------------
     # Streaming tool loop
@@ -496,20 +436,21 @@ class LLMStream:
         transfer_initiated = False
         filler_sent = False
         # True when the previous iteration executed check_availability — arms the
-        # slot presentation buffer for the following iteration so mid-stream
-        # self-corrections ("Number 3... Actually... I've got two options") are
-        # removed before audio reaches TTS.
+        # complete-response slot buffer for the following iteration so the full
+        # LLM response is held and flushed to TTS only after the stream ends.
         _last_check_avail: bool = False
 
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
             logger.info("[ms_llm] iteration=%d model=%s", iteration, model)
 
-            # ── Slot self-correction buffer ───────────────────────────────
-            # When the previous iteration executed check_availability the LLM
-            # may stream a partial/wrong slot list before self-correcting with
-            # "Actually".  Route this iteration's output through a temporary
-            # buffer; _flush_slot_buf strips pre-correction chunks before
-            # anything reaches TTS.
+            # ── Slot complete-response buffer ─────────────────────────────
+            # When the previous iteration executed check_availability, route
+            # this iteration's output through a temporary buffer instead of
+            # directly to tts_text_queue.  _one_streaming_call fills the
+            # buffer while streaming; after it returns (stream complete, turn
+            # done) _flush_slot_buf drains the entire buffer to TTS in one
+            # pass.  This eliminates sentinel guessing — the full response is
+            # always flushed intact.
             _slot_buf: Optional[asyncio.Queue] = None
             _active_q = tts_text_queue
             if _last_check_avail:
@@ -538,7 +479,7 @@ class LLMStream:
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
 
-                # ── Flush slot buffer with self-correction filtering ──────
+                # ── Flush complete-response slot buffer ───────────────────
                 if _slot_buf is not None:
                     await self._flush_slot_buf(_slot_buf, tts_text_queue, session)
 
