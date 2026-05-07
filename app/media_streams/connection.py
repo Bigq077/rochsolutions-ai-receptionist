@@ -576,23 +576,99 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
 
 # Redditch alias set — covers common STT mishearings.
 _REDDITCH_ALIASES: frozenset[str] = frozenset({
+    # ── Exact and near-exact ────────────────────────────────────────────────
     "redditch",
     "redditch clinic",
     "the redditch",
     "the redditch clinic",
     "our redditch",
     "your redditch",
-    "reditch",
+
+    # ── ch/dge-final variants ────────────────────────────────────────────────
     "reddich",
-    "redich",
-    "reddidge",
-    "reddige",
-    "reddish",
-    "red ditch",
-    "red itch",
-    "readitch",
-    "ridditch",
     "reddich clinic",
+    "redich",
+    "redich clinic",
+    "reddidge",
+    "reddidge clinic",
+    "the reddidge",
+    "our reddidge",
+    "your reddidge",
+    "reddige",
+    "reddige clinic",
+    "the reddige",
+
+    # ── ish-final variants ───────────────────────────────────────────────────
+    "reddish",
+    "reddish clinic",
+    "the reddish",
+    "our reddish",
+    "your reddish",
+    "reddis",
+    "redis",
+
+    # ── red witch family ─────────────────────────────────────────────────────
+    # Very common STT: /rɛdɪtʃ/ → "red witch"
+    "red witch",
+    "red witch clinic",
+    "the red witch",
+    "our red witch",
+    "your red witch",
+
+    # ── red rich / red ridge family ──────────────────────────────────────────
+    # /rɛdɪtʃ/ → "red rich" or "red ridge"
+    "red rich",
+    "red rich clinic",
+    "redrich",
+    "red ridge",
+    "red ridge clinic",
+    "the red ridge",
+
+    # ── red wick / red wich family ───────────────────────────────────────────
+    # like Norwich → Norrich
+    "red wich",
+    "red wick",
+    "redwich",
+    "redwick",
+
+    # ── Two-word split variants ──────────────────────────────────────────────
+    "red ditch",
+    "red ditch clinic",
+    "red itch",
+    "red itch clinic",
+    "red dige",
+    "red dich",
+    "red dish",
+    "red d itch",
+
+    # ── Surname-style mishearings ────────────────────────────────────────────
+    # STT often returns proper-noun-like forms
+    "reddick",
+    "reddick clinic",
+    "the reddick",
+    "redick",
+    "reddik",
+    "redik",
+
+    # ── Vowel-shift variants ─────────────────────────────────────────────────
+    "readitch",
+    "readich",
+    "ridditch",
+    "riddich",
+    "riditch",
+    "ridich",
+    "ruditch",
+    "reditch",
+
+    # ── Non-native / mispronounced ───────────────────────────────────────────
+    "reddisch",
+    "reddische",
+    "reddiche",
+
+    # ── Possessive / with article ────────────────────────────────────────────
+    "redditch s",
+    "the redditch s",
+    "reddich s",
 })
 
 
@@ -4583,11 +4659,19 @@ class WebSocketCallHandler:
                                                     " Alcester"
                                                     " matching.\n\n"
                                                     "Redditch is pronounced"
-                                                    " RED-itch. Variants:"
-                                                    " redditch, reditch,"
-                                                    " reddich, reddidge,"
-                                                    " reddish, red"
-                                                    " ditch.\n\n"
+                                                    " RED-itch /ˈrɛdɪtʃ/."
+                                                    " Common mishearings:"
+                                                    " red witch, red rich,"
+                                                    " red ridge, reddick,"
+                                                    " reddish, red ditch,"
+                                                    " reddidge, reddich,"
+                                                    " redich, ridditch,"
+                                                    " readitch, red wick,"
+                                                    " red wich, redrick."
+                                                    " If the utterance"
+                                                    " sounds like any of"
+                                                    " these, return"
+                                                    " 'redditch'.\n\n"
                                                     "Reply with JSON only"
                                                     " — one of exactly"
                                                     " these three: "
@@ -4610,10 +4694,14 @@ class WebSocketCallHandler:
                                                     " resemblance to"
                                                     " either clinic name,"
                                                     " return that clinic."
-                                                    " Default to alcester"
-                                                    " when ambiguous —"
-                                                    " it receives more"
-                                                    " calls."
+                                                    " If genuinely"
+                                                    " ambiguous between"
+                                                    " the two, default to"
+                                                    " 'alcester' — it is"
+                                                    " open 5 days a week"
+                                                    " vs Redditch's 1 day,"
+                                                    " so statistically"
+                                                    " more likely."
                                                 ),
                                                 messages=[{
                                                     "role": "user",
