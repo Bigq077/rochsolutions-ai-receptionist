@@ -81,6 +81,14 @@ _BANNED_SENTENCE_RE = [
          r"[^.!?]*\bI'?d be happy to\b[^.!?]*[.!?]?",
          re.IGNORECASE,
      )),
+    # "let me pull/grab those up" variants — filler implying a fetch when the
+    # data is already present; strip silently so the next substantive chunk
+    # plays immediately.
+    ("pull_those_up",
+     re.compile(
+         r"[^.!?]*\b(?:let me (?:just )?(?:pull those up|grab those)|pulling those up)\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
     # "(N slots)" annotation — raw slot-count parentheticals from tool result
     # narration (e.g. "Tuesday 12th (4 slots)"). Strip inline without removing
     # surrounding text so the day/time label survives.
