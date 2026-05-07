@@ -671,6 +671,22 @@ _REDDITCH_ALIASES: frozenset[str] = frozenset({
     "reddich s",
 })
 
+# Word-boundary regexes compiled from the alias sets above.
+# Sorted longest-first so longer multi-word aliases win over shorter
+# sub-strings in alternation matching.
+# Used by the pre-ack inline alias scan (see _detect_location_alias_inline).
+_ALCESTER_ALIAS_WB_RE: re.Pattern = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(a) for a in sorted(_ALCESTER_ALIASES, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+_REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(a) for a in sorted(_REDDITCH_ALIASES, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
 
 
 def _is_dtmf_expected(session: Optional[Dict[str, Any]]) -> bool:
@@ -5030,29 +5046,21 @@ class WebSocketCallHandler:
                             # Guard: only fire if location has NOT already been
                             # confirmed this call (prevents re-asking when the
                             # caller switches from one flow to another).
-                            # ── Inline location detection on booking turn ──
-                            # If the caller's transcript names exactly one
-                            # site, capture it now before the booking ack
-                            # branch runs — prevents unnecessary location Q.
+                            # ── Inline alias detection BEFORE booking ack ──
+                            # Scan the full transcript against the complete
+                            # _ALCESTER_ALIASES / _REDDITCH_ALIASES sets using
+                            # word-boundary matching so that, e.g., "alter"
+                            # resolves to alcester but "alternating" does not.
+                            # If a location is detected here, v3_location_confirmed
+                            # is set before the booking ack branch runs — the ack
+                            # branch then skips the location question entirely.
                             if not self.session.get("v3_location_confirmed"):
-                                _transcript_lower = utterance.lower()
-                                _has_alcester = any(
-                                    alias in _transcript_lower
-                                    for alias in (
-                                        "alcester", "alcestre", "alcestic",
-                                        "alcest", "ancestor",
-                                        # Phonetic variants callers say after
-                                        # hearing the corrected TTS "Awlster"
-                                        "awlster", "olster", "allster",
-                                        "awlsta", "olsta",
-                                    )
+                                _n_inline = _normalise_location_text(utterance)
+                                _has_alcester = bool(
+                                    _ALCESTER_ALIAS_WB_RE.search(_n_inline)
                                 )
-                                _has_redditch = any(
-                                    alias in _transcript_lower
-                                    for alias in (
-                                        "redditch", "reditch", "reddich",
-                                        "redich",
-                                    )
+                                _has_redditch = bool(
+                                    _REDDITCH_ALIAS_WB_RE.search(_n_inline)
                                 )
                                 if _has_alcester and not _has_redditch:
                                     self.session["selected_location"] = (
@@ -5065,8 +5073,8 @@ class WebSocketCallHandler:
                                         self.call_sid, self.session
                                     )
                                     logger.info(
-                                        "[ms_conn v3] location inferred "
-                                        "from booking transcript: alcester"
+                                        "[ms_conn v3] inline alias detected "
+                                        "pre-ack: alcester"
                                     )
                                 elif _has_redditch and not _has_alcester:
                                     self.session["selected_location"] = (
@@ -5079,8 +5087,8 @@ class WebSocketCallHandler:
                                         self.call_sid, self.session
                                     )
                                     logger.info(
-                                        "[ms_conn v3] location inferred "
-                                        "from booking transcript: redditch"
+                                        "[ms_conn v3] inline alias detected "
+                                        "pre-ack: redditch"
                                     )
 
                             # ── First-turn date/time extraction ──────────
