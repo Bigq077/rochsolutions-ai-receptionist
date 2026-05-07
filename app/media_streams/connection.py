@@ -2902,6 +2902,15 @@ class WebSocketCallHandler:
         self._tts_expected_final_seq: int = 0
         self._tts_pending_chunk_seq: int = 0
         self._current_chunk_seq: int = 0
+        # Out-of-order chunk tracking.  Accumulates chunk_seq values whose
+        # _delayed_tts_finished has fired.  When the terminal chunk fires before
+        # an earlier (longer) chunk, its seq is stored as _tts_pending_terminal
+        # and the silence timer is held until all preceding chunks have arrived.
+        # Reset on barge-in (where _tts_chunk_seq also resets to 0).
+        self._tts_chunks_completed: set = set()
+        self._tts_pending_terminal: int = 0
+        self._tts_pending_terminal_text: str = ""
+        self._tts_pending_terminal_chunk_start_ts: float = 0.0
 
         # ── Global 10-second silence safety net ───────────────────────────
         # _last_audio_or_transcript_ts is updated at TTS start and on every
@@ -6360,31 +6369,93 @@ class WebSocketCallHandler:
             if hasattr(self, "_flow") and self._flow.is_complete():
                 logger.debug("[ms_silence] flow complete — skipping tts_finished")
                 return
-            # ── Terminal chunk guard ──────────────────────────────────────────
-            # Only the final chunk of a q_gen may trigger the silence timer.
-            # Earlier chunks firing tts_finished must be swallowed.
-            # This prevents stale callbacks from non-terminal chunks re-triggering
-            # state machinery mid-response (e.g. FAQ answer chunk firing the
-            # silence timer before the re-anchor question chunk has played).
-            # chunk_seq was captured at sentinel placement time; _tts_expected_final_seq
-            # is the seq of the last sub-chunk queued — if chunk_seq is behind it,
-            # a newer chunk is already in-flight or has completed.
+            # ── Out-of-order chunk guard ──────────────────────────────────────
+            # Track every completed chunk_seq so the silence timer is only armed
+            # once ALL chunks up to and including the terminal have finished
+            # playing.  Fixes the case where a short terminal chunk's play-
+            # duration timer expires before a longer earlier chunk's, causing the
+            # watchdog to fire while the patient is still listening to prior audio.
+            #
+            # Three cases:
+            #   1. Terminal fires and all preceding chunks already done → normal
+            #      in-order path, fire immediately.
+            #   2. Terminal fires but earlier chunks are still pending → stash the
+            #      terminal context in _tts_pending_terminal and return.  Each
+            #      subsequent non-terminal callback re-checks and fires once the
+            #      set is complete.
+            #   3. Non-terminal fires and no pending terminal → suppress (existing
+            #      behaviour for normal multi-chunk responses).
             self._current_chunk_seq = chunk_seq
-            _fired_seq = getattr(self, "_current_chunk_seq", 0)
+            _fired_seq    = chunk_seq
             _expected_seq = getattr(self, "_tts_expected_final_seq", 0)
-            if _fired_seq < _expected_seq:
-                logger.info(
-                    "[ms_tts] tts_finished: non-terminal "
-                    "chunk %d (expected %d) — "
-                    "silence timer suppressed",
-                    _fired_seq, _expected_seq,
+            _is_terminal  = (_expected_seq > 0 and _fired_seq >= _expected_seq)
+
+            # Mark this chunk as completed.
+            self._tts_chunks_completed.add(_fired_seq)
+
+            if _is_terminal:
+                _all_done = all(
+                    i in self._tts_chunks_completed
+                    for i in range(1, _fired_seq + 1)
                 )
-                return
-            logger.info(
-                "[ms_tts] tts_finished: terminal "
-                "chunk %d — silence timer starting",
-                _fired_seq,
-            )
+                if _all_done:
+                    # Normal case: terminal arrived last (or only chunk).
+                    self._tts_pending_terminal = 0
+                    logger.info(
+                        "[ms_tts] tts_finished: terminal chunk %d — silence timer starting",
+                        _fired_seq,
+                    )
+                    # fall through to fire on_tts_finished below
+                else:
+                    # Out-of-order: terminal arrived before some earlier chunk.
+                    # Stash context and wait for remaining chunks to complete.
+                    self._tts_pending_terminal                    = _fired_seq
+                    self._tts_pending_terminal_text               = text
+                    self._tts_pending_terminal_chunk_start_ts     = chunk_started_at
+                    logger.info(
+                        "[ms_tts] tts_finished: terminal chunk %d out-of-order — "
+                        "waiting for earlier chunks (completed=%s expected=%d)",
+                        _fired_seq, sorted(self._tts_chunks_completed), _expected_seq,
+                    )
+                    return
+            else:
+                # Non-terminal chunk.  Check if this arrival resolves a stored
+                # pending terminal (i.e. the terminal fired before us).
+                _pending = self._tts_pending_terminal
+                if _pending and all(
+                    i in self._tts_chunks_completed
+                    for i in range(1, _pending + 1)
+                ):
+                    _resolve_text     = self._tts_pending_terminal_text
+                    _resolve_chunk_ts = self._tts_pending_terminal_chunk_start_ts
+                    self._tts_pending_terminal                = 0
+                    self._tts_pending_terminal_text           = ""
+                    self._tts_pending_terminal_chunk_start_ts = 0.0
+                    logger.info(
+                        "[ms_tts] tts_finished: chunk %d resolved pending terminal %d — "
+                        "silence timer starting",
+                        _fired_seq, _pending,
+                    )
+                    logger.info(
+                        "[ms_tts] tts_finished fired (resolved): chunk_text=%r q_size=%d",
+                        _resolve_text[:60], self.tts_text_queue.qsize(),
+                    )
+                    self._silence_handler.on_tts_finished(
+                        _resolve_text, chunk_started_at=_resolve_chunk_ts
+                    )
+                    logger.debug(
+                        "[ms_silence] tts_finished (resolved) fired after %.1fs delay gen=%d",
+                        delay, gen,
+                    )
+                    return
+                else:
+                    logger.info(
+                        "[ms_tts] tts_finished: non-terminal "
+                        "chunk %d (expected %d) — silence timer suppressed",
+                        _fired_seq, _expected_seq,
+                    )
+                    return
+
             logger.info(
                 "[ms_tts] tts_finished fired: chunk_text=%r q_size=%d",
                 text[:60], self.tts_text_queue.qsize(),
@@ -6480,6 +6551,12 @@ class WebSocketCallHandler:
             # from the interrupted response cannot match new ones.
             self._tts_chunk_seq = 0
             self._tts_expected_final_seq = 0
+            # Reset out-of-order tracking so stale completed-set entries from
+            # the interrupted response cannot satisfy the next turn's range check.
+            self._tts_chunks_completed = set()
+            self._tts_pending_terminal = 0
+            self._tts_pending_terminal_text = ""
+            self._tts_pending_terminal_chunk_start_ts = 0.0
             # Inhibit _tts_loop from speaking any LLM chunks that arrive after
             # the barge-in until the new turn completes (Bug 5 — stale output).
             self.session["tts_inhibit"] = True
