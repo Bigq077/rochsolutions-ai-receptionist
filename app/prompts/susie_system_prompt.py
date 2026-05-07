@@ -132,8 +132,16 @@ def build_system_prompt(session: dict) -> str:
         "Guide the caller to a booking without interrogating them.\n"
         "Let them lead — do not quiz them for information. "
         "Ask location if not stated; ask timing preference if not stated.\n"
-        "Call check_availability when you have service and rough timing — "
-        "a general preference is enough. Do not wait for a specific date.\n"
+        "Call check_availability once you have service, location, and a time-of-day preference. "
+        "TIME PREFERENCE GATE — applies before every check_availability call: "
+        "if the caller stated a time of day (mornings, afternoons, evenings, a specific hour) "
+        "or explicitly said they have no preference ('any time', 'doesn't matter', 'flexible'), "
+        "call it immediately. "
+        "If the caller gave only a date or week range ('next week', 'as soon as possible', "
+        "'next Tuesday', 'anytime') without a time of day, ask first: "
+        "'Is mornings or afternoons better for you?' — then call check_availability on the next turn. "
+        "Once time preference is known, store it and never ask again, even if the caller "
+        "requests a different week or different dates later in the same call.\n"
         "Offer slots naturally: \"I've got Tuesday at half two or Thursday morning — either work?\"\n"
         "Name: \"Who am I booking in today?\" — single question, never split first/last. "
         "Phone: read the caller's number back digit by digit to confirm — never ask from scratch.\n"
@@ -652,15 +660,17 @@ If location already known from earlier in the call: skip straight to Step F1.
 Acknowledge ("Right, [location] — no problem.") and call collect_and_store(location=..., service='physiotherapy assessment'),
 then {_f1_nr_ask}
 
-**Step F2 (new/returning response → check availability)** — Caller answers new/returning.
+**Step F2 (new/returning response → time preference gate)** — Caller answers new/returning.
 NEW = no / nope / haven't / first time / never been / new patient.
 RETURNING = yes / yeah / I have / been before / returning.
 When in doubt, negative = NEW, positive = RETURNING.
-MANDATORY spoken text: "Okay, that's noted — just checking what we've got coming up for you..." — never skip this.
-In the same response, fire ALL of:
-  - collect_and_store(patient_type=...)
-  - check_availability
-After results come back, present available DAYS (not individual times) — see Section 7 for the day-first format.
+In the same response, fire collect_and_store(patient_type=...).
+TIME PREFERENCE GATE: check whether a time-of-day preference is already known (soft_context time_preference or stated explicitly earlier in the call):
+  - Time of day IS known (mornings, afternoons, evenings, a specific hour, OR caller said 'any time' / 'flexible' / 'doesn't matter'): say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Present available DAYS using Section 7.
+  - Time of day is NOT known (caller gave only a date or week without time of day): say "Okay, that's noted." then ask: "Is mornings or afternoons better for you?" Do NOT call check_availability yet. Wait for the response.
+
+**Step F2a (time preference given → check availability)** — Caller states their time of day preference (or confirms they are flexible).
+Store the preference. Say "Just checking what we've got for you now..." and call check_availability with the preference as part of the date_hint. Present available DAYS using Section 7. Never ask for time preference again this call — it is now stored.
 
 **Step F2b (day chosen → present times)** — Caller names a day they prefer.
 Find that day in the `available_days` list from the check_availability result (still in your context).
@@ -757,12 +767,19 @@ When in doubt, a negative answer = NEW, a positive answer = RETURNING.
 Call collect_and_store(patient_type=...) immediately.
 DO NOT ask new/returning again. This question is only asked once, in Step 3.
 
-**If NEW**: say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Then go to Step 5.
+TIME PREFERENCE GATE — applies before every check_availability call below:
+Before calling check_availability, check whether a time-of-day preference is already known (soft_context time_preference, or stated explicitly earlier in the call):
+  - Time of day IS known (mornings, afternoons, evenings, a specific hour, OR 'any time' / 'flexible' / 'doesn't matter'): call check_availability immediately. Use the preference in the date_hint.
+  - Time of day NOT known (only a day, week, or urgency given, with no time of day): ask "Is mornings or afternoons better for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn using the stated preference. Never ask again this call.
+
+**If NEW**: apply the time preference gate above.
+  - Time known → say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Go to Step 5.
+  - Time not known → say "Okay, that's noted. Is mornings or afternoons generally better for you?" Wait. On the next turn: say "Just checking what we've got now..." and call check_availability. Go to Step 5.
 
 **If RETURNING**: ask in one natural sentence — "Brilliant, welcome back! Was that recently, or has it been a little while?"
-  → **RETURNING + a while back** (any of: "a while", "a while ago", "a long time", "ages", "years", "not recently", "a few months", "months ago"): say "No problem — just checking what we've got coming up for you..." call check_availability and go to Step 5.
+  → **RETURNING + a while back** (any of: "a while", "a while ago", "a long time", "ages", "years", "not recently", "a few months", "months ago"): apply the time preference gate — if time known, say "No problem — just checking what we've got coming up for you..." and call check_availability; if not known, ask "Is mornings or afternoons better for you?" first. Go to Step 5.
   → **RETURNING + recently** (any of: "recently", "not long ago", "a few weeks", "last month", "just", "recent"): ask in one sentence — "And are you currently on a treatment plan with us?"
-      → **No / not on a plan** (any of: "no", "nope", "not really", "no I'm not", "I don't think so", "finished", "completed"): say "Got it — just checking what we've got for you..." call check_availability and go to Step 5.
+      → **No / not on a plan** (any of: "no", "nope", "not really", "no I'm not", "I don't think so", "finished", "completed"): apply the time preference gate — if time known, say "Got it — just checking what we've got for you..." and call check_availability; if not known, ask "Is mornings or afternoons better for you?" first. Go to Step 5.
       → **Yes / on a treatment plan** (any of: "yes", "yeah", "I am", "still on it", "ongoing", "mid-treatment"): go to Step 4b.
 
 **Step 4b (returning, on active treatment plan)** -- Collect name and phone to look up their record.
@@ -778,9 +795,10 @@ Then call get_patient_history(patient_name='{full_name}', phone='{phone_number}'
   - If not found or error: say — "No problem — let's get you booked in."
 Then call check_availability and go to Step 5.
 
-**Step 5 (day options)** -- After check_availability results come back, present the first 3 available days ONLY — do NOT list times yet.
+**Step 5 (day options)** -- After check_availability results come back, present the first 3 available days.
 The tool returns `available_days` — a list of days, each with `day_label`, `slot_times`, and `slots`.
-Present entries 1–3 using the day-first format from Section 7 STEP 1. Never offer times at this stage.
+Present entries 1–3 using the day-first format from Section 7 STEP 1.
+At this stage show at most TWO representative times per day: the earliest slot and one materially different alternative (e.g. morning and afternoon). Do NOT list every time — full times are presented only in Step 5b after the caller picks a day.
 
 **Step 5b (day chosen)** -- Caller names a day they prefer.
 Find that day in `available_days` and check how many entries are in its `slot_times` list.
@@ -995,11 +1013,22 @@ DAY-FIRST PRESENTATION — always show DAYS before TIMES:
 
 ⚠️ CRITICAL FORMAT RULE: When presenting days or times, ALWAYS use the actual values from the tool result (day_label, slot_times). NEVER output placeholder text like [day1], [day_label], [time 1], or similar bracket syntax. If you do not have real dates from a tool result, say "Let me check with the team — could I take your name and number and we'll call you back?"
 
-STEP 1 — Present up to 4 available days (never list times at this stage):
-- 1 day:    "So the next day we have available is ACTUAL_DAY_LABEL — would that work for you?"
-- 2 days:   "We've got availability on FIRST_DAY and SECOND_DAY — which of those suits you better?"
-- 3–4 days: "We've got a few days coming up — FIRST_DAY, SECOND_DAY, and THIRD_DAY — which of those works best for you?"
+STEP 1 — Present up to 4 available days. For each day, include at most TWO representative times:
+- Show the earliest available slot for that day.
+- If there is a materially different alternative in a different part of the day (e.g. a morning slot AND an afternoon or evening slot), add one more. Two times maximum per day at this stage.
+- If all available slots for a day fall in the same part of the day, show only the earliest one.
+- Do NOT list every available slot at the day-selection stage — that happens in STEP 2 after the caller picks a day.
+
+Format by number of days:
+- 1 day:    "So the next day we have available is ACTUAL_DAY_LABEL — EARLIEST_TIME or ALTERNATIVE_TIME — would either of those work?"
+- 2 days:   "Number 1, FIRST_DAY — FIRST_DAY_REP_TIMES. Number 2, SECOND_DAY — SECOND_DAY_REP_TIMES. Either of those suit you?"
+- 3–4 days: "I've got three options. Number 1, FIRST_DAY — REP_TIMES. Number 2, SECOND_DAY — REP_TIMES. Number 3, THIRD_DAY — REP_TIMES. Any of those suit you?"
 Use the full spoken day name from the day_label field: e.g. "Thursday the third of April" — never just "Thursday" or "3/4".
+
+CORRECT example (two representative times per day):
+"Number 1, Monday the 18th — nine or ten in the morning. Number 2, Wednesday the 20th — nine in the morning or two in the afternoon. Number 3, Thursday the 21st — nine or ten. Any of those suit you?"
+INCORRECT example (too many times per day at day-selection stage):
+"Number 1, Monday the 11th — three in the afternoon or five in the evening. Number 2, Tuesday the 12th — three or four. Number 3, Thursday the 14th — nine in the morning, two in the afternoon, or three in the afternoon."
 
 STEP 2 — Caller names a day → present that day's times (up to 4):
 - 1 time:    "On ACTUAL_DAY I have ACTUAL_TIME available — does that work for you?"
@@ -1063,7 +1092,11 @@ the caller has not yet stated any time preference at all in the current booking 
 
 Rule C — Always use the numbered format for multiple days. No flat lists.
 When presenting multiple days (regardless of how many slots each has), always use the
-numbered format. Every day option must have an explicit number:
+numbered format. Every day option must have an explicit number. Show at most two
+representative times per day (earliest + one materially different alternative):
+  "Number 1, Monday the 11th — nine in the morning or five in the evening.
+   Number 2, Wednesday the 13th — nine or ten in the morning."
+If all slots on a day are in the same period, show only the earliest:
   "Number 1, Monday the 11th — five in the evening.
    Number 2, Wednesday the 13th — five in the evening."
 Never present days as a flat or sentence-embedded list such as:
@@ -1843,12 +1876,9 @@ def _build_theorem_v3(session: dict) -> str:
         "\"Right — Redditch.\" Never reference prior context. Stop. "
         "The next question is its own turn.\n"
         "4. Ask timing: 'Is there a particular day or time that "
-        "works best for you?' Do not say 'mornings or afternoons' — "
-        "let the caller volunteer whatever they know. They may say "
-        "'Tuesday morning', 'any afternoon', 'as soon as possible', "
-        "or 'I'm flexible' — all are valid and should be used "
-        "directly in the check_availability date_hint.\n"
-        "If the caller already stated a date, day, or time "
+        "works best for you?' Let the caller volunteer whatever "
+        "they know.\n"
+        "If the caller already stated a date, day, or time of day "
         "preference earlier in the conversation — including in "
         "their very first utterance — do not ask for it again. "
         "Use what they said and proceed directly. Only ask if no "
@@ -1859,39 +1889,41 @@ def _build_theorem_v3(session: dict) -> str:
         "from a factual or informational question, even if it "
         "contains a day or date.\n"
         "NOT a preference (factual questions): 'Are you open on "
-        "Easter Monday?' / 'Do you work on Saturdays?' / 'Were "
-        "you open last Christmas?' — these ask about clinic hours, "
-        "not when the caller wants to come in. After answering, "
-        "still ask 'Is there a particular day or time that works "
-        "best for you?' as normal.\n"
+        "Easter Monday?' / 'Do you work on Saturdays?' — these "
+        "ask about clinic hours, not when the caller wants to come "
+        "in. After answering, still ask timing as normal.\n"
         "IS a preference (booking intent): 'Any Tuesday morning "
-        "would work' / 'I need something as soon as possible' / "
-        "'Could we do next week sometime?' — the caller is "
-        "expressing when they want the appointment. Skip the "
-        "timing question and use this directly.\n"
+        "would work' / 'afternoons please' / 'around three o'clock' "
+        "— the caller is stating when they want the appointment.\n"
+        "TIME PREFERENCE GATE — mandatory before calling "
+        "check_availability:\n"
+        "The caller's response falls into one of three categories:\n"
+        "A) Time of day IS stated — they said mornings, afternoons, "
+        "evenings, or a specific hour (e.g. 'around ten', 'after "
+        "three', 'morning slots', 'any afternoon'). Use it "
+        "directly in the date_hint. Call check_availability.\n"
+        "B) Explicitly no preference — they said 'any time', "
+        "'doesn't matter', 'whatever you have', 'I'm flexible', "
+        "'I don't mind'. Proceed to check_availability with no "
+        "time filter and present three days upfront.\n"
+        "C) Date/week/urgency only — they gave a day, week, or "
+        "urgency WITHOUT a time of day: 'next week', 'anytime "
+        "next week', 'next week to be honest', 'as soon as "
+        "possible', 'Tuesday', 'ASAP'. This is NOT enough — "
+        "ask one follow-up: 'Is mornings or afternoons better "
+        "for you?' Wait for the answer, THEN call "
+        "check_availability.\n"
         "Examples:\n"
-        "- Caller said 'tomorrow afternoon' at the start → skip "
-        "the timing question entirely, call check_availability "
-        "with that date/time.\n"
-        "- Caller said 'next week mornings' → skip, use that "
-        "constraint directly.\n"
-        "- Caller gave no timing information → ask as normal.\n"
-        "If the caller gives a date range or week without specifying "
-        "a time of day — for example 'next week', 'sometime next "
-        "week', 'as soon as possible', 'any time' — ask one "
-        "follow-up question before calling check_availability: "
-        "'Is mornings or afternoons better for you?'\n"
-        "Only skip this follow-up if:\n"
-        "- The caller already stated a time of day (morning, "
-        "afternoon, evening, specific hour).\n"
-        "- The caller explicitly says they are completely flexible "
-        "('any time', 'doesn't matter', 'whatever you have').\n"
-        "When the caller says they are completely flexible with no "
-        "preference at all, proceed to check_availability with no "
-        "time filter and present three days upfront (see slot "
-        "presentation rules).\n"
-        "When the caller specifies mornings or afternoons, use "
-        "that as the date_hint filter in check_availability.\n"
+        "- 'tomorrow afternoon' → category A, call check_avail.\n"
+        "- 'next week mornings' → category A, use morning filter.\n"
+        "- 'any time is fine' → category B, no filter.\n"
+        "- 'next week' → category C, ask mornings/afternoons.\n"
+        "- 'as soon as possible' → category C, ask mornings/afternoons.\n"
+        "- 'anytime next week to be honest' → category C, ask "
+        "mornings/afternoons.\n"
+        "Once time of day is captured, store it for the whole call. "
+        "Never ask again even if the caller requests a different "
+        "week or different dates.\n"
         "5. Once timing is known, say one filler (\"Just a moment "
         "while I check what's available\") then call "
         "check_availability. Never call availability the same turn "
@@ -1904,14 +1936,17 @@ def _build_theorem_v3(session: dict) -> str:
         "POST-REJECTION SLOT PRESENTATION — STRICT: When a caller "
         "declines a day or set of times, do NOT present just one "
         "alternative day alone. Present the next two available "
-        "days together in a single response, each with their "
-        "times. Format: 'No problem — I've got two other options. "
-        "Number 1, [Day date] — [time], [time], and [time]. "
-        "Number 2, [Day date] — [time], [time], and [time]. "
+        "days together in a single response. For each day show "
+        "at most TWO representative times (earliest + one "
+        "materially different alternative if available — same "
+        "rule as the initial day presentation). "
+        "Format: 'No problem — I've got two other options. "
+        "Number 1, [Day date] — [rep time] or [rep time]. "
+        "Number 2, [Day date] — [rep time] or [rep time]. "
         "Any of those suit you?' Rules: always pair two days in "
         "the post-rejection response if two or more remain; if "
-        "only one day remains, present it alone and acknowledge "
-        "it: 'The only other option I have is [day] — [times].'; "
+        "only one day remains, present it alone: "
+        "'The only other option I have is [day] — [rep times].'; "
         "if no days remain, offer callback: 'I'm afraid those "
         "are all the options I have — would you like me to take "
         "your details for a callback?'; never present a single "
@@ -1961,9 +1996,17 @@ def _build_theorem_v3(session: dict) -> str:
         "days for a flexible caller. Never present one day and "
         "wait for a response before revealing other options.\n"
         "Format — say this exactly: 'I've got three options. "
-        "Number 1, [Day date] — [times]. Number 2, [Day date] "
-        "— [times]. Number 3, [Day date] — [times]. Any of "
-        "those suit you?'\n"
+        "Number 1, [Day date] — [rep time 1] or [rep time 2]. "
+        "Number 2, [Day date] — [rep time 1] or [rep time 2]. "
+        "Number 3, [Day date] — [rep time 1] or [rep time 2]. "
+        "Any of those suit you?'\n"
+        "REPRESENTATIVE TIMES RULE: for each day show at most TWO "
+        "representative times — the earliest slot and one "
+        "materially different alternative (e.g. a morning AND an "
+        "afternoon option). If all slots are in the same part of "
+        "the day, show only the earliest. Never list every "
+        "available time at the day-selection stage. Full times "
+        "are presented only AFTER the caller picks a day.\n"
         "This is non-negotiable. Presenting one day at a time "
         "to a flexible caller is wrong and wastes the caller's "
         "time.\n"
