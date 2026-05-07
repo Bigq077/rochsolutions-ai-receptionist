@@ -4172,13 +4172,36 @@ class WebSocketCallHandler:
                                 "v3_awaiting_use_this_clinic"
                             ):
                                 # ── use-this-clinic confirm handler ────────
-                                # Caller answered the "did you say Alcester?"
-                                # fallback. Affirmative → alcester.
+                                # Caller answered a "Did you say the X clinic?"
+                                # biased confirm.  Resolve the target clinic
+                                # from last_bot_prompt so the handler is
+                                # clinic-agnostic — works for both Awlstuh and
+                                # Redditch biased confirms.
+                                # Affirmative → biased clinic (or alcester
+                                # as safe default).
                                 # Redditch signal / "no" → redditch.
                                 # Genuinely unresolvable → DTMF keypad fallback.
                                 self.session[
                                     "v3_awaiting_use_this_clinic"
                                 ] = False
+
+                                # ── Derive biased clinic from last_bot_prompt ─
+                                # last_bot_prompt holds the exact phrase the
+                                # watchdog spoke, e.g. "Did you say the Awlstuh
+                                # clinic?" — read whichever clinic name appears
+                                # in it so affirmatives bind the correct one.
+                                _lbp_utc = (
+                                    self.session.get("last_bot_prompt") or ""
+                                ).lower()
+                                if (
+                                    "redditch" in _lbp_utc
+                                    or "reddich" in _lbp_utc
+                                ):
+                                    _biased_clinic = "redditch"
+                                else:
+                                    # Default: Awlstuh (the standard biased
+                                    # confirm phrase names this clinic).
+                                    _biased_clinic = "alcester"
 
                                 # ── Trailing fragment guard ───────────────
                                 # STT sometimes splits a long utterance and
@@ -4190,6 +4213,8 @@ class WebSocketCallHandler:
                                     "use", "this", "clinic", "yes",
                                     "yeah", "yep", "yup", "redditch",
                                     "reditch", "no", "nope", "alcester",
+                                    # Affirmatives added for biased-confirm path
+                                    "correct", "right", "did",
                                 }
                                 _fragment_words = (
                                     utterance.strip().lower().split()
@@ -4220,13 +4245,28 @@ class WebSocketCallHandler:
                                     )
                                     return
 
+                                # ── Affirmative / negative matching ──────
+                                # Expanded affirmative set covers all natural
+                                # yes-responses to a biased yes/no confirm.
+                                # Maps to the biased clinic read from
+                                # last_bot_prompt — NOT hardcoded to alcester.
                                 _utt_lower = utterance.lower()
-                                if (
-                                    "use this" in _utt_lower
-                                    or "yes" in _utt_lower
-                                    or "yeah" in _utt_lower
+                                _AFFIRMATIVES = (
+                                    "use this", "yes", "yeah", "yep", "yup",
+                                    "that's right", "thats right",
+                                    "that is right", "correct",
+                                    "i did", "yes i did",
+                                )
+                                if any(
+                                    a in _utt_lower for a in _AFFIRMATIVES
                                 ):
-                                    _confirmed = "alcester"
+                                    _confirmed = _biased_clinic
+                                    logger.info(
+                                        "[ms_conn v3] use-this-clinic"
+                                        " confirmed via affirmative: %s"
+                                        " (last_bot_prompt biased=%s)",
+                                        _confirmed, _biased_clinic,
+                                    )
                                 elif any(
                                     r in _utt_lower for r in (
                                         "redditch", "reditch",
