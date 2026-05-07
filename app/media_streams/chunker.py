@@ -44,6 +44,42 @@ MAX_WORDS = 50
 HARD_SPLIT_CHARS = frozenset({".", "!", "?"})
 SOFT_SPLIT_CHARS = frozenset({",", ";", ":"})   # only used at MAX_WORDS
 
+# ---------------------------------------------------------------------------
+# Forbidden chunk openers
+# ---------------------------------------------------------------------------
+# Time-of-day phrases and partial time lists that must never be the first
+# words of a standalone TTS chunk.  A split producing one of these as the
+# right-hand fragment is rejected; the boundary is extended rightward until
+# a safe opening word is found.
+#
+# Used by both ResponseChunker (streaming path) and split_tts_text (barge-in
+# sub-chunk path).
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_CHUNK_STARTERS: list = [
+    "in the morning",
+    "in the afternoon",
+    "in the evening",
+    "ten or",
+    "nine or",
+    "eleven or",
+    "or eleven",
+    "or ten",
+    "or nine",
+]
+
+# Hard upper bound on a merged hold chunk.  If the accumulated held text
+# exceeds this, it is force-emitted at the nearest word boundary before
+# the limit rather than growing indefinitely.
+_MAX_HOLD_CHARS: int = 150
+
+
+def _starts_with_forbidden(text: str) -> bool:
+    """Return True if text (after leading whitespace) starts with any FORBIDDEN_CHUNK_STARTER."""
+    lower = text.lstrip().lower()
+    return any(lower.startswith(phrase) for phrase in FORBIDDEN_CHUNK_STARTERS)
+
+
 NEVER_SPLIT_AFTER: frozenset = frozenset({
     # Titles
     "mr", "mrs", "ms", "dr", "prof", "rev", "st",
@@ -82,6 +118,11 @@ class ResponseChunker:
     def __init__(self) -> None:
         self._buffer: str = ""
         self._word_count: int = 0
+        # Hold-and-merge: stores the most recently emitted candidate, releasing
+        # it only once the NEXT candidate arrives with a valid (non-forbidden)
+        # opening.  If the next candidate starts with a FORBIDDEN_CHUNK_STARTER
+        # it is merged into _held_chunk instead of being emitted separately.
+        self._held_chunk: str = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -97,6 +138,14 @@ class ResponseChunker:
           1. word_count >= MAX_WORDS  -> force emit (hard cutoff)
           2. word_count >= MIN_WORDS AND buffer ends with HARD_SPLIT_CHAR
              AND word before punctuation NOT in NEVER_SPLIT_AFTER
+
+        After producing a candidate chunk, boundary validation is applied via
+        _handle_candidate():
+          - If the candidate starts with a FORBIDDEN_CHUNK_STARTER it was
+            orphaned from its day-label context; it is merged into _held_chunk
+            rather than emitted.
+          - If the candidate has a valid opening, the previously held chunk
+            (if any) is released and the new candidate is held in its place.
         """
         if not token:
             return None
@@ -106,14 +155,14 @@ class ResponseChunker:
 
         # Condition 1: hard cutoff
         if self._word_count >= MAX_WORDS:
-            return self._emit()
+            return self._handle_candidate(self._emit())
 
         # Condition 2: sentence boundary
         if self._word_count >= MIN_WORDS:
             stripped = self._buffer.rstrip()
             if stripped and stripped[-1] in HARD_SPLIT_CHARS:
                 if not _ends_with_abbreviation(stripped):
-                    return self._emit()
+                    return self._handle_candidate(self._emit())
 
         return None
 
@@ -121,17 +170,31 @@ class ResponseChunker:
         """
         Return any remaining buffered text when the LLM stream ends.
 
-        Always emits whatever is buffered (even < MIN_WORDS) so the tail of
-        a response is never silently dropped.
+        Combines any held chunk (awaiting boundary validation) with whatever
+        remains in the buffer so nothing is silently dropped.
+        Always emits (even < MIN_WORDS) so the tail of a response is returned.
         """
-        if self._buffer.strip():
-            return self._emit()
+        remaining = self._buffer.strip()
+        self._buffer = ""
+        self._word_count = 0
+
+        if remaining and self._held_chunk:
+            combined = (self._held_chunk + " " + remaining).strip()
+            self._held_chunk = ""
+            return combined
+        if remaining:
+            return remaining
+        if self._held_chunk:
+            held = self._held_chunk
+            self._held_chunk = ""
+            return held
         return None
 
     def reset(self) -> None:
         """Clear state between turns (e.g. after barge-in cancels mid-stream)."""
         self._buffer = ""
         self._word_count = 0
+        self._held_chunk = ""
 
     @property
     def buffer(self) -> str:
@@ -150,6 +213,50 @@ class ResponseChunker:
         self._buffer = ""
         self._word_count = 0
         return chunk
+
+    def _handle_candidate(self, candidate: str) -> Optional[str]:
+        """
+        Apply hold-and-merge boundary validation before releasing a chunk.
+
+        If candidate starts with a FORBIDDEN_CHUNK_STARTER:
+          Fold it into _held_chunk.  If the combined text exceeds
+          _MAX_HOLD_CHARS, force-emit up to the nearest word boundary before
+          the limit and keep the remainder in _held_chunk.
+
+        If candidate has a valid opening:
+          Release the previously held chunk (if any) as the return value and
+          store candidate as the new held chunk for the next round.
+
+        The "hold one behind" pattern means the most recently validated chunk
+        is always in _held_chunk and is only released when the next chunk
+        confirms the boundary is safe.  flush() drains whatever remains.
+        """
+        if not candidate or not candidate.strip():
+            return self._held_chunk or None
+
+        if _starts_with_forbidden(candidate):
+            # Orphaned fragment — merge with held context
+            self._held_chunk = (
+                (self._held_chunk + " " + candidate).strip()
+                if self._held_chunk
+                else candidate.strip()
+            )
+            if len(self._held_chunk) > _MAX_HOLD_CHARS:
+                # Force-emit at nearest word boundary before hard limit
+                split_pos = self._held_chunk.rfind(" ", 0, _MAX_HOLD_CHARS)
+                if split_pos > 0:
+                    to_emit = self._held_chunk[:split_pos].strip()
+                    self._held_chunk = self._held_chunk[split_pos:].strip()
+                else:
+                    to_emit = self._held_chunk[:_MAX_HOLD_CHARS].strip()
+                    self._held_chunk = self._held_chunk[_MAX_HOLD_CHARS:].strip()
+                return to_emit
+            return None
+        else:
+            # Valid start — release held chunk, hold this candidate
+            to_emit = self._held_chunk or None
+            self._held_chunk = candidate
+            return to_emit
 
 
 # ---------------------------------------------------------------------------
@@ -247,13 +354,20 @@ def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
         split_at: int = -1
 
         # Priority 1: em-dash " — "
-        idx = remaining.find(" — ")
-        if idx != -1:
-            candidate_left = remaining[: idx + len(" — ")].strip()
+        # Scan ALL em-dashes (not just the first) to find one whose right
+        # fragment does not start with a FORBIDDEN_CHUNK_STARTER.
+        _em = remaining.find(" — ")
+        while _em != -1:
+            candidate_left = remaining[: _em + len(" — ")].strip()
             if len(candidate_left) >= _SPLIT_MIN_LEFT:
-                split_at = idx + len(" — ")
+                right_frag = remaining[_em + len(" — "):]
+                if not _starts_with_forbidden(right_frag):
+                    split_at = _em + len(" — ")
+                    break
+            _em = remaining.find(" — ", _em + 1)
 
         # Priority 2: sentence boundaries (? ! .)
+        # Reject any boundary whose right fragment starts with a forbidden phrase.
         if split_at == -1:
             for marker in ("? ", "! ", ". "):
                 idx = remaining.find(marker)
@@ -263,7 +377,12 @@ def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
                         idx = remaining.find(marker, idx + 1)
                         continue
                     candidate = remaining[: idx + 1]
-                    if not _ends_with_abbreviation(candidate) and idx >= _SPLIT_MIN_LEFT:
+                    right_frag = remaining[idx + len(marker):]
+                    if (
+                        not _ends_with_abbreviation(candidate)
+                        and idx >= _SPLIT_MIN_LEFT
+                        and not _starts_with_forbidden(right_frag)
+                    ):
                         split_at = idx + len(marker)
                         break
                     idx = remaining.find(marker, idx + 1)
@@ -274,11 +393,23 @@ def split_tts_text(text: str, max_chars: int = 90) -> List[str]:
         if split_at == -1:
             idx = remaining.find(", ")
             if idx != -1 and idx >= max_chars // 2:
-                split_at = idx + len(", ")
+                right_frag = remaining[idx + len(", "):]
+                if not _starts_with_forbidden(right_frag):
+                    split_at = idx + len(", ")
 
-        # Priority 4: word-boundary fallback — never split mid-word
+        # Priority 4: word-boundary fallback — never split mid-word.
+        # If the fallback position produces a forbidden right fragment, scan
+        # rightward for the nearest word boundary with a safe opening, up to
+        # _MAX_HOLD_CHARS.
         if split_at == -1:
             split_at = _find_split_point(remaining, max_chars)
+            if _starts_with_forbidden(remaining[split_at:]):
+                _safe = split_at
+                for _ext in range(split_at + 1, min(len(remaining), _MAX_HOLD_CHARS) + 1):
+                    if remaining[_ext - 1] == " " and not _starts_with_forbidden(remaining[_ext:]):
+                        _safe = _ext
+                        break
+                split_at = _safe
 
         if split_at >= len(remaining):
             break
