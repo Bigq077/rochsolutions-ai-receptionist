@@ -217,6 +217,12 @@ _TAIL_FRAGMENT_SAFE: frozenset = frozenset({
 # All four conditions apply to SINGLE-WORD transcripts only.
 # Multi-word transcripts are NEVER discarded by this filter.
 
+# Single-character words that are legitimate English and must never trigger
+# the single_char_word discard — even in 2-word fragments.
+# 'i' → "I believe", "I think", "I did", etc.
+# 'a' → "a moment", "a bit", etc.
+_SINGLE_CHAR_PRONOUNS: frozenset = frozenset({'i', 'a'})
+
 # Condition 3 — production STT noise fragments seen on live calls.
 # Single-word transcripts that exactly match any of these are silently
 # dropped regardless of length.
@@ -3921,9 +3927,16 @@ class WebSocketCallHandler:
                         # noise; discard before the location resolver and DTMF
                         # fallback.  Uses the same re-arm pattern as single-word
                         # drops so silence recovery still fires after the discard.
+                        # Exemption: single-char words in _SINGLE_CHAR_PRONOUNS
+                        # ('i', 'a') are valid English and must not trigger this
+                        # discard — e.g. "i believe", "a moment" must pass through.
+                        _non_pronoun_singles = [
+                            w for w in _utt_words
+                            if len(w) == 1 and w not in _SINGLE_CHAR_PRONOUNS
+                        ]
                         if (
                             len(_utt_words) == 2
-                            and any(len(w) == 1 for w in _utt_words)
+                            and _non_pronoun_singles
                             and _stripped not in _V3_PRESERVE
                         ):
                             logger.info(
