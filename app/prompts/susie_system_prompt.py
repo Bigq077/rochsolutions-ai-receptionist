@@ -1111,6 +1111,22 @@ Flat lists give the caller no structure to respond to and prevent DTMF selection
 working. The numbered format is mandatory for any presentation of 2 or more day options,
 without exception.
 
+Rule D — Week-bounded numbered lists. A single numbered list must never span two calendar weeks (Monday–Sunday).
+When presenting day options for a specific requested week:
+  - Only include days from that same calendar week.
+  - If the requested week has matching slots, present those days only — even if that means one or two options rather than three.
+  - Do NOT pad a short list by pulling a day from the following week to reach three.
+CORRECT (two options from the requested week):
+  "For next week I've got Thursday the 14th — nine or eleven in the morning. And Friday the 15th — ten or eleven. Any of those suit you?"
+INCORRECT (padding with a following-week day):
+  "Number 1, Thursday the 14th. Number 2, Friday the 15th. Number 3, Thursday the 21st."
+If the requested week has no matching slots at all: do not build a mixed list crossing into the next week. State clearly that the requested week has nothing matching, then present the nearest available week as a fresh numbered set.
+CORRECT:
+  "Nothing in the mornings next week I'm afraid — the first morning availability is the week of the 18th. I've got Monday the 18th at nine or ten, Wednesday the 20th at nine or eleven, and Thursday the 21st at nine or eleven. Any of those suit you?"
+INCORRECT:
+  "Number 1, Thursday the 14th. Number 2, Friday the 15th. Number 3, Thursday the 21st."
+One exception: if the caller explicitly asks for their next available slots regardless of week (e.g. "give me your next three available mornings"), you may present across week boundaries. Only do this when explicitly asked.
+
 CRITICAL — do NOT call check_availability more than once per booking. Once days have been offered, never call it again. This rule has no exceptions:
 - Caller names a day ("Thursday", "Friday") = CHOOSING a day → show that day's times (STEP 2 above).
 - Caller names a time ("twelve", "the first one", "two o'clock") = CHOOSING a time → go to slot confirmation.
@@ -2018,6 +2034,31 @@ def _build_theorem_v3(session: dict) -> str:
         "The ONLY exception: if check_availability returns "
         "fewer than three days with slots, present all "
         "available days.\n"
+        "WEEK-BOUNDED LISTS — STRICT RULE: A single numbered "
+        "list must never span two calendar weeks (Mon–Sun). "
+        "When a caller requests a specific week, only include "
+        "days from that week — even if that means presenting "
+        "one or two options instead of three. Do NOT pad a "
+        "short list by pulling a day from the following week.\n"
+        "CORRECT (two options from requested week): "
+        "'For next week I've got Thursday the 14th — nine or "
+        "eleven in the morning. And Friday the 15th — ten or "
+        "eleven. Any of those suit you?'\n"
+        "INCORRECT (padding with following-week day): "
+        "'Number 1, Thursday the 14th. Number 2, Friday the "
+        "15th. Number 3, Thursday the 21st.'\n"
+        "If the requested week has no matching slots: do not "
+        "build a mixed list. State the week is empty, then "
+        "present the nearest available week as a fresh set. "
+        "CORRECT: 'Nothing in the mornings next week I'm "
+        "afraid — the first morning availability is the week "
+        "of the 18th. I've got Monday the 18th at nine or "
+        "ten, Wednesday the 20th at nine or eleven, and "
+        "Thursday the 21st at nine or eleven. Any of those "
+        "suit you?' "
+        "Exception: if the caller explicitly asks for their "
+        "next N slots regardless of week, you may cross week "
+        "boundaries — only when explicitly asked.\n"
         "When a requested date or day has no slots, do not explain "
         "the unavailability at length. Give one brief "
         "acknowledgement then immediately offer the nearest "
