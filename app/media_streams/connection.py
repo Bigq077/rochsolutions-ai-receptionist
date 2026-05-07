@@ -61,6 +61,12 @@ from .config import (
     ACK_FILLER_MARKER,
 )
 
+# Pre-slot TTS cancellation marker — mirrors PRE_SLOT_MARKER in llm_stream.py.
+# Defined here independently so connection.py does not import from llm_stream
+# at module level (llm_stream is imported lazily inside handlers to avoid
+# circular imports).
+PRE_SLOT_MARKER: str = "\x01PRE_SLOT\x01"
+
 # ---------------------------------------------------------------------------
 # Barge-in constants
 # ---------------------------------------------------------------------------
@@ -399,6 +405,34 @@ def _parse_v3_slot_options(text: str) -> dict:
             result[digit] = label
 
     return result if len(result) >= 2 else {}
+
+
+# ---------------------------------------------------------------------------
+# theorem_v3 slot map context helper
+# ---------------------------------------------------------------------------
+
+def _is_time_map(slot_map: dict) -> bool:
+    """
+    Returns True when slot map values contain times rather than day names.
+
+    Used to detect the day→time context shift: when the caller picks a day
+    and check_availability returns time slots, the new map should overwrite
+    the old day map so DTMF 1/2/3 maps to the correct time, not the old day.
+
+    Time signals: clock words, period-of-day words, spoken digit hour names.
+    Bare digit strings or day-name labels return False.
+    """
+    _TIME_SIGNALS = frozenset({
+        "o'clock", "morning", "afternoon",
+        "evening", "nine", "ten", "eleven",
+        "twelve", "one", "two", "three",
+        "four", "five", "six",
+    })
+    for v in slot_map.values():
+        v_lower = v.lower()
+        if any(sig in v_lower for sig in _TIME_SIGNALS):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -5111,16 +5145,31 @@ class WebSocketCallHandler:
                             # did not produce a map this turn (no slot presentation
                             # in this response, or slot buf was not used).
                             if self.session.get("v3_dtmf_slot_map"):
-                                logger.info(
-                                    "[ms_conn v3] slot map active (complete-response "
-                                    "extraction): %r",
-                                    self.session["v3_dtmf_slot_map"],
-                                )
+                                _new_map = self.session["v3_dtmf_slot_map"]
+                                if _is_time_map(_new_map):
+                                    # Day→time context shift: the new map contains
+                                    # time options, not day options.  _flush_slot_buf
+                                    # already wrote the new map into v3_dtmf_slot_map,
+                                    # overwriting the stale day map.  Record context so
+                                    # downstream code can distinguish day vs time DTMF.
+                                    self.session["v3_dtmf_slot_context"] = "time"
+                                    logger.info(
+                                        "[ms_conn v3] slot map shifted to time-selection: %r",
+                                        _new_map,
+                                    )
+                                else:
+                                    self.session["v3_dtmf_slot_context"] = "day"
+                                    logger.info(
+                                        "[ms_conn v3] slot map active — day-selection "
+                                        "(complete-response extraction): %r",
+                                        _new_map,
+                                    )
                             else:
                                 # No numbered options this turn — clear any stale
                                 # map so phone DTMF auto-activate is not blocked.
                                 self.session.pop("v3_slot_dtmf_active",         None)
                                 self.session.pop("v3_awaiting_slot_selection",  None)
+                                self.session.pop("v3_dtmf_slot_context",        None)
 
                             # Infer location from FAQ answer if not yet confirmed
                             # If the LLM just answered a location-specific question
@@ -6183,6 +6232,23 @@ class WebSocketCallHandler:
                             "tool call filler took over: %r", chunk_text[:60],
                         )
                         self.session["_ack_filler_cancelled"] = False
+                        continue
+
+                # Pre-slot marker: text chunks prefixed by _one_streaming_call so
+                # they can be discarded if check_availability was detected mid-stream.
+                # Strip the marker; if _pre_slot_cancelled is True, drop the chunk so
+                # the caller does not hear partial LLM text before the full slot data.
+                _pre_slot_chunk = chunk_text.startswith(PRE_SLOT_MARKER)
+                if _pre_slot_chunk:
+                    chunk_text = chunk_text[len(PRE_SLOT_MARKER):]
+                    if not chunk_text.strip():
+                        continue
+                    if self.session.get("_pre_slot_cancelled"):
+                        logger.info(
+                            "[ms_tts] pre-slot chunk suppressed — "
+                            "check_availability detected this turn: %r",
+                            chunk_text[:60],
+                        )
                         continue
 
                 # SPEC 4 / Bug 1: apply phonetic substitution to chunk_text NOW

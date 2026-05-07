@@ -67,6 +67,12 @@ from .turn_handler import sanitise_response
 
 logger = logging.getLogger(__name__)
 
+# Sentinel prefix for pre-tool text chunks.  All text chunks in a streaming
+# call are prefixed with this marker so that if check_availability is detected
+# mid-stream (via content_block_start), the tts_loop can drop them before they
+# reach ElevenLabs.  Uses the same marker+flag pattern as ACK_FILLER_MARKER.
+PRE_SLOT_MARKER = "\x01PRE_SLOT\x01"
+
 
 # ---------------------------------------------------------------------------
 # Cache-invalidation helpers for check_availability dedup guard
@@ -785,6 +791,12 @@ class LLMStream:
         # the marked ack-filler chunk before it reaches ElevenLabs.
         session["_ack_filler_active"]    = False
         session["_ack_filler_cancelled"] = False
+        # Pre-slot cancellation: all text chunks in this turn are prefixed with
+        # PRE_SLOT_MARKER.  When check_availability tool_use is detected via
+        # content_block_start, _pre_slot_cancelled is set True so the tts_loop
+        # drops any PRE_SLOT_MARKER chunks still in the queue.
+        session["_pre_slot_cancelled"] = False
+        _slot_tool_active: bool = False
 
         # Background task: fire filler phrase after timeout if no text yet.
         # Cannot rely on stream events alone — if Claude takes >5s to send
@@ -817,6 +829,26 @@ class LLMStream:
         ) as stream:
 
             async for event in stream:
+                # ── Tool-use block opening ────────────────────────────────
+                # Detect check_availability as early as possible (before the
+                # tool result arrives) so the tts_loop can drop pre-tool
+                # PRE_SLOT_MARKER chunks that haven't been consumed yet.
+                if hasattr(event, "type") and event.type == "content_block_start":
+                    _cb = getattr(event, "content_block", None)
+                    if (
+                        _cb is not None
+                        and getattr(_cb, "type", None) == "tool_use"
+                        and getattr(_cb, "name", None) == "check_availability"
+                        and not _slot_tool_active
+                    ):
+                        _slot_tool_active = True
+                        session["_pre_slot_cancelled"] = True
+                        logger.info(
+                            "[ms_gate5] pre-tool TTS output cancelled — "
+                            "slot buffer taking over (check_availability detected)"
+                        )
+                    continue
+
                 # ── Text token ────────────────────────────────────────────
                 if hasattr(event, "type"):
                     if event.type == "content_block_delta":
@@ -848,7 +880,10 @@ class LLMStream:
                                 # GATE 5: sanitise before TTS
                                 chunk = sanitise_response(chunk, session)
                                 if chunk:
-                                    await tts_text_queue.put(chunk)
+                                    # Prefix with PRE_SLOT_MARKER so the
+                                    # tts_loop can drop this chunk if
+                                    # check_availability is detected this turn.
+                                    await tts_text_queue.put(PRE_SLOT_MARKER + chunk)
 
                         continue
 
@@ -868,7 +903,7 @@ class LLMStream:
                 # GATE 5: sanitise flush chunk before TTS
                 final_chunk = sanitise_response(final_chunk, session)
                 if final_chunk:
-                    await tts_text_queue.put(final_chunk)
+                    await tts_text_queue.put(PRE_SLOT_MARKER + final_chunk)
 
             # ── GATE 5: per-turn reasoning drop count ─────────────────────
             _g5_drops = int(session.pop("_gate5_reasoning_drops", 0) or 0)
