@@ -1018,6 +1018,12 @@ DAY-FIRST PRESENTATION — always show DAYS before TIMES:
 
 ⚠️ CRITICAL FORMAT RULE: When presenting days or times, ALWAYS use the actual values from the tool result (day_label, slot_times). NEVER output placeholder text like [day1], [day_label], [time 1], or similar bracket syntax. If you do not have real dates from a tool result, say "Let me check with the team — could I take your name and number and we'll call you back?"
 
+⚠️ ABSOLUTE DATE FORMAT — mandatory everywhere a date appears. Always state dates as: day name + ordinal + month (e.g. "Thursday the 21st of May"). Never use relative labels such as "next Thursday", "the following Thursday", "the week after", or any phrasing that requires the caller to work out which date you mean.
+This applies in: numbered slot options, DTMF slot map labels, booking summary readbacks ("So that's Thursday the 21st of May at eleven"), watchdog re-asks that reference a date, and any clarification or confirmation question.
+Only exceptions: "today" and "tomorrow" are acceptable when referring to the current or next calendar day — these are unambiguous in context. Everything beyond tomorrow must use the full absolute format.
+Correct: "Thursday the 21st of May"
+Incorrect: "the following Thursday" / "next Thursday" / "Thursday the week after"
+
 STEP 1 — Present up to 4 available days. For each day, include at most TWO representative times:
 - Show the earliest available slot for that day.
 - If there is a materially different alternative in a different part of the day (e.g. a morning slot AND an afternoon or evening slot), add one more. Two times maximum per day at this stage.
@@ -2059,6 +2065,21 @@ def _build_theorem_v3(session: dict) -> str:
         "Exception: if the caller explicitly asks for their "
         "next N slots regardless of week, you may cross week "
         "boundaries — only when explicitly asked.\n"
+        "ABSOLUTE DATE FORMAT — MANDATORY everywhere a date "
+        "appears. Always state dates as: day name + ordinal + "
+        "month (e.g. 'Thursday the 21st of May'). Never use "
+        "relative labels: 'next Thursday', 'the following "
+        "Thursday', 'the week after', or any phrasing that "
+        "requires the caller to calculate which date you mean. "
+        "Applies in: numbered slot options, booking summary "
+        "readbacks, watchdog re-asks, confirmation questions, "
+        "and all other date references. "
+        "Only exceptions: 'today' and 'tomorrow' — unambiguous "
+        "in context. Everything beyond tomorrow must use the "
+        "full absolute format. "
+        "Correct: 'Thursday the 21st of May'. "
+        "Incorrect: 'next Thursday' / 'the following Thursday' "
+        "/ 'Thursday the week after'.\n"
         "When a requested date or day has no slots, do not explain "
         "the unavailability at length. Give one brief "
         "acknowledgement then immediately offer the nearest "
