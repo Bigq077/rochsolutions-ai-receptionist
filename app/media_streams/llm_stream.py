@@ -68,6 +68,51 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Cache-invalidation helpers for check_availability dedup guard
+# ---------------------------------------------------------------------------
+
+def _extract_week_reference(hint: str) -> str:
+    """
+    Return a normalised week token from a date_hint string.
+
+    Used to decide whether two consecutive check_availability calls target
+    the same week (same cache is valid) or a different week (cache must be
+    invalidated so a fresh API call is made).
+
+    Returns one of: "week_after" / "next_week" / "this_week" /
+    "day_<name>" / "unspecified".
+    """
+    if not hint:
+        return "unspecified"
+    h = hint.lower()
+    if (
+        "week after" in h
+        or "following week" in h
+        or "the week after" in h
+        or "next next week" in h
+    ):
+        return "week_after"
+    if "next week" in h:
+        return "next_week"
+    if "this week" in h:
+        return "this_week"
+    for _day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"):
+        if _day in h:
+            return f"day_{_day}"
+    return "unspecified"
+
+
+def _date_hints_differ_materially(hint_a: str, hint_b: str) -> bool:
+    """
+    Return True when the two date_hints reference materially different
+    time windows (different weeks).  A difference in time-of-day filter
+    alone (e.g. "next week mornings" vs "next week afternoons") is NOT
+    considered material — the week is the same.
+    """
+    return _extract_week_reference(hint_a) != _extract_week_reference(hint_b)
+
+
+# ---------------------------------------------------------------------------
 # Anthropic client singleton
 # ---------------------------------------------------------------------------
 
@@ -877,12 +922,45 @@ class LLMStream:
             )
 
             try:
+                # ── Cache invalidation: new date_hint targets a different week ─
+                # Before the dedup guard fires, check whether the incoming
+                # date_hint refers to a materially different week than the one
+                # used to populate last_offered_slots.  If so, clear the cache
+                # so the guard below falls through to a real API call.
+                #
+                # "Materially different" = different week reference (next week
+                # vs the week after, etc.).  A change in time-of-day filter
+                # alone (mornings → afternoons within the same week) does NOT
+                # invalidate the cache.
+                #
+                # last_date_hint is written here so it survives across turns and
+                # is always the hint that produced the current last_offered_slots.
+                if tool_name == "check_availability":
+                    _new_hint = str(
+                        args.get("date_hint") or args.get("preference") or ""
+                    )
+                    _last_hint = str(session.get("last_date_hint") or "")
+                    if (
+                        session.get("last_offered_slots")
+                        and _date_hints_differ_materially(_new_hint, _last_hint)
+                    ):
+                        logger.info(
+                            "[ms_llm] check_availability cache INVALIDATED — "
+                            "date_hint changed from %r to %r; running fresh check "
+                            "call_sid=%s",
+                            _last_hint, _new_hint, call_sid,
+                        )
+                        session["last_offered_slots"] = None
+                    # Always track the latest hint so the next call can compare.
+                    session["last_date_hint"] = _new_hint
+
                 # Dedup guard: block check_availability if slots were already
                 # retrieved this turn (last_offered_slots populated).  The LLM
                 # must use the data already returned rather than re-fetching.
                 # Allows a second call only if the session key was cleared
                 # upstream (e.g. caller explicitly asked for a new date range
-                # and connection.py cleared last_offered_slots).
+                # and connection.py cleared last_offered_slots, or the cache
+                # invalidation above detected a new week reference).
                 if tool_name == "check_availability" and session.get("last_offered_slots"):
                     logger.warning(
                         "[ms_llm] check_availability BLOCKED — slots already retrieved "
