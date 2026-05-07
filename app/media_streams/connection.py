@@ -6494,6 +6494,54 @@ class WebSocketCallHandler:
                         "waiting for earlier chunks (completed=%s expected=%d)",
                         _fired_seq, sorted(self._tts_chunks_completed), _expected_seq,
                     )
+                    # Safety-net: if earlier chunks never arrive the call would
+                    # hang indefinitely.  After 4 s, force-fire the silence timer
+                    # using the stashed terminal-chunk context.
+                    _ooo_guard_seq = _expected_seq
+                    _ooo_guard_text = text
+                    _ooo_guard_ts   = chunk_started_at
+
+                    async def _ooo_force_fire() -> None:
+                        await asyncio.sleep(4.0)
+                        # Stale-guard: a new TTS response has superseded this one.
+                        if self._tts_expected_final_seq != _ooo_guard_seq:
+                            logger.debug(
+                                "[ms_tts] _ooo_force_fire: seq mismatch "
+                                "(%d != %d) — skipping",
+                                self._tts_expected_final_seq, _ooo_guard_seq,
+                            )
+                            return
+                        # If pending terminal has already been resolved normally
+                        # (earlier chunks arrived in time), bail out.
+                        if self._tts_pending_terminal == 0:
+                            logger.debug(
+                                "[ms_tts] _ooo_force_fire: pending terminal "
+                                "already resolved — skipping"
+                            )
+                            return
+                        logger.warning(
+                            "[ms_tts] _ooo_force_fire: earlier chunks never "
+                            "arrived after 4 s for terminal seq %d — "
+                            "force-firing silence timer",
+                            _ooo_guard_seq,
+                        )
+                        # Clear stashed state so the normal resolver won't
+                        # double-fire if a late chunk somehow arrives later.
+                        self._tts_pending_terminal                = 0
+                        self._tts_pending_terminal_text           = ""
+                        self._tts_pending_terminal_chunk_start_ts = 0.0
+                        if not self._silence_handler._watchdog_has_retired:
+                            self._silence_handler.on_tts_finished(
+                                _ooo_guard_text,
+                                chunk_started_at=_ooo_guard_ts,
+                            )
+                        else:
+                            logger.debug(
+                                "[ms_tts] _ooo_force_fire: watchdog already "
+                                "retired — silence timer not restarted"
+                            )
+
+                    asyncio.create_task(_ooo_force_fire())
                     return
             else:
                 # Non-terminal chunk.  Check if this arrival resolves a stored
