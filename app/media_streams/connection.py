@@ -1217,6 +1217,25 @@ class SilenceHandler:
                     if _sr_sess:
                         _sr_sess["v3_awaiting_use_this_clinic"] = True
                         _sr_sess["last_question"] = phrase
+                        _sr_sess["last_bot_prompt"] = phrase
+                        # Derive bias from prompt text at generation time.
+                        # Stored as v3_use_this_clinic_bias so the handler
+                        # never has to re-read last_bot_prompt (which may be
+                        # overwritten before the caller responds).
+                        _sr_bias = (
+                            "redditch"
+                            if (
+                                "redditch" in phrase.lower()
+                                or "reddich" in phrase.lower()
+                            )
+                            else "alcester"
+                        )
+                        _sr_sess["v3_use_this_clinic_bias"] = _sr_bias
+                        logger.info(
+                            "[ms_conn v3] watchdog bias set: %s"
+                            " from prompt: %r",
+                            _sr_bias, phrase[:60],
+                        )
                 if _sr_sess:
                     _sr_sess["v3_location_reask_count"] = _sr_lrc + 1
             else:
@@ -2040,6 +2059,25 @@ class SilenceHandler:
                         if _sess is not None:
                             _sess["v3_awaiting_use_this_clinic"] = True
                             _sess["last_question"] = phrase
+                            _sess["last_bot_prompt"] = phrase
+                            # Derive bias from prompt text at generation time.
+                            # Stored as v3_use_this_clinic_bias so the handler
+                            # never has to re-read last_bot_prompt (which may be
+                            # overwritten before the caller responds).
+                            _v3_bias = (
+                                "redditch"
+                                if (
+                                    "redditch" in phrase.lower()
+                                    or "reddich" in phrase.lower()
+                                )
+                                else "alcester"
+                            )
+                            _sess["v3_use_this_clinic_bias"] = _v3_bias
+                            logger.info(
+                                "[ms_conn v3] watchdog bias set: %s"
+                                " from prompt: %r",
+                                _v3_bias, phrase[:60],
+                            )
                     else:
                         # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
                         # Clear v3_location_q_active so the ladder stops here.
@@ -4277,23 +4315,19 @@ class WebSocketCallHandler:
                                     "v3_awaiting_use_this_clinic"
                                 ] = False
 
-                                # ── Derive biased clinic from last_bot_prompt ─
-                                # last_bot_prompt holds the exact phrase the
-                                # watchdog spoke, e.g. "Did you say the Awlstuh
-                                # clinic?" — read whichever clinic name appears
-                                # in it so affirmatives bind the correct one.
-                                _lbp_utc = (
-                                    self.session.get("last_bot_prompt") or ""
-                                ).lower()
-                                if (
-                                    "redditch" in _lbp_utc
-                                    or "reddich" in _lbp_utc
-                                ):
-                                    _biased_clinic = "redditch"
-                                else:
-                                    # Default: Awlstuh (the standard biased
-                                    # confirm phrase names this clinic).
-                                    _biased_clinic = "alcester"
+                                # ── Read pre-computed bias from session ──────
+                                # v3_use_this_clinic_bias is set at prompt
+                                # generation time (watchdog / SilenceHandler),
+                                # derived directly from the phrase text.
+                                # Reading last_bot_prompt here is unreliable —
+                                # it may still hold a previous LLM response
+                                # that contains "Redditch" (e.g. "Awlstuh or
+                                # Redditch?"), causing the wrong clinic to be
+                                # resolved.  Use the stored bias instead.
+                                _biased_clinic = (
+                                    self.session.get("v3_use_this_clinic_bias")
+                                    or "alcester"
+                                )
 
                                 # ── Trailing fragment guard ───────────────
                                 # STT sometimes splits a long utterance and
