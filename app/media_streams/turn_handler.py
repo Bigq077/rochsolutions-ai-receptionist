@@ -199,4 +199,11 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)
     result = _LEADING_JUNK_RE.sub("", result)
-    return result.strip()
+    result = result.strip()
+    # ── Fix A: re-capitalise after opener strip ──────────────────────────────
+    # Banned opener patterns (lovely_opener, of_course_opener) strip the
+    # leading phrase and leave the rest of the sentence starting with a
+    # lower-case continuation word.  Restore sentence-initial capitalisation.
+    if result:
+        result = result[0].upper() + result[1:]
+    return result

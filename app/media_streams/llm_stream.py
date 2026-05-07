@@ -407,6 +407,30 @@ class LLMStream:
         if not chunks:
             return
 
+        # ── Fix B: early slot map detection ─────────────────────────────────
+        # Run inline slot detection on the flushed content so that
+        # session["v3_awaiting_slot_selection"] is set BEFORE _flush_slot_buf
+        # returns (i.e. before run_turn returns and before on_question_asked
+        # arms the watchdog).  This guarantees slot_selection_grace=10s is
+        # applied when WATCHDOG_START fires.
+        #
+        # Uses the same anchor regex as connection.py _V3_SLOT_ANCHOR_RE —
+        # defined inline to avoid circular imports.
+        import re as _re  # noqa: PLC0415 — local import to avoid module-level cycle
+        _SLOT_ANCHOR_INLINE_RE = _re.compile(
+            r"Number\s+([1-9])\b|(?<!\d)([1-9])\s*[—–\-]\s*",
+            _re.IGNORECASE,
+        )
+        _joined = " ".join(chunks)
+        _anchors = _SLOT_ANCHOR_INLINE_RE.findall(_joined)
+        _digit_count = sum(1 for a in _anchors if a[0] or a[1])
+        if _digit_count >= 2:
+            session["v3_awaiting_slot_selection"] = True
+            logger.info(
+                "[ms_gate5] slot buf slot map stored: %d slot(s) detected — DTMF standby",
+                _digit_count,
+            )
+
         for c in chunks:
             await tts_queue.put(c)
 
