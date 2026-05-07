@@ -429,9 +429,9 @@ class LLMStream:
 
         Gate5 filtering is applied per-chunk inside _one_streaming_call
         before chunks enter the buffer, so the buffer contains only clean,
-        spoken-safe text.  Slot map extraction (last_offered_slots) runs
-        on the complete response via last_bot_prompt after the turn, NOT
-        on individual chunks here.
+        spoken-safe text.  Full {digit: label} slot map extraction runs
+        here on the complete assembled response (Bug 7 fix) — last_bot_prompt
+        is truncated to 200 chars and must NOT be used for slot extraction.
 
         The filler phrase ("Let me just check that for you…") is sent to
         tts_text_queue directly during the tool call and is unaffected by
@@ -452,29 +452,49 @@ class LLMStream:
         if not chunks:
             return
 
-        # ── Fix B: early slot map detection ─────────────────────────────────
-        # Run inline slot detection on the flushed content so that
-        # session["v3_awaiting_slot_selection"] is set BEFORE _flush_slot_buf
-        # returns (i.e. before run_turn returns and before on_question_asked
-        # arms the watchdog).  This guarantees slot_selection_grace=10s is
-        # applied when WATCHDOG_START fires.
+        # ── Bug 7 fix: complete-response slot map extraction ─────────────────
+        # `_joined` is the full gate5-filtered LLM response assembled from all
+        # buffered chunks — the stream is complete when _flush_slot_buf is
+        # called, so every option's date string is present and untruncated.
         #
-        # Uses the same anchor regex as connection.py _V3_SLOT_ANCHOR_RE —
-        # defined inline to avoid circular imports.
+        # Previous approach ran _parse_v3_slot_options on last_bot_prompt in
+        # connection.py post-run_turn, but last_bot_prompt is capped at 200
+        # characters — a 3-option slot presentation exceeds that limit and
+        # Option 3's date string was cut off, producing an incomplete map.
+        #
+        # Inlines connection.py _parse_v3_slot_options logic to avoid a
+        # circular import.  Regex is identical to _V3_SLOT_ANCHOR_RE.
         import re as _re  # noqa: PLC0415 — local import to avoid module-level cycle
-        _SLOT_ANCHOR_INLINE_RE = _re.compile(
+        _SLOT_ANCHOR_FULL_RE = _re.compile(
             r"Number\s+([1-9])\b|(?<!\d)([1-9])\s*[—–\-]\s*",
             _re.IGNORECASE,
         )
         _joined = " ".join(chunks)
-        _anchors = _SLOT_ANCHOR_INLINE_RE.findall(_joined)
-        _digit_count = sum(1 for a in _anchors if a[0] or a[1])
-        if _digit_count >= 2:
-            session["v3_awaiting_slot_selection"] = True
-            logger.info(
-                "[ms_gate5] slot buf slot map stored: %d slot(s) detected — DTMF standby",
-                _digit_count,
-            )
+        _full_anchors = [
+            (m.start(), m.end(), m.group(1) or m.group(2))
+            for m in _SLOT_ANCHOR_FULL_RE.finditer(_joined)
+        ]
+        if len(_full_anchors) >= 2:
+            _slot_map: dict = {}
+            for _i, (_fa_start, _fa_end, _fa_digit) in enumerate(_full_anchors):
+                _next = (
+                    _full_anchors[_i + 1][0]
+                    if _i + 1 < len(_full_anchors)
+                    else len(_joined)
+                )
+                _lbl = _joined[_fa_end:_next].lstrip(", ")
+                _lbl = _re.split(r"[—–\.]", _lbl)[0].strip().rstrip(".,;- ")
+                if _lbl:
+                    _slot_map[_fa_digit] = _lbl
+            if len(_slot_map) >= 2:
+                session["v3_dtmf_slot_map"] = _slot_map
+                session["v3_awaiting_slot_selection"] = True
+                logger.info(
+                    "[ms_gate5] slot map extracted on complete response "
+                    "(%d option(s)) — DTMF standby: %r",
+                    len(_slot_map),
+                    _slot_map,
+                )
 
         for c in chunks:
             await tts_queue.put(c)

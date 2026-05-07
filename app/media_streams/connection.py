@@ -5037,30 +5037,22 @@ class WebSocketCallHandler:
                             # Persist session
                             await save_session(self.call_sid, self.session)
 
-                            # theorem_v3 slot DTMF: parse numbered options from
-                            # the LLM reply and store the map for later use.
-                            # DTMF is NOT armed here — it fires as a fallback
-                            # only when the LLM re-asks and mentions "keypad"
-                            # (detected in _handle_dtmf). Clear stale map when
-                            # no numbered options are present.
-                            _v3_slot_map = _parse_v3_slot_options(
-                                self.session.get("last_bot_prompt", "")
-                            )
-                            if _v3_slot_map:
-                                self.session["v3_dtmf_slot_map"] = _v3_slot_map
-                                # Flag that we are now waiting for a slot selection.
-                                # Watchdog uses this to grant 10 s instead of 6 s —
-                                # the caller must process up to 12 s of audio and
-                                # then choose between 2-3 dated options.
-                                self.session["v3_awaiting_slot_selection"] = True
+                            # theorem_v3 slot DTMF: slot map is now extracted by
+                            # _flush_slot_buf on the complete assembled response
+                            # (Bug 7 fix — last_bot_prompt is [:200] truncated
+                            # and must not be used for extraction).
+                            # Here we only clear stale state when _flush_slot_buf
+                            # did not produce a map this turn (no slot presentation
+                            # in this response, or slot buf was not used).
+                            if self.session.get("v3_dtmf_slot_map"):
                                 logger.info(
-                                    "[ms_conn v3] slot map stored (DTMF standby): %r",
-                                    _v3_slot_map,
+                                    "[ms_conn v3] slot map active (complete-response "
+                                    "extraction): %r",
+                                    self.session["v3_dtmf_slot_map"],
                                 )
                             else:
-                                # No numbered options — clear stale map so phone
-                                # DTMF auto-activate is not blocked
-                                self.session.pop("v3_dtmf_slot_map",            None)
+                                # No numbered options this turn — clear any stale
+                                # map so phone DTMF auto-activate is not blocked.
                                 self.session.pop("v3_slot_dtmf_active",         None)
                                 self.session.pop("v3_awaiting_slot_selection",  None)
 
