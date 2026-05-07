@@ -307,6 +307,14 @@ BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 # Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS)
 FILLER_PHRASE = "Let me have a look at what we've got…"
 
+# Prefix marker prepended to FILLER_PHRASE by the background filler task in
+# _stream_one_claude_turn().  _tts_loop strips the marker and — if a tool call
+# has since cancelled the ack filler — discards the chunk silently rather than
+# playing it on top of the tool-call filler.  Using a marker (rather than
+# string comparison) means the suppression is exact and cannot false-positive
+# on genuine LLM text that happens to echo the same phrase.
+ACK_FILLER_MARKER = "\x01ACK_FILLER\x01"
+
 # ---------------------------------------------------------------------------
 # Audio format constants for Twilio Media Streams
 # ---------------------------------------------------------------------------

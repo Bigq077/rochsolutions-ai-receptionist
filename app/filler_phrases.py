@@ -94,6 +94,18 @@ async def with_filler(
     used = session.setdefault("used_fillers", [])
     filler_text = pick_filler(filler_list, used)
 
+    # If an ack filler (background FILLER_PHRASE) was already queued for this
+    # turn, cancel it in favour of this tool-call filler.  The tool filler
+    # always wins: set _ack_filler_cancelled so _tts_loop silently drops the
+    # marked ack-filler chunk before it reaches ElevenLabs.
+    if session.get("_ack_filler_active"):
+        session["_ack_filler_cancelled"] = True
+        session["_ack_filler_active"]    = False
+        logger.info(
+            "[ms_tts] ack filler cancelled — tool call filler taking over: %r",
+            filler_text[:60],
+        )
+
     # Queue primary filler immediately (non-blocking — returns once enqueued)
     filler_task = asyncio.create_task(tts_fn(filler_text))
 

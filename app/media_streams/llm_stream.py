@@ -53,6 +53,7 @@ from .config import (
     LLM_FIRST_CHUNK_TIMEOUT_MS,
     LLM_FILLER_COOLDOWN_SEC,
     FILLER_PHRASE,
+    ACK_FILLER_MARKER,
     SAFE_FALLBACK_PHRASE,
     F_LAST_BOT_PROMPT,
     F_LAST_QUESTION,
@@ -777,6 +778,14 @@ class LLMStream:
         got_first_chunk      = False
         _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
 
+        # Reset ack-filler state for this turn.  _ack_filler_active is set True
+        # by _delayed_filler() below when FILLER_PHRASE is queued; with_filler()
+        # reads it and sets _ack_filler_cancelled True when a tool-call filler
+        # supersedes it.  _tts_loop uses _ack_filler_cancelled to silently drop
+        # the marked ack-filler chunk before it reaches ElevenLabs.
+        session["_ack_filler_active"]    = False
+        session["_ack_filler_cancelled"] = False
+
         # Background task: fire filler phrase after timeout if no text yet.
         # Cannot rely on stream events alone — if Claude takes >5s to send
         # the first event, the in-loop deadline check never fires.
@@ -786,7 +795,11 @@ class LLMStream:
                 await asyncio.sleep(timeout_sec)
                 if not got_first_chunk:
                     logger.info("[ms_llm] filler phrase triggered (background task)")
-                    await tts_text_queue.put(FILLER_PHRASE)
+                    # Prefix with ACK_FILLER_MARKER so _tts_loop can identify
+                    # this chunk and suppress it if a tool-call filler fires
+                    # in the same turn and sets _ack_filler_cancelled.
+                    await tts_text_queue.put(ACK_FILLER_MARKER + FILLER_PHRASE)
+                    session["_ack_filler_active"] = True
                     self._last_filler_at = time.monotonic()
             _filler_task = asyncio.create_task(_delayed_filler(), name="ms_llm_filler")
 

@@ -58,6 +58,7 @@ from .config import (
     BARGE_IN_THRESHOLD_MS,
     ANTHROPIC_API_KEY,
     HAIKU,
+    ACK_FILLER_MARKER,
 )
 
 # ---------------------------------------------------------------------------
@@ -6162,6 +6163,26 @@ class WebSocketCallHandler:
                 if _watchdog_reask:
                     chunk_text = chunk_text[len(_WATCHDOG_REASK_MARKER):]
                     if not chunk_text.strip():
+                        continue
+
+                # Ack-filler marker: background FILLER_PHRASE queued by
+                # _delayed_filler() in llm_stream.py.  Strip the marker; if a
+                # tool-call filler has since cancelled the ack filler for this
+                # turn (_ack_filler_cancelled), discard the chunk silently so
+                # the patient does not hear both fillers back-to-back.
+                # If the ack filler already finished playing (cancelled flag not
+                # set), strip the marker and play it normally — nothing to do.
+                _ack_filler_chunk = chunk_text.startswith(ACK_FILLER_MARKER)
+                if _ack_filler_chunk:
+                    chunk_text = chunk_text[len(ACK_FILLER_MARKER):]
+                    if not chunk_text.strip():
+                        continue
+                    if self.session.get("_ack_filler_cancelled"):
+                        logger.info(
+                            "[ms_tts] ack filler suppressed — "
+                            "tool call filler took over: %r", chunk_text[:60],
+                        )
+                        self.session["_ack_filler_cancelled"] = False
                         continue
 
                 # SPEC 4 / Bug 1: apply phonetic substitution to chunk_text NOW
