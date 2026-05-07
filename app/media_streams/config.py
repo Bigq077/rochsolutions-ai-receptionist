@@ -305,7 +305,7 @@ SAFE_FALLBACK_PHRASE = (
 BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 
 # Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS)
-FILLER_PHRASE = "Let me just check that for you…"
+FILLER_PHRASE = "Let me have a look at what we've got…"
 
 # ---------------------------------------------------------------------------
 # Audio format constants for Twilio Media Streams

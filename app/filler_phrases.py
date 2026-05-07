@@ -24,10 +24,6 @@ logger = logging.getLogger(__name__)
 _MAX_FILLER_CHARS = 400
 
 THINKING_FILLERS_PRIMARY: List[str] = [
-    "Let me just pull that up for you…",
-    "Bear with me, I'm just looking at the diary…",
-    "Just checking availability for you…",
-    "One moment, looking at the schedule…",
     "Let me have a look at what we've got…",
 ]
 
