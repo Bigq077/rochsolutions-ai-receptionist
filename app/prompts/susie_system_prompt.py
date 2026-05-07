@@ -168,7 +168,12 @@ def build_system_prompt(session: dict) -> str:
     # ── BLOCK 6 — SOFT CONTEXT (dynamic, ~0-300 chars) ───────────────────────
     sc_lines = []
     sc = session.get("soft_context") or {}
-    if sc.get("time_preference"):
+    if session.get("time_of_day_preference"):
+        sc_lines.append(
+            f"TIME OF DAY PREFERENCE CONFIRMED (caller stated this explicitly — do NOT ask again): "
+            f"{session['time_of_day_preference']}"
+        )
+    elif sc.get("time_preference"):
         sc_lines.append(f"Caller's time preference: {sc['time_preference']}")
     if sc.get("location_preference"):
         sc_lines.append(f"Caller's location preference: {sc['location_preference']}")
@@ -665,7 +670,7 @@ NEW = no / nope / haven't / first time / never been / new patient.
 RETURNING = yes / yeah / I have / been before / returning.
 When in doubt, negative = NEW, positive = RETURNING.
 In the same response, fire collect_and_store(patient_type=...).
-TIME PREFERENCE GATE: check whether a time-of-day preference is already known (soft_context time_preference or stated explicitly earlier in the call):
+TIME PREFERENCE GATE: check whether a time-of-day preference is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated explicitly earlier in the call):
   - Time of day IS known (mornings, afternoons, evenings, a specific hour, OR caller said 'any time' / 'flexible' / 'doesn't matter'): say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Present available DAYS using Section 7.
   - Time of day is NOT known (caller gave only a date or week without time of day): say "Okay, that's noted." then ask: "Is mornings or afternoons better for you?" Do NOT call check_availability yet. Wait for the response.
 
@@ -768,7 +773,7 @@ Call collect_and_store(patient_type=...) immediately.
 DO NOT ask new/returning again. This question is only asked once, in Step 3.
 
 TIME PREFERENCE GATE — applies before every check_availability call below:
-Before calling check_availability, check whether a time-of-day preference is already known (soft_context time_preference, or stated explicitly earlier in the call):
+Before calling check_availability, check whether a time-of-day preference is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated explicitly earlier in the call):
   - Time of day IS known (mornings, afternoons, evenings, a specific hour, OR 'any time' / 'flexible' / 'doesn't matter'): call check_availability immediately. Use the preference in the date_hint.
   - Time of day NOT known (only a day, week, or urgency given, with no time of day): ask "Is mornings or afternoons better for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn using the stated preference. Never ask again this call.
 
@@ -2188,7 +2193,12 @@ def _build_theorem_v3(session: dict) -> str:
     # B6 SOFT CONTEXT
     sc = session.get("soft_context") or {}
     sc_lines = []
-    if sc.get("time_preference"):
+    if session.get("time_of_day_preference"):
+        sc_lines.append(
+            f"TIME OF DAY CONFIRMED (caller stated explicitly — do NOT ask again): "
+            f"{session['time_of_day_preference']}"
+        )
+    elif sc.get("time_preference"):
         sc_lines.append(f"time preference: {sc['time_preference']}")
     if sc.get("location_preference"):
         sc_lines.append(f"location preference: {sc['location_preference']}")

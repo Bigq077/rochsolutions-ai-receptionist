@@ -4961,6 +4961,48 @@ class WebSocketCallHandler:
                             self._v3_last_processed_ts = _enqueue_ts
                             self._v3_last_transcript_text = utterance.strip()
 
+                            # ── Bug 5: time-of-day preference capture ────────
+                            # If the previous Susie turn was the "mornings or
+                            # afternoons?" question and this utterance is the
+                            # answer, capture synchronously before run_turn so
+                            # the LLM sees it in context and will not re-ask.
+                            # Once set this field is never cleared within a call.
+                            if not self.session.get("time_of_day_preference"):
+                                _pre_lbp = (self.session.get("last_bot_prompt") or "").lower()
+                                if (
+                                    "mornings or afternoons" in _pre_lbp
+                                    or "better for you" in _pre_lbp
+                                ):
+                                    _utt_l = utterance.lower()
+                                    _tod = None
+                                    if "morning" in _utt_l:
+                                        _tod = "mornings"
+                                    elif "afternoon" in _utt_l:
+                                        _tod = "afternoons"
+                                    elif "evening" in _utt_l:
+                                        _tod = "evenings"
+                                    elif any(
+                                        x in _utt_l
+                                        for x in (
+                                            "any",
+                                            "flexible",
+                                            "doesn't matter",
+                                            "no preference",
+                                            "either",
+                                            "don't mind",
+                                        )
+                                    ):
+                                        _tod = "any"
+                                    if _tod:
+                                        self.session["time_of_day_preference"] = _tod
+                                        _sc = self.session.setdefault("soft_context", {})
+                                        if not _sc.get("time_preference"):
+                                            _sc["time_preference"] = _tod
+                                        logger.info(
+                                            "[ms_conn v3] time_of_day_preference captured: %s",
+                                            _tod,
+                                        )
+
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
