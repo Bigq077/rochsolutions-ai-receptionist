@@ -458,6 +458,7 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     # New/returning session guard — injected at the top of booking workflow
     # ------------------------------------------------------------------ #
     _patient_type_already_known = collected.get("patient_type")
+    _phone_already_known = bool(collected.get("phone"))
     if _patient_type_already_known:
         _nr_label = "new" if _patient_type_already_known == "new" else "returning"
         _nr_guard = (
@@ -466,6 +467,19 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
             f"The new/returning question is DONE and MUST NOT be asked again under any circumstances. "
             f"Skip every step or instruction that asks 'have you been to us before?' "
             f"Treat patient_type = {_patient_type_already_known} as already set and proceed to the next uncompleted step.\n"
+        )
+    elif _phone_already_known:
+        # Phone confirmed → we are at or past the summary step.
+        # The new/returning question is permanently forbidden from here onwards,
+        # even if it was never asked — it is not needed to complete the booking.
+        _nr_guard = (
+            "\n⚠️ SESSION GUARD — POST-PHONE CONFIRMATION: "
+            "The phone number has been confirmed. The booking is now in the "
+            "summary/confirmation phase. The new/returning question MUST NOT "
+            "be asked at this stage or any later stage under any circumstances. "
+            "Proceed directly to the booking summary: "
+            "'So that's [Name], [day] the [ordinal] of [month] at [time] at "
+            "[location] — shall I go ahead and book that in?'\n"
         )
     else:
         _nr_guard = ""
@@ -698,10 +712,17 @@ CRITICAL phone rules for when a caller gives a new number:
     → Then call collect_and_store with phone=[caller_number from known context] to keep the booking moving.
     → Move straight to Step F5. Do NOT stay stuck on the phone number.
 
-**Step F5 (final confirmation)** — "So that's a physio assessment on [date] at [time] at [location] — [name], [phone]. Does that all sound right?"
+**Step F5 (final confirmation)** — Phone is confirmed. Speak the booking summary in this exact structure:
+"So that's [Name], [day] the [ordinal date] of [month] at [time] at [clinic] — shall I go ahead and book that in?"
+Wait for an affirmative before proceeding. Affirmatives: yes, yeah, yep, go ahead, do it, please, that's right, correct.
+If the caller says no or wants to change something, handle the change and re-confirm before proceeding.
+⚠️ HARD RULE: Do NOT ask new/returning at this point. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Do NOT include the phone number in the summary.
 
-**Step F6 (book)** — Caller says yes.
-Call book_appointment then: "Brilliant, all booked — I'll send you a text now, if you could just reply with your full name for us that would be great. Take care, we'll see you then!"
+**Step F6 (book)** — Caller gives an affirmative to "shall I go ahead and book that in?".
+Call book_appointment immediately.
+On success: say exactly — "All booked — you're in for [day] the [ordinal] at [time]. I've just sent you a confirmation text. If you could reply to that message with your full name so we have it on file, that would be great. We'll see you then — take care."
+The closing must contain: the day and date, the time, a reference to the confirmation text, a request to reply with their full name, and a warm close. Nothing else. Do NOT mention the clinic name again. Do NOT say "Is there anything else?".
+On failure: say "I'm sorry — there was a problem locking that in. Please call back and we'll get it sorted for you." Then call log_call_outcome(outcome="failed").
 Call log_call_outcome."""
 
     else:
@@ -816,9 +837,17 @@ CRITICAL phone rules for when a caller gives a new number:
     → Then call collect_and_store with phone=[caller_number from known context] to keep the booking moving.
     → Move straight to Step 10. Do NOT stay stuck on the phone number.
 
-**Step 10** -- Final confirmation: "So that's a [service] on [date] at [time] at [location] -- [name], [phone]. Does that all sound right?"
+**Step 10** -- Phone is confirmed. Speak the booking summary in this exact structure:
+"So that's [Name], [day] the [ordinal date] of [month] at [time] at [location] — shall I go ahead and book that in?"
+Wait for an affirmative before proceeding. Affirmatives: yes, yeah, yep, go ahead, do it, please, that's right, correct.
+If the caller says no or wants to change something, handle the change and re-confirm before proceeding.
+⚠️ HARD RULE: Do NOT ask new/returning at this point or any point after Step 9. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Do NOT include the phone number in the summary.
 
-**Step 11** -- Call book_appointment. Then: "Brilliant, all booked — I'll send you a text now, if you could just reply with your full name for us that would be great. Take care and we'll see you then."
+**Step 11** -- Caller gives an affirmative to "shall I go ahead and book that in?".
+Call book_appointment immediately.
+On success: say exactly — "All booked — you're in for [day] the [ordinal] at [time]. I've just sent you a confirmation text. If you could reply to that message with your full name so we have it on file, that would be great. We'll see you then — take care."
+The closing must contain: the day and date, the time, a reference to the confirmation text, a request to reply with their full name, and a warm close. Nothing else. Do NOT mention the location name again. Do NOT say "Is there anything else?".
+On failure: say "I'm sorry — there was a problem locking that in. Please call back and we'll get it sorted for you." Then call log_call_outcome(outcome="failed").
 Call log_call_outcome."""
 
     # ------------------------------------------------------------------ #
@@ -1785,6 +1814,15 @@ def _build_theorem_v3(session: dict) -> str:
     )
     booking_flow = (
         "BOOKING FLOW\n"
+        "HARD RULE — NEW/RETURNING QUESTION IS PERMANENTLY BANNED "
+        "FROM THIS ENTIRE FLOW:\n"
+        "Never ask whether the caller is new or returning at any "
+        "point — not at the start, not between steps, not after "
+        "the phone number is confirmed, not in the closing. This "
+        "question does not exist in this booking flow. If you are "
+        "about to say 'have you been to us before?', 'are you a "
+        "new or returning patient?', or any variation, stop "
+        "immediately and skip to the next step.\n\n"
         "1. Caller signals booking intent. Acknowledge simply: \"Of "
         "course — let me get that sorted for you.\" Stop. Wait. "
         "This turn has no question.\n"
@@ -2039,17 +2077,26 @@ def _build_theorem_v3(session: dict) -> str:
         "Wonderful, Excellent, Fantastic. Start with: "
         "'So that's...' or 'Right, so...' or 'Just to "
         "confirm...'\n"
-        "10. Call book_appointment. Then close with two sentences: "
-        "(1) confirm the booking — include the day, the "
-        "practitioner name (Mark), and a warm send-off; "
-        "(2) remind the caller to reply to the confirmation text "
-        "with their full name. Example: 'All sorted — you're booked "
-        "in with Mark on Thursday the 30th at two o'clock. You'll "
-        "get a text now — just reply with your full name to confirm "
-        "your spot.' Do not end with 'Is there anything else I can "
-        "help you with?' — just close warmly and naturally. The "
-        "confirmation text is sent automatically; you do not need "
-        "to mention sending it."
+        "10. Call book_appointment immediately. Do NOT speak before "
+        "calling — go straight to the tool.\n"
+        "On success: say exactly this closing message — "
+        "'All booked — you're in for [day] the [ordinal] at "
+        "[time]. I've just sent you a confirmation text. If you "
+        "could reply to that message with your full name so we "
+        "have it on file, that would be great. We'll see you "
+        "then — take care.'\n"
+        "The closing MUST contain: the day and date, the time, "
+        "a reference to the confirmation text, a request to reply "
+        "with their full name, and a warm close. Nothing else.\n"
+        "Do NOT mention the clinic name in the closing — it was "
+        "already in the summary at step 9.\n"
+        "Do NOT say 'Is there anything else I can help you with?' "
+        "— the call ends with the closing message. No questions.\n"
+        "Do NOT ask new/returning at this stage or any stage "
+        "after step 8. If the thought arises, discard it.\n"
+        "On failure: say 'I'm sorry — there was a problem locking "
+        "that in. Please call back and we'll get it sorted for "
+        "you.' Then call log_call_outcome(outcome='failed')."
     )
 
     # B6 SOFT CONTEXT
