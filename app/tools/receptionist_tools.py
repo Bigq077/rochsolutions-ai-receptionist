@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, date as _date_type
 from typing import Any, Dict, Optional
 
@@ -146,6 +147,158 @@ def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
         return day_firsts[:3]
     # Fewer than 3 days — take first 3 slots chronologically
     return sorted(filtered, key=lambda t: t[0])[:3]
+
+
+# ---------------------------------------------------------------------------
+# Week-range extraction from date_hint
+# ---------------------------------------------------------------------------
+
+_MONTH_MAP: dict[str, int] = {
+    "january": 1,  "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3,    "mar": 3,
+    "april": 4,    "apr": 4,
+    "may": 5,
+    "june": 6,     "jun": 6,
+    "july": 7,     "jul": 7,
+    "august": 8,   "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+# Matches: "18", "18th", "18th May", "18th May 2026", "18 May 2026"
+_DATE_RE = re.compile(
+    r"(\d{1,2})(?:st|nd|rd|th)?"
+    r"(?:\s+([a-z]+))?"       # optional month name
+    r"(?:\s+(\d{4}))?",       # optional 4-digit year
+    re.IGNORECASE,
+)
+
+# Matches day-of-week names
+_DOW_RE = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
+_DOW_INDEX: dict[str, int] = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _extract_week_range(
+    date_hint: str,
+) -> "tuple[_date_type, _date_type] | None":
+    """
+    Parse date_hint and return (week_start, week_end) as Monday–Sunday.
+
+    Recognised patterns (case-insensitive, extra words like "mornings" ignored):
+      "next week"                  → next Mon–Sun
+      "this week"                  → current Mon–Sun
+      "week of 18 May 2026"        → Mon–Sun of the week containing 18 May 2026
+      "week of the 18th"           → Mon–Sun of the nearest future 18th
+      "week of 18th May"           → Mon–Sun of 18 May (current/next year)
+      "Thursday 21st May mornings" → just 2026-05-21 (single-day range)
+      "21st May 2026"              → just that date
+
+    Returns None if no week/date can be extracted — caller falls back to the
+    default 30-day fetch without error.
+    """
+    if not date_hint:
+        return None
+
+    hint = date_hint.lower().strip()
+    today = _date_type.today()
+
+    def _week_of(d: _date_type) -> "tuple[_date_type, _date_type]":
+        monday = d - timedelta(days=d.weekday())
+        return monday, monday + timedelta(days=6)
+
+    def _next_monday() -> _date_type:
+        # Days until next Monday: Mon=7, Tue=6, Wed=5, Thu=4, Fri=3, Sat=2, Sun=1
+        days_ahead = 7 - today.weekday()
+        return today + timedelta(days=days_ahead)
+
+    def _nearest_future_day_of_month(day_n: int) -> "_date_type | None":
+        """Return the nearest future (or today) date with day-of-month == day_n."""
+        for month_offset in range(4):
+            m = (today.month + month_offset - 1) % 12 + 1
+            y = today.year + (today.month + month_offset - 1) // 12
+            try:
+                candidate = _date_type(y, m, day_n)
+                if candidate >= today:
+                    return candidate
+            except ValueError:
+                continue
+        return None
+
+    # ── Pattern 1: "next week" ────────────────────────────────────────────────
+    if "next week" in hint:
+        nm = _next_monday()
+        return nm, nm + timedelta(days=6)
+
+    # ── Pattern 2: "this week" ────────────────────────────────────────────────
+    if "this week" in hint:
+        return _week_of(today)
+
+    # ── Pattern 3: "week of …" ────────────────────────────────────────────────
+    # e.g. "week of 18 May 2026", "week of the 18th", "week of 18th May"
+    _wo_m = re.search(
+        r"week of(?: the)?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+([a-z]+))?(?:\s+(\d{4}))?",
+        hint,
+    )
+    if _wo_m:
+        day_n   = int(_wo_m.group(1))
+        month_s = (_wo_m.group(2) or "").lower()
+        year_s  = _wo_m.group(3) or ""
+        month_n = _MONTH_MAP.get(month_s, 0)
+        year_n  = int(year_s) if year_s else today.year
+
+        if month_n:
+            try:
+                target = _date_type(year_n, month_n, day_n)
+                if target < today and not year_s:
+                    target = _date_type(year_n + 1, month_n, day_n)
+            except ValueError:
+                return None
+        else:
+            target = _nearest_future_day_of_month(day_n)
+            if target is None:
+                return None
+
+        return _week_of(target)
+
+    # ── Pattern 4: specific date (optional day-of-week prefix) ───────────────
+    # e.g. "Thursday 21st May mornings", "21st May 2026", "the 14th"
+    _sd_m = re.search(
+        r"(\d{1,2})(?:st|nd|rd|th)?(?:\s+([a-z]+))?(?:\s+(\d{4}))?",
+        hint,
+    )
+    if _sd_m:
+        day_n   = int(_sd_m.group(1))
+        word    = (_sd_m.group(2) or "").lower()
+        year_s  = _sd_m.group(3) or ""
+        month_n = _MONTH_MAP.get(word, 0)
+
+        if month_n:
+            year_n = int(year_s) if year_s else today.year
+            try:
+                target = _date_type(year_n, month_n, day_n)
+                if target < today and not year_s:
+                    target = _date_type(year_n + 1, month_n, day_n)
+            except ValueError:
+                return None
+            return target, target  # single-day range
+
+        # Plain ordinal like "the 14th" with no month — nearest future day
+        if 1 <= day_n <= 31 and not word:
+            target = _nearest_future_day_of_month(day_n)
+            if target:
+                return target, target
+
+    return None
 
 
 async def _get_tokens() -> Optional[Dict[str, Any]]:
@@ -1462,6 +1615,36 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                 "_check_availability_acuity: after_date post-filter %s → %d/%d slots remaining",
                 after_date_cutoff, len(slots), pre_filter_count,
             )
+
+        # 4. Week range filter: if date_hint encodes a specific week (or single
+        #    date), strip every slot outside that Mon–Sun window before the LLM
+        #    sees the result.  Falls back silently when the hint cannot be parsed.
+        _week_range = _extract_week_range(preference)
+        if _week_range is not None:
+            _wk_start, _wk_end = _week_range
+            _pre_wk_count = len(slots)
+            slots = [s for s in slots if _wk_start <= s.start_time.date() <= _wk_end]
+            _n_days_returned = len({s.start_time.date() for s in slots})
+            logger.info(
+                "[ms_tools] week filter applied: %s to %s — %d days returned",
+                _wk_start, _wk_end, _n_days_returned,
+            )
+            if not slots:
+                logger.info(
+                    "[ms_tools] week filter: no slots in range %s to %s "
+                    "(removed %d slot(s))",
+                    _wk_start, _wk_end, _pre_wk_count,
+                )
+                return {
+                    "error": "no_availability",
+                    "error_detail": (
+                        f"No appointments available at {location.title()} "
+                        f"for the week of {_wk_start.strftime('%-d %B %Y')} "
+                        f"({_wk_start} to {_wk_end}). "
+                        "Offer the nearest available week as an alternative."
+                    ),
+                    "slots": [],
+                }
 
         # Build day-grouped structure for the day-first presentation flow.
         # Present exactly 3 slots (one per day where possible) so that
