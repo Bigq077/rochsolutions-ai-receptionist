@@ -695,6 +695,56 @@ _REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Slot-selection day aliases — STT mishearing correction
+# Applied ONLY when v3_awaiting_slot_selection is active so common words
+# ("first", "year") cannot false-positive outside the slot-choice window.
+#
+# Each key is the canonical day name (lowercase).
+# Values are phonetic STT garble variants confirmed from live call logs.
+# ---------------------------------------------------------------------------
+
+_V3_SLOT_DAY_ALIASES: dict[str, list[str]] = {
+    "thursday": [
+        "first year",
+        "firs year",
+        "first ear",
+    ],
+}
+
+# Compile one regex per canonical day: longest alias first so multi-word
+# entries win over any shorter overlap.
+_V3_SLOT_DAY_ALIAS_RES: dict[str, re.Pattern] = {
+    day: re.compile(
+        r"\b(?:" + "|".join(
+            re.escape(v) for v in sorted(variants, key=len, reverse=True)
+        ) + r")\b",
+        re.IGNORECASE,
+    )
+    for day, variants in _V3_SLOT_DAY_ALIASES.items()
+}
+
+
+def _apply_slot_day_aliases(text: str) -> str:
+    """
+    Replace STT day-name mishearings with the canonical day name.
+
+    Only called when v3_awaiting_slot_selection is active, so false
+    positives in other parts of the call are impossible.  Word-boundary
+    matching means "first year" inside longer text is replaced cleanly
+    while preserving surrounding words.
+    """
+    for day, pattern in _V3_SLOT_DAY_ALIAS_RES.items():
+        replaced = pattern.sub(day, text)
+        if replaced != text:
+            logger.info(
+                "[ms_stt] slot day alias applied: %r → %r",
+                text[:80], replaced[:80],
+            )
+            text = replaced
+    return text
+
+
 def _is_dtmf_expected(session: Optional[Dict[str, Any]]) -> bool:
     if not session:
         return False
@@ -3826,6 +3876,12 @@ class WebSocketCallHandler:
                     self._last_audio_at = time.monotonic()
                     self.session["llm_generation_active"] = True
                     self.session["tts_inhibit"] = False
+                    # ── Slot-selection day-alias normalisation ────────────────
+                    # Apply STT mishearing correction BEFORE the pop so the flag
+                    # is still True here.  Rewrites e.g. "first year" → "thursday"
+                    # only within the slot-choice window; harmless elsewhere.
+                    if self.session.get("v3_awaiting_slot_selection"):
+                        utterance = _apply_slot_day_aliases(utterance)
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
                     await save_session(self.call_sid, self.session)
