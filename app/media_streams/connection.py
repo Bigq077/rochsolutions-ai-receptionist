@@ -275,6 +275,35 @@ _SCHEDULING_SINGLES: frozenset = frozenset({
     "bye",
 })
 
+# Words that carry slot-selection meaning.  A transcript must contain at least
+# one of these (after lower-casing) to be treated as a genuine slot selection
+# attempt when v3_awaiting_slot_selection is active.  Phrases that happen to
+# arrive in the slot window but carry NO slot signal (e.g. "with me", "suits
+# me", "that one", "yes please") will re-arm silence instead of dispatching LLM.
+_SLOT_SIGNALS: frozenset = frozenset({
+    # Digit strings
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    # Spoken numbers
+    "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve",
+    # Day names
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    # Ordinals used as slot references ("first one", "the third")
+    "first", "second", "third", "last",
+})
+
+
+def _is_slot_selection_candidate(transcript: str) -> bool:
+    """Return True if *transcript* contains at least one slot-signal word.
+
+    Hard constraints (per Spec H):
+    - 'with me', 'suits me', 'that one', 'yes please' → False (re-arm)
+    - 'number three', 'thursday', 'the 21st', 'first one' → True (proceed)
+    """
+    words = transcript.lower().split()
+    return any(w in _SLOT_SIGNALS for w in words)
+
+
 # Vowel set used by Conditions 2a (no-vowel) and 2b (all-vowel).
 _V3_VOWELS: frozenset = frozenset("aeiou")
 
@@ -4023,6 +4052,24 @@ class WebSocketCallHandler:
                     # only within the slot-choice window; harmless elsewhere.
                     if self.session.get("v3_awaiting_slot_selection"):
                         utterance = _apply_slot_day_aliases(utterance)
+                    # ── Spec H: fragment guard ────────────────────────────────
+                    # If we're still in the slot-selection window but the
+                    # transcript has no slot-signal word (number, day, ordinal),
+                    # re-arm the silence timer and discard — do NOT dispatch LLM.
+                    # This stops phrases like "with me" / "suits me" / "yes
+                    # please" from triggering a spurious booking confirmation.
+                    if self.session.get("v3_awaiting_slot_selection") and not _is_slot_selection_candidate(utterance):
+                        logger.info(
+                            "[ms_conn] slot selection candidate rejected — no slot signal in %r; re-arming silence",
+                            utterance,
+                        )
+                        _last_q = self.session.get("last_question", "")
+                        if _last_q:
+                            self._silence_handler.set_state(self.session.get("state", "default"))
+                            self._silence_handler.on_question_asked(_last_q)
+                        self._llm_busy = False
+                        self.session["llm_generation_active"] = False
+                        continue
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
                     await save_session(self.call_sid, self.session)
