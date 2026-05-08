@@ -252,6 +252,29 @@ _V3_PRESERVE: frozenset = frozenset({
     "six", "seven", "eight", "nine", "ten",
 })
 
+# SCHEDULING_SINGLES — single words that carry genuine scheduling intent and
+# must always reach the LLM.  A single-word transcript that survived the noise
+# filter above but is NOT in this set is re-armed to the silence timer instead
+# of dispatching a wasted LLM call (CODE SPEC G).
+_SCHEDULING_SINGLES: frozenset = frozenset({
+    # Affirmatives / negatives
+    "yes", "no", "yeah", "nope", "yep", "yup", "sure", "ok", "okay", "fine",
+    "good", "great", "nah",
+    # Time of day
+    "mornings", "afternoons", "evenings", "morning", "afternoon", "evening",
+    # Day names
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    # Numbers (spoken)
+    "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve",
+    # Digit strings
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    # Greetings / presence signals (must reach LLM)
+    "hello", "hi",
+    # End-of-call signal
+    "bye",
+})
+
 # Vowel set used by Conditions 2a (no-vowel) and 2b (all-vowel).
 _V3_VOWELS: frozenset = frozenset("aeiou")
 
@@ -4203,6 +4226,32 @@ class WebSocketCallHandler:
                                             _last_q
                                         )
                                     continue
+
+                        # ── CODE SPEC G: non-scheduling single-word re-arm ───
+                        # A single word that survived all noise conditions above
+                        # but carries no scheduling intent (not a yes/no, day,
+                        # time of day, number, or presence signal) should extend
+                        # the silence window rather than dispatching a wasted
+                        # LLM call.  The caller may be mid-sentence.
+                        # Guard: len(_stripped.split()) == 1 excludes merged
+                        # utterances produced by rapid-continuation (Cond 4).
+                        if (
+                            _is_single_word
+                            and len(_stripped.split()) == 1
+                            and _stripped not in _SCHEDULING_SINGLES
+                        ):
+                            logger.info(
+                                "[ms_stt] non-scheduling single word %r — "
+                                "silence timer re-armed",
+                                _stripped,
+                            )
+                            _last_q = self.session.get("last_question", "")
+                            if _last_q:
+                                self._silence_handler.set_state(
+                                    self.session.get("state", "default")
+                                )
+                                self._silence_handler.on_question_asked(_last_q)
+                            continue
 
                         # ── Reschedule/cancel phone confirm ──────────────────
                         # Fires when the caller responds to the phone-first
