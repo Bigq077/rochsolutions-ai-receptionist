@@ -1738,23 +1738,20 @@ class SilenceHandler:
                 "[ms_watchdog] slot_selection_grace=%.1fs (v3_awaiting_slot_selection)",
                 _wait,
             )
-        # theorem_v3 phone confirmation: the system has just read back a number
-        # (either DTMF-entered or the caller's own CLI number) and is waiting
-        # for a yes/no verification.  10 s grace matches slot_selection_grace
-        # and gives the caller time to process the digit readback.
-        # Guard: BOTH flow_step=0 AND last_bot_prompt must contain a phone
-        # confirmation signal — this prevents the grace from firing on
-        # greeting/location/all other turns where flow_step=0 persists.
-        _lbp_pc = (_sess_faq_w or {}).get("last_bot_prompt", "").lower()
-        _phone_confirm_signals = (
-            "number you're calling from" in _lbp_pc
-            or "keypad" in _lbp_pc
-            or "use this number" in _lbp_pc
-        )
-        if (_sess_faq_w or {}).get("flow_step") == 0 and _phone_confirm_signals:
+        # theorem_v3 phone confirmation: flow_step=0 is an explicit sentinel set
+        # by the flow engine at the start of the phone-confirm phase (both the
+        # keypad-request turn and the digit-readback turn) and reset to -1 after
+        # each turn.  It is never present during greeting/location/other turns
+        # (session key absent → .get returns None, not 0), so keying solely off
+        # flow_step=0 is safe and covers both turns correctly.
+        # The previous guard also checked last_bot_prompt for phone-signal words,
+        # which worked for the keypad-request turn ("keypad" in prompt) but
+        # missed the digit-readback turn ("Just to confirm — that's 0 7..."),
+        # causing WATCHDOG_START wait=6.0s instead of 10.0s on the readback.
+        if (_sess_faq_w or {}).get("flow_step") == 0:
             _wait = max(_wait, 10.0)
             logger.info(
-                "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0 + phone signal)",
+                "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0)",
                 _wait,
             )
         # theorem_v3 preference question: the caller is being asked a binary
