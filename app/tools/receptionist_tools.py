@@ -1623,7 +1623,21 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # 4. Week range filter: if date_hint encodes a specific week (or single
         #    date), strip every slot outside that Mon–Sun window before the LLM
         #    sees the result.  Falls back silently when the hint cannot be parsed.
-        _week_range = _extract_week_range(preference)
+        #
+        #    Bypass: if no explicit week-anchor phrase is present the caller has
+        #    not named a week — they want the best match across the full 30-day
+        #    window (e.g. "evening slots", "any Monday", "as soon as possible").
+        #    Applying Pattern 4 in that case would silently narrow a "9pm" hint
+        #    to the nearest 9th of the month and return nothing.
+        _WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning")
+        _hint_lower = preference.lower() if preference else ""
+        _has_week_anchor = any(anchor in _hint_lower for anchor in _WEEK_ANCHORS)
+        if not _has_week_anchor:
+            logger.info(
+                "[ms_tools] week filter bypassed — no week anchor in date_hint: %r",
+                preference,
+            )
+        _week_range = _extract_week_range(preference) if _has_week_anchor else None
         if _week_range is not None:
             _wk_start, _wk_end = _week_range
             _pre_wk_count = len(slots)
