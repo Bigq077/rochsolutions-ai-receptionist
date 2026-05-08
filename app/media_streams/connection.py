@@ -1795,10 +1795,10 @@ class SilenceHandler:
                 "[ms_watchdog] reason_grace state=%s wait=%.1fs",
                 _sess_state_w, _wait,
             )
-        # ASK_LOCATION: binary choice between two named clinics — 5.5 s is
+        # ASK_LOCATION: binary choice between two named clinics — 4.5 s is
         # sufficient deliberation time without over-patience on dead air.
         elif _sess_state_w == "ASK_LOCATION":
-            _wait = max(_wait, 5.5)
+            _wait = max(_wait, 4.5)
             logger.info(
                 "[ms_watchdog] choice_grace state=%s wait=%.1fs",
                 _sess_state_w, _wait,
