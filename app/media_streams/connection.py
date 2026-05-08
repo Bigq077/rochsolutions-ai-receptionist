@@ -6406,18 +6406,20 @@ class WebSocketCallHandler:
                 # Safety net anchor: TTS activity keeps the 10s dead-air guard at bay.
                 self._last_audio_or_transcript_ts = time.monotonic()
 
+                # Sequence counter: increment ONCE per text chunk (not per sub-chunk).
+                # Each text chunk places exactly one sentinel → one _delayed_tts_finished
+                # callback.  Incrementing per sub-chunk meant that a 2-sub-chunk text
+                # item would assign seqs 1 and 2 but only fire a callback for seq 2,
+                # making the OOO range check (range(1, N+1)) always flag seq 1 as
+                # missing — a false positive that caused 4-second call hangs.
+                self._tts_chunk_seq += 1
+                _this_chunk_seq = self._tts_chunk_seq
+                self._tts_expected_final_seq = self._tts_chunk_seq
+                self._current_chunk_seq = _this_chunk_seq
+
                 for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
                     self._current_tts_text = sub_text
-
-                    # Sequence counter: increment for every sub-chunk so
-                    # _tts_expected_final_seq always equals the last sub-chunk
-                    # queued.  The terminal chunk guard in _delayed_tts_finished
-                    # uses this to suppress non-final tts_finished callbacks.
-                    self._tts_chunk_seq += 1
-                    _this_chunk_seq = self._tts_chunk_seq
-                    self._tts_expected_final_seq = self._tts_chunk_seq
-                    self._current_chunk_seq = _this_chunk_seq
 
                     self._tts_task = asyncio.create_task(
                         tts.synthesise_chunk(
