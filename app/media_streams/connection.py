@@ -2915,6 +2915,12 @@ class WebSocketCallHandler:
         # further digits arrive within _KEYPAD_IDLE_FINALIZE_SEC we finalize the
         # buffer as a synthetic transcript so the flow gate can readback.
         self._dtmf_idle_task: Optional[asyncio.Task] = None
+        # Secondary near-complete safety net: independent 5 s timeout for
+        # buffers of 9+ digits.  Does not cancel the standard idle task and is
+        # not cancelled by it — both run in parallel.  Prevents the 40 s hang
+        # that occurs when the standard idle task is interfered with and no new
+        # digit ever arrives to reschedule it.
+        self._dtmf_near_complete_task: Optional[asyncio.Task] = None
 
         # Name-collection debounce: prevents split STT finals ("my name is" +
         # "James") from firing two simultaneous LLM calls.
@@ -3394,29 +3400,47 @@ class WebSocketCallHandler:
         # mid-number even if the caller pauses between digits.
         self._last_audio_or_transcript_ts = time.monotonic()
 
-        # Cancel any pending idle-finalize task; a new digit just arrived so
-        # the caller is still actively typing.  A fresh task is scheduled
-        # below if the buffer has reached the plausibly-complete threshold.
+        # Cancel any pending idle-finalize tasks; a new digit just arrived so
+        # the caller is still actively typing.  Fresh tasks are scheduled
+        # below based on the current buffer length.
         if self._dtmf_idle_task and not self._dtmf_idle_task.done():
             self._dtmf_idle_task.cancel()
             self._dtmf_idle_task = None
+        if self._dtmf_near_complete_task and not self._dtmf_near_complete_task.done():
+            self._dtmf_near_complete_task.cancel()
+            self._dtmf_near_complete_task = None
 
         if len(buf) >= 11:
-            # Full UK number collected via keypad (min 11 digits) — push as
-            # synthetic transcript immediately.
+            # Full UK number collected via keypad — push as synthetic
+            # transcript immediately; no idle window needed.
             complete = buf[:11]
             self.session["phone_dtmf_buffer"]   = ""
             self.session["phone_awaiting_dtmf"] = False
             self.session["v3_phone_dtmf_active"] = False
-            logger.info("[ms_conn] DTMF buffer complete → synthetic transcript %r", complete)
+            logger.info(
+                "[ms_conn] DTMF 11-digit complete → immediate finalize %r",
+                complete,
+            )
             await self.transcript_queue.put((time.monotonic(), complete))
             await save_session(self.call_sid, self.session)
             logger.info("[ms_conn v3] DTMF phone collection complete")
         elif len(buf) >= 10:
-            # Plausibly complete (UK 10-digit without leading 0).  Wait a short
-            # idle window for further digits; if none arrive, finalize.
+            # Plausibly complete (UK 10-digit without leading 0).  Wait a
+            # short idle window for further digits; if none arrive, finalize.
             self._dtmf_idle_task = asyncio.create_task(
                 self._dtmf_idle_finalize(buf), name="ms_dtmf_idle_finalize"
+            )
+            # Also arm the 5 s near-complete safety net independently.
+            self._dtmf_near_complete_task = asyncio.create_task(
+                self._dtmf_near_complete_finalize(buf),
+                name="ms_dtmf_near_complete",
+            )
+        elif len(buf) >= 9:
+            # Nearly complete: arm only the 5 s safety net (standard 3.5 s
+            # idle task is not scheduled for sub-10 buffers).
+            self._dtmf_near_complete_task = asyncio.create_task(
+                self._dtmf_near_complete_finalize(buf),
+                name="ms_dtmf_near_complete",
             )
 
     async def _dtmf_idle_finalize(self, expected_buf: str) -> None:
@@ -3460,6 +3484,51 @@ class WebSocketCallHandler:
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (idle-finalize)")
+
+    async def _dtmf_near_complete_finalize(self, expected_buf: str) -> None:
+        """
+        Safety-net finalize for buffers of 9+ digits.
+
+        Fires 5 seconds after the last digit when the buffer looks nearly
+        complete but the standard 3.5 s idle task was either not scheduled
+        (9-digit buffer) or was silently interfered with.  Independent of
+        _dtmf_idle_finalize — neither task cancels the other.  If the
+        standard idle task already fired and cleared the buffer, the
+        ``buf != expected_buf`` guard below ensures this task is a no-op.
+        """
+        _NEAR_COMPLETE_SEC = 5.0
+        try:
+            await asyncio.sleep(_NEAR_COMPLETE_SEC)
+        except asyncio.CancelledError:
+            return
+        if not self.session:
+            return
+        buf = self.session.get("phone_dtmf_buffer", "")
+        if buf != expected_buf:
+            # Buffer changed (more digits arrived, or standard task already
+            # finalized) — nothing to do.
+            return
+        if self.session.get("state") not in (
+            "COLLECT_PHONE", "COLLECT_PHONE_RETURNING", "COLLECT_PHONE_RESCHEDULE",
+            "RETURNING_PLAN_COLLECT_PHONE",
+        ) and not self.session.get("rc_kp_phone_pending") \
+          and not self.session.get("v3_phone_dtmf_active"):
+            return
+        if len(buf) < 9:
+            return
+        # Use the buffer as-is — the caller typed these digits and stopped.
+        complete = buf
+        self.session["phone_dtmf_buffer"]   = ""
+        self.session["phone_awaiting_dtmf"] = False
+        self.session["v3_phone_dtmf_active"] = False
+        logger.info(
+            "[ms_conn] DTMF near-complete finalize (len=%d, timeout=5s) → "
+            "synthetic transcript %r",
+            len(complete), complete,
+        )
+        await self.transcript_queue.put((time.monotonic(), complete))
+        await save_session(self.call_sid, self.session)
+        logger.info("[ms_conn v3] DTMF phone collection complete (near-complete finalize)")
 
     async def _fire_name_reask(self) -> None:
         """
