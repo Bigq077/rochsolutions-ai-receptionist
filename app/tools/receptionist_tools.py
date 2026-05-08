@@ -200,6 +200,7 @@ def _extract_week_range(
       "week of 18 May 2026"        → Mon–Sun of the week containing 18 May 2026
       "week of the 18th"           → Mon–Sun of the nearest future 18th
       "week of 18th May"           → Mon–Sun of 18 May (current/next year)
+      "from 18 May 2026"           → Mon–Sun of the week containing 18 May 2026
       "Thursday 21st May mornings" → just 2026-05-21 (single-day range)
       "21st May 2026"              → just that date
 
@@ -269,6 +270,34 @@ def _extract_week_range(
                 return None
 
         return _week_of(target)
+
+    # ── Pattern 3.5: "from [day] [month] [year]" ─────────────────────────────
+    # e.g. "mornings from 18 May 2026", "from 18 May 2026"
+    # Treat the named date as an anchor; return the Mon–Sun week containing it.
+    _from_m = re.search(
+        r"\bfrom\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+([a-z]+)(?:\s+(\d{4}))?",
+        hint,
+    )
+    if _from_m:
+        day_n   = int(_from_m.group(1))
+        month_s = _from_m.group(2).lower()
+        year_s  = _from_m.group(3) or ""
+        month_n = _MONTH_MAP.get(month_s, 0)
+        if month_n:
+            year_n = int(year_s) if year_s else today.year
+            try:
+                anchor = _date_type(year_n, month_n, day_n)
+                if anchor < today and not year_s:
+                    anchor = _date_type(year_n + 1, month_n, day_n)
+            except ValueError:
+                pass  # fall through to Pattern 4
+            else:
+                wk_start, wk_end = _week_of(anchor)
+                logger.info(
+                    "[ms_tools] week filter applied (from-anchor): %s to %s",
+                    wk_start, wk_end,
+                )
+                return wk_start, wk_end
 
     # ── Pattern 4: specific date (optional day-of-week prefix) ───────────────
     # e.g. "Thursday 21st May mornings", "21st May 2026", "the 14th"
@@ -1629,7 +1658,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         #    window (e.g. "evening slots", "any Monday", "as soon as possible").
         #    Applying Pattern 4 in that case would silently narrow a "9pm" hint
         #    to the nearest 9th of the month and return nothing.
-        _WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning", "week starting")
+        _WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning", "week starting", "from ")
         _hint_lower = preference.lower() if preference else ""
         _has_week_anchor = any(anchor in _hint_lower for anchor in _WEEK_ANCHORS)
         if not _has_week_anchor:
