@@ -4158,7 +4158,11 @@ class WebSocketCallHandler:
                                 # run_turn will fire and LLM calls lookup_appointment
                             else:
                                 # Caller wants a different number — switch
-                                # to DTMF keypad collection
+                                # to DTMF keypad collection.
+                                # Disarm any live slot DTMF handler BEFORE
+                                # the prompt is played so the first keypad
+                                # digit goes to phone collection, not the
+                                # slot map handler.
                                 _dtmf_prompt = (
                                     "No problem — please type the number "
                                     "on your keypad now. You can press the "
@@ -4171,13 +4175,16 @@ class WebSocketCallHandler:
                                 self.session[
                                     "last_question"
                                 ] = _dtmf_prompt
+                                self.session.pop("v3_dtmf_slot_map",           None)
+                                self.session.pop("v3_slot_dtmf_active",        None)
+                                self.session.pop("v3_awaiting_slot_selection", None)
                                 self.session["v3_phone_dtmf_active"] = True
                                 await save_session(
                                     self.call_sid, self.session
                                 )
                                 logger.info(
-                                    "[ms_conn v3] DTMF phone collection"
-                                    " active"
+                                    "[ms_conn] slot DTMF disarmed → "
+                                    "phone DTMF activated (pre-emptive)"
                                 )
                                 continue  # Skip run_turn; wait for digits
 
@@ -5170,6 +5177,30 @@ class WebSocketCallHandler:
                                 self.session.pop("v3_slot_dtmf_active",         None)
                                 self.session.pop("v3_awaiting_slot_selection",  None)
                                 self.session.pop("v3_dtmf_slot_context",        None)
+
+                            # Pre-emptive slot → phone DTMF transition.
+                            # If the LLM just asked the caller to type on the
+                            # keypad (phone collection), any stale slot map
+                            # MUST be cleared now — before the first digit
+                            # arrives.  Without this, the slot handler arms
+                            # on digit-1 and silently drops digit-2 (no slot
+                            # mapping found), consuming the first two digits
+                            # of the phone number before phone DTMF activates.
+                            _post_lbp = self.session.get(
+                                "last_bot_prompt", ""
+                            ).lower()
+                            if (
+                                "keypad" in _post_lbp
+                                and self.session.get("v3_dtmf_slot_map")
+                            ):
+                                self.session.pop("v3_dtmf_slot_map",           None)
+                                self.session.pop("v3_slot_dtmf_active",        None)
+                                self.session.pop("v3_awaiting_slot_selection", None)
+                                self.session["v3_phone_dtmf_active"] = True
+                                logger.info(
+                                    "[ms_conn] slot DTMF disarmed → "
+                                    "phone DTMF activated (pre-emptive)"
+                                )
 
                             # Infer location from FAQ answer if not yet confirmed
                             # If the LLM just answered a location-specific question
