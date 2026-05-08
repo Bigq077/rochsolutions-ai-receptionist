@@ -1126,9 +1126,9 @@ CORRECT (two options from the requested week):
   "For next week I've got Thursday the 14th — nine or eleven in the morning. And Friday the 15th — ten or eleven. Any of those suit you?"
 INCORRECT (padding with a following-week day):
   "Number 1, Thursday the 14th. Number 2, Friday the 15th. Number 3, Thursday the 21st."
-If the requested week has no matching slots at all: do not build a mixed list crossing into the next week. State clearly that the requested week has nothing matching, then present the nearest available week as a fresh numbered set.
+If the requested week has no matching slots at all: do not build a mixed list crossing into the next week. Lead directly with the nearest available week as a fresh numbered set — never open with "nothing next week" or an absence statement.
 CORRECT:
-  "Nothing in the mornings next week I'm afraid — for the week of the 18th I've got Monday the 18th at nine or ten, Wednesday the 20th at nine or eleven, and Thursday the 21st at nine or eleven. Any of those suit you?"
+  "The closest I've got to mornings next week is the week of the 18th — Monday the 18th at nine or ten, Wednesday the 20th at nine or eleven, and Thursday the 21st at nine or eleven. Any of those suit you?"
 INCORRECT:
   "Number 1, Thursday the 14th. Number 2, Friday the 15th. Number 3, Thursday the 21st."
 One exception: if the caller explicitly asks for their next available slots regardless of week (e.g. "give me your next three available mornings"), you may present across week boundaries. Only do this when explicitly asked.
@@ -1968,10 +1968,12 @@ def _build_theorem_v3(session: dict) -> str:
         "while I check what's available\") then call "
         "check_availability. Never call availability the same turn "
         "timing was asked.\n"
-        "6. Present one day at a time — the soonest matching option "
-        "only. Ask if it works before offering alternatives. If "
-        "caller's preferred period is not in the data, say so "
-        "first, then offer the soonest available. When all data "
+        "6. Present the soonest matching option. Ask if it works "
+        "before offering alternatives. If the caller's preferred "
+        "period has no exact match, lead directly with the nearest "
+        "available — never open with an absence statement. The "
+        "correct pattern is: 'The closest I've got to [requested "
+        "time] is [day] at [time] — does that work?' When all data "
         "is exhausted, offer callback. "
         "POST-REJECTION SLOT PRESENTATION — STRICT: When a caller "
         "declines a day or set of times, do NOT present just one "
@@ -2104,11 +2106,11 @@ def _build_theorem_v3(session: dict) -> str:
         "'Number 1, Thursday the 14th. Number 2, Friday the "
         "15th. Number 3, Thursday the 21st.'\n"
         "If the requested week has no matching slots: do not "
-        "build a mixed list. State the week is empty, then "
-        "present the nearest available week as a fresh set. "
-        "CORRECT: 'Nothing in the mornings next week I'm "
-        "afraid — the first morning availability is the week "
-        "of the 18th. I've got Monday the 18th at nine or "
+        "build a mixed list. Lead directly with the nearest "
+        "available week as a fresh numbered set — never open "
+        "with 'nothing next week' or any absence statement. "
+        "CORRECT: 'The closest I've got to mornings next week "
+        "is the week of the 18th — Monday the 18th at nine or "
         "ten, Wednesday the 20th at nine or eleven, and "
         "Thursday the 21st at nine or eleven. Any of those "
         "suit you?' "
