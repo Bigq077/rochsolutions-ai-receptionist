@@ -3287,10 +3287,25 @@ class WebSocketCallHandler:
             self.session["last_bot_prompt"] = _next_q
             self.session["last_question"] = _next_q
             await save_session(self.call_sid, self.session)
-            logger.info(
-                "[ms_conn v3] DTMF location resolved: "
-                "%s (digit=%s)", _loc_dtmf, digit,
-            )
+            # Arm the watchdog for the follow-up question.  The verbal path
+            # gets this for free because on_transcript_received() resets
+            # _no_input_reask_count before _restart_timer runs.  DTMF never
+            # triggers on_transcript_received, so _no_input_reask_count can
+            # be > 0 from the previous "Press 1 or 2" watchdog fire — hitting
+            # WATCHDOG_RETIRED_FOR_QGEN and leaving the new question unguarded.
+            # on_question_asked increments _q_gen, resets _no_input_reask_count,
+            # resets _watchdog_has_retired, and arms a fresh watchdog.
+            if self._silence_handler is not None:
+                self._silence_handler.on_question_asked(_next_q)
+                logger.info(
+                    "[ms_conn v3] DTMF location resolved: "
+                    "%s (digit=%s) — watchdog armed for follow-up q", _loc_dtmf, digit,
+                )
+            else:
+                logger.info(
+                    "[ms_conn v3] DTMF location resolved: "
+                    "%s (digit=%s)", _loc_dtmf, digit,
+                )
             return
 
         # theorem_v3 intro: digit 1 → transfer to Mark; any other digit is
