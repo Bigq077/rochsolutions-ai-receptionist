@@ -424,63 +424,83 @@ class LLMStream:
         session: Dict[str, Any],
     ) -> None:
         """
-        Drain the complete-response slot presentation buffer and flush all
-        chunks to the real TTS queue in order.
+        Drain the complete-response slot presentation buffer, extract the
+        DTMF slot map, re-split the full response by numbered-option boundary,
+        and flush exactly one TTS chunk per option.
 
         The buffer is filled by routing the post-check_availability LLM
         streaming output through _slot_buf instead of directly to
-        tts_text_queue.  Because _one_streaming_call completes before this
-        method is called (the [ms_gate5] turn complete log fires first),
-        every chunk from the full LLM response is already in the buffer —
-        no sentinel guessing or partial-response trimming is needed.
+        tts_text_queue.  Every chunk carries a PRE_SLOT_MARKER prefix added
+        by _one_streaming_call; these are stripped here before text assembly.
 
-        Gate5 filtering is applied per-chunk inside _one_streaming_call
-        before chunks enter the buffer, so the buffer contains only clean,
-        spoken-safe text.  Full {digit: label} slot map extraction runs
-        here on the complete assembled response (Bug 7 fix) — last_bot_prompt
-        is truncated to 200 chars and must NOT be used for slot extraction.
+        Re-splitting guarantee: after joining the clean text, we split on
+        'Number 2', 'Number 3', … boundaries (lookahead so the delimiter is
+        kept with the following content).  This means:
+          - Preamble + Number 1 → TTS chunk 1
+          - "Number 2, ..." → TTS chunk 2
+          - "Number 3, ..." → TTS chunk 3
+        regardless of how the streaming ResponseChunker originally cut the
+        text.  Without this, a short response could collapse all options into
+        one large chunk that split_tts_text() then re-cuts at an em-dash,
+        silently dropping the last option's spoken text.
 
-        The filler phrase ("Let me just check that for you…") is sent to
-        tts_text_queue directly during the tool call and is unaffected by
-        this buffer.
+        Empty chunks (after stripping) produce a WARNING and are never
+        forwarded to TTS so no silent data loss can occur.
         """
-        chunks: List[str] = []
+        import re as _re  # noqa: PLC0415 — local import to avoid module-level cycle
+
+        # ── 1. Drain the slot buffer ─────────────────────────────────────────
+        raw_chunks: List[str] = []
         while True:
             try:
-                chunks.append(buf_queue.get_nowait())
+                raw_chunks.append(buf_queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
 
         logger.info(
-            "[ms_gate5] slot buf complete-response flush: %d chunk(s) to TTS",
-            len(chunks),
+            "[ms_gate5] slot buf complete-response flush: %d raw chunk(s) from buffer",
+            len(raw_chunks),
         )
 
-        if not chunks:
+        if not raw_chunks:
             return
 
-        # ── Bug 7 fix: complete-response slot map extraction ─────────────────
-        # `_joined` is the full gate5-filtered LLM response assembled from all
-        # buffered chunks — the stream is complete when _flush_slot_buf is
-        # called, so every option's date string is present and untruncated.
-        #
-        # Previous approach ran _parse_v3_slot_options on last_bot_prompt in
-        # connection.py post-run_turn, but last_bot_prompt is capped at 200
-        # characters — a 3-option slot presentation exceeds that limit and
-        # Option 3's date string was cut off, producing an incomplete map.
-        #
-        # Inlines connection.py _parse_v3_slot_options logic to avoid a
-        # circular import.  Regex is identical to _V3_SLOT_ANCHOR_RE.
-        import re as _re  # noqa: PLC0415 — local import to avoid module-level cycle
+        # ── 2. Strip PRE_SLOT_MARKER and log every boundary decision ─────────
+        clean_chunks: List[str] = []
+        for i, rc in enumerate(raw_chunks):
+            c = rc[len(PRE_SLOT_MARKER):] if rc.startswith(PRE_SLOT_MARKER) else rc
+            c = c.strip()
+            logger.info(
+                "[ms_gate5] slot buf chunk %d: %r — len=%d — sending=%s",
+                i, c[:60], len(c), len(c) > 0,
+            )
+            if not c:
+                logger.warning(
+                    "[ms_gate5] slot buf chunk %d: EMPTY after stripping — not forwarded",
+                    i,
+                )
+            else:
+                clean_chunks.append(c)
+
+        if not clean_chunks:
+            logger.warning("[ms_gate5] slot buf: no clean chunks after stripping — nothing sent to TTS")
+            return
+
+        # ── 3. Assemble complete text for slot map + re-split ────────────────
+        _joined = " ".join(clean_chunks)
+
+        # ── 4. Slot map extraction (Bug 7 fix) ───────────────────────────────
+        # Runs on the complete assembled response so every option's date string
+        # is present and untruncated (last_bot_prompt is capped at 200 chars).
         _SLOT_ANCHOR_FULL_RE = _re.compile(
             r"Number\s+([1-9])\b|(?<!\d)([1-9])\s*[—–\-]\s*",
             _re.IGNORECASE,
         )
-        _joined = " ".join(chunks)
         _full_anchors = [
             (m.start(), m.end(), m.group(1) or m.group(2))
             for m in _SLOT_ANCHOR_FULL_RE.finditer(_joined)
         ]
+        _slot_map_count = 0
         if len(_full_anchors) >= 2:
             _slot_map: dict = {}
             for _i, (_fa_start, _fa_end, _fa_digit) in enumerate(_full_anchors):
@@ -496,14 +516,45 @@ class LLMStream:
             if len(_slot_map) >= 2:
                 session["v3_dtmf_slot_map"] = _slot_map
                 session["v3_awaiting_slot_selection"] = True
+                _slot_map_count = len(_slot_map)
                 logger.info(
                     "[ms_gate5] slot map extracted on complete response "
                     "(%d option(s)) — DTMF standby: %r",
-                    len(_slot_map),
+                    _slot_map_count,
                     _slot_map,
                 )
 
-        for c in chunks:
+        # ── 5. Re-split by numbered-option boundary ──────────────────────────
+        # Split before "Number 2", "Number 3", … (lookahead keeps the
+        # delimiter with the following content).  Preamble + Number 1 stay
+        # together in the first chunk.  Responses with no numbered options
+        # (single-day, time selection) are returned as a single chunk.
+        tts_chunks = _re.split(r"(?=\bNumber\s+[2-9]\b)", _joined, flags=_re.IGNORECASE)
+        tts_chunks = [c.strip() for c in tts_chunks if c.strip()]
+
+        if not tts_chunks:
+            tts_chunks = [_joined.strip()] if _joined.strip() else []
+
+        logger.info(
+            "[ms_gate5] slot buf sending %d TTS chunk(s) after Number-boundary re-split",
+            len(tts_chunks),
+        )
+
+        # ── 6. Warn if chunk count mismatches DTMF map ───────────────────────
+        if _slot_map_count > 0 and len(tts_chunks) != _slot_map_count:
+            logger.warning(
+                "[ms_gate5] slot buf MISMATCH: %d TTS chunk(s) vs %d DTMF map "
+                "entries — some options may not be spoken — map=%r",
+                len(tts_chunks), _slot_map_count,
+                session.get("v3_dtmf_slot_map"),
+            )
+
+        # ── 7. Send to TTS ───────────────────────────────────────────────────
+        for i, c in enumerate(tts_chunks):
+            logger.info(
+                "[ms_gate5] slot buf TTS chunk %d/%d: %r — len=%d",
+                i + 1, len(tts_chunks), c[:60], len(c),
+            )
             await tts_queue.put(c)
 
     # -----------------------------------------------------------------------
