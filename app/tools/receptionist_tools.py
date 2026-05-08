@@ -1629,7 +1629,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         #    window (e.g. "evening slots", "any Monday", "as soon as possible").
         #    Applying Pattern 4 in that case would silently narrow a "9pm" hint
         #    to the nearest 9th of the month and return nothing.
-        _WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning")
+        _WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning", "week starting")
         _hint_lower = preference.lower() if preference else ""
         _has_week_anchor = any(anchor in _hint_lower for anchor in _WEEK_ANCHORS)
         if not _has_week_anchor:
