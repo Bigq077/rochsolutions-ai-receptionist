@@ -5234,6 +5234,12 @@ class WebSocketCallHandler:
                             # in this response, or slot buf was not used).
                             if self.session.get("v3_dtmf_slot_map"):
                                 _new_map = self.session["v3_dtmf_slot_map"]
+                                # Arm slot-selection wait flag here (not solely in
+                                # _flush_slot_buf) so the watchdog grace period check
+                                # always sees it regardless of which extraction path
+                                # produced the map.  Must be set before on_question_asked
+                                # arms the watchdog a few lines below.
+                                self.session["v3_awaiting_slot_selection"] = True
                                 if _is_time_map(_new_map):
                                     # Day→time context shift: the new map contains
                                     # time options, not day options.  _flush_slot_buf
