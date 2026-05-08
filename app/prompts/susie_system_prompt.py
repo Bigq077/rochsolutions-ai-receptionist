@@ -1146,6 +1146,12 @@ Always open with a neutral anchor that commits to nothing about quantity:
   "Looking at mornings for you..." ✅
 State the options first. The caller will draw their own conclusions about how many there are.
 
+Rule F — Do not restate the time preference in the slot opener.
+The caller already stated their preference. Repeating "with mornings" or "with afternoons" in the opener is redundant and creates an awkward fragment.
+Banned: "For the week of the 18th of May, with mornings — Number 1, Monday the 18th..." ✗
+Correct: "For the week of the 18th of May — Number 1, Monday the 18th..." ✅
+The preference is implied by the slots being presented. Never include it in the opener.
+
 CRITICAL — do NOT call check_availability more than once per booking. Once days have been offered, never call it again. This rule has no exceptions:
 - Caller names a day ("Thursday", "Friday") = CHOOSING a day → show that day's times (STEP 2 above).
 - Caller names a time ("twelve", "the first one", "two o'clock") = CHOOSING a time → go to slot confirmation.
@@ -1625,6 +1631,16 @@ def _build_theorem_v3(session: dict) -> str:
         "those up', 'I have that information', or anything about "
         "the retrieval process. Use the data directly and "
         "present the slots.\n"
+        "DATE_HINT FORMAT — when specifying a target week in "
+        "date_hint, always use 'week of [full date]' or 'next week' "
+        "or a specific date. Never use 'from [date]', 'after [date]', "
+        "or 'starting [date]' — open-ended range expressions cannot "
+        "be mapped to a Mon–Sun range and cause the week filter to "
+        "fall back to the full 30-day window. "
+        "Correct: 'mornings week of 18 May 2026' | "
+        "'afternoons next week' | 'morning Thursday 21 May 2026'. "
+        "Incorrect: 'mornings from 18 May 2026' | "
+        "'mornings after 17 May 2026'.\n"
         "book_appointment(patient_name, phone, location, service, "
         "slot_iso, duration_minutes?) — only after readback yes. "
         "SMS automatic.\n"
@@ -1998,6 +2014,17 @@ def _build_theorem_v3(session: dict) -> str:
         "post-rejection responses only — the initial "
         "presentation follows the flexible/specific-day rules. "
         "Never ask an open question after a rejection. "
+        "TIME PREFERENCE LOCKED: when a caller rejects a set of "
+        "slot options, only offer a different week — never re-open "
+        "the time-of-day preference. The preference is already "
+        "stored. Correct: 'Would the week after suit you better?' "
+        "or 'Shall I check the week of the 25th?' "
+        "Banned: 'Is there a particular time of day that works "
+        "better, or would a different week suit you?' — "
+        "re-asking the time preference undoes the booking flow. "
+        "Only exception: caller explicitly says they want to change "
+        "('actually could we do afternoons instead') → update the "
+        "stored preference and re-run check_availability. "
         "callback. "
         "SLOT TIME PRESENTATION — STRICT: When presenting times "
         "for a chosen day, always present exactly three times if "
