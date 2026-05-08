@@ -124,7 +124,7 @@ def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
         if time_filtered:
             filtered = time_filtered
     elif "afternoon" in pref:
-        time_filtered = [(s, e) for s, e in filtered if 14 <= s.hour < 17]
+        time_filtered = [(s, e) for s, e in filtered if s.hour >= 14]
         if time_filtered:
             filtered = time_filtered
     elif "evening" in pref:
@@ -273,7 +273,7 @@ def _extract_week_range(
     # ── Pattern 4: specific date (optional day-of-week prefix) ───────────────
     # e.g. "Thursday 21st May mornings", "21st May 2026", "the 14th"
     _sd_m = re.search(
-        r"(\d{1,2})(?:st|nd|rd|th)?(?:\s+([a-z]+))?(?:\s+(\d{4}))?",
+        r"(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?(?:\s+([a-z]+))?(?:\s+(\d{4}))?",
         hint,
     )
     if _sd_m:
@@ -292,8 +292,12 @@ def _extract_week_range(
                 return None
             return target, target  # single-day range
 
-        # Plain ordinal like "the 14th" with no month — nearest future day
-        if 1 <= day_n <= 31 and not word:
+        # Plain ordinal like "the 14th" with no month — nearest future day.
+        # Guard against time strings (e.g. "9am", "10:30") by requiring an
+        # explicit ordinal suffix (st/nd/rd/th); a bare digit with no suffix
+        # is too ambiguous to treat as a calendar date.
+        _has_ordinal = bool(re.search(r"\d(?:st|nd|rd|th)", _sd_m.group(0), re.IGNORECASE))
+        if 1 <= day_n <= 31 and not word and _has_ordinal:
             target = _nearest_future_day_of_month(day_n)
             if target:
                 return target, target

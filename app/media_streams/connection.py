@@ -1754,14 +1754,16 @@ class SilenceHandler:
                 "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0)",
                 _wait,
             )
-        # theorem_v3 preference question: the caller is being asked a binary
-        # preference question ("mornings or afternoons?", "what works better for
-        # you?").  These aren't hard slot-choice decisions but the caller still
-        # needs a moment to consider — 8 s matches location_q_grace.
+        # theorem_v3 preference question: the caller is being asked an open
+        # preference question ("mornings or afternoons?", "particular day or
+        # time?", "what works better for you?").  These aren't hard slot-choice
+        # decisions but the caller still needs a moment to consider — 8 s
+        # matches location_q_grace.
         _last_bot_w = (_sess_faq_w or {}).get("last_bot_prompt", "").lower()
         if (
             "mornings or afternoons" in _last_bot_w
             or "better for you" in _last_bot_w
+            or "particular day or time" in _last_bot_w
         ):
             _wait = max(_wait, 8.0)
             logger.info("[ms_watchdog] preference_q_grace=%.1fs", _wait)
