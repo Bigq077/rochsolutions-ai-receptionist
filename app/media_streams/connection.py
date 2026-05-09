@@ -4479,6 +4479,20 @@ class WebSocketCallHandler:
                                 _faq_pre_q = self.session.get(
                                     "last_question", ""
                                 )
+                                # ── Spec I: turn-level slot cache clear ──────
+                                # New patient turn starting — invalidate any
+                                # slots offered in the previous turn so the next
+                                # check_availability call hits Acuity fresh.
+                                # (Mid-turn re-query blocking is handled inside
+                                # llm_stream.py and is NOT affected by this.)
+                                if self.session.get("last_offered_slots") is not None:
+                                    logger.info(
+                                        "[ms_llm] slot cache cleared on new turn"
+                                        " (was date_hint=%r) [FAQ path]",
+                                        self.session.get("last_date_hint"),
+                                    )
+                                    self.session["last_offered_slots"] = None
+                                    self.session["last_date_hint"] = None
                                 self._current_llm_task = asyncio.create_task(
                                     llm.run_turn(
                                         user_text=utterance,
@@ -5289,6 +5303,20 @@ class WebSocketCallHandler:
                                             _tod,
                                         )
 
+                            # ── Spec I: turn-level slot cache clear ──────────
+                            # New patient turn starting — invalidate any slots
+                            # offered in the previous turn so the next
+                            # check_availability call hits Acuity fresh.
+                            # (Mid-turn re-query blocking in llm_stream.py is
+                            # unaffected — it only fires within the same turn.)
+                            if self.session.get("last_offered_slots") is not None:
+                                logger.info(
+                                    "[ms_llm] slot cache cleared on new turn"
+                                    " (was date_hint=%r)",
+                                    self.session.get("last_date_hint"),
+                                )
+                                self.session["last_offered_slots"] = None
+                                self.session["last_date_hint"] = None
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
