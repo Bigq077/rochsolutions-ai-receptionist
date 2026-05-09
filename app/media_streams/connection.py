@@ -304,6 +304,42 @@ def _is_slot_selection_candidate(transcript: str) -> bool:
     return any(w in _SLOT_SIGNALS for w in words)
 
 
+# Spec J — phrases that indicate the LLM has asked for the patient's name.
+# Checked against the full (untruncated) assistant turn via substring match.
+_NAME_REQUEST_PHRASES: tuple = (
+    "could i get your first name",
+    "could i take your first name",
+    "what's your first name",
+    "what is your first name",
+    "could i get your name",
+    "first name",
+)
+
+# Spec J — short confirming responses the patient may give AFTER the system
+# has confirmed a slot and asked for a name.  These carry no slot-signal word
+# and would be rejected by the Spec H guard if post_slot_confirmation_pending
+# were not checked first.
+_POST_SLOT_CONFIRMATION_PHRASES: frozenset = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "fine",
+    "perfect", "great", "good", "sounds good", "that works",
+    "that works best", "that suits me", "that suits", "suits me",
+    "works for me", "works", "brilliant", "lovely", "fantastic",
+})
+
+
+def _is_post_slot_confirmation(transcript: str) -> bool:
+    """Return True if *transcript* is a post-slot-confirmation phrase.
+
+    Passes  : 'yes', 'perfect', 'sounds good', 'that works best'
+    Fails   : 'actually wednesday', 'number three', 'with me'
+    Strategy: exact membership OR startswith — handles "sounds good thanks".
+    """
+    t = transcript.lower().strip()
+    return t in _POST_SLOT_CONFIRMATION_PHRASES or any(
+        t.startswith(p) for p in _POST_SLOT_CONFIRMATION_PHRASES
+    )
+
+
 # Vowel set used by Conditions 2a (no-vowel) and 2b (all-vowel).
 _V3_VOWELS: frozenset = frozenset("aeiou")
 
@@ -972,6 +1008,13 @@ class SilenceHandler:
         # started speaking, suppress the re-ask (don't talk over them).
         self.prompt_speech_detected: bool = False
         self.prompt_last_speech_ts: Optional[float] = None
+        # Spec J: True when the last LLM response confirmed a slot AND asked
+        # for the patient's name.  When True, short confirming responses
+        # ('yes', 'perfect', 'sounds good') bypass the Spec H slot guard
+        # instead of being rejected as non-slot-signal utterances.
+        # Reset to False each post-turn based on whether the new response
+        # contains a name-request phrase.
+        self.post_slot_confirmation_pending: bool = False
 
     # ── per-prompt speech guard helpers ────────────────────────────────────
 
@@ -4052,24 +4095,41 @@ class WebSocketCallHandler:
                     # only within the slot-choice window; harmless elsewhere.
                     if self.session.get("v3_awaiting_slot_selection"):
                         utterance = _apply_slot_day_aliases(utterance)
-                    # ── Spec H: fragment guard ────────────────────────────────
-                    # If we're still in the slot-selection window but the
-                    # transcript has no slot-signal word (number, day, ordinal),
-                    # re-arm the silence timer and discard — do NOT dispatch LLM.
-                    # This stops phrases like "with me" / "suits me" / "yes
-                    # please" from triggering a spurious booking confirmation.
+                    # ── Spec H + J: fragment / post-confirmation guard ────────
+                    # If we're in the slot-selection window but the transcript
+                    # has no slot-signal word, either:
+                    #   (J) let it through as a confirmation if
+                    #       post_slot_confirmation_pending is True and the phrase
+                    #       is a known confirming response, OR
+                    #   (H) re-arm the silence timer and discard.
                     if self.session.get("v3_awaiting_slot_selection") and not _is_slot_selection_candidate(utterance):
-                        logger.info(
-                            "[ms_conn] slot selection candidate rejected — no slot signal in %r; re-arming silence",
-                            utterance,
-                        )
-                        _last_q = self.session.get("last_question", "")
-                        if _last_q:
-                            self._silence_handler.set_state(self.session.get("state", "default"))
-                            self._silence_handler.on_question_asked(_last_q)
-                        self._llm_busy = False
-                        self.session["llm_generation_active"] = False
-                        continue
+                        if (
+                            self.post_slot_confirmation_pending
+                            and _is_post_slot_confirmation(utterance)
+                        ):
+                            # Patient confirmed the offered slot (e.g. "yes",
+                            # "sounds good", "that works best") — advance to
+                            # name-collection turn without re-asking for a slot.
+                            logger.info(
+                                "[ms_conn] post-slot confirmation %r — bypassing slot guard, advancing to name flow",
+                                utterance,
+                            )
+                            self.post_slot_confirmation_pending = False
+                            # Fall through to normal LLM dispatch below.
+                        else:
+                            # No slot signal AND not a post-confirmation phrase
+                            # — re-arm silence timer and discard (Spec H).
+                            logger.info(
+                                "[ms_conn] slot selection candidate rejected — no slot signal in %r; re-arming silence",
+                                utterance,
+                            )
+                            _last_q = self.session.get("last_question", "")
+                            if _last_q:
+                                self._silence_handler.set_state(self.session.get("state", "default"))
+                                self._silence_handler.on_question_asked(_last_q)
+                            self._llm_busy = False
+                            self.session["llm_generation_active"] = False
+                            continue
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
                     await save_session(self.call_sid, self.session)
@@ -5478,6 +5538,29 @@ class WebSocketCallHandler:
                                     "(normal path): %r",
                                     self.session.get("patient_name"),
                                 )
+                            # ── Spec J: post-slot confirmation flag ───────────
+                            # Update post_slot_confirmation_pending based on
+                            # whether this response asked for the patient's name.
+                            # Uses _last_bot (full untruncated assistant message)
+                            # so it is not affected by the 200-char last_bot_prompt
+                            # truncation.  Flag is set True if a name-request
+                            # phrase is found; cleared otherwise so a turn that
+                            # does NOT ask for a name (e.g. a slot re-offer)
+                            # resets the flag correctly.
+                            _last_bot_j = _last_bot.lower()
+                            if any(p in _last_bot_j for p in _NAME_REQUEST_PHRASES):
+                                self.post_slot_confirmation_pending = True
+                                logger.info(
+                                    "[ms_conn] post_slot_confirmation_pending = True"
+                                    " (name request detected in response)"
+                                )
+                            else:
+                                if self.post_slot_confirmation_pending:
+                                    logger.info(
+                                        "[ms_conn] post_slot_confirmation_pending cleared"
+                                        " (no name request this turn)"
+                                    )
+                                self.post_slot_confirmation_pending = False
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
                             # acknowledgement (no question), immediately queue
