@@ -44,6 +44,7 @@ import re
 import time
 import traceback
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -338,6 +339,16 @@ def _is_post_slot_confirmation(transcript: str) -> bool:
     return t in _POST_SLOT_CONFIRMATION_PHRASES or any(
         t.startswith(p) for p in _POST_SLOT_CONFIRMATION_PHRASES
     )
+
+
+# Spec K — lifecycle stage for the DTMF slot map.
+# Transitions are strictly one-way within a booking flow:
+#   DAY_SELECTION → TIME_SELECTION → NONE
+# Reset to DAY_SELECTION when a new availability check fires (new turn).
+class SlotMapStage(Enum):
+    NONE           = 0   # name collection and beyond — no slot DTMF
+    DAY_SELECTION  = 1   # numbered day options active
+    TIME_SELECTION = 2   # numbered time options active (day map cleared)
 
 
 # Vowel set used by Conditions 2a (no-vowel) and 2b (all-vowel).
@@ -1015,6 +1026,10 @@ class SilenceHandler:
         # Reset to False each post-turn based on whether the new response
         # contains a name-request phrase.
         self.post_slot_confirmation_pending: bool = False
+        # Spec K: tracks which DTMF slot map stage is currently active.
+        # Transitions: DAY_SELECTION → TIME_SELECTION → NONE (one-way per flow).
+        # Reset to DAY_SELECTION whenever a new availability check fires.
+        self.slot_map_stage: SlotMapStage = SlotMapStage.NONE
 
     # ── per-prompt speech guard helpers ────────────────────────────────────
 
@@ -3424,36 +3439,57 @@ class WebSocketCallHandler:
         # On the first digit after arming, inject the mapped label as a
         # synthetic transcript so the LLM processes it as a spoken choice.
         _slot_map = self.session.get("v3_dtmf_slot_map", {})
+        # Spec K: only arm / process slot DTMF when the stage says a slot map
+        # is active.  During name collection (NONE) any keypad press must fall
+        # through to phone-number handling rather than being misread as a day
+        # or time re-selection.
+        _slot_stage_active = self.slot_map_stage in (
+            SlotMapStage.DAY_SELECTION, SlotMapStage.TIME_SELECTION
+        )
         if (
             _slot_map
+            and _slot_stage_active
             and not self.session.get("v3_slot_dtmf_active")
             and "keypad" in self.session.get("last_bot_prompt", "").lower()
         ):
             logger.info(
                 "[ms_conn] theorem_v3: slot DTMF fallback armed "
-                "(last_bot_prompt contains 'keypad', map=%r)",
+                "(stage=%s, last_bot_prompt contains 'keypad', map=%r)",
+                self.slot_map_stage.name,
                 _slot_map,
             )
             self.session["v3_slot_dtmf_active"] = True
 
         if self.session.get("v3_slot_dtmf_active") and digit in "123456789":
-            _label = _slot_map.get(digit)
-            # Disarm regardless — one press = one selection
-            self.session.pop("v3_slot_dtmf_active",        None)
-            self.session.pop("v3_dtmf_slot_map",           None)
-            self.session.pop("v3_awaiting_slot_selection", None)
-            if _label:
+            if not _slot_stage_active:
+                # Stage has moved to NONE since arming — digit is not a slot
+                # selection; disarm silently and fall through to phone handling.
                 logger.info(
-                    "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r",
-                    digit, _label,
+                    "[ms_conn] theorem_v3: slot DTMF digit=%r ignored"
+                    " — stage is %s (not a slot stage)",
+                    digit, self.slot_map_stage.name,
                 )
-                await self.transcript_queue.put((time.monotonic(), _label))
+                self.session.pop("v3_slot_dtmf_active", None)
+                # Fall through — do NOT return; phone handler may need digit.
             else:
-                logger.info(
-                    "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
-                    digit,
-                )
-            return
+                _label = _slot_map.get(digit)
+                # Disarm regardless — one press = one selection
+                self.session.pop("v3_slot_dtmf_active",        None)
+                self.session.pop("v3_dtmf_slot_map",           None)
+                self.session.pop("v3_awaiting_slot_selection", None)
+                if _label:
+                    logger.info(
+                        "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r"
+                        " (stage=%s)",
+                        digit, _label, self.slot_map_stage.name,
+                    )
+                    await self.transcript_queue.put((time.monotonic(), _label))
+                else:
+                    logger.info(
+                        "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
+                        digit,
+                    )
+                return
 
         # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
         if self.session.get("state") == "ASK_LOCATION":
@@ -4553,6 +4589,15 @@ class WebSocketCallHandler:
                                     )
                                     self.session["last_offered_slots"] = None
                                     self.session["last_date_hint"] = None
+                                # Spec K: new turn may produce a fresh availability
+                                # check — reset stage so the incoming day map is
+                                # recognised correctly.
+                                if self.slot_map_stage == SlotMapStage.NONE:
+                                    self.slot_map_stage = SlotMapStage.DAY_SELECTION
+                                    logger.info(
+                                        "[ms_conn] slot map stage → DAY_SELECTION"
+                                        " (new turn / availability reset) [FAQ path]"
+                                    )
                                 self._current_llm_task = asyncio.create_task(
                                     llm.run_turn(
                                         user_text=utterance,
@@ -5377,6 +5422,15 @@ class WebSocketCallHandler:
                                 )
                                 self.session["last_offered_slots"] = None
                                 self.session["last_date_hint"] = None
+                            # Spec K: new turn may produce a fresh availability
+                            # check — reset stage so the incoming day map is
+                            # recognised correctly.
+                            if self.slot_map_stage == SlotMapStage.NONE:
+                                self.slot_map_stage = SlotMapStage.DAY_SELECTION
+                                logger.info(
+                                    "[ms_conn] slot map stage → DAY_SELECTION"
+                                    " (new turn / availability reset)"
+                                )
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
@@ -5433,15 +5487,19 @@ class WebSocketCallHandler:
                                     # overwriting the stale day map.  Record context so
                                     # downstream code can distinguish day vs time DTMF.
                                     self.session["v3_dtmf_slot_context"] = "time"
+                                    self.slot_map_stage = SlotMapStage.TIME_SELECTION
                                     logger.info(
-                                        "[ms_conn v3] slot map shifted to time-selection: %r",
+                                        "[ms_conn v3] slot map active — %s: %r",
+                                        self.slot_map_stage.name.lower(),
                                         _new_map,
                                     )
                                 else:
                                     self.session["v3_dtmf_slot_context"] = "day"
+                                    self.slot_map_stage = SlotMapStage.DAY_SELECTION
                                     logger.info(
-                                        "[ms_conn v3] slot map active — day-selection "
+                                        "[ms_conn v3] slot map active — %s "
                                         "(complete-response extraction): %r",
+                                        self.slot_map_stage.name.lower(),
                                         _new_map,
                                     )
                             else:
@@ -5450,6 +5508,12 @@ class WebSocketCallHandler:
                                 self.session.pop("v3_slot_dtmf_active",         None)
                                 self.session.pop("v3_awaiting_slot_selection",  None)
                                 self.session.pop("v3_dtmf_slot_context",        None)
+                                if self.slot_map_stage != SlotMapStage.NONE:
+                                    self.slot_map_stage = SlotMapStage.NONE
+                                    logger.info(
+                                        "[ms_conn v3] slot map stage → NONE"
+                                        " (no slot map this turn)"
+                                    )
 
                             # Pre-emptive slot → phone DTMF transition.
                             # If the LLM just asked the caller to type on the
@@ -5554,6 +5618,20 @@ class WebSocketCallHandler:
                                     "[ms_conn] post_slot_confirmation_pending = True"
                                     " (name request detected in response)"
                                 )
+                                # Spec K: name request = slot flow complete.
+                                # Transition stage to NONE and clear any residual
+                                # slot map so DTMF digits are not misread as
+                                # day/time re-selections during name collection.
+                                if self.slot_map_stage != SlotMapStage.NONE:
+                                    logger.info(
+                                        "[ms_conn] slot map stage → NONE"
+                                        " (name request — advancing beyond slot selection)"
+                                    )
+                                    self.slot_map_stage = SlotMapStage.NONE
+                                self.session.pop("v3_dtmf_slot_map",           None)
+                                self.session.pop("v3_slot_dtmf_active",        None)
+                                self.session.pop("v3_awaiting_slot_selection",  None)
+                                self.session.pop("v3_dtmf_slot_context",        None)
                             else:
                                 if self.post_slot_confirmation_pending:
                                     logger.info(
