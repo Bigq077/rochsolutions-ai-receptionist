@@ -3669,6 +3669,17 @@ class WebSocketCallHandler:
         buf = self.session.get("phone_dtmf_buffer", "") + digit
         self.session["phone_dtmf_buffer"] = buf
 
+        # Log immediately after buffering so buf= always appears in logs even
+        # if TTS cancellation or finalization runs next (Spec U).
+        logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
+
+        # Spec U — cancel TTS on the first digit so Susie stops speaking the
+        # moment the caller starts typing.  Digits must reach the buffer
+        # regardless of playback state; the cancellation is a side-effect, not
+        # a gate.
+        if len(buf) == 1:
+            await self._cancel_tts_playback()
+
         # Each keypress resets the silence timer (caller is actively typing).
         # last_dtmf_at is the authoritative "DTMF is live" signal used by the
         # watchdog Phase 3 guard — it persists even if phone_dtmf_buffer is cleared.
@@ -3676,8 +3687,6 @@ class WebSocketCallHandler:
         self._silence_handler.last_audio_received_at = _now_dtmf
         self._silence_handler.last_engagement_at     = _now_dtmf
         self._silence_handler.last_dtmf_at           = _now_dtmf
-
-        logger.info("[ms_conn] DTMF digit=%r buf=%r", digit, buf)
         # Reset safety-net dead-air anchor so the 10s backstop never fires
         # mid-number even if the caller pauses between digits.
         self._last_audio_or_transcript_ts = time.monotonic()
@@ -7337,6 +7346,50 @@ class WebSocketCallHandler:
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
             pass
+
+    # ========================================================================
+    # TTS playback cancellation (DTMF helper)
+    # ========================================================================
+
+    async def _cancel_tts_playback(self) -> None:
+        """Cancel any in-progress TTS synthesis and drain the Twilio playback buffer.
+
+        Called when the caller presses the first phone-number digit while TTS is
+        still playing.  The caller has switched to the keypad channel — there is
+        no point continuing to speak over them.
+
+        Mirrors the teardown performed by _on_partial_transcript on confirmed
+        barge-in, but without setting _barge_in_pending (this is a deliberate
+        DTMF-triggered stop, not a speech barge-in event).
+        """
+        _synth_active = bool(self._tts_task and not self._tts_task.done())
+        _play_active  = bool(
+            hasattr(self._silence_handler, "_tts_playing")
+            and self._silence_handler._tts_playing
+        )
+        if not (_synth_active or _play_active):
+            return
+
+        if _synth_active:
+            self._tts_task.cancel()
+
+        _drain_queue(self.tts_text_queue)
+        _drain_queue(self.audio_out_queue)
+
+        if self.stream_sid:
+            try:
+                await self.websocket.send_json({
+                    "event":     "clear",
+                    "streamSid": self.stream_sid,
+                })
+            except Exception:
+                pass
+
+        logger.info(
+            "[ms_conn] DTMF: TTS playback cancelled "
+            "(synthesis_active=%s playback_active=%s)",
+            _synth_active, _play_active,
+        )
 
     # ========================================================================
     # Barge-in
