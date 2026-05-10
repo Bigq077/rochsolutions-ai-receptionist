@@ -1019,17 +1019,6 @@ class SilenceHandler:
         # started speaking, suppress the re-ask (don't talk over them).
         self.prompt_speech_detected: bool = False
         self.prompt_last_speech_ts: Optional[float] = None
-        # Spec J: True when the last LLM response confirmed a slot AND asked
-        # for the patient's name.  When True, short confirming responses
-        # ('yes', 'perfect', 'sounds good') bypass the Spec H slot guard
-        # instead of being rejected as non-slot-signal utterances.
-        # Reset to False each post-turn based on whether the new response
-        # contains a name-request phrase.
-        self.post_slot_confirmation_pending: bool = False
-        # Spec K: tracks which DTMF slot map stage is currently active.
-        # Transitions: DAY_SELECTION → TIME_SELECTION → NONE (one-way per flow).
-        # Reset to DAY_SELECTION whenever a new availability check fires.
-        self.slot_map_stage: SlotMapStage = SlotMapStage.NONE
 
     # ── per-prompt speech guard helpers ────────────────────────────────────
 
@@ -3179,6 +3168,18 @@ class WebSocketCallHandler:
         # Router uses this to distinguish "pipeline failed at startup" from
         # "call ended normally or after a stable conversation started".
         self._call_stable: bool = False
+
+        # Spec J: True when the last LLM response confirmed a slot AND asked
+        # for the patient's name.  Short confirming responses ('yes', 'perfect',
+        # 'sounds good') bypass the Spec H slot guard while this is True.
+        # Evaluated post-turn based on the presence of _NAME_REQUEST_PHRASES
+        # in the full (untruncated) last assistant message.
+        self.post_slot_confirmation_pending: bool = False
+
+        # Spec K: lifecycle stage for the DTMF slot map.
+        # DAY_SELECTION → TIME_SELECTION → NONE (one-way per booking flow).
+        # Reset to DAY_SELECTION on new patient turn (new availability check).
+        self.slot_map_stage: SlotMapStage = SlotMapStage.NONE
 
     # ========================================================================
     # Public entry point
