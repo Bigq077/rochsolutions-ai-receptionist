@@ -3350,6 +3350,8 @@ class WebSocketCallHandler:
         if not digit:
             return
 
+        logger.info("[ms_conn] DTMF raw digit=%r v3_phone_dtmf_active=%s", digit, self.session.get("v3_phone_dtmf_active", False))
+
         if digit == "#":
             if self.session.get("v3_phone_dtmf_active"):
                 # Ordering guarantee: clear the buffer and persist it BEFORE
@@ -3360,11 +3362,7 @@ class WebSocketCallHandler:
                 logger.info("[ms_conn] DTMF # — buffer cleared")
                 await asyncio.sleep(0)          # yield: clear resolves before TTS
                 await save_session(self.call_sid, self.session)  # persist before TTS
-                _reset_msg = (
-                    "No problem — buffer cleared. "
-                    "Go ahead and type the number "
-                    "again from the beginning."
-                )
+                _reset_msg = "Buffer cleared — please type your number again."
                 await self.tts_text_queue.put(_reset_msg)
                 self.session["last_bot_prompt"] = _reset_msg
                 logger.info("[ms_conn] DTMF # — reset announced (ordering: clear→save→TTS)")
@@ -4062,11 +4060,7 @@ class WebSocketCallHandler:
                         }
                         if any(w in utterance.lower() for w in _reset_words):
                             self.session["phone_dtmf_buffer"] = ""
-                            _verbal_reset_msg = (
-                                "No problem — buffer cleared. "
-                                "Go ahead and type the number "
-                                "again from the beginning."
-                            )
+                            _verbal_reset_msg = "Buffer cleared — please type your number again."
                             await self.tts_text_queue.put(_verbal_reset_msg)
                             self.session["last_bot_prompt"] = _verbal_reset_msg
                             self.session["last_question"]   = _verbal_reset_msg
@@ -4076,6 +4070,17 @@ class WebSocketCallHandler:
                                 utterance[:40],
                             )
                             continue
+
+                    # Suppress all non-reset speech during phone keypad entry.
+                    # Any transcript that reaches here (past the verbal reset
+                    # handler) is not a reset word — drop it silently so the
+                    # LLM is not invoked while the caller is typing digits.
+                    if self.session.get("v3_phone_dtmf_active"):
+                        logger.info(
+                            "[ms_conn] transcript suppressed — phone DTMF active: %r",
+                            utterance[:60],
+                        )
+                        continue
 
                     # ── CHANGE B: Name collection debounce ───────────────────
                     # STT often splits "my name is [name]" into two finals that
@@ -5696,6 +5701,21 @@ class WebSocketCallHandler:
                                         " (no name request this turn)"
                                     )
                                 self.post_slot_confirmation_pending = False
+                            # ── Spec M: sticky v3_phone_dtmf_active ───────────
+                            # Activate phone DTMF mode whenever the LLM response
+                            # mentions "keypad", regardless of whether a slot map
+                            # was active.  This prevents the flag from being lost
+                            # if the caller speaks mid-collection and a fresh LLM
+                            # turn runs without an active slot map.
+                            if (
+                                not self.session.get("v3_phone_dtmf_active")
+                                and "keypad" in _last_bot.lower()
+                            ):
+                                self.session["v3_phone_dtmf_active"] = True
+                                logger.info(
+                                    "[ms_conn] v3_phone_dtmf_active = True"
+                                    " (keypad mention detected in response)"
+                                )
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
                             # acknowledgement (no question), immediately queue
