@@ -354,26 +354,38 @@ _COMMUNICATIVE_WORDS: frozenset = frozenset({
 })
 
 
+# Matches a single token of 5+ consecutive digits — any phone number or
+# fragment thereof (07502211207, 07502, 11207 all match; 1120 does not).
+# Must never be suppressed by any noise or single-word filter.
+_PHONE_NUMBER_RE = re.compile(r"^\d{5,}$")
+
+
 def _is_short_meaningless_fragment(transcript: str) -> bool:
     """Return True only when the transcript is safe to re-arm and discard.
 
     Hard constraints:
+    - Single token of 5+ digits (phone number / fragment) → always False
     - 4+ words  → always False (LLM must hear it)
     - Any communicative word → always False (LLM must hear it)
-    - Only True when: ≤3 words AND no communicative word
+    - Only True when: ≤3 words AND no communicative word AND not a phone number
 
     Examples:
-    - 'with me'            → True  (2 words, no communicative word — re-arm)
-    - 'suits me'           → True  (2 words, no communicative word — re-arm)
-    - 'no'                 → False ('no' is communicative — LLM)
-    - 'no none of those'   → False (has 'no', 'none' — LLM)
-    - 'actually'           → True  (1 word, not communicative — re-arm)
-    - 'that one please'    → False ('please' is communicative — LLM)
+    - '07502211207'         → False (phone number — LLM)
+    - '07502'               → False (phone fragment 5 digits — LLM)
+    - 'with me'             → True  (2 words, no communicative word — re-arm)
+    - 'suits me'            → True  (2 words, no communicative word — re-arm)
+    - 'no'                  → False ('no' is communicative — LLM)
+    - 'no none of those'    → False (has 'no', 'none' — LLM)
+    - 'actually'            → True  (1 word, not communicative — re-arm)
+    - 'that one please'     → False ('please' is communicative — LLM)
     """
-    words = transcript.lower().split()
+    words = transcript.strip().split()
+    # Phone number / fragment — never suppress
+    if len(words) == 1 and _PHONE_NUMBER_RE.match(words[0]):
+        return False
     if len(words) > 3:
         return False
-    return not any(w in _COMMUNICATIVE_WORDS for w in words)
+    return not any(w in _COMMUNICATIVE_WORDS for w in [w.lower() for w in words])
 
 
 # Spec K — lifecycle stage for the DTMF slot map.
@@ -4430,23 +4442,34 @@ class WebSocketCallHandler:
                         # LLM call.  The caller may be mid-sentence.
                         # Guard: len(_stripped.split()) == 1 excludes merged
                         # utterances produced by rapid-continuation (Cond 4).
+                        # Phone-number exemption: any single token of 5+ digits
+                        # (full number or spoken fragment) must always pass
+                        # through — never re-arm.
                         if (
                             _is_single_word
                             and len(_stripped.split()) == 1
                             and _stripped not in _SCHEDULING_SINGLES
                         ):
-                            logger.info(
-                                "[ms_stt] non-scheduling single word %r — "
-                                "silence timer re-armed",
-                                _stripped,
-                            )
-                            _last_q = self.session.get("last_question", "")
-                            if _last_q:
-                                self._silence_handler.set_state(
-                                    self.session.get("state", "default")
+                            if _PHONE_NUMBER_RE.match(_stripped):
+                                logger.info(
+                                    "[ms_stt] phone number/fragment %r — "
+                                    "passing to LLM (phone exemption)",
+                                    _stripped,
                                 )
-                                self._silence_handler.on_question_asked(_last_q)
-                            continue
+                                # Fall through to LLM dispatch below.
+                            else:
+                                logger.info(
+                                    "[ms_stt] non-scheduling single word %r — "
+                                    "silence timer re-armed",
+                                    _stripped,
+                                )
+                                _last_q = self.session.get("last_question", "")
+                                if _last_q:
+                                    self._silence_handler.set_state(
+                                        self.session.get("state", "default")
+                                    )
+                                    self._silence_handler.on_question_asked(_last_q)
+                                continue
 
                         # ── Reschedule/cancel phone confirm ──────────────────
                         # Fires when the caller responds to the phone-first
