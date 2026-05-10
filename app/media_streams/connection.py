@@ -4704,6 +4704,37 @@ class WebSocketCallHandler:
                                 )
                                 continue  # Skip run_turn; wait for digits
 
+                        # ── Spec X: echo suppression — Priority 1 ────────────
+                        # When v3_location_asked is active the phone line often
+                        # echoes Susie's own TTS back through the mic.  Short
+                        # transcripts (≤2 words) with no meaningful
+                        # location/response token must be discarded BEFORE any
+                        # handler fires.  The same check runs in
+                        # _on_final_transcript_clear to suppress the silence
+                        # timer; this check ensures the location interception
+                        # block never sees an echo candidate.
+                        if self.session.get("v3_location_asked", False):
+                            _sx_words = utterance.strip().lower().split()
+                            _SX_LOC_PASS = frozenset({
+                                "yes", "no", "yeah", "nope", "yep", "yup", "nah",
+                                "use", "this",
+                                # single-word clinic name variants
+                                "alcester", "redditch", "reditch", "reddich",
+                                "ulster", "olster", "awlster", "alchester",
+                                "one", "two", "first", "second",
+                            })
+                            if (
+                                1 <= len(_sx_words) <= 2
+                                and not any(w in _SX_LOC_PASS for w in _sx_words)
+                            ):
+                                logger.info(
+                                    "[ms_conn v3] TTS-echo suppressed: %r"
+                                    " (%d word(s)) — skipping all handlers",
+                                    utterance, len(_sx_words),
+                                )
+                                continue
+                        # ── end Spec X ────────────────────────────────────────
+
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
