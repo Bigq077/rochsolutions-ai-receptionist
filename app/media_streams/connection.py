@@ -1145,6 +1145,10 @@ class SilenceHandler:
         # Used by _restart_timer() to skip watchdog re-creation when on_tts_finished()
         # fires multiple times for the same logical question (multi-chunk TTS).
         self._watchdog_q_gen: int = -1
+        # Spec Z: deferred watchdog state.  Set when _restart_timer() is called
+        # while _llm_busy=True or the current last_question has no question — the
+        # watchdog start is deferred until on_llm_finished() fires (and TTS is idle).
+        self._watchdog_deferred: bool = False
         # Scaffold-hold grace deadline: set by the scaffold-hold path to extend
         # the watchdog patience window without corrupting last_engagement_at's
         # semantics.  Watchdog reads max(last_engagement_at, _watchdog_grace_until)
@@ -1754,8 +1758,66 @@ class SilenceHandler:
         logger.debug("[ms_silence] LLM started — timer cancelled")
 
     def on_llm_finished(self) -> None:
-        """Called when the LLM finishes processing — allow silence timer again."""
+        """Called when the LLM finishes processing — allow silence timer again.
+
+        Spec Z: if a watchdog start was deferred because _llm_busy was True,
+        fire it now — but only when TTS has also finished.  If TTS is still
+        playing, _tts_playing=True; on_tts_finished() will call _restart_timer()
+        naturally once audio ends (at which point _llm_busy=False and the normal
+        question check in _restart_timer applies).
+        """
         self._llm_busy = False
+        if self._watchdog_deferred and not self._tts_playing and not self._cancelled:
+            self._watchdog_deferred = False
+            logger.info(
+                "[ms_watchdog] WATCHDOG_DEFERRED_FIRE"
+                " reason=llm_complete q_gen=%d last_q=%r",
+                self._q_gen,
+                (self.last_question or "")[:50],
+            )
+            self._restart_timer()
+        elif self._watchdog_deferred:
+            # TTS still playing — clear deferred flag so on_tts_finished()
+            # runs normally; it will call _restart_timer() with _llm_busy=False.
+            self._watchdog_deferred = False
+            logger.info(
+                "[ms_watchdog] WATCHDOG_DEFERRED_CLEAR"
+                " reason=tts_still_playing q_gen=%d",
+                self._q_gen,
+            )
+
+    # ── Spec Z — prompt question check ──────────────────────────────────────────
+
+    _WATCHDOG_QUESTION_SIGNALS = frozenset({
+        "which", "what", "when", "where", "who", "how",
+        "would", "could", "can", "shall", "will",
+        "is that", "do you", "did you", "have you", "are you",
+        "is there", "was it",
+    })
+
+    def _prompt_contains_question(self, prompt: str) -> bool:
+        """Return True if prompt contains a clear patient-facing question.
+
+        Affirmation-only prompts like "Of course —" or "No problem." return
+        False and must never start a watchdog countdown.
+
+        Matches:
+          • Any prompt ending with "?"
+          • Prompts containing a question word / modal directed at the patient
+        """
+        stripped = prompt.strip().rstrip("—–-").strip()
+        if not stripped:
+            return False
+        # Hard fast-path: question mark anywhere in the prompt
+        if "?" in stripped:
+            return True
+        _lower = stripped.lower()
+        return any(
+            _lower.endswith(sig) or f" {sig} " in _lower
+            for sig in self._WATCHDOG_QUESTION_SIGNALS
+        )
+
+    # ────────────────────────────────────────────────────────────────────────────
 
     def restart_for_question(self, question: str) -> None:
         """Re-arm the silence timer after fragment suppression (Bug 9 / Bug 6).
@@ -2726,6 +2788,31 @@ class SilenceHandler:
                         "[ms_watchdog] WATCHDOG_CANCEL_STALE old_q_gen=%d new_q_gen=%d",
                         self._watchdog_q_gen, _my_q_gen,
                     )
+                # ── Spec Z Gate 1: never arm while LLM is in flight ────────────
+                # Deferring avoids a stale armed_at timestamp and ensures the
+                # watchdog fires only after the real response (and TTS) complete.
+                # on_llm_finished() will fire _restart_timer() once _llm_busy=False.
+                if self._llm_busy:
+                    logger.info(
+                        "[ms_watchdog] WATCHDOG_DEFERRED"
+                        " reason=llm_in_flight q_gen=%d",
+                        _my_q_gen,
+                    )
+                    self._watchdog_deferred = True
+                    return
+                # ── Spec Z Gate 2: never arm with a prompt that has no question ─
+                # Affirmation-only TTS like "Of course —" must never produce a
+                # watchdog — there is nothing to re-ask.  The next substantive
+                # question (Prompt L etc.) will arm the watchdog correctly.
+                _prompt_to_check = self.last_question or ""
+                if not self._prompt_contains_question(_prompt_to_check):
+                    logger.info(
+                        "[ms_watchdog] WATCHDOG_SUPPRESSED"
+                        " reason=no_question prompt=%r q_gen=%d",
+                        _prompt_to_check[:60], _my_q_gen,
+                    )
+                    return
+                # ── end Spec Z ─────────────────────────────────────────────────
                 _armed_at = time.time()
                 self._watchdog_q_gen = _my_q_gen
                 self._no_input_watchdog_task = asyncio.create_task(
