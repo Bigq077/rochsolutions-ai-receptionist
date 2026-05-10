@@ -126,6 +126,33 @@ _BANNED_SENTENCE_RE = [
          r"^[Tt]hat'?s a question for[^—–.!?]*(?:[—–.!?]\s*)?",
          re.IGNORECASE,
      )),
+
+    # ── Prompt C — scarcity-signalling openers ───────────────────────────────
+    # "The closest/nearest X is " — strip the preamble, keep the date/time.
+    # Pattern: anchored to start-of-chunk, strips up to and including "is " so
+    # the substantive slot info ("Tuesday the 2nd...") plays instead.
+    ("closest_nearest_opener",
+     re.compile(
+         r"^[Tt]he (?:closest|nearest)\b[^.!?]*?\bis\s+",
+         re.IGNORECASE,
+     )),
+
+    # "That is the only" / "That's the only" — full-sentence strip.
+    # Scarcity framing with no recoverable date info; strip the whole sentence.
+    ("that_is_the_only",
+     re.compile(
+         r"[^.!?]*\b[Tt]hat(?:'s| is) the only\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
+
+    # "The only [day/time/slot/morning/afternoon/evening]" — full-sentence strip.
+    ("the_only_slot_scarcity",
+     re.compile(
+         r"[^.!?]*\b[Tt]he only\s+(?:\w+\s+)*"
+         r"(?:day|time|slot|morning|afternoon|evening|option|[a-zA-Z]+day)\b"
+         r"[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
 ]
 
 _MULTI_SPACE_RE  = re.compile(r" {2,}")
