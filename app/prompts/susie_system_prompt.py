@@ -1925,8 +1925,7 @@ def _build_theorem_v3(session: dict) -> str:
         "new or returning patient?', or any variation, stop "
         "immediately and skip to the next step.\n\n"
         "1. Caller signals booking intent. Acknowledge simply: \"Of "
-        "course — let me get that sorted for you.\" Stop. Wait. "
-        "This turn has no question.\n"
+        "course —\" Stop. Wait. This turn has no question.\n"
         + _booking_step2 +
         "3. Acknowledge location simply: \"Awlstuh, perfect.\" or "
         "\"Right — Redditch.\" Never reference prior context. Stop. "

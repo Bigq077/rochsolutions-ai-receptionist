@@ -5858,7 +5858,8 @@ class WebSocketCallHandler:
                                     )
 
                             _V3_ACK_PHRASES = (
-                                "of course — let me get that sorted for you",  # current scripted phrase
+                                "of course —",                                  # current scripted phrase (short ack)
+                                "of course — let me get that sorted for you",  # legacy long form
                                 "of course — i'd be happy to sort that",        # legacy fallback
                                 "of course, let's get that moved",
                                 "of course — let's get that sorted",

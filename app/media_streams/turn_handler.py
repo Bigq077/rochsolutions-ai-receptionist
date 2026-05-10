@@ -33,13 +33,6 @@ _BANNED_SENTENCE_RE = [
     ("still_there",   re.compile(r"[^.!?]*\bstill there\b[^.!?]*[.!?]?",         re.IGNORECASE)),
     # "Lovely, [name]" acknowledgement — patronising opener, banned everywhere
     ("lovely_opener", re.compile(r"^[Ll]ovely[,\s!]+",                            re.IGNORECASE)),
-    # "Of course[, / ! / — ]..." opener — banned as sentence-starter everywhere.
-    # Strips ONLY the opener and trailing punctuation/space; leaves the rest of
-    # the response intact so the caller hears the actual content.
-    # The system prompt contains a contradictory instruction at §3 ("Of course"
-    # listed as a natural phrase) which causes this to fire despite the ABSOLUTE
-    # RULE — gate5 enforces the ban unconditionally at the output layer.
-    ("of_course_opener", re.compile(r"^Of course[,\s!—–\-]+",                    re.IGNORECASE)),
     # Internal/meta orchestration text — must never reach caller TTS
     ("lookup_already_done",   re.compile(r"[^.!?]*\blookup (?:has )?already (?:been )?done\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),
@@ -209,9 +202,9 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     result = _LEADING_JUNK_RE.sub("", result)
     result = result.strip()
     # ── Fix A: re-capitalise after opener strip ──────────────────────────────
-    # Banned opener patterns (lovely_opener, of_course_opener) strip the
-    # leading phrase and leave the rest of the sentence starting with a
-    # lower-case continuation word.  Restore sentence-initial capitalisation.
+    # Banned opener patterns (lovely_opener) strip the leading phrase and
+    # leave the rest of the sentence starting with a lower-case continuation
+    # word.  Restore sentence-initial capitalisation.
     if result:
         result = result[0].upper() + result[1:]
     return result
