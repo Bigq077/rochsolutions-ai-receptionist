@@ -4779,6 +4779,21 @@ class WebSocketCallHandler:
                                             "(FAQ path): %r",
                                             self.session.get("patient_name"),
                                         )
+                                        # Spec Q: same early activation as
+                                        # normal path — phone collection phase
+                                        # starts at name confirmation.
+                                        if not self.session.get(
+                                            "v3_phone_dtmf_active"
+                                        ):
+                                            self.session[
+                                                "v3_phone_dtmf_active"
+                                            ] = True
+                                            logger.info(
+                                                "[ms_conn] v3_phone_dtmf_active"
+                                                " = True (name confirmed —"
+                                                " phone collection phase,"
+                                                " FAQ path)"
+                                            )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -5738,6 +5753,18 @@ class WebSocketCallHandler:
                                     "(normal path): %r",
                                     self.session.get("patient_name"),
                                 )
+                                # Spec Q: activate DTMF at name-confirmed state.
+                                # Phone collection begins the moment the name is
+                                # persisted — digits may arrive before any
+                                # "keypad" mention.  Keypad-mention activation
+                                # (Spec M) remains as a secondary trigger.
+                                if not self.session.get("v3_phone_dtmf_active"):
+                                    self.session["v3_phone_dtmf_active"] = True
+                                    logger.info(
+                                        "[ms_conn] v3_phone_dtmf_active = True"
+                                        " (name confirmed — phone collection"
+                                        " phase)"
+                                    )
                             # ── Spec J: post-slot confirmation flag ───────────
                             # Update post_slot_confirmation_pending based on
                             # whether this response asked for the patient's name.
