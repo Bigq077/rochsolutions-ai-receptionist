@@ -3035,10 +3035,13 @@ class WebSocketCallHandler:
         # ── Barge-in / TTS state ───────────────────────────────────────────
         self._tts_task:  Optional[asyncio.Task] = None  # current TTS chunk task
         self._clearing   = False   # True while Twilio buffer is draining after barge-in
-        self._llm_busy   = False   # True while Claude is generating
-        # Barge-in transcript received while _llm_busy=True.  Stored here instead
-        # of being dropped so it can be re-queued once the current turn finishes.
-        self._pending_barge_in_utt: Optional[str] = None
+        self._llm_busy   = False   # True while Claude is generating (silence handler)
+        # Spec N — concurrent LLM call guard.
+        # llm_in_flight is set True the moment a transcript is accepted for LLM
+        # dispatch and cleared only after ALL iterations (including tool round-trips)
+        # complete.  At most one pending transcript is held; newer overwrites older.
+        self.llm_in_flight: bool = False
+        self.pending_transcript: Optional[str] = None
 
         # Barge-in timing/state — used for false-trigger gate and ack injection
         self._current_tts_text:    str   = ""    # text being synthesised right now
@@ -4032,16 +4035,23 @@ class WebSocketCallHandler:
                     # can fire again if the next turn goes silent.
                     self._silence_handler._reask_completed = False
 
-                    # Queue overlapping utterances while a turn is generating.
-                    # Previously these were dropped; storing them instead means
-                    # the caller's answer survives a barge-in that lands mid-LLM.
-                    # Only one utterance is held (newer overwrites older).
-                    if self._llm_busy:
-                        self._pending_barge_in_utt = utterance
-                        logger.info(
-                            "[ms_conn v3] barge-in queued (llm busy): %r",
-                            utterance[:80],
-                        )
+                    # Spec N — concurrent LLM guard.
+                    # If a turn is already in-flight (from transcript acceptance
+                    # through to full completion including tool round-trips),
+                    # queue at most one pending transcript; newer overwrites older.
+                    if self.llm_in_flight:
+                        if self.pending_transcript is not None:
+                            logger.info(
+                                "[ms_conn] pending transcript overwritten: %r → %r",
+                                self.pending_transcript[:60],
+                                utterance[:60],
+                            )
+                        else:
+                            logger.info(
+                                "[ms_conn] LLM busy — transcript queued: %r",
+                                utterance[:60],
+                            )
+                        self.pending_transcript = utterance
                         continue
 
                     # Barge-in resolution: false triggers resume TTS without
@@ -4173,6 +4183,7 @@ class WebSocketCallHandler:
                             # fall through — process normally
 
                     self._in_barge_in_recovery = False
+                    self.llm_in_flight = True   # Spec N: set before any gate/LLM work
                     self._llm_busy = True
                     self._silence_handler.on_llm_started()
                     self._last_audio_at = time.monotonic()
@@ -4217,6 +4228,7 @@ class WebSocketCallHandler:
                             if _last_q:
                                 self._silence_handler.set_state(self.session.get("state", "default"))
                                 self._silence_handler.on_question_asked(_last_q)
+                            self.llm_in_flight = False  # Spec N: no LLM call fired
                             self._llm_busy = False
                             self.session["llm_generation_active"] = False
                             continue
@@ -6066,24 +6078,21 @@ class WebSocketCallHandler:
                         await self.tts_text_queue.put(CLAUDE_ERROR_PHRASE)
                     finally:
                         self._last_turn_done_at = time.monotonic()
+                        self.llm_in_flight = False   # Spec N: clear before re-queue check
                         self._llm_busy = False
                         self._silence_handler.on_llm_finished()
                         self.session["llm_generation_active"] = False
                         await save_session(self.call_sid, self.session)
-                        # ── Re-queue any barge-in transcript that arrived while busy ──
-                        # Putting it back on transcript_queue lets the next loop
-                        # iteration pick it up cleanly (with _llm_busy=False) and
-                        # process it through the normal barge-in resolution path.
-                        if self._pending_barge_in_utt:
-                            _queued_utt = self._pending_barge_in_utt
-                            self._pending_barge_in_utt = None
+                        # Spec N — re-process any pending transcript that arrived
+                        # while the turn was in-flight.  Fresh timestamp so it is
+                        # never discarded by the stale-transcript flush.
+                        if self.pending_transcript is not None:
+                            _queued_utt = self.pending_transcript
+                            self.pending_transcript = None
                             logger.info(
-                                "[ms_conn v3] re-queuing barge-in transcript: %r",
+                                "[ms_conn v3] LLM free — processing queued transcript: %r",
                                 _queued_utt[:60],
                             )
-                            # Fresh timestamp so it's never discarded by the
-                            # stale-transcript flush (it arrived after the LLM
-                            # turn started, i.e. after any prior barge-in).
                             await self.transcript_queue.put((time.monotonic(), _queued_utt))
 
             except asyncio.CancelledError:
@@ -7806,6 +7815,11 @@ class WebSocketCallHandler:
 
         # Cancel the silence handler timer so it doesn't fire after the call ends
         self._silence_handler.cancel()
+
+        # Spec N: discard any pending transcript — the call has ended
+        if self.pending_transcript is not None:
+            logger.info("[ms_conn] pending transcript discarded on cleanup")
+            self.pending_transcript = None
 
         self.session["ws_connected"]          = False
         self.session["stt_active"]            = False
