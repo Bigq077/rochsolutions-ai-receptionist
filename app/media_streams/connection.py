@@ -419,6 +419,45 @@ _TTS_DONE_SENTINEL = object()
 # duplicate emission.  Normal dedup remains active for every other chunk.
 _WATCHDOG_REASK_MARKER = "\x01WDG_REASK\x01"
 
+# ---------------------------------------------------------------------------
+# Spec O — strip leading affirmation before watchdog re-ask construction
+# Applies only to the copy used for the re-ask; last_bot_prompt / last_question
+# are never mutated.
+# ---------------------------------------------------------------------------
+
+_LEADING_AFFIRMATION_RES = [
+    re.compile(r"^perfect\s*[—\-,]?\s*",        re.IGNORECASE),
+    re.compile(r"^brilliant\s*[—\-,]?\s*",       re.IGNORECASE),
+    re.compile(r"^great\s*[—\-,]?\s*",           re.IGNORECASE),
+    re.compile(r"^wonderful\s*[—\-,]?\s*",       re.IGNORECASE),
+    re.compile(r"^lovely\s*[—\-,]?\s*",          re.IGNORECASE),
+    re.compile(r"^fantastic\s*[—\-,]?\s*",       re.IGNORECASE),
+    re.compile(r"^excellent\s*[—\-,]?\s*",       re.IGNORECASE),
+    re.compile(r"^of course\s*[—\-,]?\s*",       re.IGNORECASE),
+    re.compile(r"^no problem\s*[—\-,]?\s*",      re.IGNORECASE),
+    re.compile(r"^not a problem\s*[—\-,]?\s*",   re.IGNORECASE),
+    re.compile(r"^awlstuh,?\s*perfect\.?\s*",    re.IGNORECASE),
+]
+
+
+def _strip_leading_affirmation(prompt: str) -> str:
+    """
+    Strip a leading affirmation word/phrase (e.g. 'Perfect —', 'Of course —')
+    from *prompt* and re-capitalise the remainder.  Returns the original string
+    unchanged if stripping would leave an empty result.
+
+    Called only when building watchdog re-asks — never modifies the stored
+    last_bot_prompt or last_question values.
+    """
+    for _pat in _LEADING_AFFIRMATION_RES:
+        _m = _pat.match(prompt)
+        if _m:
+            _rest = prompt[_m.end():]
+            if _rest:
+                return _rest[0].upper() + _rest[1:]
+            return prompt  # stripping left nothing — keep original
+    return prompt
+
 
 # ---------------------------------------------------------------------------
 # Greeting (built at call start from clinic_config.json)
@@ -2348,7 +2387,8 @@ class SilenceHandler:
                         ):
                             _lq_g = _lq_tail
                     if _lq_g and _lq_g.strip() and "how can i help" not in _lq_g.lower():
-                        _lq_body = _lq_g.strip()
+                        # Spec O: strip leading affirmation before re-ask
+                        _lq_body = _strip_leading_affirmation(_lq_g.strip())
                         phrase = _prefix + ". " + (_lq_body[0].upper() + _lq_body[1:])
                     else:
                         phrase = _prefix + " — how can I help today?"
@@ -2811,7 +2851,9 @@ class SilenceHandler:
                     _session_now["location_retry_count"] = max(_lrc_w1 + 1, 2)
                     _session_now["last_question"] = _reask1
         else:
-            _reask1 = phrase1 + (" " + q if q else "")
+            # Spec O: strip leading affirmation (e.g. "Perfect —") before appending
+            _q_clean = _strip_leading_affirmation(q) if q else q
+            _reask1 = phrase1 + (" " + _q_clean if _q_clean else "")
 
         # Name-capture structured recovery: replace generic phrase+last_question
         # with a substate-aware scaffold prompt. name_fragment is set (in session)
@@ -2926,7 +2968,9 @@ class SilenceHandler:
             "[ms_reask] firing re-ask #%d of last_question: %r  time_since_question=%.1fs",
             self.reask_count, q[:80], secs_since_q,
         )
-        _reask2 = phrase2 + (" " + q if q else "")
+        # Spec O: strip leading affirmation before appending question
+        _q_clean_w2 = _strip_leading_affirmation(q) if q else q
+        _reask2 = phrase2 + (" " + _q_clean_w2 if _q_clean_w2 else "")
         await self._tts_text_queue.put(_reask2)
         if self._on_reask:
             asyncio.create_task(self._on_reask(_reask2))
