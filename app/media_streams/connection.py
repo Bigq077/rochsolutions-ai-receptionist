@@ -665,27 +665,40 @@ def _is_time_map(slot_map: dict) -> bool:
 # Patterns that indicate the LLM just confirmed the caller's name.
 # Each captures the name in group(1).
 _V3_NAME_CONFIRM_PATTERNS = [
-    # "Thanks Sarah —" / "Thanks Sarah,"
+    # Pattern 1a: "Thanks Sarah —" / "Thanks Sarah,"
     re.compile(r'[Tt]hanks\s+([A-Za-z][a-z]{1,25})[\s—–‒,.\-]'),
-    # "So that's Sarah," / "So that's Sarah —"  (readback)
+    # Pattern 1b: "So that's Sarah," / "So that's Sarah —"  (readback)
     re.compile(r"[Ss]o (?:that'?s|it'?s)\s+([A-Za-z][a-z]{1,25})[\s—–,\-]"),
-    # "Right Sarah —" / "Right Sarah,"
+    # Pattern 1c: "Right Sarah —" / "Right Sarah,"
     re.compile(r'[Rr]ight\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
-    # "Sarah — got it" / "Sarah — noted" / "Sarah — perfect"
+    # Pattern 1d: "Sarah — got it" / "Sarah — noted" / "Sarah — perfect"
+    #   (em-dash/en-dash/hyphen, specific trailing phrase)
     re.compile(r'^([A-Za-z][a-z]{1,25})\s*[—–\-]+\s*'
                r'(?:got it|noted|perfect|right|could i|if you)'),
-    # "Of course Sarah," (mid-sentence acknowledgement)
+    # Pattern 1e: "Of course Sarah," (mid-sentence acknowledgement)
     re.compile(r'[Oo]f course\s+([A-Za-z][a-z]{1,25})[\s—–,\-]'),
-    # "Just to confirm — that's Sarah," (alternate readback opening)
+    # Pattern 1f: "Just to confirm — that's Sarah," (alternate readback opening)
     re.compile(r"[Jj]ust to confirm[^,—]*[,—]\s*(?:that'?s\s+)?([A-Za-z][a-z]{1,25})[\s—–,\-]"),
+    # Pattern 2 (Spec T amendment): name-first responses — "Sarah — got it.",
+    #   "Sarah, noted.", "Sarah — if you'd like to use..."
+    #   Permissive: title-case word + em-dash-or-comma + space.  The
+    #   _V3_NAME_FALSE_POSITIVES check below prevents "Perfect — ...",
+    #   "Awlstuh, perfect.", day-names, and other openers from matching.
+    re.compile(r'^([A-Z][a-z]{1,19})\s*[—,]\s'),
 ]
 
 # Words that must never be treated as names even if a pattern matches them.
+# Extended by Spec T amendment: day-names and common opener words added so
+# Pattern 2 (name-first) cannot false-positive on slot/location responses.
 _V3_NAME_FALSE_POSITIVES = frozenset({
     "sorry", "right", "great", "perfect", "ok", "okay", "sure",
     "yes", "no", "of", "course", "me", "you", "we", "it", "is",
     "thanks", "thank", "hi", "hello", "hey", "now", "just", "that",
     "this", "then", "so", "and", "but", "the", "a", "an",
+    # Spec T amendment additions
+    "brilliant", "lovely", "noted", "awlstuh", "redditch",
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday",
 })
 
 
