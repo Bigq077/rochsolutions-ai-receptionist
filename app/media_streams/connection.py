@@ -995,24 +995,15 @@ _TREATMENT_SIGNALS: frozenset = frozenset({
 
 def _is_treatment_specific_booking(transcript: str) -> bool:
     """
-    Return True when `transcript` contains both a booking-intent signal
-    AND a named treatment/therapy.
+    Return True when `transcript` contains any named treatment or therapy
+    signal.  No booking-intent check — both FAQ mentions ("do you do
+    acupuncture?") and explicit booking requests ("I'd like acupuncture")
+    are routed to the LLM so Prompt L framing always fires first.
 
-    Booking-intent signals are words like 'book', 'appointment',
-    'session', 'schedule', 'come in', 'get in'.  A treatment mention
-    without booking intent (e.g. "do you do acupuncture?") returns False
-    so that FAQ-style queries route to the LLM normally.
+    Revised by Spec Y (amended): booking-intent gate removed per spec.
     """
     lowered = transcript.lower()
-    _BOOKING_INTENT_SIGNALS: frozenset = frozenset({
-        "book", "appointment", "session", "schedule",
-        "come in", "get in", "see someone", "get seen",
-        "like to book", "want to book", "need to book",
-        "make an", "arrange",
-    })
-    has_booking_intent = any(sig in lowered for sig in _BOOKING_INTENT_SIGNALS)
-    has_treatment = any(sig in lowered for sig in _TREATMENT_SIGNALS)
-    return has_booking_intent and has_treatment
+    return any(sig in lowered for sig in _TREATMENT_SIGNALS)
 
 
 # ---------------------------------------------------------------------------
@@ -5774,6 +5765,28 @@ class WebSocketCallHandler:
                                 )
                                 self.session["last_offered_slots"] = None
                                 self.session["last_date_hint"] = None
+                            # ── Spec Y REVISED: pre-run_turn treatment gate ───
+                            # Must fire BEFORE run_turn because the LLM streams
+                            # "Of course —" to TTS in real time (booking_flow
+                            # step 1).  Setting booking_flow_active=True here
+                            # and v3_treatment_mentioned=True lets the system
+                            # prompt skip the ack and go straight to service
+                            # type handling.  The post-turn ack block
+                            # (if _is_booking_ack:) is suppressed because
+                            # booking_flow_active is already True when it runs.
+                            if _is_treatment_specific_booking(utterance):
+                                if not self.booking_flow_active:
+                                    self.booking_flow_active = True
+                                    logger.info(
+                                        "[ms_conn v3] treatment mention"
+                                        " detected pre-run_turn —"
+                                        " booking_flow_active=True,"
+                                        " v3_treatment_mentioned=True: %r",
+                                        utterance[:80],
+                                    )
+                                self.session["v3_treatment_mentioned"] = True
+                            # ── end Spec Y REVISED ────────────────────────────
+
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
@@ -6193,29 +6206,7 @@ class WebSocketCallHandler:
                                     "v3_location_asked", False
                                 )
                             )
-                            # ── Spec Y: treatment-specific bypass ─────────────
-                            # Compute once so both the log branch and the ack
-                            # branch can reference it without double-calling.
-                            # True only when ack was detected AND the current
-                            # utterance contains a named treatment + booking
-                            # intent — e.g. "I'd like to book acupuncture".
-                            # Pure FAQ treatment mentions ("do you do acupuncture?")
-                            # have no booking-intent signal and return False.
-                            _v3_treatment_bypass = (
-                                _is_booking_ack
-                                and _is_treatment_specific_booking(utterance)
-                            )
-                            if _v3_treatment_bypass:
-                                # Log and fall through — the LLM's full response
-                                # (Prompt L framing) already played; do not
-                                # auto-queue the location question.
-                                logger.info(
-                                    "[ms_conn v3] treatment-specific booking"
-                                    " request — bypassing booking ack,"
-                                    " passing to LLM: %r",
-                                    utterance[:80],
-                                )
-                            elif _is_booking_ack:
+                            if _is_booking_ack:
                                 # ── end Spec Y (normal ack path) ──────────────
                                 self.booking_flow_active = True
                                 logger.info("[ms_conn] booking_flow_active = True")
