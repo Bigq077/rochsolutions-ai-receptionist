@@ -341,6 +341,41 @@ def _is_post_slot_confirmation(transcript: str) -> bool:
     )
 
 
+# Words whose presence in a transcript makes it communicative — i.e. the caller
+# is expressing intent and the LLM must hear it, regardless of whether it
+# contains a slot-signal word.  Used by _is_short_meaningless_fragment to gate
+# the re-arm path inside the Spec H slot guard.
+_COMMUNICATIVE_WORDS: frozenset = frozenset({
+    "no", "not", "none", "never",
+    "yes", "yeah", "please",
+    "want", "need", "like", "have", "got",
+    "can", "could", "would",
+    "what", "when", "where", "which", "how", "why",
+})
+
+
+def _is_short_meaningless_fragment(transcript: str) -> bool:
+    """Return True only when the transcript is safe to re-arm and discard.
+
+    Hard constraints:
+    - 4+ words  → always False (LLM must hear it)
+    - Any communicative word → always False (LLM must hear it)
+    - Only True when: ≤3 words AND no communicative word
+
+    Examples:
+    - 'with me'            → True  (2 words, no communicative word — re-arm)
+    - 'suits me'           → True  (2 words, no communicative word — re-arm)
+    - 'no'                 → False ('no' is communicative — LLM)
+    - 'no none of those'   → False (has 'no', 'none' — LLM)
+    - 'actually'           → True  (1 word, not communicative — re-arm)
+    - 'that one please'    → False ('please' is communicative — LLM)
+    """
+    words = transcript.lower().split()
+    if len(words) > 3:
+        return False
+    return not any(w in _COMMUNICATIVE_WORDS for w in words)
+
+
 # Spec K — lifecycle stage for the DTMF slot map.
 # Transitions are strictly one-way within a booking flow:
 #   DAY_SELECTION → TIME_SELECTION → NONE
@@ -4153,11 +4188,12 @@ class WebSocketCallHandler:
                             )
                             self.post_slot_confirmation_pending = False
                             # Fall through to normal LLM dispatch below.
-                        else:
-                            # No slot signal AND not a post-confirmation phrase
-                            # — re-arm silence timer and discard (Spec H).
+                        elif _is_short_meaningless_fragment(utterance):
+                            # No slot signal AND the fragment is too short /
+                            # carries no communicative word — safe to re-arm.
+                            # Examples: "with me", "suits me", "actually".
                             logger.info(
-                                "[ms_conn] slot selection candidate rejected — no slot signal in %r; re-arming silence",
+                                "[ms_conn] slot fragment ignored — re-arming: %r",
                                 utterance,
                             )
                             _last_q = self.session.get("last_question", "")
@@ -4167,6 +4203,21 @@ class WebSocketCallHandler:
                             self._llm_busy = False
                             self.session["llm_generation_active"] = False
                             continue
+                        else:
+                            # No slot signal BUT the utterance is meaningful
+                            # (4+ words OR contains a communicative word such as
+                            # 'no', 'none', 'not', 'want', 'how', etc.).
+                            # Pass to LLM — the patient is expressing intent.
+                            # Examples: "no none of those suit me",
+                            #           "that one please", "not really".
+                            logger.info(
+                                "[ms_conn] non-slot utterance during slot selection"
+                                " — passing to LLM: %r",
+                                utterance,
+                            )
+                            # Fall through to normal LLM dispatch below
+                            # (do NOT continue — slot window stays open until
+                            # pop() below clears it after LLM fires).
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
                     await save_session(self.call_sid, self.session)
