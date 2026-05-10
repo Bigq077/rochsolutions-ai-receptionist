@@ -3275,6 +3275,12 @@ class WebSocketCallHandler:
         # Reset to DAY_SELECTION on new patient turn (new availability check).
         self.slot_map_stage: SlotMapStage = SlotMapStage.NONE
 
+        # Spec P: set True on the first confirmed booking ack; never cleared
+        # within a call.  Once True, all subsequent ack detection and synthetic
+        # timing-pref re-queues are suppressed so mid-flow "Of course —"
+        # responses cannot re-trigger the booking ack handler.
+        self.booking_flow_active: bool = False
+
     # ========================================================================
     # Public entry point
     # ========================================================================
@@ -5117,17 +5123,29 @@ class WebSocketCallHandler:
                                                 # preference — re-queue so
                                                 # LLM fires without asking
                                                 # again.
-                                                await (
-                                                    self.transcript_queue
-                                                    .put((time.monotonic(), _existing_tp))
-                                                )
-                                                logger.info(
-                                                    "[ms_conn v3] time_pref"
-                                                    " already known (%r) —"
-                                                    " timing Q skipped,"
-                                                    " re-queued pref",
-                                                    _existing_tp,
-                                                )
+                                                # Spec P: suppress re-queue
+                                                # if booking flow already
+                                                # active (prevents double-
+                                                # dispatch on mid-flow turns).
+                                                if self.booking_flow_active:
+                                                    logger.info(
+                                                        "[ms_conn] timing pref"
+                                                        " re-queue suppressed"
+                                                        " — booking flow"
+                                                        " already active"
+                                                    )
+                                                else:
+                                                    await (
+                                                        self.transcript_queue
+                                                        .put((time.monotonic(), _existing_tp))
+                                                    )
+                                                    logger.info(
+                                                        "[ms_conn v3] time_pref"
+                                                        " already known (%r) —"
+                                                        " timing Q skipped,"
+                                                        " re-queued pref",
+                                                        _existing_tp,
+                                                    )
                                                 _new_ret_q = None
                                             else:
                                                 _new_ret_q = (
@@ -5942,8 +5960,13 @@ class WebSocketCallHandler:
                                 "no problem at all",
                                 "let me get that sorted",
                             )
+                            # Spec P: once booking flow is active, suppress all
+                            # further ack detection so mid-flow "Of course —"
+                            # responses (e.g. confirming slot, keypad prompt)
+                            # cannot re-trigger the handler.
                             _is_booking_ack = (
-                                any(
+                                not self.booking_flow_active
+                                and any(
                                     p in _last_bot.lower()
                                     for p in _V3_ACK_PHRASES
                                 )
@@ -5952,6 +5975,8 @@ class WebSocketCallHandler:
                                 )
                             )
                             if _is_booking_ack:
+                                self.booking_flow_active = True
+                                logger.info("[ms_conn] booking_flow_active = True")
                                 self.session["v3_booking_intent"] = True
                                 # Store which intent triggered the ack
                                 if "let's get that moved" in _last_bot.lower():
