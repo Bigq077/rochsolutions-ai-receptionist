@@ -460,6 +460,44 @@ def _strip_leading_affirmation(prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Spec R — verbal reset guard helpers
+# ---------------------------------------------------------------------------
+
+_NAME_CORRECTION_SIGNALS: tuple = (
+    "my name",
+    "name is",
+    "name isn't",
+    "name's not",
+    "wrong name",
+    "name was wrong",
+    "name correction",
+    "got that wrong",
+    "mistake on the name",
+)
+
+# Pre-compiled for the conversational-speech check (Change 3).
+_DTMF_DIGIT_RUN_RE = re.compile(r"\d{2,}")
+
+
+def _is_name_correction(transcript: str) -> bool:
+    """Return True if the transcript is correcting a name, not a number."""
+    lowered = transcript.lower()
+    return any(sig in lowered for sig in _NAME_CORRECTION_SIGNALS)
+
+
+def _is_conversational_during_dtmf(transcript: str) -> bool:
+    """
+    Return True when a transcript is almost certainly conversational speech
+    rather than a number entry attempt: >4 words AND no run of 2+ digits.
+    Only triggers the escape hatch when the DTMF buffer is also empty.
+    """
+    words = transcript.strip().split()
+    if len(words) <= 4:
+        return False
+    return not _DTMF_DIGIT_RUN_RE.search(transcript)
+
+
+# ---------------------------------------------------------------------------
 # Greeting (built at call start from clinic_config.json)
 # ---------------------------------------------------------------------------
 
@@ -4110,37 +4148,91 @@ class WebSocketCallHandler:
                     if await self._resolve_barge_in(utterance):
                         continue
 
-                    # A2: verbal reset while keypad phone collection is active.
-                    # Intercept BEFORE _llm_busy is set so a simple continue
-                    # is sufficient to skip run_turn entirely.
+                    # A2: verbal reset + DTMF mode management (Spec R).
+                    # Intercept BEFORE _llm_busy is set.
                     if self.session.get("v3_phone_dtmf_active"):
-                        _reset_words = {
-                            "reset", "clear", "start over", "start again",
-                            "wrong", "mistake", "again", "restart",
-                        }
-                        if any(w in utterance.lower() for w in _reset_words):
-                            self.session["phone_dtmf_buffer"] = ""
-                            _verbal_reset_msg = "Buffer cleared — please type your number again."
-                            await self.tts_text_queue.put(_verbal_reset_msg)
-                            self.session["last_bot_prompt"] = _verbal_reset_msg
-                            self.session["last_question"]   = _verbal_reset_msg
-                            await save_session(self.call_sid, self.session)
+                        _dtmf_buf  = self.session.get("phone_dtmf_buffer", "")
+                        _utt_lower = utterance.lower()
+
+                        # ── Change 2: name-correction exclusion ───────────────
+                        # If the patient is correcting their name, exit DTMF
+                        # mode and pass the utterance to the LLM regardless of
+                        # buffer state.  A name correction is never a number
+                        # reset.
+                        if _is_name_correction(utterance):
                             logger.info(
-                                "[ms_conn v3] verbal reset — DTMF buffer cleared: %r",
-                                utterance[:40],
+                                "[ms_conn] verbal reset skipped — "
+                                "name correction detected: %r",
+                                utterance[:60],
+                            )
+                            logger.info(
+                                "[ms_conn] name correction during DTMF — "
+                                "exiting DTMF mode, passing to LLM: %r",
+                                utterance[:60],
+                            )
+                            self.session["v3_phone_dtmf_active"] = False
+                            self.session["phone_dtmf_buffer"] = ""
+                            logger.info(
+                                "[ms_conn] v3_phone_dtmf_active = False"
+                                " (exited — name correction)"
+                            )
+                            # Fall through to normal LLM dispatch.
+
+                        elif _dtmf_buf:
+                            # ── Buffer has digits ─────────────────────────────
+                            # Change 1 satisfied — verbal reset may fire.
+                            _reset_words = {
+                                "reset", "clear", "start over", "start again",
+                                "wrong", "mistake", "again", "restart",
+                            }
+                            if any(w in _utt_lower for w in _reset_words):
+                                self.session["phone_dtmf_buffer"] = ""
+                                _verbal_reset_msg = (
+                                    "Buffer cleared — please type your"
+                                    " number again."
+                                )
+                                await self.tts_text_queue.put(_verbal_reset_msg)
+                                self.session["last_bot_prompt"] = _verbal_reset_msg
+                                self.session["last_question"]   = _verbal_reset_msg
+                                await save_session(self.call_sid, self.session)
+                                logger.info(
+                                    "[ms_conn v3] verbal reset — DTMF"
+                                    " buffer cleared: %r",
+                                    utterance[:40],
+                                )
+                                continue
+                            # Buffer non-empty, no reset word → suppress.
+                            logger.info(
+                                "[ms_conn] transcript suppressed — "
+                                "phone DTMF active: %r",
+                                utterance[:60],
                             )
                             continue
 
-                    # Suppress all non-reset speech during phone keypad entry.
-                    # Any transcript that reaches here (past the verbal reset
-                    # handler) is not a reset word — drop it silently so the
-                    # LLM is not invoked while the caller is typing digits.
-                    if self.session.get("v3_phone_dtmf_active"):
-                        logger.info(
-                            "[ms_conn] transcript suppressed — phone DTMF active: %r",
-                            utterance[:60],
-                        )
-                        continue
+                        else:
+                            # ── Buffer empty (Changes 1 + 3) ─────────────────
+                            # Verbal reset must never fire on an empty buffer.
+                            # If the speech is conversational (>4 words, no
+                            # digit run) exit DTMF mode; otherwise also exit —
+                            # the patient is clearly not typing a number.
+                            logger.info(
+                                "[ms_conn] verbal reset skipped — "
+                                "buffer empty: %r",
+                                utterance[:60],
+                            )
+                            if _is_conversational_during_dtmf(utterance):
+                                logger.info(
+                                    "[ms_conn] conversational speech in empty"
+                                    " DTMF mode — exiting: %r",
+                                    utterance[:60],
+                                )
+                            self.session["v3_phone_dtmf_active"] = False
+                            logger.info(
+                                "[ms_conn] v3_phone_dtmf_active = False"
+                                " (exited — conversational speech /"
+                                " name correction)"
+                            )
+                            # Fall through to normal LLM dispatch.
 
                     # ── CHANGE B: Name collection debounce ───────────────────
                     # STT often splits "my name is [name]" into two finals that
