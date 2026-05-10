@@ -4641,15 +4641,6 @@ class WebSocketCallHandler:
                                     )
                                     self.session["last_offered_slots"] = None
                                     self.session["last_date_hint"] = None
-                                # Spec K: new turn may produce a fresh availability
-                                # check — reset stage so the incoming day map is
-                                # recognised correctly.
-                                if self.slot_map_stage == SlotMapStage.NONE:
-                                    self.slot_map_stage = SlotMapStage.DAY_SELECTION
-                                    logger.info(
-                                        "[ms_conn] slot map stage → DAY_SELECTION"
-                                        " (new turn / availability reset) [FAQ path]"
-                                    )
                                 self._current_llm_task = asyncio.create_task(
                                     llm.run_turn(
                                         user_text=utterance,
@@ -5474,15 +5465,6 @@ class WebSocketCallHandler:
                                 )
                                 self.session["last_offered_slots"] = None
                                 self.session["last_date_hint"] = None
-                            # Spec K: new turn may produce a fresh availability
-                            # check — reset stage so the incoming day map is
-                            # recognised correctly.
-                            if self.slot_map_stage == SlotMapStage.NONE:
-                                self.slot_map_stage = SlotMapStage.DAY_SELECTION
-                                logger.info(
-                                    "[ms_conn] slot map stage → DAY_SELECTION"
-                                    " (new turn / availability reset)"
-                                )
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
