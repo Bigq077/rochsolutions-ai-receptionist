@@ -1225,7 +1225,7 @@ class LLMStream:
         # via the last_bot_prompt detection path — identical to the Claude path.
         _KEYPAD_PROMPT = (
             "Of course — could you type the number on your keypad? "
-            "You can press the hashtag key to reset at any time."
+            "You can press the star key to reset at any time."
         )
         _collected = session.get("collected") or {}
         _last_user_text = ""

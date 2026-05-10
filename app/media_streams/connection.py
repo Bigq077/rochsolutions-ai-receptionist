@@ -3443,37 +3443,25 @@ class WebSocketCallHandler:
 
         logger.info("[ms_conn] DTMF raw digit=%r v3_phone_dtmf_active=%s", digit, self.session.get("v3_phone_dtmf_active", False))
 
-        if digit == "#":
+        # Spec V — both * and # are reset keys; both clear the buffer and
+        # re-prompt with the same message.  v3_phone_dtmf_active stays True
+        # so the patient remains in keypad mode after a reset.
+        if digit in {"*", "#"}:
             if self.session.get("v3_phone_dtmf_active"):
                 # Ordering guarantee: clear the buffer and persist it BEFORE
                 # queuing TTS.  The await asyncio.sleep(0) yields to the event
                 # loop so the dict mutation is visible to any concurrent reader
                 # before the TTS coroutine starts consuming the queue.
                 self.session["phone_dtmf_buffer"] = ""
-                logger.info("[ms_conn] DTMF # — buffer cleared")
+                logger.info("[ms_conn] DTMF %s — buffer cleared (reset key)", digit)
                 await asyncio.sleep(0)          # yield: clear resolves before TTS
                 await save_session(self.call_sid, self.session)  # persist before TTS
-                _reset_msg = "Buffer cleared — please type your number again."
+                _reset_msg = "No problem — buffer cleared. Go ahead and type the number again."
                 await self.tts_text_queue.put(_reset_msg)
                 self.session["last_bot_prompt"] = _reset_msg
-                logger.info("[ms_conn] DTMF # — reset announced (ordering: clear→save→TTS)")
-            return
-
-        # Star clears the buffer for theorem_v3 phone collection
-        if digit == "*":
-            if self.session.get("v3_phone_dtmf_active"):
-                # Same ordering guarantee as # handler above.
-                self.session["phone_dtmf_buffer"] = ""
-                logger.info("[ms_conn v3] DTMF * — buffer cleared")
-                await asyncio.sleep(0)          # yield: clear resolves before TTS
-                await save_session(self.call_sid, self.session)  # persist before TTS
-                _clear_msg = (
-                    "No problem — buffer cleared. "
-                    "Go ahead and type the number again."
+                logger.info(
+                    "[ms_conn] DTMF %s — reset announced (ordering: clear→save→TTS)", digit
                 )
-                await self.tts_text_queue.put(_clear_msg)
-                self.session["last_bot_prompt"] = _clear_msg
-                logger.info("[ms_conn v3] DTMF * — reset announced (ordering: clear→save→TTS)")
             return
 
         # First real keypad press: cancel any leftover speech watchdog / W1-W3
@@ -4694,7 +4682,7 @@ class WebSocketCallHandler:
                                 _dtmf_prompt = (
                                     "No problem — please type the number "
                                     "on your keypad now. You can press the "
-                                    "hashtag key to reset at any time."
+                                    "star key to reset at any time."
                                 )
                                 await self.tts_text_queue.put(_dtmf_prompt)
                                 self.session[
