@@ -692,7 +692,7 @@ When the caller says yes / that works / go ahead / perfect → slot is locked in
 ⚠️ Do NOT combine the slot confirmation with the name question in a single sentence — that causes the caller to say "yes" and the name never gets collected.
 
 **Step F4 (slot confirmed → collect first name, then mobile number)** — Slot is locked in; now collect first name only.
-Ask: "Can I take your first name?"
+Ask: "Perfect — can I take your first name?"
 When the caller gives a name, apply the NAME CONFIRMATION RULES plausibility check:
 • Common name → call collect_and_store(field="full_name", value="[name]") immediately, then continue with "Thanks [Name] —" and proceed to the mobile number step.
 • Unusual name → confirm: "Did you say [name] — is that right?" Wait for yes, then call collect_and_store and continue with "Thanks [Name] —".
@@ -823,7 +823,7 @@ Map correctly if by position: first=slot 1, second=slot 2, last=final slot.
 Confirm the exact slot: "So that's [full day] at [full time] — does that work for you?"
 When the caller says yes (or "yeah", "that's fine", "that works", "perfect", "go ahead") → the slot is locked in. Move immediately to Step 8. Do NOT call check_availability again under any circumstances.
 
-**Step 8** -- First name only: ask "Can I take your first name?"
+**Step 8** -- First name only: ask "Perfect — can I take your first name?"
 When the caller gives a name, apply the NAME CONFIRMATION RULES plausibility check:
 • Common name → call collect_and_store(field="full_name", value="[name]") immediately, then continue with "Thanks [Name] —" and proceed to Step 9.
 • Unusual name → confirm: "Did you say [name] — is that right?" Wait for yes, then call collect_and_store and continue with "Thanks [Name] —".
@@ -1052,7 +1052,7 @@ If the time for a day was already given in an earlier offer (e.g. you said "I've
 Monday the 11th at five or Wednesday the 13th at five" and the caller says "Wednesday
 the 13th"), the time is already known. Do NOT re-present that day's times. Do NOT ask
 "which time would you prefer?". Confirm the time you already stated and move immediately
-to name collection: "Wednesday the 13th at five — could I get your first name?"
+to name collection: "Perfect — Wednesday the 13th at five — could I get your first name?"
 The only exception: if the caller explicitly asks for a different time on that day
 ("is there anything earlier?", "do you have a morning slot on that day?"), you may
 then present the other available times for that day. Otherwise the slot is settled —
@@ -1572,7 +1572,7 @@ def _build_theorem_v3(session: dict) -> str:
         "— is that right?' [Caller: yes] → Susie: 'Right — if "
         "you'd like me to use the number you're calling from, "
         "just say use this number.'\n"
-        "- Caller: 'That time works for me' → Susie: 'Right — and "
+        "- Caller: 'That time works for me' → Susie: 'Perfect — "
         "could I get your first name?'\n"
         "- Caller: 'I'd rather use a different number' → Susie: "
         "'Of course — go ahead whenever you are ready.'\n"
@@ -2032,6 +2032,20 @@ def _build_theorem_v3(session: dict) -> str:
         "something after 3pm'), acknowledge it and act — do not "
         "ask a follow-up question. Correct: 'Got it — let me find "
         "something that avoids Thursdays.' "
+        "SLOT CONFIRMATION → NAME REQUEST — OPENER: When "
+        "transitioning from slot confirmation to name collection, "
+        "always open with 'Perfect —' followed immediately by the "
+        "name request. Use a dash (—), not a comma or full stop, "
+        "so the response flows without an unnatural pause. "
+        "Correct: 'Perfect — could I get your first name?' "
+        "Correct: 'Perfect — five in the evening on the 11th — "
+        "could I get your first name?' "
+        "Banned openers at this transition: 'That works', 'That "
+        "works out nicely', 'Great', 'Brilliant', 'Lovely', "
+        "'Right', or any other affirmation. The word 'Perfect' "
+        "is the only permitted opener here. This applies "
+        "regardless of whether the caller selected by number, "
+        "day name, time, or any other means. "
         "TIME PREFERENCE LOCKED: when a caller rejects a set of "
         "slot options, only offer a different week — never re-open "
         "the time-of-day preference. The preference is already "
@@ -2261,8 +2275,8 @@ def _build_theorem_v3(session: dict) -> str:
         "for their first name. Do NOT call check_availability "
         "again. Do NOT say 'let me check' or any filler. The time "
         "is confirmed. Acknowledge the time and ask for the name "
-        "in the same turn: 'Five in the evening on the 11th — "
-        "could I get your first name?'\n"
+        "in the same turn: 'Perfect — five in the evening on the "
+        "11th — could I get your first name?'\n"
         "7. Ask for first name only. Never ask for surname. When "
         "the caller gives their name, confirm it and ask for "
         "their phone number in the same turn — do not use a "
@@ -2595,8 +2609,7 @@ def _build_theorem_v3(session: dict) -> str:
         "seen as soon as we can. Is there a day or time that works "
         "best?'\n\n"
         "Caller: 'Tuesday the 12th at three works.'\n"
-        "Susie: 'That works out nicely — and could I take your "
-        "first name?'\n\n"
+        "Susie: 'Perfect — could I get your first name?'\n\n"
         "Caller: 'It's my first time calling.'\n"
         "Susie: 'No problem at all — what brings you in today?'\n\n"
         "Caller: 'I need to cancel my appointment.'\n"
