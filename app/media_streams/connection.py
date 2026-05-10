@@ -952,6 +952,55 @@ _REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Spec Y — treatment-specific booking bypass
+# When a caller names a specific treatment alongside booking intent, the
+# booking ack handler must NOT auto-queue the location question.  Instead
+# the transcript falls through to run_turn so the LLM can apply Prompt L
+# framing (acknowledge treatment → recommend assessment → offer to book).
+# ---------------------------------------------------------------------------
+_TREATMENT_SIGNALS: frozenset = frozenset({
+    "acupuncture",
+    "shockwave",
+    "dry needling",
+    "sports massage",
+    "deep tissue",
+    "ultrasound",
+    "laser",
+    "massage",
+    "needling",
+    "manipulation",
+    "mobilisation",
+    "mobilization",
+    "electrotherapy",
+    "ultrasound therapy",
+    "heat therapy",
+    "taping",
+    "strapping",
+})
+
+
+def _is_treatment_specific_booking(transcript: str) -> bool:
+    """
+    Return True when `transcript` contains both a booking-intent signal
+    AND a named treatment/therapy.
+
+    Booking-intent signals are words like 'book', 'appointment',
+    'session', 'schedule', 'come in', 'get in'.  A treatment mention
+    without booking intent (e.g. "do you do acupuncture?") returns False
+    so that FAQ-style queries route to the LLM normally.
+    """
+    lowered = transcript.lower()
+    _BOOKING_INTENT_SIGNALS: frozenset = frozenset({
+        "book", "appointment", "session", "schedule",
+        "come in", "get in", "see someone", "get seen",
+        "like to book", "want to book", "need to book",
+        "make an", "arrange",
+    })
+    has_booking_intent = any(sig in lowered for sig in _BOOKING_INTENT_SIGNALS)
+    has_treatment = any(sig in lowered for sig in _TREATMENT_SIGNALS)
+    return has_booking_intent and has_treatment
+
 
 # ---------------------------------------------------------------------------
 # Slot-selection day aliases — STT mishearing correction
@@ -6131,7 +6180,30 @@ class WebSocketCallHandler:
                                     "v3_location_asked", False
                                 )
                             )
-                            if _is_booking_ack:
+                            # ── Spec Y: treatment-specific bypass ─────────────
+                            # Compute once so both the log branch and the ack
+                            # branch can reference it without double-calling.
+                            # True only when ack was detected AND the current
+                            # utterance contains a named treatment + booking
+                            # intent — e.g. "I'd like to book acupuncture".
+                            # Pure FAQ treatment mentions ("do you do acupuncture?")
+                            # have no booking-intent signal and return False.
+                            _v3_treatment_bypass = (
+                                _is_booking_ack
+                                and _is_treatment_specific_booking(utterance)
+                            )
+                            if _v3_treatment_bypass:
+                                # Log and fall through — the LLM's full response
+                                # (Prompt L framing) already played; do not
+                                # auto-queue the location question.
+                                logger.info(
+                                    "[ms_conn v3] treatment-specific booking"
+                                    " request — bypassing booking ack,"
+                                    " passing to LLM: %r",
+                                    utterance[:80],
+                                )
+                            elif _is_booking_ack:
+                                # ── end Spec Y (normal ack path) ──────────────
                                 self.booking_flow_active = True
                                 logger.info("[ms_conn] booking_flow_active = True")
                                 self.session["v3_booking_intent"] = True
