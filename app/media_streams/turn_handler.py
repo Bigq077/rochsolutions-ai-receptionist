@@ -128,12 +128,26 @@ _BANNED_SENTENCE_RE = [
      )),
 
     # ── Prompt C — scarcity-signalling openers ───────────────────────────────
-    # "The closest/nearest X is " — strip the preamble, keep the date/time.
-    # Pattern: anchored to start-of-chunk, strips up to and including "is " so
-    # the substantive slot info ("Tuesday the 2nd...") plays instead.
+    # "The closest/nearest X is/would be/— " — strip the preamble, keep the
+    # date/time.  Anchored to start-of-chunk; strips up to and including the
+    # first recognisable connector so the slot info plays directly.
+    # Connectors handled: "is ", "would be ", em-dash/en-dash + space.
     ("closest_nearest_opener",
      re.compile(
-         r"^[Tt]he (?:closest|nearest)\b[^.!?]*?\bis\s+",
+         r"^[Tt]he (?:closest|nearest)\b[^.!?—–]*?"
+         r"(?:\bis\s+|\bwould be\s+|[—–]\s*)",
+         re.IGNORECASE,
+     )),
+    # "The closest I've got / I have / we have / available" — full-sentence
+    # strip for forms where the date cannot be rescued by the opener-strip
+    # above (no clean connector exposed, or the form is entirely a dead-end
+    # qualifier with no following slot info).  Runs after the opener-strip so
+    # cases already rescued by that pattern are never double-processed.
+    ("closest_ive_got",
+     re.compile(
+         r"[^.!?]*\b[Tt]he (?:closest|nearest)\s+"
+         r"(?:I'?ve\s+got|I\s+have|we\s+have|available)\b"
+         r"[^.!?]*[.!?]?",
          re.IGNORECASE,
      )),
 
@@ -145,11 +159,11 @@ _BANNED_SENTENCE_RE = [
          re.IGNORECASE,
      )),
 
-    # "The only [day/time/slot/morning/afternoon/evening]" — full-sentence strip.
+    # "The only [day/time/slot/morning/afternoon/evening/appointment]" — strip.
     ("the_only_slot_scarcity",
      re.compile(
          r"[^.!?]*\b[Tt]he only\s+(?:\w+\s+)*"
-         r"(?:day|time|slot|morning|afternoon|evening|option|[a-zA-Z]+day)\b"
+         r"(?:day|time|slot|morning|afternoon|evening|option|appointment|[a-zA-Z]+day)\b"
          r"[^.!?]*[.!?]?",
          re.IGNORECASE,
      )),
