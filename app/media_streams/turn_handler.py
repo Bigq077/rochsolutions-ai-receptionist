@@ -87,6 +87,45 @@ _BANNED_SENTENCE_RE = [
     # surrounding text so the day/time label survives.
     ("slot_count_annotation",
      re.compile(r"\s*\(\d+\s*slots?\)", re.IGNORECASE)),
+
+    # ── Deflection openers ───────────────────────────────────────────────────
+    # "That's one for the [role]", "that's one for the calendar",
+    # "that's something to discuss with", "that's a question for".
+    # These push the patient's question to someone else without engaging;
+    # they are never appropriate as an opener.
+    # Pattern: strip from the start of the response up to and including the
+    # first em-dash / en-dash or sentence-ending punctuation (and any trailing
+    # whitespace), leaving the substantive remainder to be re-capitalised by
+    # the existing post-strip capitalisation step.
+    ("one_for_practitioner",
+     re.compile(
+         r"^[Tt]hat'?s one for (?:the )?(?:practitioner|therapist|clinician)"
+         r"[^—–.!?]*(?:[—–.!?]\s*)?",
+         re.IGNORECASE,
+     )),
+    ("one_for_calendar",
+     re.compile(
+         r"^[Tt]hat'?s one for (?:the )?calendar[^—–.!?]*(?:[—–.!?]\s*)?",
+         re.IGNORECASE,
+     )),
+    # "that's one for mark" — named-person / general deflection fallback.
+    # (?:the )? handles "that's one for the admin" as well as "for mark".
+    # Runs after the specific-role entries so it only catches residual cases.
+    ("one_for_name",
+     re.compile(
+         r"^[Tt]hat'?s one for (?:the )?[a-zA-Z]+[^—–.!?]*(?:[—–.!?]\s*)?",
+         re.IGNORECASE,
+     )),
+    ("something_to_discuss",
+     re.compile(
+         r"^[Tt]hat'?s something to discuss with[^—–.!?]*(?:[—–.!?]\s*)?",
+         re.IGNORECASE,
+     )),
+    ("a_question_for",
+     re.compile(
+         r"^[Tt]hat'?s a question for[^—–.!?]*(?:[—–.!?]\s*)?",
+         re.IGNORECASE,
+     )),
 ]
 
 _MULTI_SPACE_RE  = re.compile(r" {2,}")
