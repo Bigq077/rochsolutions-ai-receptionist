@@ -3487,156 +3487,166 @@ class WebSocketCallHandler:
                 logger.info("[ms_conn] DTMF digit received — cancelling speech watchdog")
                 self._silence_handler._cancel_timer()
 
-        # ── theorem_v3 location DTMF fallback ────────────────────────────────
-        # Fires when two rounds of voice resolution failed and the caller
-        # was asked to press 1 (Alcester) or 2 (Redditch) on their keypad.
-        if self.session.get("v3_awaiting_location_dtmf"):
-            if digit == "1":
-                _loc_dtmf = "alcester"
-            elif digit == "2":
-                _loc_dtmf = "redditch"
-            else:
-                # Invalid key — re-prompt once
-                _invalid_msg = (
-                    "Press 1 for Awlstuh "
-                    "or 2 for Redditch."
-                )
-                await self.tts_text_queue.put(_invalid_msg)
-                self.session["last_bot_prompt"] = _invalid_msg
-                await save_session(self.call_sid, self.session)
-                return
+        # ── Specialist handlers: location / intro / slot / ASK_LOCATION ────────
+        # Spec U: wrapped in `if not v3_phone_dtmf_active` so that no handler
+        # can intercept a digit and return before it reaches the phone buffer.
+        # When phone-collection mode is active every digit must reach line
+        # `buf = ... + digit` below — the specialist handlers are irrelevant at
+        # that point and must be skipped entirely.
+        if not self.session.get("v3_phone_dtmf_active"):
 
-            # Valid digit — resolve location
-            self.session["v3_awaiting_location_dtmf"] = False
-            self.session["selected_location"] = _loc_dtmf
-            self.session["v3_location_confirmed"] = True
-            self.session["v3_location_asked"] = False
-            self.session["v3_location_q_active"] = False
-            _disp = _loc_dtmf.capitalize()
-            _ack = f"{_disp}, perfect."
-            _intent = self.session.get("v3_caller_intent", "booking")
-            if _intent in ("reschedule", "cancel"):
-                _next_q = (
-                    "Is the number you're calling on "
-                    "the one associated with your "
-                    "booking? If so, just say "
-                    "'use this number'."
-                )
-                self.session["v3_awaiting_phone_confirm"] = True
-            else:
-                _next_q = (
-                    "Is there a particular day or time "
-                    "that works best for you?"
-                )
-            await self.tts_text_queue.put(_ack)
-            await self.tts_text_queue.put(_next_q)
-            self.session["last_bot_prompt"] = _next_q
-            self.session["last_question"] = _next_q
-            await save_session(self.call_sid, self.session)
-            # Arm the watchdog for the follow-up question.  The verbal path
-            # gets this for free because on_transcript_received() resets
-            # _no_input_reask_count before _restart_timer runs.  DTMF never
-            # triggers on_transcript_received, so _no_input_reask_count can
-            # be > 0 from the previous "Press 1 or 2" watchdog fire — hitting
-            # WATCHDOG_RETIRED_FOR_QGEN and leaving the new question unguarded.
-            # on_question_asked increments _q_gen, resets _no_input_reask_count,
-            # resets _watchdog_has_retired, and arms a fresh watchdog.
-            if self._silence_handler is not None:
-                self._silence_handler.on_question_asked(_next_q)
-                logger.info(
-                    "[ms_conn v3] DTMF location resolved: "
-                    "%s (digit=%s) — watchdog armed for follow-up q", _loc_dtmf, digit,
-                )
-            else:
-                logger.info(
-                    "[ms_conn v3] DTMF location resolved: "
-                    "%s (digit=%s)", _loc_dtmf, digit,
-                )
-            return
-
-        # theorem_v3 intro: digit 1 → transfer to Mark; any other digit is
-        # swallowed (caller mis-pressed).  Clears the flag regardless so it
-        # never leaks into subsequent turns.
-        if self.session.get("v3_intro_dtmf_active"):
-            self.session["v3_intro_dtmf_active"] = False
-            if digit == "1":
-                logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
-                await self.tts_text_queue.put(
-                    "Of course — transferring you to Mark now, one moment."
-                )
-                self.session["transfer_requested_by_caller"] = True
-                await self._on_transfer_request()
-            return
-
-        # theorem_v3 slot / time selection — fallback DTMF only.
-        # DTMF is armed here (not at slot-presentation time) when:
-        #   1. A slot map exists from a previous presentation turn, AND
-        #   2. The LLM just re-asked with a "keypad" suggestion (indicating
-        #      it could not understand the caller's spoken slot choice).
-        # On the first digit after arming, inject the mapped label as a
-        # synthetic transcript so the LLM processes it as a spoken choice.
-        _slot_map = self.session.get("v3_dtmf_slot_map", {})
-        # Spec K: only arm / process slot DTMF when the stage says a slot map
-        # is active.  During name collection (NONE) any keypad press must fall
-        # through to phone-number handling rather than being misread as a day
-        # or time re-selection.
-        _slot_stage_active = self.slot_map_stage in (
-            SlotMapStage.DAY_SELECTION, SlotMapStage.TIME_SELECTION
-        )
-        if (
-            _slot_map
-            and _slot_stage_active
-            and not self.session.get("v3_slot_dtmf_active")
-            and "keypad" in self.session.get("last_bot_prompt", "").lower()
-        ):
-            logger.info(
-                "[ms_conn] theorem_v3: slot DTMF fallback armed "
-                "(stage=%s, last_bot_prompt contains 'keypad', map=%r)",
-                self.slot_map_stage.name,
-                _slot_map,
-            )
-            self.session["v3_slot_dtmf_active"] = True
-
-        if self.session.get("v3_slot_dtmf_active") and digit in "123456789":
-            if not _slot_stage_active:
-                # Stage has moved to NONE since arming — digit is not a slot
-                # selection; disarm silently and fall through to phone handling.
-                logger.info(
-                    "[ms_conn] theorem_v3: slot DTMF digit=%r ignored"
-                    " — stage is %s (not a slot stage)",
-                    digit, self.slot_map_stage.name,
-                )
-                self.session.pop("v3_slot_dtmf_active", None)
-                # Fall through — do NOT return; phone handler may need digit.
-            else:
-                _label = _slot_map.get(digit)
-                # Disarm regardless — one press = one selection
-                self.session.pop("v3_slot_dtmf_active",        None)
-                self.session.pop("v3_dtmf_slot_map",           None)
-                self.session.pop("v3_awaiting_slot_selection", None)
-                if _label:
-                    logger.info(
-                        "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r"
-                        " (stage=%s)",
-                        digit, _label, self.slot_map_stage.name,
+            # ── theorem_v3 location DTMF fallback ────────────────────────────
+            # Fires when two rounds of voice resolution failed and the caller
+            # was asked to press 1 (Alcester) or 2 (Redditch) on their keypad.
+            if self.session.get("v3_awaiting_location_dtmf"):
+                if digit == "1":
+                    _loc_dtmf = "alcester"
+                elif digit == "2":
+                    _loc_dtmf = "redditch"
+                else:
+                    # Invalid key — re-prompt once
+                    _invalid_msg = (
+                        "Press 1 for Awlstuh "
+                        "or 2 for Redditch."
                     )
-                    await self.transcript_queue.put((time.monotonic(), _label))
+                    await self.tts_text_queue.put(_invalid_msg)
+                    self.session["last_bot_prompt"] = _invalid_msg
+                    await save_session(self.call_sid, self.session)
+                    return
+
+                # Valid digit — resolve location
+                self.session["v3_awaiting_location_dtmf"] = False
+                self.session["selected_location"] = _loc_dtmf
+                self.session["v3_location_confirmed"] = True
+                self.session["v3_location_asked"] = False
+                self.session["v3_location_q_active"] = False
+                _disp = _loc_dtmf.capitalize()
+                _ack = f"{_disp}, perfect."
+                _intent = self.session.get("v3_caller_intent", "booking")
+                if _intent in ("reschedule", "cancel"):
+                    _next_q = (
+                        "Is the number you're calling on "
+                        "the one associated with your "
+                        "booking? If so, just say "
+                        "'use this number'."
+                    )
+                    self.session["v3_awaiting_phone_confirm"] = True
+                else:
+                    _next_q = (
+                        "Is there a particular day or time "
+                        "that works best for you?"
+                    )
+                await self.tts_text_queue.put(_ack)
+                await self.tts_text_queue.put(_next_q)
+                self.session["last_bot_prompt"] = _next_q
+                self.session["last_question"] = _next_q
+                await save_session(self.call_sid, self.session)
+                # Arm the watchdog for the follow-up question.  The verbal path
+                # gets this for free because on_transcript_received() resets
+                # _no_input_reask_count before _restart_timer runs.  DTMF never
+                # triggers on_transcript_received, so _no_input_reask_count can
+                # be > 0 from the previous "Press 1 or 2" watchdog fire — hitting
+                # WATCHDOG_RETIRED_FOR_QGEN and leaving the new question unguarded.
+                # on_question_asked increments _q_gen, resets _no_input_reask_count,
+                # resets _watchdog_has_retired, and arms a fresh watchdog.
+                if self._silence_handler is not None:
+                    self._silence_handler.on_question_asked(_next_q)
+                    logger.info(
+                        "[ms_conn v3] DTMF location resolved: "
+                        "%s (digit=%s) — watchdog armed for follow-up q", _loc_dtmf, digit,
+                    )
                 else:
                     logger.info(
-                        "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
-                        digit,
+                        "[ms_conn v3] DTMF location resolved: "
+                        "%s (digit=%s)", _loc_dtmf, digit,
                     )
                 return
 
-        # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
-        if self.session.get("state") == "ASK_LOCATION":
-            if digit == "1":
-                logger.info("[ms_conn] DTMF digit=1 → synthetic transcript 'alcester'")
-                await self.transcript_queue.put((time.monotonic(), "alcester"))
-            elif digit == "2":
-                logger.info("[ms_conn] DTMF digit=2 → synthetic transcript 'redditch'")
-                await self.transcript_queue.put((time.monotonic(), "redditch"))
-            return
+            # theorem_v3 intro: digit 1 → transfer to Mark; any other digit is
+            # swallowed (caller mis-pressed).  Clears the flag regardless so it
+            # never leaks into subsequent turns.
+            if self.session.get("v3_intro_dtmf_active"):
+                self.session["v3_intro_dtmf_active"] = False
+                if digit == "1":
+                    logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
+                    await self.tts_text_queue.put(
+                        "Of course — transferring you to Mark now, one moment."
+                    )
+                    self.session["transfer_requested_by_caller"] = True
+                    await self._on_transfer_request()
+                return
+
+            # theorem_v3 slot / time selection — fallback DTMF only.
+            # DTMF is armed here (not at slot-presentation time) when:
+            #   1. A slot map exists from a previous presentation turn, AND
+            #   2. The LLM just re-asked with a "keypad" suggestion (indicating
+            #      it could not understand the caller's spoken slot choice).
+            # On the first digit after arming, inject the mapped label as a
+            # synthetic transcript so the LLM processes it as a spoken choice.
+            _slot_map = self.session.get("v3_dtmf_slot_map", {})
+            # Spec K: only arm / process slot DTMF when the stage says a slot map
+            # is active.  During name collection (NONE) any keypad press must fall
+            # through to phone-number handling rather than being misread as a day
+            # or time re-selection.
+            _slot_stage_active = self.slot_map_stage in (
+                SlotMapStage.DAY_SELECTION, SlotMapStage.TIME_SELECTION
+            )
+            if (
+                _slot_map
+                and _slot_stage_active
+                and not self.session.get("v3_slot_dtmf_active")
+                and "keypad" in self.session.get("last_bot_prompt", "").lower()
+            ):
+                logger.info(
+                    "[ms_conn] theorem_v3: slot DTMF fallback armed "
+                    "(stage=%s, last_bot_prompt contains 'keypad', map=%r)",
+                    self.slot_map_stage.name,
+                    _slot_map,
+                )
+                self.session["v3_slot_dtmf_active"] = True
+
+            if self.session.get("v3_slot_dtmf_active") and digit in "123456789":
+                if not _slot_stage_active:
+                    # Stage has moved to NONE since arming — digit is not a slot
+                    # selection; disarm silently and fall through to phone handling.
+                    logger.info(
+                        "[ms_conn] theorem_v3: slot DTMF digit=%r ignored"
+                        " — stage is %s (not a slot stage)",
+                        digit, self.slot_map_stage.name,
+                    )
+                    self.session.pop("v3_slot_dtmf_active", None)
+                    # Fall through — do NOT return; phone handler may need digit.
+                else:
+                    _label = _slot_map.get(digit)
+                    # Disarm regardless — one press = one selection
+                    self.session.pop("v3_slot_dtmf_active",        None)
+                    self.session.pop("v3_dtmf_slot_map",           None)
+                    self.session.pop("v3_awaiting_slot_selection", None)
+                    if _label:
+                        logger.info(
+                            "[ms_conn] theorem_v3: slot DTMF digit=%r → injecting %r"
+                            " (stage=%s)",
+                            digit, _label, self.slot_map_stage.name,
+                        )
+                        await self.transcript_queue.put((time.monotonic(), _label))
+                    else:
+                        logger.info(
+                            "[ms_conn] theorem_v3: slot DTMF digit=%r — no mapping, ignored",
+                            digit,
+                        )
+                    return
+
+            # ASK_LOCATION: digit 1 → alcester, digit 2 → redditch (immediate, no accumulation)
+            if self.session.get("state") == "ASK_LOCATION":
+                if digit == "1":
+                    logger.info("[ms_conn] DTMF digit=1 → synthetic transcript 'alcester'")
+                    await self.transcript_queue.put((time.monotonic(), "alcester"))
+                elif digit == "2":
+                    logger.info("[ms_conn] DTMF digit=2 → synthetic transcript 'redditch'")
+                    await self.transcript_queue.put((time.monotonic(), "redditch"))
+                return
+
+        # end: specialist handlers (skipped when v3_phone_dtmf_active=True)
 
         # theorem_v3 booking path: the LLM can ask the caller to "type on your
         # keypad" from run_turn() without any structured handler having set
