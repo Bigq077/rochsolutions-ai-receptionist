@@ -7340,6 +7340,62 @@ class WebSocketCallHandler:
                 "[ms_tts] tts_finished fired: chunk_text=%r q_size=%d",
                 text[:60], self.tts_text_queue.qsize(),
             )
+
+            # ── Spec W: watchdog restart for informational responses ──────────
+            # SilenceHandler.on_tts_finished has a "late TTS callback" guard:
+            #   last_audio_received_at > _last_question_set_at + 1 s → return
+            # For informational turns (FAQ / treatment / pricing answers) this
+            # guard ALWAYS fires because the caller's transcript arrived after
+            # the previous question was asked and on_question_asked() was never
+            # called during the new LLM turn, so _last_question_set_at was never
+            # updated.  The result: no watchdog is ever armed, the silence safety
+            # net fires immediately after TTS completion citing the elapsed time
+            # from the LLM call start as dead air (e.g. "since=15.3 s").
+            #
+            # Fix: when we reach this point (terminal chunk, in-order, stale
+            # guards cleared) and no watchdog is currently live, arm one
+            # directly here — bypassing on_tts_finished entirely for the
+            # watchdog arming step.  The subsequent on_tts_finished() call
+            # below still handles _tts_playing and other bookkeeping; the
+            # idempotent q_gen guard in _restart_timer means a double-arm
+            # from that path is harmless.
+            _sh_w = self._silence_handler
+            _watchdog_live_w = (
+                _sh_w._no_input_watchdog_task is not None
+                and not _sh_w._no_input_watchdog_task.done()
+            )
+            if (
+                not _watchdog_live_w
+                and not _sh_w._watchdog_has_retired
+                and not _sh_w._llm_busy
+                and not _sh_w.currently_reasking
+                and not _sh_w._cancelled
+                and self.tts_text_queue.empty()   # no more TTS pending
+            ):
+                import re as _re_w
+                _t_str_w = text.strip()
+                _parts_w = _re_w.split(r'(?<=[.!?])\s+|\n+', _t_str_w)
+                # Use last sentence as the re-ask prompt — avoids replaying a
+                # full multi-sentence FAQ paragraph (spec W hard constraint).
+                _last_sent_w = next(
+                    (p.strip() for p in reversed(_parts_w) if p.strip()),
+                    _t_str_w,
+                )
+                if _last_sent_w:
+                    _sh_w.last_question         = _last_sent_w
+                    _sh_w.reask_count           = 0
+                    _sh_w._no_input_reask_count = 0
+                    _sh_w._last_question_set_at = time.time()
+                    _sh_w._q_gen               += 1
+                    _sh_w._watchdog_has_retired = False
+                    _sh_w._restart_timer()
+                    logger.info(
+                        "[ms_watchdog] restarted after informational response"
+                        " q_gen=%d prompt=%r",
+                        _sh_w._q_gen, _last_sent_w[:60],
+                    )
+            # ── end Spec W ────────────────────────────────────────────────────
+
             self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
