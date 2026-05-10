@@ -452,6 +452,13 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
             f"This clinic has two locations: {loc_names}.\n"
             f"INFORMATIONAL questions (address, directions, parking, hours): give details for BOTH locations — never ask them to pick one. "
             f"Example: 'We have two clinics — our Awlstuh one is at [address] and Redditch is at [address].'\n"
+            f"CLINIC DIFFERENCE QUESTION — if a caller asks what the difference is between the two clinics, asks which one to choose, "
+            f"or asks anything like 'what's the difference?', 'which one is better?', 'what does each one offer?': "
+            f"answer directly BEFORE asking them to choose. Say: "
+            f"'Alcester runs several days a week and has free parking on site — around eighty spaces. "
+            f"Redditch is Thursdays only with street parking nearby. Which would suit you better?' "
+            f"Never deflect this question or ask the caller to choose before answering it. "
+            f"Never say 'it depends on you' or 'it's up to you' without first giving the factual differences.\n"
             f"BOOKING only: ask which location the caller wants using the number prompt, "
             f"but only AFTER they have confirmed they want to book (Step 2 / Step F0 in the booking workflow). "
             f"NEVER use the number prompt outside of a booking context. "
@@ -1013,6 +1020,14 @@ This applies equally to the caller_number from context and to numbers the caller
 **check_availability** -- call ONCE per booking, before offering times. Must know location and service first.
 ALWAYS include a spoken bridge in the SAME response: "...just checking what we've got coming up for you..." (natural variant, not scripted).
 The tool returns `available_days` — a list of days, each with `day_label`, `slot_times`, and `slots`.
+
+SERVICE TYPE — physiotherapy assessments only:
+The ONLY valid value for `service` when calling check_availability is `"physiotherapy assessment"`.
+NEVER pass `"acupuncture"`, `"dry needling"`, `"sports massage"`, or any other service type.
+If a caller asks about acupuncture, dry needling, or sports massage, respond:
+"We offer physiotherapy assessments — the practitioner can discuss what approach would suit you best at your appointment. Would you like to book one?"
+Do NOT tell a caller they are booking acupuncture. Do NOT set service to anything other than `"physiotherapy assessment"`.
+This applies even if the caller explicitly asks for acupuncture — the booking type is always a physiotherapy assessment.
 
 DAY-FIRST PRESENTATION — always show DAYS before TIMES:
 
