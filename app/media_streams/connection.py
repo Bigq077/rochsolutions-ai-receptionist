@@ -1622,23 +1622,14 @@ class SilenceHandler:
                         _sr_sess["v3_awaiting_use_this_clinic"] = True
                         _sr_sess["last_question"] = phrase
                         _sr_sess["last_bot_prompt"] = phrase
-                        # Derive bias from prompt text at generation time.
-                        # Stored as v3_use_this_clinic_bias so the handler
-                        # never has to re-read last_bot_prompt (which may be
-                        # overwritten before the caller responds).
-                        _sr_bias = (
-                            "redditch"
-                            if (
-                                "redditch" in phrase.lower()
-                                or "reddich" in phrase.lower()
-                            )
-                            else "alcester"
-                        )
+                        # Bias: rung-1 phrase is always "Did you say the Awlstuh
+                        # clinic?" (Alcester).  Set directly rather than parsing
+                        # the human-readable phrase — fragile if text ever changes.
+                        _sr_bias = "alcester"
                         _sr_sess["v3_use_this_clinic_bias"] = _sr_bias
                         logger.info(
-                            "[ms_conn v3] watchdog bias set: %s"
-                            " from prompt: %r",
-                            _sr_bias, phrase[:60],
+                            "[ms_conn v3] watchdog bias set: %s (rung-1 alcester constant)",
+                            _sr_bias,
                         )
                 if _sr_sess:
                     _sr_sess["v3_location_reask_count"] = _sr_lrc + 1
@@ -2520,23 +2511,16 @@ class SilenceHandler:
                             _sess["v3_awaiting_use_this_clinic"] = True
                             _sess["last_question"] = phrase
                             _sess["last_bot_prompt"] = phrase
-                            # Derive bias from prompt text at generation time.
-                            # Stored as v3_use_this_clinic_bias so the handler
-                            # never has to re-read last_bot_prompt (which may be
-                            # overwritten before the caller responds).
-                            _v3_bias = (
-                                "redditch"
-                                if (
-                                    "redditch" in phrase.lower()
-                                    or "reddich" in phrase.lower()
-                                )
-                                else "alcester"
-                            )
+                            # Bias: rung-1 phrase is always "Did you say the
+                            # Awlstuh clinic?" (Alcester).  Set directly rather
+                            # than parsing the human-readable phrase — fragile
+                            # if text ever changes.
+                            _v3_bias = "alcester"
                             _sess["v3_use_this_clinic_bias"] = _v3_bias
                             logger.info(
                                 "[ms_conn v3] watchdog bias set: %s"
-                                " from prompt: %r",
-                                _v3_bias, phrase[:60],
+                                " (rung-1 alcester constant)",
+                                _v3_bias,
                             )
                     else:
                         # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
@@ -7653,7 +7637,10 @@ class WebSocketCallHandler:
                     (p.strip() for p in reversed(_parts_w) if p.strip()),
                     _t_str_w,
                 )
-                if _last_sent_w:
+                if _last_sent_w and _sh_w._prompt_contains_question(_last_sent_w):
+                    # Only arm when the last sentence is a genuine question —
+                    # avoids WATCHDOG_SUPPRESSED noise for purely informational
+                    # responses like "It's £75." or "Free parking is available."
                     _sh_w.last_question         = _last_sent_w
                     _sh_w.reask_count           = 0
                     _sh_w._no_input_reask_count = 0
@@ -7665,6 +7652,12 @@ class WebSocketCallHandler:
                         "[ms_watchdog] restarted after informational response"
                         " q_gen=%d prompt=%r",
                         _sh_w._q_gen, _last_sent_w[:60],
+                    )
+                else:
+                    logger.debug(
+                        "[ms_watchdog] Spec W: last sentence has no question — "
+                        "skipping watchdog restart: %r",
+                        _last_sent_w[:60],
                     )
             # ── end Spec W ────────────────────────────────────────────────────
 
@@ -8061,9 +8054,18 @@ class WebSocketCallHandler:
                 and not any(w in _V3_LOC_PASS for w in _v3_echo_words)
             )
             if _v3_echo_candidate:
+                # Suppress on_transcript_received so the watchdog keeps running
+                # (correct), but also extend _watchdog_grace_until so the watchdog
+                # does not fire prematurely due to VAD/last_engagement_at updates
+                # that happened during the echo playback.  Mic is demonstrably live
+                # — give the caller 12 s of quiet before re-asking.
+                self._silence_handler._watchdog_grace_until = max(
+                    self._silence_handler._watchdog_grace_until,
+                    time.time() + 12.0,
+                )
                 logger.info(
                     "[ms_conn v3] TTS-echo candidate %r (%d word(s)) "
-                    "— on_transcript_received suppressed, silence timer preserved",
+                    "— on_transcript_received suppressed, watchdog grace extended +12 s",
                     _fc_text, len(_v3_echo_words),
                 )
             else:
