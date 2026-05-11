@@ -5471,11 +5471,18 @@ class WebSocketCallHandler:
                                                 "v3_awaiting_phone_confirm"
                                             ] = True
                                         else:
-                                            _existing_tp = (
+                                            _sc_tp = (
                                                 self.session.get(
                                                     "soft_context"
                                                 ) or {}
                                             ).get("time_preference")
+                                            _existing_tp = (
+                                                _sc_tp
+                                                or self.session.get(
+                                                    "time_of_day_preference"
+                                                )
+                                                or ""
+                                            )
                                             if _existing_tp:
                                                 # Caller already stated
                                                 # preference — re-queue so
@@ -5532,35 +5539,59 @@ class WebSocketCallHandler:
                                                     _new_ret_q
                                                 )
                                     else:
-                                        # CODE SPEC AE — treatment bypass /
-                                        # non-booking ack-only path: only the
-                                        # ack was queued above.  Queue
-                                        # preference question immediately so
-                                        # there is no dead air after the ack.
-                                        _PREF_Q = (
-                                            "Is there a particular day"
-                                            " or time that works best"
-                                            " for you?"
+                                        # CODE SPEC AE REVISED — treatment
+                                        # bypass / non-booking ack-only path.
+                                        # Route based on what is already known:
+                                        # time preference captured → re-queue
+                                        # so LLM fires check_availability with
+                                        # both location and preference in context.
+                                        # No preference yet → ask for it.
+                                        _ae_sc = (
+                                            self.session.get("soft_context") or {}
                                         )
-                                        await self.tts_text_queue.put(
-                                            _PREF_Q
+                                        _ae_tp = (
+                                            _ae_sc.get("time_preference")
+                                            or self.session.get(
+                                                "time_of_day_preference"
+                                            )
+                                            or ""
                                         )
-                                        self.session[
-                                            "last_bot_prompt"
-                                        ] = _PREF_Q
-                                        self.session[
-                                            "last_question"
-                                        ] = _PREF_Q
-                                        self.session.setdefault(
-                                            "conversation_history", []
-                                        ).append({
-                                            "role": "assistant",
-                                            "content": _PREF_Q,
-                                        })
-                                        self._silence_handler\
-                                            .on_question_asked(
+                                        if _ae_tp:
+                                            await self.transcript_queue.put(
+                                                (time.monotonic(), _ae_tp)
+                                            )
+                                            logger.info(
+                                                "[ms_conn v3] time preference"
+                                                " already known (%r) —"
+                                                " re-queued for check_"
+                                                "availability after ack",
+                                                _ae_tp,
+                                            )
+                                        else:
+                                            _PREF_Q = (
+                                                "Is there a particular day"
+                                                " or time that works best"
+                                                " for you?"
+                                            )
+                                            await self.tts_text_queue.put(
                                                 _PREF_Q
                                             )
+                                            self.session[
+                                                "last_bot_prompt"
+                                            ] = _PREF_Q
+                                            self.session[
+                                                "last_question"
+                                            ] = _PREF_Q
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).append({
+                                                "role": "assistant",
+                                                "content": _PREF_Q,
+                                            })
+                                            self._silence_handler\
+                                                .on_question_asked(
+                                                    _PREF_Q
+                                                )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -5759,18 +5790,39 @@ class WebSocketCallHandler:
                                         _intent = self.session.get(
                                             "v3_caller_intent", "booking"
                                         )
+                                        # CODE SPEC AE REVISED — determine
+                                        # next step based on intent and
+                                        # whether time preference is known.
                                         if _intent in ("reschedule", "cancel"):
-                                            _next_q = (
+                                            _h_next_q = (
                                                 "Is the number you're "
                                                 "calling on the one "
                                                 "associated with your "
                                                 "booking? If so, just "
                                                 "say 'use this number'."
                                             )
+                                            _h_tp = ""
                                         else:
-                                            _next_q = (
-                                                "Is there a particular day or "
-                                                "time that works best for you?"
+                                            _h_sc = (
+                                                self.session.get(
+                                                    "soft_context"
+                                                ) or {}
+                                            )
+                                            _h_tp = (
+                                                _h_sc.get("time_preference")
+                                                or self.session.get(
+                                                    "time_of_day_preference"
+                                                )
+                                                or ""
+                                            )
+                                            _h_next_q = (
+                                                ""
+                                                if _h_tp
+                                                else (
+                                                    "Is there a particular"
+                                                    " day or time that works"
+                                                    " best for you?"
+                                                )
                                             )
                                         self.session[
                                             "selected_location"
@@ -5792,25 +5844,39 @@ class WebSocketCallHandler:
                                                 "v3_awaiting_phone_confirm"
                                             ] = True
                                         await self.tts_text_queue.put(_ack)
-                                        await self.tts_text_queue.put(
-                                            _next_q
-                                        )
-                                        self.session[
-                                            "last_bot_prompt"
-                                        ] = _next_q
-                                        self.session[
-                                            "last_question"
-                                        ] = _next_q
-                                        self.session.setdefault(
-                                            "conversation_history", []
-                                        ).append({
-                                            "role": "assistant",
-                                            "content": _next_q,
-                                        })
-                                        self._silence_handler\
-                                            .on_question_asked(
-                                                _next_q
+                                        if _h_tp:
+                                            # Time preference known — re-queue
+                                            # so LLM fires check_availability.
+                                            await self.transcript_queue.put(
+                                                (time.monotonic(), _h_tp)
                                             )
+                                            logger.info(
+                                                "[ms_conn v3] Haiku resolve:"
+                                                " time preference already"
+                                                " known (%r) — re-queued"
+                                                " for check_availability",
+                                                _h_tp,
+                                            )
+                                        elif _h_next_q:
+                                            await self.tts_text_queue.put(
+                                                _h_next_q
+                                            )
+                                            self.session[
+                                                "last_bot_prompt"
+                                            ] = _h_next_q
+                                            self.session[
+                                                "last_question"
+                                            ] = _h_next_q
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).append({
+                                                "role": "assistant",
+                                                "content": _h_next_q,
+                                            })
+                                            self._silence_handler\
+                                                .on_question_asked(
+                                                    _h_next_q
+                                                )
                                         await save_session(
                                             self.call_sid, self.session
                                         )
