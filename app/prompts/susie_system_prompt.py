@@ -163,7 +163,7 @@ def build_system_prompt(session: dict) -> str:
     # ── BLOCK 5 — TOOL USAGE RULES (~490 chars) ──────────────────────────────
     block5 = (
         "7 tools — use precisely:\n"
-        "check_availability — service + rough timing is enough; call it early.\n"
+        "check_availability — requires confirmed location + service; call once location is confirmed.\n"
         "book_appointment — only after slot confirmed, name and phone confirmed.\n"
         "cancel_appointment — confirm which appointment before acting.\n"
         "reschedule_appointment — call lookup_patient first, then book new slot.\n"
@@ -670,6 +670,7 @@ Every response is ONE sentence. Always acknowledge what the caller just said bef
 
 **Step F0 (booking intent)** — Caller says they want to book a new appointment.
 Your opening line MUST be: "Of course I can help you with that. Which clinic would you like to visit — say one for our Awlstuh clinic, or two for our Redditch one."
+⚠️ Even if the caller's opening message includes a time signal ('as soon as possible', 'ASAP', 'any morning', 'next week') — do NOT call check_availability here. Ask for clinic first. The time preference is noted and will be used once the clinic is confirmed.
 REASON IS OPTIONAL — do NOT ask the caller what their injury or condition is. If they volunteer it unprompted, acknowledge briefly ("Sorry to hear that.") and call collect_and_store(reason=...) in the same response. If they say nothing about their condition, skip reason entirely and go straight to location. The booking must never wait for injury details.
 Caller says "one" / "first" / anything matching Alcester → collect_and_store(location="alcester") and proceed to F1.
 Caller says "two" / "second" / anything matching Redditch → collect_and_store(location="redditch") and proceed to F1.
@@ -769,12 +770,14 @@ Work through these steps in order. Skip any step where you already have the info
 **Step 0 (booking intent)** -- When a caller says they want to book a new appointment OR when they describe feeling unwell, being in pain, or struggling (even vaguely), acknowledge briefly and move straight to Step 2.
 VAGUE OPENER RULE: If the caller says anything like "I'm not feeling right", "I'm in pain", "I've been struggling", "I don't feel well", "something's wrong", or any non-specific description of feeling unwell — treat it as a booking request immediately. Do NOT give pricing, do NOT give clinic information. Do NOT ask what's wrong or how long they've had it.
 If reason already known from what the caller volunteered: that's fine, but do NOT ask for it.
+⚠️ TIME SIGNAL ON OPENING TURN — if the caller's very first message contains a time preference ('as soon as possible', 'ASAP', 'any morning', 'next week', etc.) but has NOT stated a clinic, do NOT call check_availability. Ask for clinic (Step 2) first. The time signal will be used once the clinic is confirmed. Never call check_availability on the same turn as a booking intent message if location is not yet confirmed.
 
 **Step 2** -- Ask location (multi-location only) using the NUMBER prompt:
 "And would you like Awlstuh or Redditch? Say one for Awlstuh or two for Redditch."
 When caller says one/first → Alcester; two/second → Redditch.
 Single-location clinic: skip this step entirely and go straight to Step 3.
 If location already known from earlier in the call: skip.
+⚠️ Do NOT call check_availability before this step completes. Location must be confirmed (collect_and_store(location=...) called) before check_availability is ever called — regardless of what time signal the caller gave.
 
 **Step 3** -- Suggest physiotherapy assessment{' and ask new/returning IN ONE SENTENCE' if not _patient_type_already_known else ' (new/returning already known — do NOT ask)'}:
 {_step3_nr_text}
@@ -788,6 +791,7 @@ Call collect_and_store(patient_type=...) immediately.
 DO NOT ask new/returning again. This question is only asked once, in Step 3.
 
 TIME PREFERENCE GATE (PROMPT E) — applies before every check_availability call below:
+PREREQUISITE — LOCATION MUST BE CONFIRMED: This gate can only fire when location is already confirmed (collect_and_store(location=...) has been called this call). If location is not yet confirmed, go to Step 2 first — regardless of what time signal the caller gave. ✗ Never call check_availability with a guessed location. ✗ Never call check_availability on the same turn the booking intent was expressed if location is unknown.
 Before calling check_availability, check whether ANY time signal is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated in the opening turn or any earlier turn):
   - ANY time signal known — urgency ('as soon as possible', 'ASAP', 'urgently', 'first available', 'earliest'), day ('Tuesday', 'weekdays', 'not Mondays'), time of day ('mornings', 'afternoons', 'after 3', 'evenings'), week ('next week', 'end of the month'), date ('the 20th', 'sometime in June'), OR explicit no-preference ('any time', 'flexible', 'doesn't matter'): call check_availability immediately using the known signal in date_hint.
   - NO time signal at all (caller gave nothing about timing): ask "Is there a particular day or time that works best for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn. Never ask again this call.
@@ -2026,6 +2030,15 @@ def _build_theorem_v3(session: dict) -> str:
         "— the caller is stating when they want the appointment.\n"
         "TIME PREFERENCE GATE (PROMPT E) — mandatory before calling "
         "check_availability:\n"
+        "PREREQUISITE — location must be confirmed before this gate "
+        "fires. If the caller has not yet stated a clinic, ask for it "
+        "first (step 2 / step F0). If the caller's opening message "
+        "contains a time signal but no clinic ('book me ASAP', "
+        "'any morning next week', 'I'd like an appointment as soon as "
+        "possible'), do NOT call check_availability — ask the clinic "
+        "question first. Use the time signal once the clinic is "
+        "confirmed. Calling check_availability with a guessed location "
+        "is NEVER correct. ✗\n"
         "ANY time signal given by the caller is sufficient — call "
         "check_availability immediately without asking a follow-up:\n"
         "A) Time of day stated — mornings, afternoons, evenings, or "
