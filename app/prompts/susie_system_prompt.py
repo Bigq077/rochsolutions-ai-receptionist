@@ -1259,6 +1259,10 @@ If book_appointment returns an error, say: "My apologies — I wasn't able to co
 Filler while running: "Brilliant, just getting that booked in for you..."
 
 **cancel_appointment** -- only after: full name, phone, location, AND verbal confirmation.
+SINGLE LOOKUP RULE: call lookup_patient ONCE per cancellation flow. The appointment_id returned by that call must be passed directly to cancel_appointment — do NOT call lookup_patient again before cancelling.
+Correct sequence: lookup_patient → receive appointment_id → patient confirms → cancel_appointment(appointment_id=...) ✅
+Wrong: lookup_patient → patient confirms → lookup_patient again → cancel_appointment ✗
+The appointment_id from the first lookup is valid for the entire conversation turn. Re-fetching it doubles API calls and adds latency.
 Filler while running: "Of course, just sorting that for you now..."
 
 **reschedule_appointment** -- only after: full name, phone, location, AND new confirmed slot.
@@ -1738,8 +1742,10 @@ def _build_theorem_v3(session: dict) -> str:
         "book_appointment(patient_name, phone, location, service, "
         "slot_iso, duration_minutes?) — only after readback yes. "
         "SMS automatic.\n"
-        "cancel_appointment(patient_name, phone, location) — "
-        "after lookup confirmed and caller said cancel. "
+        "cancel_appointment(patient_name, phone, location, "
+        "appointment_id?) — after lookup confirmed and caller said "
+        "cancel. Pass the appointment_id from the lookup_patient "
+        "result directly — do NOT call lookup_patient again. "
         "CRITICAL: location must come from the lookup_patient "
         "appointment_type field ('Alcester'→'alcester', "
         "'Redditch'→'redditch') — never from the session.\n"
@@ -1748,8 +1754,10 @@ def _build_theorem_v3(session: dict) -> str:
         "slot chosen. CRITICAL: same location rule — derive from "
         "appointment_type, not the session location.\n"
         "lookup_patient(purpose∈{cancel,reschedule,history}, "
-        "name?, phone?) — before any cancel or reschedule, and on "
-        "returning bookings. Pass phone when known.\n"
+        "name?, phone?) — call ONCE before any cancel or reschedule, "
+        "and on returning bookings. Pass phone when known. "
+        "For cancel flows: do NOT call again after the patient "
+        "confirms — use the appointment_id already returned.\n"
         "transfer_to_human(reason) — when caller asks, on "
         "emergency, or verbatim trigger lines: two failed field "
         "extractions → \"I'm having a little trouble hearing you "
