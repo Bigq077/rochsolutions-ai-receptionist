@@ -2780,6 +2780,29 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
             ),
         }
 
+    # ── Location-confirmed gate ────────────────────────────────────────────────
+    # check_availability must never be called with a guessed or assumed location.
+    # selected_location is only set once the caller has confirmed their clinic
+    # (verbal intercept, biased-confirm, or DTMF).  Reject if not yet set.
+    _confirmed_loc = session.get("selected_location") or session.get("location")
+    if not _confirmed_loc:
+        logger.warning(
+            "[ms_tools] check_availability rejected: location not yet confirmed"
+            " (location arg=%r) — returning location_required error",
+            args.get("location"),
+        )
+        return {
+            "error": "location_required",
+            "message": (
+                "The caller has not yet confirmed their clinic. "
+                "Do NOT call check_availability until the caller has stated "
+                "which clinic they want (Alcester or Redditch). "
+                "Ask: 'Which clinic would you like — Awlstuh or Redditch?' "
+                "and wait for their answer. Once they confirm, call "
+                "check_availability with their confirmed location."
+            ),
+        }
+
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
         _acuity_result = await _check_availability_acuity(args, session)

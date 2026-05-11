@@ -5580,31 +5580,25 @@ class WebSocketCallHandler:
                                                 ),
                                             )
                                             if _existing_tp:
-                                                # Caller already stated
-                                                # preference — re-queue so
-                                                # LLM fires without asking
-                                                # again.
-                                                # Spec P: suppress re-queue
-                                                # if booking flow already
-                                                # active (prevents double-
-                                                # dispatch on mid-flow turns).
-                                                if self.booking_flow_active:
-                                                    logger.info(
-                                                        "[ms_conn] timing pref"
-                                                        " re-queue suppressed"
-                                                        " — booking flow"
-                                                        " already active"
-                                                    )
-                                                else:
-                                                    await (
-                                                        self.transcript_queue
-                                                        .put((time.monotonic(), _existing_tp))
-                                                    )
-                                                    logger.info(
-                                                        "[ms_conn v3] time_pref"
-                                                        " already known (%r) —"
-                                                        " timing Q skipped,"
-                                                        " re-queued pref",
+                                                # Caller confirmed location —
+                                                # always re-queue the known
+                                                # time preference so the LLM
+                                                # calls check_availability with
+                                                # the correct confirmed location.
+                                                # booking_flow_active is NOT
+                                                # a suppression reason here:
+                                                # this is a new patient turn
+                                                # (location confirmation), not
+                                                # a double-dispatch.
+                                                await (
+                                                    self.transcript_queue
+                                                    .put((time.monotonic(), _existing_tp))
+                                                )
+                                                logger.info(
+                                                    "[ms_conn v3] time_pref"
+                                                    " already known (%r) —"
+                                                    " timing Q skipped,"
+                                                    " re-queued pref",
                                                         _existing_tp,
                                                     )
                                                 _new_ret_q = None
