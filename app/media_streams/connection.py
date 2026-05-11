@@ -2074,7 +2074,7 @@ class SilenceHandler:
           Attempt 3+ — graceful exit phrase → _transfer()
         """
         import os as _os_w
-        _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "4.5"))
+        _wait = float(_os_w.getenv("NO_INPUT_WATCHDOG_SEC", "3.25"))
         if _wait <= 0:
             return
         # Relax watchdog patience in FAQ offer states.  After the AI finishes
