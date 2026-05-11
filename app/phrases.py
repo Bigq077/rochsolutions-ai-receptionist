@@ -296,7 +296,7 @@ SILENCE_THRESHOLDS: dict = {
     "ask_time":           28.0,
     "ask_reason":         32.0,   # describing symptoms takes time
     "greeting":           22.0,   # simple booking-intent question
-    "ask_location":       20.0,   # binary choice (Alcester / Redditch)
+    "ask_location":       19.0,   # binary choice (Alcester / Redditch)
     "confirm_read_back":  24.0,   # yes/no after hearing readback
     "present_days":       34.0,   # caller just heard a list of 4+ days
     "present_times":      34.0,   # caller just heard a list of time slots
