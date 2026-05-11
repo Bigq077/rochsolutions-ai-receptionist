@@ -132,16 +132,18 @@ def build_system_prompt(session: dict) -> str:
         "Guide the caller to a booking without interrogating them.\n"
         "Let them lead — do not quiz them for information. "
         "Ask location if not stated; ask timing preference if not stated.\n"
-        "Call check_availability once you have service, location, and a time-of-day preference. "
-        "TIME PREFERENCE GATE — applies before every check_availability call: "
-        "if the caller stated a time of day (mornings, afternoons, evenings, a specific hour) "
-        "or explicitly said they have no preference ('any time', 'doesn't matter', 'flexible'), "
-        "call it immediately. "
-        "If the caller gave only a date or week range ('next week', 'as soon as possible', "
-        "'next Tuesday', 'anytime') without a time of day, ask first: "
-        "'Is mornings or afternoons better for you?' — then call check_availability on the next turn. "
-        "Once time preference is known, store it and never ask again, even if the caller "
-        "requests a different week or different dates later in the same call.\n"
+        "Call check_availability once you have service, location, and any time signal — "
+        "or explicit no-preference. "
+        "TIME PREFERENCE GATE (PROMPT E) — any time signal is sufficient to call immediately: "
+        "urgency ('as soon as possible', 'ASAP', 'urgently', 'first available', 'earliest you have') → "
+        "call check_availability with date_hint: 'as soon as possible'; "
+        "day ('Tuesday', 'weekdays', 'not Mondays'), time of day ('mornings', 'afternoons', 'after 3'), "
+        "week ('next week', 'end of the month'), or date ('the 20th', 'sometime in June') → "
+        "store and use in check_availability. "
+        "No preference ('any time', 'doesn't matter', 'flexible') → call immediately with no filter. "
+        "ONLY if the caller has given NO time signal at all, ask ONE question: "
+        "'Is there a particular day or time that works best for you?' — wait for the answer, "
+        "then call check_availability. Never ask again once any preference is known.\n"
         "Offer slots naturally: \"I've got Tuesday at half two or Thursday morning — either work?\"\n"
         "Name: \"Who am I booking in today?\" — single question, never split first/last. "
         "Phone: read the caller's number back digit by digit to confirm — never ask from scratch.\n"
@@ -677,11 +679,11 @@ NEW = no / nope / haven't / first time / never been / new patient.
 RETURNING = yes / yeah / I have / been before / returning.
 When in doubt, negative = NEW, positive = RETURNING.
 In the same response, fire collect_and_store(patient_type=...).
-TIME PREFERENCE GATE: check whether a time-of-day preference is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated explicitly earlier in the call):
-  - Time of day IS known (mornings, afternoons, evenings, a specific hour, OR caller said 'any time' / 'flexible' / 'doesn't matter'): say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Present available DAYS using Section 7.
-  - Time of day is NOT known (caller gave only a date or week without time of day): say "Okay, that's noted." then ask: "Is mornings or afternoons better for you?" Do NOT call check_availability yet. Wait for the response.
+TIME PREFERENCE GATE (PROMPT E): check whether ANY time signal is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated explicitly in this call or on the opening turn):
+  - ANY time signal known — urgency ('as soon as possible', 'ASAP', 'urgently', 'first available'), day ('Tuesday', 'weekdays'), time of day ('mornings', 'afternoons', 'after 3'), week ('next week'), date ('the 20th'), OR explicit no-preference ('any time', 'flexible', 'doesn't matter'): say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response using the known signal. Present available DAYS using Section 7.
+  - NO time signal at all (caller gave nothing about timing): say "Okay, that's noted." then ask: "Is there a particular day or time that works best for you?" Do NOT call check_availability yet. Wait for the response.
 
-**Step F2a (time preference given → check availability)** — Caller states their time of day preference (or confirms they are flexible).
+**Step F2a (time preference given → check availability)** — Caller states their time preference (or confirms they are flexible).
 Store the preference. Say "Just checking what we've got for you now..." and call check_availability with the preference as part of the date_hint. Present available DAYS using Section 7. Never ask for time preference again this call — it is now stored.
 
 **Step F2b (day chosen → present times)** — Caller names a day they prefer.
@@ -779,19 +781,19 @@ When in doubt, a negative answer = NEW, a positive answer = RETURNING.
 Call collect_and_store(patient_type=...) immediately.
 DO NOT ask new/returning again. This question is only asked once, in Step 3.
 
-TIME PREFERENCE GATE — applies before every check_availability call below:
-Before calling check_availability, check whether a time-of-day preference is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated explicitly earlier in the call):
-  - Time of day IS known (mornings, afternoons, evenings, a specific hour, OR 'any time' / 'flexible' / 'doesn't matter'): call check_availability immediately. Use the preference in the date_hint.
-  - Time of day NOT known (only a day, week, or urgency given, with no time of day): ask "Is mornings or afternoons better for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn using the stated preference. Never ask again this call.
+TIME PREFERENCE GATE (PROMPT E) — applies before every check_availability call below:
+Before calling check_availability, check whether ANY time signal is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated in the opening turn or any earlier turn):
+  - ANY time signal known — urgency ('as soon as possible', 'ASAP', 'urgently', 'first available', 'earliest'), day ('Tuesday', 'weekdays', 'not Mondays'), time of day ('mornings', 'afternoons', 'after 3', 'evenings'), week ('next week', 'end of the month'), date ('the 20th', 'sometime in June'), OR explicit no-preference ('any time', 'flexible', 'doesn't matter'): call check_availability immediately using the known signal in date_hint.
+  - NO time signal at all (caller gave nothing about timing): ask "Is there a particular day or time that works best for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn. Never ask again this call.
 
 **If NEW**: apply the time preference gate above.
-  - Time known → say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Go to Step 5.
-  - Time not known → say "Okay, that's noted. Is mornings or afternoons generally better for you?" Wait. On the next turn: say "Just checking what we've got now..." and call check_availability. Go to Step 5.
+  - Time signal known → say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Go to Step 5.
+  - No time signal → say "Okay, that's noted. Is there a particular day or time that works best for you?" Wait. On the next turn: say "Just checking what we've got now..." and call check_availability. Go to Step 5.
 
 **If RETURNING**: ask in one natural sentence — "Brilliant, welcome back! Was that recently, or has it been a little while?"
-  → **RETURNING + a while back** (any of: "a while", "a while ago", "a long time", "ages", "years", "not recently", "a few months", "months ago"): apply the time preference gate — if time known, say "No problem — just checking what we've got coming up for you..." and call check_availability; if not known, ask "Is mornings or afternoons better for you?" first. Go to Step 5.
+  → **RETURNING + a while back** (any of: "a while", "a while ago", "a long time", "ages", "years", "not recently", "a few months", "months ago"): apply the time preference gate — if time signal known, say "No problem — just checking what we've got coming up for you..." and call check_availability; if no signal, ask "Is there a particular day or time that works best for you?" first. Go to Step 5.
   → **RETURNING + recently** (any of: "recently", "not long ago", "a few weeks", "last month", "just", "recent"): ask in one sentence — "And are you currently on a treatment plan with us?"
-      → **No / not on a plan** (any of: "no", "nope", "not really", "no I'm not", "I don't think so", "finished", "completed"): apply the time preference gate — if time known, say "Got it — just checking what we've got for you..." and call check_availability; if not known, ask "Is mornings or afternoons better for you?" first. Go to Step 5.
+      → **No / not on a plan** (any of: "no", "nope", "not really", "no I'm not", "I don't think so", "finished", "completed"): apply the time preference gate — if time signal known, say "Got it — just checking what we've got for you..." and call check_availability; if no signal, ask "Is there a particular day or time that works best for you?" first. Go to Step 5.
       → **Yes / on a treatment plan** (any of: "yes", "yeah", "I am", "still on it", "ongoing", "mid-treatment"): go to Step 4b.
 
 **Step 4b (returning, on active treatment plan)** -- Collect name and phone to look up their record.
@@ -2011,35 +2013,42 @@ def _build_theorem_v3(session: dict) -> str:
         "IS a preference (booking intent): 'Any Tuesday morning "
         "would work' / 'afternoons please' / 'around three o'clock' "
         "— the caller is stating when they want the appointment.\n"
-        "TIME PREFERENCE GATE — mandatory before calling "
+        "TIME PREFERENCE GATE (PROMPT E) — mandatory before calling "
         "check_availability:\n"
-        "The caller's response falls into one of three categories:\n"
-        "A) Time of day IS stated — they said mornings, afternoons, "
-        "evenings, or a specific hour (e.g. 'around ten', 'after "
-        "three', 'morning slots', 'any afternoon'). Use it "
-        "directly in the date_hint. Call check_availability.\n"
-        "B) Explicitly no preference — they said 'any time', "
-        "'doesn't matter', 'whatever you have', 'I'm flexible', "
-        "'I don't mind'. Proceed to check_availability with no "
-        "time filter and present three days upfront.\n"
-        "C) Date/week/urgency only — they gave a day, week, or "
-        "urgency WITHOUT a time of day: 'next week', 'anytime "
-        "next week', 'next week to be honest', 'as soon as "
-        "possible', 'Tuesday', 'ASAP'. This is NOT enough — "
-        "ask one follow-up: 'Is mornings or afternoons better "
-        "for you?' Wait for the answer, THEN call "
-        "check_availability.\n"
-        "Examples:\n"
-        "- 'tomorrow afternoon' → category A, call check_avail.\n"
-        "- 'next week mornings' → category A, use morning filter.\n"
-        "- 'any time is fine' → category B, no filter.\n"
-        "- 'next week' → category C, ask mornings/afternoons.\n"
-        "- 'as soon as possible' → category C, ask mornings/afternoons.\n"
-        "- 'anytime next week to be honest' → category C, ask "
+        "ANY time signal given by the caller is sufficient — call "
+        "check_availability immediately without asking a follow-up:\n"
+        "A) Time of day stated — mornings, afternoons, evenings, or "
+        "a specific hour (e.g. 'around ten', 'after three', 'any "
+        "afternoon'). Use it directly in the date_hint.\n"
+        "B) Explicitly no preference — 'any time', 'doesn't matter', "
+        "'whatever you have', 'I'm flexible', 'I don't mind'. "
+        "Call check_availability with no time filter.\n"
+        "C) Urgency — 'as soon as possible', 'ASAP', 'urgently', "
+        "'first available', 'earliest you have', 'as quickly as "
+        "possible'. Use date_hint: 'as soon as possible' and present "
+        "earliest available slots. This IS a complete signal — do NOT "
+        "ask mornings/afternoons.\n"
+        "D) Day, week, or date only — 'Tuesday', 'next week', 'the "
+        "20th', 'anytime next week'. This IS a complete signal — "
+        "store it and call check_availability. Do NOT ask "
         "mornings/afternoons.\n"
-        "Once time of day is captured, store it for the whole call. "
-        "Never ask again even if the caller requests a different "
-        "week or different dates.\n"
+        "ONLY ask 'Is there a particular day or time that works best "
+        "for you?' when the caller has given NO time signal "
+        "whatsoever (pure 'I'd like to book' with no timing at all). "
+        "Wait for the answer, THEN call check_availability.\n"
+        "Examples:\n"
+        "- 'tomorrow afternoon' → A, call check_avail immediately.\n"
+        "- 'next week mornings' → A, use morning filter.\n"
+        "- 'any time is fine' → B, no filter.\n"
+        "- 'as soon as possible' → C, date_hint: 'as soon as possible'.\n"
+        "- 'ASAP' → C, date_hint: 'as soon as possible'.\n"
+        "- 'next week' → D, call check_avail immediately.\n"
+        "- 'Tuesday' → D, call check_avail immediately.\n"
+        "- 'anytime next week to be honest' → D, call immediately.\n"
+        "- 'I'd like to book' (no timing) → ask preference question.\n"
+        "Once any time signal is captured, store it for the whole "
+        "call. Never ask again even if the caller requests a "
+        "different week or different dates.\n"
         "5. Once timing is known, say one filler (\"Just a moment "
         "while I check what's available\") then call "
         "check_availability. Never call availability the same turn "
