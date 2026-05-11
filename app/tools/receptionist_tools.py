@@ -2524,6 +2524,13 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 except Exception as e:
                     logger.warning("_cancel_appointment_acuity SMS (cached path) failed (non-fatal): %r", e)
                 session["confirmation_sms_sent"] = True
+            session["cancellation_completed"] = True
+            session["cancel_confirmed"] = True
+            logger.info(
+                "_cancel_appointment_acuity (fast-path): cancellation_completed=True"
+                " cancelled=%r was_at=%r",
+                appt_type, appt_time_str,
+            )
             return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
         # End RC fast-path — fall through to legacy name-search below
 
@@ -2579,6 +2586,13 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 logger.warning("_cancel_appointment_acuity SMS failed (non-fatal): %r", e)
             session["confirmation_sms_sent"] = True
 
+        session["cancellation_completed"] = True
+        session["cancel_confirmed"] = True
+        logger.info(
+            "_cancel_appointment_acuity: cancellation_completed=True"
+            " cancelled=%r was_at=%r",
+            appt_type, appt_time_str,
+        )
         return {
             "success": True,
             "cancelled": appt_type,
@@ -3934,12 +3948,24 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
             "message": f"No upcoming appointment found for {name or phone}",
         }
 
+    _lookup_name = f"{found.get('firstName', '')} {found.get('lastName', '')}".strip()
+    _lookup_appt_id = str(found.get("id", ""))
+
+    # Persist to session so the summary builder can populate the name field
+    # even when the LLM doesn't call collect_and_store(full_name=...).
+    session["_lookup_patient_name"] = _lookup_name
+    session["_lookup_appointment_id"] = _lookup_appt_id
+    logger.info(
+        "[ms_tools] lookup_patient: name=%r appointment_id=%r",
+        _lookup_name, _lookup_appt_id,
+    )
+
     return {
         "found": True,
-        "patient_name": f"{found.get('firstName', '')} {found.get('lastName', '')}".strip(),
+        "patient_name": _lookup_name,
         "appointment_type": found.get("type", ""),
         "appointment_time": found.get("datetime", ""),
-        "appointment_id": str(found.get("id", "")),
+        "appointment_id": _lookup_appt_id,
     }
 
 

@@ -124,6 +124,7 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         or collected.get("name")
         or collected.get("full_name")
         or patient_info.get("name")
+        or raw_session.get("_lookup_patient_name")  # CODE SPEC AK — persisted by lookup_patient
         or ""
     )
 
@@ -422,6 +423,8 @@ def _build_summary_text(outcome: str, name: str, service: str, duration: Any) ->
         if dur < 30:
             return f"⚠️ {n} – abandoned after {dur}s"
         return f"⚠️ {n} – abandoned{' during ' + service + ' booking' if service else ''} ({dur}s)"
+    if outcome == "cancelled":
+        return f"❎ {n} – appointment CANCELLED"
     if outcome == "failed":
         return f"🔧 {n} – call failed (technical issue)"
     return f"{n} – {outcome}"

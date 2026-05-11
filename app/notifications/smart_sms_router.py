@@ -279,6 +279,11 @@ async def send_smart_followup_sms(
         logger.info("✅ Booked — booking confirmation SMS already sent")
         return False
 
+    # Cancelled — cancellation confirmation SMS already sent by cancel_appointment tool
+    if outcome == "cancelled":
+        logger.info("[smart_sms] outcome=cancelled — confirmation already sent during call, skipping")
+        return False
+
     # Reschedule reached transaction stage but backend failed — patient already told verbally
     if outcome == "reschedule_failed":
         logger.info("🔴 reschedule_failed — skipping SMS (patient informed verbally during call)")
