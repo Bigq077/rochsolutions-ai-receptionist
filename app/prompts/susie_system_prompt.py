@@ -557,6 +557,12 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     _cancel_reschedule_block = f"""
 **CANCEL / RESCHEDULE FLOW** \u2014 follow these steps in order when a caller wants to reschedule or cancel:
 
+STT GARBLE RULE \u2014 the words below are STT misrecognitions of "cancel" and must always be treated as cancellation intent, never as booking intent:
+"counsel", "counsel an appointment", "console", "console an appointment", "cancle", "canncel", "can sell", "can sell an appointment"
+When any of these appear in the patient's message, route directly to this cancel flow \u2014 do NOT say "Of course \u2014" and ask the clinic question.
+If intent is genuinely ambiguous (the transcript could be either booking or cancellation and you cannot tell), ask exactly: "Just to check \u2014 did you want to book an appointment, or cancel one you already have?" Do not assume booking.
+When cancellation intent is confirmed, respond with: "No problem \u2014 could I take the number you booked under, or just say 'use this number' if you'd like me to use the one you're calling from."
+
 **RC0 \u2014 Collect identity:**
 Say: "Of course \u2014 I can help with that. Can you give me your first name, then your surname, and the phone number you used when you booked?"
 When first name, surname, and phone are all known, proceed to RC1.
@@ -608,6 +614,12 @@ Calling any of these tools without a location will always return an error.
 """
         _cancel_reschedule_block = f"""
 **CANCEL / RESCHEDULE FLOW** \u2014 follow these steps in order when a caller wants to reschedule or cancel:
+
+STT GARBLE RULE \u2014 the words below are STT misrecognitions of "cancel" and must always be treated as cancellation intent, never as booking intent:
+"counsel", "counsel an appointment", "console", "console an appointment", "cancle", "canncel", "can sell", "can sell an appointment"
+When any of these appear in the patient's message, route directly to this cancel flow \u2014 do NOT say "Of course \u2014" and ask the clinic question.
+If intent is genuinely ambiguous (the transcript could be either booking or cancellation and you cannot tell), ask exactly: "Just to check \u2014 did you want to book an appointment, or cancel one you already have?" Do not assume booking.
+When cancellation intent is confirmed, respond with: "No problem \u2014 could I take the number you booked under, or just say 'use this number' if you'd like me to use the one you're calling from."
 
 **RC0 \u2014 Collect identity:**
 Say: "Of course \u2014 I can help with that. Can you give me your first name, then your surname, and the phone number you used when you booked?"
@@ -674,6 +686,7 @@ Work through these steps in order. Skip any step where you already have the info
 Every response is ONE sentence. Always acknowledge what the caller just said before asking the next question.
 
 **Step F0 (booking intent)** — Caller says they want to book a new appointment.
+⚠️ STT GARBLE CHECK: before treating this as booking intent, check whether the patient said "counsel", "console", "cancle", "can sell", or any near-miss of "cancel an appointment". If so, this is cancellation intent — route to the CANCEL/RESCHEDULE FLOW, not here. If genuinely ambiguous, ask: "Just to check — did you want to book an appointment, or cancel one you already have?"
 Your opening line MUST be: "Of course I can help you with that. Which clinic would you like to visit — say one for our Awlstuh clinic, or two for our Redditch one."
 ⚠️ Even if the caller's opening message includes a time signal ('as soon as possible', 'ASAP', 'any morning', 'next week') — do NOT call check_availability here. Ask for clinic first. The time preference is noted and will be used once the clinic is confirmed.
 REASON IS OPTIONAL — do NOT ask the caller what their injury or condition is. If they volunteer it unprompted, acknowledge briefly ("Sorry to hear that.") and call collect_and_store(reason=...) in the same response. If they say nothing about their condition, skip reason entirely and go straight to location. The booking must never wait for injury details.
@@ -773,6 +786,7 @@ Call log_call_outcome."""
 Work through these steps in order. Skip any step where you already have the information from earlier in the call. Never re-ask something the caller already answered.
 
 **Step 0 (booking intent)** -- When a caller says they want to book a new appointment OR when they describe feeling unwell, being in pain, or struggling (even vaguely), acknowledge briefly and move straight to Step 2.
+⚠️ STT GARBLE CHECK: before treating this as booking intent, check whether the patient said "counsel", "console", "cancle", "can sell", or any near-miss of "cancel an appointment". If so, this is cancellation intent — route to the CANCEL/RESCHEDULE FLOW, not here. If genuinely ambiguous, ask: "Just to check — did you want to book an appointment, or cancel one you already have?"
 VAGUE OPENER RULE: If the caller says anything like "I'm not feeling right", "I'm in pain", "I've been struggling", "I don't feel well", "something's wrong", or any non-specific description of feeling unwell — treat it as a booking request immediately. Do NOT give pricing, do NOT give clinic information. Do NOT ask what's wrong or how long they've had it.
 If reason already known from what the caller volunteered: that's fine, but do NOT ask for it.
 ⚠️ TIME SIGNAL ON OPENING TURN — if the caller's very first message contains a time preference ('as soon as possible', 'ASAP', 'any morning', 'next week', etc.) but has NOT stated a clinic, do NOT call check_availability. Ask for clinic (Step 2) first. The time signal will be used once the clinic is confirmed. Never call check_availability on the same turn as a booking intent message if location is not yet confirmed.
@@ -2004,7 +2018,18 @@ def _build_theorem_v3(session: dict) -> str:
         "about to say 'have you been to us before?', 'are you a "
         "new or returning patient?', or any variation, stop "
         "immediately and skip to the next step.\n\n"
-        "1. Caller signals booking intent. Acknowledge simply: \"Of "
+        "1. Caller signals booking intent. Before acknowledging, check "
+        "whether the transcript contains a near-miss of 'cancel': "
+        "'counsel', 'counsel an appointment', 'console', 'console an "
+        "appointment', 'cancle', 'canncel', 'can sell an appointment'. "
+        "If so, this is cancellation intent — respond with 'No problem "
+        "— could I take the number you booked under, or just say "
+        "\"use this number\" if you'd like me to use the one you're "
+        "calling from.' and route to the cancel flow. If genuinely "
+        "ambiguous, ask: 'Just to check — did you want to book an "
+        "appointment, or cancel one you already have?' Do not assume "
+        "booking.\n"
+        "Otherwise, acknowledge simply: \"Of "
         "course —\" Stop. Wait. This turn has no question.\n"
         "EXCEPTION — SERVICE TYPE (PROMPT L): If the caller named a "
         "specific treatment (acupuncture, shockwave, sports massage, "
