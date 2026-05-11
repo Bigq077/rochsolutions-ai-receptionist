@@ -5472,6 +5472,40 @@ class WebSocketCallHandler:
                                                 "role": "assistant",
                                                 "content": _new_ret_q,
                                             })
+                                            self._silence_handler\
+                                                .on_question_asked(
+                                                    _new_ret_q
+                                                )
+                                    else:
+                                        # CODE SPEC AE — treatment bypass /
+                                        # non-booking ack-only path: only the
+                                        # ack was queued above.  Queue
+                                        # preference question immediately so
+                                        # there is no dead air after the ack.
+                                        _PREF_Q = (
+                                            "Is there a particular day"
+                                            " or time that works best"
+                                            " for you?"
+                                        )
+                                        await self.tts_text_queue.put(
+                                            _PREF_Q
+                                        )
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _PREF_Q
+                                        self.session[
+                                            "last_question"
+                                        ] = _PREF_Q
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _PREF_Q,
+                                        })
+                                        self._silence_handler\
+                                            .on_question_asked(
+                                                _PREF_Q
+                                            )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -5704,6 +5738,10 @@ class WebSocketCallHandler:
                                             "role": "assistant",
                                             "content": _next_q,
                                         })
+                                        self._silence_handler\
+                                            .on_question_asked(
+                                                _next_q
+                                            )
                                         await save_session(
                                             self.call_sid, self.session
                                         )
