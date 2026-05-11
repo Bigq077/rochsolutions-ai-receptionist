@@ -6444,6 +6444,44 @@ class WebSocketCallHandler:
                                         else "queued",
                                     )
 
+                        # ── CODE SPEC AD: treatment bypass clinic question arm ────
+                        # When the treatment bypass fires pre-run_turn,
+                        # booking_flow_active is set True before run_turn()
+                        # executes.  This means _is_booking_ack is always False
+                        # on these turns (it gates on `not booking_flow_active`),
+                        # so v3_location_q_active is never armed by the booking
+                        # ack path — even though the LLM asks the clinic question
+                        # in its Prompt L response.
+                        # Fix: after run_turn, scan _last_bot for clinic-question
+                        # signals.  If found while v3_treatment_mentioned is True
+                        # and location is not yet confirmed, arm the gate so the
+                        # patient's next utterance is intercepted by the location
+                        # handler (alias resolution, DTMF fallback, preference Q)
+                        # exactly as in a normal booking flow.
+                        _treatment_loc_signals = (
+                            "which clinic",
+                            "awlstuh or redditch",
+                            "alcester or redditch",
+                            "alcester or reditch",
+                            "which location",
+                        )
+                        if (
+                            self.session.get("v3_treatment_mentioned")
+                            and not self.session.get("v3_location_q_active")
+                            and not self.session.get("v3_location_confirmed")
+                            and any(
+                                sig in _last_bot.lower()
+                                for sig in _treatment_loc_signals
+                            )
+                        ):
+                            self.session["v3_location_q_active"] = True
+                            self.session["v3_location_asked"] = True
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] v3_location_q_active = True "
+                                "(clinic question detected in treatment bypass response)"
+                            )
+
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
                         # Silence recovery needs last_question in all cases.
                         _last_q = self.session.get("last_question", "")
