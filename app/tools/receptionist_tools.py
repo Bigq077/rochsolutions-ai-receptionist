@@ -2730,6 +2730,28 @@ def _resolve_clinic_id(session: Dict[str, Any]) -> str:
 _VALID_SERVICES: frozenset[str] = frozenset({"physiotherapy assessment"})
 
 
+def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove today's date from all availability results.
+
+    Same-day bookings are never offered — minimum lead time is next working day.
+    Applied to every check_availability return path before the result reaches
+    the LLM, regardless of date_hint.
+    """
+    if "available_days" not in result:
+        return result
+    from datetime import date as _date_cls
+    today_str = _date_cls.today().isoformat()
+    original = result["available_days"]
+    filtered = [d for d in original if d.get("date") != today_str]
+    if len(filtered) < len(original):
+        logger.info("[ms_tools] same-day slots filtered out: %s", today_str)
+    result = dict(result)
+    result["available_days"] = filtered
+    result["total_days"] = len(filtered)
+    session["available_days"] = filtered
+    return result
+
+
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # ── PROMPT L hard gate: reject any service name other than the valid set ──
     # This fires BEFORE any Acuity or Google Calendar request so invalid
@@ -2760,7 +2782,8 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
-        return await _check_availability_acuity(args, session)
+        _acuity_result = await _check_availability_acuity(args, session)
+        return _filter_same_day_slots(_acuity_result, session)
 
     from app.tools.slots import (
         generate_candidate_slots,
@@ -2826,7 +2849,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         session["last_offered_slots"] = pres_raw
         session["slot_labels"]        = pres_labels
         session["available_days"]     = days_data
-        return {"available_days": days_data, "total_days": len(days_data), "note": "calendar_not_connected"}
+        return _filter_same_day_slots(
+            {"available_days": days_data, "total_days": len(days_data), "note": "calendar_not_connected"},
+            session,
+        )
 
     calendar_id = _resolve_calendar_id(clinic, location)
 
@@ -2855,7 +2881,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         session["last_offered_slots"] = pres_raw
         session["slot_labels"]        = pres_labels
         session["available_days"]     = days_data
-        return {"available_days": days_data, "total_days": len(days_data), "note": "calendar_check_failed_unfiltered"}
+        return _filter_same_day_slots(
+            {"available_days": days_data, "total_days": len(days_data), "note": "calendar_check_failed_unfiltered"},
+            session,
+        )
 
     if not free_slots:
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
@@ -2869,7 +2898,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     session["last_offered_slots"] = pres_raw
     session["slot_labels"]        = pres_labels
     session["available_days"]     = days_data
-    return {"available_days": days_data, "total_days": len(days_data)}
+    return _filter_same_day_slots(
+        {"available_days": days_data, "total_days": len(days_data)},
+        session,
+    )
 
 
 # ---------------------------------------------------------------------------
