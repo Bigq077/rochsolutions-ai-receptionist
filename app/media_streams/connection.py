@@ -388,6 +388,23 @@ def _is_short_meaningless_fragment(transcript: str) -> bool:
     return not any(w in _COMMUNICATIVE_WORDS for w in [w.lower() for w in words])
 
 
+# CODE SPEC AJ — non-specific affirmations during DAY_SELECTION.
+# Patient confirms something works but doesn't name which day.
+_NON_SPECIFIC_SLOT_AFFIRMATIONS: frozenset = frozenset({
+    "suits me", "any of them", "any of those", "that works",
+    "fine with me", "any is fine", "any is good", "whatever",
+    "any of those suit me", "they all work", "all good",
+    "anytime", "any", "fine", "good", "okay", "ok",
+    "that works for me", "works for me", "all fine", "all work",
+    "either", "either works", "either of those", "both fine",
+    "sounds good", "sounds fine", "any would work", "any works",
+})
+
+
+def _is_non_specific_slot_affirmation(transcript: str) -> bool:
+    return transcript.lower().strip() in _NON_SPECIFIC_SLOT_AFFIRMATIONS
+
+
 # Spec K — lifecycle stage for the DTMF slot map.
 # Transitions are strictly one-way within a booking flow:
 #   DAY_SELECTION → TIME_SELECTION → NONE
@@ -4587,10 +4604,55 @@ class WebSocketCallHandler:
                             )
                             self.post_slot_confirmation_pending = False
                             # Fall through to normal LLM dispatch below.
+                        elif (
+                            self.slot_map_stage == SlotMapStage.DAY_SELECTION
+                            and _is_non_specific_slot_affirmation(utterance)
+                        ):
+                            # CODE SPEC AJ — patient confirmed something works
+                            # but didn't say which day. Ask them to specify using
+                            # the actual day labels from the active slot map.
+                            _aj_map = self.session.get("v3_dtmf_slot_map", {})
+                            _aj_days = list(_aj_map.values())
+                            if len(_aj_days) >= 3:
+                                _clarify = (
+                                    f"Which works best — {_aj_days[0]},"
+                                    f" {_aj_days[1]}, or {_aj_days[2]}?"
+                                )
+                            elif len(_aj_days) == 2:
+                                _clarify = (
+                                    f"Which works best — {_aj_days[0]}"
+                                    f" or {_aj_days[1]}?"
+                                )
+                            elif len(_aj_days) == 1:
+                                _clarify = f"Did you mean {_aj_days[0]}?"
+                            else:
+                                _clarify = "Which day works best for you?"
+                            logger.info(
+                                "[ms_conn] non-specific slot affirmation %r"
+                                " — asking to clarify: %r",
+                                utterance, _clarify,
+                            )
+                            await self.tts_text_queue.put(_clarify)
+                            self.session["last_bot_prompt"] = _clarify
+                            self.session["last_question"] = _clarify
+                            self.session.setdefault(
+                                "conversation_history", []
+                            ).append({
+                                "role": "assistant",
+                                "content": _clarify,
+                            })
+                            if self._silence_handler is not None:
+                                self._silence_handler.on_question_asked(
+                                    _clarify
+                                )
+                            self.llm_in_flight = False
+                            self._llm_busy = False
+                            self.session["llm_generation_active"] = False
+                            continue
                         elif _is_short_meaningless_fragment(utterance):
                             # No slot signal AND the fragment is too short /
                             # carries no communicative word — safe to re-arm.
-                            # Examples: "with me", "suits me", "actually".
+                            # Examples: "with me", "actually".
                             logger.info(
                                 "[ms_conn] slot fragment ignored — re-arming: %r",
                                 utterance,
