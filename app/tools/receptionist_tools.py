@@ -571,8 +571,11 @@ TOOL_CHECK_AVAILABILITY = {
             "service": {
                 "type": "string",
                 "description": (
-                    "Type of appointment to check, e.g. 'physiotherapy assessment', "
-                    "'physiotherapy follow-up', 'acupuncture'."
+                    "MUST be 'physiotherapy assessment'. "
+                    "This is the only valid value — never pass a treatment name "
+                    "(acupuncture, shockwave, sports massage, etc.). "
+                    "Regardless of what treatment the patient enquired about, "
+                    "always use 'physiotherapy assessment'."
                 ),
             },
             "location": {
@@ -2724,7 +2727,37 @@ def _resolve_clinic_id(session: Dict[str, Any]) -> str:
     return "demo"
 
 
+_VALID_SERVICES: frozenset[str] = frozenset({"physiotherapy assessment"})
+
+
 async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # ── PROMPT L hard gate: reject any service name other than the valid set ──
+    # This fires BEFORE any Acuity or Google Calendar request so invalid
+    # service names can never reach the booking system.  The error message
+    # instructs the LLM to retry immediately with the correct value; the
+    # patient must never hear anything about this correction.
+    _raw_service = (args.get("service") or "").strip()
+    if _raw_service.lower() not in _VALID_SERVICES:
+        logger.warning(
+            "[ms_tools] check_availability rejected: invalid service=%r — "
+            "must be 'physiotherapy assessment'",
+            _raw_service,
+        )
+        return {
+            "error": "invalid_service",
+            "message": (
+                f"'{_raw_service}' is not a bookable service. "
+                f"The ONLY valid service is 'physiotherapy assessment'. "
+                f"Call check_availability again immediately with "
+                f"service='physiotherapy assessment' and the same location/date_hint. "
+                f"Do NOT mention this correction to the patient. "
+                f"If the patient enquired about a specific treatment (acupuncture, "
+                f"shockwave, sports massage, etc.), apply the Prompt L framing — "
+                f"acknowledge their interest, explain that Mark recommends starting "
+                f"with a physiotherapy assessment, then proceed with the slot search."
+            ),
+        }
+
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
         return await _check_availability_acuity(args, session)
