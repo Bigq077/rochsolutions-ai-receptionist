@@ -5043,6 +5043,23 @@ class WebSocketCallHandler:
                                 self.session[
                                     "last_question"
                                 ] = _dtmf_prompt
+                                # Write the keypad prompt into conversation_history
+                                # so the LLM has context when DTMF digits arrive.
+                                # Without this the history has two consecutive user
+                                # turns ("no it was a different number" then the
+                                # phone digits) with no assistant bridge, causing
+                                # the LLM to re-ask for the number instead of
+                                # calling lookup_patient.
+                                self.session.setdefault(
+                                    "conversation_history", []
+                                ).append({
+                                    "role": "assistant",
+                                    "content": _dtmf_prompt,
+                                })
+                                logger.info(
+                                    "[ms_conn v3] keypad prompt written to"
+                                    " conversation_history for DTMF bridge"
+                                )
                                 self.session.pop("v3_dtmf_slot_map",           None)
                                 self.session.pop("v3_slot_dtmf_active",        None)
                                 self.session.pop("v3_awaiting_slot_selection", None)
