@@ -2137,11 +2137,11 @@ class SilenceHandler:
         # theorem_v3 location question — two-tier grace (CODE SPEC AH):
         #   First response (patient hasn't spoken yet): 9 s so shy callers
         #   aren't rushed before they've had a chance to reply at all.
-        #   Subsequent attempts (patient already spoke but was garbled): 3.5 s
+        #   Subsequent attempts (patient already spoke but was garbled): 2.5 s
         #   so a fast biased-confirm re-ask fires without 10 s dead air.
         if (_sess_faq_w or {}).get("v3_location_q_active"):
             if (_sess_faq_w or {}).get("_location_q_patient_spoke"):
-                _wait = max(_wait, 3.5)
+                _wait = max(_wait, 2.5)
                 logger.info(
                     "[ms_watchdog] location_q_grace=%.1fs"
                     " (patient already spoke — fast re-ask)",
