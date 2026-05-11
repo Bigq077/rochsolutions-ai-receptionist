@@ -132,6 +132,12 @@ def build_system_prompt(session: dict) -> str:
         "Guide the caller to a booking without interrogating them.\n"
         "Let them lead — do not quiz them for information. "
         "Ask location if not stated; ask timing preference if not stated.\n"
+        "LOCATION REQUIRED BEFORE check_availability — never call check_availability with a guessed "
+        "or assumed location. The correct order is always: ask which clinic if not yet confirmed → "
+        "receive answer → call check_availability once with the confirmed location. "
+        "If the caller gives a time preference but no clinic ('book me in ASAP', 'any morning next week') "
+        "do NOT call check_availability — ask the clinic question first and use the time preference once confirmed. "
+        "Never call check_availability for multiple locations speculatively in the same turn. ✗\n"
         "Call check_availability once you have service, location, and any time signal — "
         "or explicit no-preference. "
         "TIME PREFERENCE GATE (PROMPT E) — any time signal is sufficient to call immediately: "
@@ -1029,6 +1035,11 @@ WRONG: "Could you say your number?" ✗ (they are in keypad mode)
 **collect_and_store** -- call immediately every time you learn: name, phone, reason, location, patient_type, insurer, policy_number, time_preference, service. No filler needed.
 
 **check_availability** -- call ONCE per booking, before offering times. Must know location and service first.
+LOCATION MUST BE CONFIRMED BEFORE CALLING — never pass a guessed or assumed location. Never call check_availability for two locations speculatively in the same turn. Never call check_availability then ask which clinic afterwards.
+Correct order: ask clinic → get confirmed answer → call check_availability once with that location. ✅
+Wrong: caller says "book me in ASAP" with no clinic → calling check_availability for alcester AND redditch then asking. ✗
+Wrong: caller says "any morning next week" with no clinic → calling check_availability with a guessed location. ✗
+Right: ask "Which of our clinics — Alcester or Redditch?" → caller answers → call check_availability once. ✅
 ALWAYS include a spoken bridge in the SAME response: "...just checking what we've got coming up for you..." (natural variant, not scripted).
 The tool returns `available_days` — a list of days, each with `day_label`, `slot_times`, and `slots`.
 
