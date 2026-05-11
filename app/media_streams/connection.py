@@ -2095,9 +2095,9 @@ class SilenceHandler:
             logger.info("[ms_watchdog] greeting_grace=%.1fs", _wait)
         # theorem_v3 location question: callers need extra time to process an
         # unfamiliar place name ("Awlster" / Alcester) before responding.
-        # 9 s gives comfortable deliberation without feeling abandoned.
+        # 8 s gives comfortable deliberation without feeling abandoned.
         if (_sess_faq_w or {}).get("v3_location_q_active"):
-            _wait = max(_wait, 9.0)
+            _wait = max(_wait, 8.0)
             logger.info("[ms_watchdog] location_q_grace=%.1fs (v3_location_q_active)", _wait)
         # theorem_v3 slot selection: the LLM just read out 2-3 dated options
         # (up to 12 s of audio).  The caller must process the options, mentally
