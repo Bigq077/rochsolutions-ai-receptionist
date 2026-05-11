@@ -3709,14 +3709,47 @@ class WebSocketCallHandler:
                     )
                     self.session["v3_awaiting_phone_confirm"] = True
                 else:
+                    # CODE SPEC AE REVISED — routing check mirrors direct intercept
+                    _dtmf_sc = (self.session.get("soft_context") or {})
+                    _dtmf_tp = (
+                        _dtmf_sc.get("time_preference")
+                        or self.session.get("time_of_day_preference")
+                        or ""
+                    )
+                    logger.info(
+                        "[ms_conn v3] DTMF location routing —"
+                        " soft_context.time_preference=%r"
+                        " time_of_day_preference=%r",
+                        _dtmf_sc.get("time_preference"),
+                        self.session.get("time_of_day_preference"),
+                    )
                     _next_q = (
-                        "Is there a particular day or time "
-                        "that works best for you?"
+                        None if _dtmf_tp
+                        else (
+                            "Is there a particular day or time "
+                            "that works best for you?"
+                        )
                     )
                 await self.tts_text_queue.put(_ack)
-                await self.tts_text_queue.put(_next_q)
-                self.session["last_bot_prompt"] = _next_q
-                self.session["last_question"] = _next_q
+                if _next_q is not None:
+                    await self.tts_text_queue.put(_next_q)
+                    self.session["last_bot_prompt"] = _next_q
+                    self.session["last_question"] = _next_q
+                elif _intent not in ("reschedule", "cancel"):
+                    if self.booking_flow_active:
+                        logger.info(
+                            "[ms_conn v3] DTMF: re-queue suppressed"
+                            " — booking flow already active"
+                        )
+                    else:
+                        await self.transcript_queue.put(
+                            (time.monotonic(), _dtmf_tp)
+                        )
+                        logger.info(
+                            "[ms_conn v3] DTMF: time preference known"
+                            " (%r) — re-queued for check_availability",
+                            _dtmf_tp,
+                        )
                 await save_session(self.call_sid, self.session)
                 # Arm the watchdog for the follow-up question.  The verbal path
                 # gets this for free because on_transcript_received() resets
@@ -3726,7 +3759,7 @@ class WebSocketCallHandler:
                 # WATCHDOG_RETIRED_FOR_QGEN and leaving the new question unguarded.
                 # on_question_asked increments _q_gen, resets _no_input_reask_count,
                 # resets _watchdog_has_retired, and arms a fresh watchdog.
-                if self._silence_handler is not None:
+                if self._silence_handler is not None and _next_q is not None:
                     self._silence_handler.on_question_asked(_next_q)
                     logger.info(
                         "[ms_conn v3] DTMF location resolved: "
@@ -5326,9 +5359,36 @@ class WebSocketCallHandler:
                                             "say 'use this number'."
                                         )
                                     else:
+                                        # CODE SPEC AE REVISED — routing check
+                                        # mirrors direct intercept path.
+                                        _utc_sc = (
+                                            self.session.get("soft_context")
+                                            or {}
+                                        )
+                                        _utc_tp = (
+                                            _utc_sc.get("time_preference")
+                                            or self.session.get(
+                                                "time_of_day_preference"
+                                            )
+                                            or ""
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] use-this-clinic"
+                                            " routing —"
+                                            " soft_context.time_preference=%r"
+                                            " time_of_day_preference=%r",
+                                            _utc_sc.get("time_preference"),
+                                            self.session.get(
+                                                "time_of_day_preference"
+                                            ),
+                                        )
                                         _next_q = (
-                                            "Is there a particular day or "
-                                            "time that works best for you?"
+                                            None if _utc_tp
+                                            else (
+                                                "Is there a particular day"
+                                                " or time that works best"
+                                                " for you?"
+                                            )
                                         )
                                     self.session[
                                         "selected_location"
@@ -5350,19 +5410,45 @@ class WebSocketCallHandler:
                                             "v3_awaiting_phone_confirm"
                                         ] = True
                                     await self.tts_text_queue.put(_ack)
-                                    await self.tts_text_queue.put(_next_q)
-                                    self.session[
-                                        "last_bot_prompt"
-                                    ] = _next_q
-                                    self.session[
-                                        "last_question"
-                                    ] = _next_q
-                                    self.session.setdefault(
-                                        "conversation_history", []
-                                    ).append({
-                                        "role": "assistant",
-                                        "content": _next_q,
-                                    })
+                                    if _next_q is not None:
+                                        await self.tts_text_queue.put(
+                                            _next_q
+                                        )
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _next_q
+                                        self.session[
+                                            "last_question"
+                                        ] = _next_q
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _next_q,
+                                        })
+                                        if self._silence_handler is not None:
+                                            self._silence_handler\
+                                                .on_question_asked(_next_q)
+                                    elif _intent not in (
+                                        "reschedule", "cancel"
+                                    ):
+                                        if self.booking_flow_active:
+                                            logger.info(
+                                                "[ms_conn v3] use-this-clinic:"
+                                                " re-queue suppressed —"
+                                                " booking flow already active"
+                                            )
+                                        else:
+                                            await self.transcript_queue.put(
+                                                (time.monotonic(), _utc_tp)
+                                            )
+                                            logger.info(
+                                                "[ms_conn v3] use-this-clinic:"
+                                                " time preference known (%r)"
+                                                " — re-queued for"
+                                                " check_availability",
+                                                _utc_tp,
+                                            )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -5482,6 +5568,16 @@ class WebSocketCallHandler:
                                                     "time_of_day_preference"
                                                 )
                                                 or ""
+                                            )
+                                            logger.info(
+                                                "[ms_conn v3] location"
+                                                " intercept routing —"
+                                                " soft_context.time_preference=%r"
+                                                " time_of_day_preference=%r",
+                                                _sc_tp,
+                                                self.session.get(
+                                                    "time_of_day_preference"
+                                                ),
                                             )
                                             if _existing_tp:
                                                 # Caller already stated
