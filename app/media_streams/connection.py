@@ -878,10 +878,22 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     "awlsta",
     "olsta",
     "orlsta",
+    "alsta",      # CODE SPEC AH — STT garbles observed or likely
+
+    # ── Short / partial forms (CODE SPEC AH) ────────────────────────────────
+    "alce",
+    "alstr",
+    "alcest",
+    "altice",
 
     # ── Possessive / with article ────────────────────────────────────────────
     "alcester s",
     "the alcester s",
+
+    # ── Possessive / your-prefixed (CODE SPEC AH) ────────────────────────────
+    "your alsta",
+    "your alster",
+    "your alce",
 })
 
 # Redditch alias set — covers common STT mishearings.
@@ -997,6 +1009,26 @@ _REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
     ) + r")\b",
     re.IGNORECASE,
 )
+
+# CODE SPEC AH — fuzzy Alcester detection.
+# Catches STT garbles that don't appear in the exact alias set:
+# any 2-4 word transcript containing a word that starts with "al" or "ol"
+# and is 5-8 characters long, and does not match any Redditch alias.
+# Used as a pre-Haiku fast-path to fire the biased confirm immediately
+# rather than waiting for the watchdog cycle.  Only fires when
+# v3_location_q_active=True (gated at the call site).
+_PROBABLE_ALCESTER_RE: re.Pattern = re.compile(r'^(al|ol)[a-z]{3,6}$')
+
+
+def _is_probable_alcester_attempt(transcript: str) -> bool:
+    words = transcript.lower().split()
+    if not words or len(words) > 4:
+        return False
+    for word in words:
+        if _PROBABLE_ALCESTER_RE.match(word) and word not in _REDDITCH_ALIASES:
+            return True
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
@@ -2084,11 +2116,26 @@ class SilenceHandler:
         if (_sess_faq_w or {}).get("state") in ("GREETING", "DETECT_INTENT", ""):
             _wait = max(_wait, 6.0)
             logger.info("[ms_watchdog] greeting_grace=%.1fs", _wait)
-        # theorem_v3 location question: short grace — caller typically answers
-        # the binary clinic question quickly; 3.25 s is enough headroom.
+        # theorem_v3 location question — two-tier grace (CODE SPEC AH):
+        #   First response (patient hasn't spoken yet): 9 s so shy callers
+        #   aren't rushed before they've had a chance to reply at all.
+        #   Subsequent attempts (patient already spoke but was garbled): 3.5 s
+        #   so a fast biased-confirm re-ask fires without 10 s dead air.
         if (_sess_faq_w or {}).get("v3_location_q_active"):
-            _wait = max(_wait, 3.25)
-            logger.info("[ms_watchdog] location_q_grace=%.1fs (v3_location_q_active)", _wait)
+            if (_sess_faq_w or {}).get("_location_q_patient_spoke"):
+                _wait = max(_wait, 3.5)
+                logger.info(
+                    "[ms_watchdog] location_q_grace=%.1fs"
+                    " (patient already spoke — fast re-ask)",
+                    _wait,
+                )
+            else:
+                _wait = max(_wait, 9.0)
+                logger.info(
+                    "[ms_watchdog] location_q_grace=%.1fs"
+                    " (first response — shy-caller grace)",
+                    _wait,
+                )
         # theorem_v3 slot selection: the LLM just read out 2-3 dated options
         # (up to 12 s of audio).  The caller must process the options, mentally
         # compare them, and choose — cognitively heavier than the binary
@@ -4911,6 +4958,13 @@ class WebSocketCallHandler:
                                 continue
                         # ── end Spec X ────────────────────────────────────────
 
+                        # CODE SPEC AH: mark that the patient has spoken at
+                        # least once while the location question was active.
+                        # Used by the watchdog to switch to the fast 3.5s grace
+                        # (first-response grace is 9s for shy callers).
+                        if self.session.get("v3_location_q_active"):
+                            self.session["_location_q_patient_spoke"] = True
+
                         _v3_gate_fired = (
                             self.session.get("v3_booking_intent", False)
                             and not self.session.get(
@@ -4946,6 +5000,7 @@ class WebSocketCallHandler:
                             self.session["last_question"] = _loc_q
                             self.session["v3_location_asked"] = True
                             self.session["v3_location_q_active"] = True
+                            self.session["_location_q_patient_spoke"] = False
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] location gate fired — "
@@ -5536,6 +5591,40 @@ class WebSocketCallHandler:
                                         _confirmed_loc,
                                     )
                                 else:
+                                    # ── CODE SPEC AH: fuzzy Alcester detect ──
+                                    # _v3_extract_location found no exact alias
+                                    # match.  Check for probable Alcester garbles
+                                    # (2-4 word transcripts with an "al/ol" word
+                                    # that didn't match Redditch) BEFORE the
+                                    # ≤3-word re-arm guard, so callers saying
+                                    # "your alsta clinic" or "altice" get the
+                                    # biased confirm immediately rather than a
+                                    # silent timer re-arm or Haiku round-trip.
+                                    _utt_words_pre = utterance.strip().split()
+                                    if _is_probable_alcester_attempt(utterance):
+                                        _fuzzy_q = "Did you say the Awlstuh clinic?"
+                                        self.session[
+                                            "v3_awaiting_use_this_clinic"
+                                        ] = True
+                                        self.session[
+                                            "v3_use_this_clinic_bias"
+                                        ] = "alcester"
+                                        self.session["last_question"] = _fuzzy_q
+                                        self.session["last_bot_prompt"] = _fuzzy_q
+                                        await self.tts_text_queue.put(_fuzzy_q)
+                                        self._silence_handler.on_question_asked(
+                                            _fuzzy_q
+                                        )
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] fuzzy Alcester"
+                                            " match %r — biased confirm"
+                                            " queued immediately",
+                                            utterance[:60],
+                                        )
+                                        continue
                                     # ── Pre-Haiku echo guard ──────────────
                                     # _v3_extract_location already checked the
                                     # full alias set and found nothing.  Short
@@ -5556,7 +5645,6 @@ class WebSocketCallHandler:
                                     # location question and skip to the next turn.
                                     # 4+ word utterances always go to Haiku
                                     # because they are likely real caller speech.
-                                    _utt_words_pre = utterance.strip().split()
                                     if len(_utt_words_pre) <= 3:
                                         _last_q_loc = self.session.get(
                                             "last_question", ""
@@ -6473,6 +6561,7 @@ class WebSocketCallHandler:
                                     self.session["last_question"] = _loc_q
                                     self.session["v3_location_asked"] = True
                                     self.session["v3_location_q_active"] = True
+                                    self.session["_location_q_patient_spoke"] = False
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -6517,6 +6606,7 @@ class WebSocketCallHandler:
                         ):
                             self.session["v3_location_q_active"] = True
                             self.session["v3_location_asked"] = True
+                            self.session["_location_q_patient_spoke"] = False
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] v3_location_q_active = True "
