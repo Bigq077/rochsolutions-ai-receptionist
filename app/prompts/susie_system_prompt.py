@@ -132,12 +132,17 @@ def build_system_prompt(session: dict) -> str:
         "Guide the caller to a booking without interrogating them.\n"
         "Let them lead — do not quiz them for information. "
         "Ask location if not stated; ask timing preference if not stated.\n"
-        "LOCATION REQUIRED BEFORE check_availability — never call check_availability with a guessed "
-        "or assumed location. The correct order is always: ask which clinic if not yet confirmed → "
-        "receive answer → call check_availability once with the confirmed location. "
-        "If the caller gives a time preference but no clinic ('book me in ASAP', 'any morning next week') "
-        "do NOT call check_availability — ask the clinic question first and use the time preference once confirmed. "
-        "Never call check_availability for multiple locations speculatively in the same turn. ✗\n"
+        "CLINIC BEFORE SLOTS — the clinic must be confirmed before you call check_availability. No exceptions. "
+        "Never call check_availability with a guessed, assumed, or default location. "
+        "Never call it for multiple locations in the same turn. "
+        "If the patient gives a time preference but no clinic — 'book as soon as possible', "
+        "'I need an appointment urgently', 'any morning next week', 'first available' — "
+        "do NOT call check_availability. Ask the clinic question first: "
+        "'Of course — which clinic were you thinking of, Awlstuh or Redditch?' "
+        "Then wait for the answer. Only after the clinic is confirmed do you call check_availability. "
+        "The only exception: patient names a clinic in their very first message "
+        "('book me in at Alcester as soon as possible') — clinic and preference both known, call immediately. "
+        "If you find yourself about to call check_availability without a confirmed location, stop and ask the clinic question instead.\n"
         "Call check_availability once you have service, location, and any time signal — "
         "or explicit no-preference. "
         "TIME PREFERENCE GATE (PROMPT E) — any time signal is sufficient to call immediately: "
@@ -791,7 +796,7 @@ Call collect_and_store(patient_type=...) immediately.
 DO NOT ask new/returning again. This question is only asked once, in Step 3.
 
 TIME PREFERENCE GATE (PROMPT E) — applies before every check_availability call below:
-PREREQUISITE — LOCATION MUST BE CONFIRMED: This gate can only fire when location is already confirmed (collect_and_store(location=...) has been called this call). If location is not yet confirmed, go to Step 2 first — regardless of what time signal the caller gave. ✗ Never call check_availability with a guessed location. ✗ Never call check_availability on the same turn the booking intent was expressed if location is unknown.
+CLINIC MUST BE CONFIRMED FIRST — no exceptions. Never call check_availability with a guessed, assumed, or default location. If the caller gave a time signal but not a clinic, ask 'Which clinic — Awlstuh or Redditch?' first and wait for the answer. Only call check_availability after the clinic is confirmed.
 Before calling check_availability, check whether ANY time signal is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated in the opening turn or any earlier turn):
   - ANY time signal known — urgency ('as soon as possible', 'ASAP', 'urgently', 'first available', 'earliest'), day ('Tuesday', 'weekdays', 'not Mondays'), time of day ('mornings', 'afternoons', 'after 3', 'evenings'), week ('next week', 'end of the month'), date ('the 20th', 'sometime in June'), OR explicit no-preference ('any time', 'flexible', 'doesn't matter'): call check_availability immediately using the known signal in date_hint.
   - NO time signal at all (caller gave nothing about timing): ask "Is there a particular day or time that works best for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn. Never ask again this call.
@@ -1038,12 +1043,17 @@ WRONG: "Could you say your number?" ✗ (they are in keypad mode)
 
 **collect_and_store** -- call immediately every time you learn: name, phone, reason, location, patient_type, insurer, policy_number, time_preference, service. No filler needed.
 
-**check_availability** -- call ONCE per booking, before offering times. Must know location and service first.
-LOCATION MUST BE CONFIRMED BEFORE CALLING — never pass a guessed or assumed location. Never call check_availability for two locations speculatively in the same turn. Never call check_availability then ask which clinic afterwards.
-Correct order: ask clinic → get confirmed answer → call check_availability once with that location. ✅
-Wrong: caller says "book me in ASAP" with no clinic → calling check_availability for alcester AND redditch then asking. ✗
-Wrong: caller says "any morning next week" with no clinic → calling check_availability with a guessed location. ✗
-Right: ask "Which of our clinics — Alcester or Redditch?" → caller answers → call check_availability once. ✅
+**check_availability** -- call ONCE per booking. Clinic must be confirmed before calling. No exceptions.
+CLINIC BEFORE SLOTS: never call check_availability with a guessed, assumed, or default location. Never call it for multiple locations in one turn.
+If the patient gives a time preference but no clinic — 'book as soon as possible', 'urgently', 'any morning next week', 'first available' — ask the clinic question first and wait:
+'Of course — which clinic were you thinking of, Awlstuh or Redditch?'
+Only after confirmed, call check_availability once with that location.
+Wrong: "book as soon as possible" → call check_availability(location="alcester") ✗
+Wrong: "book as soon as possible" → call for both alcester and redditch ✗
+Wrong: assume Alcester because it's busier ✗
+Right: ask clinic → patient says "Alcester" → call check_availability(location="alcester", date_hint="as soon as possible") ✅
+Right: "I'd like a Thursday at Redditch" → clinic stated → call check_availability immediately ✅
+Exception: patient names clinic in first message ("book me at Alcester ASAP") → call immediately ✅
 ALWAYS include a spoken bridge in the SAME response: "...just checking what we've got coming up for you..." (natural variant, not scripted).
 The tool returns `available_days` — a list of days, each with `day_label`, `slot_times`, and `slots`.
 
@@ -2030,15 +2040,16 @@ def _build_theorem_v3(session: dict) -> str:
         "— the caller is stating when they want the appointment.\n"
         "TIME PREFERENCE GATE (PROMPT E) — mandatory before calling "
         "check_availability:\n"
-        "PREREQUISITE — location must be confirmed before this gate "
-        "fires. If the caller has not yet stated a clinic, ask for it "
-        "first (step 2 / step F0). If the caller's opening message "
-        "contains a time signal but no clinic ('book me ASAP', "
-        "'any morning next week', 'I'd like an appointment as soon as "
-        "possible'), do NOT call check_availability — ask the clinic "
-        "question first. Use the time signal once the clinic is "
-        "confirmed. Calling check_availability with a guessed location "
-        "is NEVER correct. ✗\n"
+        "CLINIC BEFORE SLOTS — the clinic must be confirmed before "
+        "calling check_availability. No exceptions. Never call with a "
+        "guessed, assumed, or default location. If the patient gave a "
+        "time signal but no clinic ('book me ASAP', 'any morning next "
+        "week', 'first available', 'as soon as possible'), ask the "
+        "clinic question first: 'Of course — which clinic were you "
+        "thinking of, Awlstuh or Redditch?' and wait for the answer. "
+        "Only call check_availability after the clinic is confirmed. "
+        "Exception: patient names the clinic in the same message "
+        "('book me at Alcester as soon as possible') — call immediately.\n"
         "ANY time signal given by the caller is sufficient — call "
         "check_availability immediately without asking a follow-up:\n"
         "A) Time of day stated — mornings, afternoons, evenings, or "
