@@ -3949,6 +3949,7 @@ class WebSocketCallHandler:
                 "[ms_conn] DTMF 11-digit complete → immediate finalize %r",
                 complete,
             )
+            self._inject_phone_context_for_lookup(complete)
             await self.transcript_queue.put((time.monotonic(), complete))
             await save_session(self.call_sid, self.session)
             logger.info("[ms_conn v3] DTMF phone collection complete")
@@ -4009,6 +4010,7 @@ class WebSocketCallHandler:
             "[ms_conn] DTMF idle-finalize after %.1fs → synthetic transcript %r",
             _KEYPAD_IDLE_FINALIZE_SEC, complete,
         )
+        self._inject_phone_context_for_lookup(complete)
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (idle-finalize)")
@@ -4054,9 +4056,54 @@ class WebSocketCallHandler:
             "synthetic transcript %r",
             len(complete), complete,
         )
+        self._inject_phone_context_for_lookup(complete)
         await self.transcript_queue.put((time.monotonic(), complete))
         await save_session(self.call_sid, self.session)
         logger.info("[ms_conn v3] DTMF phone collection complete (near-complete finalize)")
+
+    def _inject_phone_context_for_lookup(self, phone: str) -> None:
+        """Inject a synthetic assistant turn into conversation_history before a
+        DTMF phone number is queued as a transcript in cancel / reschedule flows.
+
+        Without this, the LLM receives the phone number without any prior
+        context asking for it and asks for the number again instead of calling
+        lookup_patient.  The injection makes the history look like:
+            assistant: "Please enter the phone number you booked under…"
+            user: "07426779875"
+        so the LLM correctly calls lookup_patient(phone=..., purpose=...).
+        """
+        intent = self.session.get("v3_caller_intent", "")
+        if intent not in ("cancel", "reschedule"):
+            return
+
+        history = self.session.setdefault("conversation_history", [])
+
+        # Only inject if the last assistant message doesn't already ask for phone.
+        _last_assistant = ""
+        for _msg in reversed(history):
+            if _msg.get("role") == "assistant":
+                _last_assistant = (_msg.get("content") or "").lower()
+                break
+        _phone_signals = ("number", "phone", "keypad", "booked under", "calling from")
+        if any(s in _last_assistant for s in _phone_signals):
+            # History already has phone context — nothing to do.
+            return
+
+        # Use whatever was last asked; fall back to a sensible default.
+        _ctx_q = (
+            self.session.get("last_question")
+            or self.session.get("last_bot_prompt")
+            or (
+                "No problem — could I take the number you booked under, "
+                "or just say 'use this number' if you'd like me to use "
+                "the one you're calling from."
+            )
+        )
+        history.append({"role": "assistant", "content": _ctx_q})
+        logger.info(
+            "[ms_conn v3] injected phone context for %s lookup: %r",
+            intent, _ctx_q[:80],
+        )
 
     async def _fire_name_reask(self) -> None:
         """
