@@ -3344,6 +3344,12 @@ class WebSocketCallHandler:
         self._tts_gen: int = 0
 
         # ── Latency / timing ──────────────────────────────────────────────
+        # Monotonic timestamp set every time TTS audio finishes playing on the
+        # caller's end (stamped at each on_tts_finished call-site in
+        # _delayed_tts_finished).  Used by the echo suppression window check —
+        # only transcripts arriving within ECHO_SUPPRESS_WINDOW_S of this
+        # timestamp are candidates for TTS-echo suppression.
+        self._tts_audio_done_at:      float = 0.0
         self._last_audio_at:          float = 0.0   # monotonic time of last audio sent to Twilio
         self._last_filler_at:         float = 0.0   # monotonic time of last filler phrase played
         self._bad_line_played         = False        # once-per-call bad-line phrase guard
@@ -4869,6 +4875,12 @@ class WebSocketCallHandler:
                         # _on_final_transcript_clear to suppress the silence
                         # timer; this check ensures the location interception
                         # block never sees an echo candidate.
+                        #
+                        # Timestamp guard: real echoes arrive within ~500 ms of
+                        # TTS finishing; 1.5 s gives comfortable headroom.  A
+                        # transcript arriving more than 1.5 s after the last TTS
+                        # completed is real caller speech and must pass through.
+                        _ECHO_SUPPRESS_WINDOW_S = 1.5
                         if self.session.get("v3_location_asked", False):
                             _sx_words = utterance.strip().lower().split()
                             _SX_LOC_PASS = frozenset({
@@ -4879,14 +4891,22 @@ class WebSocketCallHandler:
                                 "ulster", "olster", "awlster", "alchester",
                                 "one", "two", "first", "second",
                             })
+                            _sx_in_window = (
+                                self._tts_audio_done_at > 0
+                                and (time.monotonic() - self._tts_audio_done_at)
+                                    < _ECHO_SUPPRESS_WINDOW_S
+                            )
                             if (
-                                1 <= len(_sx_words) <= 2
+                                _sx_in_window
+                                and 1 <= len(_sx_words) <= 2
                                 and not any(w in _SX_LOC_PASS for w in _sx_words)
                             ):
                                 logger.info(
                                     "[ms_conn v3] TTS-echo suppressed: %r"
-                                    " (%d word(s)) — skipping all handlers",
+                                    " (%d word(s), %.2fs after TTS done)"
+                                    " — skipping all handlers",
                                     utterance, len(_sx_words),
+                                    time.monotonic() - self._tts_audio_done_at,
                                 )
                                 continue
                         # ── end Spec X ────────────────────────────────────────
@@ -7580,6 +7600,7 @@ class WebSocketCallHandler:
                         self._tts_pending_terminal_text           = ""
                         self._tts_pending_terminal_chunk_start_ts = 0.0
                         if not self._silence_handler._watchdog_has_retired:
+                            self._tts_audio_done_at = time.monotonic()
                             self._silence_handler.on_tts_finished(
                                 _ooo_guard_text,
                                 chunk_started_at=_ooo_guard_ts,
@@ -7614,6 +7635,7 @@ class WebSocketCallHandler:
                         "[ms_tts] tts_finished fired (resolved): chunk_text=%r q_size=%d",
                         _resolve_text[:60], self.tts_text_queue.qsize(),
                     )
+                    self._tts_audio_done_at = time.monotonic()
                     self._silence_handler.on_tts_finished(
                         _resolve_text, chunk_started_at=_resolve_chunk_ts
                     )
@@ -7699,6 +7721,7 @@ class WebSocketCallHandler:
                     )
             # ── end Spec W ────────────────────────────────────────────────────
 
+            self._tts_audio_done_at = time.monotonic()
             self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
@@ -8087,24 +8110,30 @@ class WebSocketCallHandler:
                 "ulster", "olster", "awlster", "alchester",
                 "one", "two", "first", "second",
             })
+            # Timestamp guard: genuine mic bleed arrives within ~500 ms of TTS
+            # finishing; 1.5 s gives headroom.  A transcript arriving more than
+            # 1.5 s later is real caller speech and must reset the watchdog.
+            _v3_in_window = (
+                self._tts_audio_done_at > 0
+                and (time.monotonic() - self._tts_audio_done_at) < 1.5
+            )
             _v3_echo_candidate = (
-                1 <= len(_v3_echo_words) <= 2
+                _v3_in_window
+                and 1 <= len(_v3_echo_words) <= 2
                 and not any(w in _V3_LOC_PASS for w in _v3_echo_words)
             )
             if _v3_echo_candidate:
-                # Suppress on_transcript_received so the watchdog keeps running
-                # (correct), but also extend _watchdog_grace_until so the watchdog
-                # does not fire prematurely due to VAD/last_engagement_at updates
-                # that happened during the echo playback.  Mic is demonstrably live
-                # — give the caller 12 s of quiet before re-asking.
-                self._silence_handler._watchdog_grace_until = max(
-                    self._silence_handler._watchdog_grace_until,
-                    time.time() + 12.0,
-                )
+                # Suppress on_transcript_received so the watchdog keeps running.
+                # No grace extension needed — the timing gate already ensures
+                # only genuine sub-500ms echoes are suppressed; after a real
+                # echo the caller hasn't started speaking yet so the normal
+                # watchdog timeout handles the silence correctly.
                 logger.info(
-                    "[ms_conn v3] TTS-echo candidate %r (%d word(s)) "
-                    "— on_transcript_received suppressed, watchdog grace extended +12 s",
+                    "[ms_conn v3] TTS-echo candidate %r (%d word(s),"
+                    " %.2fs after TTS done)"
+                    " — on_transcript_received suppressed",
                     _fc_text, len(_v3_echo_words),
+                    time.monotonic() - self._tts_audio_done_at,
                 )
             else:
                 self._silence_handler.on_transcript_received(text)
