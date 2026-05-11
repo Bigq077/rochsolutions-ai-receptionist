@@ -405,6 +405,27 @@ def _is_non_specific_slot_affirmation(transcript: str) -> bool:
     return transcript.lower().strip() in _NON_SPECIFIC_SLOT_AFFIRMATIONS
 
 
+# Patience-phrase guard — if the LLM response is a hold/wait phrase the
+# caller has not expressed booking intent; suppress the booking ack handler.
+_PATIENCE_SIGNALS: frozenset = frozenset({
+    "take your time",
+    "no rush",
+    "whenever you're ready",
+    "go ahead whenever",
+    "of course — take",
+    "of course — no rush",
+    "not a problem — take",
+    "no problem — take",
+    "of course, take",
+    "of course — bear with",
+})
+
+
+def _is_patience_response(text: str) -> bool:
+    t = text.lower()
+    return any(s in t for s in _PATIENCE_SIGNALS)
+
+
 # Spec K — lifecycle stage for the DTMF slot map.
 # Transitions are strictly one-way within a booking flow:
 #   DAY_SELECTION → TIME_SELECTION → NONE
@@ -6650,8 +6671,20 @@ class WebSocketCallHandler:
                             # further ack detection so mid-flow "Of course —"
                             # responses (e.g. confirming slot, keypad prompt)
                             # cannot re-trigger the handler.
+                            # Patience phrase guard: if the LLM responded with
+                            # a hold/wait phrase (e.g. "Of course — take your
+                            # time.") the caller has not expressed booking
+                            # intent — suppress the ack handler entirely.
+                            _patience = _is_patience_response(_last_bot)
+                            if _patience:
+                                logger.info(
+                                    "[ms_conn v3] patience response detected"
+                                    " — loc Q suppressed: %r",
+                                    _last_bot[:80],
+                                )
                             _is_booking_ack = (
-                                not self.booking_flow_active
+                                not _patience
+                                and not self.booking_flow_active
                                 and any(
                                     p in _last_bot.lower()
                                     for p in _V3_ACK_PHRASES
