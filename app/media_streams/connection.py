@@ -1010,26 +1010,6 @@ _REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
     re.IGNORECASE,
 )
 
-# CODE SPEC AH — fuzzy Alcester detection.
-# Catches STT garbles that don't appear in the exact alias set:
-# any 2-4 word transcript containing a word that starts with "al" or "ol"
-# and is 5-8 characters long, and does not match any Redditch alias.
-# Used as a pre-Haiku fast-path to fire the biased confirm immediately
-# rather than waiting for the watchdog cycle.  Only fires when
-# v3_location_q_active=True (gated at the call site).
-_PROBABLE_ALCESTER_RE: re.Pattern = re.compile(r'^(al|ol)[a-z]{3,6}$')
-
-
-def _is_probable_alcester_attempt(transcript: str) -> bool:
-    words = transcript.lower().split()
-    if not words or len(words) > 4:
-        return False
-    for word in words:
-        if _PROBABLE_ALCESTER_RE.match(word) and word not in _REDDITCH_ALIASES:
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
 # When a caller names a specific treatment alongside booking intent, the
@@ -5591,61 +5571,32 @@ class WebSocketCallHandler:
                                         _confirmed_loc,
                                     )
                                 else:
-                                    # ── CODE SPEC AH: fuzzy Alcester detect ──
-                                    # _v3_extract_location found no exact alias
-                                    # match.  Check for probable Alcester garbles
-                                    # (2-4 word transcripts with an "al/ol" word
-                                    # that didn't match Redditch) BEFORE the
-                                    # ≤3-word re-arm guard, so callers saying
-                                    # "your alsta clinic" or "altice" get the
-                                    # biased confirm immediately rather than a
-                                    # silent timer re-arm or Haiku round-trip.
+                                    # ── CODE SPEC AI: active-question guard ───
+                                    # _v3_extract_location found no exact alias.
+                                    # Original logic: skip Haiku for ≤ 3-word
+                                    # transcripts (assumed noise).  That was wrong
+                                    # — short utterances like "your alsta clinic"
+                                    # or "Alcester please" ARE real answers when
+                                    # the system just asked a direct question.
+                                    # The skip is now gated: only discard when NO
+                                    # active question is awaiting a response.
+                                    # Within v3_location_q_active the system is
+                                    # always waiting, so the guard never fires here.
                                     _utt_words_pre = utterance.strip().split()
-                                    if _is_probable_alcester_attempt(utterance):
-                                        _fuzzy_q = "Did you say the Awlstuh clinic?"
-                                        self.session[
-                                            "v3_awaiting_use_this_clinic"
-                                        ] = True
-                                        self.session[
-                                            "v3_use_this_clinic_bias"
-                                        ] = "alcester"
-                                        self.session["last_question"] = _fuzzy_q
-                                        self.session["last_bot_prompt"] = _fuzzy_q
-                                        await self.tts_text_queue.put(_fuzzy_q)
-                                        self._silence_handler.on_question_asked(
-                                            _fuzzy_q
+                                    _ai_active_q = (
+                                        self.session.get("v3_location_q_active")
+                                        or self.session.get(
+                                            "post_slot_confirmation_pending"
                                         )
-                                        await save_session(
-                                            self.call_sid, self.session
+                                        or self.slot_map_stage in (
+                                            SlotMapStage.DAY_SELECTION,
+                                            SlotMapStage.TIME_SELECTION,
                                         )
-                                        logger.info(
-                                            "[ms_conn v3] fuzzy Alcester"
-                                            " match %r — biased confirm"
-                                            " queued immediately",
-                                            utterance[:60],
-                                        )
-                                        continue
-                                    # ── Pre-Haiku echo guard ──────────────
-                                    # _v3_extract_location already checked the
-                                    # full alias set and found nothing.  Short
-                                    # utterances (≤ 3 words) with no alias match
-                                    # are almost certainly TTS echoes that slipped
-                                    # through the 2-word echo-suppression gate in
-                                    # _on_final_transcript_clear (e.g. "at your
-                                    # house", "the clinic please").  Calling Haiku
-                                    # for these causes two problems:
-                                    #   1. ~1-2 s API latency resets the silence
-                                    #      timer and delays the real re-ask.
-                                    #   2. When Haiku returns "unknown" it queues
-                                    #      a spurious "Did you say Alcester?"
-                                    #      confirm that confuses the caller.
-                                    # Guard: if the utterance is ≤ 3 words AND
-                                    # no alias matched, treat it as noise —
-                                    # re-arm the silence timer with the current
-                                    # location question and skip to the next turn.
-                                    # 4+ word utterances always go to Haiku
-                                    # because they are likely real caller speech.
-                                    if len(_utt_words_pre) <= 3:
+                                    )
+                                    if (
+                                        len(_utt_words_pre) <= 3
+                                        and not _ai_active_q
+                                    ):
                                         _last_q_loc = self.session.get(
                                             "last_question", ""
                                         )
@@ -5661,12 +5612,22 @@ class WebSocketCallHandler:
                                         logger.info(
                                             "[ms_conn v3] short non-alias"
                                             " utterance %r (%d word(s))"
-                                            " — Haiku skipped, silence"
-                                            " timer re-armed",
+                                            " — no active question,"
+                                            " Haiku skipped, timer re-armed",
                                             utterance[:60],
                                             len(_utt_words_pre),
                                         )
                                         continue
+                                    elif len(_utt_words_pre) <= 3:
+                                        logger.info(
+                                            "[ms_conn v3] short non-alias"
+                                            " utterance %r (%d word(s))"
+                                            " — active question, passing"
+                                            " to Haiku",
+                                            utterance[:60],
+                                            len(_utt_words_pre),
+                                        )
+                                        # fall through to Haiku resolver
 
                                     # ── Haiku location resolver ───────────
                                     # Dedicated small-model call — faster and
