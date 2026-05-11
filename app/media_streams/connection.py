@@ -699,13 +699,37 @@ _V3_NAME_FALSE_POSITIVES = frozenset({
     "brilliant", "lovely", "noted", "awlstuh", "redditch",
     "monday", "tuesday", "wednesday", "thursday", "friday",
     "saturday", "sunday",
+    # CODE SPEC AB: time-of-day words — prevent slot-presentation phrases like
+    # "Afternoons — I've got..." from being stored as a patient name.
+    "morning", "mornings", "afternoon", "afternoons", "evening", "evenings",
+    # Scheduling vocabulary that appears at the start of availability responses
+    "number", "slot", "appointment", "available", "availability",
+    # Month names — prevent date strings like "May —" being captured as a name
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
 })
 
 
-def _v3_try_persist_name(session: dict, last_bot: str) -> bool:
+def _v3_try_persist_name(
+    session: dict,
+    last_bot: str,
+    post_slot_pending: bool = False,
+) -> bool:
     """
     Scan the LLM's last reply for a name-confirmation pattern and immediately
     persist the name in session state if found and not already set.
+
+    Phase gate (CODE SPEC AB): only runs when the system is actively in the
+    name collection phase.  The gate passes when either:
+      • post_slot_pending is True  — the PREVIOUS turn asked for the caller's
+        name, so the current caller utterance was the name answer and this
+        response is the LLM's confirmation ("Thanks Sarah — …").
+      • The CURRENT last_bot itself contains a _NAME_REQUEST_PHRASES token —
+        handles the rare case where the LLM asks for and acknowledges the name
+        within the same single response.
+    If neither condition is met the function returns False immediately, which
+    prevents slot-presentation phrases like "Afternoons — I've got …" from
+    being stored as a patient name.
 
     Writes to both:
       session["patient_name"]          — direct key for easy downstream reads
@@ -721,6 +745,15 @@ def _v3_try_persist_name(session: dict, last_bot: str) -> bool:
         return False
 
     if not last_bot:
+        return False
+
+    # ── Phase gate ────────────────────────────────────────────────────────────
+    # Only proceed when we are in the name-collection phase of the call.
+    _last_bot_lower = last_bot.lower()
+    _name_requested_this_turn = any(
+        p in _last_bot_lower for p in _NAME_REQUEST_PHRASES
+    )
+    if not post_slot_pending and not _name_requested_this_turn:
         return False
 
     for pattern in _V3_NAME_CONFIRM_PATTERNS:
@@ -5042,7 +5075,9 @@ class WebSocketCallHandler:
                                             )
                                             break
                                     if _v3_try_persist_name(
-                                        self.session, _faq_last_bot
+                                        self.session,
+                                        _faq_last_bot,
+                                        post_slot_pending=self.post_slot_confirmation_pending,
                                     ):
                                         logger.info(
                                             "[ms_conn v3] name persisted "
@@ -6009,7 +6044,11 @@ class WebSocketCallHandler:
                             # _v3_try_persist_name also writes session["patient_name"]
                             # as a direct key so summaries can find it even if
                             # the collected dict path is not traversed.
-                            if _v3_try_persist_name(self.session, _last_bot):
+                            if _v3_try_persist_name(
+                                self.session,
+                                _last_bot,
+                                post_slot_pending=self.post_slot_confirmation_pending,
+                            ):
                                 await save_session(
                                     self.call_sid, self.session
                                 )
