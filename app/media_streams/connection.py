@@ -7159,6 +7159,35 @@ class WebSocketCallHandler:
                     logger.info(
                         "[ms_conn] tts_inhibit: discarding stale chunk %r", chunk_text[:60]
                     )
+                    # CODE SPEC AC: track inhibited slot chunks so we can clear
+                    # the DTMF slot map when ALL chunks from a slot presentation
+                    # are discarded before the patient hears any option.
+                    # _slot_chunks_sent is set by _flush_slot_buf only when a
+                    # real slot map (≥2 entries) was extracted this turn.
+                    _sc_sent = self.session.get("_slot_chunks_sent", 0)
+                    if _sc_sent > 0 and re.search(
+                        r"\bNumber\s+\d\b", chunk_text, re.IGNORECASE
+                    ):
+                        _sc_inh = (
+                            int(self.session.get("_slot_chunks_inhibited", 0)) + 1
+                        )
+                        self.session["_slot_chunks_inhibited"] = _sc_inh
+                        logger.info(
+                            "[ms_conn] slot chunk inhibited %d/%d",
+                            _sc_inh, _sc_sent,
+                        )
+                        if _sc_inh >= _sc_sent:
+                            # All chunks gone — patient never heard any option.
+                            # Wipe the slot map so the next turn fetches fresh data.
+                            logger.info(
+                                "[ms_conn] all slot chunks inhibited — clearing "
+                                "slot map (patient never heard options)"
+                            )
+                            self.session.pop("v3_dtmf_slot_map",          None)
+                            self.session.pop("v3_awaiting_slot_selection", None)
+                            self.session.pop("_slot_chunks_sent",          None)
+                            self.session.pop("_slot_chunks_inhibited",     None)
+                            self.slot_map_stage = SlotMapStage.NONE
                     continue
 
                 # Skip consecutive identical chunks (dedup guard) — but never for

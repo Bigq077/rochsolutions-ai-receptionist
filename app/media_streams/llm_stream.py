@@ -549,7 +549,26 @@ class LLMStream:
                 session.get("v3_dtmf_slot_map"),
             )
 
-        # ── 7. Send to TTS ───────────────────────────────────────────────────
+        # ── 7. Arm slot-chunk inhibit tracking (CODE SPEC AC) ───────────────
+        # Record the number of TTS chunks being sent so _tts_loop can detect
+        # when ALL of them are discarded by tts_inhibit (barge-in before the
+        # patient heard a single option).  In that case the slot map is stale
+        # and must be cleared so the next availability check starts fresh.
+        # Only armed when a real DTMF slot map was extracted (_slot_map_count≥2);
+        # single-slot responses have no map to clear.
+        if _slot_map_count >= 2:
+            session["_slot_chunks_sent"]      = len(tts_chunks)
+            session["_slot_chunks_inhibited"] = 0
+            logger.info(
+                "[ms_gate5] slot inhibit guard armed: %d chunk(s) tracked",
+                len(tts_chunks),
+            )
+        else:
+            # No slot map — discard any stale counters from a previous turn.
+            session.pop("_slot_chunks_sent",      None)
+            session.pop("_slot_chunks_inhibited", None)
+
+        # ── 8. Send to TTS ───────────────────────────────────────────────────
         for i, c in enumerate(tts_chunks):
             logger.info(
                 "[ms_gate5] slot buf TTS chunk %d/%d: %r — len=%d",
