@@ -157,7 +157,7 @@ def build_system_prompt(session: dict) -> str:
         "then call check_availability. Never ask again once any preference is known.\n"
         "Offer slots naturally: \"I've got Tuesday at half two or Thursday morning — either work?\"\n"
         "Name: \"Who am I booking in today?\" — single question, never split first/last. "
-        "Phone: read the caller's number back digit by digit to confirm — never ask from scratch.\n"
+        "Phone: store the caller's number immediately once collected — no readback needed. If the caller confirms the number they're calling from, store it directly with collect_and_store.\n"
         "Read the full booking back and wait for yes before calling book_appointment. "
         "Never ask for info you already have. If no slots, offer the waitlist.\n"
         "Returning patients: call lookup_patient before re-collecting details.\n"
@@ -231,7 +231,7 @@ def build_system_prompt(session: dict) -> str:
         spaced = " ".join(caller_number_local)
         state_lines.append(
             f"Caller phone (pre-loaded): {caller_number_local} "
-            f"(digit by digit: {spaced}). Read back to confirm — never ask from scratch."
+            f"Use this number directly if the caller says 'use this number' or confirms the calling number — no readback needed."
         )
 
     if session.get("booking_id") or session.get("acuity_booking_id") or session.get("calendar_event_id"):
@@ -436,7 +436,7 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
     if twilio_from_local and not collected.get("phone"):
         context_lines.append(f"  caller_number = {twilio_from_local}")
         _spaced = " ".join(twilio_from_local)
-        context_lines.append(f"  caller_number_spaced = {_spaced}  ← read this back digit by digit when asking to confirm")
+        context_lines.append(f"  caller_number_spaced = {_spaced}  ← use this value when caller confirms; do NOT read it back aloud")
 
     if context_lines:
         known_context = (
@@ -736,10 +736,7 @@ If full_name or name already in session: skip the name question — do NOT ask a
 Do NOT ask for a surname — first name only is collected on the call.
 After name confirmed, proceed to ask for the mobile number.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
-  - If YES → ask EXACTLY: "And the best number to reach you on — is that the same number you're calling from, [caller_number_spaced]?"
-    ⚠️ MANDATORY: You MUST speak the spaced digits from caller_number_spaced in this question.
-    Example: if caller_number_spaced = "0 7 7 0 0 9 0 0 1 2 3", say: "And the best number to reach you on — is that the same number you're calling from, 0 7 7 0 0 9 0 0 1 2 3?"
-    Saying "is that the same number you're calling from?" WITHOUT the digits is WRONG — the caller needs to hear their number read back.
+  - If YES → ask: "And the best number to reach you on — is that the same number you're calling from?"
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step F5.
         ⚠️ PHONE CONFIRM RULE — never make this mistake:
           CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
@@ -752,9 +749,8 @@ CRITICAL phone rules for when a caller gives a new number:
   Part 1 — your entire response must be: "Not a problem — could you please give me the first five digits?"
   Part 2 — once you have received the first five digits, your entire response must be: "Thank you — and the last six digits?"
 - ⚠️ DO NOT call collect_and_store after Part 1 alone. The first five digits are INCOMPLETE. Hold them in working memory only.
-- Only AFTER you have received BOTH parts: combine them into the full number, then read it back with each digit separated by a space: "Got that — so that's [d1] [d2] [d3] [d4] [d5] [d6] [d7] [d8] [d9] [d10] [d11] — is that correct?" Wait for an explicit yes before proceeding.
-- If caller confirms yes: call collect_and_store with the complete combined number and move to Step F5.
-- If caller corrects part of it: update the corrected digit(s), read the full corrected number back once, then call collect_and_store and move to Step F5.
+- Only AFTER you have received BOTH parts: combine them into the full number, say "Got that." and call collect_and_store with the complete combined number immediately, then move to Step F5. No readback needed.
+- If the caller volunteers a correction before you proceed: update the corrected digit(s) and call collect_and_store with the corrected number, then move to Step F5.
 - If after TWO full collection attempts the number still cannot be confirmed:
     → Say: "Not to worry -- I'll send a quick text to the number you're calling from now. Just reply with the number you'd like us to use and we'll update it."
     → Call send_followup_sms with phone=[caller_number from known context], message_type="general", custom_message="Hi, it's Susie from {sms_name}! Could you reply to this text with the phone number you'd like us to use for your appointment? Thanks!"
@@ -829,7 +825,7 @@ Before calling check_availability, check whether ANY time signal is already know
 Ask: "And your name — just so I can find your records?"
 When name given: call collect_and_store(field="full_name", value="[name as spoken]").
 Then check whether caller_number appears in the known context above.
-  - If YES → ask EXACTLY: "And is the number you're calling from right now the same number you originally booked with, [caller_number_spaced]?"
+  - If YES → ask: "And is the number you're calling from right now the same number you originally booked with?"
       - Caller says YES → call collect_and_store(field="phone", value=[caller_number exactly as shown in context]).
       - Caller says NO / gives different number → collect the new number using the two-part method from Step 9.
   - If NO caller_number → ask: "And what's the best number to reach you on?" then use the two-part method from Step 9.
@@ -873,10 +869,7 @@ Do NOT ask for a surname — first name only is collected on the call.
 **Step 9** -- Mobile number:
 If phone already known: skip.
 CALLER ID FIRST: Check whether caller_number appears in the known context above.
-  - If YES → ask EXACTLY: "And the best number to reach you on — is that the same number you're calling from, [caller_number_spaced]?"
-    ⚠️ MANDATORY: You MUST speak the spaced digits from caller_number_spaced in this question.
-    Example: if caller_number_spaced = "0 7 7 0 0 9 0 0 1 2 3", say: "And the best number to reach you on — is that the same number you're calling from, 0 7 7 0 0 9 0 0 1 2 3?"
-    Saying "is that the same number?" WITHOUT the digits is WRONG — the caller must hear their number spoken back.
+  - If YES → ask: "And the best number to reach you on — is that the same number you're calling from?"
       - Caller says yes (or "yeah", "that's right", "yes that's it", "correct") → call collect_and_store with phone=[caller_number exactly as shown in context], then move straight to Step 10.
         ⚠️ PHONE CONFIRM RULE — never make this mistake:
           CORRECT → collect_and_store(field="phone", value="07870166861")  ← the ACTUAL digits from caller_number
@@ -889,9 +882,8 @@ CRITICAL phone rules for when a caller gives a new number:
   Part 1 — your entire response must be: "Not a problem — could you please give me the first five digits?"
   Part 2 — once you have received the first five digits, your entire response must be: "Thank you — and the last six digits?"
 - ⚠️ DO NOT call collect_and_store after Part 1 alone. The first five digits are INCOMPLETE. Hold them in working memory only.
-- Only AFTER you have received BOTH parts: combine them into the full number, then read it back with each digit separated by a space: "Got that — so that's [d1] [d2] [d3] [d4] [d5] [d6] [d7] [d8] [d9] [d10] [d11] — is that correct?" Wait for an explicit yes before proceeding.
-- If caller confirms yes: call collect_and_store with the complete combined number and move to Step 10.
-- If caller corrects part of it: update the corrected digit(s), read the full corrected number back once, then call collect_and_store and move to Step 10.
+- Only AFTER you have received BOTH parts: combine them into the full number, say "Got that." and call collect_and_store with the complete combined number immediately, then move to Step 10. No readback needed.
+- If the caller volunteers a correction before you proceed: update the corrected digit(s) and call collect_and_store with the corrected number, then move to Step 10.
 - If after TWO full collection attempts the number still cannot be confirmed:
     → Say: "Not to worry -- I'll send a quick text to the number you're calling from now. Just reply with the number you'd like us to use and we'll update it."
     → Call send_followup_sms with phone=[caller_number from known context], message_type="general", custom_message="Hi, it's Susie from [clinic_name]! Could you reply to this text with the phone number you'd like us to use for your appointment? Thanks!"
@@ -966,7 +958,7 @@ Examples -- copy this style exactly:
 - Caller says NEW patient → "No problem at all." then move straight on
 - Caller says RETURNING patient → "Oh brilliant, welcome back." then move straight on
 - Caller gives name → do NOT repeat or echo the name back. Ask immediately for their number: "And the best number to reach you on?"
-- Caller gives phone number → "Got that." then read it back DIGIT BY DIGIT (each digit separated by a space): "So that's 0 7 8 7 0 1 6 6 8 6 1 — is that correct?" — wait for explicit yes before moving on
+- Caller gives phone number → "Got that." then call collect_and_store with the number immediately and move to the next step — no readback needed
 - Caller picks a slot → "Perfect, so that's [full date and time]..." then ask to confirm
 NEVER move on without any acknowledgment -- silence feels broken.
 
@@ -2866,8 +2858,8 @@ def _build_theorem_v3(session: dict) -> str:
         "if the caller wants a different number they will say so. "
         "The calling number is available in CALL STATE. Only ask "
         "them to provide a number if they decline the calling "
-        "number. When the calling number is confirmed, read every "
-        "digit back individually, then wait for confirmation.\n"
+        "number. When the calling number is confirmed, store it "
+        "immediately — no readback needed.\n"
         "When collecting a phone number — whether for a new "
         "booking or for a lookup — always ask the caller to type "
         "it on their keypad, not say it aloud. This ensures "
@@ -2879,8 +2871,7 @@ def _build_theorem_v3(session: dict) -> str:
         "them to type anything. Do NOT ask the caller to say "
         "digits aloud. Do NOT do a digit-by-digit readback for "
         "keypad-entered numbers — the keypad is already accurate. "
-        "Simply confirm the full number once: 'Just to confirm "
-        "— that's [number]. Is that right?'\n"
+        "Store it immediately with collect_and_store and move on.\n"
         "9. Warm readback summary. State caller name, day, "
         "date, time, and clinic only. Do not mention the "
         "appointment type, session duration, or what the "
@@ -2956,8 +2947,8 @@ def _build_theorem_v3(session: dict) -> str:
     cn = session.get("twilio_from_local") or ""
     if cn:
         state.append(
-            f"caller phone (pre-loaded): {cn} — read back digit by "
-            f"digit ({' '.join(cn)}); never ask from scratch"
+            f"caller phone (pre-loaded): {cn} — use this directly "
+            f"if caller confirms; no readback needed"
         )
     if (session.get("acuity_booking_id")
             or session.get("booking_id")
@@ -3225,9 +3216,8 @@ def _build_theorem_v3(session: dict) -> str:
         "alongside genuine afternoon slots (2pm+), list the earlier "
         "ones first and label them correctly: \"I've got midday, "
         "two o'clock, or three in the afternoon.\"\n"
-        "The digit-by-digit phone number readback is the only "
-        "context where numbers are spoken as individual digits. All "
-        "times are spoken as described above, never as digits."
+        "Phone numbers are never read back digit by digit. "
+        "All times are spoken as described above, never as digits."
     )
 
     # OUTPUT DISCIPLINE — absolute prohibition on reasoning in spoken output
