@@ -6320,6 +6320,55 @@ class WebSocketCallHandler:
                                 self.session["v3_treatment_mentioned"] = True
                             # ── end Spec Y REVISED ────────────────────────────
 
+                            # ── Duplicate slot guard ──────────────────────────
+                            # Problem: rapid-continuation transcript pairs fire
+                            # two LLM calls.  If LLM call 1 presents slots, the
+                            # pending transcript re-queues and LLM call 2 also
+                            # presents the same slots.  Caller hears two slot
+                            # lists with two "Any of those suit you?" CTAs.
+                            #
+                            # Guard: if slot selection is still active AND the
+                            # new utterance is short (< 8 words) AND contains
+                            # no rejection or new-date signal, suppress run_turn
+                            # — the slots are already in the caller's ear.
+                            #
+                            # NOT suppressed:
+                            #   - Utterances ≥ 8 words (genuine new request)
+                            #   - Any rejection/alternative signal word
+                            #   - When v3_awaiting_slot_selection is False
+                            #     (slot selection phase is over)
+                            _sg_words = utterance.strip().split()
+                            _SLOT_GUARD_PASS = frozenset({
+                                "none", "nothing", "different", "another",
+                                "else", "instead", "other", "change",
+                                "doesn't", "dont", "won't", "wont",
+                                "can't", "cant", "not", "no",
+                                "june", "july", "august", "september",
+                                "october", "november", "december",
+                                "january", "february", "march", "april",
+                                "week", "month", "earlier", "later",
+                            })
+                            _slot_repeat_suppressed = (
+                                bool(self.session.get(
+                                    "v3_awaiting_slot_selection"
+                                ))
+                                and len(_sg_words) < 8
+                                and not any(
+                                    w.lower().strip(".,?!'")
+                                    in _SLOT_GUARD_PASS
+                                    for w in _sg_words
+                                )
+                            )
+                            if _slot_repeat_suppressed:
+                                logger.info(
+                                    "[ms_conn] slot repeat suppressed"
+                                    " — slots already presented this"
+                                    " turn: %r",
+                                    utterance[:60],
+                                )
+                                continue
+                            # ── end duplicate slot guard ──────────────────────
+
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
