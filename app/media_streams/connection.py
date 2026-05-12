@@ -6924,6 +6924,26 @@ class WebSocketCallHandler:
                                                 " or time that works best"
                                                 " for you?"
                                             )
+                                    # ── Suppress timing Q if slots already
+                                    # presented this turn (e.g. inline booking
+                                    # ack where check_availability ran in the
+                                    # same LLM turn).  The slot buffer CTA
+                                    # ("Any of those suit you?") already
+                                    # invites a response — queuing the timing
+                                    # preference question on top would fire
+                                    # two questions simultaneously.
+                                    if (
+                                        _next_q is not None
+                                        and self.session.get(
+                                            "v3_awaiting_slot_selection"
+                                        )
+                                    ):
+                                        logger.info(
+                                            "[ms_conn v3] timing Q suppressed"
+                                            " — slots already presented"
+                                            " this turn"
+                                        )
+                                        _next_q = None
                                     if _next_q is not None:
                                         await self.tts_text_queue.put(_next_q)
                                         self.session[
