@@ -6944,6 +6944,21 @@ class WebSocketCallHandler:
                                             " this turn"
                                         )
                                         _next_q = None
+                                    # ── Suppress timing Q if LLM response
+                                    # already contains a question this turn.
+                                    # Prevents two open questions firing back
+                                    # to back (e.g. LLM asks clinic question
+                                    # AND ack queues timing preference Q).
+                                    if (
+                                        _next_q is not None
+                                        and "?" in _last_bot
+                                    ):
+                                        logger.info(
+                                            "[ms_conn v3] timing Q suppressed"
+                                            " — LLM response already contains"
+                                            " a question this turn"
+                                        )
+                                        _next_q = None
                                     if _next_q is not None:
                                         await self.tts_text_queue.put(_next_q)
                                         self.session[
