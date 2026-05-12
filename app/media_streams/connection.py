@@ -3388,6 +3388,11 @@ class WebSocketCallHandler:
         # caller's continued speech triggers a second barge-in before the first
         # utterance is processed.
         self._in_barge_in_recovery: bool = False
+        # Clinical barge-in protection: True while a clinical/empathy response is
+        # being synthesised.  When set, barge-in does NOT cancel the TTS so the
+        # caller always hears the full empathy acknowledgement before Susie listens
+        # to the next input.  Reset to False at the start of each new TTS chunk.
+        self._clinical_response_active: bool = False
 
         # Keypad idle-finalize: scheduled when the DTMF buffer has enough digits
         # to plausibly be a complete number but the caller has paused.  If no
@@ -7808,6 +7813,33 @@ class WebSocketCallHandler:
                 sub_chunks = split_tts_text(chunk_text)
                 _any_cancelled = False
 
+                # ── Clinical barge-in protection ──────────────────────────────
+                # Reset for each new chunk; re-arm if this chunk contains
+                # empathy/clinical language without slot-selection content.
+                # When armed, _on_partial_transcript will NOT cancel this TTS.
+                self._clinical_response_active = False
+                _CLINICAL_EMPATHY_PHRASES = (
+                    "sounds uncomfortable", "sounds painful",
+                    "sorry to hear", "that must be", "must be difficult",
+                    "that sounds really", "really uncomfortable",
+                    "really painful", "sorry about that",
+                )
+                _ct_lower = chunk_text.lower()
+                _has_slot_content = bool(
+                    re.search(r"\bnumber\s+\d\b", chunk_text, re.IGNORECASE)
+                )
+                if (
+                    any(p in _ct_lower for p in _CLINICAL_EMPATHY_PHRASES)
+                    and not _has_slot_content
+                ):
+                    self._clinical_response_active = True
+                    logger.info(
+                        "[ms_conn] clinical response active"
+                        " — barge-in guard armed: %r",
+                        chunk_text[:60],
+                    )
+                # ── end clinical barge-in protection ──────────────────────────
+
                 # Notify silence handler ONCE per chunk (not per sub-chunk).
                 # on_tts_started() is paired with exactly one on_tts_finished() call
                 # (via _delayed_tts_finished after the sentinel).  Calling it per
@@ -8236,6 +8268,9 @@ class WebSocketCallHandler:
             # ── end Spec W ────────────────────────────────────────────────────
 
             self._tts_audio_done_at = time.monotonic()
+            # Clinical protection no longer needed once the terminal chunk has
+            # played out — reset so subsequent caller speech is handled normally.
+            self._clinical_response_active = False
             self._silence_handler.on_tts_finished(text, chunk_started_at=chunk_started_at)
             logger.debug("[ms_silence] tts_finished fired after %.1fs delay gen=%d", delay, gen)
         except asyncio.CancelledError:
@@ -8357,6 +8392,19 @@ class WebSocketCallHandler:
                 "[ms_conn] barge-in: playback-only window — "
                 "synthesis done but audio still playing"
             )
+
+        # ── Clinical barge-in guard ────────────────────────────────────────
+        # When a clinical/empathy response is active, do NOT cancel the TTS.
+        # The caller hears the full empathy acknowledgement; their barge-in
+        # text is processed normally on the NEXT final transcript event.
+        if self._clinical_response_active:
+            logger.info(
+                "[ms_conn] barge-in suppressed"
+                " — clinical response completing: %r",
+                self._current_tts_text[:60],
+            )
+            return
+        # ── end clinical barge-in guard ───────────────────────────────────
 
         # Record barge-in start time (only once per barge-in event)
         if not self._barge_in_pending:

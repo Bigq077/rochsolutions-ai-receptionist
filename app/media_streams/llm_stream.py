@@ -853,6 +853,7 @@ class LLMStream:
         timeout_sec          = LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0
         got_first_chunk      = False
         _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
+        _any_tts_emitted     = False  # True if ANY sanitised chunk actually reached the queue
 
         # Reset ack-filler state for this turn.  _ack_filler_active is set True
         # by _delayed_filler() below when FILLER_PHRASE is queued; with_filler()
@@ -954,6 +955,7 @@ class LLMStream:
                                     # tts_loop can drop this chunk if
                                     # check_availability is detected this turn.
                                     await tts_text_queue.put(PRE_SLOT_MARKER + chunk)
+                                    _any_tts_emitted = True
 
                         continue
 
@@ -974,6 +976,7 @@ class LLMStream:
                 final_chunk = sanitise_response(final_chunk, session)
                 if final_chunk:
                     await tts_text_queue.put(PRE_SLOT_MARKER + final_chunk)
+                    _any_tts_emitted = True
 
             # ── GATE 5: per-turn reasoning drop count ─────────────────────
             _g5_drops = int(session.pop("_gate5_reasoning_drops", 0) or 0)
@@ -1009,6 +1012,30 @@ class LLMStream:
             elif stop_reason == "end_turn" and not full_text.strip():
                 # Empty response -- caller receives nothing; handled by nudge in loop
                 pass
+
+            # ── GATE 5: empty-response fallback (Failure Mode A) ────────────────
+            # If the LLM produced text but every chunk was removed by gate5
+            # (e.g. one_for_practitioner stripped the entire response), the caller
+            # hears silence.  Substitute a safe booking-redirect phrase immediately
+            # using the same tts_text_queue path as normal output.
+            # Guards:
+            #   - _any_tts_emitted=False  → nothing reached the queue this turn
+            #   - full_text.strip()       → LLM did produce content (not truly empty)
+            #   - stop_reason != "tool_use" → tool call will produce its own response
+            if (
+                not _any_tts_emitted
+                and full_text.strip()
+                and stop_reason != "tool_use"
+            ):
+                _gate5_fallback = (
+                    "What I can do is get you booked in so Mark can "
+                    "have a proper look — would that help?"
+                )
+                logger.info(
+                    "[ms_gate5] banned phrase removal left empty response"
+                    " — substituting fallback"
+                )
+                await tts_text_queue.put(_gate5_fallback)
 
         # Ensure background filler task is cleaned up
         if _filler_task and not _filler_task.done():
