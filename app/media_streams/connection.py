@@ -6791,6 +6791,25 @@ class WebSocketCallHandler:
                                     self.session["v3_caller_intent"] = "cancel"
                                 else:
                                     self.session["v3_caller_intent"] = "booking"
+                                # ── FAQ-session bridge filler ──────────────────
+                                # When the caller transitions from a long FAQ
+                                # session to booking (q_gen ≥ 5), play a short
+                                # filler phrase immediately after the booking ack
+                                # so they hear a warm bridge while Susie switches
+                                # modes.  Without this, long context windows can
+                                # produce a 1-2 s gap between the LLM's ack
+                                # phrase and the first booking question.
+                                _faq_q_gen = self._silence_handler._q_gen
+                                if _faq_q_gen >= 5:
+                                    await self.tts_text_queue.put(
+                                        "Let me get that sorted for you."
+                                    )
+                                    logger.info(
+                                        "[ms_conn v3] booking ack filler"
+                                        " — FAQ session detected q_gen=%d",
+                                        _faq_q_gen,
+                                    )
+                                # ── end FAQ-session bridge filler ─────────────
                                 # Booking ack detected — advance to next question.
                                 # If location already confirmed, skip location Q
                                 # and go straight to new/returning.
