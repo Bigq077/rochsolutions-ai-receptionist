@@ -426,6 +426,26 @@ def _is_patience_response(text: str) -> bool:
     return any(s in t for s in _PATIENCE_SIGNALS)
 
 
+# Inline alias booking-intent gate.
+# Only confirms a location alias when the same transcript contains at
+# least one booking intent signal.  Pure FAQ questions that happen to
+# name a clinic (e.g. "how many disabled bays at Redditch?") must NOT
+# confirm v3_location_confirmed — doing so skips the location question
+# when booking starts later, silently binding the wrong clinic.
+_BOOKING_INTENT_SIGNALS: frozenset = frozenset({
+    "book", "booking", "appointment", "appointments",
+    "reschedule", "cancel", "move", "change my",
+    "come in", "see you", "visit", "slot", "available",
+    "availability", "get in", "book in", "make an appointment",
+    "see mark", "get seen", "register", "new patient",
+})
+
+
+def _transcript_has_booking_intent(text: str) -> bool:
+    t = text.lower()
+    return any(s in t for s in _BOOKING_INTENT_SIGNALS)
+
+
 # Spec K — lifecycle stage for the DTMF slot map.
 # Transitions are strictly one-way within a booking flow:
 #   DAY_SELECTION → TIME_SELECTION → NONE
@@ -6597,6 +6617,17 @@ class WebSocketCallHandler:
                             # If a location is detected here, v3_location_confirmed
                             # is set before the booking ack branch runs — the ack
                             # branch then skips the location question entirely.
+                            #
+                            # ALIAS CONFIRMATION LOGIC:
+                            # 1. booking_flow_active=True → confirm
+                            #    (caller already in booking flow,
+                            #     location is for their appointment)
+                            # 2. booking_flow_active=False AND
+                            #    booking intent in transcript → confirm
+                            #    (e.g. "book at Alcester" on first turn)
+                            # 3. booking_flow_active=False AND no
+                            #    booking intent → candidate only
+                            #    (e.g. "disabled bays at Redditch" FAQ)
                             if not self.session.get("v3_location_confirmed"):
                                 _n_inline = _normalise_location_text(utterance)
                                 _has_alcester = bool(
@@ -6605,34 +6636,65 @@ class WebSocketCallHandler:
                                 _has_redditch = bool(
                                     _REDDITCH_ALIAS_WB_RE.search(_n_inline)
                                 )
+                                # Gate: only confirm when booking intent
+                                # is present in this transcript OR the
+                                # caller is already in the booking flow.
+                                _inline_has_intent = (
+                                    self.booking_flow_active
+                                    or _transcript_has_booking_intent(
+                                        utterance
+                                    )
+                                )
                                 if _has_alcester and not _has_redditch:
-                                    self.session["selected_location"] = (
-                                        "alcester"
-                                    )
-                                    self.session["v3_location_confirmed"] = (
-                                        True
-                                    )
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] inline alias detected "
-                                        "pre-ack: alcester"
-                                    )
+                                    if _inline_has_intent:
+                                        self.session["selected_location"] = (
+                                            "alcester"
+                                        )
+                                        self.session[
+                                            "v3_location_confirmed"
+                                        ] = True
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] inline alias"
+                                            " detected pre-ack: alcester"
+                                        )
+                                    else:
+                                        self.session[
+                                            "v3_soft_location_candidate"
+                                        ] = "alcester"
+                                        logger.info(
+                                            "[ms_conn v3] inline alias in"
+                                            " FAQ context — candidate"
+                                            " noted, not confirmed:"
+                                            " alcester"
+                                        )
                                 elif _has_redditch and not _has_alcester:
-                                    self.session["selected_location"] = (
-                                        "redditch"
-                                    )
-                                    self.session["v3_location_confirmed"] = (
-                                        True
-                                    )
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] inline alias detected "
-                                        "pre-ack: redditch"
-                                    )
+                                    if _inline_has_intent:
+                                        self.session["selected_location"] = (
+                                            "redditch"
+                                        )
+                                        self.session[
+                                            "v3_location_confirmed"
+                                        ] = True
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] inline alias"
+                                            " detected pre-ack: redditch"
+                                        )
+                                    else:
+                                        self.session[
+                                            "v3_soft_location_candidate"
+                                        ] = "redditch"
+                                        logger.info(
+                                            "[ms_conn v3] inline alias in"
+                                            " FAQ context — candidate"
+                                            " noted, not confirmed:"
+                                            " redditch"
+                                        )
 
                             # ── First-turn date/time extraction ──────────
                             # Capture time/date preference from this
