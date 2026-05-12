@@ -5088,7 +5088,17 @@ class WebSocketCallHandler:
                         # transcript arriving more than 1.5 s after the last TTS
                         # completed is real caller speech and must pass through.
                         _ECHO_SUPPRESS_WINDOW_S = 1.5
-                        if self.session.get("v3_location_asked", False):
+                        if (
+                            self.session.get("v3_location_asked", False)
+                            # Bypass echo suppression when the biased confirm is
+                            # active ("Did you say the Awlstuh clinic?").  The
+                            # caller's "yes I did" / "I did" is 2 words and
+                            # contains no _SX_LOC_PASS token, so it would be
+                            # silently dropped — preventing Alcester resolution.
+                            and not self.session.get(
+                                "v3_awaiting_use_this_clinic", False
+                            )
+                        ):
                             _sx_words = utterance.strip().lower().split()
                             _SX_LOC_PASS = frozenset({
                                 "yes", "no", "yeah", "nope", "yep", "yup", "nah",
@@ -8465,7 +8475,13 @@ class WebSocketCallHandler:
         #   • clinic names / phonetic variants  → _v3_extract_location handles
         #   • yes / no / yeah / nope / yep / yup (binary answers)
         #   • "use" / "this"  (start of "use this clinic")
-        elif self.session.get("v3_location_asked", False):
+        elif (
+            self.session.get("v3_location_asked", False)
+            # Bypass when biased confirm is active — caller's "yes I did" /
+            # "I did" (2 words, no pass token) must not be echo-suppressed
+            # or the silence timer never resets and Alcester is not resolved.
+            and not self.session.get("v3_awaiting_use_this_clinic", False)
+        ):
             _v3_echo_words = _fc_text.lower().split()
             _V3_LOC_PASS = frozenset({
                 "yes", "no", "yeah", "nope", "yep", "yup", "nah",
