@@ -2157,9 +2157,10 @@ class SilenceHandler:
         # theorem_v3 slot selection: the LLM just read out 2-3 dated options
         # (up to 12 s of audio).  The caller must process the options, mentally
         # compare them, and choose — cognitively heavier than the binary
-        # location question.  10 s post-TTS is the minimum comfortable window.
+        # location question.  15 s post-TTS gives a full mental processing window
+        # (raised from 10 s — 3 options × ~4 s mental comparison time).
         if (_sess_faq_w or {}).get("v3_awaiting_slot_selection"):
-            _wait = max(_wait, 10.0)
+            _wait = max(_wait, 15.0)
             logger.info(
                 "[ms_watchdog] slot_selection_grace=%.1fs (v3_awaiting_slot_selection)",
                 _wait,
@@ -2561,13 +2562,20 @@ class SilenceHandler:
             if _state in ("GREETING", "DETECT_INTENT", ""):
                 # v3 bypasses the FlowEngine state machine so state stays
                 # GREETING even after asking location / new-returning questions.
+                # ── v3 slot selection re-ask ──────────────────────────────────
+                # Slot selection: caller has just heard 2-3 options (day + times).
+                # Do NOT re-read the CTA verbatim — the caller heard it once.
+                # Do NOT use "Sorry, I didn't catch that" (G2 banned phrase).
+                # Use a neutral prompt that doesn't presuppose they missed it.
+                if (_sess or {}).get("v3_awaiting_slot_selection"):
+                    phrase = "Still with you — which of those would you like?"
                 # ── v3 location retry ladder ──────────────────────────────────
                 # When the location question is active, escalate on the 2nd
                 # re-ask to "Did you say the Alcester clinic?" — a biased binary
                 # that lets the caller say yes once rather than repeating the
                 # place name.  The v3_awaiting_use_this_clinic flag routes their
                 # next response to the existing yes/no confirmation handler.
-                if (_sess or {}).get("v3_location_q_active"):
+                elif (_sess or {}).get("v3_location_q_active"):
                     _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
                     if _v3_lrc == 0:
                         # Rung 1: biased confirm — lets the caller say yes/no once.
