@@ -405,6 +405,36 @@ def _is_non_specific_slot_affirmation(transcript: str) -> bool:
     return transcript.lower().strip() in _NON_SPECIFIC_SLOT_AFFIRMATIONS
 
 
+# Open-availability signals — used to detect rapid-continuation transcripts
+# that express no-preference / any-time availability AFTER slots have already
+# been presented.  When v3_awaiting_slot_selection is True and the new
+# transcript matches one of these, the LLM call is suppressed: the slots
+# already presented are the correct answer and re-running check_availability
+# would produce a duplicate slot list.
+_OPEN_AVAILABILITY_SIGNALS: frozenset = frozenset({
+    "any", "anytime", "any time", "any day",
+    "free", "free all week", "free this week",
+    "flexible", "doesn't matter", "don't mind",
+    "don't really mind", "not really mind",
+    "no preference", "whenever",
+    "happy with anything", "not fussed",
+    "either", "both", "all week",
+    "i'm free", "im free",
+    "whatever works", "whatever you have",
+    "doesn't matter to me", "not bothered",
+})
+
+
+def _is_open_availability_utterance(text: str) -> bool:
+    """Return True if *text* is an open-availability / no-preference phrase.
+
+    Uses substring matching (not exact) so 'i don't really mind to be honest'
+    and 'i'm free all week to be honest' are caught alongside shorter forms.
+    """
+    t = text.lower().strip()
+    return any(s in t for s in _OPEN_AVAILABILITY_SIGNALS)
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -4773,6 +4803,24 @@ class WebSocketCallHandler:
                             # Pass to LLM — the patient is expressing intent.
                             # Examples: "no none of those suit me",
                             #           "that one please", "not really".
+                            #
+                            # Guard: if the new transcript is an open-
+                            # availability / no-preference phrase AND slots
+                            # were already presented this turn, suppress the
+                            # LLM call.  The slots already presented are the
+                            # correct answer — re-running check_availability
+                            # would produce a duplicate slot list.
+                            if _is_open_availability_utterance(utterance):
+                                logger.info(
+                                    "[ms_conn v3] open-availability continuation"
+                                    " suppressed — slots already presented"
+                                    " this turn: %r",
+                                    utterance,
+                                )
+                                self.llm_in_flight = False
+                                self._llm_busy = False
+                                self.session["llm_generation_active"] = False
+                                continue
                             logger.info(
                                 "[ms_conn] non-slot utterance during slot selection"
                                 " — passing to LLM: %r",
