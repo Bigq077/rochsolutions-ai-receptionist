@@ -2133,7 +2133,8 @@ def _build_theorem_v3(session: dict) -> str:
         if (_loc_confirmed and _sel_loc)
         else (
             "2. Ask location: \"Which clinic were you thinking of — "
-            "Awlstuh or Redditch?\" Wait. Accept name variants and "
+            "Awlstuh or Redditch?\" Wait. Accept name variants "
+            "(see LOCATION RECOGNITION FROM STT below), "
             "one/two.\n"
         )
     )
@@ -2267,6 +2268,21 @@ def _build_theorem_v3(session: dict) -> str:
         "Right: caller says 'book an appointment please' → Susie "
         "asks 'Which clinic — Awlstuh or Redditch?' → caller says "
         "'Alcester' → Susie calls check_availability(alcester).\n"
+        "LOCATION RECOGNITION FROM STT: Phone calls are transcribed "
+        "by speech-to-text software which sometimes mishears place "
+        "names. If a caller's transcript contains any of the "
+        "variants below, treat it as if they named that clinic "
+        "directly. Do NOT ask 'which clinic?' if a location variant "
+        "is clearly present in the transcript. Apply this "
+        "recognition before deciding whether to ask the clinic "
+        "question.\n"
+        "STT variants that mean Alcester: 'alter', 'alster', "
+        "'awlster', 'alcester', 'alchester', 'awlchester', "
+        "'altster', 'al-ster', 'olster', 'alcaster', 'alcesters', "
+        "'alester', 'awlstuh', 'alter clinic', 'your alcester'.\n"
+        "STT variants that mean Redditch: 'reddit', 'reddich', "
+        "'red ditch', 'reditch', 'reddidge', 'redich', "
+        "'your redditch'.\n"
         "TIME PREFERENCE GATE (PROMPT E) — mandatory before calling "
         "check_availability:\n"
         "CLINIC BEFORE SLOTS — the clinic must be confirmed before "
