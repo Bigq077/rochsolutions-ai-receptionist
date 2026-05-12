@@ -8870,7 +8870,7 @@ class WebSocketCallHandler:
         because at least one of conditions 2–5 is always true then.
         """
         _INTERVAL = 10.0
-        _PHRASE_1 = "Sorry, I didn't quite catch that — are you still there?"
+        _PHRASE_1 = "Still with you — which of those days suits you?"
         _PHRASE_2 = (
             "I'm not able to hear you at the moment — "
             "feel free to call back and we'll get that sorted for you."
