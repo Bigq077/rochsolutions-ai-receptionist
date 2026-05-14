@@ -266,6 +266,25 @@ class LLMStream:
         messages: List[dict] = list(history[-MAX_HISTORY_TURNS:])
         messages.append({"role": "user", "content": user_text})
 
+        # ── Prompt cache: conversation history ───────────────────────────
+        # System prompt is cached at the API call site (ephemeral on the
+        # system block).  Here we add a second cache breakpoint on the
+        # second-to-last message — i.e. the last stable history entry
+        # before the current user turn.  Anthropic caches everything up to
+        # and including that marker, so turns 2+ avoid re-processing the
+        # full conversation history on every call.
+        # Requires at least 2 messages (history entry + current user turn).
+        # Content must be a string (skip tool-result messages whose content
+        # is already a list).
+        if len(messages) >= 2:
+            _cache_target = messages[-2]
+            if isinstance(_cache_target.get("content"), str):
+                _cache_target["content"] = [{
+                    "type":          "text",
+                    "text":          _cache_target["content"],
+                    "cache_control": {"type": "ephemeral"},
+                }]
+
         tools       = _build_claude_tools()
         full_reply  = ""     # assembled from all chunks for history
         transfer_initiated = False

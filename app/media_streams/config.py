@@ -149,7 +149,11 @@ class FastPathTurnType(str, Enum):
 
 # Minimum words in a TTS chunk before it can be emitted
 # (prevents choppy single-sentence fragments)
-MIN_CHUNK_WORDS = 15
+# Lowered from 15 → 8: first audio plays as soon as any complete sentence
+# reaches 8 words, reducing time-to-first-audio by ~300-500ms per turn.
+# Still prevents sub-sentence fragments — chunker only emits at sentence
+# boundaries (. ! ?); this threshold gates how soon that boundary fires.
+MIN_CHUNK_WORDS = 8
 
 # Maximum words per TTS chunk
 # (ensures forward progress even on run-on sentences)
