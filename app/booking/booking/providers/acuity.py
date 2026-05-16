@@ -3,6 +3,7 @@ Acuity Scheduling provider adapter.
 """
 
 import asyncio
+import json
 import logging
 from typing import List, Optional
 from datetime import datetime, date, timedelta
@@ -17,8 +18,14 @@ from ..exceptions import (
     SlotUnavailable,
 )
 from ..utils import LONDON_TZ, to_utc, ensure_london_tz
+from app.storage.redis_store import redis_client
 
 logger = logging.getLogger(__name__)
+
+# TTL for per-date availability cache entries.
+# Slot availability does not change meaningfully within a single call;
+# 60s is conservative and safe for calls up to ~5 minutes.
+_ACUITY_CACHE_TTL = 60
 
 
 class AcuityAdapter:
@@ -312,6 +319,26 @@ class AcuityAdapter:
 
         async def _fetch_day(day: date) -> list:
             day_str = day.isoformat()
+            cache_key = (
+                f"acuity_avail:{acuity_type_id}:{acuity_cal_id or ''}:{day_str}"
+            )
+
+            # ── Cache read ────────────────────────────────────────────────
+            if redis_client:
+                try:
+                    cached = await redis_client.get(cache_key)
+                    if cached is not None:
+                        logger.debug("[acuity_cache] HIT %s", cache_key)
+                        return json.loads(cached)
+                except Exception as _cache_err:
+                    logger.warning(
+                        "[acuity_cache] Redis read error for %s: %r",
+                        cache_key, _cache_err,
+                    )
+
+            logger.debug("[acuity_cache] MISS %s", cache_key)
+
+            # ── Live Acuity request ───────────────────────────────────────
             params = {
                 "appointmentTypeID": acuity_type_id,
                 "date": day_str,
@@ -329,6 +356,21 @@ class AcuityAdapter:
             except Exception as day_err:
                 logger.warning("Acuity per-day query failed for %s: %r", day_str, day_err)
                 slots = []
+
+            # ── Cache write ───────────────────────────────────────────────
+            if redis_client:
+                try:
+                    await redis_client.set(
+                        cache_key,
+                        json.dumps(slots),
+                        ex=_ACUITY_CACHE_TTL,
+                    )
+                except Exception as _cache_err:
+                    logger.warning(
+                        "[acuity_cache] Redis write error for %s: %r",
+                        cache_key, _cache_err,
+                    )
+
             logger.debug("Acuity per-day: %s — %d slot(s)", day_str, len(slots))
             return slots
 
@@ -547,7 +589,27 @@ class AcuityAdapter:
                 "start_time": booking.start_time.isoformat(),
             },
         )
-        
+
+        # ── Cache invalidation ────────────────────────────────────────────
+        # Delete the cached availability for the booked date so any subsequent
+        # check_availability call in the same conversation does not return the
+        # slot that was just taken.
+        if redis_client:
+            _inv_cal_id = (
+                request.practitioner_id.replace("acuity_cal_", "")
+                if request.practitioner_id else ""
+            )
+            _inv_date = london_time.date().isoformat()
+            _inv_key = f"acuity_avail:{acuity_type_id}:{_inv_cal_id}:{_inv_date}"
+            try:
+                await redis_client.delete(_inv_key)
+                logger.debug("[acuity_cache] invalidated %s after booking", _inv_key)
+            except Exception as _inv_err:
+                logger.warning(
+                    "[acuity_cache] Redis invalidation error for %s: %r",
+                    _inv_key, _inv_err,
+                )
+
         return booking
     
     async def list_appointments(
