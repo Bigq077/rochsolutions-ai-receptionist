@@ -441,6 +441,44 @@ def _is_open_availability_utterance(text: str) -> bool:
     return any(s in t for s in _OPEN_AVAILABILITY_SIGNALS)
 
 
+def _extract_time_preference(text: str) -> "str | None":
+    """Extract an explicit time-of-day preference from *text*.
+
+    Returns 'mornings', 'afternoons', 'evenings', 'any', or None.
+    Designed to fire on embedded preferences such as
+    'anytime next week afternoons please' as well as standalone
+    answers to the 'mornings or afternoons?' question.
+
+    Guards against false-positives from call-opening greetings
+    ('good morning', 'morning') which are ≤2-word forms containing
+    only greeting words and must not be treated as slot preferences.
+    """
+    t = text.lower().strip()
+    words = t.split()
+    # Short greeting — not a scheduling preference.
+    if len(words) <= 2 and all(
+        w.rstrip("!?,") in ("good", "morning", "hi", "hello", "hey")
+        for w in words
+    ):
+        return None
+    if "morning" in t:
+        return "mornings"
+    if "afternoon" in t:
+        return "afternoons"
+    if "evening" in t:
+        return "evenings"
+    # No-preference / open-availability signals
+    if any(s in t for s in (
+        "anytime", "any time", "any day",
+        "flexible", "doesn't matter",
+        "no preference", "don't mind",
+        "don't really mind", "not fussed",
+        "not bothered", "either",
+    )):
+        return "any"
+    return None
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -6336,47 +6374,30 @@ class WebSocketCallHandler:
                             self._v3_last_processed_ts = _enqueue_ts
                             self._v3_last_transcript_text = utterance.strip()
 
-                            # ── Bug 5: time-of-day preference capture ────────
-                            # If the previous Susie turn was the "mornings or
-                            # afternoons?" question and this utterance is the
-                            # answer, capture synchronously before run_turn so
-                            # the LLM sees it in context and will not re-ask.
+                            # ── Bug 5 / Extended: time-of-day preference capture ─
+                            # Scan every accepted utterance for an embedded
+                            # time-of-day preference signal BEFORE dispatching
+                            # to the LLM, so that if the LLM calls
+                            # check_availability in the same turn the preference
+                            # is already in session state.  Fires on standalone
+                            # answers ('mornings please') AND embedded phrases
+                            # ('anytime next week afternoons').  The _pre_lbp
+                            # gate has been removed — _extract_time_preference()
+                            # handles false-positive avoidance internally.
                             # Once set this field is never cleared within a call.
                             if not self.session.get("time_of_day_preference"):
-                                _pre_lbp = (self.session.get("last_bot_prompt") or "").lower()
-                                if (
-                                    "mornings or afternoons" in _pre_lbp
-                                    or "better for you" in _pre_lbp
-                                ):
-                                    _utt_l = utterance.lower()
-                                    _tod = None
-                                    if "morning" in _utt_l:
-                                        _tod = "mornings"
-                                    elif "afternoon" in _utt_l:
-                                        _tod = "afternoons"
-                                    elif "evening" in _utt_l:
-                                        _tod = "evenings"
-                                    elif any(
-                                        x in _utt_l
-                                        for x in (
-                                            "any",
-                                            "flexible",
-                                            "doesn't matter",
-                                            "no preference",
-                                            "either",
-                                            "don't mind",
-                                        )
-                                    ):
-                                        _tod = "any"
-                                    if _tod:
-                                        self.session["time_of_day_preference"] = _tod
-                                        _sc = self.session.setdefault("soft_context", {})
-                                        if not _sc.get("time_preference"):
-                                            _sc["time_preference"] = _tod
-                                        logger.info(
-                                            "[ms_conn v3] time_of_day_preference captured: %s",
-                                            _tod,
-                                        )
+                                _tod = _extract_time_preference(utterance)
+                                if _tod:
+                                    self.session["time_of_day_preference"] = _tod
+                                    _sc = self.session.setdefault("soft_context", {})
+                                    if not _sc.get("time_preference"):
+                                        _sc["time_preference"] = _tod
+                                    logger.info(
+                                        "[ms_conn v3] time_of_day_preference captured: %s"
+                                        " (from utterance %r)",
+                                        _tod,
+                                        utterance,
+                                    )
 
                             # ── Spec I: turn-level slot cache clear ──────────
                             # New patient turn starting — invalidate any slots
