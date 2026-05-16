@@ -34,6 +34,7 @@ Model selection:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -263,27 +264,47 @@ class LLMStream:
 
         # ── Step 6-8: LLM streaming with tool loop ───────────────────────
         history: List[dict] = session.setdefault("conversation_history", [])
-        messages: List[dict] = list(history[-MAX_HISTORY_TURNS:])
+
+        # Deep-copy so cache_control mutations never bleed back into session
+        # history.  The previous shallow copy (list(history[...])) left dict
+        # references intact, so cache_control blocks accumulated turn-over-turn
+        # and hit Anthropic's hard limit of 4 by turn 7.
+        messages: List[dict] = copy.deepcopy(list(history[-MAX_HISTORY_TURNS:]))
         messages.append({"role": "user", "content": user_text})
 
-        # ── Prompt cache: conversation history ───────────────────────────
-        # System prompt is cached at the API call site (ephemeral on the
-        # system block).  Here we add a second cache breakpoint on the
-        # second-to-last message — i.e. the last stable history entry
-        # before the current user turn.  Anthropic caches everything up to
-        # and including that marker, so turns 2+ avoid re-processing the
-        # full conversation history on every call.
-        # Requires at least 2 messages (history entry + current user turn).
-        # Content must be a string (skip tool-result messages whose content
-        # is already a list).
-        if len(messages) >= 2:
-            _cache_target = messages[-2]
-            if isinstance(_cache_target.get("content"), str):
-                _cache_target["content"] = [{
-                    "type":          "text",
-                    "text":          _cache_target["content"],
-                    "cache_control": {"type": "ephemeral"},
-                }]
+        # ── Prompt cache: strip then re-apply ────────────────────────────
+        # CHANGE 1: remove every cache_control block from the working copy.
+        # History may carry stale blocks from earlier turns (pre-fix) or from
+        # tool-result messages whose content is already a list.  Wiping first
+        # makes the count deterministic before we re-apply below.
+        for _msg in messages:
+            _mc = _msg.get("content")
+            if isinstance(_mc, list):
+                for _blk in _mc:
+                    if isinstance(_blk, dict):
+                        _blk.pop("cache_control", None)
+            _msg.pop("cache_control", None)
+
+        # CHANGE 2: re-apply cache_control to exactly one point in messages —
+        # the last assistant message (Point B).  Point A is the system prompt,
+        # applied inline at the API call site.  Two breakpoints total, always
+        # within Anthropic's hard limit of 4 regardless of history length.
+        for _msg in reversed(messages):
+            if _msg.get("role") == "assistant":
+                _mc = _msg.get("content")
+                if isinstance(_mc, str):
+                    _msg["content"] = [{
+                        "type":          "text",
+                        "text":          _mc,
+                        "cache_control": {"type": "ephemeral"},
+                    }]
+                elif isinstance(_mc, list):
+                    # Find the last text block and tag it.
+                    for _blk in reversed(_mc):
+                        if isinstance(_blk, dict) and _blk.get("type") == "text":
+                            _blk["cache_control"] = {"type": "ephemeral"}
+                            break
+                break  # only the most recent assistant turn
 
         tools       = _build_claude_tools()
         full_reply  = ""     # assembled from all chunks for history
@@ -904,6 +925,23 @@ class LLMStream:
                     session["_ack_filler_active"] = True
                     self._last_filler_at = time.monotonic()
             _filler_task = asyncio.create_task(_delayed_filler(), name="ms_llm_filler")
+
+        # Regression guard: total cache_control blocks must never exceed 4
+        # (Anthropic hard limit).  System prompt = 1; messages should have
+        # exactly 1 (last assistant turn) = 2 total.  Warn loudly if higher.
+        _cc_count = sum(
+            1
+            for _m in messages
+            for _b in (_m.get("content") if isinstance(_m.get("content"), list) else [])
+            if isinstance(_b, dict) and "cache_control" in _b
+        )
+        if _cc_count > 1:
+            logger.warning(
+                "[ms_llm] CACHE_CONTROL_OVERFLOW: %d block(s) in messages "
+                "(expected 1) — %d total with system prompt. "
+                "History mutation regression — check run_turn() cache logic.",
+                _cc_count, _cc_count + 1,
+            )
 
         async with client.messages.stream(
             model=model,
