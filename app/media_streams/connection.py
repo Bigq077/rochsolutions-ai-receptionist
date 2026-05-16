@@ -45,6 +45,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -61,12 +62,17 @@ from .config import (
     HAIKU,
     ACK_FILLER_MARKER,
 )
+from .filler_guard import FillerGuard
 
 # Pre-slot TTS cancellation marker — mirrors PRE_SLOT_MARKER in llm_stream.py.
 # Defined here independently so connection.py does not import from llm_stream
 # at module level (llm_stream is imported lazily inside handlers to avoid
 # circular imports).
 PRE_SLOT_MARKER: str = "\x01PRE_SLOT\x01"
+
+# µ-law 8kHz silence injected after a filler clip plays, so the LLM response
+# doesn't start abruptly.  0x7F = mid-scale µ-law ≈ silence; 800 samples = 100ms.
+_SILENCE_100MS: bytes = bytes([0x7F] * 800)
 
 # ---------------------------------------------------------------------------
 # Barge-in constants
@@ -3389,6 +3395,17 @@ class WebSocketCallHandler:
         self._audio_out_proc = AudioOutputProcessor()
         self._stt_stream     = STTStream()
 
+        # ── Filler clip guard (Change A) ───────────────────────────────────
+        # Plays a short pre-synthesised clip on Acuity availability turns only.
+        # Run scripts/synthesise_filler.py once to generate the clip.
+        self._filler = FillerGuard(
+            clip_path=Path("audio_clips/filler_checking.ulaw"),
+            send_audio=self._send_ulaw,
+        )
+        # Per-turn flag: True once the post-filler silence has been injected,
+        # preventing multiple injections across consecutive TTS chunks.
+        self._filler_breath_injected: bool = False
+
         # ── Control events ─────────────────────────────────────────────────
         self._stop_event    = asyncio.Event()  # set when "stop" received or WS closes
         self._started_event = asyncio.Event()  # set when "start" event is processed
@@ -5343,6 +5360,10 @@ class WebSocketCallHandler:
                                     )
                                     self.session["last_offered_slots"] = None
                                     self.session["last_date_hint"] = None
+                                # Change B: arm filler before LLM call.
+                                # No-op here (non-v3 path, booking_flow_active absent).
+                                self._filler_breath_injected = False
+                                await self._filler.arm(self.session)
                                 self._current_llm_task = asyncio.create_task(
                                     llm.run_turn(
                                         user_text=utterance,
@@ -6383,6 +6404,7 @@ class WebSocketCallHandler:
                             if _is_treatment_specific_booking(utterance):
                                 if not self.booking_flow_active:
                                     self.booking_flow_active = True
+                                    self.session["booking_flow_active"] = True
                                     logger.info(
                                         "[ms_conn v3] treatment mention"
                                         " detected pre-run_turn —"
@@ -6441,6 +6463,11 @@ class WebSocketCallHandler:
                                 )
                                 continue
                             # ── end duplicate slot guard ──────────────────────
+
+                            # Change B: arm filler before LLM call.
+                            # arm() is a no-op unless booking_flow_active is True.
+                            self._filler_breath_injected = False
+                            await self._filler.arm(self.session)
 
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
@@ -6895,6 +6922,7 @@ class WebSocketCallHandler:
                             if _is_booking_ack:
                                 # ── end Spec Y (normal ack path) ──────────────
                                 self.booking_flow_active = True
+                                self.session["booking_flow_active"] = True
                                 logger.info("[ms_conn] booking_flow_active = True")
                                 self.session["v3_booking_intent"] = True
                                 # Store which intent triggered the ack
@@ -7889,6 +7917,14 @@ class WebSocketCallHandler:
                     )
                 _last_tts_chunk = chunk_text.strip()
 
+                # Change C: cancel filler timer; inject 100ms breath gap if
+                # the clip already fired this turn (one-shot: _filler_breath_injected
+                # prevents multiple injections across consecutive TTS chunks).
+                self._filler.cancel()
+                if self._filler.has_played and not self._filler_breath_injected:
+                    self._filler_breath_injected = True
+                    await self._send_ulaw(_SILENCE_100MS)
+
                 # Split long phrases into shorter sub-chunks so barge-in fires
                 # sooner — at most ~1-2s of audio in Twilio's buffer instead of
                 # up to ~6-7s for a full deterministic day/time phrase.
@@ -7993,6 +8029,24 @@ class WebSocketCallHandler:
             pass
         except Exception as exc:
             logger.error("[ms_conn] _tts_loop fatal: %r", exc)
+
+    # ========================================================================
+    # Raw µ-law send helper  (used by FillerGuard)
+    # ========================================================================
+
+    async def _send_ulaw(self, ulaw_bytes: bytes) -> None:
+        """
+        Encode raw µ-law bytes as base64 and put them directly on audio_out_queue.
+
+        Used by FillerGuard to inject the pre-synthesised filler clip into the
+        audio stream without going through ElevenLabs synthesis.  The _send_loop
+        picks the payload up and forwards it to Twilio exactly like any other
+        audio frame.
+        """
+        if not ulaw_bytes:
+            return
+        b64 = base64.b64encode(ulaw_bytes).decode("ascii")
+        await self.audio_out_queue.put(b64)
 
     # ========================================================================
     # Send loop
@@ -8517,6 +8571,10 @@ class WebSocketCallHandler:
                 _synthesis_active, _playback_active,
                 self._current_tts_text[:60], self._tts_gen,
             )
+
+        # Change E: cancel any armed filler so it doesn't play into a turn
+        # the caller has already interrupted.
+        self._filler.cancel()
 
         # Cancel synthesis only if still running — it may already be done
         # while audio is still draining through send_loop.

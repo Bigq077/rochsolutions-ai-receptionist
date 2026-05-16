@@ -8,7 +8,7 @@ Conversion pipeline per chunk:
 
 ratecv state is preserved across chunks (audioop requirement).
 AssemblyAI v2 fallback accepts 8kHz PCM16 directly (no upsampling).
-Buffer strategy: accumulate PCM_FLUSH_FRAMES (3) before forwarding = 60ms bursts.
+Buffer strategy: accumulate PCM_FLUSH_FRAMES (1) before forwarding = 20ms bursts.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class AudioInputProcessor:
     """
     Converts Twilio G.711 mu-law 8kHz to PCM16 for AssemblyAI.
-    Maintains ratecv state across chunks. Buffers PCM_FLUSH_FRAMES before forwarding.
+    Maintains ratecv state across chunks. Forwards every PCM_FLUSH_FRAMES frames (1 = 20ms).
     """
 
     def __init__(self) -> None:

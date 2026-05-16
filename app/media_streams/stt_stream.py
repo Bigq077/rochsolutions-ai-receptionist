@@ -286,12 +286,7 @@ class STTStream:
         # ── Auth: raw API key in Authorization header (server-to-server) ──────
         # ?token= in the URL is for *temporary* browser tokens — NOT the raw key.
         url        = ASSEMBLYAI_WS_URL_V2 if ASSEMBLYAI_USE_V2 else ASSEMBLYAI_WS_URL
-        # min_turn_silence override: reduce from config default (300ms) to 200ms.
-        # Shorter silence = faster end-of-turn detection for brief answers
-        # ("Alcester", "yes", "use this number") — saves ~100ms per turn.
-        # v3 only — v2 uses end_utterance_silence_threshold instead.
-        if not ASSEMBLYAI_USE_V2:
-            url = url.replace("&min_turn_silence=300", "&min_turn_silence=200")
+        # min_turn_silence is set to 200ms directly in ASSEMBLYAI_WS_URL (config.py).
         # keyterms_prompt: JSON-encoded array boosted at the STT session level.
         # Improves recognition of proper nouns not in the standard vocabulary.
         # v3 only — v2 does not support this parameter.

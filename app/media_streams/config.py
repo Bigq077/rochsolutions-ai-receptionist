@@ -87,7 +87,7 @@ ASSEMBLYAI_WS_URL = (
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
-    "&min_turn_silence=300"
+    "&min_turn_silence=200"
 )
 
 # v2 fallback — 8kHz input, no upsampling needed (battle-tested, older)
@@ -169,8 +169,12 @@ SENTENCE_END_CHARS = ['.', '!', '?', '...']
 # How long to wait for AssemblyAI silence detection before forcing end of turn
 STT_SILENCE_TIMEOUT_MS = 1000
 
-# How long to wait for first LLM text chunk before playing a filler phrase
-LLM_FIRST_CHUNK_TIMEOUT_MS = 5000
+# How long to wait for first LLM text chunk before playing a filler phrase.
+# Raised from 5000 → 9000 so this safety-net filler cannot race with the
+# FillerGuard clip on Acuity availability turns (which arms at 350ms).
+# The old 5s threshold could fire on a slow-but-normal turn; 9s means it only
+# fires on genuinely broken turns where the LLM has stalled entirely.
+LLM_FIRST_CHUNK_TIMEOUT_MS = 9000
 
 # How long to wait for a TTS chunk to complete before moving to the next
 TTS_CHUNK_TIMEOUT_MS = 3000
@@ -333,10 +337,12 @@ TWILIO_CHANNELS    = 1
 TWILIO_FRAME_SAMPLES = 160
 TWILIO_FRAME_MS      = 20
 
-# PCM buffer flush threshold for AssemblyAI (3 frames = 60ms)
-# v3 requires 16kHz PCM16: 640 bytes/frame -> flush at 1920 bytes
-# v2 requires  8kHz PCM16: 320 bytes/frame -> flush at  960 bytes
-PCM_FLUSH_FRAMES = 3
+# PCM buffer flush threshold for AssemblyAI (1 frame = 20ms)
+# Reduced from 3 frames (60ms) to 1 frame (20ms) — saves 40ms STT latency.
+# AssemblyAI v3 streaming accepts any chunk size; no minimum frame requirement.
+# v3 requires 16kHz PCM16: 640 bytes/frame -> flush at  640 bytes
+# v2 requires  8kHz PCM16: 320 bytes/frame -> flush at  320 bytes
+PCM_FLUSH_FRAMES = 1
 PCM_FRAME_BYTES_V3 = 640   # 16kHz PCM16 frame (20ms)
 PCM_FRAME_BYTES_V2 = 320   # 8kHz  PCM16 frame (20ms)
 
