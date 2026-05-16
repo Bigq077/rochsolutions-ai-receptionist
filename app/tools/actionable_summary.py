@@ -143,7 +143,7 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         })
         for _msg in _history:
             if _msg.get("role") == "assistant":
-                _m = _NAME_RE.search(_msg.get("content", "") or "")
+                _m = _NAME_RE.search(_extract_message_text(_msg.get("content")))
                 if _m:
                     _cand = next(
                         (g for g in _m.groups() if g), ""
@@ -434,6 +434,33 @@ def _build_summary_text(outcome: str, name: str, service: str, duration: Any) ->
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _extract_message_text(content: Any) -> str:
+    """
+    Normalise a message's content field to a plain string.
+
+    The Anthropic API returns content as either a plain string (simple turns)
+    or a list of typed blocks (tool-use turns).  This function handles all
+    cases cleanly so callers can treat content as a string unconditionally:
+
+      1. Plain string          → returned as-is (after empty-string coercion)
+      2. List with text blocks → text extracted and joined with a space
+      3. List with no text blocks (e.g. pure tool_use) → empty string
+      4. Empty list            → empty string
+      5. None / falsy          → empty string
+    """
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
 def _format_turns(turns: List[Any], max_turns: int = 10) -> str:
     """Format the last N conversation turns into a readable string for the LLM."""
     lines = []
@@ -441,11 +468,13 @@ def _format_turns(turns: List[Any], max_turns: int = 10) -> str:
         if not isinstance(turn, dict):
             continue
         role = turn.get("role", turn.get("speaker", ""))
-        text = turn.get("text", turn.get("user", turn.get("content", "")))
+        text = _extract_message_text(
+            turn.get("text") or turn.get("user") or turn.get("content")
+        )
         if not text:
             continue
         label = "Susie" if str(role).lower() in ("assistant", "ai", "bot", "susie") else "Patient"
-        lines.append(f"{label}: {str(text).strip()}")
+        lines.append(f"{label}: {text.strip()}")
     return "\n".join(lines)
 
 
