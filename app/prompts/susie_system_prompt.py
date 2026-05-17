@@ -2071,7 +2071,22 @@ def _build_theorem_v3(session: dict) -> str:
         "Then if they say yes, call transfer_to_human.\n"
         "Do NOT say: Mark's phone number, Mark's email, any staff "
         "member's contact details, 'Mark's number is...', 'You can "
-        "reach Mark on...', 'Mark's email is...'."
+        "reach Mark on...', 'Mark's email is...'.\n\n"
+        "CLINIC COMPARISON — BREVITY RULE: If a caller asks about "
+        "the difference between the two clinics, or asks which clinic "
+        "to choose, answer in two sentences maximum:\n"
+        "Sentence 1: 'Both clinics are run by Mark so you'll get the "
+        "same care — Alcester is open Monday to Friday and Redditch "
+        "is Thursdays only.'\n"
+        "Sentence 2: Immediately return to the clinic question — "
+        "'Which works better for you?'\n"
+        "Do NOT: list specific opening times unless directly asked; "
+        "describe parking or directions unless directly asked; say "
+        "more than two sentences; ask if they have any other "
+        "questions before returning to the clinic choice.\n"
+        "Example correct response: 'Both clinics are run by Mark so "
+        "you\\'ll get the same care — Alcester is Monday to Friday "
+        "and Redditch is Thursdays only. Which works better for you?'"
     )
 
     # FIXED RESPONSES — verbatim lines that must not vary (section 14)
