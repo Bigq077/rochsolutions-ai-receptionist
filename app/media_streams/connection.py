@@ -479,6 +479,33 @@ def _extract_time_preference(text: str) -> "str | None":
     return None
 
 
+# Question signals — used to detect FAQ / question utterances that arrive
+# while the location gate is active and Haiku returns unknown.  Any transcript
+# matching one of these signals is a caller question, not an unclear location
+# answer, and must be routed to the LLM for a proper FAQ response rather than
+# firing the use-this-clinic biased confirm.
+_QUESTION_SIGNALS: frozenset = frozenset({
+    "what", "why", "how", "where",
+    "when", "who", "which", "tell me",
+    "can you tell", "what's the",
+    "what is the", "difference",
+    "is there", "do you", "does it",
+    "what are", "how do",
+})
+
+
+def _transcript_is_question(text: str) -> bool:
+    """Return True if *text* is a caller question rather than a location answer.
+
+    Checks for a trailing '?' or the presence of any question-word signal.
+    Used to gate the Haiku-unknown → use-this-clinic confirm flow: when Haiku
+    returns unknown AND the transcript is a question, the caller wants a FAQ
+    answer, not a location re-ask.
+    """
+    t = text.lower().strip()
+    return t.endswith("?") or any(s in t for s in _QUESTION_SIGNALS)
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -6276,8 +6303,78 @@ class WebSocketCallHandler:
                                             utterance[:60],
                                         )
                                     else:
-                                        # Haiku returned unknown — use-this-
-                                        # clinic biased confirm as last resort
+                                        # Haiku returned unknown.
+                                        # ── Question guard ──────────────────
+                                        # If the caller asked a FAQ question
+                                        # (e.g. "what is the difference
+                                        # between the clinics?") rather than
+                                        # giving an unclear location answer,
+                                        # route to the LLM for a proper
+                                        # response instead of firing the
+                                        # use-this-clinic confirm.
+                                        # v3_location_asked is NOT cleared —
+                                        # the location question stays pending
+                                        # and Susie will re-ask after the
+                                        # LLM answers the FAQ.
+                                        if _transcript_is_question(utterance):
+                                            logger.info(
+                                                "[ms_conn v3] location"
+                                                " intercept — Haiku unknown"
+                                                " + question detected,"
+                                                " routing to LLM: %r",
+                                                utterance[:60],
+                                            )
+                                            self._filler_breath_injected = (
+                                                False
+                                            )
+                                            await self._filler.arm(
+                                                self.session
+                                            )
+                                            self._current_llm_task = (
+                                                asyncio.create_task(
+                                                    llm.run_turn(
+                                                        user_text=utterance,
+                                                        session=self.session,
+                                                        call_sid=self.call_sid,
+                                                        stream_sid=(
+                                                            self.stream_sid
+                                                        ),
+                                                        tts_text_queue=(
+                                                            self.tts_text_queue
+                                                        ),
+                                                        audio_out_queue=(
+                                                            self.audio_out_queue
+                                                        ),
+                                                        websocket=(
+                                                            self.websocket
+                                                        ),
+                                                        on_transfer=(
+                                                            self
+                                                            ._on_transfer_request
+                                                        ),
+                                                    ),
+                                                    name="ms_llm_turn",
+                                                )
+                                            )
+                                            try:
+                                                await self._current_llm_task
+                                            except asyncio.CancelledError:
+                                                logger.info(
+                                                    "[ms_conn v3] Haiku-unknown"
+                                                    " FAQ run_turn cancelled"
+                                                    " — newer transcript wins"
+                                                )
+                                            finally:
+                                                self._current_llm_task = None
+                                            await save_session(
+                                                self.call_sid, self.session
+                                            )
+                                            continue
+
+                                        # ── use-this-clinic confirm ─────────
+                                        # Non-question unknown — biased confirm
+                                        # as last resort (caller gave unclear
+                                        # location answer, not a question).
                                         _confirm_q = (
                                             "Sorry, I didn't quite catch"
                                             " that — did you say the"
