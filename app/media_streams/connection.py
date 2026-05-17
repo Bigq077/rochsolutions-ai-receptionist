@@ -506,6 +506,32 @@ def _transcript_is_question(text: str) -> bool:
     return t.endswith("?") or any(s in t for s in _QUESTION_SIGNALS)
 
 
+# Use-this-clinic confirm gates.
+# _USE_THIS_CLINIC_AFFIRMATIVES — the ONLY responses that trigger clinic
+# confirmation.  Everything else (rejections, questions, ambiguous answers)
+# routes to the LLM for proper handling so the caller is never silently
+# assigned a clinic they did not choose.
+# _USE_THIS_CLINIC_REJECTIONS — explicit negatives / question words that
+# must never be interpreted as a "yes" to the biased confirm.
+_USE_THIS_CLINIC_AFFIRMATIVES: frozenset = frozenset({
+    "yes", "yeah", "yep", "yup",
+    "correct", "that's right", "thats right", "that is right",
+    "use this clinic", "use this one",
+    "that one", "that's the one",
+    "use that", "confirmed", "go ahead",
+    "sounds right", "perfect",
+    "yes please",
+    "use this", "i did", "yes i did",
+})
+
+_USE_THIS_CLINIC_REJECTIONS: frozenset = frozenset({
+    "no", "nope", "not", "wrong",
+    "different", "other", "actually",
+    "wait", "what", "why", "how",
+    "i asked", "i said", "i meant",
+})
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -5637,37 +5663,126 @@ class WebSocketCallHandler:
                                     )
                                     return
 
-                                # ── Affirmative / negative matching ──────
-                                # Expanded affirmative set covers all natural
-                                # yes-responses to a biased yes/no confirm.
-                                # Maps to the biased clinic read from
-                                # last_bot_prompt — NOT hardcoded to alcester.
+                                # ── Rejection / question guard ───────────
+                                # "no i asked what is the difference"
+                                # contains "no", "what", "i asked" — all
+                                # rejection signals.  Route to LLM so the
+                                # caller gets a proper response.
+                                # v3_location_asked stays True so the
+                                # location question remains pending and
+                                # Susie will re-ask after the LLM responds.
                                 _utt_lower = utterance.lower()
-                                _AFFIRMATIVES = (
-                                    "use this", "yes", "yeah", "yep", "yup",
-                                    "that's right", "thats right",
-                                    "that is right", "correct",
-                                    "i did", "yes i did",
-                                )
                                 if any(
-                                    a in _utt_lower for a in _AFFIRMATIVES
+                                    r in _utt_lower
+                                    for r in _USE_THIS_CLINIC_REJECTIONS
                                 ):
-                                    _confirmed = _biased_clinic
                                     logger.info(
                                         "[ms_conn v3] use-this-clinic"
-                                        " confirmed via affirmative: %s"
-                                        " (last_bot_prompt biased=%s)",
-                                        _confirmed, _biased_clinic,
+                                        " rejected — negative/question"
+                                        " response: %r",
+                                        utterance[:60],
                                     )
-                                elif any(
-                                    r in _utt_lower for r in (
-                                        "redditch", "reditch",
-                                        "reddich", "no", "other",
+                                    self._filler_breath_injected = False
+                                    await self._filler.arm(self.session)
+                                    self._current_llm_task = (
+                                        asyncio.create_task(
+                                            llm.run_turn(
+                                                user_text=utterance,
+                                                session=self.session,
+                                                call_sid=self.call_sid,
+                                                stream_sid=self.stream_sid,
+                                                tts_text_queue=(
+                                                    self.tts_text_queue
+                                                ),
+                                                audio_out_queue=(
+                                                    self.audio_out_queue
+                                                ),
+                                                websocket=self.websocket,
+                                                on_transfer=(
+                                                    self._on_transfer_request
+                                                ),
+                                            ),
+                                            name="ms_llm_turn",
+                                        )
                                     )
+                                    try:
+                                        await self._current_llm_task
+                                    except asyncio.CancelledError:
+                                        logger.info(
+                                            "[ms_conn v3] use-this-clinic"
+                                            " rejection LLM turn cancelled"
+                                            " — newer transcript wins"
+                                        )
+                                    finally:
+                                        self._current_llm_task = None
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    continue
+
+                                # ── Affirmative-only gate ─────────────────
+                                # Any response that is not an explicit
+                                # affirmative (ambiguous, vague, or a direct
+                                # location name) goes to the LLM.  The LLM
+                                # sees v3_location_asked=True and handles
+                                # it correctly (e.g. "Redditch" → confirm).
+                                if not any(
+                                    a in _utt_lower
+                                    for a in _USE_THIS_CLINIC_AFFIRMATIVES
                                 ):
-                                    _confirmed = "redditch"
-                                else:
-                                    _confirmed = None
+                                    logger.info(
+                                        "[ms_conn v3] use-this-clinic"
+                                        " — no clear affirmative, passing"
+                                        " to LLM: %r",
+                                        utterance[:60],
+                                    )
+                                    self._filler_breath_injected = False
+                                    await self._filler.arm(self.session)
+                                    self._current_llm_task = (
+                                        asyncio.create_task(
+                                            llm.run_turn(
+                                                user_text=utterance,
+                                                session=self.session,
+                                                call_sid=self.call_sid,
+                                                stream_sid=self.stream_sid,
+                                                tts_text_queue=(
+                                                    self.tts_text_queue
+                                                ),
+                                                audio_out_queue=(
+                                                    self.audio_out_queue
+                                                ),
+                                                websocket=self.websocket,
+                                                on_transfer=(
+                                                    self._on_transfer_request
+                                                ),
+                                            ),
+                                            name="ms_llm_turn",
+                                        )
+                                    )
+                                    try:
+                                        await self._current_llm_task
+                                    except asyncio.CancelledError:
+                                        logger.info(
+                                            "[ms_conn v3] use-this-clinic"
+                                            " ambiguous LLM turn cancelled"
+                                            " — newer transcript wins"
+                                        )
+                                    finally:
+                                        self._current_llm_task = None
+                                    await save_session(
+                                        self.call_sid, self.session
+                                    )
+                                    continue
+
+                                # Explicit affirmative — confirm biased
+                                # clinic and proceed with booking flow.
+                                _confirmed = _biased_clinic
+                                logger.info(
+                                    "[ms_conn v3] use-this-clinic"
+                                    " confirmed via affirmative: %s"
+                                    " (bias=%s)",
+                                    _confirmed, _biased_clinic,
+                                )
 
                                 if _confirmed:
                                     _disp = _confirmed.capitalize()
@@ -6376,9 +6491,8 @@ class WebSocketCallHandler:
                                         # as last resort (caller gave unclear
                                         # location answer, not a question).
                                         _confirm_q = (
-                                            "Sorry, I didn't quite catch"
-                                            " that — did you say the"
-                                            " Awlstuh clinic? If so,"
+                                            "Just to check — did you say"
+                                            " the Awlstuh clinic? If so,"
                                             " just say 'use this clinic'."
                                         )
                                         self.session[
