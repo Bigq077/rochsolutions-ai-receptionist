@@ -25,6 +25,11 @@ def build_system_prompt(session: dict) -> str:
     if session.get("clinic_id") == "theorem_v3":
         return _build_theorem_v3(session)
 
+    # jv_v1 — Joint Venture Physiotherapy (single-site, Bolton)
+    if session.get("clinic_id") == "jv_v1":
+        from app.prompts.jv_system_prompt import _build_jv_v1
+        return _build_jv_v1(session)
+
     from app.clinic_config import get_clinic
     from datetime import datetime, timedelta
 
