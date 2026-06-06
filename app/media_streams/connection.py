@@ -9497,4 +9497,8 @@ class WebSocketCallHandler:
         try:
             await asyncio.wait_for(
                 self._started_event.wait(),
-         
+                timeout=TWILIO_STARTED_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[ms_conn] %s: timed out waiting for start event", loop_name)
+            raise asyncio.CancelledError
