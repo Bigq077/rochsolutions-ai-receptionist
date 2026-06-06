@@ -3489,8 +3489,11 @@ class WebSocketCallHandler:
         # ── Filler clip guard (Change A) ───────────────────────────────────
         # Plays a short pre-synthesised clip on Acuity availability turns only.
         # Run scripts/synthesise_filler.py once to generate the clip.
+        # clip_path_2: if filler_moment.ulaw exists it plays as a second filler
+        # after 2.5s of silence post-primary; otherwise the primary clip repeats.
         self._filler = FillerGuard(
             clip_path=Path("audio_clips/filler_checking.ulaw"),
+            clip_path_2=Path("audio_clips/filler_moment.ulaw"),
             send_audio=self._send_ulaw,
         )
         # Per-turn flag: True once the post-filler silence has been injected,
@@ -9494,8 +9497,4 @@ class WebSocketCallHandler:
         try:
             await asyncio.wait_for(
                 self._started_event.wait(),
-                timeout=TWILIO_STARTED_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("[ms_conn] %s: timed out waiting for start event", loop_name)
-            raise asyncio.CancelledError
+         

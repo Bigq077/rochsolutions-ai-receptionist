@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time as _time
 from datetime import datetime, timedelta, date as _date_type
 from typing import Any, Dict, Optional
 
@@ -1465,6 +1466,33 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
     service = (args.get("service") or "physiotherapy assessment").strip()
     preference = (args.get("date_hint") or args.get("preference") or "").strip()
 
+    # ── Availability cache (90s TTL) ──────────────────────────────────────
+    # When the user selects a slot from already-presented options on the next
+    # turn, the LLM fires check_availability again with identical parameters.
+    # Skip the 30-call Acuity fetch and return the cached result instead.
+    _cache = session.get("_availability_cache")
+    if _cache:
+        _cache_age = _time.monotonic() - _cache.get("_ts", 0)
+        if (
+            _cache.get("location") == location
+            and (_cache.get("date_hint") or "").lower() == preference.lower()
+            and _cache_age < 90
+        ):
+            logger.info(
+                "_check_availability_acuity: CACHE HIT loc=%r hint=%r age=%.1fs — "
+                "skipping Acuity fetch",
+                location, preference, _cache_age,
+            )
+            # Restore session keys so slot resolution still works
+            session["last_offered_slots"] = _cache["last_offered_slots"]
+            session["slot_labels"]        = _cache["slot_labels"]
+            session["available_days"]     = _cache["available_days"]
+            return {
+                "available_days": _cache["available_days"],
+                "total_days":     _cache["total_days"],
+                "_from_cache":    True,
+            }
+
     # Explicit day_window from the LLM bypasses progressive search
     explicit_window = args.get("day_window")
 
@@ -1713,6 +1741,17 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         session["available_days"]              = days_data
         session["_acuity_appointment_type_id"] = appointment_type_id
         session["_acuity_practitioner_id"]     = practitioner_id
+
+        # ── Populate 90s availability cache ───────────────────────────────
+        session["_availability_cache"] = {
+            "location":          location,
+            "date_hint":         preference.lower(),
+            "_ts":               _time.monotonic(),
+            "last_offered_slots": pres_raw,
+            "slot_labels":       pres_labels,
+            "available_days":    days_data,
+            "total_days":        len(days_data),
+        }
 
         return {"available_days": days_data, "total_days": len(days_data)}
 

@@ -46,6 +46,7 @@ from .config import (
     ANTHROPIC_API_KEY,
     OPENAI_API_KEY,
     SONNET,
+    HAIKU,
     GPT_MODEL,
     CLAUDE_MAX_TOKENS,
     CLAUDE_TEMPERATURE,
@@ -171,7 +172,11 @@ def _build_openai_tools() -> list:
 # ---------------------------------------------------------------------------
 
 def _pick_model(session: Dict[str, Any]) -> str:
-    """Always use Sonnet — free-form loop requires consistent reasoning."""
+    """
+    Select the starting model for a turn.  Sonnet handles iteration=1 (tool
+    decisions, date parsing, free-form reasoning).  Post-tool iterations switch
+    to Haiku inside _streaming_tool_loop when _last_check_avail is True.
+    """
     return SONNET
 
 
@@ -662,8 +667,12 @@ class LLMStream:
             if _last_check_avail:
                 _slot_buf = asyncio.Queue()
                 _active_q = _slot_buf
+                # Post-check_availability slot presentation is deterministic
+                # template-filling — switch to Haiku (~1s vs ~6s on Sonnet).
+                model = HAIKU
                 logger.info(
-                    "[ms_llm] slot buffer active (post-check_availability) iter=%d",
+                    "[ms_llm] slot buffer active (post-check_availability) iter=%d"
+                    " — switched to HAIKU",
                     iteration,
                 )
             _last_check_avail = False  # reset; re-armed below after tool execution
@@ -1560,19 +1569,4 @@ def _question_from_response(text: str) -> str:
     sentences = _SENTENCE_SPLIT_RE.split(text.strip())
     question  = ""
     for sentence in reversed(sentences):
-        s = sentence.strip()
-        if s.endswith("?"):
-            question = s
-            break
-
-    if not question:
-        return ""
-
-    for prefix in _LLM_OPENER_PREFIXES:
-        if question.lower().startswith(prefix.lower()):
-            question = question[len(prefix):].lstrip()
-            if question:
-                question = question[0].upper() + question[1:]
-            break
-
-    return question.strip()
+        s = sentence.str
