@@ -101,4 +101,48 @@ class FillerGuard:
             self._task = None
         self._played = False
 
-        # Gate 1: only fir
+        # Gate 1: only fire on booking_flow_active turns.
+        if not session.get("booking_flow_active"):
+            return
+
+        # Gate 2: clip must be present.
+        if not self._clip:
+            return
+
+        _delay_s        = delay_ms / 1000.0
+        _second_delay_s = self._second_delay_s
+        _clip           = self._clip
+        _clip_2         = self._clip_2
+        _send           = self._send_audio
+
+        async def _fire() -> None:
+            await asyncio.sleep(_delay_s)
+            self._played = True
+            logger.info("[ms_filler] clip firing (delay=%dms)", delay_ms)
+            await _send(_clip)
+            # Wait to see if the LLM responds; if not, play second clip.
+            # cancel() will interrupt this sleep when the first TTS chunk arrives.
+            await asyncio.sleep(_second_delay_s)
+            logger.info(
+                "[ms_filler] second clip firing (still no LLM response after %.1fs)",
+                _second_delay_s,
+            )
+            await _send(_clip_2)
+
+        self._task = asyncio.create_task(_fire(), name="ms_filler_guard")
+
+    def cancel(self) -> None:
+        """
+        Cancel the pending timer.
+
+        If the clip has already started playing, do nothing — interrupting
+        a short clip sounds worse than letting it finish naturally.
+        """
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+
+    @property
+    def has_played(self) -> bool:
+        """True if the clip was actually sent this turn."""
+        return self._played
