@@ -5306,8 +5306,15 @@ class WebSocketCallHandler:
                                 "yes", "no", "yeah", "nope", "yep", "yup", "nah",
                                 "use", "this",
                                 # single-word clinic name variants
-                                "alcester", "redditch", "reditch", "reddich",
-                                "ulster", "olster", "awlster", "alchester",
+                                # Alcester: written + common non-rhotic STT outputs
+                                # (Susie TTS says "Awlstuh"; callers echo that back
+                                # and STT transcribes the non-rhotic ending variously)
+                                "alcester", "alchester",
+                                "awlster", "awlstuh", "awlstah",
+                                "alster", "allster", "allstuh",
+                                "ulster", "olster",
+                                # Redditch: written + mishearing variants
+                                "redditch", "reditch", "reddich", "reddish",
                                 "one", "two", "first", "second",
                             })
                             _sx_in_window = (

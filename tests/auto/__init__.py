@@ -1,1 +1,0 @@
-# Susie Automated Test Suite
