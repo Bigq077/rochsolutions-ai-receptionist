@@ -11,19 +11,36 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+def build_system_prompt_parts(session: dict) -> tuple:
+    """
+    Return (static_prompt, dynamic_prompt) for two-block caching.
+
+    The static block is sent with cache_control: ephemeral — Anthropic caches
+    it for 5 minutes so only the first turn of each call pays the full input
+    cost (~19K tokens for theorem_v3).  The dynamic block carries per-turn
+    session state and is never cached.
+
+    Use this in llm_stream.run_turn().  All other callers that expect a plain
+    string should use build_system_prompt() which joins both parts.
+    """
+    if session.get("clinic_id") == "theorem_v3":
+        return _build_theorem_v3(session)   # now returns (static, dynamic)
+    # For other clinic types the whole prompt is small — treat as fully static.
+    return (build_system_prompt(session), "")
+
+
 def build_system_prompt(session: dict) -> str:
     """
-    Build the v2 system prompt for Susie. 8 blocks joined by double newline.
-    Target length: 3,500-5,500 chars. Plain text only — no markdown.
-    NOT yet wired in; written here for review before Prompt 4 activation.
+    Build the full system prompt as a single string (backward-compatible).
 
-    Replaces get_system_prompt() once activated.
+    For caching-aware callers use build_system_prompt_parts() instead.
     """
     # theorem_v3 runs without the FlowEngine — the prompt itself must
     # encode every behavioural rule and clinic fact. Branch first; do not
     # fall through to the shared theorem / theorem_v2 path.
     if session.get("clinic_id") == "theorem_v3":
-        return _build_theorem_v3(session)
+        static, dynamic = _build_theorem_v3(session)
+        return "\n\n".join(filter(None, [static, dynamic]))
 
     # jv_v1 — Joint Venture Physiotherapy (single-site, Bolton)
     if session.get("clinic_id") == "jv_v1":
@@ -3359,9 +3376,12 @@ def _build_theorem_v3(session: dict) -> str:
         "is both accurate and reassuring."
     )
 
-    blocks = [treatment_override, identity]
-    if b7: blocks.append(b7)
-    blocks.extend([
+    # ── STATIC block — large, content never changes within a call ────────────
+    # Cached by llm_stream.py with cache_control: ephemeral so only turn 1
+    # pays the full input cost.  Do NOT put any session-derived content here.
+    static_blocks = [
+        treatment_override,
+        identity,
         booking_flow,
         tools,
         reschedule_cancel,
@@ -3373,12 +3393,22 @@ def _build_theorem_v3(session: dict) -> str:
         warm_expressions,
         time_format_rules,
         location_rule,
-        date_awareness,
+        date_awareness,   # changes daily — fine for 5-min ephemeral TTL
         clinic,
         prices,
         policies,
         faq,
         fixed_responses,
-    ])
-    if b6: blocks.append(b6)
-    return "\n\n".join(blocks)
+    ]
+
+    # ── DYNAMIC block — per-turn session state, never cached ─────────────────
+    # Small (~100-400 tokens). Sent as a second system block without
+    # cache_control so the static prefix above is never invalidated.
+    dynamic_blocks = []
+    if b7: dynamic_blocks.append(b7)
+    if b6: dynamic_blocks.append(b6)
+
+    return (
+        "\n\n".join(static_blocks),
+        "\n\n".join(dynamic_blocks),
+    )

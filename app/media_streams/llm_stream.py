@@ -263,9 +263,12 @@ class LLMStream:
         # ── Step 4: Model selection ──────────────────────────────────────
         model = _pick_model(session)
 
-        # ── Step 5: System prompt ────────────────────────────────────────
-        from app.prompts.susie_system_prompt import build_system_prompt
-        system_prompt = build_system_prompt(session)
+        # ── Step 5: System prompt (two-block caching) ───────────────────
+        # static_prompt: large, never changes within a call → cached.
+        # dynamic_prompt: small per-turn state → sent uncached each turn.
+        from app.prompts.susie_system_prompt import build_system_prompt_parts
+        _static_prompt, _dynamic_prompt = build_system_prompt_parts(session)
+        system_prompt = _static_prompt  # kept for any legacy references below
 
         # ── Step 6-8: LLM streaming with tool loop ───────────────────────
         history: List[dict] = session.setdefault("conversation_history", [])
@@ -952,13 +955,23 @@ class LLMStream:
                 _cc_count, _cc_count + 1,
             )
 
+        # Build system blocks: static (cached) + optional dynamic (uncached).
+        # Anthropic caches the static prefix for 5 min — only turn 1 pays
+        # full input cost for the ~19K-token static block.
+        _system_blocks: list = [{
+            "type":          "text",
+            "text":          _static_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        if _dynamic_prompt:
+            _system_blocks.append({
+                "type": "text",
+                "text": _dynamic_prompt,
+            })
+
         async with client.messages.stream(
             model=model,
-            system=[{
-                "type":          "text",
-                "text":          system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }],
+            system=_system_blocks,
             messages=messages,
             tools=tools,
             max_tokens=CLAUDE_MAX_TOKENS,
