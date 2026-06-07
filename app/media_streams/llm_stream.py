@@ -1569,4 +1569,19 @@ def _question_from_response(text: str) -> str:
     sentences = _SENTENCE_SPLIT_RE.split(text.strip())
     question  = ""
     for sentence in reversed(sentences):
-        s = sentence.str
+        s = sentence.strip()
+        if s.endswith("?"):
+            question = s
+            break
+
+    if not question:
+        return ""
+
+    for prefix in _LLM_OPENER_PREFIXES:
+        if question.lower().startswith(prefix.lower()):
+            question = question[len(prefix):].lstrip()
+            if question:
+                question = question[0].upper() + question[1:]
+            break
+
+    return question.strip()
