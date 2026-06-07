@@ -118,7 +118,7 @@ CLAUDE_TEMPERATURE = 0.4
 MAX_TOOL_ITERATIONS = 6
 
 # Maximum conversation history turns kept in session (each turn = 2 entries)
-MAX_HISTORY_TURNS = 20
+MAX_HISTORY_TURNS = 10
 
 # ---------------------------------------------------------------------------
 # GPT fallback constants
