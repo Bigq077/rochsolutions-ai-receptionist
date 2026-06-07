@@ -4906,6 +4906,13 @@ class WebSocketCallHandler:
                             self.llm_in_flight = False  # Spec N: no LLM call fired
                             self._llm_busy = False
                             self.session["llm_generation_active"] = False
+                            # on_llm_started() was called above (line 4818) before
+                            # gates ran.  Since no LLM was actually launched, we must
+                            # mirror it with on_llm_finished() so the watchdog's
+                            # internal _llm_busy is cleared.  Without this, the
+                            # deferred timer set by on_question_asked() above never
+                            # fires → 10-15s dead air until the safety net kicks in.
+                            self._silence_handler.on_llm_finished()
                             continue
                         else:
                             # No slot signal BUT the utterance is meaningful
@@ -4931,6 +4938,9 @@ class WebSocketCallHandler:
                                 self.llm_in_flight = False
                                 self._llm_busy = False
                                 self.session["llm_generation_active"] = False
+                                # Mirror on_llm_started() with on_llm_finished()
+                                # so the watchdog's internal _llm_busy is cleared.
+                                self._silence_handler.on_llm_finished()
                                 continue
                             logger.info(
                                 "[ms_conn] non-slot utterance during slot selection"
