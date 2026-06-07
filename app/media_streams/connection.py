@@ -1064,6 +1064,13 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     "olsta",
     "orlsta",
     "alsta",      # CODE SPEC AH — STT garbles observed or likely
+    # -uh endings: Susie TTS says "Awlstuh" (non-rhotic schwa);
+    # callers echo this back and STT renders the schwa as "-uh" not "-a"
+    "awlstuh",
+    "awlstah",
+    "allstuh",
+    "alstuh",
+    "olstuh",
 
     # ── Short / partial forms (CODE SPEC AH) ────────────────────────────────
     "alce",
@@ -5302,21 +5309,24 @@ class WebSocketCallHandler:
                             )
                         ):
                             _sx_words = utterance.strip().lower().split()
-                            _SX_LOC_PASS = frozenset({
-                                "yes", "no", "yeah", "nope", "yep", "yup", "nah",
-                                "use", "this",
-                                # single-word clinic name variants
-                                # Alcester: written + common non-rhotic STT outputs
-                                # (Susie TTS says "Awlstuh"; callers echo that back
-                                # and STT transcribes the non-rhotic ending variously)
-                                "alcester", "alchester",
-                                "awlster", "awlstuh", "awlstah",
-                                "alster", "allster", "allstuh",
-                                "ulster", "olster",
-                                # Redditch: written + mishearing variants
-                                "redditch", "reditch", "reddich", "reddish",
-                                "one", "two", "first", "second",
-                            })
+                            # Build the pass set from the canonical alias sets so
+                            # it never drifts out of sync.  Single-word aliases are
+                            # enough: the check is word-level (any word in the
+                            # utterance matches a pass token).  Confirmation tokens
+                            # (yes/no/yep…) and ordinals are added manually.
+                            _SX_LOC_PASS = (
+                                frozenset(
+                                    a for a in (
+                                        _ALCESTER_ALIASES | _REDDITCH_ALIASES
+                                    )
+                                    if " " not in a
+                                )
+                                | {
+                                    "yes", "no", "yeah", "nope", "yep",
+                                    "yup", "nah", "use", "this",
+                                    "one", "two", "first", "second",
+                                }
+                            )
                             _sx_in_window = (
                                 self._tts_audio_done_at > 0
                                 and (time.monotonic() - self._tts_audio_done_at)

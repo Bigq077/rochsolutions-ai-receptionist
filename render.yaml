@@ -1,0 +1,10 @@
+# Region: Frankfurt (EU Central) — confirmed in Render dashboard 12/03/2026.
+# Optimal for UK/EU callers. ~80-150 ms lower RTT vs us-west (Oregon).
+services:
+  - type: web
+    name: rochsolutions-ai-receptionist
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75 --log-level info
+    healthCheckPath: /health
+    autoDeploy: true

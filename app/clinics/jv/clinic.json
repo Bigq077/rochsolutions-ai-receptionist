@@ -1,0 +1,299 @@
+{
+  "_notes": "MARK_REVIEW: Items tagged TBC must be confirmed with Marcus before go-live. Search for 'TBC' to find every gap.",
+  "clinic_id": "jv_v1",
+  "clinic_name": "Joint Venture Physiotherapy",
+  "brand_names": [
+    "Joint Venture Physiotherapy",
+    "Joint Venture Physio",
+    "JV Physiotherapy",
+    "JV Physio"
+  ],
+  "primary_phone": "+44 7586 605462",
+  "contact_email": "Jointventurephysiotherapy@gmail.com",
+  "websites": [
+    "https://jointventurephysiotherapy.co.uk"
+  ],
+  "company_number": "TBC",
+  "locations": [
+    {
+      "location_id": "bolton",
+      "name": "Flexspace Bolton",
+      "address_full": "Flexspace Bolton (Lythgoe House), Manchester Road, Bolton, BL3 2NZ",
+      "postcode": "BL3 2NZ",
+      "access_instructions": "Patients are given an access code for the main entrance. Use the top keypad to enter the code, then take a seat in the waiting area.",
+      "parking": "Free 24/7 on-site parking",
+      "wheelchair_accessible": true,
+      "serves_areas": ["Bolton", "Walkden", "Worsley", "Salford", "Greater Manchester"],
+      "nearest_city": "Bolton (20-25 minutes from Manchester by car)",
+      "road_access": "Manchester Road (A6), Bolton town centre"
+    }
+  ],
+  "opening_hours": {
+    "bolton": {
+      "_note": "MARK_REVIEW: Confirm exact opening and closing times with Marcus for each day before go-live",
+      "monday":    { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
+      "tuesday":   { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
+      "wednesday": { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
+      "thursday":  { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
+      "friday":    { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
+      "saturday":  { "open": "TBC", "close": "TBC", "note": "Saturday morning appointments available" },
+      "sunday":    "Closed"
+    },
+    "last_appointment": "TBC — confirm with Marcus",
+    "bank_holidays":    "TBC — confirm with Marcus"
+  },
+  "team_and_availability": {
+    "practitioners": [
+      {
+        "name": "Marcus",
+        "surname_note": "TBC — STT variant 'marcus smith' seen; confirm correct surname before go-live",
+        "title": "Clinical Lead & Physiotherapist",
+        "qualifications": "Masters in Advanced Clinical Practice, HCPC Registered (PH104377), CSP member",
+        "background": "Elite sport, private practice, NHS, clinical leadership and education. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
+        "prescribing_qualified": true,
+        "prescribing_scope": "Acupuncture and corticosteroid injections",
+        "locations": ["bolton"],
+        "is_sole_practitioner": true,
+        "days_available": "Monday to Friday evenings, Saturday mornings — exact schedule TBC with Marcus",
+        "notes": "All appointments are with Marcus."
+      }
+    ],
+    "admin_staff": [],
+    "booking_notes": [
+      "Single practitioner — all appointments are with Marcus.",
+      "Appointments available in-clinic (Bolton), remotely (video/phone), and via home visit (Bolton and Greater Manchester).",
+      "Corticosteroid injections are coming soon — not yet bookable."
+    ]
+  },
+  "booking": {
+    "system": "Carepatron",
+    "booking_url": "book.carepatron.com/Joint-Venture-Physiotherapy/Marcus",
+    "booking_window_months": "TBC with Marcus",
+    "preferred_handling": "Book directly into Carepatron where possible.",
+    "patient_notes_supported": "TBC — Carepatron supports clinical notes",
+    "sms_confirmation_on_booking": "TBC with Marcus",
+    "same_day_booking": "TBC with Marcus",
+    "calendars_by_location": false,
+    "calendars_by_service": "TBC — confirm Carepatron appointment type structure with Marcus",
+    "never_autobook": [
+      "Corticosteroid injections (coming soon — not yet available)",
+      "Insurance referral appointments (if applicable — confirm with Marcus)"
+    ]
+  },
+  "services": [
+    {
+      "service_id": "msk_initial_assessment",
+      "name": "Initial Assessment (Musculoskeletal)",
+      "typical_duration_minutes": 40,
+      "for_patients": "New",
+      "description": "A thorough physiotherapy assessment of your musculoskeletal condition, leading to an accurate diagnosis and a personalised treatment plan. Marcus will take a full history, carry out a physical examination, and agree next steps with you.",
+      "pre_booking_notes": "Wear comfortable, loose clothing that allows easy access to the area being assessed.",
+      "pricing": {
+        "in_clinic_gbp": 52,
+        "remote_gbp": null,
+        "home_visit_gbp": 80
+      },
+      "available_as": ["in_clinic", "home_visit"]
+    },
+    {
+      "service_id": "msk_treatment_session",
+      "name": "MSK Treatment Session",
+      "typical_duration_minutes": 30,
+      "for_patients": "Returning",
+      "description": "A focused follow-up session to continue your rehabilitation, deliver hands-on manual therapy, and progress your exercise programme. Tailored to your current stage of recovery.",
+      "pre_booking_notes": "Wear comfortable clothing. Bring any relevant scan reports or GP letters if you have them.",
+      "pricing": {
+        "in_clinic_gbp": 46,
+        "remote_gbp": 40,
+        "home_visit_gbp": 80
+      },
+      "available_as": ["in_clinic", "remote", "home_visit"]
+    },
+    {
+      "service_id": "virtual_appointment",
+      "name": "Virtual Appointment",
+      "typical_duration_minutes": 30,
+      "for_patients": "Both",
+      "description": "A video or phone consultation with Marcus — ideal for those outside Bolton and Manchester, or for review appointments that do not require hands-on treatment. Available to patients anywhere in the UK or worldwide.",
+      "pre_booking_notes": "You will receive a video link by email before the appointment. Have a quiet space and, if possible, wear clothing that allows you to show the affected area.",
+      "pricing": {
+        "price_gbp": 40
+      },
+      "available_as": ["remote"]
+    },
+    {
+      "service_id": "acupuncture",
+      "name": "Acupuncture",
+      "typical_duration_minutes": 30,
+      "for_patients": "Both",
+      "description": "Safe, evidence-based treatment using fine sterile needles to relieve pain, reduce tension, improve circulation, and promote healing. Delivered by Marcus, who is qualified to provide acupuncture as part of a comprehensive treatment plan.",
+      "pre_booking_notes": "Wear loose clothing. Avoid heavy meals immediately before the session.",
+      "pricing": {
+        "in_clinic_gbp": 48,
+        "home_visit_gbp": 70,
+        "package": "6 in-clinic sessions for £250"
+      },
+      "available_as": ["in_clinic", "home_visit"]
+    },
+    {
+      "service_id": "sports_massage",
+      "name": "Sports Massage",
+      "typical_duration_minutes_options": [30, 60],
+      "for_patients": "Both",
+      "description": "Specialist hands-on massage techniques to alleviate muscle tension, improve flexibility, support injury recovery, and enhance athletic performance. Tailored to your specific needs — whether you need deep tissue work, relaxation, or recovery support.",
+      "pre_booking_notes": "Wear or bring shorts or a vest if the lower body or back is being treated.",
+      "pricing": {
+        "30min_in_clinic_gbp": 40,
+        "60min_in_clinic_gbp": 55
+      },
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "neuro_assessment",
+      "name": "Neurological Physiotherapy — Initial Assessment",
+      "typical_duration_minutes": 60,
+      "for_patients": "New",
+      "description": "Specialist physiotherapy for neurological conditions including multiple sclerosis, stroke, functional neurological disorder (FND), and vestibular conditions. Marcus will carry out a comprehensive assessment and develop a tailored rehabilitation programme to improve function, movement, and quality of life.",
+      "pre_booking_notes": "Wear comfortable clothing. Bring any relevant letters from consultants or neurologists if you have them.",
+      "pricing": {
+        "in_clinic_gbp": 80,
+        "remote_gbp": 70
+      },
+      "available_as": ["in_clinic", "remote", "home_visit"]
+    },
+    {
+      "service_id": "neuro_followup",
+      "name": "Neurological Physiotherapy — Follow-up",
+      "typical_duration_minutes": 60,
+      "for_patients": "Returning",
+      "description": "Follow-up neurological physiotherapy session to continue your rehabilitation programme, reassess progress, and adjust interventions as needed.",
+      "pricing": {
+        "in_clinic_gbp": 65,
+        "remote_gbp": 60
+      },
+      "available_as": ["in_clinic", "remote", "home_visit"]
+    },
+    {
+      "service_id": "outdoor_sports_rehab",
+      "name": "Outdoor Sports Rehabilitation",
+      "typical_duration_minutes": 45,
+      "for_patients": "Returning",
+      "description": "End-stage rehabilitation for sporting injuries, carried out outdoors with a focus on enhancing performance and safely returning to play. Ideal for athletes who are near full recovery and need sport-specific conditioning before returning to training or competition.",
+      "pre_booking_notes": "Wear appropriate outdoor sportswear and footwear for your sport.",
+      "pricing": {
+        "price_gbp": 55
+      },
+      "available_as": ["outdoor_bolton"]
+    },
+    {
+      "service_id": "home_visit",
+      "name": "Home Visit — Assessment & Treatment",
+      "typical_duration_minutes": 60,
+      "for_patients": "Both",
+      "description": "Full physiotherapy assessment and treatment delivered at your home. Perfect for patients who find it difficult to travel, or those who prefer the convenience of care at home. Available across Bolton and the Manchester region.",
+      "pre_booking_notes": "Ensure there is a clear space where Marcus can work — a firm chair or clear floor area is ideal.",
+      "pricing": {
+        "msk_gbp": 80,
+        "acupuncture_gbp": 70,
+        "travel_surcharge_note": "Travel may apply for locations outside Bolton — confirm with Marcus"
+      },
+      "available_as": ["home_visit_bolton_and_greater_manchester"]
+    },
+    {
+      "service_id": "corticosteroid_injections",
+      "_status": "COMING SOON — do not book; take enquirer name and number for Marcus to follow up when available",
+      "name": "Corticosteroid Injections",
+      "available": false
+    }
+  ],
+  "pricing_and_policies": {
+    "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics with no compromise on quality",
+    "u18_student_discount": "Available on request — mention when booking",
+    "payment_methods": ["card", "cash", "bank_transfer_by_prior_arrangement"],
+    "deposit_required": "TBC with Marcus",
+    "cancellation_policy": "Minimum 24 hours notice required",
+    "late_cancellation_fee": "100% of appointment fee (less than 24 hours notice)",
+    "no_show_fee": "100% of appointment fee",
+    "late_arrival_policy": "If more than 15 minutes late, session may not proceed but full charge may still apply",
+    "returning_patient_definition": "Same condition = returning patient. New or unrelated condition = new assessment recommended.",
+    "chaperone": "Patients may bring a friend or family member to any appointment",
+    "minimum_age": "No minimum age — discounts available for under 18",
+    "gp_referral_required": false,
+    "reports_and_letters": "TBC with Marcus"
+  },
+  "insurance": {
+    "model": "Self-pay with private health insurance accepted",
+    "bupa_accepted": true,
+    "other_insurers_accepted": true,
+    "protocol": "Caller must obtain a pre-authorisation code from their insurer and confirm their cover before the first appointment.",
+    "what_ai_should_do": [
+      "Confirm private healthcare referrals are accepted.",
+      "Ask the caller to get a pre-authorisation code from their insurer.",
+      "Advise them to confirm their eligibility and cover before the first appointment.",
+      "Offer to book provisionally while they obtain the authorisation code.",
+      "Collect insurer name for the booking notes."
+    ]
+  },
+  "call_handling": {
+    "transfer_to_human_triggers": [
+      "Caller requests to speak to Marcus directly",
+      "Complex clinical question the AI cannot safely answer",
+      "Caller is distressed or in crisis",
+      "Corticosteroid injection enquiry (coming soon — take details only)",
+      "Three understanding failures or two failed lookups"
+    ],
+    "emergency_message": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
+    "if_cant_answer": "Acknowledge the question, explain Marcus will be in touch, and offer to take the caller's name and number for a callback.",
+    "if_all_slots_full": "Take caller's name, number, and preferred times — offer to add them to the waiting list and confirm Marcus will follow up.",
+    "after_hours": "Take a message with name, number, and reason for calling. Confirm Marcus will call back during the next available business hours.",
+    "who_handles_followups": "Marcus",
+    "ai_must_never_answer": [
+      "Clinical diagnosis",
+      "Whether a specific condition is safe to treat without assessment",
+      "Specific medication advice",
+      "Prognosis or recovery timescales (beyond general guidance)"
+    ]
+  },
+  "brand_and_tone": {
+    "tagline": "Your Recovery Is Our Joint Venture",
+    "care_philosophy": "Personalised expert care for every patient — in-clinic, at home, or online. Flexible appointments, a broad range of treatments, and prices 10-20% below local competitors.",
+    "tone_words": ["Professional", "Approachable", "Affordable"],
+    "ai_persona_name": "Susie",
+    "ai_voice_type": "Warm, confident, Northern British tone",
+    "lead_practitioner": "Marcus",
+    "phrases_never_use": ["cheap", "budget", "basic", "we can't help with that"],
+    "phrases_use_freely": ["personalised", "tailored", "flexible", "affordable", "expert", "recovery", "in your own time", "wherever suits you"]
+  },
+  "stt_variants": {
+    "clinic_name": [
+      "joint venture physio",
+      "joint venture",
+      "JV physio",
+      "JV physiotherapy",
+      "joint vencher physio",
+      "joint venture fizzy-oh"
+    ],
+    "bolton": [
+      "bolten",
+      "boltan",
+      "bol-ton",
+      "bolton greater manchester"
+    ],
+    "marcus": [
+      "markus",
+      "the physio"
+    ],
+    "services": {
+      "acupuncture": ["acupunture", "acu-puncture"],
+      "neurological": ["neurological", "neuro", "nerve condition"],
+      "carepatron": ["care patron", "cair patron"],
+      "msk": ["em ess kay", "musculoskeletal"],
+      "flexspace": ["flex space", "fleck space", "flecks space"]
+    }
+  },
+  "reporting": {
+    "google_sheets_call_summaries": "TBC",
+    "missed_call_tracking": "TBC",
+    "notifications_for_manual_followups": "TBC"
+  }
+}
