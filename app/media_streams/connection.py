@@ -6831,6 +6831,15 @@ class WebSocketCallHandler:
                                 continue
                             # ── end duplicate slot guard ──────────────────────
 
+                            # Capture previous bot response BEFORE run_turn()
+                            # overwrites last_bot_prompt.  Used by the booking
+                            # ack detection below to recognise when the caller
+                            # is affirming an LLM-generated booking CTA
+                            # ("yes please" → "Would you like to book?").
+                            _pre_turn_last_bot = self.session.get(
+                                "last_bot_prompt", ""
+                            )
+
                             # Change B: arm filler before LLM call.
                             # arm() is a no-op unless booking_flow_active is True.
                             self._filler_breath_injected = False
@@ -7317,7 +7326,42 @@ class WebSocketCallHandler:
                                 w in _last_q_lower
                                 for w in ("book", "appointment", "sort that",
                                           "get that sorted", "would you like")
-                            ) or self.session.get("v3_cta_booking_pending", False)
+                            )
+                            # Also detect caller affirming an LLM-generated
+                            # booking CTA ("yes please" → "Would you like to
+                            # book?").  _pre_turn_last_bot holds the bot
+                            # response from before run_turn() was called
+                            # (run_turn() overwrites last_bot_prompt with the
+                            # current turn's reply, so we must use the snapshot).
+                            if not _prev_q_booking:
+                                _prev_bot_lower = (
+                                    _pre_turn_last_bot or ""
+                                ).lower()
+                                _CTA_BOOKING_PHRASES = (
+                                    "would you like to book",
+                                    "book an appointment",
+                                    "like to make an appointment",
+                                    "shall i book",
+                                    "book you in",
+                                )
+                                _bot_had_cta = any(
+                                    p in _prev_bot_lower
+                                    for p in _CTA_BOOKING_PHRASES
+                                )
+                                _utt_is_affirm = bool(re.search(
+                                    r"\b(?:yes|yeah|yep|sure|okay|ok|yup"
+                                    r"|absolutely|definitely|go ahead"
+                                    r"|i would|i do|course)\b",
+                                    utterance, re.IGNORECASE,
+                                ))
+                                if _bot_had_cta and _utt_is_affirm:
+                                    _prev_q_booking = True
+                                    logger.info(
+                                        "[ms_conn v3] CTA affirm:"
+                                        " prev_bot had booking CTA,"
+                                        " caller=%r — booking context set",
+                                        utterance[:60],
+                                    )
                             _caller_has_booking_context = bool(
                                 _caller_booking_words or _prev_q_booking
                             )
@@ -7338,8 +7382,6 @@ class WebSocketCallHandler:
                                 self.booking_flow_active = True
                                 self.session["booking_flow_active"] = True
                                 logger.info("[ms_conn] booking_flow_active = True")
-                                # Clear CTA-pending flag now that ack has fired
-                                self.session.pop("v3_cta_booking_pending", None)
                                 self.session["v3_booking_intent"] = True
                                 # Store which intent triggered the ack
                                 if "let's get that moved" in _last_bot.lower():
@@ -7901,39 +7943,7 @@ class WebSocketCallHandler:
 
                     if not _is_pause:
                         # BUG 1 fix — clear stale LLM reply before each transcript so
-                        # post-turn diagnostic log always reflects the NEW bot output.
-                        # Before clearing, capture whether the caller is affirming a
-                        # booking CTA ("yes please" / "yeah" to "Would you like to
-                        # book?").  This sets v3_cta_booking_pending so the booking ack
-                        # handler can recognise booking-context even when the caller
-                        # uses no booking keyword of their own.
-                        _prev_bot_cta = self.session.get("last_bot_prompt", "").lower()
-                        _CTA_BOOKING_PHRASES = (
-                            "would you like to book",
-                            "book an appointment",
-                            "like to make an appointment",
-                            "shall i book",
-                            "book you in",
-                        )
-                        _bot_has_booking_cta = any(
-                            p in _prev_bot_cta for p in _CTA_BOOKING_PHRASES
-                        )
-                        _caller_affirms = bool(re.search(
-                            r"\b(?:yes|yeah|yep|sure|okay|ok|yup"
-                            r"|absolutely|definitely|go ahead|i would"
-                            r"|i do|course)\b",
-                            utterance, re.IGNORECASE,
-                        ))
-                        if _bot_has_booking_cta and _caller_affirms:
-                            self.session["v3_cta_booking_pending"] = True
-                            logger.info(
-                                "[ms_conn v3] CTA affirm detected"
-                                " — v3_cta_booking_pending=True"
-                                " (prev_bot had booking CTA, caller=%r)",
-                                utterance[:60],
-                            )
-                        else:
-                            self.session.pop("v3_cta_booking_pending", None)
+                        # post-turn diagnostic log always reflects the NEW bot output
                         self.session["last_bot_prompt"] = ""
                         # Reset per-turn speech-emission flag.  _TrackedQueue and _llm_fn
                         # both set this True whenever audible text is enqueued.
