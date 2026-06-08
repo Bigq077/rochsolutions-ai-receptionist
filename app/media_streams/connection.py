@@ -7349,15 +7349,53 @@ class WebSocketCallHandler:
                                     )
                                 else:
                                     # Location unknown — queue intent-aware
-                                    # location question
+                                    # location question.
+                                    # If the caller mentioned a specific clinic
+                                    # during this FAQ session (v3_soft_location_
+                                    # candidate is set), use an immediate biased
+                                    # confirm rather than the open two-choice
+                                    # question.  This avoids asking "which clinic?"
+                                    # when e.g. the caller just asked about
+                                    # parking at Alcester then said they want to
+                                    # book.  The caller answers yes/no once and
+                                    # we move straight to timing.
                                     _loc_intent = self.session.get(
                                         "v3_caller_intent", "booking"
+                                    )
+                                    _soft_cand = self.session.get(
+                                        "v3_soft_location_candidate"
                                     )
                                     if _loc_intent in ("reschedule", "cancel"):
                                         _loc_q = (
                                             "Was your original appointment "
                                             "at our Awlstuh or Redditch "
                                             "clinic?"
+                                        )
+                                    elif _soft_cand:
+                                        _cand_disp = (
+                                            "Awlstuh"
+                                            if _soft_cand == "alcester"
+                                            else "Redditch"
+                                        )
+                                        _loc_q = (
+                                            f"And just to confirm — "
+                                            f"was that for the "
+                                            f"{_cand_disp} clinic?"
+                                        )
+                                        # Arm the biased yes/no handler so
+                                        # the caller's 'yes' immediately
+                                        # confirms the candidate without
+                                        # waiting for the watchdog.
+                                        self.session[
+                                            "v3_awaiting_use_this_clinic"
+                                        ] = True
+                                        self.session[
+                                            "v3_use_this_clinic_bias"
+                                        ] = _soft_cand
+                                        logger.info(
+                                            "[ms_conn v3] soft candidate '%s'"
+                                            " — biased confirm at booking ack",
+                                            _soft_cand,
                                         )
                                     else:
                                         _loc_q = (
@@ -9353,14 +9391,25 @@ class WebSocketCallHandler:
                     _safety_net_count = 0
                     _tracked_q_gen    = _current_q_gen
 
-                # 7. Part A — watchdog already completed re-ask for this q_gen
+                # 7. Part A — watchdog already completed re-ask for this q_gen.
+                # Suppress within a 20s window to prevent an immediate double-
+                # prompt.  After 20s with no transcript the watchdog retired
+                # without ever getting a response (caller spoke but STT missed
+                # it) — override the suppression so the safety net fires again.
                 if getattr(self._silence_handler, "_reask_completed", False):
-                    logger.info(
-                        "[ms_safety_net] suppressed — watchdog already completed "
-                        "reask for q_gen=%d",
-                        _current_q_gen,
+                    if _since < 20.0:
+                        logger.info(
+                            "[ms_safety_net] suppressed — watchdog reask done, "
+                            "within 20s window (since=%.1fs q_gen=%d)",
+                            _since, _current_q_gen,
+                        )
+                        continue
+                    logger.warning(
+                        "[ms_safety_net] watchdog reask done but _since=%.1fs"
+                        " ≥20s — overriding suppression (q_gen=%d); "
+                        "watchdog retired without transcript",
+                        _since, _current_q_gen,
                     )
-                    continue
 
                 # ── Part B: count-bounded re-ask / graceful close ─────────────
                 _safety_net_count += 1
