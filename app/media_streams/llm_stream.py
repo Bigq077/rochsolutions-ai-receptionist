@@ -573,6 +573,17 @@ class LLMStream:
                     _slot_map,
                 )
 
+        # If no new numbered options were found this turn (single-slot response,
+        # date-specific re-check, etc.) clear any stale slot map so connection.py
+        # does not re-arm DTMF pointing at options the caller never heard.
+        if _slot_map_count == 0:
+            if session.pop("v3_dtmf_slot_map", None) is not None:
+                session.pop("v3_awaiting_slot_selection", None)
+                logger.info(
+                    "[ms_gate5] slot buf: no numbered options this turn"
+                    " — cleared stale slot map"
+                )
+
         # ── 5. Re-split by numbered-option boundary ──────────────────────────
         # Split before "Number 2", "Number 3", … (lookahead keeps the
         # delimiter with the following content).  Preamble + Number 1 stay
