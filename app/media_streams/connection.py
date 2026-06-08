@@ -5760,10 +5760,16 @@ class WebSocketCallHandler:
                                     a in _utt_lower
                                     for a in _USE_THIS_CLINIC_AFFIRMATIVES
                                 ):
+                                    # Clear the flag BEFORE passing to LLM so
+                                    # the next utterance isn't intercepted again
+                                    # by the use-this-clinic handler.
+                                    self.session[
+                                        "v3_awaiting_use_this_clinic"
+                                    ] = False
                                     logger.info(
                                         "[ms_conn v3] use-this-clinic"
                                         " — no clear affirmative, passing"
-                                        " to LLM: %r",
+                                        " to LLM (flag cleared): %r",
                                         utterance[:60],
                                     )
                                     self._filler_breath_injected = False
@@ -6516,35 +6522,62 @@ class WebSocketCallHandler:
                                             )
                                             continue
 
-                                        # ── use-this-clinic confirm ─────────
-                                        # Non-question unknown — biased confirm
-                                        # as last resort (caller gave unclear
-                                        # location answer, not a question).
-                                        _confirm_q = (
-                                            "Just to check — did you say"
-                                            " the Awlstuh clinic? If so,"
-                                            " just say 'use this clinic'."
-                                        )
+                                        # ── Haiku unknown, non-question ─────
+                                        # Haiku couldn't classify the response
+                                        # and it's not a question — route to
+                                        # the full LLM instead of looping
+                                        # another biased confirm. Clear the
+                                        # flag so the next utterance isn't
+                                        # intercepted again.
                                         self.session[
                                             "v3_awaiting_use_this_clinic"
-                                        ] = True
-                                        await self.tts_text_queue.put(
-                                            _confirm_q
+                                        ] = False
+                                        logger.info(
+                                            "[ms_conn v3] Haiku unknown"
+                                            " non-question — clearing flag,"
+                                            " routing to LLM: %r",
+                                            utterance[:60],
                                         )
-                                        self.session[
-                                            "last_bot_prompt"
-                                        ] = _confirm_q
-                                        self.session[
-                                            "last_question"
-                                        ] = _confirm_q
+                                        self._filler_breath_injected = False
+                                        await self._filler.arm(self.session)
+                                        self._current_llm_task = (
+                                            asyncio.create_task(
+                                                llm.run_turn(
+                                                    user_text=utterance,
+                                                    session=self.session,
+                                                    call_sid=self.call_sid,
+                                                    stream_sid=(
+                                                        self.stream_sid
+                                                    ),
+                                                    tts_text_queue=(
+                                                        self.tts_text_queue
+                                                    ),
+                                                    audio_out_queue=(
+                                                        self.audio_out_queue
+                                                    ),
+                                                    websocket=(
+                                                        self.websocket
+                                                    ),
+                                                    on_transfer=(
+                                                        self
+                                                        ._on_transfer_request
+                                                    ),
+                                                ),
+                                                name="ms_llm_turn",
+                                            )
+                                        )
+                                        try:
+                                            await self._current_llm_task
+                                        except asyncio.CancelledError:
+                                            logger.info(
+                                                "[ms_conn v3] Haiku-unknown"
+                                                " non-q LLM turn cancelled"
+                                                " — newer transcript wins"
+                                            )
+                                        finally:
+                                            self._current_llm_task = None
                                         await save_session(
                                             self.call_sid, self.session
-                                        )
-                                        logger.info(
-                                            "[ms_conn v3] Haiku unknown —"
-                                            " use-this-clinic confirm"
-                                            " queued: %r",
-                                            utterance[:60],
                                         )
 
                         else:
@@ -7426,6 +7459,19 @@ class WebSocketCallHandler:
                                     self.session["v3_location_asked"] = True
                                     self.session["v3_location_q_active"] = True
                                     self.session["_location_q_patient_spoke"] = False
+                                    # Add injected location Q to conversation
+                                    # history so the LLM knows what was asked
+                                    # if the caller's response bypasses the
+                                    # intercept handler and reaches run_turn().
+                                    if not _llm_asked_loc:
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _loc_q,
+                                        })
+                                        self._silence_handler\
+                                            .on_question_asked(_loc_q)
                                     await save_session(
                                         self.call_sid, self.session
                                     )
