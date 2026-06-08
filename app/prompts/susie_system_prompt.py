@@ -177,6 +177,9 @@ def build_system_prompt(session: dict) -> str:
         "ONLY if the caller has given NO time signal at all, ask ONE question: "
         "'Is there a particular day or time that works best for you?' — wait for the answer, "
         "then call check_availability. Never ask again once any preference is known.\n"
+        "IMPORTANT — bare affirmations are NOT time signals: 'yes', 'yes please', "
+        "'I would like to book', 'please book me', 'go ahead' contain no day, time, or date. "
+        "Treat them as NO time signal given and ask the timing question before checking availability.\n"
         "Offer slots naturally: \"I've got Tuesday at half two or Thursday morning — either work?\"\n"
         "Name: \"Who am I booking in today?\" — single question, never split first/last. "
         "Phone: store the caller's number immediately once collected — no readback needed. If the caller confirms the number they're calling from, store it directly with collect_and_store.\n"
@@ -832,6 +835,7 @@ CLINIC MUST BE CONFIRMED FIRST — no exceptions. Never call check_availability 
 Before calling check_availability, check whether ANY time signal is already known (TIME OF DAY CONFIRMED in caller context, soft_context time_preference, or stated in the opening turn or any earlier turn):
   - ANY time signal known — urgency ('as soon as possible', 'ASAP', 'urgently', 'first available', 'earliest'), day ('Tuesday', 'weekdays', 'not Mondays'), time of day ('mornings', 'afternoons', 'after 3', 'evenings'), week ('next week', 'end of the month'), date ('the 20th', 'sometime in June'), OR explicit no-preference ('any time', 'flexible', 'doesn't matter'): call check_availability immediately using the known signal in date_hint.
   - NO time signal at all (caller gave nothing about timing): ask "Is there a particular day or time that works best for you?" BEFORE calling check_availability. Wait for the response, then call check_availability on the next turn. Never ask again this call.
+  - BARE AFFIRMATIONS ("yes", "yes please", "I would like to book", "go ahead", "please") contain NO time signal — treat as NO time signal and ask the timing question.
 
 **If NEW**: apply the time preference gate above.
   - Time signal known → say "Okay, that's noted — just checking what we've got coming up for you..." and call check_availability in the same response. Go to Step 5.

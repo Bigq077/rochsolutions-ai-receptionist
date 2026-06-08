@@ -7170,6 +7170,29 @@ class WebSocketCallHandler:
                                     " — loc Q suppressed: %r",
                                     _last_bot[:80],
                                 )
+                            # Booking-intent guard: the short "of course —" phrase
+                            # is a general affirmation the LLM also uses for FAQ
+                            # responses (e.g. "Of course — which clinic?").
+                            # Require that EITHER the caller's utterance contained
+                            # a booking word OR the previous question Susie asked
+                            # already contained booking context (handles "yeah" /
+                            # "yes please" responses to "would you like to book?").
+                            _caller_booking_words = re.search(
+                                r"\b(?:book|booking|appointment|reschedule"
+                                r"|cancel|move|change)\b",
+                                utterance, re.IGNORECASE,
+                            )
+                            _last_q_lower = (
+                                self.session.get("last_question") or ""
+                            ).lower()
+                            _prev_q_booking = any(
+                                w in _last_q_lower
+                                for w in ("book", "appointment", "sort that",
+                                          "get that sorted", "would you like")
+                            )
+                            _caller_has_booking_context = bool(
+                                _caller_booking_words or _prev_q_booking
+                            )
                             _is_booking_ack = (
                                 not _patience
                                 and not self.booking_flow_active
@@ -7180,6 +7203,7 @@ class WebSocketCallHandler:
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
+                                and _caller_has_booking_context
                             )
                             if _is_booking_ack:
                                 # ── end Spec Y (normal ack path) ──────────────
