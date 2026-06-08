@@ -304,10 +304,20 @@ def build_system_prompt(session: dict) -> str:
             f"Do NOT call check_availability."
         )
 
-    # If a date was discussed then the cache cleared (e.g. FAQ detour),
-    # tell the LLM so it can resume from the same date window.
+    # After a FAQ detour: surface the most specific date context available.
+    # LAST OFFERED DAY (specific ISO date) takes precedence over LAST DATE
+    # DISCUSSED (week range) — prevents re-presenting a full multi-day list
+    # when only a single specific day had been on the table.
+    _v3_day_iso = session.get("v3_last_offered_day_iso")
     _v3_last_date = session.get("v3_last_presented_date_hint")
-    if _v3_last_date and not session.get("last_date_hint"):
+    if _v3_day_iso and not session.get("v3_awaiting_slot_selection"):
+        state_lines.append(
+            f"LAST OFFERED DAY: {_v3_day_iso} — "
+            "if the caller confirms or continues booking, call "
+            f"check_availability with date_hint='{_v3_day_iso}' "
+            "(ISO date) to show only that day's times, not a full week."
+        )
+    elif _v3_last_date and not session.get("last_date_hint"):
         state_lines.append(
             f"LAST DATE DISCUSSED: {_v3_last_date} — "
             "use this as the date_hint for check_availability "

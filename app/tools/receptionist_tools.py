@@ -214,6 +214,22 @@ def _extract_week_range(
     hint = date_hint.lower().strip()
     today = _date_type.today()
 
+    # ── Pattern 0: ISO date "YYYY-MM-DD" ─────────────────────────────────────
+    # e.g. "2026-06-23" — used when v3_last_offered_day_iso is set in CALL STATE.
+    # Most unambiguous form: match before any other pattern.
+    _iso_m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", date_hint.strip())
+    if _iso_m:
+        try:
+            target = _date_type(
+                int(_iso_m.group(1)), int(_iso_m.group(2)), int(_iso_m.group(3))
+            )
+            logger.info(
+                "[ms_tools] week filter: ISO date match → single-day %s", target
+            )
+            return target, target
+        except ValueError:
+            pass
+
     def _week_of(d: _date_type) -> "tuple[_date_type, _date_type]":
         monday = d - timedelta(days=d.weekday())
         return monday, monday + timedelta(days=6)
@@ -1886,6 +1902,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         # Booking confirmed — clear the last-presented date hint so it
         # doesn't resurface in CALL STATE after the appointment is made.
         session.pop("v3_last_presented_date_hint", None)
+        session.pop("v3_last_offered_day_iso", None)
 
         # Stage 2: create pending name-confirmation record (non-fatal)
         try:

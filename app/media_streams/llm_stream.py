@@ -566,6 +566,16 @@ class LLMStream:
                 session["v3_dtmf_slot_map"] = _slot_map
                 session["v3_awaiting_slot_selection"] = True
                 _slot_map_count = len(_slot_map)
+                # Save the first offered day's ISO date for FAQ-detour recovery.
+                # If the caller asks a FAQ mid-selection (clearing the slot map),
+                # this lets CALL STATE redirect check_availability to only that day.
+                _av_days = session.get("available_days") or []
+                if _av_days:
+                    session["v3_last_offered_day_iso"] = _av_days[0]["date"]
+                    logger.info(
+                        "[ms_gate5] v3_last_offered_day_iso=%r saved",
+                        _av_days[0]["date"],
+                    )
                 logger.info(
                     "[ms_gate5] slot map extracted on complete response "
                     "(%d option(s)) — DTMF standby: %r",
@@ -576,12 +586,15 @@ class LLMStream:
         # If no new numbered options were found this turn (single-slot response,
         # date-specific re-check, etc.) clear any stale slot map so connection.py
         # does not re-arm DTMF pointing at options the caller never heard.
+        # NOTE: v3_last_offered_day_iso is intentionally NOT cleared here —
+        # it must survive the FAQ detour so CALL STATE can direct the LLM back
+        # to the correct day on the caller's next booking confirmation.
         if _slot_map_count == 0:
             if session.pop("v3_dtmf_slot_map", None) is not None:
                 session.pop("v3_awaiting_slot_selection", None)
                 logger.info(
                     "[ms_gate5] slot buf: no numbered options this turn"
-                    " — cleared stale slot map"
+                    " — cleared stale slot map (v3_last_offered_day_iso preserved)"
                 )
 
         # ── 5. Re-split by numbered-option boundary ──────────────────────────
