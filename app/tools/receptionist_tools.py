@@ -1883,6 +1883,9 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             session["collected"]["insurer"] = insurer
         session["acuity_booking_id"] = booking.provider_booking_id
         session["calendar_status"] = "created"
+        # Booking confirmed — clear the last-presented date hint so it
+        # doesn't resurface in CALL STATE after the appointment is made.
+        session.pop("v3_last_presented_date_hint", None)
 
         # Stage 2: create pending name-confirmation record (non-fatal)
         try:

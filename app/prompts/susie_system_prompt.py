@@ -289,6 +289,16 @@ def build_system_prompt(session: dict) -> str:
     if known_lines:
         state_lines.append("Already known — do NOT ask again: " + ", ".join(known_lines))
 
+    # If a date was discussed then the cache cleared (e.g. FAQ detour),
+    # tell the LLM so it can resume from the same date window.
+    _v3_last_date = session.get("v3_last_presented_date_hint")
+    if _v3_last_date and not session.get("last_date_hint"):
+        state_lines.append(
+            f"LAST DATE DISCUSSED: {_v3_last_date} — "
+            "use this as the date_hint for check_availability "
+            "if the caller confirms or continues booking."
+        )
+
     block7 = "\n".join(state_lines) if state_lines else ""
 
     # ── BLOCK 8 — MULTI-SHOT EXAMPLES (~540 chars) ───────────────────────────

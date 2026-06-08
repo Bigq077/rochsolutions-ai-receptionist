@@ -5474,13 +5474,20 @@ class WebSocketCallHandler:
                                 # (Mid-turn re-query blocking is handled inside
                                 # llm_stream.py and is NOT affected by this.)
                                 if self.session.get("last_offered_slots") is not None:
+                                    _prev_hint = self.session.get("last_date_hint")
                                     logger.info(
                                         "[ms_llm] slot cache cleared on new turn"
                                         " (was date_hint=%r) [FAQ path]",
-                                        self.session.get("last_date_hint"),
+                                        _prev_hint,
                                     )
                                     self.session["last_offered_slots"] = None
                                     self.session["last_date_hint"] = None
+                                    # Preserve the date hint so CALL STATE can
+                                    # show the LLM what was last discussed.
+                                    if _prev_hint:
+                                        self.session[
+                                            "v3_last_presented_date_hint"
+                                        ] = _prev_hint
                                 # Change B: arm filler before LLM call.
                                 # No-op here (non-v3 path, booking_flow_active absent).
                                 self._filler_breath_injected = False
@@ -6680,13 +6687,20 @@ class WebSocketCallHandler:
                             # (Mid-turn re-query blocking in llm_stream.py is
                             # unaffected — it only fires within the same turn.)
                             if self.session.get("last_offered_slots") is not None:
+                                _prev_hint = self.session.get("last_date_hint")
                                 logger.info(
                                     "[ms_llm] slot cache cleared on new turn"
                                     " (was date_hint=%r)",
-                                    self.session.get("last_date_hint"),
+                                    _prev_hint,
                                 )
                                 self.session["last_offered_slots"] = None
                                 self.session["last_date_hint"] = None
+                                # Preserve the date hint so CALL STATE can
+                                # show the LLM what was last discussed.
+                                if _prev_hint:
+                                    self.session[
+                                        "v3_last_presented_date_hint"
+                                    ] = _prev_hint
                             # ── Spec Y REVISED: pre-run_turn treatment gate ───
                             # Must fire BEFORE run_turn because the LLM streams
                             # "Of course —" to TTS in real time (booking_flow
