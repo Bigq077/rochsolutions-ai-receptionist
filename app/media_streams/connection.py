@@ -7092,8 +7092,25 @@ class WebSocketCallHandler:
                                         utterance
                                     )
                                 )
+                                # Also confirm directly when the LLM had
+                                # just asked "Which clinic?" — the caller's
+                                # answer is a direct response to that
+                                # question, so no biased re-confirm needed
+                                # at booking time.
+                                _last_prompt_lower = self.session.get(
+                                    "last_bot_prompt", ""
+                                ).lower()
+                                _prev_was_loc_q = any(
+                                    kw in _last_prompt_lower
+                                    for kw in (
+                                        "which clinic",
+                                        "awlstuh or redditch",
+                                        "alcester or redditch",
+                                        "alcester or reditch",
+                                    )
+                                )
                                 if _has_alcester and not _has_redditch:
-                                    if _inline_has_intent:
+                                    if _inline_has_intent or _prev_was_loc_q:
                                         self.session["selected_location"] = (
                                             "alcester"
                                         )
@@ -7105,7 +7122,10 @@ class WebSocketCallHandler:
                                         )
                                         logger.info(
                                             "[ms_conn v3] inline alias"
-                                            " detected pre-ack: alcester"
+                                            " detected pre-ack: alcester%s",
+                                            " (answered loc Q)"
+                                            if _prev_was_loc_q
+                                            else "",
                                         )
                                     else:
                                         self.session[
@@ -7118,7 +7138,7 @@ class WebSocketCallHandler:
                                             " alcester"
                                         )
                                 elif _has_redditch and not _has_alcester:
-                                    if _inline_has_intent:
+                                    if _inline_has_intent or _prev_was_loc_q:
                                         self.session["selected_location"] = (
                                             "redditch"
                                         )
@@ -7130,7 +7150,10 @@ class WebSocketCallHandler:
                                         )
                                         logger.info(
                                             "[ms_conn v3] inline alias"
-                                            " detected pre-ack: redditch"
+                                            " detected pre-ack: redditch%s",
+                                            " (answered loc Q)"
+                                            if _prev_was_loc_q
+                                            else "",
                                         )
                                     else:
                                         self.session[
