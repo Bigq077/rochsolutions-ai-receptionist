@@ -9286,7 +9286,9 @@ class WebSocketCallHandler:
              and log — duplicate re-asks are unhelpful and confusing.
 
         Part B — maximum 2 fires per q_gen:
-          Fire 1: soft re-ask ("Sorry, I didn't quite catch that...")
+          Fire 1: context-aware soft re-ask — slot phrase if v3_awaiting_slot_selection,
+                  else replay last_question (prefixed "Sorry — I can't quite hear you —")
+                  or fall back to "Sorry — are you still there? I can't hear anything."
           Fire 2: graceful close phrase, wait for TTS, hang up cleanly.
 
         Part C — on graceful close, sets session["no_audio_close"] = True so
@@ -9297,7 +9299,6 @@ class WebSocketCallHandler:
         because at least one of conditions 2–5 is always true then.
         """
         _INTERVAL = 10.0
-        _PHRASE_1 = "Still with you — which of those days suits you?"
         _PHRASE_2 = (
             "I'm not able to hear you at the moment — "
             "feel free to call back and we'll get that sorted for you."
@@ -9374,9 +9375,25 @@ class WebSocketCallHandler:
                         getattr(self._silence_handler, "_tts_playing", False),
                         _current_q_gen,
                     )
+                    # Context-aware re-ask: slot phrase only when caller is actually
+                    # choosing from a presented list.  At all other call stages use
+                    # the last stored question (if any) or a neutral "still there?"
+                    # prompt so we never ask about "days" before any slots have been
+                    # shown to the caller.
+                    if self.session.get("v3_awaiting_slot_selection"):
+                        _phrase_1 = "Still with you — which of those days suits you?"
+                    else:
+                        _last_q = getattr(self._silence_handler, "last_question", "")
+                        if _last_q:
+                            _phrase_1 = f"Sorry — I can't quite hear you — {_last_q}"
+                        else:
+                            _phrase_1 = (
+                                "Sorry — are you still there? "
+                                "I can't hear anything at my end."
+                            )
                     # Clear tts_inhibit in case a stale barge-in flag is blocking TTS.
                     self.session["tts_inhibit"] = False
-                    await self.tts_text_queue.put(_WATCHDOG_REASK_MARKER + _PHRASE_1)
+                    await self.tts_text_queue.put(_WATCHDOG_REASK_MARKER + _phrase_1)
                     # Reset anchor to avoid immediate re-fire on next wake.
                     self._last_audio_or_transcript_ts = time.monotonic()
 
