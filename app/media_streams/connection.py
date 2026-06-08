@@ -5475,6 +5475,7 @@ class WebSocketCallHandler:
                                 # llm_stream.py and is NOT affected by this.)
                                 if self.session.get("last_offered_slots") is not None:
                                     _prev_hint = self.session.get("last_date_hint")
+                                    _prev_slots = self.session.get("last_offered_slots") or []
                                     logger.info(
                                         "[ms_llm] slot cache cleared on new turn"
                                         " (was date_hint=%r) [FAQ path]",
@@ -5482,12 +5483,40 @@ class WebSocketCallHandler:
                                     )
                                     self.session["last_offered_slots"] = None
                                     self.session["last_date_hint"] = None
-                                    # Preserve the date hint so CALL STATE can
-                                    # show the LLM what was last discussed.
-                                    if _prev_hint:
+                                    # Prefer the specific day from offered slots
+                                    # over the broader week hint (e.g. save
+                                    # "2026-06-23" not "week of 22 June 2026").
+                                    # This ensures CALL STATE re-prompts the
+                                    # exact day, not the whole week.
+                                    _offered_day_iso = None
+                                    if _prev_slots:
+                                        try:
+                                            _offered_day_iso = (
+                                                _prev_slots[0]["start"][:10]
+                                            )
+                                        except (IndexError, KeyError, TypeError):
+                                            pass
+                                    if _offered_day_iso:
+                                        self.session[
+                                            "v3_last_presented_date_hint"
+                                        ] = _offered_day_iso
+                                        self.session[
+                                            "v3_last_offered_day_iso"
+                                        ] = _offered_day_iso
+                                        logger.info(
+                                            "[ms_llm] slot cache cleared [FAQ]:"
+                                            " day iso=%r from offered slots",
+                                            _offered_day_iso,
+                                        )
+                                    elif _prev_hint:
                                         self.session[
                                             "v3_last_presented_date_hint"
                                         ] = _prev_hint
+                                        logger.info(
+                                            "[ms_llm] slot cache cleared [FAQ]:"
+                                            " date hint=%r preserved",
+                                            _prev_hint,
+                                        )
                                 # Change B: arm filler before LLM call.
                                 # No-op here (non-v3 path, booking_flow_active absent).
                                 self._filler_breath_injected = False
@@ -6688,6 +6717,7 @@ class WebSocketCallHandler:
                             # unaffected — it only fires within the same turn.)
                             if self.session.get("last_offered_slots") is not None:
                                 _prev_hint = self.session.get("last_date_hint")
+                                _prev_slots = self.session.get("last_offered_slots") or []
                                 logger.info(
                                     "[ms_llm] slot cache cleared on new turn"
                                     " (was date_hint=%r)",
@@ -6695,12 +6725,40 @@ class WebSocketCallHandler:
                                 )
                                 self.session["last_offered_slots"] = None
                                 self.session["last_date_hint"] = None
-                                # Preserve the date hint so CALL STATE can
-                                # show the LLM what was last discussed.
-                                if _prev_hint:
+                                # Prefer the specific day from offered slots
+                                # over the broader week hint (e.g. save
+                                # "2026-06-23" not "week of 22 June 2026").
+                                # This ensures CALL STATE re-prompts the
+                                # exact day, not the whole week.
+                                _offered_day_iso = None
+                                if _prev_slots:
+                                    try:
+                                        _offered_day_iso = (
+                                            _prev_slots[0]["start"][:10]
+                                        )
+                                    except (IndexError, KeyError, TypeError):
+                                        pass
+                                if _offered_day_iso:
+                                    self.session[
+                                        "v3_last_presented_date_hint"
+                                    ] = _offered_day_iso
+                                    self.session[
+                                        "v3_last_offered_day_iso"
+                                    ] = _offered_day_iso
+                                    logger.info(
+                                        "[ms_llm] slot cache cleared:"
+                                        " day iso=%r from offered slots",
+                                        _offered_day_iso,
+                                    )
+                                elif _prev_hint:
                                     self.session[
                                         "v3_last_presented_date_hint"
                                     ] = _prev_hint
+                                    logger.info(
+                                        "[ms_llm] slot cache cleared:"
+                                        " date hint=%r preserved",
+                                        _prev_hint,
+                                    )
                             # ── Spec Y REVISED: pre-run_turn treatment gate ───
                             # Must fire BEFORE run_turn because the LLM streams
                             # "Of course —" to TTS in real time (booking_flow

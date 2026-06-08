@@ -1708,6 +1708,22 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning", "week starting", "from ")
         _hint_lower = preference.lower() if preference else ""
         _has_week_anchor = any(anchor in _hint_lower for anchor in _WEEK_ANCHORS)
+        # Also allow exact ISO dates ("2026-06-23") and specific ordinal dates
+        # ("Monday 22 June 2026", "22nd June 2026") to reach _extract_week_range —
+        # Pattern 0 / Pattern 4 return a single-day range for these.
+        # Without this, "2026-06-23" would be bypassed and all 30 days returned.
+        if not _has_week_anchor and preference:
+            _has_week_anchor = bool(
+                re.fullmatch(r"\d{4}-\d{2}-\d{2}", preference.strip())
+            ) or bool(
+                re.search(
+                    r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|"
+                    r"mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+                    r"sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+                    r"\b",
+                    _hint_lower,
+                )
+            )
         if not _has_week_anchor:
             logger.info(
                 "[ms_tools] week filter bypassed — no week anchor in date_hint: %r",
