@@ -331,6 +331,7 @@ class LLMStream:
                 tts_text_queue=tts_text_queue,
                 on_transfer=on_transfer,
                 interim_played=interim_played,
+                dynamic_prompt=_dynamic_prompt,
             )
         except Exception as exc:
             logger.error("[ms_llm] streaming_tool_loop error: %r", exc)
@@ -639,6 +640,7 @@ class LLMStream:
         tts_text_queue: asyncio.Queue,
         on_transfer: Optional[Callable[[], Coroutine]],
         interim_played: bool = False,
+        dynamic_prompt: str = "",
     ) -> tuple:
         """
         Run the Claude streaming + tool-calling loop.
@@ -694,6 +696,7 @@ class LLMStream:
                     # Only suppress on first iteration — subsequent iterations
                     # (after tool calls) generate genuinely new text.
                     interim_played=(interim_played and iteration == 1),
+                    dynamic_prompt=dynamic_prompt,
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
 
@@ -730,6 +733,7 @@ class LLMStream:
                                 tts_text_queue=tts_text_queue,
                                 filler_sent=True,
                                 interim_played=True,
+                                dynamic_prompt=dynamic_prompt,
                             )
                             filler_sent = True
                             _retry_ok = True
@@ -891,6 +895,7 @@ class LLMStream:
         tts_text_queue: asyncio.Queue,
         filler_sent: bool,
         interim_played: bool = False,
+        dynamic_prompt: str = "",
     ) -> tuple:
         """
         Open one Claude streaming session, feed tokens through the chunker,
@@ -960,13 +965,13 @@ class LLMStream:
         # full input cost for the ~19K-token static block.
         _system_blocks: list = [{
             "type":          "text",
-            "text":          _static_prompt,
+            "text":          system_prompt,
             "cache_control": {"type": "ephemeral"},
         }]
-        if _dynamic_prompt:
+        if dynamic_prompt:
             _system_blocks.append({
                 "type": "text",
-                "text": _dynamic_prompt,
+                "text": dynamic_prompt,
             })
 
         async with client.messages.stream(
