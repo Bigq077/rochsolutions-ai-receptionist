@@ -1203,6 +1203,26 @@ _REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# FAQ clinic gate — topics that differ between Alcester and Redditch.
+# When no clinic is confirmed and the caller asks about one of these topics,
+# Susie must ask "Which clinic?" BEFORE answering.  Without this hard gate
+# the LLM tends to summarise both clinics first and ask at the end, which
+# fails the UX spec.  The gate injects the question directly, skips
+# run_turn(), and writes the exchange into conversation_history so the
+# following LLM turn has full parking/address context for the named clinic.
+# ---------------------------------------------------------------------------
+_FAQ_CLINIC_SPECIFIC_RE = re.compile(
+    r"\b(?:"
+    r"park(?:ing)?|car\s*park|"
+    r"address|postcode|"
+    r"open(?:ing)?(?:\s+hour[s]?|\s+time[s]?)?|business\s+hour[s]?|when.*open|"
+    r"bus\s+(?:stop|route|number|line)|train\s+(?:station|line|stop)|"
+    r"public\s+transport|how\s+(?:do\s+i|to)\s+get\s+there"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
 # When a caller names a specific treatment alongside booking intent, the
 # booking ack handler must NOT auto-queue the location question.  Instead
@@ -6830,6 +6850,60 @@ class WebSocketCallHandler:
                                 )
                                 continue
                             # ── end duplicate slot guard ──────────────────────
+
+                            # ── FAQ clinic gate ──────────────────────────────
+                            # Hard-coded intercept: if the caller asks about
+                            # a clinic-specific topic (parking, address, hours,
+                            # transport) and no clinic is confirmed yet, ask
+                            # "Which clinic?" directly — skip run_turn() so
+                            # the LLM cannot summarise both clinics first.
+                            # Injects the exchange into conversation_history
+                            # so the next LLM turn has full FAQ context for
+                            # the specific clinic the caller names.
+                            if (
+                                not self.session.get("v3_location_confirmed")
+                                and not self.booking_flow_active
+                                and not self.session.get(
+                                    "v3_location_asked", False
+                                )
+                                and bool(
+                                    _FAQ_CLINIC_SPECIFIC_RE.search(utterance)
+                                )
+                            ):
+                                _faq_clinic_q = (
+                                    "Which clinic were you thinking of"
+                                    " — Awlstuh or Redditch?"
+                                )
+                                await self.tts_text_queue.put(_faq_clinic_q)
+                                # Write into history so next LLM turn has
+                                # parking/address/hours context for the clinic.
+                                _faq_h = self.session.setdefault(
+                                    "conversation_history", []
+                                )
+                                _faq_h.append(
+                                    {"role": "user", "content": utterance}
+                                )
+                                _faq_h.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": _faq_clinic_q,
+                                    }
+                                )
+                                self.session["last_bot_prompt"] = _faq_clinic_q
+                                self.session["last_question"] = _faq_clinic_q
+                                self.session["_turn_speech_emitted"] = True
+                                self._silence_handler.on_question_asked(
+                                    _faq_clinic_q
+                                )
+                                logger.info(
+                                    "[ms_conn v3] FAQ clinic gate:"
+                                    " no clinic confirmed — injecting"
+                                    " 'Which clinic?' and skipping"
+                                    " run_turn (utterance=%r)",
+                                    utterance[:80],
+                                )
+                                continue  # finally: cleans up llm_in_flight
+                            # ── end FAQ clinic gate ───────────────────────────
 
                             # Capture previous bot response BEFORE run_turn()
                             # overwrites last_bot_prompt.  Used by the booking
