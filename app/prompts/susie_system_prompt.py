@@ -289,6 +289,21 @@ def build_system_prompt(session: dict) -> str:
     if known_lines:
         state_lines.append("Already known — do NOT ask again: " + ", ".join(known_lines))
 
+    # Active slot selection interrupted by a FAQ — show the pending days
+    # so the LLM re-prompts them after answering rather than starting fresh.
+    _v3_slot_map = session.get("v3_dtmf_slot_map", {})
+    if session.get("v3_awaiting_slot_selection") and _v3_slot_map:
+        _slot_days = list(_v3_slot_map.values())
+        _first_day = _slot_days[0] if _slot_days else ""
+        _days_str = ", ".join(_slot_days[:3])
+        state_lines.append(
+            f"ACTIVE SLOT OFFER (DO NOT restart booking): "
+            f"{_days_str} were just offered and the caller paused to ask a "
+            f"question. Answer the question briefly, then end your response "
+            f"with: \"Shall I go ahead and book you in for {_first_day}?\" "
+            f"Do NOT call check_availability."
+        )
+
     # If a date was discussed then the cache cleared (e.g. FAQ detour),
     # tell the LLM so it can resume from the same date window.
     _v3_last_date = session.get("v3_last_presented_date_hint")
