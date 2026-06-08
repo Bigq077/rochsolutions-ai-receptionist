@@ -523,8 +523,12 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
         loc_names = " or ".join(loc.get("name", "") for loc in locations)
         location_section = (
             f"This clinic has two locations: {loc_names}.\n"
-            f"INFORMATIONAL questions (address, directions, parking, hours): give details for BOTH locations — never ask them to pick one. "
-            f"Example: 'We have two clinics — our Awlstuh one is at [address] and Redditch is at [address].'\n"
+            f"INFORMATIONAL questions (address, directions, parking, hours): "
+            f"if the clinic is not yet confirmed (no location= in CALL STATE), "
+            f"ask 'Which clinic were you thinking of — Awlstuh or Redditch?' FIRST, "
+            f"then answer specifically for that clinic once they say. "
+            f"Never summarise both clinics in one response for these questions. "
+            f"If the clinic is already confirmed in CALL STATE, answer directly.\n"
             f"CLINIC DIFFERENCE QUESTION — if a caller asks what the difference is between the two clinics, asks which one to choose, "
             f"or asks anything like 'what's the difference?', 'which one is better?', 'what does each one offer?': "
             f"answer directly BEFORE asking them to choose. Say: "
