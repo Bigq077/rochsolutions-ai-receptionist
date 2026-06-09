@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _BANNED_SENTENCE_RE = [
+    # ── Banned opener words ──────────────────────────────────────────────────
+    # Strip sycophantic/robotic openers from the very first token(s) of any
+    # LLM chunk.  Anchored to ^ so it ONLY fires at the start of a chunk —
+    # never mid-sentence.  Strips the word plus its connector (comma, dash,
+    # exclamation) and any trailing space, leaving the substantive reply intact.
+    # e.g. "Of course — which clinic?" → "Which clinic?"
+    #      "Perfect, could I get your name?" → "Could I get your name?"
+    #      "Absolutely, we offer acupuncture" → "We offer acupuncture"
+    # Runs first so downstream patterns see clean text.
+    ("banned_opener",
+     re.compile(
+         r"^(?:Absolutely|Certainly|Of course|Sure thing|Sure"
+         r"|Wonderful|Fantastic|Exactly|Indeed|Definitely|Totally"
+         r"|Obviously|Clearly|Lovely|Right so|Perfect|Great)"
+         r"[,!\-—–]\s*",
+         re.IGNORECASE,
+     )),
     ("bear_with_me",  re.compile(r"[^.!?]*\bbear with me\b[^.!?]*[.!?]?",        re.IGNORECASE)),
     ("bare_with_me",  re.compile(r"[^.!?]*\bbare with me\b[^.!?]*[.!?]?",        re.IGNORECASE)),
     ("just_a_moment", re.compile(r"[^.!?]*\bjust a moment\b[^.!?]*[.!?]?",       re.IGNORECASE)),

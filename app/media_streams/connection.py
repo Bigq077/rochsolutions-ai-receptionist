@@ -52,6 +52,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 import anthropic
 
+import random as _random
+
 from .config import (
     TWILIO_STARTED_TIMEOUT_SEC,
     PIPELINE_FAILURE_PHRASE,
@@ -61,6 +63,7 @@ from .config import (
     ANTHROPIC_API_KEY,
     HAIKU,
     ACK_FILLER_MARKER,
+    FILLER_PHRASES,
 )
 from .filler_guard import FillerGuard
 
@@ -3937,7 +3940,7 @@ class WebSocketCallHandler:
                 self.session["v3_location_asked"] = False
                 self.session["v3_location_q_active"] = False
                 _disp = _loc_dtmf.capitalize()
-                _ack = f"{_disp}, perfect."
+                _ack = f"{_disp}."
                 _intent = self.session.get("v3_caller_intent", "booking")
                 if _intent in ("reschedule", "cancel"):
                     _next_q = (
@@ -4019,7 +4022,7 @@ class WebSocketCallHandler:
                 if digit == "1":
                     logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
                     await self.tts_text_queue.put(
-                        "Of course — transferring you to Mark now, one moment."
+                        "Transferring you to Mark now — one moment."
                     )
                     self.session["transfer_requested_by_caller"] = True
                     await self._on_transfer_request()
@@ -5237,10 +5240,7 @@ class WebSocketCallHandler:
                             ):
                                 # Caller confirmed → use calling number
                                 self.session["lookup_phone"] = _calling_number
-                                _filler = (
-                                    "Let me have a look at what we've"
-                                    " got…"
-                                )
+                                _filler = _random.choice(FILLER_PHRASES)
                                 await self.tts_text_queue.put(_filler)
                                 self.session["last_bot_prompt"] = _filler
                                 await save_session(
@@ -5878,7 +5878,7 @@ class WebSocketCallHandler:
 
                                 if _confirmed:
                                     _disp = _confirmed.capitalize()
-                                    _ack = f"{_disp}, perfect."
+                                    _ack = f"{_disp}."
                                     _intent = self.session.get(
                                         "v3_caller_intent", "booking"
                                     )
@@ -6046,7 +6046,7 @@ class WebSocketCallHandler:
                                 )
                                 if _confirmed_loc:
                                     _loc_label = _confirmed_loc.capitalize()
-                                    _ack = f"{_loc_label}, perfect."
+                                    _ack = f"{_loc_label}."
                                     await self.tts_text_queue.put(_ack)
                                     self.session["last_bot_prompt"] = _ack
                                     self.session["selected_location"] = (
@@ -6407,7 +6407,7 @@ class WebSocketCallHandler:
 
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
-                                        _ack = f"{_disp}, perfect."
+                                        _ack = f"{_disp}."
                                         _intent = self.session.get(
                                             "v3_caller_intent", "booking"
                                         )
@@ -8019,7 +8019,7 @@ class WebSocketCallHandler:
                     if _is_pause:
                         self.session["caller_pause_active"] = True
                         self.session["pause_silence_total"] = 0.0
-                        await self.tts_text_queue.put("Of course, take your time.")
+                        await self.tts_text_queue.put("Take your time.")
                         # Don't pass to state machine; silence timer will use 45s window
                         # We still need to re-arm the silence handler after speaking.
                         # NOTE: on_question_asked bumps _q_gen, so bind caller_pause_q_gen
@@ -9738,8 +9738,8 @@ class WebSocketCallHandler:
                             _phrase_1 = f"Sorry — I can't quite hear you — {_last_q}"
                         else:
                             _phrase_1 = (
-                                "Sorry — are you still there? "
-                                "I can't hear anything at my end."
+                                "I'm just having a little trouble"
+                                " hearing you — apologies about that."
                             )
                     # Clear tts_inhibit in case a stale barge-in flag is blocking TTS.
                     self.session["tts_inhibit"] = False
