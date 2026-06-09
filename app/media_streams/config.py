@@ -312,8 +312,19 @@ SAFE_FALLBACK_PHRASE = (
 
 BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 
-# Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS)
-FILLER_PHRASE = "Let me have a look at what we've got…"
+# Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS).
+# Multiple phrases — llm_stream picks one at random each turn.
+FILLER_PHRASES = [
+    "Let me have a look at what we've got…",
+    "One moment while I check that for you…",
+    "Just checking the diary now…",
+    "I'll take a look at the schedule for you…",
+    "Let me pull that up now…",
+    "Checking what's free for you…",
+    "Let me see what we have available…",
+]
+# Keep the singular alias so any other import of FILLER_PHRASE still compiles.
+FILLER_PHRASE = FILLER_PHRASES[0]
 
 # Prefix marker prepended to FILLER_PHRASE by the background filler task in
 # _stream_one_claude_turn().  _tts_loop strips the marker and — if a tool call
