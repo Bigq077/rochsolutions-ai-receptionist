@@ -39,7 +39,7 @@ _BANNED_SENTENCE_RE = [
          r"^(?:Absolutely|Certainly|Of course|Sure thing|Sure"
          r"|Wonderful|Fantastic|Exactly|Indeed|Definitely|Totally"
          r"|Obviously|Clearly|Lovely|Right so|Perfect|Great)"
-         r"[,!\-—–]\s*",
+         r"\s*[,!\-—–]\s*",
          re.IGNORECASE,
      )),
     ("bear_with_me",  re.compile(r"[^.!?]*\bbear with me\b[^.!?]*[.!?]?",        re.IGNORECASE)),
@@ -145,24 +145,25 @@ _BANNED_SENTENCE_RE = [
      )),
 
     # ── Prompt C — scarcity-signalling openers ───────────────────────────────
-    # "The closest/nearest X is/would be/— " — strip the preamble, keep the
-    # date/time.  Anchored to start-of-chunk; strips up to and including the
-    # first recognisable connector so the slot info plays directly.
-    # Connectors handled: "is ", "would be ", em-dash/en-dash + space.
+    # "The closest/nearest/soonest/earliest X is/would be/— " — strip the
+    # preamble, keep the date/time.  Anchored to start-of-chunk; strips up to
+    # and including the first recognisable connector so the slot info plays
+    # directly.  Connectors handled: "is ", "would be ", em-dash/en-dash + space.
     ("closest_nearest_opener",
      re.compile(
-         r"^[Tt]he (?:closest|nearest)\b[^.!?—–]*?"
+         r"^[Tt]he (?:closest|nearest|soonest|earliest)\b[^.!?—–]*?"
          r"(?:\bis\s+|\bwould be\s+|[—–]\s*)",
          re.IGNORECASE,
      )),
-    # "The closest I've got / I have / we have / available" — full-sentence
-    # strip for forms where the date cannot be rescued by the opener-strip
-    # above (no clean connector exposed, or the form is entirely a dead-end
-    # qualifier with no following slot info).  Runs after the opener-strip so
-    # cases already rescued by that pattern are never double-processed.
+    # "The closest/soonest/earliest I've got / I have / we have / available" —
+    # full-sentence strip for forms where the date cannot be rescued by the
+    # opener-strip above (no clean connector exposed, or the form is entirely
+    # a dead-end qualifier with no following slot info).  Runs after the
+    # opener-strip so cases already rescued by that pattern are never
+    # double-processed.
     ("closest_ive_got",
      re.compile(
-         r"[^.!?]*\b[Tt]he (?:closest|nearest)\s+"
+         r"[^.!?]*\b[Tt]he (?:closest|nearest|soonest|earliest)\s+"
          r"(?:I'?ve\s+got|I\s+have|we\s+have|available)\b"
          r"[^.!?]*[.!?]?",
          re.IGNORECASE,

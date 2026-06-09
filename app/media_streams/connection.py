@@ -1029,6 +1029,13 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     # ── Confirmed call-log transcripts ──────────────────────────────────────
     "alcestra",
     "ausesta",
+    # STT renders "Alcester" as "alstac" — \b boundary blocks "alsta" from
+    # matching "alstac", so adding explicitly.  Observed: "your alstac clinic"
+    "alstac",
+    "alstac clinic",
+    "your alstac",
+    "alstack",
+    "alstick",
     "your alcestra",
     "our alcestra",
     "the clinic",
