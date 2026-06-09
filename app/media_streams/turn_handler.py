@@ -159,12 +159,26 @@ _BANNED_SENTENCE_RE = [
          re.IGNORECASE,
      )),
 
-    # "The only [day/time/slot/morning/afternoon/evening/appointment]" — strip.
+    # "The only [slot/day/time/...] [modifier] is ..." — strip just the
+    # scarcity opener, keeping the date/time info that follows.
+    # Mirrors closest_nearest_opener: recovers actionable slot info instead
+    # of wiping the entire sentence.
+    #
+    # Before (full-sentence strip — BUG): "The only day available is Wednesday
+    # the 17th — does that work?" → stripped to "" → fallback fires.
+    # After  (prefix strip — FIXED):     "The only day available is " →
+    # stripped, leaving "Wednesday the 17th — does that work?" → plays fine.
+    #
+    # Handles: "The only slot available is", "The only day we have is",
+    # "The only available appointment is", "The only time I've got is", etc.
     ("the_only_slot_scarcity",
      re.compile(
-         r"[^.!?]*\b[Tt]he only\s+(?:\w+\s+)*"
-         r"(?:day|time|slot|morning|afternoon|evening|option|appointment|[a-zA-Z]+day)\b"
-         r"[^.!?]*[.!?]?",
+         r"\b[Tt]he only\s+"
+         r"(?:available\s+)?"
+         r"(?:slot|day|time|option|appointment|[a-zA-Z]+day)"
+         r"(?:\s+(?:available|that\s+(?:is\s+)?available"
+         r"|we\s+have(?:\s+available)?|I(?:'ve)?\s+(?:got|have)(?:\s+available)?))?"
+         r"\s+(?:is|are|would be)\s*",
          re.IGNORECASE,
      )),
 ]

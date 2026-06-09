@@ -7249,6 +7249,48 @@ class WebSocketCallHandler:
                                             " redditch"
                                         )
 
+                                # ── FAQ follow-up re-queue ────────────────
+                                # If the previous bot turn was "Which clinic?"
+                                # (FAQ gate) and the alias just confirmed the
+                                # clinic, but this LLM turn produced no
+                                # audible TTS (the LLM was confused and
+                                # re-asked "Which clinic?", which was
+                                # deduplicated) — queue a clean synthetic
+                                # utterance so the NEXT turn runs with
+                                # location= in CALL STATE and can answer the
+                                # original FAQ question (parking/hours/etc.)
+                                # without requiring the watchdog to fire.
+                                if (
+                                    _prev_was_loc_q
+                                    and self.session.get(
+                                        "v3_location_confirmed"
+                                    )
+                                    and not self.session.get(
+                                        "_turn_speech_emitted"
+                                    )
+                                ):
+                                    _requeue_loc = self.session.get(
+                                        "selected_location", "alcester"
+                                    )
+                                    _requeue_name = (
+                                        "Alcester"
+                                        if _requeue_loc == "alcester"
+                                        else "Redditch"
+                                    )
+                                    _requeue_utt = (
+                                        f"The {_requeue_name} clinic please"
+                                    )
+                                    self.pending_transcript = _requeue_utt
+                                    logger.info(
+                                        "[ms_conn v3] FAQ loc Q answered,"
+                                        " no TTS emitted this turn"
+                                        " — queuing synthetic %r so next"
+                                        " turn answers original FAQ with"
+                                        " location=%s confirmed",
+                                        _requeue_utt,
+                                        _requeue_loc,
+                                    )
+
                             # ── First-turn date/time extraction ──────────
                             # Capture time/date preference from this
                             # utterance so the booking flow can skip the
