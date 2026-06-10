@@ -638,9 +638,8 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
             "The phone number has been confirmed. The booking is now in the "
             "summary/confirmation phase. The new/returning question MUST NOT "
             "be asked at this stage or any later stage under any circumstances. "
-            "Proceed directly to the booking summary, reading the phone number "
-            "digit by digit: "
-            "'So that's [Name] — [phone digit by digit] — [day] the [ordinal] "
+            "Proceed directly to the booking summary: "
+            "'So that's [Name] — [day] the [ordinal] "
             "of [month] at [time] at [location] — shall I go ahead and book "
             "that in?'\n"
         )
@@ -888,10 +887,10 @@ CRITICAL phone rules for when a caller gives a new number:
     → Move straight to Step F5. Do NOT stay stuck on the phone number.
 
 **Step F5 (final confirmation)** — Phone is confirmed. Speak the booking summary in this exact structure:
-"So that's [Name] — [phone number read digit by digit] — [day] the [ordinal date] of [month] at [time] at [clinic] — shall I go ahead and book that in?"
+"So that's [Name] — [day] the [ordinal date] of [month] at [time] at [clinic] — shall I go ahead and book that in?"
 Wait for an affirmative before proceeding. Affirmatives: yes, yeah, yep, go ahead, do it, please, that's right, correct.
 If the caller says no or wants to change something, handle the change and re-confirm before proceeding.
-⚠️ HARD RULE: Do NOT ask new/returning at this point. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Include the phone number in the summary, read digit by digit with spaces between each digit.
+⚠️ HARD RULE: Do NOT ask new/returning at this point. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?".
 
 **Step F6 (book)** — Caller gives an affirmative to "shall I go ahead and book that in?".
 Call book_appointment immediately.
@@ -1022,10 +1021,10 @@ CRITICAL phone rules for when a caller gives a new number:
     → Move straight to Step 10. Do NOT stay stuck on the phone number.
 
 **Step 10** -- Phone is confirmed. Speak the booking summary in this exact structure:
-"So that's [Name] — [phone number read digit by digit] — [day] the [ordinal date] of [month] at [time] at [location] — shall I go ahead and book that in?"
+"So that's [Name] — [day] the [ordinal date] of [month] at [time] at [location] — shall I go ahead and book that in?"
 Wait for an affirmative before proceeding. Affirmatives: yes, yeah, yep, go ahead, do it, please, that's right, correct.
 If the caller says no or wants to change something, handle the change and re-confirm before proceeding.
-⚠️ HARD RULE: Do NOT ask new/returning at this point or any point after Step 9. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Include the phone number in the summary, read digit by digit with spaces between each digit.
+⚠️ HARD RULE: Do NOT ask new/returning at this point or any point after Step 9. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?".
 
 **Step 11** -- Caller gives an affirmative to "shall I go ahead and book that in?".
 Call book_appointment immediately.

@@ -1290,7 +1290,33 @@ class LLMStream:
                 # upstream (e.g. caller explicitly asked for a new date range
                 # and connection.py cleared last_offered_slots, or the cache
                 # invalidation above detected a new week reference).
-                if tool_name == "check_availability" and session.get("last_offered_slots"):
+                #
+                # Post-collect guard: block check_availability once name AND
+                # phone are both confirmed.  At that point the slot is already
+                # agreed — re-running availability causes Haiku's slot buffer to
+                # misfire and ask for the name a second time.
+                _col = session.get("collected") or {}
+                if (
+                    tool_name == "check_availability"
+                    and _col.get("phone")
+                    and (_col.get("name") or _col.get("full_name"))
+                ):
+                    logger.warning(
+                        "[ms_llm] check_availability BLOCKED — name+phone already "
+                        "collected; forcing booking readback call_sid=%s", call_sid,
+                    )
+                    result = {
+                        "error": "booking_details_already_complete",
+                        "message": (
+                            "Name and phone number are already confirmed. "
+                            "Do NOT call check_availability. "
+                            "Produce the booking summary immediately using the slot "
+                            "already agreed in conversation history: "
+                            "'So that\\'s [Name] — [day] the [ordinal] of [month] at "
+                            "[time] at [location] — shall I go ahead and book that in?'"
+                        ),
+                    }
+                elif tool_name == "check_availability" and session.get("last_offered_slots"):
                     logger.warning(
                         "[ms_llm] check_availability BLOCKED — slots already retrieved "
                         "this turn (last_offered_slots present); returning cached result "
