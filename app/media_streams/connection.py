@@ -6968,6 +6968,13 @@ class WebSocketCallHandler:
                                 # this continue reaches the while-loop top.
                                 continue
 
+                            # B2: tracks whether any post-turn recovery path
+                            # queued speech to TTS.  The v3 tts_text_queue is a
+                            # plain asyncio.Queue (not _TrackedQueue), so this
+                            # local flag is the only reliable signal; it is
+                            # checked by the deferred gate5 suppression block.
+                            _v3_post_turn_speech = False
+
                             # Persist session
                             await save_session(self.call_sid, self.session)
 
@@ -7539,6 +7546,7 @@ class WebSocketCallHandler:
                                     await self.tts_text_queue.put(
                                         "Let me get that sorted for you."
                                     )
+                                    _v3_post_turn_speech = True
                                     logger.info(
                                         "[ms_conn v3] booking ack filler"
                                         " — FAQ session detected q_gen=%d",
@@ -7629,6 +7637,7 @@ class WebSocketCallHandler:
                                         _next_q = None
                                     if _next_q is not None:
                                         await self.tts_text_queue.put(_next_q)
+                                        _v3_post_turn_speech = True
                                         self.session[
                                             "last_bot_prompt"
                                         ] = _next_q
@@ -7724,6 +7733,7 @@ class WebSocketCallHandler:
                                     )
                                     if not _llm_asked_loc:
                                         await self.tts_text_queue.put(_loc_q)
+                                        _v3_post_turn_speech = True
                                     # Always set session flags so the
                                     # location gate arms correctly
                                     # regardless of whether we queued TTS.
@@ -7799,26 +7809,26 @@ class WebSocketCallHandler:
                         # ── B2: deferred gate5 fallback emission ─────────────
                         # gate5 (llm_stream) deferred its empty-response fallback
                         # to here so it never races ahead of the post-turn
-                        # recovery path above.  Emit it ONLY if this turn
-                        # produced no audible speech (run_turn or any post-turn
-                        # TTS — the _TrackedQueue tracks both) AND no synthetic
-                        # continuation was queued (the FAQ re-queue sets
-                        # pending_transcript, which runs as the next turn and
-                        # produces the real prompt).  Otherwise the fallback is
-                        # redundant and would double-speak over the recovery.
+                        # recovery path above.  Emit it ONLY if no post-turn
+                        # recovery path queued any speech (_v3_post_turn_speech)
+                        # AND no synthetic continuation was queued
+                        # (pending_transcript).  Note: the v3 tts_text_queue is a
+                        # plain asyncio.Queue (not _TrackedQueue), so
+                        # _turn_speech_emitted is NOT used here — _v3_post_turn_speech
+                        # is the authoritative signal for post-run_turn puts.
                         _g5_pending = self.session.pop(
                             "_gate5_fallback_pending", None
                         )
                         if _g5_pending:
                             if (
-                                self.session.get("_turn_speech_emitted")
+                                _v3_post_turn_speech
                                 or self.pending_transcript is not None
                             ):
                                 logger.info(
                                     "[ms_conn v3] deferred gate5 fallback"
                                     " suppressed — turn recovered (%s)",
-                                    "speech emitted"
-                                    if self.session.get("_turn_speech_emitted")
+                                    "post-turn speech"
+                                    if _v3_post_turn_speech
                                     else "synthetic re-queue",
                                 )
                             else:
