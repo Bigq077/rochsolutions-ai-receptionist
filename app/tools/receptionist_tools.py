@@ -1751,7 +1751,11 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                         f"No appointments available at {location.title()} "
                         f"for the week of {_wk_start.strftime('%-d %B %Y')} "
                         f"({_wk_start} to {_wk_end}). "
-                        "Offer the nearest available week as an alternative."
+                        "Acknowledge that date has nothing, then offer the next available as: "
+                        "'I don't have anything on [date] — how about [day] at [time]?' "
+                        "Do NOT use phrases like 'the closest I've got', 'the nearest available', "
+                        "'the soonest I've got', or 'the earliest I've got'. "
+                        "End with an open question: 'Does that work for you?'"
                     ),
                     "slots": [],
                 }
