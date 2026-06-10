@@ -695,15 +695,28 @@ class LLMStream:
             # always flushed intact.
             _slot_buf: Optional[asyncio.Queue] = None
             _active_q = tts_text_queue
+            _call_system  = system_prompt
+            _call_dynamic = dynamic_prompt
             if _last_check_avail:
                 _slot_buf = asyncio.Queue()
                 _active_q = _slot_buf
                 # Post-check_availability slot presentation is deterministic
-                # template-filling — switch to Haiku (~1s vs ~6s on Sonnet).
+                # template-filling — switch to Haiku with a focused formatting
+                # prompt (~1.5K tokens) instead of the full ~19K persona prompt.
+                # The big prompt forced a cold-cache prefill on Haiku's first
+                # slot call (~9s of dead air, since the prompt cache is keyed
+                # per-model and Sonnet's cache doesn't carry to Haiku); the
+                # focused prompt prefills in ~1s even cold.  messages + tools
+                # are left unchanged so conversational context is preserved.
+                from app.prompts.susie_system_prompt import (
+                    SLOT_FORMATTER_SYSTEM_PROMPT,
+                )
                 model = HAIKU
+                _call_system  = SLOT_FORMATTER_SYSTEM_PROMPT
+                _call_dynamic = ""
                 logger.info(
                     "[ms_llm] slot buffer active (post-check_availability) iter=%d"
-                    " — switched to HAIKU",
+                    " — switched to HAIKU + focused slot prompt",
                     iteration,
                 )
             _last_check_avail = False  # reset; re-armed below after tool execution
@@ -713,7 +726,7 @@ class LLMStream:
                 chunk_text, tool_uses, did_transfer = await self._one_streaming_call(
                     client=client,
                     model=model,
-                    system_prompt=system_prompt,
+                    system_prompt=_call_system,
                     messages=messages,
                     tools=tools,
                     session=session,
@@ -722,7 +735,7 @@ class LLMStream:
                     # Only suppress on first iteration — subsequent iterations
                     # (after tool calls) generate genuinely new text.
                     interim_played=(interim_played and iteration == 1),
-                    dynamic_prompt=dynamic_prompt,
+                    dynamic_prompt=_call_dynamic,
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
 
