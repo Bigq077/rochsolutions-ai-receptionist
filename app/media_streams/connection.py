@@ -9687,7 +9687,7 @@ class WebSocketCallHandler:
         Part B — maximum 2 fires per q_gen:
           Fire 1: context-aware soft re-ask — slot phrase if v3_awaiting_slot_selection,
                   else replay last_question (prefixed "Sorry — I can't quite hear you —")
-                  or fall back to "Sorry — are you still there? I can't hear anything."
+                  or fall back to "I'm just having a little trouble hearing you — apologies about that."
           Fire 2: graceful close phrase, wait for TTS, hang up cleanly.
 
         Part C — on graceful close, sets session["no_audio_close"] = True so

@@ -886,10 +886,10 @@ CRITICAL phone rules for when a caller gives a new number:
     → Move straight to Step F5. Do NOT stay stuck on the phone number.
 
 **Step F5 (final confirmation)** — Phone is confirmed. Speak the booking summary in this exact structure:
-"So that's [Name], [day] the [ordinal date] of [month] at [time] at [clinic] — shall I go ahead and book that in?"
+"So that's [Name] — [phone number read digit by digit] — [day] the [ordinal date] of [month] at [time] at [clinic] — shall I go ahead and book that in?"
 Wait for an affirmative before proceeding. Affirmatives: yes, yeah, yep, go ahead, do it, please, that's right, correct.
 If the caller says no or wants to change something, handle the change and re-confirm before proceeding.
-⚠️ HARD RULE: Do NOT ask new/returning at this point. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Do NOT include the phone number in the summary.
+⚠️ HARD RULE: Do NOT ask new/returning at this point. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Include the phone number in the summary, read digit by digit with spaces between each digit.
 
 **Step F6 (book)** — Caller gives an affirmative to "shall I go ahead and book that in?".
 Call book_appointment immediately.
@@ -1020,10 +1020,10 @@ CRITICAL phone rules for when a caller gives a new number:
     → Move straight to Step 10. Do NOT stay stuck on the phone number.
 
 **Step 10** -- Phone is confirmed. Speak the booking summary in this exact structure:
-"So that's [Name], [day] the [ordinal date] of [month] at [time] at [location] — shall I go ahead and book that in?"
+"So that's [Name] — [phone number read digit by digit] — [day] the [ordinal date] of [month] at [time] at [location] — shall I go ahead and book that in?"
 Wait for an affirmative before proceeding. Affirmatives: yes, yeah, yep, go ahead, do it, please, that's right, correct.
 If the caller says no or wants to change something, handle the change and re-confirm before proceeding.
-⚠️ HARD RULE: Do NOT ask new/returning at this point or any point after Step 9. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Do NOT include the phone number in the summary.
+⚠️ HARD RULE: Do NOT ask new/returning at this point or any point after Step 9. Do NOT ask any other question. Do NOT say "Is there anything else I can help you with?". Include the phone number in the summary, read digit by digit with spaces between each digit.
 
 **Step 11** -- Caller gives an affirmative to "shall I go ahead and book that in?".
 Call book_appointment immediately.
@@ -2660,20 +2660,19 @@ def _build_theorem_v3(session: dict) -> str:
         "the week, or a different time of day — rather than "
         "re-explaining why the original constraint produces the "
         "same result. "
-        "SLOT CONFIRMATION → NAME REQUEST — OPENER: When "
-        "transitioning from slot confirmation to name collection, "
-        "always open with 'Perfect —' followed immediately by the "
-        "name request. Use a dash (—), not a comma or full stop, "
-        "so the response flows without an unnatural pause. "
-        "Correct: 'Perfect — could I get your first name?' "
-        "Correct: 'Perfect — five in the evening on the 11th — "
-        "could I get your first name?' "
-        "Banned openers at this transition: 'That works', 'That "
-        "works out nicely', 'Great', 'Brilliant', 'Lovely', "
-        "'Right', or any other affirmation. The word 'Perfect' "
-        "is the only permitted opener here. This applies "
-        "regardless of whether the caller selected by number, "
-        "day name, time, or any other means. "
+        "SLOT CONFIRMATION → NAME REQUEST: When the caller accepts "
+        "a slot, confirm the slot in the same response before asking "
+        "for their name. Required pattern: 'So that's [day] the "
+        "[date] at [time] — could I get your first name?' "
+        "Example: 'So that's Wednesday the 17th at ten — could I "
+        "get your first name?' "
+        "If the caller chose by number (e.g. 'one' or 'the first'), "
+        "state the slot they selected: 'So that's Monday the 14th "
+        "at nine — could I get your first name?' "
+        "NEVER skip straight to the name question — always state "
+        "the confirmed slot first. NEVER open with 'Perfect', "
+        "'Great', 'Brilliant', 'Lovely', or any other affirmation. "
+        "Start directly with 'So that's [slot details]'. "
         "TIME PREFERENCE LOCKED: when a caller rejects a set of "
         "slot options, only offer a different week — never re-open "
         "the time-of-day preference. The preference is already "
