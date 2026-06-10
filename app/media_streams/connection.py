@@ -685,6 +685,54 @@ def _is_conversational_during_dtmf(transcript: str) -> bool:
     return not _DTMF_DIGIT_RUN_RE.search(transcript)
 
 
+# Phrases confirming "use the number I'm calling from" during the verbal
+# phone-collection step.  Substring-matched against a lower-cased transcript.
+_USE_THIS_NUMBER_SIGNALS: tuple = (
+    "use this number", "use that number", "use the number",
+    "use my number", "use this one", "use that one",
+    "use this", "use that", "same number", "this number",
+    "that number", "the same one", "number i'm calling",
+    "number im calling", "number i'm on", "number im on",
+    "one i'm calling", "one im calling", "calling from",
+    "keep this number", "keep that number",
+)
+
+# Short bare affirmatives that, in the phone-confirm context (buffer empty,
+# Susie just asked "say use this number"), can only mean "yes, use it".
+_PHONE_CONFIRM_AFFIRMATIVES: frozenset = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "correct", "right",
+    "that's right", "thats right", "fine", "that's fine", "thats fine",
+    "ok", "okay", "please", "go ahead", "yes please", "perfect",
+})
+
+
+def _is_use_this_number(transcript: str) -> bool:
+    """
+    True when the caller is confirming they want the number they are calling
+    from used for the booking.
+
+    Matches explicit 'use this number' phrasings, or a short bare affirmative
+    (<=3 words) — which, in the verbal phone-confirmation step, reliably means
+    'yes, use the calling number'.  Negative intent ('no', 'a different number')
+    is never matched, so it falls through to the LLM / keypad path unchanged.
+    """
+    lowered = transcript.strip().lower().rstrip(".!?")
+    if not lowered:
+        return False
+    # Explicit negative intent must never be swallowed as a confirmation.
+    if any(neg in lowered for neg in ("different", "another", "wrong", "not ", "no ")):
+        return False
+    if any(sig in lowered for sig in _USE_THIS_NUMBER_SIGNALS):
+        return True
+    words = lowered.split()
+    if len(words) <= 3 and (
+        lowered in _PHONE_CONFIRM_AFFIRMATIVES
+        or any(w in _PHONE_CONFIRM_AFFIRMATIVES for w in words)
+    ):
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Greeting (built at call start from clinic_config.json)
 # ---------------------------------------------------------------------------
@@ -4740,23 +4788,50 @@ class WebSocketCallHandler:
                             # If the speech is conversational (>4 words, no
                             # digit run) exit DTMF mode; otherwise also exit —
                             # the patient is clearly not typing a number.
-                            logger.info(
-                                "[ms_conn] verbal reset skipped — "
-                                "buffer empty: %r",
-                                utterance[:60],
-                            )
-                            if _is_conversational_during_dtmf(utterance):
+
+                            # ── Verbal "use this number" intercept ───────────
+                            # The caller can confirm the calling number by voice
+                            # ("use this number") instead of typing.  The LLM is
+                            # unreliable here — it has re-run check_availability
+                            # instead of storing the phone (see 18:47 bug log).
+                            # Store the calling number programmatically so that
+                            # _phone_already_known flips in the system prompt and
+                            # the POST-PHONE CONFIRMATION guard drives the LLM
+                            # straight to the booking readback.  Only fires when
+                            # a calling number is actually present.
+                            _caller_num = self.session.get("twilio_from_local", "")
+                            if _caller_num and _is_use_this_number(utterance):
+                                self.session.setdefault("collected", {})
+                                self.session["collected"]["phone"] = _caller_num
+                                self.session["v3_phone_dtmf_active"] = False
+                                self.session["phone_dtmf_buffer"] = ""
+                                await save_session(self.call_sid, self.session)
                                 logger.info(
-                                    "[ms_conn] conversational speech in empty"
-                                    " DTMF mode — exiting: %r",
+                                    "[ms_conn v3] verbal phone confirm — stored"
+                                    " calling number %s and exited DTMF; LLM will"
+                                    " produce booking readback: %r",
+                                    _caller_num, utterance[:60],
+                                )
+                                # Fall through to run_turn — phone is now in
+                                # CALL STATE, so the LLM proceeds to the summary.
+                            else:
+                                logger.info(
+                                    "[ms_conn] verbal reset skipped — "
+                                    "buffer empty: %r",
                                     utterance[:60],
                                 )
-                            self.session["v3_phone_dtmf_active"] = False
-                            logger.info(
-                                "[ms_conn] v3_phone_dtmf_active = False"
-                                " (exited — conversational speech /"
-                                " name correction)"
-                            )
+                                if _is_conversational_during_dtmf(utterance):
+                                    logger.info(
+                                        "[ms_conn] conversational speech in empty"
+                                        " DTMF mode — exiting: %r",
+                                        utterance[:60],
+                                    )
+                                self.session["v3_phone_dtmf_active"] = False
+                                logger.info(
+                                    "[ms_conn] v3_phone_dtmf_active = False"
+                                    " (exited — conversational speech /"
+                                    " name correction)"
+                                )
                             # Fall through to normal LLM dispatch.
 
                     # ── CHANGE B: Name collection debounce ───────────────────

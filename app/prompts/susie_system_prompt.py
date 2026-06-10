@@ -638,9 +638,11 @@ def get_system_prompt(session: Dict[str, Any]) -> str:
             "The phone number has been confirmed. The booking is now in the "
             "summary/confirmation phase. The new/returning question MUST NOT "
             "be asked at this stage or any later stage under any circumstances. "
-            "Proceed directly to the booking summary: "
-            "'So that's [Name], [day] the [ordinal] of [month] at [time] at "
-            "[location] — shall I go ahead and book that in?'\n"
+            "Proceed directly to the booking summary, reading the phone number "
+            "digit by digit: "
+            "'So that's [Name] — [phone digit by digit] — [day] the [ordinal] "
+            "of [month] at [time] at [location] — shall I go ahead and book "
+            "that in?'\n"
         )
     else:
         _nr_guard = ""
