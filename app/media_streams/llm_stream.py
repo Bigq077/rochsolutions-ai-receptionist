@@ -843,10 +843,24 @@ class LLMStream:
             )
             messages.append({"role": "user", "content": tool_result_blocks})
 
-            # Re-arm slot buffer for the next iteration if check_availability ran.
-            _last_check_avail = any(
+            # Re-arm slot buffer for the next iteration ONLY when
+            # check_availability ran AND returned usable slots.  A zero-slot
+            # result must fall through to Sonnet (full prompt) so it can
+            # explain the lack of availability and offer an alternative — the
+            # focused Haiku slot prompt has no handling for an empty result and
+            # would emit silence (C8-5: caller abandoned the call after a
+            # 0-slot "tomorrow" check returned nothing and Susie went quiet).
+            _ran_check_av = any(
                 tu.get("name") == "check_availability" for tu in tool_uses
             )
+            _last_check_avail = _ran_check_av and bool(
+                session.get("_check_av_had_slots")
+            )
+            if _ran_check_av and not _last_check_avail:
+                logger.info(
+                    "[ms_llm] check_availability returned 0 slots — slot buffer "
+                    "NOT armed; Sonnet handles the no-availability reply"
+                )
 
             await save_session(call_sid, session)
 
@@ -1337,6 +1351,19 @@ class LLMStream:
             except Exception as exc:
                 logger.error("[ms_llm] tool %s error: %r", tool_name, exc)
                 result = {"error": str(exc)}
+
+            # Track, fresh per call, whether THIS check_availability returned
+            # usable slots.  Derived from the tool result itself so it is never
+            # stale across turns (slots_count above is only written on success
+            # and would otherwise carry over from a previous turn).  The slot-
+            # buffer re-arm reads this to choose Haiku (slots → format) vs
+            # Sonnet (no slots → explain + offer alternative).  Without it a
+            # zero-slot result armed the focused Haiku prompt, which has no
+            # handling for an empty result and emitted silence (C8-5).
+            if tool_name == "check_availability":
+                session["_check_av_had_slots"] = bool(
+                    isinstance(result, dict) and result.get("available_days")
+                )
 
             logger.info(
                 "[ms_llm] tool result: name=%s result=%s",
