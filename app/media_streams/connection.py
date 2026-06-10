@@ -3600,6 +3600,18 @@ class WebSocketCallHandler:
         self.llm_in_flight: bool = False
         self.pending_transcript: Optional[str] = None
 
+        # ── C8-2 — location-ack race guard ─────────────────────────────────
+        # When a location ack is emitted (caller's clinic resolved → next Q
+        # queued), STT frequently delivers a second phantom final from the
+        # same breath ~80ms–1.5s later ("i guess", "as soon as possible").
+        # Routing it to Sonnet fires a redundant turn that re-asks the clinic
+        # question or monologues opening hours, contradicting the ack just
+        # heard.  We record the ack time and drop any transcript inside the
+        # window below.  session["location_acked_this_turn"] is the one-shot
+        # flag; _location_ack_ts is the monotonic stamp.
+        self._location_ack_ts: float = 0.0
+        self._LOCATION_ACK_DROP_WINDOW: float = 1.5  # seconds
+
         # Barge-in timing/state — used for false-trigger gate and ack injection
         self._current_tts_text:    str   = ""    # text being synthesised right now
         self._barge_in_pending:    bool  = False  # True between partial and final transcript
@@ -4695,6 +4707,28 @@ class WebSocketCallHandler:
                     # Caller spoke — reset watchdog reask_completed so safety net
                     # can fire again if the next turn goes silent.
                     self._silence_handler._reask_completed = False
+
+                    # ── C8-2 — location-ack race guard ───────────────────────
+                    # Drop phantom second finals that arrive in the brief window
+                    # after a location ack this turn (see __init__ note).  The
+                    # genuine answer to the queued question always arrives later
+                    # than the window (the caller must hear the question first,
+                    # and the question audio alone takes >1.5s to play), so a
+                    # real reply is never suppressed.
+                    if self.session.get("location_acked_this_turn"):
+                        _loc_ack_age = time.monotonic() - self._location_ack_ts
+                        if _loc_ack_age < self._LOCATION_ACK_DROP_WINDOW:
+                            logger.info(
+                                "[ms_conn v3] C8-2 transcript dropped — %.0fms"
+                                " after location ack (window %.1fs): %r",
+                                _loc_ack_age * 1000.0,
+                                self._LOCATION_ACK_DROP_WINDOW,
+                                utterance[:60],
+                            )
+                            continue
+                        # Window expired — clear the one-shot flag so the next
+                        # legitimate turn is never suppressed.
+                        self.session["location_acked_this_turn"] = False
 
                     # Spec N — concurrent LLM guard.
                     # If a turn is already in-flight (from transcript acceptance
@@ -7731,6 +7765,12 @@ class WebSocketCallHandler:
                                         self.call_sid, self.session
                                     )
                                     self.session["v3_booking_intent"] = False
+                                    # C8-2: mark this turn as having ack'd the
+                                    # location so a phantom second final from the
+                                    # same breath is dropped at dequeue rather
+                                    # than firing a redundant Sonnet turn.
+                                    self.session["location_acked_this_turn"] = True
+                                    self._location_ack_ts = time.monotonic()
                                     logger.info(
                                         "[ms_conn v3] booking ack — location "
                                         "known (%s), intent=%s, queued next Q",
