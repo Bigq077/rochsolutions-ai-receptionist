@@ -77,6 +77,25 @@ logger = logging.getLogger(__name__)
 # reach ElevenLabs.  Uses the same marker+flag pattern as ACK_FILLER_MARKER.
 PRE_SLOT_MARKER = "\x01PRE_SLOT\x01"
 
+# ---------------------------------------------------------------------------
+# Guaranteed end-of-turn fallbacks (C8-5 silence eradication)
+# ---------------------------------------------------------------------------
+# When a turn completes without a single audio chunk reaching the caller the
+# loop-level guarantee in _streaming_tool_loop emits one of these so the caller
+# never hears dead air.  Two variants so the message fits the situation:
+#   - NO_AVAILABILITY_FALLBACK: a check_availability ran this turn and the most
+#     recent one returned zero slots (the original C8-5 scenario — caller asked
+#     for a date with no openings and Susie went silent).
+#   - SILENCE_RECOVERY_FALLBACK: any other no-speech turn (text fully stripped
+#     by gate5, suppression-gate break with no flow.py output, etc.).
+NO_AVAILABILITY_FALLBACK = (
+    "I'm afraid I don't have anything free then — "
+    "would another day or time work for you?"
+)
+SILENCE_RECOVERY_FALLBACK = (
+    "Sorry, I didn't quite catch that — could you say that again?"
+)
+
 
 # ---------------------------------------------------------------------------
 # Cache-invalidation helpers for check_availability dedup guard
@@ -656,6 +675,9 @@ class LLMStream:
                 i + 1, len(tts_chunks), c[:60], len(c),
             )
             await tts_queue.put(c)
+            # Signal to the tool loop that real audio reached the caller this
+            # turn (C8-5 silence guarantee).
+            session["_slotbuf_emitted"] = True
 
     # -----------------------------------------------------------------------
     # Streaming tool loop
@@ -687,6 +709,20 @@ class LLMStream:
         # complete-response slot buffer for the following iteration so the full
         # LLM response is held and flushed to TTS only after the stream ends.
         _last_check_avail: bool = False
+
+        # ── C8-5 silence guarantee — per-turn speech tracking ───────────────
+        # _turn_real_tts: True once ANY chunk reaches the real tts_text_queue
+        #   this turn (direct stream, slot-buffer flush, or per-call fallback).
+        # _check_av_ran_turn: True if any iteration executed check_availability
+        #   (used to choose the no-availability vs generic fallback message).
+        # _flow_suppressed: True if the loop broke on a deterministic-suppression
+        #   gate (flow.py owns the spoken output for that state) — suppresses the
+        #   inline guarantee for non-v3 clinics so it never double-speaks over
+        #   flow.py.  (v3 is protected separately by connection.py's post-turn
+        #   _v3_post_turn_speech guard, so the deferral is always safe there.)
+        session["_turn_real_tts"]    = False
+        session["_check_av_ran_turn"] = False
+        _flow_suppressed: bool = False
 
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
             logger.info("[ms_llm] iteration=%d model=%s", iteration, model)
@@ -745,9 +781,22 @@ class LLMStream:
                 )
                 filler_sent = True  # suppress filler on subsequent iterations
 
+                # ── Track real-queue speech for the C8-5 silence guarantee ──
+                # When the slot buffer is active this iteration's output went to
+                # _slot_buf (not the real queue), so the authoritative signal is
+                # whether _flush_slot_buf actually sent chunks — checked below.
+                # When the buffer is NOT active, _one_streaming_call's own
+                # emission flag is authoritative.
+                _oc_emitted = bool(session.pop("_oc_emitted_tts", False))
+
                 # ── Flush complete-response slot buffer ───────────────────
                 if _slot_buf is not None:
+                    session["_slotbuf_emitted"] = False
                     await self._flush_slot_buf(_slot_buf, tts_text_queue, session)
+                    if session.pop("_slotbuf_emitted", False):
+                        session["_turn_real_tts"] = True
+                elif _oc_emitted:
+                    session["_turn_real_tts"] = True
 
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
@@ -884,6 +933,7 @@ class LLMStream:
                     "[ms_llm] rc_lookup_failed after tool — "
                     "suppressing post-tool LLM response"
                 )
+                _flow_suppressed = True
                 break
 
             if session.get("rc_lookup_just_succeeded"):
@@ -893,6 +943,7 @@ class LLMStream:
                     "[ms_llm] rc_lookup_just_succeeded after tool — "
                     "suppressing post-tool LLM response"
                 )
+                _flow_suppressed = True
                 break
 
             if session.get("rc_appointment_confirmed"):
@@ -902,6 +953,7 @@ class LLMStream:
                     "[ms_llm] rc_appointment_confirmed after tool — "
                     "suppressing post-tool LLM response"
                 )
+                _flow_suppressed = True
                 break
 
             # PRESENT_DAYS / PRESENT_DAYS_RESCHEDULE: the deterministic path in
@@ -917,6 +969,7 @@ class LLMStream:
                     "[ms_llm] PRESENT_DAYS state after tool — "
                     "suppressing post-tool LLM response"
                 )
+                _flow_suppressed = True
                 break
 
             # ── Transfer requested by a tool ─────────────────────────────
@@ -936,6 +989,61 @@ class LLMStream:
             logger.warning("[ms_llm] hit MAX_TOOL_ITERATIONS")
             await tts_text_queue.put(SAFE_FALLBACK_PHRASE)
             full_reply = SAFE_FALLBACK_PHRASE
+            session["_turn_real_tts"] = True  # the line above reached the queue
+
+        # ── C8-5 silence guarantee — end-of-turn catch-all ──────────────────
+        # If this entire turn (every iteration, slot-buffer flush, and per-call
+        # fallback) emitted nothing audible, the caller would hear dead air —
+        # the exact failure that made a tester abandon the call (Call 8: a
+        # zero-slot "tomorrow" check returned nothing and Susie went silent).
+        # Guarantee a spoken response on every no-speech exit path here.
+        #
+        # Skipped when:
+        #   - transfer_initiated: the transfer flow owns the audio.
+        #   - _flow_suppressed (non-v3 only): a deterministic-suppression gate
+        #     handed the spoken output to flow.py, which speaks via its own
+        #     drain — emitting here would double-speak.  For v3 there is no
+        #     flow.py drain, and connection.py's post-turn _v3_post_turn_speech
+        #     guard suppresses the deferred fallback if any recovery path spoke,
+        #     so deferring is always safe (and IS the fix for a suppression-gate
+        #     break that leaves flow.py with nothing to present).
+        _is_v3 = session.get("clinic_id") == "theorem_v3"
+        if (
+            not transfer_initiated
+            and not session.get("_turn_real_tts")
+            and not (_flow_suppressed and not _is_v3)
+        ):
+            _ran_av   = bool(session.get("_check_av_ran_turn"))
+            _had_slots = bool(session.get("_check_av_had_slots"))
+            _fallback = (
+                NO_AVAILABILITY_FALLBACK
+                if (_ran_av and not _had_slots)
+                else SILENCE_RECOVERY_FALLBACK
+            )
+            if _is_v3:
+                # Defer to connection.py's post-turn path (avoids racing the
+                # booking-ack location question / FAQ synthetic re-queue).  A
+                # no-availability situation always wins over any generic pending
+                # message a per-call fallback may have set; otherwise only fill
+                # in a pending fallback if one is not already queued.
+                if _ran_av and not _had_slots:
+                    session["_gate5_fallback_pending"] = _fallback
+                else:
+                    session.setdefault("_gate5_fallback_pending", _fallback)
+                logger.warning(
+                    "[ms_llm] turn produced no audible speech — guaranteed "
+                    "fallback DEFERRED to v3 post-turn path (ran_av=%s "
+                    "had_slots=%s flow_suppressed=%s): %r",
+                    _ran_av, _had_slots, _flow_suppressed, _fallback,
+                )
+            else:
+                await tts_text_queue.put(_fallback)
+                full_reply = full_reply or _fallback
+                logger.warning(
+                    "[ms_llm] turn produced no audible speech — emitted "
+                    "guaranteed fallback (ran_av=%s had_slots=%s): %r",
+                    _ran_av, _had_slots, _fallback,
+                )
 
         return full_reply, transfer_initiated
 
@@ -1200,6 +1308,16 @@ class LLMStream:
                         bool(full_text.strip()), stop_reason,
                     )
                     await tts_text_queue.put(_gate5_fallback)
+                    # Count this inline fallback as real emission so the
+                    # loop-level C8-5 guarantee does not double-speak.
+                    _any_tts_emitted = True
+
+        # Expose this call's emission state to the tool loop so it can track
+        # whether ANY audio reached the real queue across all iterations
+        # (C8-5 silence guarantee).  When the slot buffer is active this reflects
+        # puts to the buffer, not the real queue — the loop overrides it with the
+        # _flush_slot_buf result in that case.
+        session["_oc_emitted_tts"] = _any_tts_emitted
 
         # Ensure background filler task is cleaned up
         if _filler_task and not _filler_task.done():
@@ -1416,6 +1534,10 @@ class LLMStream:
                 session["_check_av_had_slots"] = bool(
                     isinstance(result, dict) and result.get("available_days")
                 )
+                # Mark that a check ran this turn so the loop-level C8-5 silence
+                # guarantee can choose the no-availability fallback over the
+                # generic re-ask when the turn ends with no audible speech.
+                session["_check_av_ran_turn"] = True
 
             logger.info(
                 "[ms_llm] tool result: name=%s result=%s",
