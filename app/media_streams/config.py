@@ -170,9 +170,9 @@ SENTENCE_END_CHARS = ['.', '!', '?', '...']
 STT_SILENCE_TIMEOUT_MS = 1000
 
 # How long to wait for first LLM text chunk before playing a filler phrase.
-# Lowered from 9000 → 2000 so callers hear audio within 2s on slow turns.
-# Ack filler is cancelled when a tool-call filler fires, so no race condition.
-LLM_FIRST_CHUNK_TIMEOUT_MS = 2000
+# 6s: safety-net only — tool-call fillers handle availability turns; this
+# catches turns where Sonnet stalls entirely. Phrases must be context-neutral.
+LLM_FIRST_CHUNK_TIMEOUT_MS = 6000
 
 # How long to wait for a TTS chunk to complete before moving to the next
 TTS_CHUNK_TIMEOUT_MS = 3000
@@ -313,13 +313,11 @@ BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 # Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS).
 # Multiple phrases — llm_stream picks one at random each turn.
 FILLER_PHRASES = [
-    "Let me have a look at what we've got…",
-    "One moment while I check that for you…",
-    "Just checking the diary now…",
-    "I'll take a look at the schedule for you…",
-    "Let me pull that up now…",
-    "Checking what's free for you…",
-    "Let me see what we have available…",
+    "Won't be a second…",
+    "Give me a moment…",
+    "Right with you…",
+    "One moment…",
+    "Just a second…",
 ]
 # Keep the singular alias so any other import of FILLER_PHRASE still compiles.
 FILLER_PHRASE = FILLER_PHRASES[0]
