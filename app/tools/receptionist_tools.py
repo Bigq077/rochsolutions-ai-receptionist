@@ -1785,7 +1785,13 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
             "total_days":        len(days_data),
         }
 
-        return {"available_days": days_data, "total_days": len(days_data)}
+        # presentation_mode: phrase-anchored weeks → multi_day (3 options spread across days)
+        # Everything else (ASAP, specific date, no preference) → single_day (all times on day 1)
+        _PHRASE_WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning", "week starting", "from ")
+        _is_phrase_week = any(a in _hint_lower for a in _PHRASE_WEEK_ANCHORS)
+        _presentation_mode = "multi_day" if _is_phrase_week else "single_day"
+
+        return {"available_days": days_data, "total_days": len(days_data), "presentation_mode": _presentation_mode}
 
     except Exception as e:
         logger.error("_check_availability_acuity unexpected error: %r", e, exc_info=True)
