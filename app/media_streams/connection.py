@@ -3178,8 +3178,8 @@ class SilenceHandler:
                 if _total >= 45.0:
                     # First check-in — let caller know we're still here
                     phrase = (
-                        "Just checking you're still there — "
-                        "no rush at all, take your time."
+                        "No rush at all — take your time, "
+                        "we're still here whenever you're ready."
                     )
                     await self._tts_text_queue.put(phrase)
                     logger.info("[ms_silence] pause 45s check-in played")

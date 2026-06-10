@@ -170,11 +170,9 @@ SENTENCE_END_CHARS = ['.', '!', '?', '...']
 STT_SILENCE_TIMEOUT_MS = 1000
 
 # How long to wait for first LLM text chunk before playing a filler phrase.
-# Raised from 5000 → 9000 so this safety-net filler cannot race with the
-# FillerGuard clip on Acuity availability turns (which arms at 350ms).
-# The old 5s threshold could fire on a slow-but-normal turn; 9s means it only
-# fires on genuinely broken turns where the LLM has stalled entirely.
-LLM_FIRST_CHUNK_TIMEOUT_MS = 9000
+# Lowered from 9000 → 2000 so callers hear audio within 2s on slow turns.
+# Ack filler is cancelled when a tool-call filler fires, so no race condition.
+LLM_FIRST_CHUNK_TIMEOUT_MS = 2000
 
 # How long to wait for a TTS chunk to complete before moving to the next
 TTS_CHUNK_TIMEOUT_MS = 3000
