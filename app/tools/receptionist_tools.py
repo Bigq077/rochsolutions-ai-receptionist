@@ -1732,6 +1732,7 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _week_range = _extract_week_range(preference) if _has_week_anchor else None
         if _week_range is not None:
             _wk_start, _wk_end = _week_range
+            _all_slots_pre_wk = slots[:]  # save before week filter for next_available lookup
             _pre_wk_count = len(slots)
             slots = [s for s in slots if _wk_start <= s.start_time.date() <= _wk_end]
             _n_days_returned = len({s.start_time.date() for s in slots})
@@ -1745,18 +1746,41 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     "(removed %d slot(s))",
                     _wk_start, _wk_end, _pre_wk_count,
                 )
+                # Build next_available from unfiltered data so Sonnet can answer
+                # without a second check_availability call.
+                _future_slots = sorted(
+                    (s for s in _all_slots_pre_wk if s.start_time.date() > _wk_end),
+                    key=lambda s: s.start_time,
+                )
+                _seen_days: set = set()
+                _next_avail: list = []
+                for _fs in _future_slots:
+                    _fd = _fs.start_time.date()
+                    if _fd not in _seen_days:
+                        _seen_days.add(_fd)
+                        _next_avail.append({
+                            "date": _fd.isoformat(),
+                            "day_label": _fs.start_time.strftime("%A %-d %B"),
+                            "time": _fs.start_time.strftime("%H:%M"),
+                        })
+                    if len(_next_avail) >= 3:
+                        break
+                _na_hint = (
+                    f" Next available: {_next_avail[0]['day_label']} at {_next_avail[0]['time']}."
+                    if _next_avail else " No availability in the next 30 days."
+                )
                 return {
                     "error": "no_availability",
                     "error_detail": (
                         f"No appointments available at {location.title()} "
-                        f"for the week of {_wk_start.strftime('%-d %B %Y')} "
-                        f"({_wk_start} to {_wk_end}). "
-                        "Acknowledge that date has nothing, then offer the next available as: "
-                        "'I don't have anything on [date] — how about [day] at [time]?' "
-                        "Do NOT use phrases like 'the closest I've got', 'the nearest available', "
-                        "'the soonest I've got', or 'the earliest I've got'. "
-                        "End with an open question: 'Does that work for you?'"
+                        f"on {_wk_start.strftime('%-d %B %Y')} ({_wk_start} to {_wk_end})."
+                        f"{_na_hint} "
+                        "Use the next_available data to respond: "
+                        "'I don't have anything on [date] — the next I have is [day] at [time]. "
+                        "Does that work for you?' "
+                        "Do NOT call check_availability again."
                     ),
+                    "next_available": _next_avail,
                     "slots": [],
                 }
 

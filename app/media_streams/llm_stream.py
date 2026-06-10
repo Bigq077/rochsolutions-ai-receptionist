@@ -1165,11 +1165,22 @@ class LLMStream:
                         and not _slot_tool_active
                     ):
                         _slot_tool_active = True
-                        session["_pre_slot_cancelled"] = True
-                        logger.info(
-                            "[ms_gate5] pre-tool TTS output cancelled — "
-                            "slot buffer taking over (check_availability detected)"
-                        )
+                        # Don't cancel pre-slot text when the previous check in
+                        # this turn returned 0 slots — Sonnet's text is the
+                        # no-availability explanation, not filler throat-clearing.
+                        _prev_ran = bool(session.get("_check_av_ran_turn"))
+                        _prev_had = bool(session.get("_check_av_had_slots"))
+                        if not (_prev_ran and not _prev_had):
+                            session["_pre_slot_cancelled"] = True
+                            logger.info(
+                                "[ms_gate5] pre-tool TTS output cancelled — "
+                                "slot buffer taking over (check_availability detected)"
+                            )
+                        else:
+                            logger.info(
+                                "[ms_gate5] pre-tool TTS preserved — "
+                                "previous check returned 0 slots, Sonnet explanation kept"
+                            )
                     continue
 
                 # ── Text token ────────────────────────────────────────────
