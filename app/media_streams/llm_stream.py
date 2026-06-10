@@ -303,15 +303,21 @@ class LLMStream:
             if _msg.get("role") == "assistant":
                 _mc = _msg.get("content")
                 if isinstance(_mc, str):
-                    _msg["content"] = [{
-                        "type":          "text",
-                        "text":          _mc,
-                        "cache_control": {"type": "ephemeral"},
-                    }]
+                    # Anthropic rejects cache_control on empty text blocks.
+                    if _mc.strip():
+                        _msg["content"] = [{
+                            "type":          "text",
+                            "text":          _mc,
+                            "cache_control": {"type": "ephemeral"},
+                        }]
                 elif isinstance(_mc, list):
-                    # Find the last text block and tag it.
+                    # Find the last non-empty text block and tag it.
                     for _blk in reversed(_mc):
-                        if isinstance(_blk, dict) and _blk.get("type") == "text":
+                        if (
+                            isinstance(_blk, dict)
+                            and _blk.get("type") == "text"
+                            and _blk.get("text", "").strip()
+                        ):
                             _blk["cache_control"] = {"type": "ephemeral"}
                             break
                 break  # only the most recent assistant turn
