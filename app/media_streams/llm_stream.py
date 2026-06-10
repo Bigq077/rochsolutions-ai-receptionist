@@ -1168,12 +1168,32 @@ class LLMStream:
                     "Sorry, I didn't quite catch that"
                     " — could you say that again?"
                 )
-                logger.info(
-                    "[ms_gate5] no TTS emitted this turn (full_text=%r,"
-                    " stop_reason=%r) — substituting fallback",
-                    bool(full_text.strip()), stop_reason,
-                )
-                await tts_text_queue.put(_gate5_fallback)
+                # theorem_v3 (Bug B2): defer the fallback to connection.py's
+                # post-turn path instead of emitting it inline.  The v3 loop
+                # runs recovery logic AFTER run_turn returns — the booking-ack
+                # location question and the FAQ synthetic re-queue both
+                # legitimately produce the caller's next prompt.  Emitting the
+                # fallback here races ahead of that recovery, so the caller
+                # hears "Sorry, I didn't quite catch that" immediately followed
+                # by the correct question.  connection.py emits the deferred
+                # fallback only if the turn produced NO speech AND queued NO
+                # synthetic continuation.  The FlowEngine path is unchanged
+                # (it has its own gated global fallback in connection.py).
+                if session.get("clinic_id") == "theorem_v3":
+                    session["_gate5_fallback_pending"] = _gate5_fallback
+                    logger.info(
+                        "[ms_gate5] no TTS emitted this turn (full_text=%r,"
+                        " stop_reason=%r) — fallback DEFERRED to v3 post-turn"
+                        " path",
+                        bool(full_text.strip()), stop_reason,
+                    )
+                else:
+                    logger.info(
+                        "[ms_gate5] no TTS emitted this turn (full_text=%r,"
+                        " stop_reason=%r) — substituting fallback",
+                        bool(full_text.strip()), stop_reason,
+                    )
+                    await tts_text_queue.put(_gate5_fallback)
 
         # Ensure background filler task is cleaned up
         if _filler_task and not _filler_task.done():

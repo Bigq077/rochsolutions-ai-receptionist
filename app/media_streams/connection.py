@@ -6926,6 +6926,17 @@ class WebSocketCallHandler:
                             self._filler_breath_injected = False
                             await self._filler.arm(self.session)
 
+                            # B2 fix: establish a fresh per-turn speech flag and
+                            # clear any stale deferred gate5 fallback before the
+                            # LLM turn.  The v3 loop otherwise never resets
+                            # _turn_speech_emitted; the _TrackedQueue sets it True
+                            # on any audible enqueue during run_turn OR the
+                            # post-turn recovery path, so the deferred-fallback
+                            # decision below can rely on it.  Reaching this point
+                            # means no early-continue branch spoke this turn.
+                            self.session["_turn_speech_emitted"] = False
+                            self.session.pop("_gate5_fallback_pending", None)
+
                             self._current_llm_task = asyncio.create_task(
                                 llm.run_turn(
                                     user_text=utterance,
@@ -7784,6 +7795,38 @@ class WebSocketCallHandler:
                                 "[ms_conn v3] v3_location_q_active = True "
                                 "(clinic question detected in treatment bypass response)"
                             )
+
+                        # ── B2: deferred gate5 fallback emission ─────────────
+                        # gate5 (llm_stream) deferred its empty-response fallback
+                        # to here so it never races ahead of the post-turn
+                        # recovery path above.  Emit it ONLY if this turn
+                        # produced no audible speech (run_turn or any post-turn
+                        # TTS — the _TrackedQueue tracks both) AND no synthetic
+                        # continuation was queued (the FAQ re-queue sets
+                        # pending_transcript, which runs as the next turn and
+                        # produces the real prompt).  Otherwise the fallback is
+                        # redundant and would double-speak over the recovery.
+                        _g5_pending = self.session.pop(
+                            "_gate5_fallback_pending", None
+                        )
+                        if _g5_pending:
+                            if (
+                                self.session.get("_turn_speech_emitted")
+                                or self.pending_transcript is not None
+                            ):
+                                logger.info(
+                                    "[ms_conn v3] deferred gate5 fallback"
+                                    " suppressed — turn recovered (%s)",
+                                    "speech emitted"
+                                    if self.session.get("_turn_speech_emitted")
+                                    else "synthetic re-queue",
+                                )
+                            else:
+                                await self.tts_text_queue.put(_g5_pending)
+                                logger.info(
+                                    "[ms_conn v3] deferred gate5 fallback"
+                                    " emitted — no recovery this turn"
+                                )
 
                         # ── Watchdog re-arm (both gate-fired and normal) ─────
                         # Silence recovery needs last_question in all cases.
