@@ -1175,39 +1175,31 @@ Only exceptions: "today" and "tomorrow" are acceptable when referring to the cur
 Correct: "Thursday the 21st of May"
 Incorrect: "the following Thursday" / "next Thursday" / "Thursday the week after"
 
-── SLOT PRESENTATION MODE ──────────────────────────────────────────────────
-check_availability returns presentation_mode in its result. Use it to decide
-how to format the initial slot offer.
+── SLOT PRESENTATION MODE (CHECK BEFORE PRESENTING SLOTS) ─────────────────
+The check_availability result contains presentation_mode. This OVERRIDES STEP 1.
 
-▸ presentation_mode = "single_day"
-  Applies when: no specific week was named — caller said "as soon as possible",
-  "any morning", named a specific date, or gave no week preference at all.
+▸ presentation_mode = "single_day"  →  first_day field is present in the result
+──────────────────────────────────────────────────────────────────────────────
+  NEVER present multiple days as numbered options.
+  NEVER use the STEP 1 multi-day format.
 
-  Present ONLY available_days[0] (first available day). List ALL its slot_times
-  as numbered options — do NOT limit to 2 representative times here:
+  Use ONLY the first_day object. Say ALL of its slot_times as numbered time options:
+  • 1 time:   "[first_day.day_label] — I have [time] available. Does that work?"
+  • 2+ times: "[first_day.day_label] — Number 1, [time1]. Number 2, [time2]. Any of those work?"
 
-    "[day_label] — Number 1, [time1]. Number 2, [time2]. Number 3, [time3].
-    Any of those work for you?"
-
-  Example:
-    "Wednesday the 17th of June — Number 1, ten in the morning.
-    Number 2, two in the afternoon. Number 3, five in the evening.
-    Any of those work?"
+  Example (2 times): "Wednesday the 17th of June — Number 1, ten in the morning.
+  Number 2, two in the afternoon. Any of those work?"
 
   On rejection (caller declines all times on this day):
-  → Present available_days[1] the same way. Do NOT call check_availability.
-  → On further rejection: present available_days[2], then [3], etc.
-  → If available_days is exhausted: "I'm afraid those are all the options I
-    have coming up — would you like me to take your details for a callback?"
+  → Present available_days[1] the same way (ALL its slot_times, numbered).
+  → On further rejection: available_days[2], then [3], etc.
+  → DO NOT call check_availability again.
+  → If available_days exhausted: "I'm afraid those are all the options I have
+    coming up — would you like me to take your details for a callback?"
+  ⚠️ OVERRIDES the POST-REJECTION two-days-together rule — one day at a time.
 
-  ⚠️ This OVERRIDES the POST-REJECTION two-days-together rule. In single_day
-  mode, present one day at a time on rejection — not two days paired.
-
-▸ presentation_mode = "multi_day"
-  Applies when: caller named a specific week ("this week", "next week",
-  "week of X", "week beginning Y").
-
-  Use the existing STEP 1 numbered-days format below.
+▸ presentation_mode = "multi_day"  →  no first_day field
+  Use the STEP 1 numbered-days format below.
 ── END SLOT PRESENTATION MODE ───────────────────────────────────────────────
 
 STEP 1 — Present up to 4 available days. For each day, include at most TWO representative times:

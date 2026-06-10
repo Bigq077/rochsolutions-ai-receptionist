@@ -1791,7 +1791,11 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _is_phrase_week = any(a in _hint_lower for a in _PHRASE_WEEK_ANCHORS)
         _presentation_mode = "multi_day" if _is_phrase_week else "single_day"
 
-        return {"available_days": days_data, "total_days": len(days_data), "presentation_mode": _presentation_mode}
+        _result = {"available_days": days_data, "total_days": len(days_data), "presentation_mode": _presentation_mode}
+        if _presentation_mode == "single_day" and days_data:
+            _result["first_day"] = days_data[0]
+
+        return _result
 
     except Exception as e:
         logger.error("_check_availability_acuity unexpected error: %r", e, exc_info=True)

@@ -1138,9 +1138,8 @@ class LLMStream:
                 and stop_reason != "tool_use"
             ):
                 _gate5_fallback = (
-                    "That's really something the practitioner would be"
-                    " best placed to advise on"
-                    " — shall I get you booked in to discuss it?"
+                    "Sorry, I didn't quite catch that"
+                    " — could you say that again?"
                 )
                 logger.info(
                     "[ms_gate5] no TTS emitted this turn (full_text=%r,"
