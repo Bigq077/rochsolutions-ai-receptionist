@@ -110,19 +110,35 @@ _BANNED_SENTENCE_RE = [
     # "that's something to discuss with", "that's a question for".
     # These push the patient's question to someone else without engaging;
     # they are never appropriate as an opener.
-    # Pattern: strip from the start of the response up to and including the
-    # first em-dash / en-dash or sentence-ending punctuation (and any trailing
-    # whitespace), leaving the substantive remainder to be re-capitalised by
-    # the existing post-strip capitalisation step.
+    #
+    # NARROW MATCH (fixes C4-2 / C5-T13 / C6-1):
+    # The old pattern ended each opener with `[^—–.!?]*` which matches commas
+    # and EVERY character up to the first dash / period — so an answer phrased
+    # as "That's one for the practitioner to assess, but generally physio helps
+    # with slip discs…" had its entire substantive clause eaten, leaving only
+    # the booking push (caller got no real answer; had to re-ask).
+    #
+    # Fix: each opener now only matches when the deflection target word is
+    # IMMEDIATELY followed by a clean separator — an em/en-dash (the intended
+    # "deflect — then pivot" form), a sentence terminator (pure deflection with
+    # nothing after), or end-of-chunk.  `_SEP` below is shared by all five.
+    # If a comma or a continuing clause follows the target instead, the opener
+    # is part of a substantive sentence and is left fully intact.
+    #
+    #   "That's one for the practitioner — Mark can help."  → "Mark can help."
+    #   "That's one for the practitioner."                  → ""  (pure deflect)
+    #   "That's one for the practitioner to assess, but…"   → unchanged ✓
+    #   "That's one for the practitioner, but we can…"      → unchanged ✓
     ("one_for_practitioner",
      re.compile(
-         r"^[Tt]hat'?s one for (?:the )?(?:practitioner|therapist|clinician)"
-         r"[^—–.!?]*(?:[—–.!?]\s*)?",
+         r"^[Tt]hat'?s one for (?:the )?(?:practitioner|therapist|clinician)\b"
+         r"(?:\s*[—–]\s*|\s*[.!?]\s*|\s*$)",
          re.IGNORECASE,
      )),
     ("one_for_calendar",
      re.compile(
-         r"^[Tt]hat'?s one for (?:the )?calendar[^—–.!?]*(?:[—–.!?]\s*)?",
+         r"^[Tt]hat'?s one for (?:the )?calendar\b"
+         r"(?:\s*[—–]\s*|\s*[.!?]\s*|\s*$)",
          re.IGNORECASE,
      )),
     # "that's one for mark" — named-person / general deflection fallback.
@@ -130,17 +146,20 @@ _BANNED_SENTENCE_RE = [
     # Runs after the specific-role entries so it only catches residual cases.
     ("one_for_name",
      re.compile(
-         r"^[Tt]hat'?s one for (?:the )?[a-zA-Z]+[^—–.!?]*(?:[—–.!?]\s*)?",
+         r"^[Tt]hat'?s one for (?:the )?[a-zA-Z]+\b"
+         r"(?:\s*[—–]\s*|\s*[.!?]\s*|\s*$)",
          re.IGNORECASE,
      )),
     ("something_to_discuss",
      re.compile(
-         r"^[Tt]hat'?s something to discuss with[^—–.!?]*(?:[—–.!?]\s*)?",
+         r"^[Tt]hat'?s something to discuss with(?: (?:the |your )?[a-zA-Z]+)?\b"
+         r"(?:\s*[—–]\s*|\s*[.!?]\s*|\s*$)",
          re.IGNORECASE,
      )),
     ("a_question_for",
      re.compile(
-         r"^[Tt]hat'?s a question for[^—–.!?]*(?:[—–.!?]\s*)?",
+         r"^[Tt]hat'?s a question for(?: (?:the |your )?[a-zA-Z]+)?\b"
+         r"(?:\s*[—–]\s*|\s*[.!?]\s*|\s*$)",
          re.IGNORECASE,
      )),
 
