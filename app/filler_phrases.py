@@ -25,6 +25,12 @@ _MAX_FILLER_CHARS = 400
 
 THINKING_FILLERS_PRIMARY: List[str] = [
     "Let me have a look at what we've got…",
+    "One moment while I check that for you…",
+    "Just checking the diary now…",
+    "I'll take a look at the schedule for you…",
+    "Let me pull that up now…",
+    "Checking what's free for you…",
+    "Let me see what we have available…",
 ]
 
 THINKING_FILLERS_SECONDARY: List[str] = [
