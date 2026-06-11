@@ -6186,6 +6186,13 @@ class WebSocketCallHandler:
                                     # If captured during a booking flow, queue
                                     # next question based on caller intent.
                                     if _was_booking:
+                                        # Clear any stale FAQ pending utterance:
+                                        # the caller has expressed booking
+                                        # intent, so a deferred FAQ question is
+                                        # superseded by the booking flow.
+                                        self.session.pop(
+                                            "v3_faq_pending_utterance", None
+                                        )
                                         _loc_display = (
                                             _confirmed_loc.capitalize()
                                         )
@@ -6276,59 +6283,82 @@ class WebSocketCallHandler:
                                                     _new_ret_q
                                                 )
                                     else:
-                                        # CODE SPEC AE REVISED — treatment
-                                        # bypass / non-booking ack-only path.
-                                        # Route based on what is already known:
-                                        # time preference captured → re-queue
-                                        # so LLM fires check_availability with
-                                        # both location and preference in context.
-                                        # No preference yet → ask for it.
-                                        _ae_sc = (
-                                            self.session.get("soft_context") or {}
+                                        # Non-booking ack-only path.
+                                        # If the location was confirmed while
+                                        # answering a FAQ clinic gate question
+                                        # (v3_faq_pending_utterance is set),
+                                        # re-queue the original FAQ utterance so
+                                        # run_turn() answers it with the now-
+                                        # confirmed clinic in CALL STATE.
+                                        # Do NOT inject a timing question —
+                                        # the caller asked about parking/hours,
+                                        # not to book.
+                                        _faq_pending = self.session.pop(
+                                            "v3_faq_pending_utterance", None
                                         )
-                                        _ae_tp = (
-                                            _ae_sc.get("time_preference")
-                                            or self.session.get(
-                                                "time_of_day_preference"
-                                            )
-                                            or ""
-                                        )
-                                        if _ae_tp:
+                                        if _faq_pending:
                                             await self.transcript_queue.put(
-                                                (time.monotonic(), _ae_tp)
+                                                (time.monotonic(), _faq_pending)
                                             )
                                             logger.info(
-                                                "[ms_conn v3] time preference"
-                                                " already known (%r) —"
-                                                " re-queued for check_"
-                                                "availability after ack",
-                                                _ae_tp,
+                                                "[ms_conn v3] FAQ pending"
+                                                " utterance re-queued after"
+                                                " clinic confirm: %r",
+                                                _faq_pending[:60],
                                             )
                                         else:
-                                            _PREF_Q = (
-                                                "Is there a particular day"
-                                                " or time that works best"
-                                                " for you?"
+                                            # Treatment bypass / non-booking
+                                            # with no pending FAQ — route based
+                                            # on what is already known.
+                                            _ae_sc = (
+                                                self.session.get(
+                                                    "soft_context"
+                                                ) or {}
                                             )
-                                            await self.tts_text_queue.put(
-                                                _PREF_Q
+                                            _ae_tp = (
+                                                _ae_sc.get("time_preference")
+                                                or self.session.get(
+                                                    "time_of_day_preference"
+                                                )
+                                                or ""
                                             )
-                                            self.session[
-                                                "last_bot_prompt"
-                                            ] = _PREF_Q
-                                            self.session[
-                                                "last_question"
-                                            ] = _PREF_Q
-                                            self.session.setdefault(
-                                                "conversation_history", []
-                                            ).append({
-                                                "role": "assistant",
-                                                "content": _PREF_Q,
-                                            })
-                                            self._silence_handler\
-                                                .on_question_asked(
+                                            if _ae_tp:
+                                                await self.transcript_queue.put(
+                                                    (time.monotonic(), _ae_tp)
+                                                )
+                                                logger.info(
+                                                    "[ms_conn v3] time"
+                                                    " preference already"
+                                                    " known (%r) — re-queued"
+                                                    " for check_availability"
+                                                    " after ack",
+                                                    _ae_tp,
+                                                )
+                                            else:
+                                                _PREF_Q = (
+                                                    "Is there a particular"
+                                                    " day or time that works"
+                                                    " best for you?"
+                                                )
+                                                await self.tts_text_queue.put(
                                                     _PREF_Q
                                                 )
+                                                self.session[
+                                                    "last_bot_prompt"
+                                                ] = _PREF_Q
+                                                self.session[
+                                                    "last_question"
+                                                ] = _PREF_Q
+                                                self.session.setdefault(
+                                                    "conversation_history", []
+                                                ).append({
+                                                    "role": "assistant",
+                                                    "content": _PREF_Q,
+                                                })
+                                                self._silence_handler\
+                                                    .on_question_asked(
+                                                        _PREF_Q
+                                                    )
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -7018,16 +7048,20 @@ class WebSocketCallHandler:
                                 self.session["last_question"] = _faq_clinic_q
                                 self.session["_turn_speech_emitted"] = True
                                 # Arm the location gate so the caller's next
-                                # utterance is intercepted by the alias/location
-                                # handler rather than falling through to run_turn().
-                                # Without these flags, an ambiguous follow-up
-                                # (STT mishear or filler word) hits the LLM which
-                                # re-asks "Which clinic?" — causing a triple-ask.
+                                # utterance is intercepted by the alias handler
+                                # rather than falling through to run_turn().
+                                # Store the original FAQ utterance so the
+                                # location handler can re-run it (answer the
+                                # parking/hours question) instead of injecting
+                                # a booking-flow timing question.
                                 self.session["v3_location_asked"] = True
                                 self.session["v3_location_q_active"] = True
                                 self.session[
                                     "_location_q_patient_spoke"
                                 ] = False
+                                self.session[
+                                    "v3_faq_pending_utterance"
+                                ] = utterance
                                 self._silence_handler.on_question_asked(
                                     _faq_clinic_q
                                 )
