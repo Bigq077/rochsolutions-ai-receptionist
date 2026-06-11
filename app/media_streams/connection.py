@@ -7662,28 +7662,43 @@ class WebSocketCallHandler:
                                     " caller=%r — booking context set",
                                     utterance[:60],
                                 )
-                            _caller_has_booking_context = bool(
-                                _caller_booking_words or _prev_q_booking
-                            )
-                            # Recovery fires when EITHER the current reply
-                            # carries a scripted ack phrase (original path) OR
-                            # we have a strong CTA-affirm signal (prev bot
-                            # offered to book + caller affirmed).  The latter
-                            # makes recovery independent of whatever the current
-                            # turn produced — critical when that reply was
-                            # stripped to nothing as a banned opener, which
-                            # otherwise leaves no ack phrase to match.
+                            # Recovery fires when EITHER:
+                            #  (a) the caller's CURRENT utterance contains a
+                            #      booking word AND the current reply carries a
+                            #      scripted ack phrase ("of course —"), OR
+                            #  (b) we have a strong CTA-affirm signal (prev bot
+                            #      offered to book + caller affirmed).
+                            # The ack-phrase arm (a) deliberately requires
+                            # _caller_booking_words (a booking verb in THIS
+                            # utterance) rather than the broad
+                            # _caller_has_booking_context.  Reason: once any CTA
+                            # has been offered, _prev_q_booking stays True for the
+                            # rest of the call (last_question still holds "…book
+                            # one?"), so _caller_has_booking_context is True on
+                            # every later turn.  Sonnet opens many unrelated
+                            # replies (FAQ answers, "could you repeat that")
+                            # with "Of course —", and _last_bot reads the raw
+                            # pre-gate5 text from conversation_history (gate5
+                            # strips the banned opener only from TTS, not from
+                            # history) — so the ack phrase is present even when
+                            # the caller never heard it.  Gating the ack arm on a
+                            # booking word in the live utterance stops these
+                            # non-booking turns from hijacking the location flow.
+                            # The CTA-affirm arm (b) keeps its own independent
+                            # signal so "yes please" → CTA still works.
                             _is_booking_ack = (
                                 not _patience
                                 and not self.booking_flow_active
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
-                                and _caller_has_booking_context
                                 and (
-                                    any(
-                                        p in _last_bot.lower()
-                                        for p in _V3_ACK_PHRASES
+                                    (
+                                        _caller_booking_words
+                                        and any(
+                                            p in _last_bot.lower()
+                                            for p in _V3_ACK_PHRASES
+                                        )
                                     )
                                     or _cta_affirm
                                 )
