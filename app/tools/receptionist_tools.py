@@ -57,7 +57,61 @@ def _ordinal(n: int) -> str:
     return f"{n}{['th', 'st', 'nd', 'rd', 'th'][min(n % 10, 4)]}"
 
 
-def _build_days_data(slot_tuples: list, max_days: int = 30) -> list:
+def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> list:
+    """
+    Filter (start_dt, end_dt) tuples to those matching the caller's stated
+    day-of-week and/or time-of-day preference (e.g. 'Thursday afternoon').
+
+    Past slots are dropped first.  The day-of-week filter and the time-of-day
+    filter are each applied only when they leave at least one slot — a
+    preference that matches nothing is ignored rather than emptying the list,
+    so the caller still hears the nearest available options.  Returns all
+    future slots unfiltered when the preference produces no matches at all.
+
+    Shared by _select_presented_tuples (which builds slot_labels) and
+    _build_days_data (which builds available_days) so BOTH presentation
+    surfaces honour the same preference.  Previously only slot_labels was
+    filtered while available_days returned every day — so a "Thursday
+    afternoon" request was presented with non-Thursday days (bug C5-5).
+    """
+    now = datetime.now(LONDON_TZ)
+    future_only = [(s, e) for s, e in slot_tuples if s > now]
+
+    pref = preference.lower()
+    filtered = future_only
+
+    day_map = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+    pref_days = [wd for name, wd in day_map.items() if name in pref]
+    if pref_days:
+        day_filtered = [(s, e) for s, e in filtered if s.weekday() in pref_days]
+        if day_filtered:
+            filtered = day_filtered
+
+    if "morning" in pref:
+        time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
+        if time_filtered:
+            filtered = time_filtered
+    elif "afternoon" in pref:
+        time_filtered = [(s, e) for s, e in filtered if s.hour >= 14]
+        if time_filtered:
+            filtered = time_filtered
+    elif "evening" in pref:
+        time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
+        if time_filtered:
+            filtered = time_filtered
+
+    # Fall back to all future slots if preference produced no matches
+    if not filtered:
+        filtered = future_only
+    return filtered
+
+
+def _build_days_data(
+    slot_tuples: list, max_days: int = 30, preference: str = "",
+) -> list:
     """
     Group (start_dt, end_dt) tuples into per-day summaries for the day-first
     availability presentation flow.
@@ -68,7 +122,13 @@ def _build_days_data(slot_tuples: list, max_days: int = 30) -> list:
     when 8+ April days existed, April 23 was silently excluded from
     available_days even though Acuity returned it.  Presentation still shows
     only 3 days at a time via _build_day_list_phrase(:3) and paging.
+
+    When a preference is supplied (e.g. 'Thursday afternoon') the day/time
+    filter is applied first so available_days contains ONLY days matching the
+    request — keeping the day-first presentation consistent with slot_labels
+    (bug C5-5).  Falls back to all days when nothing matches the preference.
     """
+    slot_tuples = _filter_tuples_by_preference(slot_tuples, preference)
     from collections import defaultdict as _dd
     days_map: "_dd[Any, list]" = _dd(list)
     for start, end in slot_tuples:
@@ -103,39 +163,10 @@ def _select_presented_tuples(slot_tuples: list, preference: str = "") -> list:
     the LLM filters by preference but slot_labels has unfiltered Acuity results.
     Falls back to all future slots if no preference-matching slots found.
     """
-    now = datetime.now(LONDON_TZ)
-    future_only = [(s, e) for s, e in slot_tuples if s > now]
-
-    # Apply preference filtering so stored slot_labels match LLM verbal output
-    pref = preference.lower()
-    filtered = future_only
-
-    day_map = {
-        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-        "friday": 4, "saturday": 5, "sunday": 6,
-    }
-    pref_days = [wd for name, wd in day_map.items() if name in pref]
-    if pref_days:
-        day_filtered = [(s, e) for s, e in filtered if s.weekday() in pref_days]
-        if day_filtered:
-            filtered = day_filtered
-
-    if "morning" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
-        if time_filtered:
-            filtered = time_filtered
-    elif "afternoon" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour >= 14]
-        if time_filtered:
-            filtered = time_filtered
-    elif "evening" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
-        if time_filtered:
-            filtered = time_filtered
-
-    # Fall back to all future slots if preference produced no matches
-    if not filtered:
-        filtered = future_only
+    # Apply preference filtering so stored slot_labels match LLM verbal output.
+    # Shared helper guarantees available_days (built by _build_days_data) uses
+    # the identical day/time filter — see _filter_tuples_by_preference.
+    filtered = _filter_tuples_by_preference(slot_tuples, preference)
 
     day_seen: set = set()
     day_firsts: list = []
@@ -1789,9 +1820,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # slot_labels[0/1/2] map 1:1 to the 1st/2nd/3rd slot spoken by Susie.
         slot_tuples = [(s.start_time, s.end_time) for s in slots]
         presented   = _select_presented_tuples(slot_tuples, preference=preference)
-        # Build days_data from ALL slots so each day shows all its available times,
-        # not just the one slot selected for variety by _select_presented_tuples.
-        days_data   = _build_days_data(slot_tuples)
+        # Build days_data from preference-matching slots so each day shows all
+        # its available times for the requested day/time, not just the one slot
+        # selected for variety by _select_presented_tuples.  Passing preference
+        # keeps available_days consistent with slot_labels (bug C5-5): a
+        # "Thursday afternoon" request no longer yields non-Thursday days.
+        days_data   = _build_days_data(slot_tuples, preference=preference)
 
         pres_raw    = [{"start": s.isoformat(), "end": e.isoformat()} for s, e in presented]
         pres_labels = [s.strftime("%a %d %b at %H:%M") for s, e in presented]
@@ -2949,6 +2983,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     duration_min = int(args.get("duration_minutes") or 50)
     day_window_days = int(args.get("day_window") or 7)
+    # Day/time preference (e.g. "Thursday afternoon") — passed to both
+    # presentation builders so available_days honours it, mirroring the Acuity
+    # path (bug C5-5).
+    _pref = (args.get("date_hint") or args.get("preference") or "").strip()
 
     clinic = get_clinic(session.get("clinic_id"))
     working_hours = clinic.get("working_hours", {})
@@ -2990,10 +3028,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     if not tokens:
         if not candidates:
             return {"error": "No slots found in the next 7 days.", "slots": []}
-        presented  = _select_presented_tuples(candidates)
-        # Build from ALL candidates so available_days contains the full window,
-        # not just the 3 presented slots.  Mirrors the Acuity path fix.
-        days_data  = _build_days_data(candidates)
+        presented  = _select_presented_tuples(candidates, preference=_pref)
+        # Build from preference-matching candidates so available_days honours
+        # the requested day/time.  Mirrors the Acuity path fix (bug C5-5).
+        days_data  = _build_days_data(candidates, preference=_pref)
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -3023,9 +3061,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         free_slots = candidates
         if not free_slots:
             return {"error": "No candidate slots found in the next 7 days.", "slots": []}
-        presented  = _select_presented_tuples(free_slots)
-        # Build from ALL free_slots (= candidates here) so available_days is complete.
-        days_data  = _build_days_data(free_slots)
+        presented  = _select_presented_tuples(free_slots, preference=_pref)
+        # Build from preference-matching free_slots so available_days honours
+        # the requested day/time.  Mirrors the Acuity path fix (bug C5-5).
+        days_data  = _build_days_data(free_slots, preference=_pref)
         pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
         pres_labels = [format_slot(s) for s in presented]
         session["last_offered_slots"] = pres_raw
@@ -3039,10 +3078,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     if not free_slots:
         return {"error": "No available slots found. Try a different time preference or wider window.", "slots": []}
 
-    presented  = _select_presented_tuples(free_slots)
-    # Build from ALL free_slots so available_days contains the full window,
-    # not just the 3 presented slots.  Mirrors the Acuity path fix.
-    days_data  = _build_days_data(free_slots)
+    presented  = _select_presented_tuples(free_slots, preference=_pref)
+    # Build from preference-matching free_slots so available_days honours the
+    # requested day/time.  Mirrors the Acuity path fix (bug C5-5).
+    days_data  = _build_days_data(free_slots, preference=_pref)
     pres_raw   = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
     pres_labels = [format_slot(s) for s in presented]
     session["last_offered_slots"] = pres_raw
