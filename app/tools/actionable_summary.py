@@ -140,6 +140,11 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         _FP = frozenset({
             "sorry", "right", "great", "perfect", "ok", "okay", "sure",
             "yes", "no", "of", "course", "me", "you", "it", "that",
+            # day and month names — "So that's Wednesday…" must not match
+            "monday", "tuesday", "wednesday", "thursday", "friday",
+            "saturday", "sunday",
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december",
         })
         for _msg in _history:
             if _msg.get("role") == "assistant":
