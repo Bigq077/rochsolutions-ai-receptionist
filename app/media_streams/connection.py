@@ -6617,6 +6617,15 @@ class WebSocketCallHandler:
                                         await save_session(
                                             self.call_sid, self.session
                                         )
+                                        # C8-2: arm the race guard so any
+                                        # phantom second final from the same
+                                        # breath is dropped at dequeue.
+                                        self.session[
+                                            "location_acked_this_turn"
+                                        ] = True
+                                        self._location_ack_ts = (
+                                            time.monotonic()
+                                        )
                                         logger.info(
                                             "[ms_conn v3] Haiku resolved"
                                             " location: %s, intent=%s,"
