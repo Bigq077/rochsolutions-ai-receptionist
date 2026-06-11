@@ -7926,9 +7926,6 @@ class WebSocketCallHandler:
                                         # Caller already named this clinic
                                         # explicitly during the call — confirm
                                         # it silently rather than re-asking.
-                                        # CALL STATE will show CLINIC CONFIRMED
-                                        # on the next turn so the LLM proceeds
-                                        # to timing.
                                         self.session[
                                             "selected_location"
                                         ] = _soft_cand
@@ -7945,14 +7942,51 @@ class WebSocketCallHandler:
                                             "v3_soft_location_candidate",
                                             None,
                                         )
+                                        # Inject timing question directly —
+                                        # equivalent to the location-known
+                                        # branch above, but we skip the biased
+                                        # confirm step.  Suppress if the LLM
+                                        # already asked a question this turn
+                                        # (e.g. it asked timing itself).
+                                        _sc_next_q = (
+                                            "Is there a particular day"
+                                            " or time that works best"
+                                            " for you?"
+                                        )
+                                        _sc_llm_asked = "?" in _last_bot
+                                        _sc_slots_shown = self.session.get(
+                                            "v3_awaiting_slot_selection"
+                                        )
+                                        if not _sc_llm_asked and not _sc_slots_shown:
+                                            await self.tts_text_queue.put(
+                                                _sc_next_q
+                                            )
+                                            _v3_post_turn_speech = True
+                                            self.session[
+                                                "last_bot_prompt"
+                                            ] = _sc_next_q
+                                            self.session[
+                                                "last_question"
+                                            ] = _sc_next_q
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).append({
+                                                "role": "assistant",
+                                                "content": _sc_next_q,
+                                            })
                                         await save_session(
                                             self.call_sid, self.session
                                         )
                                         logger.info(
                                             "[ms_conn v3] soft candidate '%s'"
                                             " auto-confirmed at booking ack"
-                                            " — no re-ask",
+                                            " — timing Q %s",
                                             _soft_cand,
+                                            "suppressed (LLM asked)"
+                                            if _sc_llm_asked
+                                            else "suppressed (slots shown)"
+                                            if _sc_slots_shown
+                                            else "injected",
                                         )
                                         _loc_q = None
                                     else:
