@@ -7923,85 +7923,107 @@ class WebSocketCallHandler:
                                             "clinic?"
                                         )
                                     elif _soft_cand:
-                                        _cand_disp = (
-                                            "Awlstuh"
-                                            if _soft_cand == "alcester"
-                                            else "Redditch"
-                                        )
-                                        _loc_q = (
-                                            f"And just to confirm — "
-                                            f"was that for the "
-                                            f"{_cand_disp} clinic?"
-                                        )
-                                        # Arm the biased yes/no handler so
-                                        # the caller's 'yes' immediately
-                                        # confirms the candidate without
-                                        # waiting for the watchdog.
+                                        # Caller already named this clinic
+                                        # explicitly during the call — confirm
+                                        # it silently rather than re-asking.
+                                        # CALL STATE will show CLINIC CONFIRMED
+                                        # on the next turn so the LLM proceeds
+                                        # to timing.
                                         self.session[
-                                            "v3_awaiting_use_this_clinic"
+                                            "selected_location"
+                                        ] = _soft_cand
+                                        self.session[
+                                            "v3_location_confirmed"
                                         ] = True
                                         self.session[
-                                            "v3_use_this_clinic_bias"
-                                        ] = _soft_cand
+                                            "v3_location_asked"
+                                        ] = True
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
+                                        self.session.pop(
+                                            "v3_soft_location_candidate",
+                                            None,
+                                        )
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
                                         logger.info(
                                             "[ms_conn v3] soft candidate '%s'"
-                                            " — biased confirm at booking ack",
+                                            " auto-confirmed at booking ack"
+                                            " — no re-ask",
                                             _soft_cand,
                                         )
+                                        _loc_q = None
                                     else:
                                         _loc_q = (
                                             "Which clinic were you thinking "
                                             "of — Awlstuh or Redditch?"
                                         )
-                                    # Only queue to TTS if the LLM didn't
-                                    # already ask the location question in
-                                    # its reply — prevents double-ask when
-                                    # the model ignores the "stop after ack"
-                                    # instruction and includes the question.
-                                    _llm_asked_loc = any(
-                                        kw in _last_bot.lower()
-                                        for kw in (
-                                            "which clinic",
-                                            "alcester or redditch",
-                                            "alcester or reditch",
-                                            "original appointment at",
+                                    if _loc_q is not None:
+                                        # Only queue to TTS if the LLM didn't
+                                        # already ask the location question in
+                                        # its reply — prevents double-ask when
+                                        # the model ignores the "stop after
+                                        # ack" instruction and includes the
+                                        # question.
+                                        _llm_asked_loc = any(
+                                            kw in _last_bot.lower()
+                                            for kw in (
+                                                "which clinic",
+                                                "alcester or redditch",
+                                                "alcester or reditch",
+                                                "original appointment at",
+                                            )
                                         )
-                                    )
-                                    if not _llm_asked_loc:
-                                        await self.tts_text_queue.put(_loc_q)
-                                        _v3_post_turn_speech = True
-                                    # Always set session flags so the
-                                    # location gate arms correctly
-                                    # regardless of whether we queued TTS.
-                                    self.session["last_bot_prompt"] = _loc_q
-                                    self.session["last_question"] = _loc_q
-                                    self.session["v3_location_asked"] = True
-                                    self.session["v3_location_q_active"] = True
-                                    self.session["_location_q_patient_spoke"] = False
-                                    # Add injected location Q to conversation
-                                    # history so the LLM knows what was asked
-                                    # if the caller's response bypasses the
-                                    # intercept handler and reaches run_turn().
-                                    if not _llm_asked_loc:
-                                        self.session.setdefault(
-                                            "conversation_history", []
-                                        ).append({
-                                            "role": "assistant",
-                                            "content": _loc_q,
-                                        })
-                                        self._silence_handler\
-                                            .on_question_asked(_loc_q)
-                                    await save_session(
-                                        self.call_sid, self.session
-                                    )
-                                    logger.info(
-                                        "[ms_conn v3] booking ack detected —"
-                                        " intent=%s, loc Q %s",
-                                        _loc_intent,
-                                        "suppressed (LLM already asked)"
-                                        if _llm_asked_loc
-                                        else "queued",
-                                    )
+                                        if not _llm_asked_loc:
+                                            await self.tts_text_queue.put(
+                                                _loc_q
+                                            )
+                                            _v3_post_turn_speech = True
+                                        # Always set session flags so the
+                                        # location gate arms correctly
+                                        # regardless of whether we queued TTS.
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _loc_q
+                                        self.session[
+                                            "last_question"
+                                        ] = _loc_q
+                                        self.session[
+                                            "v3_location_asked"
+                                        ] = True
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = True
+                                        self.session[
+                                            "_location_q_patient_spoke"
+                                        ] = False
+                                        # Add injected location Q to
+                                        # conversation history so the LLM
+                                        # knows what was asked if the caller's
+                                        # response bypasses the intercept
+                                        # handler and reaches run_turn().
+                                        if not _llm_asked_loc:
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).append({
+                                                "role": "assistant",
+                                                "content": _loc_q,
+                                            })
+                                            self._silence_handler\
+                                                .on_question_asked(_loc_q)
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] booking ack"
+                                            " detected — intent=%s, loc Q %s",
+                                            _loc_intent,
+                                            "suppressed (LLM already asked)"
+                                            if _llm_asked_loc
+                                            else "queued",
+                                        )
 
                         # ── CODE SPEC AD: treatment bypass clinic question arm ────
                         # When the treatment bypass fires pre-run_turn,
