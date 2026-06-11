@@ -7038,6 +7038,25 @@ class WebSocketCallHandler:
                             _pre_turn_last_bot = self.session.get(
                                 "last_bot_prompt", ""
                             )
+                            # last_bot_prompt is truncated to [:200]
+                            # (llm_stream.py).  A long clinical reply
+                            # (empathy + physio sentence + "Would you like
+                            # to book…") can push the booking CTA past char
+                            # 200, hiding it from CTA-affirm detection and
+                            # producing a silent turn on "yes please".
+                            # Capture the FULL previous assistant message from
+                            # conversation_history (run_turn() has not yet
+                            # appended this turn's reply, so the last assistant
+                            # entry is the previous turn's complete response).
+                            _pre_turn_last_bot_full = ""
+                            for _m in reversed(
+                                self.session.get("conversation_history", [])
+                            ):
+                                if _m.get("role") == "assistant":
+                                    _pre_turn_last_bot_full = (
+                                        _m.get("content", "") or ""
+                                    )
+                                    break
 
                             # Change B: arm filler before LLM call.
                             # arm() is a no-op unless booking_flow_active is True.
@@ -7592,49 +7611,69 @@ class WebSocketCallHandler:
                             # response from before run_turn() was called
                             # (run_turn() overwrites last_bot_prompt with the
                             # current turn's reply, so we must use the snapshot).
-                            if not _prev_q_booking:
-                                _prev_bot_lower = (
-                                    _pre_turn_last_bot or ""
-                                ).lower()
-                                _CTA_BOOKING_PHRASES = (
-                                    "would you like to book",
-                                    "book an appointment",
-                                    "like to make an appointment",
-                                    "shall i book",
-                                    "book you in",
+                            # CTA-affirm detection — computed unconditionally
+                            # so _cta_affirm is available to _is_booking_ack
+                            # even when _prev_q_booking is already set.  Reads
+                            # the FULL previous reply (not the [:200]-truncated
+                            # last_bot_prompt) so a CTA at the tail of a long
+                            # clinical response is still seen.
+                            _prev_bot_lower = (
+                                _pre_turn_last_bot_full
+                                or _pre_turn_last_bot
+                                or ""
+                            ).lower()
+                            _CTA_BOOKING_PHRASES = (
+                                "would you like to book",
+                                "book an appointment",
+                                "book an assessment",
+                                "like to make an appointment",
+                                "shall i book",
+                                "book you in",
+                            )
+                            _bot_had_cta = any(
+                                p in _prev_bot_lower
+                                for p in _CTA_BOOKING_PHRASES
+                            )
+                            _utt_is_affirm = bool(re.search(
+                                r"\b(?:yes|yeah|yep|sure|okay|ok|yup"
+                                r"|absolutely|definitely|go ahead"
+                                r"|i would|i do|course)\b",
+                                utterance, re.IGNORECASE,
+                            ))
+                            _cta_affirm = _bot_had_cta and _utt_is_affirm
+                            if _cta_affirm and not _prev_q_booking:
+                                _prev_q_booking = True
+                                logger.info(
+                                    "[ms_conn v3] CTA affirm:"
+                                    " prev_bot had booking CTA,"
+                                    " caller=%r — booking context set",
+                                    utterance[:60],
                                 )
-                                _bot_had_cta = any(
-                                    p in _prev_bot_lower
-                                    for p in _CTA_BOOKING_PHRASES
-                                )
-                                _utt_is_affirm = bool(re.search(
-                                    r"\b(?:yes|yeah|yep|sure|okay|ok|yup"
-                                    r"|absolutely|definitely|go ahead"
-                                    r"|i would|i do|course)\b",
-                                    utterance, re.IGNORECASE,
-                                ))
-                                if _bot_had_cta and _utt_is_affirm:
-                                    _prev_q_booking = True
-                                    logger.info(
-                                        "[ms_conn v3] CTA affirm:"
-                                        " prev_bot had booking CTA,"
-                                        " caller=%r — booking context set",
-                                        utterance[:60],
-                                    )
                             _caller_has_booking_context = bool(
                                 _caller_booking_words or _prev_q_booking
                             )
+                            # Recovery fires when EITHER the current reply
+                            # carries a scripted ack phrase (original path) OR
+                            # we have a strong CTA-affirm signal (prev bot
+                            # offered to book + caller affirmed).  The latter
+                            # makes recovery independent of whatever the current
+                            # turn produced — critical when that reply was
+                            # stripped to nothing as a banned opener, which
+                            # otherwise leaves no ack phrase to match.
                             _is_booking_ack = (
                                 not _patience
                                 and not self.booking_flow_active
-                                and any(
-                                    p in _last_bot.lower()
-                                    for p in _V3_ACK_PHRASES
-                                )
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
                                 and _caller_has_booking_context
+                                and (
+                                    any(
+                                        p in _last_bot.lower()
+                                        for p in _V3_ACK_PHRASES
+                                    )
+                                    or _cta_affirm
+                                )
                             )
                             if _is_booking_ack:
                                 # ── end Spec Y (normal ack path) ──────────────
