@@ -7713,19 +7713,39 @@ class WebSocketCallHandler:
                             # signal so "yes please" → CTA still works.
                             _is_booking_ack = (
                                 not _patience
-                                and not self.booking_flow_active
-                                and not self.session.get(
-                                    "v3_location_asked", False
-                                )
                                 and (
                                     (
-                                        _caller_booking_words
+                                        # Normal sentinel arm: only when flow
+                                        # hasn't started and location not asked
+                                        not self.booking_flow_active
+                                        and not self.session.get(
+                                            "v3_location_asked", False
+                                        )
+                                        and _caller_booking_words
                                         and any(
                                             p in _last_bot.lower()
                                             for p in _V3_ACK_PHRASES
                                         )
                                     )
-                                    or _cta_affirm
+                                    or (
+                                        # CTA-affirm arm: explicit yes to a
+                                        # booking offer — bypasses flow-state
+                                        # gates (treatment detection can set
+                                        # booking_flow_active=True prematurely,
+                                        # blocking this path).  Guards: not
+                                        # mid-slot-selection, not post-booking.
+                                        _cta_affirm
+                                        and not self.session.get(
+                                            "v3_awaiting_slot_selection"
+                                        )
+                                        and not (
+                                            self.session.get("acuity_booking_id")
+                                            or self.session.get("booking_id")
+                                            or self.session.get(
+                                                "calendar_status"
+                                            ) == "created"
+                                        )
+                                    )
                                 )
                             )
                             if _is_booking_ack:
