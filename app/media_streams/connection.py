@@ -7017,6 +7017,17 @@ class WebSocketCallHandler:
                                 self.session["last_bot_prompt"] = _faq_clinic_q
                                 self.session["last_question"] = _faq_clinic_q
                                 self.session["_turn_speech_emitted"] = True
+                                # Arm the location gate so the caller's next
+                                # utterance is intercepted by the alias/location
+                                # handler rather than falling through to run_turn().
+                                # Without these flags, an ambiguous follow-up
+                                # (STT mishear or filler word) hits the LLM which
+                                # re-asks "Which clinic?" — causing a triple-ask.
+                                self.session["v3_location_asked"] = True
+                                self.session["v3_location_q_active"] = True
+                                self.session[
+                                    "_location_q_patient_spoke"
+                                ] = False
                                 self._silence_handler.on_question_asked(
                                     _faq_clinic_q
                                 )
