@@ -7923,72 +7923,33 @@ class WebSocketCallHandler:
                                             "clinic?"
                                         )
                                     elif _soft_cand:
-                                        # Caller already named this clinic
-                                        # explicitly during the call — confirm
-                                        # it silently rather than re-asking.
+                                        # Caller named a clinic during the
+                                        # call — ask a targeted confirmation
+                                        # rather than the open two-choice Q.
+                                        _cand_disp = (
+                                            "Awlstuh"
+                                            if _soft_cand == "alcester"
+                                            else "Redditch"
+                                        )
+                                        _loc_q = (
+                                            f"Just to confirm — was that"
+                                            f" for our {_cand_disp} clinic?"
+                                        )
+                                        # Arm the biased yes/no handler so
+                                        # the caller's 'yes' immediately
+                                        # confirms the candidate.
                                         self.session[
-                                            "selected_location"
+                                            "v3_awaiting_use_this_clinic"
+                                        ] = True
+                                        self.session[
+                                            "v3_use_this_clinic_bias"
                                         ] = _soft_cand
-                                        self.session[
-                                            "v3_location_confirmed"
-                                        ] = True
-                                        self.session[
-                                            "v3_location_asked"
-                                        ] = True
-                                        self.session[
-                                            "v3_location_q_active"
-                                        ] = False
-                                        self.session.pop(
-                                            "v3_soft_location_candidate",
-                                            None,
-                                        )
-                                        # Inject timing question directly —
-                                        # equivalent to the location-known
-                                        # branch above, but we skip the biased
-                                        # confirm step.  Suppress if the LLM
-                                        # already asked a question this turn
-                                        # (e.g. it asked timing itself).
-                                        _sc_next_q = (
-                                            "Is there a particular day"
-                                            " or time that works best"
-                                            " for you?"
-                                        )
-                                        _sc_llm_asked = "?" in _last_bot
-                                        _sc_slots_shown = self.session.get(
-                                            "v3_awaiting_slot_selection"
-                                        )
-                                        if not _sc_llm_asked and not _sc_slots_shown:
-                                            await self.tts_text_queue.put(
-                                                _sc_next_q
-                                            )
-                                            _v3_post_turn_speech = True
-                                            self.session[
-                                                "last_bot_prompt"
-                                            ] = _sc_next_q
-                                            self.session[
-                                                "last_question"
-                                            ] = _sc_next_q
-                                            self.session.setdefault(
-                                                "conversation_history", []
-                                            ).append({
-                                                "role": "assistant",
-                                                "content": _sc_next_q,
-                                            })
-                                        await save_session(
-                                            self.call_sid, self.session
-                                        )
                                         logger.info(
                                             "[ms_conn v3] soft candidate '%s'"
-                                            " auto-confirmed at booking ack"
-                                            " — timing Q %s",
+                                            " — biased confirm Q at booking"
+                                            " ack",
                                             _soft_cand,
-                                            "suppressed (LLM asked)"
-                                            if _sc_llm_asked
-                                            else "suppressed (slots shown)"
-                                            if _sc_slots_shown
-                                            else "injected",
                                         )
-                                        _loc_q = None
                                     else:
                                         _loc_q = (
                                             "Which clinic were you thinking "
