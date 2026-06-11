@@ -7342,16 +7342,29 @@ class WebSocketCallHandler:
                                 # answer is a direct response to that
                                 # question, so no biased re-confirm needed
                                 # at booking time.
-                                _last_prompt_lower = self.session.get(
-                                    "last_bot_prompt", ""
-                                ).lower()
+                                # Comma-strip so clarification variants like
+                                # "Just to check — did you mean Awlstuh, or
+                                # Redditch?" still match "awlstuh or redditch".
+                                # Without this the caller's clinic answer to a
+                                # clarification question is treated as a soft
+                                # candidate and the location is never confirmed.
+                                _last_prompt_lower = re.sub(
+                                    r",", "",
+                                    self.session.get(
+                                        "last_bot_prompt", ""
+                                    ).lower(),
+                                )
                                 _prev_was_loc_q = any(
                                     kw in _last_prompt_lower
                                     for kw in (
                                         "which clinic",
+                                        "which location",
                                         "awlstuh or redditch",
                                         "alcester or redditch",
                                         "alcester or reditch",
+                                        "did you mean awlstuh",
+                                        "did you mean alcester",
+                                        "did you mean redditch",
                                     )
                                 )
                                 if _has_alcester and not _has_redditch:
