@@ -7372,11 +7372,15 @@ class WebSocketCallHandler:
                                 # Without this the caller's clinic answer to a
                                 # clarification question is treated as a soft
                                 # candidate and the location is never confirmed.
+                                # Use the pre-run_turn snapshot: by this
+                                # point run_turn() has already updated
+                                # last_bot_prompt to the current response,
+                                # so reading the session key would check
+                                # the parking/hours answer rather than the
+                                # previous "which clinic?" question.
                                 _last_prompt_lower = re.sub(
                                     r",", "",
-                                    self.session.get(
-                                        "last_bot_prompt", ""
-                                    ).lower(),
+                                    _pre_turn_last_bot.lower(),
                                 )
                                 _prev_was_loc_q = any(
                                     kw in _last_prompt_lower
