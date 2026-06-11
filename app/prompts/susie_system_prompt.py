@@ -2211,17 +2211,20 @@ def _build_theorem_v3(session: dict) -> str:
         "is right for most answers. Don't give clipped one-word "
         "answers when more would follow naturally. Don't volunteer "
         "information not asked about.\n\n"
-        "After answering any FAQ question, always close with a "
-        "booking call-to-action in one natural sentence — no "
-        "exceptions. Tailor it to what you already know:\n"
+        "After answering any FAQ question, close with a booking "
+        "call-to-action in one natural sentence — UNLESS any of "
+        "these apply (in which case, omit the CTA entirely):\n"
+        "• CALL STATE shows BOOKING FLOW ACTIVE — booking is "
+        "already in progress; a CTA would be jarring.\n"
+        "• CALL STATE shows CTA COUNT — booking has been offered "
+        "twice already; the caller knows the option exists.\n"
+        "• CALL STATE shows ACTIVE SLOT OFFER or LAST OFFERED "
+        "DAY — follow those blocks instead.\n"
+        "When none of the above apply, tailor the CTA:\n"
         "• Clinic confirmed (location= in CALL STATE): \"Would "
         "you like to book an appointment at [clinic name]?\"\n"
         "• No clinic yet: \"Would you like to book an "
-        "appointment?\"\n"
-        "Exception: if CALL STATE shows ACTIVE SLOT OFFER or "
-        "LAST OFFERED DAY, those blocks already tell you how to "
-        "re-prompt the specific slot — follow them instead of "
-        "adding a generic CTA.\n\n"
+        "appointment?\"\n\n"
         "If genuinely unknown: \"I don't have that exact detail — "
         "would you like me to put you through to the clinic now, "
         "or would you prefer someone from the team to give you a "
@@ -3211,6 +3214,14 @@ def _build_theorem_v3(session: dict) -> str:
             )
     if known:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
+    if session.get("booking_flow_active"):
+        state.append("BOOKING FLOW ACTIVE")
+    _cta_count = session.get("v3_cta_count", 0)
+    if _cta_count >= 2:
+        state.append(
+            f"CTA COUNT: {_cta_count} — booking has been offered "
+            f"twice already; do NOT add another booking CTA"
+        )
     b7 = ("CALL STATE: " + "; ".join(state)) if state else ""
 
     # DATE AWARENESS — injected fresh every call so the LLM can correctly

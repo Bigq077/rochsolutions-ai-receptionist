@@ -7207,6 +7207,30 @@ class WebSocketCallHandler:
                                 )
                             )
 
+                            # ── CTA COUNT TRACKING ────────────────────────────
+                            # Count booking CTAs in bot replies so the prompt
+                            # can suppress repetitive offers after 2 fires.
+                            # Only count pre-booking-flow turns — CTAs inside
+                            # the booking flow ("shall I go ahead and book?")
+                            # are not the repetitive FAQ kind.
+                            if not self.booking_flow_active:
+                                _CTA_DETECT = (
+                                    "would you like to book",
+                                    "book an appointment",
+                                    "book an assessment",
+                                    "like to make an appointment",
+                                    "shall i book",
+                                    "book you in",
+                                )
+                                if any(
+                                    p in _last_bot.lower()
+                                    for p in _CTA_DETECT
+                                ):
+                                    self.session["v3_cta_count"] = (
+                                        self.session.get("v3_cta_count", 0) + 1
+                                    )
+                            # ── end CTA COUNT TRACKING ────────────────────────
+
                             # ── NAME PERSISTENCE (Bug 7) ─────────────────────
                             # Persist name immediately when the LLM confirms it
                             # verbally ("Thanks Sarah — if you'd like to use
