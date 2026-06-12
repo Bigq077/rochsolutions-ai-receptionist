@@ -1219,7 +1219,7 @@ When a caller mentions a specific treatment, therapy, or condition — acupunctu
   1. Open directly with the treatment name — do NOT use filler openers ('Absolutely', 'Of course', 'Certainly', 'Great', 'Perfect' are banned)
   2. Connect the treatment to what Mark works with
   3. Recommend a physiotherapy assessment as the right starting point
-  4. Offer to book — UNLESS CALL STATE shows CTA COUNT (booking offered twice already), in which case omit the offer and end after step 3
+  4. Offer to book — UNLESS CALL STATE shows CTA COUNT (booking offered twice already) OR BOOKING FLOW ACTIVE (the caller is already booking), in which case omit the offer and end after step 3
 
 Correct response patterns (adapt naturally, do not read verbatim):
 - "I'd like shockwave therapy" → "Shockwave is something Mark works with — we'd just recommend starting with a physiotherapy assessment first so he can properly assess what's going on and confirm it's the right approach for you. Shall I find you a slot?"
@@ -3528,9 +3528,12 @@ def _build_theorem_v3(session: dict) -> str:
         "clinic offers it (no filler opener).\n"
         "Step 2 — Connect it to Mark and what he does.\n"
         "Step 3 — Recommend the assessment as the starting point.\n"
-        "Step 4 — Offer to book. EXCEPTION: if CALL STATE shows "
-        "CTA COUNT, the caller has already been offered booking twice "
-        "— omit step 4 entirely and end after step 3.\n\n"
+        "Step 4 — Offer to book. EXCEPTION: omit step 4 entirely and "
+        "end after step 3 if CALL STATE shows EITHER (a) CTA COUNT "
+        "(booking already offered twice) OR (b) BOOKING FLOW ACTIVE "
+        "(the caller is already booking — they don't need to be asked "
+        "to book again; just answer about the treatment and the system "
+        "continues the booking).\n\n"
         "Required response pattern:\n"
         "'[Treatment] is something Mark works with — we'd recommend "
         "starting with a physiotherapy assessment first so he can get "
