@@ -7583,45 +7583,38 @@ class WebSocketCallHandler:
                                         "did you mean redditch",
                                     )
                                 )
-                                # ── Generic "the clinic" reference ───────────
-                                # "the clinic" is the default site (Alcester)
-                                # but NOT a name mishear, so it must only confirm
-                                # in a genuine clinic-CHOICE context: explicit
-                                # booking words in THIS transcript, or a direct
-                                # answer to "which clinic?". Bare
-                                # booking_flow_active is deliberately excluded —
-                                # a treatment FAQ ("does the clinic do sports
-                                # massages") flips booking_flow_active True yet
-                                # carries no booking word, and previously bound
-                                # Alcester silently (Test A wrong-clinic bug,
-                                # 2026-06-12). Promote to a confirmable Alcester
-                                # signal only when the strict gate passes;
-                                # otherwise note as a soft candidate so the
-                                # booking-ack branch still asks which clinic.
+                                # ── Generic "the clinic" — SOFT alias ────────
+                                # Two-tier alias model: STRONG aliases (specific
+                                # name mishears — alter/awlstuh/host/redditch)
+                                # hard-confirm on intent above. "the clinic" is a
+                                # SOFT alias: it names the business generically
+                                # and cannot disambiguate two clinics, so it must
+                                # NEVER silently default and NEVER trigger the
+                                # open "Alcester or Redditch?" question. Note it
+                                # as a soft candidate (Alcester = the primary
+                                # site) and let the booking-ack soft-candidate
+                                # path (~line 8156) ask the BIASED binary confirm
+                                # "Just to confirm — was that for our Awlstuh
+                                # clinic?" and arm the use-this-clinic yes/no
+                                # handler (yes/'use this clinic' → Alcester,
+                                # clean 'no' → Redditch). This replaces the
+                                # earlier hard-confirm (e6da612) which silently
+                                # bound Alcester on "book at the clinic"; the
+                                # soft-candidate path is the safer behaviour the
+                                # owner signed off (2026-06-12).
                                 if (
                                     _GENERIC_CLINIC_ALIAS_RE.search(_n_inline)
                                     and not _has_alcester
                                     and not _has_redditch
                                 ):
-                                    if (
-                                        _transcript_has_booking_intent(utterance)
-                                        or _prev_was_loc_q
-                                    ):
-                                        _has_alcester = True
-                                        logger.info(
-                                            "[ms_conn v3] generic 'the clinic'"
-                                            " in choice context — treated as"
-                                            " alcester default"
-                                        )
-                                    else:
-                                        self.session[
-                                            "v3_soft_location_candidate"
-                                        ] = "alcester"
-                                        logger.info(
-                                            "[ms_conn v3] generic 'the clinic'"
-                                            " in FAQ context — candidate noted,"
-                                            " not confirmed: alcester"
-                                        )
+                                    self.session[
+                                        "v3_soft_location_candidate"
+                                    ] = "alcester"
+                                    logger.info(
+                                        "[ms_conn v3] generic 'the clinic' —"
+                                        " soft candidate (biased confirm at"
+                                        " booking ack): alcester"
+                                    )
                                 if _has_alcester and not _has_redditch:
                                     if _inline_has_intent or _prev_was_loc_q:
                                         self.session["selected_location"] = (
