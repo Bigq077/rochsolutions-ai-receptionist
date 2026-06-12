@@ -525,6 +525,12 @@ _USE_THIS_CLINIC_AFFIRMATIVES: frozenset = frozenset({
     "sounds right", "perfect",
     "yes please",
     "use this", "i did", "yes i did",
+    # Caller drops the "use" the re-ask told them to say ("just say
+    # 'use this clinic'" → "this clinic"). Recognise the truncated forms
+    # so the confirm resolves deterministically instead of an LLM round-trip.
+    # Safe under substring matching: the rejection guard runs first, so
+    # "not this clinic"/"this one's wrong" route to the LLM before this gate.
+    "this clinic", "this one",
 })
 
 _USE_THIS_CLINIC_REJECTIONS: frozenset = frozenset({
