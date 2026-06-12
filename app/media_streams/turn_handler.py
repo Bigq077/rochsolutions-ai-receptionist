@@ -225,6 +225,35 @@ _MULTI_SPACE_RE  = re.compile(r" {2,}")
 # ended with a colon is removed and the continuation chunk starts with ": ".
 _LEADING_JUNK_RE = re.compile(r"^[\s:,—–\-]+")
 
+# ---------------------------------------------------------------------------
+# Gate 5c — redundant booking-offer strip (CONDITIONAL on booking_flow_active)
+# ---------------------------------------------------------------------------
+# Once the caller has agreed to book (booking_flow_active set), the answer to
+# "would you like to book?" is already yes.  If the LLM appends a booking
+# offer anyway — e.g. after answering a treatment question mid-flow ("Sports
+# massage is within Mark's toolkit … Would you like to book one?") — it is
+# redundant and pushy.  This strips the offer sentence; the booking flow
+# continues via its own question injection / watchdog.
+#
+# This pattern is applied ONLY when session["booking_flow_active"] is True, so
+# pre-booking FAQ turns (where the CTA is the desired close) are untouched.
+# It matches booking-OFFER phrasings only — never the legitimate booking-flow
+# questions ("Is there a day or time…?", "Which clinic…?"), which contain none
+# of these tokens.
+_BOOKING_OFFER_RE = re.compile(
+    r"[^.!?]*\b(?:"
+    r"would you like (?:me )?to book"
+    r"|would you like to go ahead"
+    r"|shall i (?:go ahead and )?book"
+    r"|shall i find you a slot"
+    r"|shall i check availability"
+    r"|do you want to book"
+    r"|want me to book"
+    r"|like to book (?:an|a|one)\b"
+    r")\b[^.!?]*[.!?]?",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Gate 5a — chunk-level reasoning drop patterns
@@ -327,6 +356,18 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         if cleaned != result:
             logger.info("[ms_gate5] removed banned phrase (%s)", desc)
             result = cleaned
+
+    # ── Gate 5c: redundant booking-offer strip during active booking ─────────
+    # Only fires when the caller is already booking — never on pre-booking FAQ
+    # turns where the CTA is the desired close.
+    if session.get("booking_flow_active"):
+        _offer_cleaned = _BOOKING_OFFER_RE.sub("", result)
+        if _offer_cleaned != result:
+            logger.info(
+                "[ms_gate5] removed redundant booking offer "
+                "(booking_flow_active)"
+            )
+            result = _offer_cleaned
 
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)
