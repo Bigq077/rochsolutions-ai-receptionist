@@ -2380,7 +2380,7 @@ class SilenceHandler:
                     _wait,
                 )
             else:
-                _wait = max(_wait, 6.0)
+                _wait = max(_wait, 4.0)
                 logger.info(
                     "[ms_watchdog] location_q_grace=%.1fs"
                     " (first response — shy-caller grace)",
