@@ -261,6 +261,32 @@ def _extract_week_range(
         except ValueError:
             pass
 
+    # ── Pattern 0.5: relative "today" / "tomorrow" ──────────────────────────
+    # Bare relative-date words carry no week/ordinal/month anchor, so without
+    # explicit handling they fall through to None and the 30-day sweep is
+    # returned unfiltered — the caller asks for "tomorrow" and is shown the
+    # soonest slot on some *other* day as if it answered the question, and on a
+    # closed day (e.g. tomorrow=Saturday) is never told the day is unavailable
+    # (C8-4 relative-date failure: caller had to repeat 3× before the LLM
+    # happened to spell out the ISO date).  Resolve against today's date and
+    # return a single-day range so the filter narrows to exactly that day — a
+    # closed day then correctly yields zero slots and triggers the
+    # next_available path ("tomorrow's a Saturday, next is Thursday 18th").
+    # Checked before the ordinal/month patterns below: a phrase like "tomorrow
+    # afternoon around 3pm" has no month token, so those patterns return None
+    # and the day intent would otherwise be lost.
+    if re.search(r"\btomorrow\b", hint):
+        target = today + timedelta(days=1)
+        logger.info(
+            "[ms_tools] week filter: relative 'tomorrow' → single-day %s", target
+        )
+        return target, target
+    if re.search(r"\btoday\b", hint):
+        logger.info(
+            "[ms_tools] week filter: relative 'today' → single-day %s", today
+        )
+        return today, today
+
     def _week_of(d: _date_type) -> "tuple[_date_type, _date_type]":
         monday = d - timedelta(days=d.weekday())
         return monday, monday + timedelta(days=6)
@@ -1746,6 +1772,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         if not _has_week_anchor and preference:
             _has_week_anchor = bool(
                 re.fullmatch(r"\d{4}-\d{2}-\d{2}", preference.strip())
+            ) or bool(
+                # Relative single-day anchors — resolved by Pattern 0.5 in
+                # _extract_week_range.  Without this the bypass returns the full
+                # 30-day sweep for "tomorrow afternoon around 3pm" and the day
+                # intent is lost (C8-4 relative-date failure).
+                re.search(r"\b(?:today|tomorrow)\b", _hint_lower)
             ) or bool(
                 re.search(
                     r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|"
