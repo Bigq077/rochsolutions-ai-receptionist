@@ -4733,6 +4733,35 @@ class WebSocketCallHandler:
                         # legitimate turn is never suppressed.
                         self.session["location_acked_this_turn"] = False
 
+                    # ── Same-breath straggler guard ──────────────────────────
+                    # STT sometimes splits one spoken utterance into several
+                    # FINALs.  A fragment enqueued BEFORE the previous turn
+                    # finished was spoken before the caller could hear any
+                    # response, so it cannot be a reply to that turn — it is a
+                    # tail of the same breath.  The Spec N in-flight guard below
+                    # misses it when the fragment is dequeued in the brief window
+                    # just after the turn completes (llm_in_flight already
+                    # cleared).  Dispatching it fires a redundant second turn
+                    # (stress test 2026-06-12: long ankle sentence →
+                    # "...that i go down to physiotherapy clinic" → two
+                    # overlapping "Would you like to book one?" responses, which
+                    # also interleaved the TTS chunk sequence and triggered the
+                    # out-of-order stall).  A genuine reply is always enqueued
+                    # AFTER the response audio plays (well after _last_turn_done_at),
+                    # so this never drops a real answer.
+                    if (
+                        self._last_turn_done_at > 0.0
+                        and _enqueue_ts > 0.0
+                        and _enqueue_ts < self._last_turn_done_at
+                    ):
+                        logger.info(
+                            "[ms_conn] same-breath straggler dropped — enqueued"
+                            " %.0fms before prior turn completed (not a reply): %r",
+                            (self._last_turn_done_at - _enqueue_ts) * 1000.0,
+                            utterance[:60],
+                        )
+                        continue
+
                     # Spec N — concurrent LLM guard.
                     # If a turn is already in-flight (from transcript acceptance
                     # through to full completion including tool round-trips),
