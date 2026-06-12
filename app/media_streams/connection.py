@@ -2380,7 +2380,7 @@ class SilenceHandler:
                     _wait,
                 )
             else:
-                _wait = max(_wait, 9.0)
+                _wait = max(_wait, 6.0)
                 logger.info(
                     "[ms_watchdog] location_q_grace=%.1fs"
                     " (first response — shy-caller grace)",
@@ -2407,7 +2407,10 @@ class SilenceHandler:
         # which worked for the keypad-request turn ("keypad" in prompt) but
         # missed the digit-readback turn ("Just to confirm — that's 0 7..."),
         # causing WATCHDOG_START wait=6.0s instead of 10.0s on the readback.
-        if (_sess_faq_w or {}).get("flow_step") == 0:
+        if (
+            (_sess_faq_w or {}).get("flow_step") == 0
+            and not (_sess_faq_w or {}).get("v3_location_q_active")
+        ):
             _wait = max(_wait, 10.0)
             logger.info(
                 "[ms_watchdog] phone_confirm_grace=%.1fs (flow_step=0)",
