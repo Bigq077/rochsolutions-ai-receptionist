@@ -9444,11 +9444,36 @@ class WebSocketCallHandler:
                     (p.strip() for p in reversed(_parts_w) if p.strip()),
                     _t_str_w,
                 )
-                if _last_sent_w and _sh_w._prompt_contains_question(_last_sent_w):
-                    # Only arm when the last sentence is a genuine question —
+                _has_question_w = bool(
+                    _last_sent_w and _sh_w._prompt_contains_question(_last_sent_w)
+                )
+                # Fix A: while the clinic question is still pending, ALWAYS arm
+                # the location ladder — even when the LLM's re-ask ends on a
+                # statement (e.g. "We've got two locations, so I just want to
+                # make sure I check the right one for you.").  Without this the
+                # question-only guard below skipped arming, the generic 10s
+                # _silence_safety_net fired its "how can I help today?" reset,
+                # and the booking/location context was lost (stress test
+                # 2026-06-12 12:23).  The watchdog fire path keys its prompt off
+                # v3_location_q_active and builds the biased clinic confirm
+                # itself, so a non-question last sentence is fine here.
+                _loc_active_w = bool(self.session.get("v3_location_q_active"))
+                if _has_question_w or _loc_active_w:
+                    # Only arm on a genuine question OR an active clinic prompt —
                     # avoids WATCHDOG_SUPPRESSED noise for purely informational
                     # responses like "It's £75." or "Free parking is available."
-                    _sh_w.last_question         = _last_sent_w
+                    if _has_question_w:
+                        _arm_q_w = _last_sent_w
+                    else:
+                        # Location active but last sentence is a statement — seed
+                        # last_question with the canonical clinic question so any
+                        # non-ladder reader stays on-topic (the watchdog ladder
+                        # overrides this with its own biased confirm phrase).
+                        _arm_q_w = (
+                            "Which clinic were you thinking of — "
+                            "Awlstuh or Redditch?"
+                        )
+                    _sh_w.last_question         = _arm_q_w
                     _sh_w.reask_count           = 0
                     _sh_w._no_input_reask_count = 0
                     _sh_w._last_question_set_at = time.time()
@@ -9457,8 +9482,8 @@ class WebSocketCallHandler:
                     _sh_w._restart_timer()
                     logger.info(
                         "[ms_watchdog] restarted after informational response"
-                        " q_gen=%d prompt=%r",
-                        _sh_w._q_gen, _last_sent_w[:60],
+                        " q_gen=%d prompt=%r loc_active=%s",
+                        _sh_w._q_gen, _arm_q_w[:60], _loc_active_w,
                     )
                 else:
                     logger.debug(
