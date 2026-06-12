@@ -5931,9 +5931,66 @@ class WebSocketCallHandler:
                                 # location question remains pending and
                                 # Susie will re-ask after the LLM responds.
                                 _utt_lower = utterance.lower()
-                                if any(
-                                    r in _utt_lower
-                                    for r in _USE_THIS_CLINIC_REJECTIONS
+
+                                # ── Clean-negative → bind the OTHER clinic ────
+                                # With only two clinics (Awlstuh + Redditch), an
+                                # unambiguous "no" to "Did you say the Awlstuh
+                                # clinic?" resolves Redditch directly instead of
+                                # bouncing to the LLM (which used to re-ask and
+                                # loop).  Caller-requested 2026-06-12.  Strictly
+                                # gated: a bare negative with NO question/
+                                # confusion words and NO mention of the guessed
+                                # clinic — so "no, what's the difference?" or
+                                # "no, the Awlstuh one" still fall through to the
+                                # LLM rejection path below.
+                                _other_clinic = (
+                                    "redditch"
+                                    if _biased_clinic != "redditch"
+                                    else "alcester"
+                                )
+                                _neg_tokens = (
+                                    "no", "nope", "nah", "wrong",
+                                    "incorrect", "didn't", "did not",
+                                )
+                                _confusion_tokens = (
+                                    "what", "why", "how", "which",
+                                    "difference", "?", "asked", "mean",
+                                    "actually", "wait", "pardon", "repeat",
+                                    "again", "sorry", "problem", "worries",
+                                    "rush", "bother",
+                                )
+                                _biased_aliases = (
+                                    ("awlstuh", "alcester", "alster",
+                                     "all stuh", "ouston", "ousto")
+                                    if _biased_clinic == "alcester"
+                                    else ("redditch", "reditch", "red ditch")
+                                )
+                                _clean_negative = (
+                                    any(t in _utt_lower for t in _neg_tokens)
+                                    and not any(
+                                        t in _utt_lower
+                                        for t in _confusion_tokens
+                                    )
+                                    and not any(
+                                        a in _utt_lower for a in _biased_aliases
+                                    )
+                                    and len(_utt_lower.split()) <= 6
+                                )
+                                if _clean_negative:
+                                    logger.info(
+                                        "[ms_conn v3] use-this-clinic clean"
+                                        " negative %r — binding other clinic"
+                                        " %s (was bias=%s)",
+                                        utterance[:60], _other_clinic,
+                                        _biased_clinic,
+                                    )
+
+                                if (
+                                    any(
+                                        r in _utt_lower
+                                        for r in _USE_THIS_CLINIC_REJECTIONS
+                                    )
+                                    and not _clean_negative
                                 ):
                                     logger.info(
                                         "[ms_conn v3] use-this-clinic"
@@ -5985,9 +6042,12 @@ class WebSocketCallHandler:
                                 # location name) goes to the LLM.  The LLM
                                 # sees v3_location_asked=True and handles
                                 # it correctly (e.g. "Redditch" → confirm).
-                                if not any(
-                                    a in _utt_lower
-                                    for a in _USE_THIS_CLINIC_AFFIRMATIVES
+                                if (
+                                    not any(
+                                        a in _utt_lower
+                                        for a in _USE_THIS_CLINIC_AFFIRMATIVES
+                                    )
+                                    and not _clean_negative
                                 ):
                                     # Clear the flag BEFORE passing to LLM so
                                     # the next utterance isn't intercepted again
@@ -6039,13 +6099,18 @@ class WebSocketCallHandler:
                                     )
                                     continue
 
-                                # Explicit affirmative — confirm biased
-                                # clinic and proceed with booking flow.
-                                _confirmed = _biased_clinic
+                                # Confirm the clinic and proceed with booking.
+                                # Affirmative → biased clinic; clean negative →
+                                # the other clinic (only two exist).
+                                _confirmed = (
+                                    _other_clinic if _clean_negative
+                                    else _biased_clinic
+                                )
                                 logger.info(
                                     "[ms_conn v3] use-this-clinic"
-                                    " confirmed via affirmative: %s"
-                                    " (bias=%s)",
+                                    " confirmed via %s: %s (bias=%s)",
+                                    "negative-flip" if _clean_negative
+                                    else "affirmative",
                                     _confirmed, _biased_clinic,
                                 )
 
