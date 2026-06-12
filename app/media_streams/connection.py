@@ -10099,12 +10099,24 @@ class WebSocketCallHandler:
                         _phrase_1 = "Still with you — which of those days suits you?"
                     else:
                         _last_q = getattr(self._silence_handler, "last_question", "")
-                        if _last_q:
+                        # Never replay the opening greeting as a "re-ask".
+                        # last_question can still hold the greeting (q_gen=1),
+                        # which produced the jarring mid-call
+                        # "Sorry — I can't quite hear you — Hi there, I'm Susie…
+                        # press 1…" (stress test 2026-06-12).  A re-ask must be a
+                        # short prompt, so skip the greeting (or any over-long
+                        # stored line) and fall back to a brief re-anchor.
+                        _lq_low = _last_q.lower()
+                        _is_greeting = any(
+                            m in _lq_low
+                            for m in ("ai receptionist", "press 1", "i'm susie")
+                        )
+                        if _last_q and not _is_greeting and len(_last_q) <= 90:
                             _phrase_1 = f"Sorry — I can't quite hear you — {_last_q}"
                         else:
                             _phrase_1 = (
-                                "I'm just having a little trouble"
-                                " hearing you — apologies about that."
+                                "Sorry, I can't quite hear you —"
+                                " how can I help today?"
                             )
                     # Clear tts_inhibit in case a stale barge-in flag is blocking TTS.
                     self.session["tts_inhibit"] = False
