@@ -1086,7 +1086,12 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     "alstick",
     "your alcestra",
     "our alcestra",
-    "the clinic",
+    # NOTE: "the clinic" is intentionally NOT here. It is a GENERIC reference to
+    # the business, not a name mishear, so it cannot disambiguate Alcester from
+    # Redditch. It is handled separately via _GENERIC_CLINIC_ALIAS_RE with a
+    # stricter confirm-gate (see the pre-ack inline alias scan ~line 7565), so a
+    # generic FAQ like "does the clinic do sports massages" no longer silently
+    # binds Alcester (Test A wrong-clinic bug, 2026-06-12).
     # STT mishears of "Alcester" as "alter" or "host" + clinic
     # Observed across calls 5–9; substring match covers "your alter clinic",
     # "your host clinic", "your alter clin" (split transcript) etc.
@@ -1256,6 +1261,22 @@ _ALCESTER_ALIAS_WB_RE: re.Pattern = re.compile(
 _REDDITCH_ALIAS_WB_RE: re.Pattern = re.compile(
     r"\b(?:" + "|".join(
         re.escape(a) for a in sorted(_REDDITCH_ALIASES, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+
+# Generic clinic references — phrases that name "a clinic" generically rather
+# than mishearing a specific clinic NAME. These resolve to the default site
+# (Alcester, the primary Mon–Fri clinic) but ONLY in a genuine clinic-choice
+# context, so a generic FAQ ("does the clinic do sports massages") cannot
+# silently bind a location. Gated separately from the name-mishear sets above:
+# see the pre-ack inline alias scan (~line 7565).
+_GENERIC_CLINIC_ALIASES: frozenset[str] = frozenset({
+    "the clinic",
+})
+_GENERIC_CLINIC_ALIAS_RE: re.Pattern = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(a) for a in sorted(_GENERIC_CLINIC_ALIASES, key=len, reverse=True)
     ) + r")\b",
     re.IGNORECASE,
 )
@@ -7562,6 +7583,45 @@ class WebSocketCallHandler:
                                         "did you mean redditch",
                                     )
                                 )
+                                # ── Generic "the clinic" reference ───────────
+                                # "the clinic" is the default site (Alcester)
+                                # but NOT a name mishear, so it must only confirm
+                                # in a genuine clinic-CHOICE context: explicit
+                                # booking words in THIS transcript, or a direct
+                                # answer to "which clinic?". Bare
+                                # booking_flow_active is deliberately excluded —
+                                # a treatment FAQ ("does the clinic do sports
+                                # massages") flips booking_flow_active True yet
+                                # carries no booking word, and previously bound
+                                # Alcester silently (Test A wrong-clinic bug,
+                                # 2026-06-12). Promote to a confirmable Alcester
+                                # signal only when the strict gate passes;
+                                # otherwise note as a soft candidate so the
+                                # booking-ack branch still asks which clinic.
+                                if (
+                                    _GENERIC_CLINIC_ALIAS_RE.search(_n_inline)
+                                    and not _has_alcester
+                                    and not _has_redditch
+                                ):
+                                    if (
+                                        _transcript_has_booking_intent(utterance)
+                                        or _prev_was_loc_q
+                                    ):
+                                        _has_alcester = True
+                                        logger.info(
+                                            "[ms_conn v3] generic 'the clinic'"
+                                            " in choice context — treated as"
+                                            " alcester default"
+                                        )
+                                    else:
+                                        self.session[
+                                            "v3_soft_location_candidate"
+                                        ] = "alcester"
+                                        logger.info(
+                                            "[ms_conn v3] generic 'the clinic'"
+                                            " in FAQ context — candidate noted,"
+                                            " not confirmed: alcester"
+                                        )
                                 if _has_alcester and not _has_redditch:
                                     if _inline_has_intent or _prev_was_loc_q:
                                         self.session["selected_location"] = (
