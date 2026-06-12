@@ -1899,7 +1899,12 @@ class SilenceHandler:
                         else "Sorry, I didn't quite catch that. Which clinic were you thinking of — Awlstuh or Redditch?"
                     )
                 else:
-                    phrase = "Did you say the Awlstuh clinic?"
+                    # Solicit "use this clinic" explicitly — a bare "yes" is
+                    # often dropped by STT; the distinct phrase lands reliably.
+                    phrase = (
+                        "Did you say the Awlstuh clinic? "
+                        "If so, just say 'use this clinic'."
+                    )
                     if _sr_sess:
                         _sr_sess["v3_awaiting_use_this_clinic"] = True
                         _sr_sess["last_question"] = phrase
@@ -2814,7 +2819,14 @@ class SilenceHandler:
                     _v3_lrc = int((_sess or {}).get("v3_location_reask_count", 0))
                     if _v3_lrc == 0:
                         # Rung 1: biased confirm — lets the caller say yes/no once.
-                        phrase = "Did you say the Awlstuh clinic?"
+                        # Solicit "use this clinic" explicitly: a bare "yes" is
+                        # frequently dropped by STT, whereas the distinct phrase
+                        # "use this clinic" lands reliably (caller feedback
+                        # 2026-06-12).
+                        phrase = (
+                            "Did you say the Awlstuh clinic? "
+                            "If so, just say 'use this clinic'."
+                        )
                         if _sess is not None:
                             _sess["v3_awaiting_use_this_clinic"] = True
                             _sess["last_question"] = phrase
@@ -10167,7 +10179,25 @@ class WebSocketCallHandler:
                     # the last stored question (if any) or a neutral "still there?"
                     # prompt so we never ask about "days" before any slots have been
                     # shown to the caller.
-                    if self.session.get("v3_awaiting_slot_selection"):
+                    if self.session.get("v3_location_q_active"):
+                        # Location still unresolved (STT can't catch the clinic
+                        # name — "ousto"/"ouston"/"the clinic").  Do NOT fall
+                        # through to the generic "how can I help today?" reset:
+                        # that throws away the booking/location context and
+                        # forces the caller to start over (stress test
+                        # 2026-06-12 12:23).  Mirror the watchdog location-ladder
+                        # rung-1 biased binary confirm and solicit the
+                        # STT-robust "use this clinic" phrase, routing the next
+                        # answer through the existing use-this-clinic handler.
+                        _phrase_1 = (
+                            "Did you say the Awlstuh clinic? "
+                            "If so, just say 'use this clinic'."
+                        )
+                        self.session["v3_awaiting_use_this_clinic"] = True
+                        self.session["v3_use_this_clinic_bias"] = "alcester"
+                        self.session["last_question"] = _phrase_1
+                        self.session["last_bot_prompt"] = _phrase_1
+                    elif self.session.get("v3_awaiting_slot_selection"):
                         _phrase_1 = "Still with you — which of those days suits you?"
                     else:
                         _last_q = getattr(self._silence_handler, "last_question", "")
