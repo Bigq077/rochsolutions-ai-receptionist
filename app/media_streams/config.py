@@ -87,7 +87,17 @@ ASSEMBLYAI_WS_URL = (
     "&sample_rate=16000"
     "&encoding=pcm_s16le"
     "&format_turns=false"
-    "&min_turn_silence=200"
+    # min_turn_silence: ms of silence before AssemblyAI ends the caller's turn.
+    # Was 200ms — far too aggressive: any mid-sentence hesitation >200ms split
+    # one spoken utterance into multiple FINALs, which fired overlapping LLM
+    # turns (double responses) and interleaved the TTS chunk sequence (the
+    # out-of-order stalls).  Stress test 2026-06-12: a ~0.9s pause mid-ramble
+    # split "...meeting online" / "to check if mark has diagnosed..." into two
+    # turns.  Raised to 800ms to capture run-on speech as a single FINAL.
+    # Trade-off: ~600ms more latency before the bot replies.  Tunable dial — go
+    # higher (toward the v2-proven 1200) if long-pause ramblers still split;
+    # lower if replies feel sluggish.
+    "&min_turn_silence=800"
 )
 
 # v2 fallback — 8kHz input, no upsampling needed (battle-tested, older)
