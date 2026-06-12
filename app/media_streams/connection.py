@@ -3733,6 +3733,19 @@ class WebSocketCallHandler:
         self._tts_pending_terminal: int = 0
         self._tts_pending_terminal_text: str = ""
         self._tts_pending_terminal_chunk_start_ts: float = 0.0
+        # Cumulative playout clock (monotonic).  Twilio buffers audio
+        # faster-than-realtime, so every chunk's TTS-done sentinel is processed
+        # by _send_loop within ~1s of the others.  If each chunk's finish timer
+        # slept only its OWN play duration from that near-simultaneous baseline,
+        # a long middle chunk's timer would outlast the short terminal chunk's
+        # timer — the terminal would "finish" first, trip the out-of-order
+        # guard, and the 4s OOO backstop would force-fire the watchdog WHILE the
+        # caller was still hearing the answer (premature "Sorry, I didn't catch
+        # that" re-ask on every multi-sentence FAQ turn).  Instead we track the
+        # absolute monotonic time the queued audio actually finishes playing and
+        # schedule each chunk's callback for that instant, so chunks finish
+        # strictly in order.  Reset to 0.0 on barge-in (Twilio buffer cleared).
+        self._tts_playout_end_mono: float = 0.0
 
         # ── Global 10-second silence safety net ───────────────────────────
         # _last_audio_or_transcript_ts is updated at TTS start and on every
@@ -9114,12 +9127,26 @@ class WebSocketCallHandler:
                     # silence-transfer cascade (12s + 10s + 4s windows) even though
                     # Susie never spoke.
                     if text and play_secs > 0.01:
+                        # Cumulative playout scheduling: this chunk's audio
+                        # actually finishes playing only after all previously
+                        # queued audio has played out.  Anchor to the running
+                        # playout-end clock (or now, whichever is later, so a
+                        # gap since the last chunk self-heals) and schedule the
+                        # finish callback for that absolute instant.  This makes
+                        # chunks finish strictly in order — the terminal chunk
+                        # always last — so the OOO stall / 4s force-fire path is
+                        # no longer reached on normal multi-sentence responses.
+                        now = time.monotonic()
+                        playout_start = max(now, self._tts_playout_end_mono)
+                        playout_end   = playout_start + play_secs
+                        self._tts_playout_end_mono = playout_end
+                        sched_delay = max(0.0, playout_end - now)
                         logger.info(
                             "[ms_silence] tts_finished in %.1fs: %r",
-                            play_secs, text[:60],
+                            sched_delay, text[:60],
                         )
                         asyncio.create_task(
-                            self._delayed_tts_finished(play_secs, text, self._tts_gen, chunk_start_ts, chunk_q_gen, chunk_seq),
+                            self._delayed_tts_finished(sched_delay, text, self._tts_gen, chunk_start_ts, chunk_q_gen, chunk_seq),
                             name="ms_silence_tts_delay",
                         )
                     elif text:
@@ -9265,15 +9292,20 @@ class WebSocketCallHandler:
                         "waiting for earlier chunks (completed=%s expected=%d)",
                         _fired_seq, sorted(self._tts_chunks_completed), _expected_seq,
                     )
-                    # Safety-net: if earlier chunks never arrive the call would
-                    # hang indefinitely.  After 4 s, force-fire the silence timer
-                    # using the stashed terminal-chunk context.
+                    # Crash-only backstop: with cumulative playout scheduling
+                    # (see _tts_playout_end_mono) chunks now finish strictly in
+                    # order, so reaching this branch means a chunk's finish task
+                    # genuinely never ran (e.g. cancelled/crashed), NOT merely a
+                    # long middle chunk still playing.  The old 4s timeout fired
+                    # mid-playback on normal multi-sentence answers and produced
+                    # the premature "Sorry, I didn't catch that" re-ask; 30s makes
+                    # this a true hang-guard that never trips during real audio.
                     _ooo_guard_seq = _expected_seq
                     _ooo_guard_text = text
                     _ooo_guard_ts   = chunk_started_at
 
                     async def _ooo_force_fire() -> None:
-                        await asyncio.sleep(4.0)
+                        await asyncio.sleep(30.0)
                         # Stale-guard: a new TTS response has superseded this one.
                         if self._tts_expected_final_seq != _ooo_guard_seq:
                             logger.debug(
@@ -9292,8 +9324,9 @@ class WebSocketCallHandler:
                             return
                         logger.warning(
                             "[ms_tts] _ooo_force_fire: earlier chunks never "
-                            "arrived after 4 s for terminal seq %d — "
-                            "force-firing silence timer",
+                            "arrived after 30 s for terminal seq %d — "
+                            "force-firing silence timer (chunk task likely "
+                            "crashed/cancelled)",
                             _ooo_guard_seq,
                         )
                         # Clear stashed state so the normal resolver won't
@@ -9460,6 +9493,10 @@ class WebSocketCallHandler:
 
         _drain_queue(self.tts_text_queue)
         _drain_queue(self.audio_out_queue)
+        # Twilio buffer is cleared below — discard the cumulative playout clock so
+        # the next response schedules from `now`, not the cancelled audio's
+        # future playout-end (mirrors the barge-in reset).
+        self._tts_playout_end_mono = 0.0
 
         if self.stream_sid:
             try:
@@ -9581,6 +9618,12 @@ class WebSocketCallHandler:
             self._tts_pending_terminal = 0
             self._tts_pending_terminal_text = ""
             self._tts_pending_terminal_chunk_start_ts = 0.0
+            # Reset the cumulative playout clock: the Twilio buffer is cleared
+            # below, so any audio scheduled into the future is discarded.  Without
+            # this, the next response's first chunk would be scheduled against the
+            # interrupted response's stale (future) playout-end, adding phantom
+            # delay before its finish callback / watchdog arming.
+            self._tts_playout_end_mono = 0.0
             # Inhibit _tts_loop from speaking any LLM chunks that arrive after
             # the barge-in until the new turn completes (Bug 5 — stale output).
             self.session["tts_inhibit"] = True
