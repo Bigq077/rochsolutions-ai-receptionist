@@ -8161,9 +8161,14 @@ class WebSocketCallHandler:
                                             if _soft_cand == "alcester"
                                             else "Redditch"
                                         )
+                                        # Match the watchdog rung-1 wording
+                                        # exactly so a no-input re-ask reads as
+                                        # the SAME question, not a new one, and
+                                        # tells the caller how to answer.
                                         _loc_q = (
-                                            f"Just to confirm — was that"
-                                            f" for our {_cand_disp} clinic?"
+                                            f"Did you say the {_cand_disp}"
+                                            f" clinic? If so, just say 'use"
+                                            f" this clinic'."
                                         )
                                         # Arm the biased yes/no handler so
                                         # the caller's 'yes' immediately
