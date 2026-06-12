@@ -363,11 +363,27 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
     if session.get("booking_flow_active"):
         _offer_cleaned = _BOOKING_OFFER_RE.sub("", result)
         if _offer_cleaned != result:
-            logger.info(
-                "[ms_gate5] removed redundant booking offer "
-                "(booking_flow_active)"
-            )
-            result = _offer_cleaned
+            # Gate 5c removes a REDUNDANT trailing CTA tacked onto an FAQ answer
+            # mid-booking (e.g. "...eighty parking spaces. Would you like to
+            # book?").  It must NOT eat the legitimate closing confirmation
+            # ("shall I go ahead and book that in?").  _BOOKING_OFFER_RE spans
+            # [^.!?]* on both sides, so when that confirmation is the whole
+            # response it matches end-to-end and strips to empty — the caller
+            # then hears the deaf-sounding "Sorry, I didn't quite catch that"
+            # fallback, killing a completed booking (Test 1, 2026-06-12: caller
+            # entered phone via DTMF, confirmation stripped → abandoned).
+            # Only strip when substantive content remains.
+            if _offer_cleaned.strip():
+                logger.info(
+                    "[ms_gate5] removed redundant booking offer "
+                    "(booking_flow_active)"
+                )
+                result = _offer_cleaned
+            else:
+                logger.info(
+                    "[ms_gate5] booking offer KEPT — it is the whole response "
+                    "(closing confirmation), not a redundant tail"
+                )
 
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)
