@@ -5162,12 +5162,22 @@ class WebSocketCallHandler:
                             self.post_slot_confirmation_pending = False
                             # Fall through to normal LLM dispatch below.
                         elif (
-                            self.slot_map_stage == SlotMapStage.DAY_SELECTION
+                            self.slot_map_stage in (
+                                SlotMapStage.DAY_SELECTION,
+                                SlotMapStage.TIME_SELECTION,
+                            )
                             and _is_non_specific_slot_affirmation(utterance)
                         ):
                             # CODE SPEC AJ — patient confirmed something works
-                            # but didn't say which day. Ask them to specify using
-                            # the actual day labels from the active slot map.
+                            # but didn't say WHICH option (day or time). Ask them
+                            # to specify using the actual labels from the active
+                            # slot map.  Bug B: previously gated to DAY_SELECTION
+                            # only, so a non-specific affirmation during
+                            # TIME_SELECTION ("works for me" with two times
+                            # offered) fell through to _is_short_meaningless_
+                            # fragment and was SILENTLY dropped → ~18s dead air
+                            # (Redditch call 18:31:34). Covering TIME_SELECTION
+                            # too re-asks which option instead of going silent.
                             _aj_map = self.session.get("v3_dtmf_slot_map", {})
                             _aj_days = list(_aj_map.values())
                             if len(_aj_days) >= 3:
@@ -5183,7 +5193,7 @@ class WebSocketCallHandler:
                             elif len(_aj_days) == 1:
                                 _clarify = f"Did you mean {_aj_days[0]}?"
                             else:
-                                _clarify = "Which day works best for you?"
+                                _clarify = "Which option works best for you?"
                             logger.info(
                                 "[ms_conn] non-specific slot affirmation %r"
                                 " — asking to clarify: %r",
