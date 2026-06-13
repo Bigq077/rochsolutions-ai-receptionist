@@ -9591,7 +9591,22 @@ class WebSocketCallHandler:
                     # Only arm on a genuine question OR an active clinic prompt —
                     # avoids WATCHDOG_SUPPRESSED noise for purely informational
                     # responses like "It's £75." or "Free parking is available."
-                    if _has_question_w:
+                    if self.session.get("v3_awaiting_use_this_clinic"):
+                        # Biased confirm is armed (soft-candidate / use-this-
+                        # clinic path). The watchdog fire path speaks the rung-1
+                        # biased confirm regardless of the last spoken sentence,
+                        # so seed last_question with that SAME phrase — keeps the
+                        # log and any non-ladder reader consistent with what is
+                        # actually spoken. Checked first because the biased
+                        # confirm ends on the instruction "...just say 'use this
+                        # clinic'." (not a question), so _has_question_w would
+                        # otherwise mis-seed it with the generic open Q. Matches
+                        # the fire path's rung-1 alcester constant (line ~2854).
+                        _arm_q_w = (
+                            "Did you say the Awlstuh clinic? "
+                            "If so, just say 'use this clinic'."
+                        )
+                    elif _has_question_w:
                         _arm_q_w = _last_sent_w
                     else:
                         # Location active but last sentence is a statement — seed
