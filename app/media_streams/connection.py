@@ -4738,16 +4738,28 @@ class WebSocketCallHandler:
                     except asyncio.TimeoutError:
                         continue
 
-                    # Unpack timestamped item from queue
+                    # Unpack timestamped item from queue.
+                    # Internal re-injections (FAQ pending / preference re-queues
+                    # after a clinic ack) carry a 3rd element flagging them as
+                    # synthetic.  These are NOT STT-origin finals, so they must
+                    # bypass the STT-phantom guards below (barge-in flush, C8-2
+                    # location-ack drop, same-breath straggler) — those guards
+                    # exist only to discard stray STT fragments and would
+                    # otherwise eat a deliberately re-queued utterance that was
+                    # enqueued microseconds before the ack turn completed.
+                    _synthetic = False
                     if isinstance(_raw_item, tuple):
-                        _enqueue_ts, utterance = _raw_item
+                        if len(_raw_item) == 3:
+                            _enqueue_ts, utterance, _synthetic = _raw_item
+                        else:
+                            _enqueue_ts, utterance = _raw_item
                     else:
                         _enqueue_ts, utterance = 0.0, _raw_item  # legacy safety
 
                     # Discard stale transcripts enqueued before the last confirmed
                     # barge-in — these are phantom STT finals from a burst that
                     # fired before the caller finished interrupting.
-                    if _enqueue_ts < self._barge_in_flush_before:
+                    if not _synthetic and _enqueue_ts < self._barge_in_flush_before:
                         logger.info(
                             "[ms_conn] stale transcript discarded (pre-barge-in): %r",
                             utterance[:80],
@@ -4770,7 +4782,7 @@ class WebSocketCallHandler:
                     # than the window (the caller must hear the question first,
                     # and the question audio alone takes >1.5s to play), so a
                     # real reply is never suppressed.
-                    if self.session.get("location_acked_this_turn"):
+                    if not _synthetic and self.session.get("location_acked_this_turn"):
                         _loc_ack_age = time.monotonic() - self._location_ack_ts
                         if _loc_ack_age < self._LOCATION_ACK_DROP_WINDOW:
                             logger.info(
@@ -4802,7 +4814,8 @@ class WebSocketCallHandler:
                     # AFTER the response audio plays (well after _last_turn_done_at),
                     # so this never drops a real answer.
                     if (
-                        self._last_turn_done_at > 0.0
+                        not _synthetic
+                        and self._last_turn_done_at > 0.0
                         and _enqueue_ts > 0.0
                         and _enqueue_ts < self._last_turn_done_at
                     ):
@@ -6236,7 +6249,8 @@ class WebSocketCallHandler:
                                             )
                                         else:
                                             await self.transcript_queue.put(
-                                                (time.monotonic(), _utc_tp)
+                                                (time.monotonic(), _utc_tp,
+                                                 True)
                                             )
                                             logger.info(
                                                 "[ms_conn v3] use-this-clinic:"
@@ -6446,8 +6460,13 @@ class WebSocketCallHandler:
                                             "v3_faq_pending_utterance", None
                                         )
                                         if _faq_pending:
+                                            # synthetic=True: bypass STT-phantom
+                                            # guards — this re-injection races the
+                                            # ack turn's completion and would else
+                                            # be dropped as a same-breath straggler.
                                             await self.transcript_queue.put(
-                                                (time.monotonic(), _faq_pending)
+                                                (time.monotonic(), _faq_pending,
+                                                 True)
                                             )
                                             logger.info(
                                                 "[ms_conn v3] FAQ pending"
@@ -6473,7 +6492,8 @@ class WebSocketCallHandler:
                                             )
                                             if _ae_tp:
                                                 await self.transcript_queue.put(
-                                                    (time.monotonic(), _ae_tp)
+                                                    (time.monotonic(), _ae_tp,
+                                                     True)
                                                 )
                                                 logger.info(
                                                     "[ms_conn v3] time"
@@ -6764,7 +6784,8 @@ class WebSocketCallHandler:
                                             # Time preference known — re-queue
                                             # so LLM fires check_availability.
                                             await self.transcript_queue.put(
-                                                (time.monotonic(), _h_tp)
+                                                (time.monotonic(), _h_tp,
+                                                 True)
                                             )
                                             logger.info(
                                                 "[ms_conn v3] Haiku resolve:"
