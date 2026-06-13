@@ -541,6 +541,43 @@ _USE_THIS_CLINIC_REJECTIONS: frozenset = frozenset({
 })
 
 
+# ── Unified clinic-location ladder copy ──────────────────────────────────────
+# Every "ask location" path (booking, FAQ, reschedule/cancel) shares this same
+# 3-rung ladder so the caller hears identical, friendly wording everywhere —
+# whether the re-ask is triggered by silence (watchdog) or by an unintelligible
+# answer (the location-answer intercept):
+#   Rung 1 — open choice (the first ask).
+#   Rung 2 — biased confirm; arms the use-this-clinic handler.  KEEP the literal
+#            "use this clinic" trigger phrase — the handler keys off it.
+#   Rung 3 — DTMF keypad fallback.  KEEP "press 1 … 2" + the Awlstuh/Redditch
+#            mapping — the DTMF handler and clinic binding rely on it.
+# Spoken strings use "Awlstuh" (phonetic) for correct TTS pronunciation — do
+# NOT change to "Alcester".  Rung 1 keeps "Awlstuh or Redditch" so the
+# location-question detectors elsewhere (substring checks) still match.
+_LOC_RUNG1_OPEN: str = (
+    "Is this for our Awlstuh or Redditch clinic?"
+)
+
+
+def _loc_rung2_confirm(clinic_disp: str = "Awlstuh") -> str:
+    """Rung-2 biased confirm, parametrised by clinic so the booking-ack path
+    (which may bias Redditch) and the watchdog/silence ladder (always Awlstuh)
+    speak the SAME wording.  Keeps the literal "use this clinic" trigger."""
+    return (
+        f"No worries — did you say the {clinic_disp} clinic? "
+        f"If so, just say 'use this clinic'."
+    )
+
+
+# Convenience alias for the Awlstuh-constant sites (watchdog / silence / seeds).
+_LOC_RUNG2_CONFIRM: str = _loc_rung2_confirm("Awlstuh")
+
+_LOC_RUNG3_DTMF: str = (
+    "No problem at all — on your keypad, just press 1 for Awlstuh, "
+    "or 2 for Redditch."
+)
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -1919,31 +1956,31 @@ class SilenceHandler:
             if (_sr_sess or {}).get("v3_location_q_active"):
                 _sr_lrc = int((_sr_sess or {}).get("v3_location_reask_count", 0))
                 if _sr_lrc == 0:
-                    _sr_lq = (_sr_sess or {}).get("last_question", "")
-                    phrase = (
-                        "Sorry, I didn't quite catch that. " + _sr_lq.strip()
-                        if _sr_lq and "how can i help" not in _sr_lq.lower()
-                        else "Sorry, I didn't quite catch that. Which clinic were you thinking of — Awlstuh or Redditch?"
-                    )
-                else:
-                    # Solicit "use this clinic" explicitly — a bare "yes" is
-                    # often dropped by STT; the distinct phrase lands reliably.
-                    phrase = (
-                        "Did you say the Awlstuh clinic? "
-                        "If so, just say 'use this clinic'."
-                    )
+                    # Rung 2 — biased confirm; arms the use-this-clinic handler.
+                    # (The open question was already the first ask; the first
+                    # re-ask escalates straight to the biased confirm — same as
+                    # the watchdog ladder.)
+                    phrase = _LOC_RUNG2_CONFIRM
                     if _sr_sess:
                         _sr_sess["v3_awaiting_use_this_clinic"] = True
                         _sr_sess["last_question"] = phrase
                         _sr_sess["last_bot_prompt"] = phrase
-                        # Bias: rung-1 phrase is always "Did you say the Awlstuh
-                        # clinic?" (Alcester).  Set directly rather than parsing
-                        # the human-readable phrase — fragile if text ever changes.
-                        _sr_bias = "alcester"
-                        _sr_sess["v3_use_this_clinic_bias"] = _sr_bias
+                        _sr_sess["v3_use_this_clinic_bias"] = "alcester"
                         logger.info(
-                            "[ms_conn v3] watchdog bias set: %s (rung-1 alcester constant)",
-                            _sr_bias,
+                            "[ms_conn v3] silence ladder rung 2"
+                            " (biased confirm) — bias=alcester",
+                        )
+                else:
+                    # Rung 3 — DTMF keypad fallback; deterministic terminal.
+                    phrase = _LOC_RUNG3_DTMF
+                    if _sr_sess:
+                        _sr_sess["v3_awaiting_location_dtmf"] = True
+                        _sr_sess["v3_awaiting_use_this_clinic"] = False
+                        _sr_sess["v3_location_q_active"] = False
+                        _sr_sess["last_question"] = phrase
+                        _sr_sess["last_bot_prompt"] = phrase
+                        logger.info(
+                            "[ms_conn v3] silence ladder rung 3 (DTMF keypad)",
                         )
                 if _sr_sess:
                     _sr_sess["v3_location_reask_count"] = _sr_lrc + 1
@@ -2850,10 +2887,7 @@ class SilenceHandler:
                         # frequently dropped by STT, whereas the distinct phrase
                         # "use this clinic" lands reliably (caller feedback
                         # 2026-06-12).
-                        phrase = (
-                            "Did you say the Awlstuh clinic? "
-                            "If so, just say 'use this clinic'."
-                        )
+                        phrase = _LOC_RUNG2_CONFIRM
                         if _sess is not None:
                             _sess["v3_awaiting_use_this_clinic"] = True
                             _sess["last_question"] = phrase
@@ -2872,10 +2906,7 @@ class SilenceHandler:
                     else:
                         # Rung 2: DTMF keypad fallback — completely deterministic, no STT.
                         # Clear v3_location_q_active so the ladder stops here.
-                        phrase = (
-                            "No problem — press 1 on your keypad for Awlstuh "
-                            "or 2 for Redditch."
-                        )
+                        phrase = _LOC_RUNG3_DTMF
                         if _sess is not None:
                             _sess["v3_awaiting_location_dtmf"] = True
                             _sess["v3_awaiting_use_this_clinic"] = False
@@ -5613,10 +5644,7 @@ class WebSocketCallHandler:
                                     "our Awlstuh or Redditch clinic?"
                                 )
                             else:
-                                _loc_q = (
-                                    "Which clinic were you thinking of "
-                                    "— Awlstuh or Redditch?"
-                                )
+                                _loc_q = _LOC_RUNG1_OPEN
                             await self.tts_text_queue.put(_loc_q)
                             self.session["last_bot_prompt"] = _loc_q
                             self.session["last_question"] = _loc_q
@@ -6089,6 +6117,59 @@ class WebSocketCallHandler:
                                     )
                                     and not _clean_negative
                                 ):
+                                    # Third try on the ANSWER path.  The caller
+                                    # responded to the rung-2 biased confirm but
+                                    # it's not a clear yes/no (questions and
+                                    # rejections were already routed to the LLM
+                                    # by the guard above).  If the answer names a
+                                    # clinic (e.g. just "Redditch"), let the LLM
+                                    # resolve it — must NOT force DTMF and lose a
+                                    # valid choice.  If it names no clinic at all,
+                                    # it's garble → escalate to the rung-3 DTMF
+                                    # keypad so the ladder matches the booking
+                                    # flow (open → biased confirm → DTMF).
+                                    _utc_has_clinic = any(
+                                        a in _utt_lower
+                                        for a in (
+                                            _ALCESTER_ALIASES
+                                            | _REDDITCH_ALIASES
+                                        )
+                                    )
+                                    if not _utc_has_clinic:
+                                        _utc_dtmf = _LOC_RUNG3_DTMF
+                                        self.session[
+                                            "v3_awaiting_use_this_clinic"
+                                        ] = False
+                                        self.session[
+                                            "v3_awaiting_location_dtmf"
+                                        ] = True
+                                        self.session[
+                                            "v3_location_q_active"
+                                        ] = False
+                                        self.session[
+                                            "v3_location_reask_count"
+                                        ] = int(self.session.get(
+                                            "v3_location_reask_count", 0)) + 1
+                                        self.session[
+                                            "last_question"
+                                        ] = _utc_dtmf
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _utc_dtmf
+                                        logger.info(
+                                            "[ms_conn v3] use-this-clinic — no"
+                                            " clear answer & no clinic named"
+                                            " after biased confirm → rung 3"
+                                            " DTMF keypad: %r",
+                                            utterance[:60],
+                                        )
+                                        await self.tts_text_queue.put(_utc_dtmf)
+                                        self._silence_handler\
+                                            .on_question_asked(_utc_dtmf)
+                                        await save_session(
+                                            self.call_sid, self.session
+                                        )
+                                        continue
                                     # Clear the flag BEFORE passing to LLM so
                                     # the next utterance isn't intercepted again
                                     # by the use-this-clinic handler.
@@ -6097,8 +6178,8 @@ class WebSocketCallHandler:
                                     ] = False
                                     logger.info(
                                         "[ms_conn v3] use-this-clinic"
-                                        " — no clear affirmative, passing"
-                                        " to LLM (flag cleared): %r",
+                                        " — clinic named but not a clean yes/no,"
+                                        " passing to LLM (flag cleared): %r",
                                         utterance[:60],
                                     )
                                     self._filler_breath_injected = False
@@ -6904,62 +6985,77 @@ class WebSocketCallHandler:
                                             continue
 
                                         # ── Haiku unknown, non-question ─────
-                                        # Haiku couldn't classify the response
-                                        # and it's not a question — route to
-                                        # the full LLM instead of looping
-                                        # another biased confirm. Clear the
-                                        # flag so the next utterance isn't
-                                        # intercepted again.
-                                        self.session[
-                                            "v3_awaiting_use_this_clinic"
-                                        ] = False
-                                        logger.info(
-                                            "[ms_conn v3] Haiku unknown"
-                                            " non-question — clearing flag,"
-                                            " routing to LLM: %r",
-                                            utterance[:60],
-                                        )
-                                        self._filler_breath_injected = False
-                                        await self._filler.arm(self.session)
-                                        self._current_llm_task = (
-                                            asyncio.create_task(
-                                                llm.run_turn(
-                                                    user_text=utterance,
-                                                    session=self.session,
-                                                    call_sid=self.call_sid,
-                                                    stream_sid=(
-                                                        self.stream_sid
-                                                    ),
-                                                    tts_text_queue=(
-                                                        self.tts_text_queue
-                                                    ),
-                                                    audio_out_queue=(
-                                                        self.audio_out_queue
-                                                    ),
-                                                    websocket=(
-                                                        self.websocket
-                                                    ),
-                                                    on_transfer=(
-                                                        self
-                                                        ._on_transfer_request
-                                                    ),
-                                                ),
-                                                name="ms_llm_turn",
+                                        # Garbled clinic answer (STT couldn't
+                                        # resolve it) and NOT a question — climb
+                                        # the SAME location ladder the silence
+                                        # watchdog uses, so a voice-answer re-ask
+                                        # and a silence re-ask are identical:
+                                        #   reask_count 0  → rung 2 biased confirm
+                                        #   reask_count ≥1 → rung 3 DTMF keypad
+                                        # v3_location_reask_count is shared with
+                                        # the watchdog so the two never double up.
+                                        # (Previously routed to the LLM, which
+                                        # re-asked with ad-hoc wording — the
+                                        # 17:37 spiral.  Questions still go to the
+                                        # LLM via the guard above.)
+                                        _hu_lrc = int(
+                                            self.session.get(
+                                                "v3_location_reask_count", 0
                                             )
                                         )
-                                        try:
-                                            await self._current_llm_task
-                                        except asyncio.CancelledError:
+                                        if _hu_lrc == 0:
+                                            _hu_phrase = _LOC_RUNG2_CONFIRM
+                                            self.session[
+                                                "v3_awaiting_use_this_clinic"
+                                            ] = True
+                                            self.session[
+                                                "v3_use_this_clinic_bias"
+                                            ] = "alcester"
                                             logger.info(
-                                                "[ms_conn v3] Haiku-unknown"
-                                                " non-q LLM turn cancelled"
-                                                " — newer transcript wins"
+                                                "[ms_conn v3] Haiku unknown"
+                                                " non-question — rung 2 biased"
+                                                " confirm (bias=alcester): %r",
+                                                utterance[:60],
                                             )
-                                        finally:
-                                            self._current_llm_task = None
+                                        else:
+                                            _hu_phrase = _LOC_RUNG3_DTMF
+                                            self.session[
+                                                "v3_awaiting_location_dtmf"
+                                            ] = True
+                                            self.session[
+                                                "v3_awaiting_use_this_clinic"
+                                            ] = False
+                                            self.session[
+                                                "v3_location_q_active"
+                                            ] = False
+                                            logger.info(
+                                                "[ms_conn v3] Haiku unknown"
+                                                " non-question — rung 3 DTMF"
+                                                " keypad: %r",
+                                                utterance[:60],
+                                            )
+                                        self.session[
+                                            "v3_location_reask_count"
+                                        ] = _hu_lrc + 1
+                                        self.session[
+                                            "last_question"
+                                        ] = _hu_phrase
+                                        self.session[
+                                            "last_bot_prompt"
+                                        ] = _hu_phrase
+                                        # v3_location_asked stays True so the
+                                        # caller's next answer re-enters this
+                                        # intercept (rung 2 also armed the
+                                        # use-this-clinic handler for it).
+                                        await self.tts_text_queue.put(
+                                            _hu_phrase
+                                        )
+                                        self._silence_handler\
+                                            .on_question_asked(_hu_phrase)
                                         await save_session(
                                             self.call_sid, self.session
                                         )
+                                        continue
 
                         else:
                             # ── Normal path: run free-form LLM turn ─────────
@@ -7195,10 +7291,7 @@ class WebSocketCallHandler:
                                     _FAQ_CLINIC_SPECIFIC_RE.search(utterance)
                                 )
                             ):
-                                _faq_clinic_q = (
-                                    "Which clinic were you thinking of"
-                                    " — Awlstuh or Redditch?"
-                                )
+                                _faq_clinic_q = _LOC_RUNG1_OPEN
                                 await self.tts_text_queue.put(_faq_clinic_q)
                                 # Write into history so next LLM turn has
                                 # parking/address/hours context for the clinic.
@@ -8182,15 +8275,11 @@ class WebSocketCallHandler:
                                             if _soft_cand == "alcester"
                                             else "Redditch"
                                         )
-                                        # Match the watchdog rung-1 wording
-                                        # exactly so a no-input re-ask reads as
-                                        # the SAME question, not a new one, and
-                                        # tells the caller how to answer.
-                                        _loc_q = (
-                                            f"Did you say the {_cand_disp}"
-                                            f" clinic? If so, just say 'use"
-                                            f" this clinic'."
-                                        )
+                                        # Shared rung-2 copy (parametrised by
+                                        # clinic) so a no-input re-ask reads as
+                                        # the SAME question the watchdog speaks,
+                                        # and tells the caller how to answer.
+                                        _loc_q = _loc_rung2_confirm(_cand_disp)
                                         # Arm the biased yes/no handler so
                                         # the caller's 'yes' immediately
                                         # confirms the candidate.
@@ -8207,10 +8296,7 @@ class WebSocketCallHandler:
                                             _soft_cand,
                                         )
                                     else:
-                                        _loc_q = (
-                                            "Which clinic were you thinking "
-                                            "of — Awlstuh or Redditch?"
-                                        )
+                                        _loc_q = _LOC_RUNG1_OPEN
                                     if _loc_q is not None:
                                         # Only queue to TTS if the LLM didn't
                                         # already ask the location question in
@@ -9623,10 +9709,7 @@ class WebSocketCallHandler:
                         # clinic'." (not a question), so _has_question_w would
                         # otherwise mis-seed it with the generic open Q. Matches
                         # the fire path's rung-1 alcester constant (line ~2854).
-                        _arm_q_w = (
-                            "Did you say the Awlstuh clinic? "
-                            "If so, just say 'use this clinic'."
-                        )
+                        _arm_q_w = _LOC_RUNG2_CONFIRM
                     elif _has_question_w:
                         _arm_q_w = _last_sent_w
                     else:
@@ -9634,10 +9717,7 @@ class WebSocketCallHandler:
                         # last_question with the canonical clinic question so any
                         # non-ladder reader stays on-topic (the watchdog ladder
                         # overrides this with its own biased confirm phrase).
-                        _arm_q_w = (
-                            "Which clinic were you thinking of — "
-                            "Awlstuh or Redditch?"
-                        )
+                        _arm_q_w = _LOC_RUNG1_OPEN
                     _sh_w.last_question         = _arm_q_w
                     _sh_w.reask_count           = 0
                     _sh_w._no_input_reask_count = 0
@@ -10379,10 +10459,7 @@ class WebSocketCallHandler:
                         # rung-1 biased binary confirm and solicit the
                         # STT-robust "use this clinic" phrase, routing the next
                         # answer through the existing use-this-clinic handler.
-                        _phrase_1 = (
-                            "Did you say the Awlstuh clinic? "
-                            "If so, just say 'use this clinic'."
-                        )
+                        _phrase_1 = _LOC_RUNG2_CONFIRM
                         self.session["v3_awaiting_use_this_clinic"] = True
                         self.session["v3_use_this_clinic_bias"] = "alcester"
                         self.session["last_question"] = _phrase_1
