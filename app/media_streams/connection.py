@@ -5122,6 +5122,18 @@ class WebSocketCallHandler:
                     self._last_audio_at = time.monotonic()
                     self.session["llm_generation_active"] = True
                     self.session["tts_inhibit"] = False
+                    # Bug A — reset the TTS dedup baseline at the start of every
+                    # v3 caller turn.  The legacy flow path enqueues this sentinel
+                    # before handle_transcript, but the v3 path never did, so the
+                    # consecutive-duplicate guard persisted ACROSS turns: a
+                    # legitimate re-ask that repeats the previous question verbatim
+                    # (caller gives an unusable day answer → LLM re-asks "Is there
+                    # a particular day or time?") was dropped → ~10s dead air until
+                    # the watchdog fired (18:30:59→18:31:10 Redditch call).
+                    # Resetting per turn lets the repeat play immediately;
+                    # within-turn dedup still works (sentinel precedes this turn's
+                    # chunks in the FIFO queue).
+                    await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
                     # ── Slot-selection day-alias normalisation ────────────────
                     # Apply STT mishearing correction BEFORE the pop so the flag
                     # is still True here.  Rewrites e.g. "first year" → "thursday"
