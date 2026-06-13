@@ -4104,33 +4104,62 @@ class WebSocketCallHandler:
                     )
                     self.session["v3_awaiting_phone_confirm"] = True
                 else:
-                    # CODE SPEC AE REVISED — routing check mirrors direct intercept
-                    _dtmf_sc = (self.session.get("soft_context") or {})
-                    _dtmf_tp = (
-                        _dtmf_sc.get("time_preference")
-                        or self.session.get("time_of_day_preference")
-                        or ""
+                    # FAQ-before-clinic: if the caller asked a clinic-specific
+                    # FAQ (parking/hours/etc.) and we only asked the clinic in
+                    # order to answer it, re-queue that question now the clinic
+                    # is known — do NOT drop them into the booking timing flow.
+                    # Mirrors the verbal location-intercept non-booking path
+                    # (keyed off v3_booking_intent).  synthetic=True so the
+                    # re-injection clears the STT-phantom guards.
+                    _dtmf_faq_pending = self.session.pop(
+                        "v3_faq_pending_utterance", None
                     )
-                    logger.info(
-                        "[ms_conn v3] DTMF location routing —"
-                        " soft_context.time_preference=%r"
-                        " time_of_day_preference=%r",
-                        _dtmf_sc.get("time_preference"),
-                        self.session.get("time_of_day_preference"),
-                    )
-                    _next_q = (
-                        None if _dtmf_tp
-                        else (
-                            "Is there a particular day or time "
-                            "that works best for you?"
+                    _dtmf_faq_requeued = False
+                    if _dtmf_faq_pending and not self.session.get(
+                        "v3_booking_intent", False
+                    ):
+                        _next_q = None
+                        _dtmf_tp = ""
+                        _dtmf_faq_requeued = True
+                        await self.transcript_queue.put(
+                            (time.monotonic(), _dtmf_faq_pending, True)
                         )
-                    )
+                        logger.info(
+                            "[ms_conn v3] DTMF: FAQ pending re-queued after"
+                            " clinic confirm (no booking Q): %r",
+                            _dtmf_faq_pending[:60],
+                        )
+                    else:
+                        # CODE SPEC AE REVISED — routing check mirrors direct intercept
+                        _dtmf_sc = (self.session.get("soft_context") or {})
+                        _dtmf_tp = (
+                            _dtmf_sc.get("time_preference")
+                            or self.session.get("time_of_day_preference")
+                            or ""
+                        )
+                        logger.info(
+                            "[ms_conn v3] DTMF location routing —"
+                            " soft_context.time_preference=%r"
+                            " time_of_day_preference=%r",
+                            _dtmf_sc.get("time_preference"),
+                            self.session.get("time_of_day_preference"),
+                        )
+                        _next_q = (
+                            None if _dtmf_tp
+                            else (
+                                "Is there a particular day or time "
+                                "that works best for you?"
+                            )
+                        )
                 await self.tts_text_queue.put(_ack)
                 if _next_q is not None:
                     await self.tts_text_queue.put(_next_q)
                     self.session["last_bot_prompt"] = _next_q
                     self.session["last_question"] = _next_q
-                elif _intent not in ("reschedule", "cancel"):
+                elif (
+                    _intent not in ("reschedule", "cancel")
+                    and not _dtmf_faq_requeued
+                ):
                     if self.booking_flow_active:
                         logger.info(
                             "[ms_conn v3] DTMF: re-queue suppressed"
@@ -6249,37 +6278,70 @@ class WebSocketCallHandler:
                                             "say 'use this number'."
                                         )
                                     else:
-                                        # CODE SPEC AE REVISED — routing check
-                                        # mirrors direct intercept path.
-                                        _utc_sc = (
-                                            self.session.get("soft_context")
-                                            or {}
+                                        # FAQ-before-clinic: re-queue a pending
+                                        # clinic-specific FAQ now the clinic is
+                                        # known instead of dropping the caller
+                                        # into the booking timing flow.  Mirrors
+                                        # the verbal location-intercept non-
+                                        # booking path (keyed off
+                                        # v3_booking_intent).  synthetic=True so
+                                        # the re-injection clears the STT-phantom
+                                        # guards.
+                                        _utc_faq_pending = self.session.pop(
+                                            "v3_faq_pending_utterance", None
                                         )
-                                        _utc_tp = (
-                                            _utc_sc.get("time_preference")
-                                            or self.session.get(
-                                                "time_of_day_preference"
-                                            )
-                                            or ""
-                                        )
-                                        logger.info(
-                                            "[ms_conn v3] use-this-clinic"
-                                            " routing —"
-                                            " soft_context.time_preference=%r"
-                                            " time_of_day_preference=%r",
-                                            _utc_sc.get("time_preference"),
+                                        _utc_faq_requeued = False
+                                        if _utc_faq_pending and not (
                                             self.session.get(
-                                                "time_of_day_preference"
-                                            ),
-                                        )
-                                        _next_q = (
-                                            None if _utc_tp
-                                            else (
-                                                "Is there a particular day"
-                                                " or time that works best"
-                                                " for you?"
+                                                "v3_booking_intent", False
                                             )
-                                        )
+                                        ):
+                                            _next_q = None
+                                            _utc_tp = ""
+                                            _utc_faq_requeued = True
+                                            await self.transcript_queue.put(
+                                                (time.monotonic(),
+                                                 _utc_faq_pending, True)
+                                            )
+                                            logger.info(
+                                                "[ms_conn v3] use-this-clinic:"
+                                                " FAQ pending re-queued after"
+                                                " clinic confirm (no booking"
+                                                " Q): %r",
+                                                _utc_faq_pending[:60],
+                                            )
+                                        else:
+                                            # CODE SPEC AE REVISED — routing
+                                            # check mirrors direct intercept.
+                                            _utc_sc = (
+                                                self.session.get("soft_context")
+                                                or {}
+                                            )
+                                            _utc_tp = (
+                                                _utc_sc.get("time_preference")
+                                                or self.session.get(
+                                                    "time_of_day_preference"
+                                                )
+                                                or ""
+                                            )
+                                            logger.info(
+                                                "[ms_conn v3] use-this-clinic"
+                                                " routing —"
+                                                " soft_context.time_preference"
+                                                "=%r time_of_day_preference=%r",
+                                                _utc_sc.get("time_preference"),
+                                                self.session.get(
+                                                    "time_of_day_preference"
+                                                ),
+                                            )
+                                            _next_q = (
+                                                None if _utc_tp
+                                                else (
+                                                    "Is there a particular day"
+                                                    " or time that works best"
+                                                    " for you?"
+                                                )
+                                            )
                                     self.session[
                                         "selected_location"
                                     ] = _confirmed
@@ -6319,8 +6381,9 @@ class WebSocketCallHandler:
                                         if self._silence_handler is not None:
                                             self._silence_handler\
                                                 .on_question_asked(_next_q)
-                                    elif _intent not in (
-                                        "reschedule", "cancel"
+                                    elif (
+                                        _intent not in ("reschedule", "cancel")
+                                        and not _utc_faq_requeued
                                     ):
                                         if self.booking_flow_active:
                                             logger.info(
