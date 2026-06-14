@@ -5539,6 +5539,38 @@ class WebSocketCallHandler:
                         # Phone-number exemption: any single token of 5+ digits
                         # (full number or spoken fragment) must always pass
                         # through — never re-arm.
+                        # ── BUG-1 fix: answer-expected context exemption ─────
+                        # A single word that is the EXPECTED ANSWER must not be
+                        # dropped as noise.  Two contexts: (a) the name step
+                        # (caller answers "James"/"Quentin"); (b) a yes/no confirm
+                        # (caller answers "please"/"yeah").  Real STT garbage was
+                        # already removed by the too-short / no-vowel / all-vowel
+                        # / noise-list filters above, so a single word surviving
+                        # to here is a plausible answer.  Keyed on the pending
+                        # question text + post_slot flag, so the noise re-arm is
+                        # unchanged in every OTHER context (zero regression to the
+                        # mid-sentence-noise suppression this guard exists for).
+                        # See [[susie-8call-sweep]] BUG-1 (dropped on Calls 1,2,4,6).
+                        _lq_ctx = (
+                            (self.session.get("last_question") or "")
+                            + " "
+                            + (self.session.get("last_bot_prompt") or "")
+                        ).lower()
+                        _name_step = (
+                            bool(self.session.get("post_slot_confirmation_pending"))
+                            or "your name" in _lq_ctx
+                            or "first name" in _lq_ctx
+                        )
+                        _yesno_step = any(
+                            _m in _lq_ctx
+                            for _m in (
+                                "shall i", "would you", "did you say",
+                                "is that right", "is that correct",
+                                "use this", "could i get", "can i take",
+                            )
+                        )
+                        _answer_expected = _name_step or _yesno_step
+
                         if (
                             _is_single_word
                             and len(_stripped.split()) == 1
@@ -5549,6 +5581,13 @@ class WebSocketCallHandler:
                                     "[ms_stt] phone number/fragment %r — "
                                     "passing to LLM (phone exemption)",
                                     _stripped,
+                                )
+                                # Fall through to LLM dispatch below.
+                            elif _answer_expected:
+                                logger.info(
+                                    "[ms_stt] single word %r accepted — "
+                                    "answer-expected context (name=%s yesno=%s)",
+                                    _stripped, _name_step, _yesno_step,
                                 )
                                 # Fall through to LLM dispatch below.
                             else:
