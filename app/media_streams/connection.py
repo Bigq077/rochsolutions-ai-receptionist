@@ -10456,7 +10456,11 @@ class WebSocketCallHandler:
         This is intentionally narrow — it never fires during normal call flow
         because at least one of conditions 2–5 is always true then.
         """
-        _INTERVAL = 10.0
+        # Poll cadence for the dead-air backstop.  Lowered 10.0 → 5.0 so that
+        # after the watchdog retires without a response the backstop re-engages
+        # within ~one interval instead of leaving a long silent hole (Bug A2:
+        # a 25s gap when a non-location watchdog re-ask got no answer).
+        _INTERVAL = 5.0
         _PHRASE_2 = (
             "I'm not able to hear you at the moment — "
             "feel free to call back and we'll get that sorted for you."
@@ -10467,7 +10471,7 @@ class WebSocketCallHandler:
         _tracked_q_gen    = -1
 
         await self._wait_for_start("silence_safety_net")
-        # Seed timestamp so we don't fire in the first 10 s of the call.
+        # Seed timestamp so we don't fire in the first interval of the call.
         self._last_audio_or_transcript_ts = time.monotonic()
 
         try:
@@ -10517,16 +10521,16 @@ class WebSocketCallHandler:
                 # without ever getting a response (caller spoke but STT missed
                 # it) — override the suppression so the safety net fires again.
                 if getattr(self._silence_handler, "_reask_completed", False):
-                    if _since < 20.0:
+                    if _since < 8.0:
                         logger.info(
                             "[ms_safety_net] suppressed — watchdog reask done, "
-                            "within 20s window (since=%.1fs q_gen=%d)",
+                            "within 8s window (since=%.1fs q_gen=%d)",
                             _since, _current_q_gen,
                         )
                         continue
                     logger.warning(
                         "[ms_safety_net] watchdog reask done but _since=%.1fs"
-                        " ≥20s — overriding suppression (q_gen=%d); "
+                        " ≥8s — overriding suppression (q_gen=%d); "
                         "watchdog retired without transcript",
                         _since, _current_q_gen,
                     )
