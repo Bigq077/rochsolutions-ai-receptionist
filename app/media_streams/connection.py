@@ -9839,6 +9839,15 @@ class WebSocketCallHandler:
             # ── end Spec W ────────────────────────────────────────────────────
 
             self._tts_audio_done_at = time.monotonic()
+            # Reset the dead-air safety-net anchor when Susie stops speaking, so
+            # "dead air" is measured from the end of her turn — never counting her
+            # own (possibly multi-chunk) speech as caller silence.  Without this a
+            # long response (e.g. slot confirm + "I'll need your name and number")
+            # left the anchor at the response's START, so the safety net saw ~9s
+            # of "silence" the instant TTS finished and — with the tightened A2
+            # timing — fired a re-ask and then hung up on a caller who had been
+            # given zero seconds to answer (no_audio close mid-booking, 12:17:57).
+            self._last_audio_or_transcript_ts = time.monotonic()
             # Clinical protection no longer needed once the terminal chunk has
             # played out — reset so subsequent caller speech is handled normally.
             self._clinical_response_active = False
@@ -10456,11 +10465,12 @@ class WebSocketCallHandler:
         This is intentionally narrow — it never fires during normal call flow
         because at least one of conditions 2–5 is always true then.
         """
-        # Poll cadence for the dead-air backstop.  Lowered 10.0 → 5.0 so that
-        # after the watchdog retires without a response the backstop re-engages
-        # within ~one interval instead of leaving a long silent hole (Bug A2:
-        # a 25s gap when a non-location watchdog re-ask got no answer).
-        _INTERVAL = 5.0
+        # Poll cadence for the dead-air backstop.  Kept at 10.0: the A2 hole was
+        # closed by lowering the post-reask suppression window (20s → 8s) plus
+        # resetting the dead-air anchor on TTS-finish (see _delayed_tts_finished).
+        # A 5s interval was tried but made the two-strike graceful-close hang up
+        # ~5s after the first re-ask — too fast, it cut off a caller mid-booking.
+        _INTERVAL = 10.0
         _PHRASE_2 = (
             "I'm not able to hear you at the moment — "
             "feel free to call back and we'll get that sorted for you."
