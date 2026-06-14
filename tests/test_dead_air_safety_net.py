@@ -261,3 +261,26 @@ async def test_no_fire_while_phone_dtmf_active():
     stub = _make_stub_self(clock, session={"v3_phone_dtmf_active": True})
     fires = await _run(stub, clock, timeline=[], horizon=_T0 + (_INTERVAL * 2) + 1)
     assert fires == [], f"fired during keypad phone entry: {fires}"
+
+
+# ---------------------------------------------------------------------------
+# Bug C — the replayed re-ask must not double up fillers
+# ---------------------------------------------------------------------------
+
+async def test_reask_does_not_double_filler():
+    clock = VClock()
+    stub = _make_stub_self(clock)
+    # Stored question already opens with its own acknowledgement filler.
+    stub._silence_handler.last_question = (
+        "No problem — do you prefer mornings or afternoons?"
+    )
+    fires = await _run(stub, clock, timeline=[], horizon=_T0 + _INTERVAL + 1)
+
+    assert len(fires) == 1, f"expected one re-ask, got {fires}"
+    _, text = fires[0]
+    low = text.lower()
+    # It prefixes "Sorry — I can't quite hear you —"; the stored question's own
+    # "No problem —" filler must be stripped so we don't stack two fillers.
+    assert "no problem" not in low, f"double filler in re-ask: {text!r}"
+    # The actual question content must survive.
+    assert "mornings or afternoons" in low, f"lost question content: {text!r}"

@@ -1444,6 +1444,51 @@ def _is_dtmf_expected(session: Optional[Dict[str, Any]]) -> bool:
     return False
 
 
+# Short acknowledgement openers Susie uses to soften a turn ("No problem — …").
+# When a stored question is replayed as a dead-air re-ask it is prefixed with its
+# own filler ("Sorry — I can't quite hear you —"); a leading filler on the stored
+# question would then stack two fillers (Bug C, 2026-06-14).
+_LEADING_FILLERS = frozenset({
+    "no problem", "no worries", "not to worry", "of course", "sure",
+    "right", "okay", "ok", "alright", "all right", "absolutely", "got it",
+})
+
+
+def _strip_leading_filler(text: str) -> str:
+    """Drop a single leading acknowledgement clause ("No problem — ", "Sure — ").
+
+    Only strips when the leading clause is a KNOWN short filler followed by a
+    dash separator, so real question content is never truncated.  Idempotent.
+    """
+    if not text:
+        return text
+    for _sep in (" — ", " – ", " - "):
+        _idx = text.find(_sep)
+        if 0 < _idx <= 24:
+            _head = text[:_idx].strip().lower().rstrip(",.!")
+            if _head in _LEADING_FILLERS:
+                return text[_idx + len(_sep):].lstrip()
+    return text
+
+
+def _build_slot_clarify(slot_labels: list) -> str:
+    """Build the 'which option?' clarify prompt listing EVERY offered slot.
+
+    Bug B (2026-06-14): the old builder listed only the first three of N options,
+    silently dropping later slots — a caller wanting the 4th/5th could not pick
+    it.  List them all, with natural "A, B, … or Z" grammar.
+    """
+    _labels = [str(s).strip() for s in (slot_labels or []) if str(s).strip()]
+    if not _labels:
+        return "Which option works best for you?"
+    if len(_labels) == 1:
+        return f"Did you mean {_labels[0]}?"
+    if len(_labels) == 2:
+        return f"Which works best — {_labels[0]} or {_labels[1]}?"
+    _body = ", ".join(_labels[:-1])
+    return f"Which works best — {_body}, or {_labels[-1]}?"
+
+
 class SilenceHandler:
     """
     Fires a re-ask phrase if the caller has been silent for an extended
@@ -5194,21 +5239,10 @@ class WebSocketCallHandler:
                             # (Redditch call 18:31:34). Covering TIME_SELECTION
                             # too re-asks which option instead of going silent.
                             _aj_map = self.session.get("v3_dtmf_slot_map", {})
-                            _aj_days = list(_aj_map.values())
-                            if len(_aj_days) >= 3:
-                                _clarify = (
-                                    f"Which works best — {_aj_days[0]},"
-                                    f" {_aj_days[1]}, or {_aj_days[2]}?"
-                                )
-                            elif len(_aj_days) == 2:
-                                _clarify = (
-                                    f"Which works best — {_aj_days[0]}"
-                                    f" or {_aj_days[1]}?"
-                                )
-                            elif len(_aj_days) == 1:
-                                _clarify = f"Did you mean {_aj_days[0]}?"
-                            else:
-                                _clarify = "Which option works best for you?"
+                            # Bug B: list EVERY offered slot, not just the first
+                            # three — dropping options left a caller unable to
+                            # pick the 4th/5th time.
+                            _clarify = _build_slot_clarify(list(_aj_map.values()))
                             logger.info(
                                 "[ms_conn] non-specific slot affirmation %r"
                                 " — asking to clarify: %r",
@@ -10595,7 +10629,12 @@ class WebSocketCallHandler:
                             for m in ("ai receptionist", "press 1", "i'm susie")
                         )
                         if _last_q and not _is_greeting and len(_last_q) <= 90:
-                            _phrase_1 = f"Sorry — I can't quite hear you — {_last_q}"
+                            # Bug C: strip the stored question's own leading
+                            # filler so we don't stack "Sorry — … — No problem —".
+                            _phrase_1 = (
+                                "Sorry — I can't quite hear you — "
+                                f"{_strip_leading_filler(_last_q)}"
+                            )
                         else:
                             _phrase_1 = (
                                 "Sorry, I can't quite hear you —"
