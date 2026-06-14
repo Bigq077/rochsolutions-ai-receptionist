@@ -57,6 +57,43 @@ def _ordinal(n: int) -> str:
     return f"{n}{['th', 'st', 'nd', 'rd', 'th'][min(n % 10, 4)]}"
 
 
+_HOUR_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+    7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
+}
+
+
+def _spoken_slot_time(hhmm: str) -> str:
+    """Convert a 24-hour 'HH:MM' slot time into its natural spoken label.
+
+    Deterministic source of truth for slot wording ("nine in the morning",
+    "midday", "one in the afternoon", "five in the evening") so the Haiku slot
+    formatter copies labels verbatim instead of converting times itself — which
+    let it drop/invent slots (e.g. rendering [09,10,11,12,13] as 09,10,12,13,14
+    and booking a non-existent 2pm).  Slots are on the hour in practice; :30 and
+    other minutes are handled defensively.
+    """
+    try:
+        h, m = map(int, hhmm.split(":"))
+    except Exception:
+        return hhmm
+    if h == 12 and m == 0:
+        return "midday"
+    if h == 0 and m == 0:
+        return "midnight"
+    part = (
+        "in the morning" if h < 12
+        else "in the afternoon" if h < 17
+        else "in the evening"
+    )
+    hour_word = _HOUR_WORDS[h % 12 or 12]
+    if m == 0:
+        return f"{hour_word} {part}"
+    if m == 30:
+        return f"half past {hour_word} {part}"
+    return f"{hour_word} {m:02d} {part}"
+
+
 def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> list:
     """
     Filter (start_dt, end_dt) tuples to those matching the caller's stated
@@ -140,11 +177,16 @@ def _build_days_data(
         dt = day_slots[0][0]
         day_name  = dt.strftime("%A")                # "Thursday"
         day_label = f"{day_name} {_ordinal(dt.day)} {dt.strftime('%B')}"  # "Thursday 26th March"
+        _times = [s[0].strftime("%H:%M") for s in day_slots]
         days_data.append({
-            "date":       day.isoformat(),
-            "day_label":  day_label,
-            "slot_times": [s[0].strftime("%H:%M") for s in day_slots],
-            "slots":      [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in day_slots],
+            "date":              day.isoformat(),
+            "day_label":         day_label,
+            "slot_times":        _times,
+            # Ready-made spoken labels, aligned 1:1 with slot_times. The slot
+            # formatter must use these verbatim — never re-convert the 24h times
+            # itself (it dropped/invented slots when it did, booking phantoms).
+            "slot_times_spoken": [_spoken_slot_time(t) for t in _times],
+            "slots":             [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in day_slots],
         })
     return days_data
 

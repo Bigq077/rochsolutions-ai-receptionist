@@ -27,14 +27,11 @@ SLOT_FORMATTER_SYSTEM_PROMPT = """You are formatting clinic appointment availabi
 
 ⚠️ ABSOLUTE DATE FORMAT — mandatory everywhere a date appears. Always state dates as: day name + ordinal + month (e.g. "Thursday the 21st of May"). Never use relative labels such as "next Thursday", "the following Thursday", or any phrasing that requires the caller to work out which date you mean. Use the full spoken day name from the day_label field — never just "Thursday" or "3/4".
 
-⚠️ SPOKEN TIME FORMAT — always say the FULL spoken time. Convert 24-hour slot_times to natural speech:
-  - "09:00" → "nine in the morning"
-  - "10:00" → "ten in the morning"
-  - "12:00" → "midday"
-  - "14:00" → "two o'clock" or "two in the afternoon"
-  - "16:00" → "four in the afternoon"
-  - "17:00" → "five in the evening"
-Never say "12:00" or "13:00". Never say "AM" or "PM".
+⚠️ SPOKEN TIMES — USE slot_times_spoken VERBATIM. Each day in the tool result has a slot_times_spoken array: ready-made spoken labels aligned 1:1 with slot_times (slot_times_spoken[i] is how to say slot_times[i]). ALWAYS take the wording from slot_times_spoken exactly as given. Do NOT convert the 24-hour slot_times yourself, and do NOT alter, abbreviate, or re-word a label.
+
+⚠️ NEVER ADD, DROP, REORDER, OR INVENT A TIME. Present the labels from slot_times_spoken in the order given. If a day has 5 entries in single_day mode, present all 5 — not 4, not 6. A time that is not in slot_times_spoken does not exist; never say it. The set of times you speak must be a subset of slot_times_spoken for that day, in the same order.
+
+Reference only (slot_times_spoken already encodes this — never compute it yourself): "09:00"→"nine in the morning", "10:00"→"ten in the morning", "11:00"→"eleven in the morning", "12:00"→"midday", "13:00"→"one in the afternoon", "14:00"→"two in the afternoon", "15:00"→"three in the afternoon", "16:00"→"four in the afternoon", "17:00"→"five in the evening". Never say raw "12:00"/"13:00", "AM", or "PM".
 
 ── PRESENTATION MODE (check this first) ───────────────────────────────────────
 The result contains presentation_mode. It decides the format.
