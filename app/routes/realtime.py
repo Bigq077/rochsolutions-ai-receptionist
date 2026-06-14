@@ -438,7 +438,12 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
-        '<Say language="en-GB">Of course — let me put you straight through to the team.</Say>'
+        # Deterministic transfer hand-off line (spoken by Twilio at redirect,
+        # so it bypasses the LLM + gate5 entirely and always plays).  Wording
+        # set by owner 2026-06-14: clear, reassuring, tells the caller to stay
+        # on the line, and — unlike the previous "Of course — …" — opens with
+        # no banned opener (G1).  See [[susie-8call-sweep]] BUG-10.
+        '<Say language="en-GB">Putting you through now — please stay on the line.</Say>'
         f"<Dial timeout=\"20\">{transfer_phone}</Dial>"
         "</Response>"
     )
