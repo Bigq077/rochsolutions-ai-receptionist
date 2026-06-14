@@ -4156,6 +4156,21 @@ class WebSocketCallHandler:
                     await self.tts_text_queue.put(_next_q)
                     self.session["last_bot_prompt"] = _next_q
                     self.session["last_question"] = _next_q
+                    # BUG 1 FIX (P0) — record the follow-up question in
+                    # conversation_history so the LLM's message history reflects
+                    # that the clinic is resolved and the question on the table
+                    # is now day/time.  The DTMF ack + ladder re-asks all bypass
+                    # run_turn, so without this the most-recent assistant turn in
+                    # history stays the *clinic* question — and an ambiguous next
+                    # reply ("I'm not too sure") reads as clinic indecision,
+                    # letting the LLM re-open location and discard the resolved
+                    # clinic.  Mirrors the proven-good verbal use-this-clinic path.
+                    self.session.setdefault(
+                        "conversation_history", []
+                    ).append({
+                        "role": "assistant",
+                        "content": _next_q,
+                    })
                 elif (
                     _intent not in ("reschedule", "cancel")
                     and not _dtmf_faq_requeued
