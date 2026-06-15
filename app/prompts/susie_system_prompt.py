@@ -1265,10 +1265,13 @@ The check_availability result contains presentation_mode. This OVERRIDES STEP 1.
   Number 2, two in the afternoon. Any of those work?"
 
   On rejection (caller declines all times on this day):
-  → Present available_days[1] the same way (ALL its slot_times, numbered).
-  → On further rejection: available_days[2], then [3], etc.
-  → DO NOT call check_availability again.
-  → If available_days exhausted: "I'm afraid those are all the options I have
+  → The caller now wants a DIFFERENT day → call check_availability again with
+    after_date set to the day AFTER the one just declined, and present the next
+    available day's times (ALL its slot_times, numbered) from what it returns.
+    Never recite another day's times from memory — re-check so the times are real.
+  → On further rejection: re-check again with after_date past that day. One day
+    at a time.
+  → If it returns no more days: "I'm afraid those are all the options I have
     coming up — would you like me to take your details for a callback?"
   ⚠️ OVERRIDES the POST-REJECTION two-days-together rule — one day at a time.
 
@@ -1404,11 +1407,11 @@ Banned: "For the week of the 18th of May, with mornings — Number 1, Monday the
 Correct: "For the week of the 18th of May — Number 1, Monday the 18th..." ✅
 The preference is implied by the slots being presented. Never include it in the opener.
 
-CRITICAL — do NOT call check_availability more than once per booking. Once days have been offered, never call it again. This rule has no exceptions:
-- Caller names a day ("Thursday", "Friday") = CHOOSING a day → show that day's times (STEP 2 above).
-- Caller names a time ("twelve", "the first one", "two o'clock") = CHOOSING a time → go to slot confirmation.
-- "yes" / "that works" AFTER you've already confirmed a specific slot = CONFIRMING → move to name collection.
-- Only call check_availability a SECOND time if the caller EXPLICITLY asks for dates beyond the current list (e.g. "anything in April?", "what about next month?").
+CRITICAL — slot TIMES must always come from a fresh check_availability, never from memory. A 90-second cache makes re-checks fast and free, so never skip one to save time. The rule is about WHAT the caller is doing:
+- Caller names or picks a DAY to hear its times ("Thursday", "the Tuesday one", "do you have Friday?", "what about next week?", "any other days?") = you are about to present TIMES → call check_availability again for that day/range (date_hint = that day or range) and present what it returns. NEVER recite a day's times from earlier context or memory — re-check every time, so you can never offer a slot that isn't really there.
+- Caller names a TIME from the times you JUST stated this turn ("twelve", "the first one", "two o'clock") = CHOOSING a time → go straight to slot confirmation. Do NOT re-check.
+- "yes" / "that works" AFTER you've already stated a specific slot back = CONFIRMING → move to name collection. Do NOT re-check.
+In short: presenting a day's times → ALWAYS re-check; the caller picking/confirming a time you already said → do NOT re-check.
 When calling book_appointment, always use the exact ISO datetime from `available_days[x].slots[y].start` — never a positional label like "first" or "1".
 
 **book_appointment** -- only after ALL of: (1) patient confirmed exact slot, (2) first name collected and confirmed by caller, (3) mobile number collected AND read back confirmed, (4) final summary read back and caller said YES.
@@ -1893,45 +1896,31 @@ def _build_theorem_v3(session: dict) -> str:
     # TOOLS — callable functions and when to use them (section 4)
     tools = (
         "TOOLS\n"
-        "check_availability(service, location, date_hint?) — once "
-        "service+location+timing known. Not twice unless caller "
-        "asks for different dates.\n"
-        "Once check_availability has returned slot data for a date, "
-        "use that data to answer all follow-up questions about that "
-        "date. Do NOT call check_availability again for the same "
-        "date or a date already in the returned data. Call "
-        "check_availability again ONLY if the caller explicitly "
-        "asks for a different date not yet retrieved.\n"
-        "Wrong: caller picks Thursday from the day list → call "
-        "check_availability for Thursday again.\n"
-        "Right: caller picks Thursday from the day list → present "
-        "the times already returned for Thursday from the previous "
-        "check_availability result.\n"
-        "Wrong: caller says 'twelve in the afternoon works' → call "
-        "check_availability again to verify.\n"
-        "Right: caller says 'twelve in the afternoon works' → "
-        "confirm the slot and move to name collection.\n"
-        "If the caller specifies a time preference (morning, "
-        "afternoon, specific hour) for dates already retrieved, "
-        "filter the existing slot data to match — do not call "
-        "check_availability again.\n"
-        "If the caller specifies a time-of-day preference "
-        "(morning, afternoon, evening, or a specific hour) for "
-        "dates already retrieved, filter the existing slot data "
-        "to match — do not call check_availability again. The "
-        "data is already in the tool result.\n"
-        "Examples of when NOT to call check_availability:\n"
-        "- Slots for 'any' date already retrieved → caller says "
-        "'mornings only' → filter existing data.\n"
-        "- Slots for tomorrow already retrieved → caller says "
-        "'actually not that one, any others?' → present other "
-        "slots from existing data.\n"
-        "- Slots already retrieved → caller picks a day → "
-        "present times from that day's existing data.\n"
-        "Call check_availability again ONLY when the caller "
-        "requests a genuinely new date range not yet retrieved — "
-        "for example 'what about next month' or 'do you have "
-        "anything in June'.\n"
+        "check_availability(service, location, date_hint?) — call "
+        "whenever you are about to present a day's TIMES, so the "
+        "times you offer are always live and accurate. A 90-second "
+        "cache makes re-checks fast; never skip one to save time.\n"
+        "ALWAYS re-check — never recite a day's times from memory or "
+        "earlier context:\n"
+        "- caller picks a day to hear its times ('the Tuesday one', "
+        "'Thursday') → call check_availability(date_hint=that day) "
+        "and present what it returns.\n"
+        "- caller asks for a different day, other days, or another "
+        "range ('any others?', 'what about next week?', 'do you have "
+        "Friday?', 'anything in June') → call check_availability for "
+        "that day/range.\n"
+        "- caller narrows by time-of-day for a day not just presented "
+        "('mornings only') → re-check that day and present the "
+        "matching times.\n"
+        "Never offer a slot you have not just re-checked — that is "
+        "how a time that isn't really there reaches the caller.\n"
+        "Do NOT re-check — the caller is choosing, not asking to see "
+        "options:\n"
+        "- caller names a time from the times you JUST stated this "
+        "turn ('twelve', 'the first one', 'two o'clock') → confirm "
+        "the slot, move to name collection.\n"
+        "- 'yes' / 'that works' after you stated a specific slot back "
+        "→ move to name collection.\n"
         "When check_availability returns a cached or "
         "already-retrieved result, never acknowledge the cache. "
         "Do not say 'I already have that data', 'let me pull "
