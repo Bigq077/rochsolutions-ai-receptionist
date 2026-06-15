@@ -10656,6 +10656,32 @@ class WebSocketCallHandler:
                         )
                     continue
 
+                # 6b. Caller explicitly requested a pause ("one second", "hang on").
+                #     The no-input watchdog stands down in this state by RETURNING
+                #     early (line ~2665) — which makes its task .done(), so the
+                #     condition-5 "watchdog still alive" shield above no longer
+                #     protects us.  With no pause check of its own, the safety net
+                #     would then fire the harshest, context-wiping reset ("how can
+                #     I help today?") straight over a caller who simply asked for a
+                #     moment (BUG-6: fired at 16.9s, wiped booking/location context).
+                #     Honour the pause EXACTLY as the watchdog does — skip while it
+                #     is valid for the current question generation.  No dead-air
+                #     coverage is lost: the pause loop (_run, line ~3306) owns this
+                #     window — soft 45s "no rush" check-in, graceful terminate +
+                #     transfer at 90s.  Cleared on any substantive utterance, so it
+                #     cannot over-suppress a caller who actually resumes.
+                if self.session and self.session.get("caller_pause_active"):
+                    _pause_q_gen = self.session.get("caller_pause_q_gen")
+                    _cur_q_gen   = getattr(self._silence_handler, "_q_gen", 0)
+                    if _pause_q_gen is None or _pause_q_gen == _cur_q_gen:
+                        logger.info(
+                            "[ms_safety_net] suppressed — caller_pause_active valid"
+                            " (pause_q_gen=%s cur_q_gen=%d since=%.1fs); pause loop"
+                            " owns dead-air handling",
+                            _pause_q_gen, _cur_q_gen, _since,
+                        )
+                        continue
+
                 # ── Sync q_gen counter: reset count on new question generation ─
                 _current_q_gen = getattr(self._silence_handler, "_q_gen", 0)
                 if _current_q_gen != _tracked_q_gen:
