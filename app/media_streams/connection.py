@@ -7383,17 +7383,43 @@ class WebSocketCallHandler:
                             # (if _is_booking_ack:) is suppressed because
                             # booking_flow_active is already True when it runs.
                             if _is_treatment_specific_booking(utterance):
-                                if not self.booking_flow_active:
+                                # BUG-7 fix: a treatment mention always flags
+                                # v3_treatment_mentioned (drives the assessment-
+                                # first framing + treatment-aware routing), but it
+                                # must enter the booking flow ONLY when there is
+                                # ACTUAL booking intent.  A pure FAQ treatment
+                                # question ("do you offer acupuncture?", "does
+                                # shockwave hurt?") must NOT flip
+                                # booking_flow_active — that adds the "BOOKING FLOW
+                                # ACTIVE" CALL-STATE marker (susie_system_prompt
+                                # line ~3246), which is the sole thing that makes
+                                # the LLM tack a "day or time?" booking push onto
+                                # every later FAQ answer (BUG-7, Calls 4 & 5).
+                                # Real booking ("book a massage") has intent and
+                                # still activates here; a later "yes" to an offer
+                                # still activates via the CTA-affirm path.  The
+                                # code already called this premature-flag out at
+                                # the _is_booking_ack CTA-affirm arm.  Owner-signed
+                                # FROZEN-zone change 2026-06-15. See [[susie-8call-sweep]].
+                                self.session["v3_treatment_mentioned"] = True
+                                if (
+                                    not self.booking_flow_active
+                                    and _transcript_has_booking_intent(utterance)
+                                ):
                                     self.booking_flow_active = True
                                     self.session["booking_flow_active"] = True
                                     logger.info(
-                                        "[ms_conn v3] treatment mention"
-                                        " detected pre-run_turn —"
-                                        " booking_flow_active=True,"
-                                        " v3_treatment_mentioned=True: %r",
+                                        "[ms_conn v3] treatment mention + booking"
+                                        " intent — booking_flow_active=True: %r",
                                         utterance[:80],
                                     )
-                                self.session["v3_treatment_mentioned"] = True
+                                else:
+                                    logger.info(
+                                        "[ms_conn v3] treatment mention (FAQ, no"
+                                        " booking intent) — v3_treatment_mentioned"
+                                        " set, booking_flow_active left %s: %r",
+                                        self.booking_flow_active, utterance[:80],
+                                    )
                             # ── end Spec Y REVISED ────────────────────────────
 
                             # ── Duplicate slot guard ──────────────────────────
