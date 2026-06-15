@@ -10625,8 +10625,13 @@ class WebSocketCallHandler:
                 #    fills phone_dtmf_buffer — so a non-empty buffer means the
                 #    caller has begun dialling and we skip the nudge entirely.
                 if self.session.get("v3_phone_dtmf_active"):
+                    # Threshold == _INTERVAL (10s): with the 10s poll cadence the
+                    # nudge then fires in the [10s, 20s) window regardless of how
+                    # the poll aligns with the prompt — worst case ~20s, a safe
+                    # margin under the 25s G24 fail line (a 15s threshold could
+                    # land as late as ~25s and brush the line; observed 22.9s).
                     if (
-                        _since >= 15.0
+                        _since >= 10.0
                         and not self.session.get("_phone_dtmf_nudged")
                         and not self.session.get("phone_dtmf_buffer")
                         and not self._llm_busy
