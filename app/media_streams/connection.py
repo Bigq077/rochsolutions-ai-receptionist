@@ -2532,13 +2532,15 @@ class SilenceHandler:
                     " (first response — shy-caller grace)",
                     _wait,
                 )
-        # theorem_v3 slot selection: the LLM just read out 2-3 dated options
-        # (up to 12 s of audio).  The caller must process the options, mentally
-        # compare them, and choose — cognitively heavier than the binary
-        # location question.  15 s post-TTS gives a full mental processing window
-        # (raised from 10 s — 3 options × ~4 s mental comparison time).
+        # theorem_v3 slot selection: the LLM just read out up to 3 dated options.
+        # Now that multi_day presents ONE day + ONE time per option (short list,
+        # ~7 s of audio instead of ~12 s), the caller has far less to process, so
+        # the grace is back to 10 s (down from 15 s — the 15 s was sized for the
+        # old 3-days x 2-times list).  Still comfortably above the 6-8 s natural
+        # pause floor; do NOT drop toward the 5 s zone that once cut off a
+        # thinking caller (P0 06dd4cb).
         if (_sess_faq_w or {}).get("v3_awaiting_slot_selection"):
-            _wait = max(_wait, 15.0)
+            _wait = max(_wait, 10.0)
             logger.info(
                 "[ms_watchdog] slot_selection_grace=%.1fs (v3_awaiting_slot_selection)",
                 _wait,
