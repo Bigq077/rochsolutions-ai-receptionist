@@ -1927,7 +1927,15 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _is_phrase_week = any(a in _hint_lower for a in _PHRASE_WEEK_ANCHORS)
         _presentation_mode = "multi_day" if _is_phrase_week else "single_day"
 
-        _result = {"available_days": days_data, "total_days": len(days_data), "presentation_mode": _presentation_mode}
+        # Cap the multi_day SPOKEN list to the soonest 3 days.  days_data is
+        # sorted soonest-first, so [:3] keeps the nearest options and leads with
+        # the soonest.  A 4-day list ran ~16s of TTS and felt like a menu dump
+        # (caller overwhelm).  The FULL set is still in session["available_days"]
+        # (set above) — resolution (_resolve_slot_iso / DTMF) reads the session
+        # copy, so the caller can still pick or ask about a day beyond the 3
+        # presented; only the spoken presentation is trimmed.
+        _present_days = days_data[:3] if _presentation_mode == "multi_day" else days_data
+        _result = {"available_days": _present_days, "total_days": len(_present_days), "presentation_mode": _presentation_mode}
         if _presentation_mode == "single_day" and days_data:
             _result["first_day"] = days_data[0]
 
