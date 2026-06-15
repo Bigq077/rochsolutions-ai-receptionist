@@ -164,25 +164,27 @@ _BANNED_SENTENCE_RE = [
      )),
 
     # ── Prompt C — scarcity-signalling openers ───────────────────────────────
-    # "The closest/nearest/soonest/earliest X is/would be/— " — strip the
-    # preamble, keep the date/time.  Anchored to start-of-chunk; strips up to
-    # and including the first recognisable connector so the slot info plays
-    # directly.  Connectors handled: "is ", "would be ", em-dash/en-dash + space.
+    # "The closest/nearest X is/would be/— " — strip the preamble, keep the
+    # date/time.  Anchored to start-of-chunk; strips up to and including the
+    # first recognisable connector so the slot info plays directly.
+    # NOTE: "soonest"/"earliest" were DELIBERATELY removed here (2026-06-15,
+    # owner decision) — "The earliest I have is …" is now the WELCOME warm
+    # lead-in for ASAP slot requests (SLOT_FORMATTER lead_in="earliest"), not
+    # scarcity.  Only the robotic "closest"/"nearest" openers are still stripped.
     ("closest_nearest_opener",
      re.compile(
-         r"^[Tt]he (?:closest|nearest|soonest|earliest)\b[^.!?—–]*?"
+         r"^[Tt]he (?:closest|nearest)\b[^.!?—–]*?"
          r"(?:\bis\s+|\bwould be\s+|[—–]\s*)",
          re.IGNORECASE,
      )),
-    # "The closest/soonest/earliest I've got / I have / we have / available" —
+    # "The closest/nearest I've got / I have / we have / available" —
     # full-sentence strip for forms where the date cannot be rescued by the
-    # opener-strip above (no clean connector exposed, or the form is entirely
-    # a dead-end qualifier with no following slot info).  Runs after the
-    # opener-strip so cases already rescued by that pattern are never
-    # double-processed.
+    # opener-strip above.  Runs after the opener-strip so cases already rescued
+    # by that pattern are never double-processed.
+    # ("soonest"/"earliest" intentionally excluded — see note above.)
     ("closest_ive_got",
      re.compile(
-         r"[^.!?]*\b[Tt]he (?:closest|nearest|soonest|earliest)\s+"
+         r"[^.!?]*\b[Tt]he (?:closest|nearest)\s+"
          r"(?:I'?ve\s+got|I\s+have|we\s+have|available)\b"
          r"[^.!?]*[.!?]?",
          re.IGNORECASE,
