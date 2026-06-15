@@ -10613,9 +10613,42 @@ class WebSocketCallHandler:
                 if _wd and not _wd.done():
                     continue
 
-                # 6. v3 phone DTMF collection active — silence during keypad
-                #    entry is expected; safety net must not fire mid-number.
+                # 6. v3 phone DTMF collection active.
+                #    The generic safety net below escalates to a graceful HANGUP
+                #    on its 2nd fire, so it must NEVER run during keypad entry.
+                #    But fully suppressing it left a long dead-air hole when the
+                #    caller never started typing (BUG-3: 29s silence, Call 8 — >25s,
+                #    a G24 fail).  Emit ONE gentle, NON-terminal nudge if the caller
+                #    has typed nothing for ~15s, then stay quiet (never repeats,
+                #    never hangs up).  Safe against mid-dial firing two ways: each
+                #    DTMF digit resets the dead-air anchor (_handle_dtmf ~4396) AND
+                #    fills phone_dtmf_buffer — so a non-empty buffer means the
+                #    caller has begun dialling and we skip the nudge entirely.
                 if self.session.get("v3_phone_dtmf_active"):
+                    if (
+                        _since >= 15.0
+                        and not self.session.get("_phone_dtmf_nudged")
+                        and not self.session.get("phone_dtmf_buffer")
+                        and not self._llm_busy
+                        and not getattr(
+                            self._silence_handler, "_tts_playing", False
+                        )
+                    ):
+                        self.session["_phone_dtmf_nudged"] = True
+                        self.session["tts_inhibit"] = False
+                        _dtmf_nudge = (
+                            "Take your time — just type the number on your "
+                            "keypad whenever you're ready."
+                        )
+                        await self.tts_text_queue.put(
+                            _WATCHDOG_REASK_MARKER + _dtmf_nudge
+                        )
+                        self._last_audio_or_transcript_ts = time.monotonic()
+                        logger.info(
+                            "[ms_safety_net] phone-DTMF one-time nudge"
+                            " (since=%.1fs, buffer empty — caller not dialling)",
+                            _since,
+                        )
                     continue
 
                 # ── Sync q_gen counter: reset count on new question generation ─
