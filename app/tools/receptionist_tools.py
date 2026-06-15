@@ -1938,6 +1938,13 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _result = {"available_days": _present_days, "total_days": len(_present_days), "presentation_mode": _presentation_mode}
         if _presentation_mode == "single_day" and days_data:
             _result["first_day"] = days_data[0]
+            # Warm lead-in: only when the caller asked for the SOONEST/ASAP (not a
+            # specific day) does the formatter open with "The earliest I have is …".
+            # Narrow positive triggers — never fires on a specific-day request like
+            # "do you have Tuesday?".  Single_day only; multi_day never gets it.
+            _ASAP_SIGNALS = ("soon", "asap", "earliest", "first avail", "as soon as")
+            if any(_s in _hint_lower for _s in _ASAP_SIGNALS):
+                _result["lead_in"] = "earliest"
 
         return _result
 
