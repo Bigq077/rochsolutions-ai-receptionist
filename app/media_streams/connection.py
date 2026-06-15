@@ -434,6 +434,38 @@ _OPEN_AVAILABILITY_SIGNALS: frozenset = frozenset({
 })
 
 
+# Rejection / alternative-request signals.  When the caller REJECTS the
+# presented slots or asks for DIFFERENT ones ("no, anything else?", "any
+# others?", "a different day"), that is the OPPOSITE of a redundant open-
+# availability repeat — it must reach the LLM (which re-runs check_availability
+# for another day/week), never be suppressed.  Without this, the substring
+# match on "any" inside "anything"/"any chance" mis-fired the open-availability
+# suppression guard → dead air → caller hung up (abandoned call 2026-06-15).
+# Rejection words are matched per-token (word boundary) so "no" does not match
+# inside "another"/"now"; the alternative signals are distinctive enough for a
+# substring test.
+_SLOT_REJECTION_WORDS: frozenset = frozenset({
+    "no", "nope", "nah", "not", "none", "don't", "dont",
+    "doesn't", "doesnt", "won't", "wont", "can't", "cant",
+})
+_SLOT_ALTERNATIVE_SIGNALS: tuple = (
+    "else", "other", "another", "different", "instead", "rather",
+)
+
+
+def _is_slot_rejection_or_alternative(text: str) -> bool:
+    """Return True if *text* rejects the offered slots or requests alternatives.
+
+    Used to EXEMPT such utterances from the open-availability suppression guard:
+    "no, have you got anything else?" must reach the LLM, not be silenced.
+    """
+    t = text.lower()
+    return (
+        any(w in _SLOT_REJECTION_WORDS for w in t.split())
+        or any(s in t for s in _SLOT_ALTERNATIVE_SIGNALS)
+    )
+
+
 def _is_open_availability_utterance(text: str) -> bool:
     """Return True if *text* is an open-availability / no-preference phrase.
 
@@ -5302,7 +5334,19 @@ class WebSocketCallHandler:
                             # LLM call.  The slots already presented are the
                             # correct answer — re-running check_availability
                             # would produce a duplicate slot list.
-                            if _is_open_availability_utterance(utterance):
+                            # Exempt rejections / alternative requests: "no,
+                            # anything else?" / "any others?" / "a different
+                            # day" REJECT the presented slots and ask for new
+                            # ones — the opposite of a redundant repeat.  These
+                            # must reach the LLM (re-fetch another day/week) and
+                            # fall through below so the slot window is popped;
+                            # suppressing them traps the caller (the suppression
+                            # path never clears v3_awaiting_slot_selection), which
+                            # caused repeated silence → hang-up (2026-06-15).
+                            if (
+                                _is_open_availability_utterance(utterance)
+                                and not _is_slot_rejection_or_alternative(utterance)
+                            ):
                                 logger.info(
                                     "[ms_conn v3] open-availability continuation"
                                     " suppressed — slots already presented"
