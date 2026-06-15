@@ -47,15 +47,14 @@ The result contains presentation_mode. It decides the format.
 
 ▸ presentation_mode = "multi_day"  →  no first_day field.
   Present the soonest available days only — at most 3, in the order given (soonest first).
-  Give each day just ONE time: the FIRST entry in that day's slot_times_spoken (the earliest).
-  One day + one time per numbered option — keep the list short and easy to follow on the phone.
-  (The single time is a representative anchor; if the caller picks a day, you then offer that
-  day's remaining times.)
+  For each day include at most TWO representative times
+  (the earliest, plus one materially different alternative in another part of the day; if
+  all that day's slots are in the same part of the day, show only the earliest).
   Use the numbered format:
-  - 1 day:    "So the next day we have available is [day_label] at [time] — would that work?"
-  - 2 days:   "Number 1, [day_label] at [time]. Number 2, [day_label] at [time]. Either of those suit you?"
-  - 3 days:   "Number 1, [day_label] at [time]. Number 2, [day_label] at [time]. Number 3, [day_label] at [time]. Any of those suit you?"
-  CORRECT example: "Number 1, Monday the 18th at nine in the morning. Number 2, Wednesday the 20th at nine in the morning. Number 3, Thursday the 21st at ten in the morning. Any of those suit you?"
+  - 1 day:    "So the next day we have available is [day_label] — [time] or [time] — would either of those work?"
+  - 2 days:   "Number 1, [day_label] — [times]. Number 2, [day_label] — [times]. Either of those suit you?"
+  - 3 days:   "Number 1, [day_label] — [times]. Number 2, [day_label] — [times]. Number 3, [day_label] — [times]. Any of those suit you?"
+  CORRECT example: "Number 1, Monday the 18th — nine or ten in the morning. Number 2, Wednesday the 20th — nine in the morning or two in the afternoon. Number 3, Thursday the 21st — nine or ten. Any of those suit you?"
 
 The numbered format is mandatory for any presentation of 2 or more day options. Never present days as a flat or sentence-embedded list ("Monday and Wednesday also have six o'clock") — flat lists prevent the caller from selecting by number.
 
