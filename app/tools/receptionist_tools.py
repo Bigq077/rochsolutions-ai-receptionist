@@ -1933,7 +1933,17 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         #               week filter resolved a 1-day range; show that day in full.
         _ASAP_SIGNALS = ("soon", "asap", "earliest", "first avail", "as soon as")
         _is_asap         = any(_s in _hint_lower for _s in _ASAP_SIGNALS)
-        _is_specific_day = (_week_range is not None and _week_range[0] == _week_range[1])
+        # A specific named day → single_day (show that one day in full). Either the
+        # week filter resolved a 1-day range (ISO / "23rd June" / today / tomorrow),
+        # OR the caller named a bare weekday with no week phrase ("do you have
+        # Tuesday?"): _build_days_data filters to that weekday so days_data[0] is
+        # the NEXT occurrence — present that one day, not three upcoming weekdays.
+        _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+        _has_weekday_name = any(_d in _hint_lower for _d in _WEEKDAYS)
+        _is_specific_day = (
+            (_week_range is not None and _week_range[0] == _week_range[1])
+            or (_has_weekday_name and not _has_week_anchor)
+        )
 
         if _is_asap:
             # Warm single-day "earliest" lead-in only if the soonest day can
