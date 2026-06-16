@@ -94,10 +94,12 @@ ASSEMBLYAI_WS_URL = (
     # out-of-order stalls).  Stress test 2026-06-12: a ~0.9s pause mid-ramble
     # split "...meeting online" / "to check if mark has diagnosed..." into two
     # turns.  Raised to 800ms to capture run-on speech as a single FINAL.
-    # Trade-off: ~600ms more latency before the bot replies.  Tunable dial — go
+    # Trade-off: more latency before the bot replies.  Tunable dial — go
     # higher (toward the v2-proven 1200) if long-pause ramblers still split;
     # lower if replies feel sluggish.
-    "&min_turn_silence=800"
+    # 2026-06-15: 800 -> 600 to shave ~200ms of dead air off every turn (latency
+    # pass).  If a slow/pausing talker gets split mid-sentence, bump back to 700.
+    "&min_turn_silence=600"
 )
 
 # v2 fallback — 8kHz input, no upsampling needed (battle-tested, older)
