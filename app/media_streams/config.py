@@ -182,15 +182,23 @@ SENTENCE_END_CHARS = ['.', '!', '?', '...']
 STT_SILENCE_TIMEOUT_MS = 1000
 
 # How long to wait for first LLM text chunk before playing a filler phrase.
-# 6s: safety-net only — tool-call fillers handle availability turns; this
-# catches turns where Sonnet stalls entirely. Phrases must be context-neutral.
-LLM_FIRST_CHUNK_TIMEOUT_MS = 6000
+# 1800ms: outlier latency-mask. Normal turns get their first token in ~400-700ms
+# (cached prompt) and cancel this, so it NEVER fires on a normal turn — only when
+# Sonnet stalls past the normal ceiling (cold start / Anthropic retry / overload),
+# i.e. the "some turns take too long" spikes. Kept well above normal TTFT so it
+# stays rare and never feels robotic. Phrases must be context-neutral (they are).
+# Was 6000 (so slow turns sat in dead air up to 6s before any audio).
+LLM_FIRST_CHUNK_TIMEOUT_MS = 1800
 
 # How long to wait for a TTS chunk to complete before moving to the next
 TTS_CHUNK_TIMEOUT_MS = 3000
 
 # Filler cooldown: minimum seconds between filler phrases ("Just one moment...")
-LLM_FILLER_COOLDOWN_SEC = 20.0
+# 8s (was 20): with the 1800ms outlier trigger, fillers are already rare; a
+# shorter cooldown lets a cluster of slow turns (e.g. an Anthropic bad minute
+# with several retries) each get masked instead of leaving the 2nd+ in dead air.
+# Still long enough that a normal cadence never stacks fillers.
+LLM_FILLER_COOLDOWN_SEC = 8.0
 
 # Bad-line detection: minimum silence gap before playing bad-line phrase
 BAD_LINE_SILENCE_THRESHOLD_SEC = 10.0
