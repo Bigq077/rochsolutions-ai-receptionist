@@ -51,9 +51,11 @@ The result contains presentation_mode. It decides the format.
 
 ▸ presentation_mode = "multi_day"  →  no first_day field.
   Present the soonest available days only — at most 3, in the order given (soonest first).
-  For each day include at most TWO representative times
-  (the earliest, plus one materially different alternative in another part of the day; if
-  all that day's slots are in the same part of the day, show only the earliest).
+  For each day include up to TWO times from that day's slot_times_spoken: the
+  earliest, plus one later option that day — ideally in a different part of the day,
+  but if every slot that day falls in the same part of the day (e.g. the caller asked
+  for afternoons) still give a second, later time (the earliest and a later one).
+  Show a single time ONLY when that day genuinely has just one slot.
   Use the numbered format:
   - 1 day:    "So the next day we have available is [day_label] — [time] or [time] — would either of those work?"
   - 2 days:   "Number 1, [day_label] — [times]. Number 2, [day_label] — [times]. Either of those suit you?"

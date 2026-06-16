@@ -1921,29 +1921,46 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
             "total_days":        len(days_data),
         }
 
-        # presentation_mode: phrase-anchored weeks → multi_day (3 options spread across days)
-        # Everything else (ASAP, specific date, no preference) → single_day (all times on day 1)
-        _PHRASE_WEEK_ANCHORS = ("next week", "this week", "week of", "week beginning", "week starting", "from ")
-        _is_phrase_week = any(a in _hint_lower for a in _PHRASE_WEEK_ANCHORS)
-        _presentation_mode = "multi_day" if _is_phrase_week else "single_day"
+        # ── presentation_mode ────────────────────────────────────────────────
+        # multi_day is the DEFAULT (breadth: ≤3 days × ≤2 times) so a vague or
+        # part-of-day request shows a real spread instead of one lonely slot.
+        # single_day (one day, all its times) is reserved for the two cases where
+        # a single day is genuinely what the caller wants:
+        #   (a) ASAP  — "soonest/earliest" → the one earliest day + warm lead-in,
+        #               but it FALLS BACK to multi_day when that day is too thin
+        #               so the caller still hears ≥2 options ("fill-forward").
+        #   (b) a SPECIFIC named day — "Tuesday", "the 23rd", "tomorrow" → the
+        #               week filter resolved a 1-day range; show that day in full.
+        _ASAP_SIGNALS = ("soon", "asap", "earliest", "first avail", "as soon as")
+        _is_asap         = any(_s in _hint_lower for _s in _ASAP_SIGNALS)
+        _is_specific_day = (_week_range is not None and _week_range[0] == _week_range[1])
+
+        if _is_asap:
+            # Warm single-day "earliest" lead-in only if the soonest day can
+            # stand on its own (≥2 times); otherwise fall through to multi_day
+            # breadth so the caller is never offered a single take-it-or-leave-it
+            # slot (the Call-1 "one day, one slot" defect).
+            _earliest_thin = not (days_data and len(days_data[0].get("slot_times", [])) >= 2)
+            _presentation_mode = "multi_day" if _earliest_thin else "single_day"
+        elif _is_specific_day:
+            _presentation_mode = "single_day"
+        else:
+            _presentation_mode = "multi_day"
 
         # Cap the multi_day SPOKEN list to the soonest 3 days.  days_data is
         # sorted soonest-first, so [:3] keeps the nearest options and leads with
-        # the soonest.  A 4-day list ran ~16s of TTS and felt like a menu dump
-        # (caller overwhelm).  The FULL set is still in session["available_days"]
-        # (set above) — resolution (_resolve_slot_iso / DTMF) reads the session
-        # copy, so the caller can still pick or ask about a day beyond the 3
-        # presented; only the spoken presentation is trimmed.
+        # the soonest.  The FULL set is still in session["available_days"] (set
+        # above) — resolution (_resolve_slot_iso / DTMF) reads the session copy,
+        # so the caller can still pick or ask about a day beyond the 3 presented;
+        # only the spoken presentation is trimmed.  The ≤2-times-per-day cap is
+        # enforced by the slot formatter (SLOT_FORMATTER_SYSTEM_PROMPT, multi_day).
         _present_days = days_data[:3] if _presentation_mode == "multi_day" else days_data
         _result = {"available_days": _present_days, "total_days": len(_present_days), "presentation_mode": _presentation_mode}
         if _presentation_mode == "single_day" and days_data:
             _result["first_day"] = days_data[0]
-            # Warm lead-in: only when the caller asked for the SOONEST/ASAP (not a
-            # specific day) does the formatter open with "The earliest I have is …".
-            # Narrow positive triggers — never fires on a specific-day request like
-            # "do you have Tuesday?".  Single_day only; multi_day never gets it.
-            _ASAP_SIGNALS = ("soon", "asap", "earliest", "first avail", "as soon as")
-            if any(_s in _hint_lower for _s in _ASAP_SIGNALS):
+            # Warm lead-in only on a single_day ASAP request ("soonest/earliest").
+            # Never on a specific-day request like "do you have Tuesday?".
+            if _is_asap:
                 _result["lead_in"] = "earliest"
 
         return _result
