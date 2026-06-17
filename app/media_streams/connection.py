@@ -300,6 +300,14 @@ _SLOT_SIGNALS: frozenset = frozenset({
     "monday", "tuesday", "wednesday", "thursday", "friday",
     # Ordinals used as slot references ("first one", "the third")
     "first", "second", "third", "last",
+    # Part-of-day / clock references. With multi_day as the default, each day is
+    # presented as e.g. "nine in the morning or five in the evening", so callers
+    # routinely pick by part of day ("the afternoon one", "in the morning").
+    # Treat these as slot-selection candidates so the utterance reaches the LLM
+    # (which resolves it against the offered times, and clarifies when two slots
+    # share a band) instead of being discarded as a meaningless fragment — the
+    # cause of a caller having to repeat a clear pick several times (2026-06-17).
+    "morning", "afternoon", "evening", "midday", "noon", "o'clock",
 })
 
 
