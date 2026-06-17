@@ -1907,6 +1907,19 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         # "Thursday afternoon" request no longer yields non-Thursday days.
         days_data   = _build_days_data(slot_tuples, preference=preference)
 
+        # Drop TODAY at the source — same-day bookings are never offered (min lead
+        # = next working day).  Doing it here (not only in the post-return
+        # _filter_same_day_slots) keeps days_data, first_day, available_days and
+        # the per-day 3-cap all consistent.  Bug B (2026-06-17): the post-return
+        # filter stripped today from available_days but left first_day = today, so
+        # single_day mode spoke today's filtered 6pm slot ("Wednesday 17th — six
+        # in the evening") while available_days[0] was correctly Monday 22nd.
+        _today_iso = today.isoformat()
+        _before_sd = len(days_data)
+        days_data = [d for d in days_data if d.get("date") != _today_iso]
+        if len(days_data) < _before_sd:
+            logger.info("[ms_tools] same-day dropped at source: %s", _today_iso)
+
         pres_raw    = [{"start": s.isoformat(), "end": e.isoformat()} for s, e in presented]
         pres_labels = [s.strftime("%a %d %b at %H:%M") for s, e in presented]
 
