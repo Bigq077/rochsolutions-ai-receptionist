@@ -127,12 +127,18 @@ def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> lis
         if day_filtered:
             filtered = day_filtered
 
+    # Band boundaries, non-overlapping, aligned with the spoken labels
+    # (_spoken_slot_time: <12 morning, <17 afternoon, else evening):
+    #   morning   = hour < 12
+    #   afternoon = 12 <= hour < 17   (was hour>=14 — dropped midday/1pm AND
+    #                                  wrongly included 17:00, which is evening)
+    #   evening   = hour >= 17
     if "morning" in pref:
         time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
         if time_filtered:
             filtered = time_filtered
     elif "afternoon" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour >= 14]
+        time_filtered = [(s, e) for s, e in filtered if 12 <= s.hour < 17]
         if time_filtered:
             filtered = time_filtered
     elif "evening" in pref:
