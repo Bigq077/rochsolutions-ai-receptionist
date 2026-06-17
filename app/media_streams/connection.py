@@ -10154,6 +10154,21 @@ class WebSocketCallHandler:
             self._tts_pending_terminal = 0
             self._tts_pending_terminal_text = ""
             self._tts_pending_terminal_chunk_start_ts = 0.0
+            # Clear the speaking flag for the interrupted response.  Its audio is
+            # being abandoned (synthesis cancelled + Twilio buffer flushed below)
+            # and its terminal chunk may have been stranded out-of-order — a lost
+            # middle chunk never completes on_tts_finished, which is what normally
+            # clears _tts_playing.  If left True, BOTH silence nets stall: the
+            # no-input watchdog soft-guards on _tts_playing (Phase 3, ~line 2719)
+            # and the dead-air safety net stands down (guard #3, ~line 2650), so a
+            # superseded turn whose own response is then discarded leaves the
+            # caller in permanent dead air (G24 breach observed 2026-06-17).
+            # Safe to clear here: this runs only on a confirmed barge-in (the
+            # caller is speaking, so speech-recovery cannot false-fire), and the
+            # next turn re-sets _tts_playing=True via on_tts_started; if that turn
+            # is discarded, the flag correctly stays False so the re-armed watchdog
+            # can fire its recovery re-ask instead of stalling forever.
+            self._silence_handler._tts_playing = False
             # Reset the cumulative playout clock: the Twilio buffer is cleared
             # below, so any audio scheduled into the future is discarded.  Without
             # this, the next response's first chunk would be scheduled against the
