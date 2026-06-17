@@ -3972,6 +3972,12 @@ class WebSocketCallHandler:
         # "call ended normally or after a stable conversation started".
         self._call_stable: bool = False
 
+        # Heard-nothing slot recovery (Bug A): when a barge-in's tts_inhibit
+        # flag discards an entire slot presentation before the caller hears any
+        # option, re-queue the saved chunks once instead of going silent.
+        self._inhibited_slot_chunks: list = []
+        self._slot_represented_once: bool = False
+
         # Spec J: True when the last LLM response confirmed a slot AND asked
         # for the patient's name.  Short confirming responses ('yes', 'perfect',
         # 'sounds good') bypass the Spec H slot guard while this is True.
@@ -9410,6 +9416,9 @@ class WebSocketCallHandler:
                     if _sc_sent > 0 and re.search(
                         r"\bNumber\s+\d\b", chunk_text, re.IGNORECASE
                     ):
+                        # Save the discarded chunk so we can re-present it if the
+                        # WHOLE presentation gets inhibited (Bug A recovery).
+                        self._inhibited_slot_chunks.append(chunk_text)
                         _sc_inh = (
                             int(self.session.get("_slot_chunks_inhibited", 0)) + 1
                         )
@@ -9419,18 +9428,48 @@ class WebSocketCallHandler:
                             _sc_inh, _sc_sent,
                         )
                         if _sc_inh >= _sc_sent:
-                            # All chunks gone — patient never heard any option.
-                            # Wipe the slot map so the next turn fetches fresh data.
-                            logger.info(
-                                "[ms_conn] all slot chunks inhibited — clearing "
-                                "slot map (patient never heard options)"
-                            )
-                            self.session.pop("v3_dtmf_slot_map",          None)
-                            self.session.pop("v3_awaiting_slot_selection", None)
-                            self.session.pop("_slot_chunks_sent",          None)
-                            self.session.pop("_slot_chunks_inhibited",     None)
-                            self.slot_map_stage = SlotMapStage.NONE
+                            # All chunks gone — patient heard NOTHING.  Recover
+                            # instead of going silent: clear the inhibit and
+                            # re-queue the saved chunks so they actually play this
+                            # time, keeping the slot map intact.  One-shot per
+                            # burst (_slot_represented_once, reset when any chunk
+                            # next plays) prevents a re-inhibit -> re-queue loop.
+                            if (
+                                not self._slot_represented_once
+                                and self._inhibited_slot_chunks
+                            ):
+                                self._slot_represented_once = True
+                                self.session["tts_inhibit"] = False
+                                self.session["_slot_chunks_inhibited"] = 0
+                                _saved = self._inhibited_slot_chunks
+                                self._inhibited_slot_chunks = []
+                                logger.info(
+                                    "[ms_conn] all slot chunks inhibited — "
+                                    "re-presenting %d chunk(s) (patient heard "
+                                    "nothing, slot map kept)",
+                                    len(_saved),
+                                )
+                                for _c in _saved:
+                                    self.tts_text_queue.put_nowait(_c)
+                            else:
+                                # Already re-presented once and still inhibited —
+                                # give up to avoid a loop; clear the map.
+                                logger.info(
+                                    "[ms_conn] all slot chunks inhibited again — "
+                                    "clearing slot map (patient never heard options)"
+                                )
+                                self.session.pop("v3_dtmf_slot_map",          None)
+                                self.session.pop("v3_awaiting_slot_selection", None)
+                                self.session.pop("_slot_chunks_sent",          None)
+                                self.session.pop("_slot_chunks_inhibited",     None)
+                                self.slot_map_stage = SlotMapStage.NONE
+                                self._inhibited_slot_chunks = []
                     continue
+
+                # A chunk is about to play (not inhibited) — allow a future
+                # heard-nothing re-presentation for the next slot burst.
+                if self._slot_represented_once:
+                    self._slot_represented_once = False
 
                 # Skip consecutive identical chunks (dedup guard) — but never for
                 # a watchdog re-ask, which is a deliberate replay of the question.
