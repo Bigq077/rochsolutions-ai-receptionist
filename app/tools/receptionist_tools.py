@@ -1952,12 +1952,11 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         )
 
         if _is_asap:
-            # Warm single-day "earliest" lead-in only if the soonest day can
-            # stand on its own (≥2 times); otherwise fall through to multi_day
-            # breadth so the caller is never offered a single take-it-or-leave-it
-            # slot (the Call-1 "one day, one slot" defect).
-            _earliest_thin = not (days_data and len(days_data[0].get("slot_times", [])) >= 2)
-            _presentation_mode = "multi_day" if _earliest_thin else "single_day"
+            # Owner decision 2026-06-15: ASAP shows the ONE soonest day as-is
+            # (NO fill-forward), then acts on the caller's response.  The single
+            # take-it-or-leave-it case is acceptable now that BUG-12 lets the
+            # caller ask "anything else?" and get alternatives.
+            _presentation_mode = "single_day"
         elif _is_specific_day:
             _presentation_mode = "single_day"
         else:
@@ -1973,7 +1972,23 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
         _present_days = days_data[:3] if _presentation_mode == "multi_day" else days_data
         _result = {"available_days": _present_days, "total_days": len(_present_days), "presentation_mode": _presentation_mode}
         if _presentation_mode == "single_day" and days_data:
-            _result["first_day"] = days_data[0]
+            # Cap a single day's SPOKEN times to the soonest 3 so a busy day
+            # (e.g. "the 29th" with 10 slots) isn't a wall of times.  When more
+            # exist, flag more_times so the formatter adds the "…a few others
+            # that day if neither suits" tail.  The FULL day stays in
+            # session["available_days"] (set above), so _resolve_slot_iso / DTMF
+            # still resolve a time beyond the 3 presented.
+            _fd = days_data[0]
+            _n = len(_fd.get("slot_times", []) or [])
+            if _n > 3:
+                _fd = {
+                    **_fd,
+                    "slot_times":        (_fd.get("slot_times") or [])[:3],
+                    "slot_times_spoken": (_fd.get("slot_times_spoken") or [])[:3],
+                    "slots":             (_fd.get("slots") or [])[:3],
+                    "more_times":        True,
+                }
+            _result["first_day"] = _fd
             # Warm lead-in only on a single_day ASAP request ("soonest/earliest").
             # Never on a specific-day request like "do you have Tuesday?".
             if _is_asap:
