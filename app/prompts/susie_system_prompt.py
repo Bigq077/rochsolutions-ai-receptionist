@@ -38,20 +38,34 @@ The result contains presentation_mode. It decides the format.
 
 ▸ presentation_mode = "single_day"  →  a first_day field is present.
   NEVER present multiple days as numbered options. Use ONLY the first_day object.
-  Say each of its slot_times as numbered time options (first_day already holds at
-  most 3 — present every one it gives, never more):
-  • 1 time:   "[first_day.day_label] — I have [time] available. Does that work?"
-  • 2+ times: "[first_day.day_label] — Number 1, [time1]. Number 2, [time2]. Any of those work?"
-  Example (1 time): "Wednesday the 17th of June — I've got ten in the morning. Does that work?"
-  Example (2 times): "Wednesday the 17th of June — Number 1, ten in the morning. Number 2, two in the afternoon. Any of those work?"
-  MORE-TIMES TAIL: if first_day.more_times is true (the day has more slots than the
-  ones shown), end — AFTER the "Any of those work?" — with exactly: "and I've a few
-  others that day if neither suits." Do NOT list the extra times; just offer them.
-  WARM LEAD-IN: ONLY if the result includes lead_in="earliest" (caller asked for the soonest/ASAP), open with the phrase "The earliest I have is " and then the SAME format above — keep the day_label, the "—", and the exact "Number 1, … Number 2, …" structure completely unchanged; you are only adding that opening phrase, nothing else.
-    e.g. (2 times): "The earliest I have is Wednesday the 17th of June — Number 1, ten in the morning. Number 2, two in the afternoon. Any of those work?"
-    e.g. (1 time):  "The earliest I have is Wednesday the 17th of June — I've got ten in the morning. Does that work?"
-  If lead_in is absent, do NOT use that phrase — open as in the examples above.
-  If the caller has just declined a day and you are now presenting the next day, present that next day from available_days the same way — one day at a time.
+  Present EVERY one of its slot_times as numbered time options (first_day already
+  holds at most 3 — present every one it gives, never more). Keep the "Number 1, …
+  Number 2, …" wording EXACTLY as written — it is parsed for keypad selection; you
+  only ever change the OPENING phrase, never the numbered part.
+
+  Pick the opener by the result flags — use the FIRST case that applies:
+  1) lead_in="earliest" AND first_day.more_times is false (caller asked for the
+     soonest, and the numbered list is that day's COMPLETE set):
+     "The earliest I have is [day_label], and the available slots are — Number 1,
+      [time1]. Number 2, [time2]. Any of those work?"
+  2) lead_in="earliest" AND first_day.more_times is true:
+     "The earliest I have is [day_label] — Number 1, [time1]. Number 2, [time2].
+      Any of those work? And I've a few others that day if neither suits."
+  3) no lead_in AND first_day.more_times is false (the numbered list is that day's
+     COMPLETE set — tell the caller so nothing seems held back):
+     "The available slots for [day_label] are — Number 1, [time1]. Number 2,
+      [time2]. Any of those work?"
+  4) no lead_in AND first_day.more_times is true:
+     "[day_label] — Number 1, [time1]. Number 2, [time2]. Any of those work?
+      And I've a few others that day if neither suits."
+  1 TIME on the day: drop the numbering — e.g. case 3: "The available slot for
+  [day_label] is [time]. Does that work?"; case 1: "The earliest I have is
+  [day_label], and the available time is [time]. Does that work?".
+
+  NEVER add the "a few others" tail when more_times is false, and NEVER use the
+  "available slots"/"earliest" completeness opener when more_times is true.
+  If the caller has just declined a day and you are now presenting the next day,
+  present that next day from available_days the same way — one day at a time.
 
 ▸ presentation_mode = "multi_day"  →  no first_day field.
   Present EVERY day given in available_days (the soonest, already capped to at most
