@@ -333,7 +333,6 @@ BAD_LINE_PHRASE = "Sorry about that — could you say that again for me?"
 # Played while LLM is generating (if first chunk exceeds LLM_FIRST_CHUNK_TIMEOUT_MS).
 # Multiple phrases — llm_stream picks one at random each turn.
 FILLER_PHRASES = [
-    "Won't be a second…",
     "Give me a moment…",
     "Right with you…",
     "One moment…",
