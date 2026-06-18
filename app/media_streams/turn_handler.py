@@ -55,6 +55,13 @@ _BANNED_SENTENCE_RE = [
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),
     ("lookup_already_ran",    re.compile(r"[^.!?]*\blookup(?:_appointment)? already ran\b[^.!?]*[.!?]?",    re.IGNORECASE)),
     ("rc_stage_leak",         re.compile(r"[^.!?]*\brc_stage\b[^.!?]*[.!?]?",                               re.IGNORECASE)),
+    # CALL STATE internal labels (BOOKING FLOW ACTIVE, CTA COUNT, etc.) spoken
+    # aloud — Sonnet occasionally paraphrases the injected CALL STATE block into
+    # speech (observed Call 4, 2026-06-17: "The booking flow is already active
+    # for Redditch."). These tokens are pure internal vocabulary; Susie never
+    # says them to a caller. Strip the offending sentence, leaving the rest
+    # (e.g. the follow-up question) intact.
+    ("internal_call_state_leak", re.compile(r"[^.!?]*\b(?:booking flow|call state|cta count)\b[^.!?]*[.!?]?", re.IGNORECASE)),
 
     # ── LLM internal reasoning narration ────────────────────────────────────
     # These patterns match full sentences containing internal chain-of-thought
