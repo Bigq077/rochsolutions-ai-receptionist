@@ -429,7 +429,7 @@ def _is_non_specific_slot_affirmation(transcript: str) -> bool:
 # already presented are the correct answer and re-running check_availability
 # would produce a duplicate slot list.
 _OPEN_AVAILABILITY_SIGNALS: frozenset = frozenset({
-    "any", "anytime", "any time", "any day",
+    "anytime", "any time", "any day",
     "free", "free all week", "free this week",
     "flexible", "doesn't matter", "don't mind",
     "don't really mind", "not really mind",
@@ -5359,9 +5359,29 @@ class WebSocketCallHandler:
                             # suppressing them traps the caller (the suppression
                             # path never clears v3_awaiting_slot_selection), which
                             # caused repeated silence → hang-up (2026-06-15).
+                            # Exempt genuine new questions / FAQs.  An utterance
+                            # like "do you offer sports massages by any chance?"
+                            # contains an availability signal substring but is a
+                            # NEW question, not a no-preference continuation.
+                            # Suppressing it traps the caller in a re-ask loop
+                            # (observed 2026-06-18: asked 3x, never answered →
+                            # abandoned).  Such utterances must reach the LLM.
+                            _ut_low = utterance.lower()
+                            _looks_like_new_question = (
+                                "?" in utterance
+                                or any(
+                                    k in _ut_low for k in (
+                                        "offer", "do you", "are you", "have you",
+                                        "what", "how much", "how do", "how long",
+                                        "can i", "could i", "is there", "price",
+                                        "cost", "question",
+                                    )
+                                )
+                            )
                             if (
                                 _is_open_availability_utterance(utterance)
                                 and not _is_slot_rejection_or_alternative(utterance)
+                                and not _looks_like_new_question
                             ):
                                 logger.info(
                                     "[ms_conn v3] open-availability continuation"
