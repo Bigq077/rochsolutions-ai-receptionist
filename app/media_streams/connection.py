@@ -8295,12 +8295,36 @@ class WebSocketCallHandler:
                                 p in _prev_bot_lower
                                 for p in _CTA_BOOKING_PHRASES
                             )
-                            _utt_is_affirm = bool(re.search(
+                            # Affirm detection is split strong vs weak.  Strong
+                            # tokens (yes/yeah/sure/…) are unambiguous.  Weak
+                            # tokens ("i do", "i would", "course") also occur
+                            # INSIDE wh-questions and distress phrases — e.g.
+                            # "what do I do?" contains "\bi do\b".  A weak-only
+                            # match inside a wh-question is NOT a booking
+                            # affirmation, so it is discarded; strong tokens are
+                            # left fully intact (so "yes, when can I come in?"
+                            # still affirms).  (Call 6, 2026-06-18: an emergency
+                            # "…might have broken my hip, what do I do, what do I
+                            # do" matched "i do" and, with the prior "would you
+                            # like to book one?" CTA, falsely fired a booking ack
+                            # → location pivot right after the 999/A&E message.)
+                            _utt_strong_affirm = bool(re.search(
                                 r"\b(?:yes|yeah|yep|sure|okay|ok|yup"
-                                r"|absolutely|definitely|go ahead"
-                                r"|i would|i do|course)\b",
+                                r"|absolutely|definitely|go ahead)\b",
                                 utterance, re.IGNORECASE,
                             ))
+                            _utt_weak_affirm = bool(re.search(
+                                r"\b(?:i would|i do|course)\b",
+                                utterance, re.IGNORECASE,
+                            ))
+                            _utt_is_wh_question = bool(re.search(
+                                r"\b(?:what|how|why|where|when|which)\b",
+                                utterance, re.IGNORECASE,
+                            ))
+                            _utt_is_affirm = (
+                                _utt_strong_affirm
+                                or (_utt_weak_affirm and not _utt_is_wh_question)
+                            )
                             _cta_affirm = _bot_had_cta and _utt_is_affirm
                             if _cta_affirm and not _prev_q_booking:
                                 _prev_q_booking = True
