@@ -331,7 +331,6 @@ _NAME_REQUEST_PHRASES: tuple = (
     "what is your first name",
     "could i get your name",
     "first name",
-    "full name",
 )
 
 # Spec J — short confirming responses the patient may give AFTER the system
