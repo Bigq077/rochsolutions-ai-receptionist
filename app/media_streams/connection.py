@@ -9855,9 +9855,21 @@ class WebSocketCallHandler:
                     _ooo_guard_seq = _expected_seq
                     _ooo_guard_text = text
                     _ooo_guard_ts   = chunk_started_at
+                    # Capture the precise cumulative playout-end so recovery can
+                    # fire ~3s after the audio ACTUALLY finishes, not on a blind
+                    # 30s timer (which left the caller in dead air for half a
+                    # minute when an earlier chunk's finish task never ran).
+                    _ooo_playout_end = self._tts_playout_end_mono
 
                     async def _ooo_force_fire() -> None:
-                        await asyncio.sleep(30.0)
+                        # Wait until just past the real audio-end (playout clock),
+                        # falling back to a 30s cap only if the clock is unset.
+                        _OOO_MARGIN = 3.0
+                        if _ooo_playout_end > 0.0:
+                            _wait = (_ooo_playout_end + _OOO_MARGIN) - time.monotonic()
+                        else:
+                            _wait = 30.0
+                        await asyncio.sleep(max(2.0, _wait))
                         # Stale-guard: a new TTS response has superseded this one.
                         if self._tts_expected_final_seq != _ooo_guard_seq:
                             logger.debug(
@@ -9876,7 +9888,7 @@ class WebSocketCallHandler:
                             return
                         logger.warning(
                             "[ms_tts] _ooo_force_fire: earlier chunks never "
-                            "arrived after 30 s for terminal seq %d — "
+                            "arrived by playout-end for terminal seq %d — "
                             "force-firing silence timer (chunk task likely "
                             "crashed/cancelled)",
                             _ooo_guard_seq,
@@ -10705,9 +10717,34 @@ class WebSocketCallHandler:
                 if self._llm_busy:
                     continue
 
-                # 3. TTS currently playing
+                # 3. TTS currently playing.
+                #    Bug A backstop: _tts_playing can strand True when a chunk
+                #    starts (bumping _tts_last_start_ts) but its finish callback
+                #    never fires (chunk cancelled by barge-in, or an out-of-order
+                #    terminal whose earlier chunk was eaten). Every other chunk's
+                #    finish then sees chunk_started_at < _tts_last_start_ts and
+                #    refuses to clear the flag (on_tts_finished ~2313), so BOTH
+                #    silence nets stay inhibited → dead air until hangup.
+                #    Use the precise cumulative playout clock to distinguish a
+                #    genuinely-playing chunk (now < playout_end) from a stale
+                #    flag. We only reach here when _since >= _INTERVAL (≥10s since
+                #    the last chunk START), so the playout clock already reflects
+                #    the current chunk — no risk of cutting a mid-flight chunk.
                 if getattr(self._silence_handler, "_tts_playing", False):
-                    continue
+                    _playout_end = getattr(self, "_tts_playout_end_mono", 0.0)
+                    if _playout_end > 0.0 and _now < _playout_end + 2.0:
+                        # Audio genuinely still playing — suppress.
+                        continue
+                    # No audio scheduled in flight but flag still set → stale.
+                    logger.warning(
+                        "[ms_safety_net] _tts_playing stale (playout ended "
+                        "%.1fs ago, flag still set) — force-clearing "
+                        "(Bug A backstop) q_gen=%d",
+                        (_now - _playout_end) if _playout_end > 0.0 else -1.0,
+                        getattr(self._silence_handler, "_q_gen", 0),
+                    )
+                    self._silence_handler._tts_playing = False
+                    # fall through — safety net proceeds to recover
 
                 # 4. DTMF expected — watchdog stands down in keypad mode
                 if _is_dtmf_expected(self.session):
