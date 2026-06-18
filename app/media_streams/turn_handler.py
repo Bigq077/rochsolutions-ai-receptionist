@@ -302,10 +302,19 @@ _REASONING_HH_MM_RE = re.compile(r"\d{2}:\d{2}")
 
 # Sentences that open with explicit reasoning narration openers.
 # Anchored to start-of-string OR after sentence-ending punctuation.
+#
+# NOTE: "I should" was DELIBERATELY removed here (2026-06-18, Call 5 over-drop).
+# As a chunk-level trigger it discarded the ENTIRE chunk, so a conversational
+# lead-in like "I should mention — at Alcester we have Thursday slots. Number 1,
+# Thursday 2nd July…" lost the real slots alongside the preface, leaving the
+# caller with a spurious "Sorry, I didn't quite catch that". "I should" still
+# lives in Gate 5b (reasoning_i_should, sentence-level strip) — the identical
+# token — so genuine reasoning ("I should pick the morning slots") is still
+# removed, but surgically (its sentence only), preserving adjacent slot text.
 _REASONING_OPENER_RE = re.compile(
     r"(?:^|(?<=[.!?])\s*)"
     r"(?:Filtering|Checking|Skipping|The rule says|I'?ll need to|With only|"
-    r"Let me work out|Looking at the|Calculating|So I need to|I should)\b",
+    r"Let me work out|Looking at the|Calculating|So I need to)\b",
     re.IGNORECASE,
 )
 

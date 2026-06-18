@@ -95,6 +95,13 @@ NO_AVAILABILITY_FALLBACK = (
 SILENCE_RECOVERY_FALLBACK = (
     "Sorry, I didn't quite catch that — could you say that again?"
 )
+#   - SLOT_RECOVERY_FALLBACK: a check_availability ran this turn AND returned
+#     slots, but the turn still produced no audible speech (e.g. gate5 dropped a
+#     reasoning-prefaced slot chunk).  The caller WAS understood — never blame
+#     them with "I didn't quite catch that"; own the hiccup and let them re-ask.
+SLOT_RECOVERY_FALLBACK = (
+    "Sorry, could you say that again for me?"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1015,18 +1022,24 @@ class LLMStream:
         ):
             _ran_av   = bool(session.get("_check_av_ran_turn"))
             _had_slots = bool(session.get("_check_av_had_slots"))
-            _fallback = (
-                NO_AVAILABILITY_FALLBACK
-                if (_ran_av and not _had_slots)
-                else SILENCE_RECOVERY_FALLBACK
-            )
+            if _ran_av and not _had_slots:
+                _fallback = NO_AVAILABILITY_FALLBACK
+            elif _ran_av and _had_slots:
+                # Slots WERE retrieved this turn but none reached the queue
+                # (formatter output dropped by gate5).  The caller was
+                # understood — use the non-blaming recovery, not "didn't catch
+                # that".
+                _fallback = SLOT_RECOVERY_FALLBACK
+            else:
+                _fallback = SILENCE_RECOVERY_FALLBACK
             if _is_v3:
                 # Defer to connection.py's post-turn path (avoids racing the
-                # booking-ack location question / FAQ synthetic re-queue).  A
-                # no-availability situation always wins over any generic pending
-                # message a per-call fallback may have set; otherwise only fill
+                # booking-ack location question / FAQ synthetic re-queue).  When
+                # a check ran this turn the av-aware phrase (no-availability or
+                # slot-recovery) always wins over any generic "didn't catch
+                # that" a per-call fallback may have queued; otherwise only fill
                 # in a pending fallback if one is not already queued.
-                if _ran_av and not _had_slots:
+                if _ran_av:
                     session["_gate5_fallback_pending"] = _fallback
                 else:
                     session.setdefault("_gate5_fallback_pending", _fallback)
