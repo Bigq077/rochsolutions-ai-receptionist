@@ -8408,31 +8408,43 @@ class WebSocketCallHandler:
                                             "v3_awaiting_phone_confirm"
                                         ] = True
                                     else:
-                                        _existing_tp2 = (
-                                            self.session.get(
-                                                "soft_context"
-                                            ) or {}
-                                        ).get("time_preference")
-                                        if _existing_tp2:
-                                            # Caller already stated timing —
-                                            # skip Q, re-queue pref
-                                            await (
-                                                self.transcript_queue
-                                                .put((time.monotonic(), _existing_tp2))
-                                            )
-                                            _next_q = None
+                                        # Always ask the timing question at the
+                                        # booking ack.  We deliberately do NOT
+                                        # skip it when a soft time_preference
+                                        # already exists, because:
+                                        #  (1) the old skip path re-queued the
+                                        #      pref as a 2-tuple transcript, which
+                                        #      the C8-2 location-ack guard armed
+                                        #      ~80 lines below then dropped (it
+                                        #      lacked synthetic=True) → the ack
+                                        #      said "Let me get that sorted" then
+                                        #      stalled → dead air / abandon; and
+                                        #  (2) soft_context["time_preference"] is
+                                        #      populated from ANY utterance incl.
+                                        #      FAQs (e.g. "are you open Easter
+                                        #      Monday"), so it is frequently a
+                                        #      phantom the caller never stated for
+                                        #      this booking.
+                                        # Asking is safe; the caller confirms the
+                                        # timing in one breath.  Clear the stale
+                                        # pref so their fresh answer wins cleanly
+                                        # (soft_context is otherwise first-wins).
+                                        _sc2 = self.session.get("soft_context")
+                                        if isinstance(_sc2, dict) and _sc2.get(
+                                            "time_preference"
+                                        ):
                                             logger.info(
-                                                "[ms_conn v3] timing pref"
-                                                " known (%r) at ack — Q"
-                                                " skipped, re-queued",
-                                                _existing_tp2,
+                                                "[ms_conn v3] cleared stale soft"
+                                                " time_preference (%r) at booking"
+                                                " ack — will ask timing Q",
+                                                _sc2.get("time_preference"),
                                             )
-                                        else:
-                                            _next_q = (
-                                                "Is there a particular day"
-                                                " or time that works best"
-                                                " for you?"
-                                            )
+                                            _sc2.pop("time_preference", None)
+                                        _next_q = (
+                                            "Is there a particular day"
+                                            " or time that works best"
+                                            " for you?"
+                                        )
                                     # ── Suppress timing Q if slots already
                                     # presented this turn (e.g. inline booking
                                     # ack where check_availability ran in the
