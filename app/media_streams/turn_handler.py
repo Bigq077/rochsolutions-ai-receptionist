@@ -62,6 +62,29 @@ _BANNED_SENTENCE_RE = [
     # says them to a caller. Strip the offending sentence, leaving the rest
     # (e.g. the follow-up question) intact.
     ("internal_call_state_leak", re.compile(r"[^.!?]*\b(?:booking flow|call state|cta count)\b[^.!?]*[.!?]?", re.IGNORECASE)),
+    # Tool/system mechanics narrated aloud — Susie must never reference "the
+    # system", repeated lookups, or "the same availability" to a caller.
+    # Observed Call 1 (2026-06-18, "next week" cascade): "I'm getting the same
+    # availability — it looks like the system [is showing the same days]."
+    # Strip the whole offending sentence; the substantive alternative that
+    # follows (a real next-available day) is in a separate sentence/turn and is
+    # preserved.  "the system" is pure internal vocabulary — Susie would never
+    # say it to a patient — so matching it (in a diary/availability context) is
+    # safe.
+    ("system_availability_narration",
+     re.compile(
+         r"[^.!?]*\b(?:it looks like the system|the system (?:is|keeps|seems|appears)"
+         r"|getting the same availability|the same availability(?: as before)?)\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
+    # "let me try a different search / another search" — internal retry
+    # narration (Call 1: "Let me try a different search for the following
+    # week.").  The caller never needs to hear that a lookup is being retried.
+    ("different_search_narration",
+     re.compile(
+         r"[^.!?]*\b(?:try (?:a|another) different search|a different search)\b[^.!?]*[.!?]?",
+         re.IGNORECASE,
+     )),
 
     # ── LLM internal reasoning narration ────────────────────────────────────
     # These patterns match full sentences containing internal chain-of-thought
