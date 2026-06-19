@@ -2139,6 +2139,13 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         session["collected"]["phone"] = phone
         session["collected"]["service"] = service
         session["collected"]["slot"] = args["slot_iso"]
+        # Populate the top-level slot key the confirmation SMS builder reads.
+        # build_sms() (app/sms_templates.py) resolves date/time from
+        # session["selected_slot"] — a key only the legacy v2 flow.py set.
+        # The v3 tool path never wrote it, so the SMS rendered blank 📅/⏰
+        # lines (fell through to "—").  Set it from the just-booked ISO so
+        # Path 1 (ISO parse) fills in the date and time.
+        session["selected_slot"] = args["slot_iso"]
         if insurer:
             session["collected"]["insurer"] = insurer
         session["acuity_booking_id"] = booking.provider_booking_id
