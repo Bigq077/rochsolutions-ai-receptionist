@@ -4269,9 +4269,27 @@ class WebSocketCallHandler:
                     and not _dtmf_faq_requeued
                 ):
                     if self.booking_flow_active:
+                        # Booking already active: ask the day/time question
+                        # rather than re-queueing the stored timing (no tool
+                        # fires, no strand).  Without this the call dead-airs
+                        # after the clinic ack — same bug as the verbal
+                        # use-this-clinic path (2026-06-19).
+                        _dtmf_dt_q = (
+                            "Is there a particular day or time "
+                            "that works best for you?"
+                        )
+                        await self.tts_text_queue.put(_dtmf_dt_q)
+                        self.session["last_bot_prompt"] = _dtmf_dt_q
+                        self.session["last_question"] = _dtmf_dt_q
+                        self.session.setdefault(
+                            "conversation_history", []
+                        ).append({
+                            "role": "assistant",
+                            "content": _dtmf_dt_q,
+                        })
                         logger.info(
-                            "[ms_conn v3] DTMF: re-queue suppressed"
-                            " — booking flow already active"
+                            "[ms_conn v3] DTMF: booking active — asked"
+                            " day/time Q (no strand)"
                         )
                     else:
                         await self.transcript_queue.put(
@@ -6576,10 +6594,45 @@ class WebSocketCallHandler:
                                         and not _utc_faq_requeued
                                     ):
                                         if self.booking_flow_active:
+                                            # Booking already active: do NOT
+                                            # re-queue the stored timing (would
+                                            # risk a double check_availability and
+                                            # acts on a possibly-stale pref).  But
+                                            # this path is ack-only — without a
+                                            # next step the call dead-airs after
+                                            # the clinic ack and abandons
+                                            # (2026-06-19: "book Friday" → clinic
+                                            # via use-this-clinic ladder →
+                                            # silence).  Ask the day/time question
+                                            # instead: no tool fires, caller
+                                            # confirms in one breath (mirrors the
+                                            # #1 booking-ack fix).
+                                            _utc_dt_q = (
+                                                "Is there a particular day or"
+                                                " time that works best for you?"
+                                            )
+                                            await self.tts_text_queue.put(
+                                                _utc_dt_q
+                                            )
+                                            self.session[
+                                                "last_bot_prompt"
+                                            ] = _utc_dt_q
+                                            self.session[
+                                                "last_question"
+                                            ] = _utc_dt_q
+                                            self.session.setdefault(
+                                                "conversation_history", []
+                                            ).append({
+                                                "role": "assistant",
+                                                "content": _utc_dt_q,
+                                            })
+                                            if self._silence_handler is not None:
+                                                self._silence_handler\
+                                                    .on_question_asked(_utc_dt_q)
                                             logger.info(
                                                 "[ms_conn v3] use-this-clinic:"
-                                                " re-queue suppressed —"
-                                                " booking flow already active"
+                                                " booking active — asked day/time"
+                                                " Q (no strand)"
                                             )
                                         else:
                                             await self.transcript_queue.put(
