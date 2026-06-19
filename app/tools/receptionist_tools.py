@@ -2844,6 +2844,49 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
             return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
         # End RC fast-path — fall through to legacy name-search below
 
+        # Exact-ID path: cancel the EXACT appointment when its id is known —
+        # passed explicitly by reschedule, or stored in session by a preceding
+        # lookup_patient.  The name-search fallback below can match the WRONG
+        # appointment: during reschedule the new booking is created first (under
+        # the same/placeholder name), so the search matched that just-created
+        # NEW booking and cancelled it instead of the original (2026-06-19
+        # data-integrity bug).  Prefer the id whenever we have one.
+        _explicit_appt_id = (
+            str(args.get("appointment_id") or "").strip()
+            or str(session.get("_lookup_appointment_id") or "").strip()
+        )
+        if _explicit_appt_id:
+            _ok = await adapter.cancel_booking(_explicit_appt_id)
+            if not _ok:
+                return {"success": False, "error": "Cancellation failed. Please ask the caller to call the clinic directly."}
+            _appt_time_str = (
+                session.get("_lookup_appointment_datetime", "")
+                or session.get("reschedule_appt_datetime", "")
+            )
+            _appt_type = session.get("_lookup_appointment_type", "") or "appointment"
+            session["calendar_status"] = "cancelled"
+            session.pop("_lookup_appointment_id", None)
+            if not args.get("_suppress_sms"):
+                try:
+                    from app.notifications.booking_sms import send_cancellation_confirmation
+                    if _appt_time_str:
+                        _dt = datetime.fromisoformat(_appt_time_str.replace("Z", "+00:00"))
+                        await send_cancellation_confirmation(
+                            patient_phone=args.get("phone", ""),
+                            patient_name=_safe_first_name(session, args.get("patient_name") or ""),
+                            appointment_time=_dt,
+                        )
+                except Exception as e:
+                    logger.warning("_cancel_appointment_acuity SMS (exact-id) failed (non-fatal): %r", e)
+                session["confirmation_sms_sent"] = True
+            session["cancellation_completed"] = True
+            session["cancel_confirmed"] = True
+            logger.info(
+                "_cancel_appointment_acuity (exact-id): cancelled id=%r was_at=%r",
+                _explicit_appt_id, _appt_time_str,
+            )
+            return {"success": True, "cancelled": _appt_type, "was_at": _appt_time_str}
+
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
         today = datetime.now(LONDON_TZ).date()
         end = today + timedelta(days=60)
@@ -2955,8 +2998,21 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
             "_reschedule_appointment_acuity: injecting original type_id=%s", original_type_id
         )
 
-    # STEP 1: Book the new slot FIRST — original appointment untouched until this succeeds
-    book_args = {**args, "slot_iso": args["new_slot_iso"], "_suppress_sms": True}
+    # Capture the ORIGINAL appointment id BEFORE booking the new slot.  STEP 1
+    # creates a new appointment and overwrites session["acuity_booking_id"], so
+    # STEP 2 must cancel this captured id EXPLICITLY — never by name search,
+    # which matched the just-created new booking and cancelled it instead of the
+    # original (2026-06-19 data-integrity bug).
+    _orig_appt_id = (
+        str(session.get("reschedule_appt_id") or "").strip()
+        or str(session.get("_lookup_appointment_id") or "").strip()
+    )
+
+    # STEP 1: Book the new slot FIRST — original appointment untouched until this succeeds.
+    # Carry the looked-up patient name onto the new booking when available, so the
+    # rescheduled appointment isn't created under a placeholder (e.g. "the caller").
+    _resched_name = (session.get("_lookup_patient_name") or "").strip() or args.get("patient_name")
+    book_args = {**args, "patient_name": _resched_name, "slot_iso": args["new_slot_iso"], "_suppress_sms": True}
     book_result = await _book_appointment_acuity(book_args, session)
 
     if not book_result.get("success"):
@@ -2968,9 +3024,11 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
             ),
         }
 
-    # STEP 2: Cancel the original appointment (only now that new slot is confirmed)
+    # STEP 2: Cancel the ORIGINAL appointment by its exact id (only now that the
+    # new slot is confirmed).  Pass the captured id so the cancel can never
+    # target the new booking.
     cancel_result = await _cancel_appointment_acuity(
-        {**args, "_suppress_sms": True}, session
+        {**args, "_suppress_sms": True, "appointment_id": _orig_appt_id}, session
     )
     if not cancel_result.get("success"):
         # New booking succeeded but cancel failed — log for clinic to manually clean up
@@ -4270,6 +4328,8 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
     # even when the LLM doesn't call collect_and_store(full_name=...).
     session["_lookup_patient_name"] = _lookup_name
     session["_lookup_appointment_id"] = _lookup_appt_id
+    session["_lookup_appointment_datetime"] = found.get("datetime", "")
+    session["_lookup_appointment_type"] = found.get("type", "")
     logger.info(
         "[ms_tools] lookup_patient: name=%r appointment_id=%r",
         _lookup_name, _lookup_appt_id,
