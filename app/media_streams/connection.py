@@ -9755,6 +9755,11 @@ class WebSocketCallHandler:
                 _this_chunk_seq = self._tts_chunk_seq
                 self._tts_expected_final_seq = self._tts_chunk_seq
                 self._current_chunk_seq = _this_chunk_seq
+                # TEMP instrumentation (#6 diagnosis) — no behaviour change.
+                logger.info(
+                    "[ms_tts_seq] synth     seq=%d sub=%d text=%r",
+                    _this_chunk_seq, len(sub_chunks), chunk_text[:40],
+                )
 
                 for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
@@ -9796,6 +9801,11 @@ class WebSocketCallHandler:
                     # can compare against _tts_expected_final_seq and suppress
                     # non-terminal callbacks from intermediate chunks.
                     self._tts_pending_chunk_seq = self._tts_chunk_seq
+                    # TEMP instrumentation (#6 diagnosis) — no behaviour change.
+                    logger.info(
+                        "[ms_tts_seq] place     seq=%d text=%r",
+                        self._tts_pending_chunk_seq, chunk_text[:40],
+                    )
                     await self.audio_out_queue.put(_TTS_DONE_SENTINEL)
 
         except asyncio.CancelledError:
@@ -9860,6 +9870,13 @@ class WebSocketCallHandler:
                     self._tts_pending_chunk_start_ts = 0.0
                     self._tts_pending_q_gen = -1
                     self._tts_pending_chunk_seq = 0
+                    # TEMP instrumentation (#6 diagnosis) — no behaviour change.
+                    # Compare this consumed (seq, text) against the [ms_tts_seq]
+                    # place lines: a mismatch proves the shared-scalar race.
+                    logger.info(
+                        "[ms_tts_seq] consume   seq=%d text=%r",
+                        chunk_seq, (text or "")[:40],
+                    )
                     play_secs = _tts_bytes_sent / 8000.0
                     _tts_bytes_sent = 0
                     # Only arm the silence timer if audio was actually delivered.
