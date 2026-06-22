@@ -2051,6 +2051,32 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
 
         service = (args.get("service") or "physiotherapy assessment").strip()
         patient_name = (args.get("patient_name") or "").strip()
+        # ── Full-name guarantee ───────────────────────────────────────────
+        # The booking flow reads back only the FIRST name, so the LLM may pass
+        # patient_name as just the first name even though the caller gave a
+        # surname (captured deterministically into session this call). If we
+        # hold a richer first+surname for the SAME first name, prefer it so the
+        # surname reaches Acuity. Never overrides a name the LLM already sent
+        # with two+ tokens, and never swaps to an unrelated first name.
+        _stored_name = (
+            session.get("patient_name")
+            or session.get("collected", {}).get("name")
+            or ""
+        ).strip()
+        if (
+            _stored_name
+            and len(_stored_name.split()) >= 2
+            and len(patient_name.split()) <= 1
+            and (
+                not patient_name
+                or patient_name.lower() == _stored_name.split()[0].lower()
+            )
+        ):
+            logger.info(
+                "[ms_tools] book_appointment full-name guarantee: %r -> %r",
+                patient_name, _stored_name,
+            )
+            patient_name = _stored_name
         phone = (args.get("phone") or "").strip()
         is_new = bool(args.get("is_new_patient", True))
         insurer = (args.get("insurer_name") or "").strip()

@@ -1029,10 +1029,93 @@ _V3_NAME_FALSE_POSITIVES = frozenset({
 })
 
 
+# Stop-words that must never be captured as a surname. Combined with
+# _V3_NAME_FALSE_POSITIVES at match time. Conversational/filler tokens that
+# commonly co-occur in a name-answer utterance.
+_SURNAME_STOPWORDS = frozenset({
+    "is", "are", "was", "be", "my", "your", "the", "a", "an", "and", "or",
+    "but", "name", "names", "first", "last", "given", "middle", "second",
+    "surname", "family", "please", "thanks", "thank", "yes", "yeah", "yep",
+    "no", "nope", "use", "this", "that", "number", "one", "calling", "from",
+    "on", "with", "for", "it", "its", "im", "i", "me", "we", "you", "he",
+    "she", "they", "clinic", "appointment", "booking", "book", "sorry",
+    "mr", "mrs", "ms", "miss", "mister", "doctor", "dr", "there", "hi",
+    "hello", "hey", "ok", "okay", "just", "spelt", "spelled", "spell",
+    "like", "would", "to", "of", "as", "so", "well", "um", "uh", "er",
+})
+
+_SURNAME_TOKEN = r"[a-z][a-z'\-]{1,24}"
+
+
+def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
+    """Best-effort surname extraction from the caller's name-answer utterance.
+
+    The first name is taken authoritatively from Susie's readback ("Thanks
+    Quentin —"); this only recovers the SURNAME so the full name can be
+    registered WITHOUT ever reading the surname back. Returns a capitalised
+    surname, or "" if none can be confidently identified.
+
+    Only invoked inside the name-collection phase (gated by the caller of
+    _v3_try_persist_name and by a successful first-name readback match), so the
+    utterance is a name answer — which keeps false positives low.
+    """
+    if not caller_utterance:
+        return ""
+    text = caller_utterance.lower()
+    text = re.sub(r"[^a-z'\-\s]", " ", text)   # punctuation/digits → space
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    first_l = (first_name or "").lower()
+
+    def _ok(tok: str) -> bool:
+        return (
+            bool(tok)
+            and 2 <= len(tok) <= 25
+            and tok != first_l
+            and tok not in _SURNAME_STOPWORDS
+            and tok not in _V3_NAME_FALSE_POSITIVES
+        )
+
+    # 1) Explicit surname marker — most reliable.
+    #    "surname is rock", "last name rock", "family name is o'brien"
+    m = re.search(
+        r"(?:surname|last name|family name|second name)"
+        r"(?:\s+is|\s+was|'s)?\s+(" + _SURNAME_TOKEN + r")",
+        text,
+    )
+    if m and _ok(m.group(1)):
+        return m.group(1).capitalize()
+
+    # 2) "my name is X Y[ Z]", "it's X Y", "i'm X Y", "this is X Y".
+    #    Surname = last name-like token of the captured tail.
+    m = re.search(
+        r"(?:my name is|name'?s|name is|it'?s|it is|i'?m|i am|this is)\s+"
+        r"(" + _SURNAME_TOKEN + r")\s+(" + _SURNAME_TOKEN
+        + r"(?:\s+" + _SURNAME_TOKEN + r")*)",
+        text,
+    )
+    if m:
+        cand = m.group(2).split()[-1]
+        if _ok(cand):
+            return cand.capitalize()
+
+    # 3) Bare name "quentin rock" / "quentin james rock" — only when the first
+    #    token matches the readback first name (high confidence).
+    tokens = text.split()
+    if 2 <= len(tokens) <= 4 and tokens[0] == first_l:
+        cand = tokens[-1]
+        if _ok(cand):
+            return cand.capitalize()
+
+    return ""
+
+
 def _v3_try_persist_name(
     session: dict,
     last_bot: str,
     post_slot_pending: bool = False,
+    caller_utterance: str = "",
 ) -> bool:
     """
     Scan the LLM's last reply for a name-confirmation pattern and immediately
@@ -1080,8 +1163,15 @@ def _v3_try_persist_name(
         if m:
             candidate = m.group(1).capitalize()
             if candidate.lower() not in _V3_NAME_FALSE_POSITIVES:
-                session.setdefault("collected", {})["name"] = candidate
-                session["patient_name"] = candidate
+                # The readback only ever contains the FIRST name (Susie never
+                # reads the surname back), so recover the surname from the
+                # caller's own utterance and store the FULL name. First name
+                # stays authoritative from the readback; surname is best-effort
+                # from the (clean) transcript. Falls back to first-name-only.
+                surname = _v3_extract_surname(caller_utterance, candidate)
+                full = f"{candidate} {surname}" if surname else candidate
+                session.setdefault("collected", {})["name"] = full
+                session["patient_name"] = full
                 return True
 
     return False
@@ -6063,6 +6153,7 @@ class WebSocketCallHandler:
                                         self.session,
                                         _faq_last_bot,
                                         post_slot_pending=self.post_slot_confirmation_pending,
+                                        caller_utterance=utterance,
                                     ):
                                         logger.info(
                                             "[ms_conn v3] name persisted "
@@ -7884,6 +7975,7 @@ class WebSocketCallHandler:
                                 self.session,
                                 _last_bot,
                                 post_slot_pending=self.post_slot_confirmation_pending,
+                                caller_utterance=utterance,
                             ):
                                 await save_session(
                                     self.call_sid, self.session
