@@ -2181,31 +2181,42 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         session.pop("v3_last_presented_date_hint", None)
         session.pop("v3_last_offered_day_iso", None)
 
-        # Stage 2: create pending name-confirmation record (non-fatal)
-        try:
-            from app.storage.redis_store import create_pending_name_confirmation
-            from app.flows.triage_legacy import normalize_phone
-            norm_phone = normalize_phone(phone)
-            first = patient_name.split()[0] if patient_name else ""
-            await create_pending_name_confirmation(
-                phone=norm_phone,
-                first_name=first,
-                appointment_id=booking.provider_booking_id,
-                location=location,
-            )
+        # Stage 2: create pending name-confirmation record + 30-min nudge —
+        # ONLY when we do NOT already hold the caller's surname. With first +
+        # surname captured on the call there is nothing to chase, so skip both
+        # the pending record and the reminder SMS. (If surname capture missed,
+        # the name is a single token and we still chase it, which also keeps
+        # the booking-confirmation SMS's full-name request in step.)
+        if len(patient_name.split()) >= 2:
             logger.info(
-                "[PENDING_NAME] record created: phone=%r appt_id=%r",
-                norm_phone,
-                booking.provider_booking_id,
+                "[PENDING_NAME] skipped — full name already captured (%r)",
+                patient_name,
             )
-            # Schedule 30-min name-confirm nudge (non-fatal)
+        else:
             try:
-                from app.notifications.scheduler import schedule_name_confirm_reminder
-                await schedule_name_confirm_reminder(phone=norm_phone, first_name=first)
-            except Exception as _sched_err:
-                logger.warning("[PENDING_NAME] reminder schedule failed (non-fatal): %r", _sched_err)
-        except Exception as _pn_err:
-            logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
+                from app.storage.redis_store import create_pending_name_confirmation
+                from app.flows.triage_legacy import normalize_phone
+                norm_phone = normalize_phone(phone)
+                first = patient_name.split()[0] if patient_name else ""
+                await create_pending_name_confirmation(
+                    phone=norm_phone,
+                    first_name=first,
+                    appointment_id=booking.provider_booking_id,
+                    location=location,
+                )
+                logger.info(
+                    "[PENDING_NAME] record created: phone=%r appt_id=%r",
+                    norm_phone,
+                    booking.provider_booking_id,
+                )
+                # Schedule 30-min name-confirm nudge (non-fatal)
+                try:
+                    from app.notifications.scheduler import schedule_name_confirm_reminder
+                    await schedule_name_confirm_reminder(phone=norm_phone, first_name=first)
+                except Exception as _sched_err:
+                    logger.warning("[PENDING_NAME] reminder schedule failed (non-fatal): %r", _sched_err)
+            except Exception as _pn_err:
+                logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
 
         # Confirmation SMS — non-fatal.
         # Suppressed when called as part of a reschedule (caller gets a reschedule
