@@ -9980,6 +9980,17 @@ class WebSocketCallHandler:
                     gen, self._tts_gen, text[:60],
                 )
                 return
+            # Record this chunk as PLAYED for the in-order terminal check before
+            # the stale-q_gen / flow-complete guards below skip arming the timer.
+            # Root cause of the #6 OOO dead-air: a chunk that finished playing but
+            # was dropped as stale-q_gen (e.g. a previous turn's filler whose audio
+            # ended after the next question began) never got recorded, leaving a
+            # permanent gap in _tts_chunks_completed that blocked every later
+            # terminal's all-done check and forced the _ooo_force_fire backstop.
+            # Marking it here (it did play) lets the next terminal fire in-order.
+            # NB: placed AFTER the barge-in guard — interrupted chunks must not count.
+            if chunk_seq:
+                self._tts_chunks_completed.add(chunk_seq)
             # Stale-question guard: if the flow has advanced to a new question
             # since this chunk was enqueued, the old prompt must not restart the
             # silence timer or overwrite last_question.  Fixes the "old prompt
