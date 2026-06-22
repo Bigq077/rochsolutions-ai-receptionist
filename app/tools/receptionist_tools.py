@@ -274,6 +274,79 @@ _DOW_INDEX: dict[str, int] = {
 }
 
 
+# Two-date disjunction / range, each side optionally carrying its own month:
+#   "8th or 9th", "18-19 July", "16th of July or 15th of July", "1st or 2nd".
+# A trailing month/year applies to whichever side lacks one.
+# GUARD (applied in _extract_multidate_range): only treated as DATES when at
+# least one ordinal suffix or a valid month name is present — so time ranges
+# like "2-3pm" or "between 2 and 3" are NOT misread as the 2nd/3rd.
+_MULTIDATE_RE = re.compile(
+    r"(?:the\s+)?(\d{1,2})(st|nd|rd|th)?(?:\s+of)?(?:\s+([a-z]+))?"
+    r"\s*(?:\bor\b|\band\b|\bto\b|/|&|,|-)\s*"
+    r"(?:the\s+)?(\d{1,2})(st|nd|rd|th)?(?:\s+of)?(?:\s+([a-z]+))?"
+    r"(?:\s+(\d{4}))?",
+    re.IGNORECASE,
+)
+
+
+def _extract_multidate_range(
+    hint: str,
+    today: "_date_type",
+) -> "tuple[_date_type, _date_type] | None":
+    """Parse a two-date disjunction/range ("8th or 9th", "18-19 July") into a
+    (start, end) span. Returns None when the text is not a confident two-date
+    reference (e.g. a time range like "2-3pm"). The first name is taken from
+    each side's own month if present, otherwise it inherits the other side's
+    month; bare days with no month resolve to the nearest future day-of-month.
+    """
+    if not hint:
+        return None
+    m = _MULTIDATE_RE.search(hint)
+    if not m:
+        return None
+    day1 = int(m.group(1))
+    ord1 = m.group(2)
+    mon1 = (m.group(3) or "").lower()
+    day2 = int(m.group(4))
+    ord2 = m.group(5)
+    mon2 = (m.group(6) or "").lower()
+    year_s = m.group(7) or ""
+    m1n = _MONTH_MAP.get(mon1, 0)
+    m2n = _MONTH_MAP.get(mon2, 0)
+    # Date-vs-time guard: require a real month or an ordinal suffix.
+    if not (m1n or m2n or ord1 or ord2):
+        return None
+    year_n = int(year_s) if year_s else today.year
+
+    def _resolve(day_n: int, month_n: int) -> "_date_type | None":
+        if month_n:
+            try:
+                d = _date_type(year_n, month_n, day_n)
+                if d < today and not year_s:
+                    d = _date_type(year_n + 1, month_n, day_n)
+                return d
+            except ValueError:
+                return None
+        # No month → nearest future date with that day-of-month.
+        for off in range(4):
+            mm = (today.month + off - 1) % 12 + 1
+            yy = today.year + (today.month + off - 1) // 12
+            try:
+                c = _date_type(yy, mm, day_n)
+                if c >= today:
+                    return c
+            except ValueError:
+                continue
+        return None
+
+    eff_m1 = m1n or m2n          # inherit the other side's month if missing
+    eff_m2 = m2n or m1n
+    dates = [d for d in (_resolve(day1, eff_m1), _resolve(day2, eff_m2)) if d]
+    if not dates:
+        return None
+    return min(dates), max(dates)
+
+
 def _extract_week_range(
     date_hint: str,
 ) -> "tuple[_date_type, _date_type] | None":
@@ -426,6 +499,19 @@ def _extract_week_range(
                     wk_start, wk_end,
                 )
                 return wk_start, wk_end
+
+    # ── Pattern 3.7: two-date disjunction / range ───────────────────────────
+    # e.g. "8th or 9th", "18-19 July", "16th of July or 15th of July".
+    # Must run BEFORE Pattern 4 — the single-date matcher would grab only the
+    # first day and (lacking a directly-following month) return None, which is
+    # the original "X or Y wrongly refused" bug. Returns the span covering both.
+    _md_range = _extract_multidate_range(hint, today)
+    if _md_range is not None:
+        logger.info(
+            "[ms_tools] week filter: multi-date range %s to %s (from %r)",
+            _md_range[0], _md_range[1], date_hint,
+        )
+        return _md_range
 
     # ── Pattern 4: specific date (optional day-of-week prefix) ───────────────
     # e.g. "Thursday 21st May mornings", "21st May 2026", "the 14th"
@@ -1840,6 +1926,12 @@ async def _check_availability_acuity(args: Dict[str, Any], session: Dict[str, An
                     r"\b",
                     _hint_lower,
                 )
+            ) or bool(
+                # Two-date disjunction/range ("8th or 9th", "18-19 July") —
+                # without this, no-month forms never reach _extract_week_range
+                # and fall through to the global-earliest sweep (the "X or Y
+                # wrongly refused" bug).
+                _extract_multidate_range(_hint_lower, _date_type.today())
             )
         if not _has_week_anchor:
             logger.info(
