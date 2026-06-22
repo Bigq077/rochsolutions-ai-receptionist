@@ -3100,6 +3100,24 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
 # Acuity executor: reschedule_appointment
 # ---------------------------------------------------------------------------
 
+_PLACEHOLDER_NAMES = {
+    "", "unknown", "unknown unknown", "the caller", "caller", "patient",
+    "the patient", "guest", "n/a", "na", "none",
+}
+
+
+def _is_placeholder_name(n: str) -> bool:
+    """True when a name is a placeholder/non-name and must not reach Acuity."""
+    n = (n or "").strip().lower()
+    if n in _PLACEHOLDER_NAMES:
+        return True
+    parts = n.split()
+    # "unknown unknown" / first==last placeholder forms.
+    if len(parts) >= 2 and len(set(parts)) == 1:
+        return True
+    return False
+
+
 async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """
     Reschedule via Acuity: book new slot FIRST, then cancel old.
@@ -3148,9 +3166,27 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
     )
 
     # STEP 1: Book the new slot FIRST — original appointment untouched until this succeeds.
-    # Carry the looked-up patient name onto the new booking when available, so the
-    # rescheduled appointment isn't created under a placeholder (e.g. "the caller").
-    _resched_name = (session.get("_lookup_patient_name") or "").strip() or args.get("patient_name")
+    # Carry the looked-up patient name onto the new booking. The LLM sometimes
+    # passes a placeholder ("unknown") several turns after the lookup, which would
+    # otherwise create the rescheduled appointment with no real name AND trip the
+    # name-chase SMS. Resolution order: looked-up name → a real arg name → cached
+    # reschedule name → safe label. Never let a placeholder through.
+    _lookup_nm = (session.get("_lookup_patient_name") or "").strip()
+    _arg_nm    = (args.get("patient_name") or "").strip()
+    if _lookup_nm and not _is_placeholder_name(_lookup_nm):
+        _resched_name = _lookup_nm
+    elif _arg_nm and not _is_placeholder_name(_arg_nm):
+        _resched_name = _arg_nm
+    else:
+        _resched_name = (session.get("reschedule_appt_name") or "").strip() or "Patient"
+        logger.warning(
+            "_reschedule: no real patient name (lookup=%r arg=%r) — booked as %r",
+            _lookup_nm, _arg_nm, _resched_name,
+        )
+    logger.info(
+        "_reschedule: new-booking name=%r (lookup=%r arg=%r)",
+        _resched_name, _lookup_nm, _arg_nm,
+    )
     book_args = {**args, "patient_name": _resched_name, "slot_iso": args["new_slot_iso"], "_suppress_sms": True}
     book_result = await _book_appointment_acuity(book_args, session)
 
@@ -3193,7 +3229,7 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
             old_time = datetime.fromisoformat(old_time_str.replace("Z", "+00:00"))
             await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=_safe_first_name(session, args.get("patient_name") or ""),
+                patient_name=_safe_first_name(session, _resched_name),
                 old_time=old_time,
                 new_time=new_time,
                 location=location.title(),
