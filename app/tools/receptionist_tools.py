@@ -1104,6 +1104,8 @@ TOOL_LOOKUP_PATIENT = {
     "description": (
         "Look up a patient by name or phone number. "
         "Use before cancel or reschedule to confirm the appointment exists and share details with the patient. "
+        "The result includes has_more=true when the number has more than one upcoming booking; "
+        "if the caller says the appointment you read back is not the right one, call again with next=true to step to the next match. "
         "Use purpose='history' to retrieve their recent treatment history."
     ),
     "input_schema": {
@@ -1123,6 +1125,14 @@ TOOL_LOOKUP_PATIENT = {
                 "description": (
                     "'cancel' or 'reschedule' — look up an upcoming appointment. "
                     "'history' — retrieve the patient's recent treatment history."
+                ),
+            },
+            "next": {
+                "type": "boolean",
+                "description": (
+                    "Set true to advance to the NEXT matching appointment when the caller "
+                    "says the one you read back is not the right one and has_more was true. "
+                    "Re-uses the stored match list — do not resend name or phone."
                 ),
             },
         },
@@ -4421,6 +4431,44 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
     name = (args.get("name") or "").strip()
     phone = (args.get("phone") or "").strip()
 
+    def _emit(appt: dict, idx: int, total: int) -> Dict[str, Any]:
+        """Build the tool result for one match and persist it as the active
+        appointment (so cancel/reschedule target it by exact id)."""
+        _nm = f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip()
+        _id = str(appt.get("id", ""))
+        session["_lookup_patient_name"] = _nm
+        session["_lookup_appointment_id"] = _id
+        session["_lookup_appointment_datetime"] = appt.get("datetime", "")
+        session["_lookup_appointment_type"] = appt.get("type", "")
+        logger.info(
+            "[ms_tools] lookup_patient: match %d/%d name=%r appointment_id=%r",
+            idx + 1, total, _nm, _id,
+        )
+        return {
+            "found": True,
+            "patient_name": _nm,
+            "appointment_type": appt.get("type", ""),
+            "appointment_time": appt.get("datetime", ""),
+            "appointment_id": _id,
+            "match_count": total,
+            "has_more": idx < total - 1,
+        }
+
+    # ── Advance to the NEXT match (caller said the readback wasn't the one) ──
+    # Re-uses the stored match list from the first lookup — no name/phone or
+    # re-fetch needed.
+    if args.get("next"):
+        _matches = session.get("_lookup_matches") or []
+        _idx = int(session.get("_lookup_match_index", 0)) + 1
+        if _matches and _idx < len(_matches):
+            session["_lookup_match_index"] = _idx
+            return _emit(_matches[_idx], _idx, len(_matches))
+        return {
+            "found": False,
+            "exhausted": True,
+            "message": "No further upcoming appointments under that number.",
+        }
+
     if not name and not phone:
         return {"found": False, "message": "Provide name or phone to look up an appointment"}
 
@@ -4434,43 +4482,36 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         return {"found": False, "message": "Could not retrieve appointments"}
 
     name_lower = name.lower()
-    found = None
-    for appt in appointments:
-        full = f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip().lower()
-        if name_lower and name_lower in full:
-            found = appt
-            break
-        if phone and phone in (appt.get("phone") or ""):
-            found = appt
-            break
+    # Collect ALL future matches (same name-OR-phone predicate as before, but
+    # no early break) so a number with several bookings can be stepped through.
+    matches = [
+        appt for appt in appointments
+        if (name_lower
+            and name_lower in f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip().lower())
+        or (phone and phone in (appt.get("phone") or ""))
+    ]
 
-    if not found:
+    if not matches:
         return {
             "found": False,
             "message": f"No upcoming appointment found for {name or phone}",
         }
 
-    _lookup_name = f"{found.get('firstName', '')} {found.get('lastName', '')}".strip()
-    _lookup_appt_id = str(found.get("id", ""))
-
-    # Persist to session so the summary builder can populate the name field
-    # even when the LLM doesn't call collect_and_store(full_name=...).
-    session["_lookup_patient_name"] = _lookup_name
-    session["_lookup_appointment_id"] = _lookup_appt_id
-    session["_lookup_appointment_datetime"] = found.get("datetime", "")
-    session["_lookup_appointment_type"] = found.get("type", "")
-    logger.info(
-        "[ms_tools] lookup_patient: name=%r appointment_id=%r",
-        _lookup_name, _lookup_appt_id,
-    )
-
-    return {
-        "found": True,
-        "patient_name": _lookup_name,
-        "appointment_type": found.get("type", ""),
-        "appointment_time": found.get("datetime", ""),
-        "appointment_id": _lookup_appt_id,
-    }
+    # Earliest first, and store the full list so the caller can step through
+    # multiple bookings under one number ("no, the other one").
+    matches.sort(key=lambda a: a.get("datetime", "") or "")
+    session["_lookup_matches"] = [
+        {
+            "id": a.get("id"),
+            "firstName": a.get("firstName", ""),
+            "lastName": a.get("lastName", ""),
+            "datetime": a.get("datetime", ""),
+            "type": a.get("type", ""),
+        }
+        for a in matches
+    ]
+    session["_lookup_match_index"] = 0
+    return _emit(matches[0], 0, len(matches))
 
 
 TOOL_EXECUTORS: Dict[str, Any] = {
