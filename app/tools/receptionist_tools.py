@@ -3106,6 +3106,18 @@ _PLACEHOLDER_NAMES = {
 }
 
 
+def _phone_key(p: str) -> str:
+    """Reduce a phone number to its UK 'core' (no +44 / leading 0 / spaces) so
+    local and E.164 forms compare equal. '07502211207' and '+447502211207'
+    both -> '7502211207'. Returns '' for empty/garbage."""
+    import re as _re
+    d = _re.sub(r"\D", "", p or "")
+    if d.startswith("44"):
+        d = d[2:]
+    d = d.lstrip("0")
+    return d
+
+
 def _is_placeholder_name(n: str) -> bool:
     """True when a name is a placeholder/non-name and must not reach Acuity."""
     n = (n or "").strip().lower()
@@ -4518,13 +4530,16 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
         return {"found": False, "message": "Could not retrieve appointments"}
 
     name_lower = name.lower()
-    # Collect ALL future matches (same name-OR-phone predicate as before, but
-    # no early break) so a number with several bookings can be stepped through.
+    # Format-agnostic phone match: reduce both sides to the UK "core" number so
+    # a caller's local form ("07502211207") matches an appointment stored in
+    # E.164 ("+447502211207"). A naive substring match failed across formats —
+    # e.g. an already-rescheduled appointment (stored E.164) became unfindable.
+    _pk = _phone_key(phone)
     matches = [
         appt for appt in appointments
         if (name_lower
             and name_lower in f"{appt.get('firstName', '')} {appt.get('lastName', '')}".strip().lower())
-        or (phone and phone in (appt.get("phone") or ""))
+        or (_pk and _pk == _phone_key(appt.get("phone") or ""))
     ]
 
     if not matches:
