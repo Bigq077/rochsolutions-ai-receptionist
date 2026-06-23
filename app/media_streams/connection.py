@@ -11260,14 +11260,22 @@ class WebSocketCallHandler:
         except Exception as exc:
             logger.error("[ms_conn] cleanup save failed: %r", exc)
 
-        # Mirror-save to call: prefix for /twilio/status webhook compatibility
+        # Mirror-save to the legacy call: key the /twilio/status webhook reads.
+        # CRITICAL: /status loads via redis_store.get_session(), which keys on
+        # _session_key() — i.e. call:{sid}:{hmac8} when SESSION_SECRET is set.
+        # Writing a bare "call:{sid}" key (as this previously did) means /status
+        # reads an empty default session once SESSION_SECRET is enabled on Render,
+        # losing the entire enriched session (name, phone, phone_confirmed,
+        # last_bot_prompt) → no SMS + wrong outcome classification (2026-06-23 bug).
+        # Use _session_key() so the mirror lands on exactly the key /status reads,
+        # in both secret-set and secret-unset modes.
         try:
             import copy
             import json as _json
-            from app.storage.redis_store import redis_client
+            from app.storage.redis_store import redis_client, _session_key
             if redis_client:
                 await redis_client.set(
-                    f"call:{self.call_sid}",
+                    _session_key(self.call_sid),
                     _json.dumps(copy.deepcopy(self.session)),
                     ex=7200,
                 )
