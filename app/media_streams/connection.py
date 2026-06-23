@@ -5256,13 +5256,20 @@ class WebSocketCallHandler:
                             if _caller_num and _is_use_this_number(utterance):
                                 self.session.setdefault("collected", {})
                                 self.session["collected"]["phone"] = _caller_num
+                                # phone_confirmed=True is REQUIRED: _get_confirmed_phone
+                                # (smart_sms_router / actionable_summary) only returns
+                                # collected["phone"] when phone_confirmed is True.  Without
+                                # it the stored number is invisible to the SMS router →
+                                # phone=no → no confirmation SMS even though the caller
+                                # confirmed the number (2026-06-23 bug).
+                                self.session["phone_confirmed"] = True
                                 self.session["v3_phone_dtmf_active"] = False
                                 self.session["phone_dtmf_buffer"] = ""
                                 await save_session(self.call_sid, self.session)
                                 logger.info(
                                     "[ms_conn v3] verbal phone confirm — stored"
-                                    " calling number %s and exited DTMF; LLM will"
-                                    " produce booking readback: %r",
+                                    " calling number %s + phone_confirmed=True and"
+                                    " exited DTMF; LLM will produce booking readback: %r",
                                     _caller_num, utterance[:60],
                                 )
                                 # Fall through to run_turn — phone is now in
