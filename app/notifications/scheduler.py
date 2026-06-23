@@ -8,7 +8,7 @@ functions will gracefully fail without crashing the app.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 import asyncio
 import json
@@ -60,6 +60,8 @@ async def schedule_appointment_reminders(
     is_new_patient: bool = False,
     has_insurance: bool = False,
     insurer: Optional[str] = None,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> bool:
     """
     Schedule all appointment reminders (24hr and same-day).
@@ -87,15 +89,23 @@ async def schedule_appointment_reminders(
         return False
     
     try:
+        # appointment_time may be tz-aware (Acuity → Europe/London) or naive
+        # (legacy paths). Normalise both sides to UTC-aware before comparing so
+        # we never hit "can't compare offset-naive and offset-aware", which would
+        # be swallowed by the except below and silently abort all scheduling.
+        _appt = appointment_time
+        if _appt.tzinfo is None:
+            _appt = _appt.replace(tzinfo=timezone.utc)
+
         # Calculate reminder times
-        reminder_24hr = appointment_time - timedelta(hours=24)
-        reminder_2hr = appointment_time - timedelta(hours=2)
-        
-        now = datetime.utcnow()
-        
+        reminder_24hr = _appt - timedelta(hours=24)
+        reminder_2hr = _appt - timedelta(hours=2)
+
+        now = datetime.now(timezone.utc)
+
         # Only schedule future reminders
         reminders_scheduled = []
-        
+
         # Schedule 24-hour reminder
         if reminder_24hr > now:
             reminder_id_24hr = await _schedule_reminder(
@@ -108,10 +118,12 @@ async def schedule_appointment_reminders(
                 is_new_patient=is_new_patient,
                 has_insurance=has_insurance,
                 insurer=insurer,
+                clinic_name=clinic_name,
+                clinic_phone=clinic_phone,
             )
             reminders_scheduled.append(reminder_id_24hr)
             logger.info(f"24hr reminder scheduled for {reminder_24hr}")
-        
+
         # Schedule 2-hour reminder
         if reminder_2hr > now:
             reminder_id_2hr = await _schedule_reminder(
@@ -124,6 +136,8 @@ async def schedule_appointment_reminders(
                 is_new_patient=False,
                 has_insurance=False,
                 insurer=None,
+                clinic_name=clinic_name,
+                clinic_phone=clinic_phone,
             )
             reminders_scheduled.append(reminder_id_2hr)
             logger.info(f"2hr reminder scheduled for {reminder_2hr}")
@@ -154,13 +168,15 @@ async def _schedule_reminder(
     is_new_patient: bool = False,
     has_insurance: bool = False,
     insurer: Optional[str] = None,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> str:
     """Schedule a single reminder in Redis."""
     if not REDIS_AVAILABLE or not redis_client:
         raise Exception("Redis not available")
-    
+
     reminder_id = f"reminder:{patient_phone}:{appointment_time.isoformat()}:{reminder_type}"
-    
+
     reminder_data = {
         "reminder_id": reminder_id,
         "reminder_type": reminder_type,
@@ -172,6 +188,8 @@ async def _schedule_reminder(
         "is_new_patient": is_new_patient,
         "has_insurance": has_insurance,
         "insurer": insurer,
+        "clinic_name": clinic_name,
+        "clinic_phone": clinic_phone,
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -231,9 +249,11 @@ async def process_due_reminders() -> int:
         return 0
     
     try:
-        now = datetime.utcnow()
+        # tz-aware UTC so the POSIX timestamp is correct regardless of the
+        # server's local timezone (reminder scores are aware-UTC timestamps).
+        now = datetime.now(timezone.utc)
         now_timestamp = now.timestamp()
-        
+
         due_reminder_ids = await redis_client.zrangebyscore(
             PENDING_REMINDERS_SET,
             min=0,
@@ -296,7 +316,9 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
     is_new_patient = reminder_data.get("is_new_patient", False)
     has_insurance = reminder_data.get("has_insurance", False)
     insurer = reminder_data.get("insurer")
-    
+    clinic_name = reminder_data.get("clinic_name")
+    clinic_phone = reminder_data.get("clinic_phone")
+
     try:
         if reminder_type == "24hr":
             success = await send_24hr_reminder(
@@ -307,6 +329,8 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
                 is_new_patient=is_new_patient,
                 has_insurance=has_insurance,
                 insurer=insurer,
+                clinic_name=clinic_name,
+                clinic_phone=clinic_phone,
             )
         elif reminder_type == "2hr":
             success = await send_same_day_reminder(
@@ -314,6 +338,8 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
                 patient_name=patient_name,
                 appointment_time=appointment_time,
                 location=location,
+                clinic_name=clinic_name,
+                clinic_phone=clinic_phone,
             )
         else:
             logger.error(f"Unknown reminder type: {reminder_type}")

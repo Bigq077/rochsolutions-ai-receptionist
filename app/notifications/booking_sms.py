@@ -136,6 +136,8 @@ async def send_24hr_reminder(
     is_new_patient: bool = False,
     has_insurance: bool = False,
     insurer: Optional[str] = None,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> bool:
     """
     Send 24-hour reminder SMS.
@@ -164,6 +166,8 @@ async def send_24hr_reminder(
             appointment_time=appointment_time,
             location=location_short,
             what_to_bring=is_new_patient,  # Only remind new patients what to bring
+            clinic_name=clinic_name,
+            clinic_phone=clinic_phone,
         )
         
         await send_sms(to=patient_phone, message=message)
@@ -209,6 +213,8 @@ async def send_same_day_reminder(
     patient_name: str,
     appointment_time: datetime,
     location: str,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> bool:
     """
     Send same-day reminder (2 hours before appointment).
@@ -229,6 +235,8 @@ async def send_same_day_reminder(
             patient_name=patient_name,
             appointment_time=appointment_time,
             location=location_short,
+            clinic_name=clinic_name,
+            clinic_phone=clinic_phone,
         )
         
         await send_sms(to=patient_phone, message=message)

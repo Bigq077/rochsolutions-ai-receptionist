@@ -2341,6 +2341,24 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             except Exception as e:
                 logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
 
+        # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
+        # Fires for reschedules too (new appointment time gets its own reminders).
+        try:
+            from app.notifications.scheduler import schedule_appointment_reminders
+            await schedule_appointment_reminders(
+                patient_phone=phone,
+                patient_name=patient_name,
+                appointment_time=booking.start_time,
+                location=location.title(),
+                is_new_patient=is_new,
+                has_insurance=bool(insurer),
+                insurer=insurer or None,
+                clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+                clinic_phone=clinic.get("phone"),
+            )
+        except Exception as e:
+            logger.warning("_book_appointment_acuity reminder scheduling failed (non-fatal): %r", e)
+
         # Sheets log — non-fatal
         try:
             from app.tools.handoff import send_to_sheet
@@ -3632,6 +3650,23 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["confirmation_sms_sent"] = True
     except Exception as e:
         logger.warning("book_appointment SMS failed (non-fatal): %r", e)
+
+    # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
+    try:
+        from app.notifications.scheduler import schedule_appointment_reminders
+        await schedule_appointment_reminders(
+            patient_phone=phone,
+            patient_name=patient_name,
+            appointment_time=start_dt,
+            location=location.title(),
+            is_new_patient=is_new,
+            has_insurance=bool(insurer),
+            insurer=insurer or None,
+            clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+            clinic_phone=clinic.get("phone"),
+        )
+    except Exception as e:
+        logger.warning("book_appointment reminder scheduling failed (non-fatal): %r", e)
 
     # Sheets log — non-blocking
     try:
