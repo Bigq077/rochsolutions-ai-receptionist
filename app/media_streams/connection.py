@@ -5128,6 +5128,52 @@ class WebSocketCallHandler:
                     if await self._resolve_barge_in(utterance):
                         continue
 
+                    # ── Booking-flow verbal phone confirm ────────────────────
+                    # Reschedule/cancel set v3_awaiting_phone_confirm and have a
+                    # deterministic "use this number" handler.  The BOOKING flow
+                    # has no such flag — its phone-confirm step is LLM-generated
+                    # ("…just say use this number") — so "use this number" used to
+                    # fall through to the LLM, which re-ran check_availability
+                    # (looping) and never stored the phone → phone=no → no
+                    # confirmation SMS (2026-06-23 bug).  Store the calling number
+                    # programmatically (mirrors the DTMF-branch intercept) so the
+                    # POST-PHONE CONFIRMATION guard drives the LLM to the booking
+                    # readback, and mark it confirmed so the SMS router has a
+                    # number even if the caller then drops at the readback.
+                    # Tightly gated: booking only, not during DTMF, not the
+                    # reschedule/cancel path, only at the phone-confirm step
+                    # (so a "yes" at slot confirmation can't trip it), and only
+                    # when a calling number actually exists (else: no change).
+                    if (
+                        not self.session.get("v3_phone_dtmf_active")
+                        and not self.session.get("v3_awaiting_phone_confirm")
+                        and self.session.get("booking_flow_active")
+                        and _is_use_this_number(utterance)
+                    ):
+                        _bk_caller_num = self.session.get("twilio_from_local", "")
+                        _bk_lastq = (
+                            self.session.get("last_question", "")
+                            or self.session.get("last_bot_prompt", "")
+                            or ""
+                        ).lower()
+                        _bk_phone_step = (
+                            "use this number" in _bk_lastq
+                            or "number you're calling on" in _bk_lastq
+                            or "number you booked" in _bk_lastq
+                        )
+                        if _bk_caller_num and _bk_phone_step:
+                            self.session.setdefault("collected", {})
+                            self.session["collected"]["phone"] = _bk_caller_num
+                            self.session["phone_confirmed"] = True
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] booking verbal phone confirm — "
+                                "stored calling number %s + phone_confirmed=True; "
+                                "LLM will produce booking readback: %r",
+                                _bk_caller_num, utterance[:60],
+                            )
+                            # Fall through to run_turn — phone now in CALL STATE.
+
                     # A2: verbal reset + DTMF mode management (Spec R).
                     # Intercept BEFORE _llm_busy is set.
                     if self.session.get("v3_phone_dtmf_active"):
