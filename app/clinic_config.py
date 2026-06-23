@@ -146,7 +146,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "timezone": "Europe/London",
 
         # Branding / contact — used in SMS messages
-        "sms_name": "Theorem Health",
+        "sms_name": "Theorem Health and Wellness",
         "phone":    "07870 166861",
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
