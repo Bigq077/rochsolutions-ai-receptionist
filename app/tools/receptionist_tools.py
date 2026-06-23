@@ -2932,6 +2932,31 @@ def _safe_first_name(session: Dict[str, Any], fallback: str = "") -> str:
 # Acuity executor: cancel_appointment
 # ---------------------------------------------------------------------------
 
+async def _cancel_reminders_for(
+    session: Dict[str, Any], args: Dict[str, Any], appt_time_str: str
+) -> None:
+    """
+    Remove pending reminder SMS for a cancelled appointment instant. Non-fatal.
+    Resolves the caller's phone from args/session and matches reminders by the
+    appointment instant, so a reschedule's NEW reminders are never touched.
+    """
+    if not appt_time_str:
+        return
+    try:
+        from app.notifications.scheduler import cancel_reminders_for_appointment
+        phone = (
+            args.get("phone")
+            or (session.get("collected", {}) or {}).get("phone")
+            or session.get("twilio_from_local")
+            or session.get("twilio_from")
+            or ""
+        )
+        when = datetime.fromisoformat(appt_time_str.replace("Z", "+00:00"))
+        await cancel_reminders_for_appointment(patient_phone=phone, appointment_time=when)
+    except Exception as e:
+        logger.warning("reminder cancellation failed (non-fatal): %r", e)
+
+
 async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """cancel_appointment via Acuity Scheduling (Theorem clinic)."""
     from datetime import date as _date
@@ -2998,6 +3023,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 " cancelled=%r was_at=%r",
                 appt_type, appt_time_str,
             )
+            await _cancel_reminders_for(session, args, appt_time_str)
             return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
         # End RC fast-path — fall through to legacy name-search below
 
@@ -3042,6 +3068,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 "_cancel_appointment_acuity (exact-id): cancelled id=%r was_at=%r",
                 _explicit_appt_id, _appt_time_str,
             )
+            await _cancel_reminders_for(session, args, _appt_time_str)
             return {"success": True, "cancelled": _appt_type, "was_at": _appt_time_str}
 
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
@@ -3103,6 +3130,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
             " cancelled=%r was_at=%r",
             appt_type, appt_time_str,
         )
+        await _cancel_reminders_for(session, args, appt_time_str)
         return {
             "success": True,
             "cancelled": appt_type,

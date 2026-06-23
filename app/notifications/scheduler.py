@@ -8,6 +8,7 @@ functions will gracefully fail without crashing the app.
 """
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 import asyncio
@@ -236,6 +237,89 @@ async def cancel_appointment_reminders(
     
     except Exception as e:
         logger.error(f"Failed to cancel reminders: {e}", exc_info=True)
+        return 0
+
+
+def _phone_core(p: str) -> str:
+    """
+    Reduce a phone number to its comparable UK core so local and E.164 forms
+    match: '07502211207' and '+447502211207' both -> '7502211207'.
+    Mirrors receptionist_tools._phone_key. Returns '' for empty/garbage.
+    """
+    d = re.sub(r"\D", "", p or "")
+    if d.startswith("44"):
+        d = d[2:]
+    return d.lstrip("0")
+
+
+async def cancel_reminders_for_appointment(
+    patient_phone: str,
+    appointment_time: datetime,
+) -> int:
+    """
+    Cancel pending reminders for ONE specific appointment instant.
+
+    Matches on normalised phone core AND the appointment instant (within 60s),
+    comparing datetimes rather than raw isoformat strings. This is robust to:
+      - phone-format drift between booking and cancellation (+44 vs 0),
+      - timezone-string drift (a stored 'Europe/London' time vs a 'Z' UTC time
+        for the same instant).
+
+    Because it targets a single instant, a reschedule's just-created NEW
+    reminders (a different time) are preserved while the OLD ones are removed.
+    Safe no-op if Redis is unavailable.
+    """
+    if not REDIS_AVAILABLE or not redis_client:
+        return 0
+
+    target_phone = _phone_core(patient_phone)
+    if not target_phone or appointment_time is None:
+        return 0
+
+    try:
+        appt = appointment_time
+        if appt.tzinfo is None:
+            appt = appt.replace(tzinfo=timezone.utc)
+        target_ts = appt.timestamp()
+
+        reminder_ids = await redis_client.zrange(PENDING_REMINDERS_SET, 0, -1)
+        removed = 0
+        for reminder_id in reminder_ids:
+            try:
+                data_json = await redis_client.get(reminder_id)
+                if not data_json:
+                    # Orphaned set entry — clean it up.
+                    await redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
+                    continue
+                data = json.loads(data_json)
+                if _phone_core(data.get("patient_phone", "")) != target_phone:
+                    continue
+                appt_str = data.get("appointment_time", "")
+                if not appt_str:
+                    continue
+                stored = datetime.fromisoformat(appt_str.replace("Z", "+00:00"))
+                if stored.tzinfo is None:
+                    stored = stored.replace(tzinfo=timezone.utc)
+                if abs(stored.timestamp() - target_ts) <= 60:
+                    await redis_client.delete(reminder_id)
+                    await redis_client.zrem(PENDING_REMINDERS_SET, reminder_id)
+                    removed += 1
+            except Exception as _inner:
+                logger.warning(
+                    "cancel_reminders_for_appointment: skipping %r: %r",
+                    reminder_id, _inner,
+                )
+                continue
+
+        if removed:
+            logger.info(
+                "Cancelled %d pending reminder(s) for ***%s @ %s",
+                removed, target_phone[-4:], appt.isoformat(),
+            )
+        return removed
+
+    except Exception as e:
+        logger.error("cancel_reminders_for_appointment failed: %r", e, exc_info=True)
         return 0
 
 
