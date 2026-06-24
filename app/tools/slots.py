@@ -84,50 +84,66 @@ def generate_candidate_slots(
     day_end_h: int = 18,
     tz=DEFAULT_TZ,
     clinic_working_hours: Optional[dict] = None,
+    increment_min: Optional[int] = None,
 ) -> list[tuple[datetime, datetime]]:
     """
-    Generate candidate slots inside [window_start, window_end], all timezone-aware in tz.
+    Generate candidate slots inside [window_start, window_end], all tz-aware.
+
+    Produced day by day, anchored to each day's OPENING time and spaced
+    `increment_min` apart (defaults to duration_min — e.g. 60 to offer hourly
+    slots even though an appointment is shorter). Each slot lasts duration_min.
+
+    Working-hours bounds support FRACTIONAL hours (16.5 = 16:30, 21.1667 ≈
+    21:10), so half-hour openings/closings are respected exactly — a slot is
+    only emitted when slot_start >= opening AND slot_start + duration <= closing.
+    Integer hours (e.g. demo's 8–19) behave exactly as before.
     """
     window_start = _ensure_tz(window_start, tz)
     window_end = _ensure_tz(window_end, tz)
 
-    slots: list[tuple[datetime, datetime]] = []
-    step = timedelta(minutes=duration_min)
-
-    # Start from next boundary for neatness (preserves tzinfo)
-    cursor = window_start.replace(second=0, microsecond=0)
-    minute_mod = cursor.minute % duration_min
-    if minute_mod != 0:
-        cursor += timedelta(minutes=(duration_min - minute_mod))
-
+    increment = int(increment_min or duration_min)
+    dur = timedelta(minutes=duration_min)
+    step = timedelta(minutes=increment)
     day_keys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
-    while cursor < window_end:
-        slot_start = _ensure_tz(cursor, tz)
-        slot_end = _ensure_tz(cursor + step, tz)
+    def _hm(val: float) -> tuple[int, int]:
+        h = int(val)
+        m = int(round((val - h) * 60))
+        if m >= 60:  # rounding guard
+            h += 1
+            m -= 60
+        return h, m
 
-        # Determine working hours for this weekday
+    slots: list[tuple[datetime, datetime]] = []
+
+    # Iterate by calendar date so DST transitions never drift the boundaries.
+    d = window_start.date()
+    end_d = window_end.date()
+    while d <= end_d:
+        wd = d.weekday()  # 0=mon
         if clinic_working_hours:
-            key = day_keys[slot_start.weekday()]  # 0=mon
-            hours = clinic_working_hours.get(key)
+            hours = clinic_working_hours.get(day_keys[wd])
             if not hours:
-                cursor += step
+                d += timedelta(days=1)
                 continue
-            ds_h, de_h = int(hours[0]), int(hours[1])
+            ds_v, de_v = float(hours[0]), float(hours[1])
         else:
-            # Backward-compatible default (Mon–Fri only)
-            if slot_start.weekday() >= 5:
-                cursor += step
+            if wd >= 5:  # backward-compatible default: Mon–Fri only
+                d += timedelta(days=1)
                 continue
-            ds_h, de_h = int(day_start_h), int(day_end_h)
+            ds_v, de_v = float(day_start_h), float(day_end_h)
 
-        day_start = _ensure_tz(slot_start.replace(hour=ds_h, minute=0, second=0, microsecond=0), tz)
-        day_end = _ensure_tz(slot_start.replace(hour=de_h, minute=0, second=0, microsecond=0), tz)
+        ds_h, ds_m = _hm(ds_v)
+        de_h, de_m = _hm(de_v)
+        day_open = _ensure_tz(datetime(d.year, d.month, d.day, ds_h, ds_m), tz)
+        day_close = _ensure_tz(datetime(d.year, d.month, d.day, de_h, de_m), tz)
 
-        if slot_start >= day_start and slot_end <= day_end and slot_end <= window_end:
-            slots.append((slot_start, slot_end))
-
-        cursor += step
+        cursor = day_open
+        while cursor + dur <= day_close and cursor < window_end:
+            if cursor >= window_start:
+                slots.append((cursor, _ensure_tz(cursor + dur, tz)))
+            cursor = _ensure_tz(cursor + step, tz)
+        d += timedelta(days=1)
 
     return slots
 

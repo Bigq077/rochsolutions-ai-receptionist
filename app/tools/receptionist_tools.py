@@ -3562,6 +3562,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         w_start, w_end,
         duration_min=duration_min,
         clinic_working_hours=working_hours,
+        increment_min=clinic.get("slot_increment_minutes"),
     )
 
     tokens = await _get_tokens()

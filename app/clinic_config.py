@@ -1306,6 +1306,10 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
     clinic["slot_minutes"] = slot_minutes
+    # Slot-offering increment (spacing between offered start times). Defaults to
+    # slot_minutes; set higher (e.g. 60) to offer hourly slots even though the
+    # appointment itself is shorter.
+    clinic["slot_increment_minutes"] = int(op.get("slot_increment_minutes", slot_minutes))
     clinic["days_ahead"] = int(op.get("days_ahead", 60))
     clinic["working_hours"] = _working_hours_to_tuples(op.get("working_hours", {}), slot_minutes)
 
