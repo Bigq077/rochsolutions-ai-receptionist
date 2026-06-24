@@ -8613,12 +8613,22 @@ class WebSocketCallHandler:
                                 from app.clinic_config import single_location_template
                                 _solo_loc = single_location_template(self.session.get("clinic_id"))
                                 if _solo_loc:
+                                    # Confirm the single site to suppress the gate,
+                                    # but do NOT mark the location question "asked"/
+                                    # "active": v3_location_asked drives
+                                    # _v3_loc_answering, which would route the
+                                    # caller's next replies into the two-clinic
+                                    # Awlstuh/Redditch resolver instead of the LLM.
+                                    # v3_location_confirmed alone suppresses the gate
+                                    # (booking_intent AND not asked AND not confirmed).
                                     self.session["v3_location_confirmed"] = True
-                                    self.session["v3_location_asked"] = True
+                                    self.session["v3_location_asked"] = False
+                                    self.session["v3_location_q_active"] = False
                                     self.session["selected_location"] = _solo_loc
                                     logger.info(
                                         "[ms_conn tpl] single-site auto-confirmed location=%r "
-                                        "— two-clinic location gate suppressed", _solo_loc,
+                                        "— two-clinic location gate + answer-resolver suppressed",
+                                        _solo_loc,
                                     )
                                 # Store which intent triggered the ack
                                 if "let's get that moved" in _last_bot.lower():
