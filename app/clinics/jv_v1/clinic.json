@@ -49,8 +49,8 @@
     "phone": "+44 7586 605462",
     "transfer_phone": "+447586605462",
     "booking_system": "google_calendar",
-    "_calendar_id_note": "Google Calendar that Carepatron two-way syncs. Requires google_tokens OAuth (account with edit access to this calendar) before bookings write; until then availability still generates from working_hours.",
-    "calendar_id": "0ee3a961836fedb8c1b5da206ce73fa74acc8ad6305e14334e4ce2b09921c051@group.calendar.google.com",
+    "_calendar_id_note": "MUST match the calendar Carepatron two-way syncs (Carepatron > Settings > Connected apps > Google Calendar). Currently quentinroch10@gmail.com (the Carepatron-synced PRIMARY calendar) so Marcus's Carepatron appointments appear as busy and Susie won't double-book. google_tokens is OAuthed as this same account. NB: personal events on this calendar also block slots — keep it work-focused.",
+    "calendar_id": "quentinroch10@gmail.com",
     "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
     "digest": {
       "enabled": true,
