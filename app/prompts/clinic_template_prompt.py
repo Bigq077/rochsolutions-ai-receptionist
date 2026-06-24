@@ -87,8 +87,11 @@ def _gbp(v: Any) -> str:
     return f"£{v}" if v is not None else ""
 
 
-def _service_price_summary(svc: Dict[str, Any]) -> str:
-    """Compact per-service modality pricing, e.g. 'in-clinic £52 | home visit £80'."""
+def _service_price_summary(svc: Dict[str, Any], modalities: List[str] = None) -> str:
+    """Compact per-service modality pricing, e.g. 'in-clinic £52 | remote £40'.
+    Modalities not offered by the clinic (e.g. home_visit when removed) are
+    omitted so Susie never quotes a price for something she can't book."""
+    modalities = modalities if modalities is not None else ["in_clinic", "remote", "home_visit"]
     p = svc.get("pricing", {}) or {}
     parts: List[str] = []
     if p.get("in_clinic_gbp") is not None:
@@ -102,7 +105,7 @@ def _service_price_summary(svc: Dict[str, Any]) -> str:
         parts.append(f"remote {_gbp(p['remote_gbp'])}")
     if p.get("price_gbp") is not None:
         parts.append(_gbp(p["price_gbp"]))
-    if p.get("home_visit_gbp") is not None:
+    if p.get("home_visit_gbp") is not None and "home_visit" in modalities:
         parts.append(f"home visit {_gbp(p['home_visit_gbp'])}")
     if p.get("package"):
         parts.append(str(p["package"]))
@@ -141,7 +144,7 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         if svc.get("available") is False:
             coming_soon.append(svc.get("name", svc.get("service_id", "")))
             continue
-        summary = _service_price_summary(svc)
+        summary = _service_price_summary(svc, clinic.get("modalities"))
         sid = svc.get("service_id", "")
         nm = svc.get("name", sid)
         who = svc.get("for_patients", "")
@@ -199,7 +202,7 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             in_clinic.append(f"{nm}{dur_s}: {_gbp(p['price_gbp'])}")
         if p.get("remote_gbp") is not None:
             remote.append(f"{nm}{dur_s}: {_gbp(p['remote_gbp'])}")
-        if p.get("home_visit_gbp") is not None:
+        if p.get("home_visit_gbp") is not None and "home_visit" in (clinic.get("modalities") or []):
             home.append(f"{nm}: {_gbp(p['home_visit_gbp'])}")
         if p.get("package"):
             in_clinic.append(f"{nm} package: {p['package']}")
@@ -680,15 +683,15 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "booking is already in progress, do NOT say 'Right —' and do NOT "
         "re-offer to book. Proceed directly to the current booking step "
         "(modality if not yet known, otherwise timing).\n"
-        f"2. MODALITY ({cn} is a single site — there is no clinic-selection "
-        "step). If the caller has not already made it clear, ask ONE question: "
-        f"'Would you like to come into the {loc_spoken} clinic, have a remote "
-        "video or phone appointment, or would a home visit suit you better?' "
-        "Once the modality is known (in-clinic / remote / home visit), never "
-        "ask again. Determine the SERVICE from SERVICE MAPPING — never ask "
-        "'new or returning'.\n"
-        "3. Ask timing: 'Is there a particular day or time that works best "
-        "for you?' If the caller already stated a date, day, or time of day "
+        "2. TIMING IS THE FIRST QUESTION. Ask exactly: 'Do you have a "
+        "preference for when you want to come in?' Do NOT ask which clinic "
+        f"({cn} is a single site) and do NOT ask new/returning. Default the "
+        f"appointment to in-clinic at {loc_spoken} (location='{tk['primary_location_id']}'); "
+        "ONLY if the caller explicitly asks for a remote video or phone "
+        "appointment, set location='remote'. There is no home-visit option — "
+        "never offer one. Determine the SERVICE from SERVICE MAPPING.\n"
+        "3. Treat the answer to step 2 as the timing preference. If the caller "
+        "already stated a date, day, or time of day "
         "earlier — including in their first utterance — do NOT ask again; use "
         "it and proceed. Only count it as a timing preference if the caller is "
         "telling you WHEN they want the appointment (not a factual question "

@@ -1217,6 +1217,61 @@ TOOL_SCHEMAS = [
 ]
 
 
+def build_tool_schemas(clinic_id: Optional[str]) -> list:
+    """
+    Return the tool schemas for a clinic.
+
+    The static schemas above are hardcoded for Theorem (location enum
+    alcester/redditch, service 'physiotherapy assessment', 50-min default). For a
+    single-site template clinic (e.g. jv_v1) that forces the LLM to pass the
+    wrong location/service. Here we deep-copy and rewrite location/service/
+    duration from the clinic's own config. Theorem / legacy / multi-site clinics
+    get the static list unchanged (single_location_template returns None).
+    """
+    import copy
+    from app.clinic_config import get_clinic, single_location_template
+
+    solo = single_location_template(clinic_id)
+    if not solo:
+        return list(TOOL_SCHEMAS)
+
+    clinic = get_clinic(clinic_id)
+    mods = clinic.get("modalities") or []
+    has_remote = "remote" in mods
+    loc_enum = [solo] + (["remote"] if has_remote else [])
+    slot_min = int(clinic.get("slot_minutes", 40))
+    svc_ids = [
+        s.get("service_id")
+        for s in (clinic.get("services") or [])
+        if s.get("available") is not False and s.get("service_id")
+    ]
+    svc_desc = (
+        "The service to book — use the matching service ID from SERVICE MAPPING"
+        + (f" (e.g. {svc_ids[0]})." if svc_ids else ".")
+    )
+    loc_desc = (
+        f"Appointment location: '{solo}' for in-clinic"
+        + (", or 'remote' for a video/phone appointment." if has_remote else ".")
+    )
+
+    out = []
+    for t in TOOL_SCHEMAS:
+        t2 = copy.deepcopy(t)
+        props = (t2.get("input_schema") or {}).get("properties") or {}
+        loc = props.get("location")
+        if isinstance(loc, dict) and loc.get("enum") == ["alcester", "redditch"]:
+            loc["enum"] = loc_enum
+            loc["description"] = loc_desc
+        svc = props.get("service")
+        if isinstance(svc, dict):
+            svc["description"] = svc_desc
+        dur = props.get("duration_minutes")
+        if isinstance(dur, dict):
+            dur["description"] = f"Appointment length in minutes. Defaults to {slot_min}."
+        out.append(t2)
+    return out
+
+
 # ===========================================================================
 # ACUITY SCHEDULING — helpers and executors (Theorem clinic only)
 # ===========================================================================
@@ -3455,7 +3510,6 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     from app.clinic_config import get_clinic
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
-    duration_min = int(args.get("duration_minutes") or 50)
     day_window_days = int(args.get("day_window") or 7)
     # Day/time preference (e.g. "Thursday afternoon") — passed to both
     # presentation builders so available_days honours it, mirroring the Acuity
@@ -3464,6 +3518,10 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     clinic = get_clinic(session.get("clinic_id"))
     working_hours = clinic.get("working_hours", {})
+    # Slot length: caller-passed override, else the clinic's configured
+    # slot_minutes (jv_v1 = 40), else 50. Drives slot spacing — a wrong default
+    # is why JV showed 50-min Theorem-spaced slots.
+    duration_min = int(args.get("duration_minutes") or clinic.get("slot_minutes") or 50)
 
     now = datetime.now(LONDON_TZ)
     w_start = now

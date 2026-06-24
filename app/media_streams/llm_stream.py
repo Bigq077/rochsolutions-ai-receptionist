@@ -172,18 +172,19 @@ def _get_anthropic_client():
 # Tool definitions
 # ---------------------------------------------------------------------------
 
-def _build_claude_tools() -> list:
-    """Return tool definitions in Anthropic native format."""
-    from app.tools.receptionist_tools import TOOL_SCHEMAS
-    tools = list(TOOL_SCHEMAS)
-    return tools
+def _build_claude_tools(session: Dict[str, Any] = None) -> list:
+    """Return tool definitions in Anthropic native format, customised per clinic."""
+    from app.tools.receptionist_tools import build_tool_schemas
+    cid = (session or {}).get("clinic_id")
+    return list(build_tool_schemas(cid))
 
 
-def _build_openai_tools() -> list:
-    """Return tool definitions in OpenAI function-calling format."""
-    from app.tools.receptionist_tools import TOOL_SCHEMAS
+def _build_openai_tools(session: Dict[str, Any] = None) -> list:
+    """Return tool definitions in OpenAI function-calling format, per clinic."""
+    from app.tools.receptionist_tools import build_tool_schemas
+    cid = (session or {}).get("clinic_id")
     tools = []
-    for tool in TOOL_SCHEMAS:
+    for tool in build_tool_schemas(cid):
         tools.append({
             "type": "function",
             "function": {
@@ -348,7 +349,7 @@ class LLMStream:
                             break
                 break  # only the most recent assistant turn
 
-        tools       = _build_claude_tools()
+        tools       = _build_claude_tools(session)
         full_reply  = ""     # assembled from all chunks for history
         transfer_initiated = False
 
@@ -472,7 +473,7 @@ class LLMStream:
             augmented_system = system_prompt
             messages = [{"role": "user", "content": instruction}]
 
-        tools    = _build_claude_tools() if allow_tools else []
+        tools    = _build_claude_tools(session) if allow_tools else []
 
         full_reply = ""
         try:
@@ -1683,7 +1684,7 @@ class LLMStream:
         try:
             from openai import AsyncOpenAI
             gpt_client   = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=15.0)
-            tools        = _build_openai_tools()
+            tools        = _build_openai_tools(session)
             oai_messages = [
                 {"role": "system", "content": _GPT_CONSTRAINT_PREFIX + system_prompt},
             ] + list(messages)
