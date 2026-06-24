@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Dict, Any, Optional
 import os
+import json
 import copy as _copy
+from pathlib import Path
 
 
 def _hours_tuple(start_hour: float, end_hour: float):
@@ -19,7 +21,7 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Format: "+447XXXXXXXXX": "clinic_id"
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
-    "+447367002651": "theorem",       # Theorem Health and Wellness (legacy pipeline)
+    "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
     "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
@@ -1238,16 +1240,166 @@ UK_BANK_HOLIDAYS = [
 # HELPER FUNCTIONS
 # ============================================================================
 
+# ──────────────────────────────────────────────────────────────────────────
+# Data-driven clinics: load operational + prompt config from
+# app/clinics/<clinic_id>/clinic.json for clinics NOT in the legacy CLINICS
+# dict.  Onboarding a new clinic therefore edits one JSON file (plus the
+# Twilio number map) — no Python.  Legacy clinics (demo/theorem*) are
+# unaffected: get_clinic() short-circuits on `cid in CLINICS` before any
+# disk access.
+# ──────────────────────────────────────────────────────────────────────────
+_CLINICS_DIR = Path(__file__).resolve().parent / "clinics"
+_CLINIC_JSON_CACHE: Dict[str, Any] = {}   # cid -> {"mtime": float, "clinic": dict}
+
+
+def _hhmm_to_float(value: Any) -> Optional[float]:
+    """'16:30' -> 16.5 ; None/closed -> None."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        h, m = value.split(":")
+        return int(h) + int(m) / 60.0
+    except Exception:
+        return None
+
+
+def _working_hours_to_tuples(wh: Dict[str, Any], slot_minutes: int) -> Dict[str, Any]:
+    """
+    Convert {day: {open, last_appointment}} to {day: (start, end)} where
+    end = last_appointment + slot_minutes.  is_within_working_hours() uses
+    `start <= t < end`, so the buffer keeps the LAST appointment bookable.
+    Closed days (None / "Closed") map to None.
+    """
+    buffer = (slot_minutes or 40) / 60.0
+    out: Dict[str, Any] = {}
+    for day, spec in (wh or {}).items():
+        if not spec or (isinstance(spec, str) and spec.strip().lower() == "closed"):
+            out[day] = None
+            continue
+        start = _hhmm_to_float(spec.get("open"))
+        last = _hhmm_to_float(spec.get("last_appointment") or spec.get("close"))
+        if start is None or last is None:
+            out[day] = None
+            continue
+        out[day] = (start, last + buffer)
+    return out
+
+
+def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return the full clinic.json dict with the legacy 'clinic contract' keys
+    (read by get_clinic callers: booking, SMS, prompts) flattened on top, so
+    the SAME dict serves both the booking subsystem and the prompt template.
+    """
+    clinic = dict(loaded)  # keep services/faq/prompt_facts/etc. for the template
+    op = loaded.get("operational", {}) or {}
+    slot_minutes = int(op.get("slot_minutes", 40))
+
+    clinic["display_name"] = loaded.get("clinic_name", loaded.get("display_name", "the clinic"))
+    clinic["timezone"] = op.get("timezone", "Europe/London")
+    clinic["sms_name"] = op.get("sms_name", clinic["display_name"])
+    clinic["phone"] = op.get("phone", loaded.get("primary_phone", ""))
+    if op.get("transfer_phone"):
+        clinic["transfer_phone"] = op["transfer_phone"]
+    clinic["booking_system"] = op.get("booking_system", "manual_handoff")
+    clinic["calendar_id"] = op.get("calendar_id")
+    clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config
+    clinic["slot_minutes"] = slot_minutes
+    clinic["days_ahead"] = int(op.get("days_ahead", 60))
+    clinic["working_hours"] = _working_hours_to_tuples(op.get("working_hours", {}), slot_minutes)
+
+    # Some callers expect per-location hours keyed by location id.
+    primary = op.get("primary_location") or (
+        (loaded.get("locations") or [{}])[0].get("location_id")
+    )
+    if primary:
+        clinic.setdefault("location_working_hours", {})[primary] = clinic["working_hours"]
+    return clinic
+
+
+def _load_clinic_json(cid: str) -> Optional[Dict[str, Any]]:
+    """Load + mtime-cache app/clinics/<cid>/clinic.json. None if absent."""
+    path = _CLINICS_DIR / cid / "clinic.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _CLINIC_JSON_CACHE.get(cid)
+    if cached and cached["mtime"] == mtime:
+        return cached["clinic"]
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    clinic = _map_json_to_clinic_contract(loaded)
+    _CLINIC_JSON_CACHE[cid] = {"mtime": mtime, "clinic": clinic}
+    return clinic
+
+
 def get_clinic(clinic_id: Optional[str]) -> Dict[str, Any]:
     """
-    Safe getter: defaults to demo if unknown.
+    Safe getter. Resolution order:
+      1. Legacy CLINICS dict (demo/theorem*) — untouched.
+      2. Data-driven app/clinics/<id>/clinic.json (new clinics, e.g. jv_v1).
+      3. Fallback to demo.
     Injects 'clinic_id' into the returned dict so downstream code
     (e.g. knowledge retrieval) can identify the clinic.
     """
     cid = (clinic_id or "demo").strip().lower()
-    clinic = dict(CLINICS.get(cid, CLINICS["demo"]))
+    if cid in CLINICS:
+        clinic = dict(CLINICS[cid])
+        clinic["clinic_id"] = cid
+        return clinic
+    loaded = _load_clinic_json(cid)
+    if loaded is not None:
+        clinic = dict(loaded)
+        clinic["clinic_id"] = cid
+        return clinic
+    clinic = dict(CLINICS["demo"])
     clinic["clinic_id"] = cid
     return clinic
+
+
+def is_freeform_clinic(clinic_id: Optional[str]) -> bool:
+    """
+    True if the clinic runs the free-form LLM loop (the prompt is the brain,
+    no FlowEngine state machine): theorem_v3, or any template_v1 clinic.
+
+    Used by the media_streams runtime to route the call. theorem_v3 is matched
+    by its literal id (it has no clinic.json / prompt_engine — get_clinic falls
+    back to demo for it), so theorem's routing is byte-identical; template
+    clinics enter the same loop via their prompt_engine flag.
+    """
+    cid = (clinic_id or "").strip().lower()
+    if cid == "theorem_v3":
+        return True
+    try:
+        return get_clinic(cid).get("prompt_engine") == "template_v1"
+    except Exception:
+        return False
+
+
+def single_location_template(clinic_id: Optional[str]) -> Optional[str]:
+    """
+    For a single-site template clinic, return its one location_id (lowercased);
+    otherwise None. Lets the runtime auto-confirm the only site and skip the
+    two-clinic location gate. None for theorem_v3 / multi-site / non-template.
+    """
+    cid = (clinic_id or "").strip().lower()
+    if cid == "theorem_v3":
+        return None
+    try:
+        c = get_clinic(cid)
+    except Exception:
+        return None
+    if c.get("prompt_engine") != "template_v1":
+        return None
+    locs = c.get("locations") or []
+    if len(locs) > 1:
+        return None
+    if locs:
+        return (locs[0].get("location_id") or "").strip().lower() or None
+    return ((c.get("operational") or {}).get("primary_location") or "").strip().lower() or None
 
 
 def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:

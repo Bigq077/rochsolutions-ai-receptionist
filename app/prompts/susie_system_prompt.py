@@ -110,6 +110,15 @@ def build_system_prompt_parts(session: dict) -> tuple:
     """
     if session.get("clinic_id") == "theorem_v3":
         return _build_theorem_v3(session)   # now returns (static, dynamic)
+
+    # Data-driven template clinics (prompt_engine == "template_v1") return
+    # their own (static, dynamic) split for prompt caching.
+    from app.clinic_config import get_clinic as _get_clinic
+    _clinic = _get_clinic(session.get("clinic_id"))
+    if _clinic.get("prompt_engine") == "template_v1":
+        from app.prompts.clinic_template_prompt import build_clinic_prompt
+        return build_clinic_prompt(session, _clinic)
+
     # For other clinic types the whole prompt is small — treat as fully static.
     return (build_system_prompt(session), "")
 
@@ -127,12 +136,21 @@ def build_system_prompt(session: dict) -> str:
         static, dynamic = _build_theorem_v3(session)
         return "\n\n".join(filter(None, [static, dynamic]))
 
-    # jv_v1 — Joint Venture Physiotherapy (single-site, Bolton)
+    from app.clinic_config import get_clinic
+
+    # Data-driven template clinics (e.g. jv_v1). Selected purely by the
+    # prompt_engine flag in clinic.json — flip it off to fall back to the
+    # legacy _build_jv_v1 branch below (kept as a one-field rollback).
+    _tmpl_clinic = get_clinic(session.get("clinic_id"))
+    if _tmpl_clinic.get("prompt_engine") == "template_v1":
+        from app.prompts.clinic_template_prompt import build_clinic_prompt
+        static, dynamic = build_clinic_prompt(session, _tmpl_clinic)
+        return "\n\n".join(filter(None, [static, dynamic]))
+
+    # jv_v1 LEGACY FALLBACK — only reached if prompt_engine is unset/off.
     if session.get("clinic_id") == "jv_v1":
         from app.prompts.jv_system_prompt import _build_jv_v1
         return _build_jv_v1(session)
-
-    from app.clinic_config import get_clinic
     from datetime import datetime, timedelta
 
     try:

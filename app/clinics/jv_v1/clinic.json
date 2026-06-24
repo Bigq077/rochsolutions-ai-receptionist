@@ -30,18 +30,98 @@
   ],
   "opening_hours": {
     "bolton": {
-      "_note": "MARK_REVIEW: Confirm exact opening and closing times with Marcus for each day before go-live",
-      "monday":    { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
-      "tuesday":   { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
-      "wednesday": { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
-      "thursday":  { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
-      "friday":    { "open": "TBC", "close": "TBC", "note": "Evening appointments available" },
-      "saturday":  { "open": "TBC", "close": "TBC", "note": "Saturday morning appointments available" },
+      "_note": "Confirmed with Marcus 2026-06-23. Times are OPEN and LAST APPOINTMENT (last appt is bookable). Evenings Mon-Fri, Saturday mornings.",
+      "monday":    { "open": "16:30", "last_appointment": "20:30", "note": "Evening appointments" },
+      "tuesday":   { "open": "17:00", "last_appointment": "20:30", "note": "Evening appointments" },
+      "wednesday": { "open": "17:30", "last_appointment": "20:30", "note": "Evening appointments" },
+      "thursday":  { "open": "16:30", "last_appointment": "20:30", "note": "Evening appointments" },
+      "friday":    { "open": "16:30", "last_appointment": "19:30", "note": "Evening appointments" },
+      "saturday":  { "open": "09:30", "last_appointment": "13:30", "note": "Saturday mornings" },
       "sunday":    "Closed"
     },
-    "last_appointment": "TBC — confirm with Marcus",
-    "bank_holidays":    "TBC — confirm with Marcus"
+    "last_appointment": "8:30pm weekday evenings (Friday 7:30pm), 1:30pm Saturday",
+    "bank_holidays":    "TBC — varies by week, confirm with Marcus"
   },
+  "operational": {
+    "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
+    "timezone": "Europe/London",
+    "sms_name": "Joint Venture Physiotherapy",
+    "phone": "+44 7586 605462",
+    "transfer_phone": "+447586605462",
+    "booking_system": "google_calendar",
+    "_calendar_id_note": "Google Calendar that Carepatron two-way syncs. Requires google_tokens OAuth (account with edit access to this calendar) before bookings write; until then availability still generates from working_hours.",
+    "calendar_id": "0ee3a961836fedb8c1b5da206ce73fa74acc8ad6305e14334e4ce2b09921c051@group.calendar.google.com",
+    "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
+    "digest": {
+      "enabled": true,
+      "email_to": "",
+      "hour": 21,
+      "minute": 30
+    },
+    "slot_minutes": 40,
+    "days_ahead": 60,
+    "primary_location": "bolton",
+    "working_hours": {
+      "mon": { "open": "16:30", "last_appointment": "20:30" },
+      "tue": { "open": "17:00", "last_appointment": "20:30" },
+      "wed": { "open": "17:30", "last_appointment": "20:30" },
+      "thu": { "open": "16:30", "last_appointment": "20:30" },
+      "fri": { "open": "16:30", "last_appointment": "19:30" },
+      "sat": { "open": "09:30", "last_appointment": "13:30" },
+      "sun": null
+    }
+  },
+  "prompt_engine": "template_v1",
+  "prompt_mode": "modality_gate",
+  "modalities": ["in_clinic", "remote", "home_visit"],
+  "modality_labels": {
+    "in_clinic": "in-clinic at Bolton",
+    "remote": "remote (video/phone)",
+    "home_visit": "home visit"
+  },
+  "modality_session_keys": {
+    "confirmed_flag": "jv_modality_confirmed",
+    "value_key": "jv_modality"
+  },
+  "prompt_facts": {
+    "identity_descriptor": "a private physiotherapy clinic based in Bolton",
+    "sole_practitioner": true,
+    "practitioner": "Marcus",
+    "practitioner_credentials": "Masters in Advanced Clinical Practice, HCPC Registered PH104377, CSP member. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
+    "persona_tone": "Warm, confident, Northern British",
+    "persona_descriptor": "a warm, capable Northern British receptionist",
+    "pricing_default_line": "Default to the in-clinic assessment fee (£52) for new patients asking 'how much is an appointment'.",
+    "default_price_summary": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website.",
+    "tagline": "Your Recovery Is Our Joint Venture",
+    "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics — a genuine differentiator. Reference it when appropriate, never apologise for pricing.",
+    "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I help you today?",
+    "ai_self_response": "Yes, I'm an AI receptionist for Joint Venture Physiotherapy — I can answer questions and book appointments for you.",
+    "clinical_deflection_response": "That's one for Marcus to assess properly at your appointment.",
+    "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
+    "booking_offer": "Would you like to book an assessment so Marcus can take a proper look?",
+    "modality_question": "Would you like to come into our Bolton clinic, have a remote video or phone appointment, or would a home visit suit you better?",
+    "hours_summary_spoken": "We offer evening appointments Monday to Friday and Saturday morning slots — let me check what's available for you.",
+    "closing_practitioner_line": "You're in good hands with Marcus."
+  },
+  "faq": [
+    { "q": "Do I need a GP referral?", "a": "No — you can book directly with us without a referral. Just call or book online and we'll get you seen as soon as possible." },
+    { "q": "How do I access the clinic?", "a": "We're at Flexspace Bolton, Lythgoe House, Manchester Road, Bolton, BL3 2NZ. On arrival you'll be given the access code for the main entrance — use the top keypad, then come in and take a seat in the waiting area." },
+    { "q": "Is there parking?", "a": "Yes — there is free 24/7 on-site parking at Flexspace Bolton. No need to worry about finding a space or paying for parking." },
+    { "q": "Do you offer evening or weekend appointments?", "a": "Yes — we offer evening appointments on weekdays and Saturday morning slots. Contact us and we'll find a time that works for you." },
+    { "q": "How much does it cost?", "a": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website." },
+    { "q": "Do you accept private health insurance?", "a": "Yes — we accept private healthcare referrals. You'll need to get a pre-authorisation code from your insurer and confirm your cover before your first appointment. Give us a call and we can help guide you through the process." },
+    { "q": "Can you come to me?", "a": "Yes — we offer home visits across Bolton and the Greater Manchester area. A 60-minute combined assessment and treatment session at your home is £80. Please mention this when booking." },
+    { "q": "Can I have a remote appointment?", "a": "Yes — we offer video and phone consultations for £40 per session. These are available to patients anywhere in the UK or worldwide, and are ideal for follow-ups or if you can't make it in person." },
+    { "q": "What conditions do you treat?", "a": "We treat a wide range of musculoskeletal and neurological conditions — from back pain, neck pain, and sports injuries to multiple sclerosis, stroke rehabilitation, and vestibular conditions. If you're unsure whether we can help, give us a call and Marcus will advise you." },
+    { "q": "Who will I see?", "a": "All appointments are with Marcus, our Clinical Lead. Marcus has a Masters in Advanced Clinical Practice and a background in elite sport, the NHS, and private practice — you're in expert hands." },
+    { "q": "How do I book?", "a": "You can book online at our website, or give us a call and we'll sort it for you. We have evening and Saturday morning slots available." },
+    { "q": "What should I wear?", "a": "Wear comfortable, loose clothing that allows easy access to the area being treated. Marcus will let you know if anything specific is needed for your appointment." },
+    { "q": "Do you offer discounts?", "a": "Yes — we offer discounts for patients under 18 and students. Please mention this when booking." },
+    { "q": "Can I drive after my appointment?", "a": "In most cases yes, but Marcus will advise you depending on what treatment you've had." },
+    { "q": "What is your cancellation policy?", "a": "We require at least 24 hours notice to cancel or rearrange. Cancellations with less than 24 hours notice or no-shows may be charged the full session fee." },
+    { "q": "Should I eat before my appointment?", "a": "No special preparation needed — just eat as you normally would. For acupuncture, avoid a heavy meal immediately beforehand." },
+    { "q": "What happens at my first appointment?", "a": "Marcus will take a full history, assess your movement and strength, and put together a tailored treatment plan — the whole thing takes about 40 minutes for an MSK assessment." }
+  ],
   "team_and_availability": {
     "practitioners": [
       {

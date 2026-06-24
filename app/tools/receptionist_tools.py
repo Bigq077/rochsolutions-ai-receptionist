@@ -3373,8 +3373,15 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # service names can never reach the booking system.  The error message
     # instructs the LLM to retry immediately with the correct value; the
     # patient must never hear anything about this correction.
+    # The single-service gate and the "which clinic" location gate below are
+    # Theorem-specific (one bookable service, two physical sites). They must
+    # NOT fire for data-driven template clinics (e.g. jv_v1), which have their
+    # own multi-service catalogue and a single site selected by modality.
+    _gate_cid = _resolve_clinic_id(session)
+    _is_theorem_gate = _gate_cid in ("theorem", "theorem_v2", "theorem_v3")
+
     _raw_service = (args.get("service") or "").strip()
-    if _raw_service.lower() not in _VALID_SERVICES:
+    if _is_theorem_gate and _raw_service.lower() not in _VALID_SERVICES:
         logger.warning(
             "[ms_tools] check_availability rejected: invalid service=%r — "
             "must be 'physiotherapy assessment'",
@@ -3401,25 +3408,38 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     # (verbal intercept, biased-confirm, or DTMF).  Reject if not yet set.
     _confirmed_loc = session.get("selected_location") or session.get("location")
     if not _confirmed_loc:
-        logger.warning(
-            "[ms_tools] check_availability rejected: location not yet confirmed"
-            " (location arg=%r) — returning location_required error",
-            args.get("location"),
-        )
-        return {
-            "error": "location_required",
-            "message": (
-                "The caller has not yet confirmed their clinic. "
-                "Do NOT call check_availability until the caller has stated "
-                "which clinic they want (Alcester or Redditch). "
-                "Ask: 'Which clinic would you like — Awlstuh or Redditch?' "
-                "and wait for their answer. Once they confirm, call "
-                "check_availability with their confirmed location."
-            ),
-        }
+        # Single-site template clinics (e.g. jv_v1) have no clinic-selection
+        # step — auto-resolve to their one location so the gate passes.
+        from app.clinic_config import get_clinic as _gc_loc
+        _loc_clinic = _gc_loc(session.get("clinic_id"))
+        _loc_list = _loc_clinic.get("locations") or []
+        if _loc_clinic.get("prompt_engine") == "template_v1" and len(_loc_list) == 1:
+            _confirmed_loc = (_loc_list[0].get("location_id") or "primary")
+            session["selected_location"] = _confirmed_loc
+            logger.info(
+                "[ms_tools] single-site template clinic — auto-set "
+                "selected_location=%s", _confirmed_loc,
+            )
+        else:
+            logger.warning(
+                "[ms_tools] check_availability rejected: location not yet confirmed"
+                " (location arg=%r) — returning location_required error",
+                args.get("location"),
+            )
+            return {
+                "error": "location_required",
+                "message": (
+                    "The caller has not yet confirmed their clinic. "
+                    "Do NOT call check_availability until the caller has stated "
+                    "which clinic they want (Alcester or Redditch). "
+                    "Ask: 'Which clinic would you like — Awlstuh or Redditch?' "
+                    "and wait for their answer. Once they confirm, call "
+                    "check_availability with their confirmed location."
+                ),
+            }
 
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
-    if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
+    if _gate_cid in ("theorem", "theorem_v2", "theorem_v3"):
         _acuity_result = await _check_availability_acuity(args, session)
         return _filter_same_day_slots(_acuity_result, session)
 
