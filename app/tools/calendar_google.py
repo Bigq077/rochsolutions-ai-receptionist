@@ -265,6 +265,37 @@ def list_upcoming_events(
     return resp.get("items", [])
 
 
+def list_events_for_day(
+    stored_tokens: Dict[str, Any],
+    day: datetime,
+    calendar_id: str = DEFAULT_CALENDAR_ID,
+) -> List[Dict[str, Any]]:
+    """
+    Return all (single) events on the Europe/London calendar day that `day`
+    falls on, ordered by start time. Recurring events are expanded
+    (singleEvents=True). Used by the end-of-day booking digest.
+    """
+    service = get_calendar_service(stored_tokens)
+
+    day_local = _ensure_tz(day)
+    start_local = day_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+
+    resp = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=start_local.isoformat(),
+            timeMax=end_local.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=250,
+        )
+        .execute()
+    )
+    return resp.get("items", [])
+
+
 def patch_event_time(
     stored_tokens: Dict[str, Any],
     event_id: str,

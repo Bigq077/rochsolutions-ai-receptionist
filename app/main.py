@@ -369,6 +369,18 @@ async def startup():
     else:
         logger.info("ℹ️  Reminder worker disabled (Redis not available)")
 
+    # End-of-day booking digest worker. Self-gates on MEDIA_STREAMS_CLINIC_ID +
+    # operational.digest.enabled, and is SMTP/Redis-optional (safe no-op until
+    # configured), so it's always safe to start.
+    try:
+        import asyncio
+        from app.notifications.digest import start_digest_worker
+
+        asyncio.create_task(start_digest_worker(interval_seconds=300))
+        logger.info("✅ Booking digest worker started (checks every 5 minutes)")
+    except Exception as e:
+        logger.warning(f"⚠️  Booking digest worker not started: {e}")
+
     logger.info("=" * 60)
     logger.info("✅ Startup complete - ready to accept requests")
     logger.info("=" * 60)
