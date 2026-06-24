@@ -435,6 +435,16 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     clinic = get_clinic(session.get("clinic_id"))
     transfer_phone = clinic.get("transfer_phone") or TRANSFER_FALLBACK_NUMBER
 
+    # Action URL fires when the <Dial> finishes (answered/no-answer/busy/failed).
+    # Without it, a missed transfer just drops the caller silently — the handler
+    # at /twilio/transfer-miss instead notifies the clinic by SMS and takes a
+    # voicemail. Needs an absolute URL (BASE_URL); if unset we fall back to the
+    # old bare <Dial> rather than emit a relative action Twilio can't reach.
+    _base = os.getenv("BASE_URL", "").rstrip("/")
+    _action_attr = (
+        f' action="{_base}/twilio/transfer-miss" method="POST"' if _base else ""
+    )
+
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
@@ -444,7 +454,7 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
         # on the line, and — unlike the previous "Of course — …" — opens with
         # no banned opener (G1).  See [[susie-8call-sweep]] BUG-10.
         '<Say language="en-GB">Putting you through now — please stay on the line.</Say>'
-        f"<Dial timeout=\"20\">{transfer_phone}</Dial>"
+        f"<Dial timeout=\"20\"{_action_attr}>{transfer_phone}</Dial>"
         "</Response>"
     )
 

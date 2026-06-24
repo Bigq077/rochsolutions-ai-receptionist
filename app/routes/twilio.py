@@ -1023,6 +1023,71 @@ async def transfer_status(request: Request):
     return xml(vr)
 
 
+@router.post("/transfer-miss")
+async def transfer_miss(request: Request):
+    """
+    Action handler for the v3 Media Streams transfer <Dial> (_handle_transfer).
+
+    Fires when that <Dial> finishes. On a missed transfer (no-answer/busy/
+    failed) it notifies the clinic by SMS so they can call the patient back,
+    then takes a voicemail. On answered/canceled it simply ends the call.
+
+    Distinct from /transfer-status (the legacy HTTP flow, which re-engages the
+    old Susie) — the v3 call has already left the Media Streams socket, so here
+    we capture a message rather than try to resume the bot.
+    """
+    form        = await request.form()
+    call_sid    = (form.get("CallSid")        or "").strip()
+    dial_status = (form.get("DialCallStatus") or "").strip().lower()
+    from_num    = (form.get("From")           or "").strip()
+
+    logger.info("transfer-miss: call_sid=%s dial_status=%s", call_sid, dial_status)
+
+    vr = VoiceResponse()
+
+    # Mark answered (call ended) or caller hung up before pickup — nothing to do.
+    if dial_status in ("completed", "canceled"):
+        return xml(vr)
+
+    # Missed (no-answer / busy / failed) — notify the clinic by SMS.
+    try:
+        session = await get_session(call_sid) or {}
+    except Exception:
+        session = {}
+
+    try:
+        from app.clinic_config import get_clinic
+        from app.notifications.sms import send_sms
+        _clinic         = get_clinic(session.get("clinic_id"))
+        _transfer_phone = _clinic.get("transfer_phone", "")
+        if _transfer_phone:
+            _collected     = session.get("collected") or {}
+            _caller_name   = _collected.get("name", "")
+            _caller_number = (
+                session.get("twilio_from", "")
+                or from_num
+                or _collected.get("phone", "")
+            )
+            _lines = ["📵 Missed patient transfer via Susie."]
+            if _caller_number and not _caller_number.startswith("client:"):
+                _lines.append(f"📱 Call back: {_caller_number}")
+            if _caller_name:
+                _lines.append(f"Name: {_caller_name}")
+            await send_sms(to=_transfer_phone, message="\n".join(_lines))
+            logger.info("transfer-miss: clinic notified at %s", _transfer_phone)
+    except Exception as e:
+        logger.warning("transfer-miss SMS failed (non-fatal): %r", e)
+
+    # Polite close for the caller (voicemail added in the next step).
+    vr.say(
+        "I'm sorry, the team isn't available to take your call right now. "
+        "Please call us back and we'll be happy to help. Goodbye.",
+        language="en-GB",
+    )
+    vr.hangup()
+    return xml(vr)
+
+
 # =========================================================
 # QUICK ANSWER HANDLER
 # Improvement 2: Location-specific instant answers
