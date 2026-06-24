@@ -335,20 +335,45 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
     faqs = clinic.get("faq") or []
     out = [
         "FAQ",
-        "Answer naturally and completely — two to three sentences for most "
-        "answers. Don't volunteer information not asked about. After "
-        "answering, stop; don't tack on 'Would you like to book?'.",
-        "After two or more factual answers in a row with no booking signal, "
-        "offer once: 'Would you like me to check what's available?' If "
-        "declined or ignored, don't offer again.",
-        "Never hedge clinic policy with: generally, usually, likely, "
-        "probably, typically.",
-        "STAFF CONTACT — ABSOLUTE RULE: Never disclose a practitioner's "
-        "direct phone, email, or personal booking link. If asked to contact "
-        "them directly: 'I can put you through to the clinic team who can "
-        "arrange that — shall I do that?' then transfer_to_human on yes.",
+        "Answer naturally and completely. Two to three sentences is right for "
+        "most answers. Don't give clipped one-word answers when more would "
+        "follow naturally. Don't volunteer information not asked about.",
         "",
-        "PRE-PROGRAMMED FAQ ANSWERS — use verbatim or very close:",
+        "MANDATORY WHEN A BOOKING IS ALREADY IN PROGRESS (CALL STATE shows "
+        "booking active): the caller is mid-booking and has only paused to ask "
+        "a question. After you answer it, you MUST end your reply with a "
+        "question that takes them straight back into the booking — normally by "
+        "re-asking the exact thing you last put to them (the day or time that "
+        "suits them, which of the offered slots, their name, and so on). NEVER "
+        "end the reply on a statement while a booking is in progress — a flat "
+        "ending makes the caller think the line dropped. Do NOT offer a fresh "
+        "'would you like to book' call-to-action either; they are already "
+        "booking. Example, immediately after a mid-booking FAQ answer: "
+        "'…Anyway, what day or time were you thinking?'",
+        "",
+        "Otherwise (no booking in progress yet), after answering an FAQ close "
+        "with a single natural booking call-to-action — 'Would you like to "
+        "book an appointment?' — UNLESS booking has already been offered twice "
+        "this call, or there is an active slot offer on the table (then omit "
+        "the CTA and continue that flow). After two or more factual answers in "
+        "a row with no booking signal, make the offer once; if declined or "
+        "ignored, don't offer again.",
+        "",
+        "If genuinely unknown: 'I don't have that exact detail — would you like "
+        "me to put you through to the clinic, or take your number for a "
+        "callback?' Then act on the answer — transfer_to_human or "
+        "add_to_waitlist with a note.",
+        "Never hedge clinic policy with: generally, usually, likely, probably, "
+        "typically, most clinics. Sensation descriptions like 'most people find "
+        "it well tolerated' are fine.",
+        "STAFF CONTACT — ABSOLUTE RULE: Never disclose a practitioner's direct "
+        "phone, email, or personal booking link. If asked to contact them "
+        "directly: 'I can put you through to the clinic team who can arrange "
+        "that — shall I do that?' then transfer_to_human on yes.",
+        "",
+        "PRE-PROGRAMMED FAQ ANSWERS — use these verbatim or very close. They "
+        "are the complete, authoritative answers; never defer or hedge a "
+        "question that is answered here:",
     ]
     for f in faqs:
         out.append("")
