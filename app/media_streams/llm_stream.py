@@ -1014,7 +1014,10 @@ class LLMStream:
         #     guard suppresses the deferred fallback if any recovery path spoke,
         #     so deferring is always safe (and IS the fix for a suppression-gate
         #     break that leaves flow.py with nothing to present).
-        _is_v3 = session.get("clinic_id") == "theorem_v3"
+        from app.clinic_config import is_freeform_clinic as _is_freeform
+        # Free-form clinics (theorem_v3 + template_v1) have no flow.py drain, so
+        # the deferral logic below applies to all of them, not just v3.
+        _is_v3 = _is_freeform(session.get("clinic_id"))
         if (
             not transfer_initiated
             and not session.get("_turn_real_tts")
@@ -1317,7 +1320,8 @@ class LLMStream:
                 # fallback only if the turn produced NO speech AND queued NO
                 # synthetic continuation.  The FlowEngine path is unchanged
                 # (it has its own gated global fallback in connection.py).
-                if session.get("clinic_id") == "theorem_v3":
+                from app.clinic_config import is_freeform_clinic as _is_freeform
+                if _is_freeform(session.get("clinic_id")):
                     session["_gate5_fallback_pending"] = _gate5_fallback
                     logger.info(
                         "[ms_gate5] no TTS emitted this turn (full_text=%r,"

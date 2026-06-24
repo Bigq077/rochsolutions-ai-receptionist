@@ -4502,8 +4502,9 @@ class WebSocketCallHandler:
         # keypad" from run_turn() without any structured handler having set
         # v3_phone_dtmf_active.  Only fires when no slot map exists (slot map
         # takes priority for keypad detection above).
+        from app.clinic_config import is_freeform_clinic as _is_freeform
         if (
-            self.session.get("clinic_id") == "theorem_v3"
+            _is_freeform(self.session.get("clinic_id"))
             and not self.session.get("v3_phone_dtmf_active")
             and not self.session.get("v3_dtmf_slot_map")
             and "keypad" in self.session.get("last_bot_prompt", "").lower()
@@ -4992,13 +4993,17 @@ class WebSocketCallHandler:
 
         clinic_id = self.session.get("clinic_id", "")
 
-        if clinic_id == "theorem_v3":
+        from app.clinic_config import is_freeform_clinic
+        if is_freeform_clinic(clinic_id):
             # ────────────────────────────────────────────────────────────────
-            # theorem_v3 — free-form LLM loop (Prompt 5)
-            # No FlowEngine. Every utterance is handed straight to run_turn(),
-            # which streams TTS, fires tools, and appends conversation_history
-            # internally.  This branch returns at the end so execution NEVER
-            # falls through to the FlowEngine code below.
+            # Free-form LLM loop (Prompt 5) — theorem_v3 AND template_v1 clinics
+            # (e.g. jv_v1). No FlowEngine. Every utterance is handed straight to
+            # run_turn(), which streams TTS, fires tools, and appends
+            # conversation_history internally.  This branch returns at the end
+            # so execution NEVER falls through to the FlowEngine code below.
+            # The v3_* session-flag sub-behaviours inside self-gate: slot-DTMF
+            # arms generically; intro-DTMF and the two-clinic location gate are
+            # never armed for single-site template clinics, so they stay dormant.
             # ────────────────────────────────────────────────────────────────
             from .llm_stream import LLMStream
 
@@ -8599,6 +8604,22 @@ class WebSocketCallHandler:
                                 self.session["booking_flow_active"] = True
                                 logger.info("[ms_conn] booking_flow_active = True")
                                 self.session["v3_booking_intent"] = True
+                                # Single-site template clinics have no clinic-
+                                # selection step — auto-confirm the one location so
+                                # the v3 two-clinic location gate (_v3_gate_fired)
+                                # and all its downstream "Awlstuh or Redditch?"
+                                # branches stay dormant. theorem (multi-site) is
+                                # unaffected: single_location_template returns None.
+                                from app.clinic_config import single_location_template
+                                _solo_loc = single_location_template(self.session.get("clinic_id"))
+                                if _solo_loc:
+                                    self.session["v3_location_confirmed"] = True
+                                    self.session["v3_location_asked"] = True
+                                    self.session["selected_location"] = _solo_loc
+                                    logger.info(
+                                        "[ms_conn tpl] single-site auto-confirmed location=%r "
+                                        "— two-clinic location gate suppressed", _solo_loc,
+                                    )
                                 # Store which intent triggered the ack
                                 if "let's get that moved" in _last_bot.lower():
                                     self.session["v3_caller_intent"] = (
@@ -10787,6 +10808,32 @@ class WebSocketCallHandler:
         # Guard: only fire once per call
         if self.session.get("greeting_delivered"):
             logger.info("[ms_conn] greeting already delivered — skipping")
+            return
+
+        # ────────────────────────────────────────────────────────────────────
+        # Template clinics (e.g. jv_v1) — greeting from clinic.json
+        # prompt_facts.greeting, NO "press 1 → Mark" intro DTMF (single
+        # practitioner / different transfer target). Mirrors the v3 greeting
+        # path otherwise so the free-form loop starts in the same state.
+        # ────────────────────────────────────────────────────────────────────
+        from app.clinic_config import is_freeform_clinic as _is_ff, get_clinic as _gc
+        _cid_g = self.session.get("clinic_id")
+        if _is_ff(_cid_g) and _cid_g != "theorem_v3":
+            _tpl = _gc(_cid_g)
+            _greeting = ((_tpl.get("prompt_facts") or {}).get("greeting") or "").strip() \
+                or "Hi there, I'm Susie — how can I help you today?"
+            logger.info("[ms_conn tpl] greeting: %r", _greeting[:80])
+
+            history = self.session.setdefault("conversation_history", [])
+            history.append({"role": "user",      "content": "[call connected — patient is on the line]"})
+            history.append({"role": "assistant",  "content": _greeting})
+            self.session["last_bot_prompt"]    = _greeting
+            self.session["last_question"]      = ""
+            self.session["greeting_delivered"] = True
+            self.session["turn_count"]         = 1
+
+            await save_session(self.call_sid, self.session)
+            await self.tts_text_queue.put(_greeting)
             return
 
         # ────────────────────────────────────────────────────────────────────
