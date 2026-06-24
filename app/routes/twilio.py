@@ -1078,12 +1078,82 @@ async def transfer_miss(request: Request):
     except Exception as e:
         logger.warning("transfer-miss SMS failed (non-fatal): %r", e)
 
-    # Polite close for the caller (voicemail added in the next step).
+    # No pickup — invite a voicemail. The recording POSTs to /twilio/voicemail-done.
     vr.say(
         "I'm sorry, the team isn't available to take your call right now. "
-        "Please call us back and we'll be happy to help. Goodbye.",
+        "Please leave a short message after the tone and we'll get back to "
+        "you as soon as we can.",
         language="en-GB",
     )
+    vr.record(
+        max_length=120,
+        play_beep=True,
+        finish_on_key="#",
+        timeout=5,
+        action=_abs_url(request, "/twilio/voicemail-done"),
+        method="POST",
+    )
+    # Safety fallback if the <Record> action is somehow not reached.
+    vr.hangup()
+    return xml(vr)
+
+
+@router.post("/voicemail-done")
+async def voicemail_done(request: Request):
+    """
+    Record action callback for a missed-transfer voicemail. Twilio POSTs here
+    once the caller finishes recording (presses #, hangs up, or 5s silence).
+    SMSes the clinic the recording (link + duration), then thanks the caller.
+    """
+    form          = await request.form()
+    call_sid      = (form.get("CallSid")           or "").strip()
+    recording_url = (form.get("RecordingUrl")      or "").strip()
+    duration      = (form.get("RecordingDuration") or "0").strip()
+    from_num      = (form.get("From")              or "").strip()
+
+    logger.info("voicemail-done: call_sid=%s duration=%s", call_sid, duration)
+
+    try:
+        _dur = int(duration)
+    except ValueError:
+        _dur = 0
+
+    vr = VoiceResponse()
+
+    if recording_url and _dur >= 1:
+        try:
+            session = await get_session(call_sid) or {}
+        except Exception:
+            session = {}
+        try:
+            from app.clinic_config import get_clinic
+            from app.notifications.sms import send_sms
+            _clinic         = get_clinic(session.get("clinic_id"))
+            _transfer_phone = _clinic.get("transfer_phone", "")
+            if _transfer_phone:
+                _collected = session.get("collected") or {}
+                _name      = _collected.get("name", "")
+                _number    = session.get("twilio_from", "") or from_num
+                _lines = ["🎙️ Voicemail from a missed transfer."]
+                if _number and not _number.startswith("client:"):
+                    _lines.append(f"📱 {_number}")
+                if _name:
+                    _lines.append(f"Name: {_name}")
+                _lines.append(f"▶️ {recording_url}.mp3 ({_dur}s)")
+                await send_sms(to=_transfer_phone, message="\n".join(_lines))
+                logger.info("voicemail-done: voicemail SMS sent to %s", _transfer_phone)
+        except Exception as e:
+            logger.warning("voicemail-done SMS failed (non-fatal): %r", e)
+        vr.say(
+            "Thank you — we've got your message and will be in touch. Goodbye.",
+            language="en-GB",
+        )
+    else:
+        vr.say(
+            "We didn't catch a message — please call us back. Goodbye.",
+            language="en-GB",
+        )
+
     vr.hangup()
     return xml(vr)
 
