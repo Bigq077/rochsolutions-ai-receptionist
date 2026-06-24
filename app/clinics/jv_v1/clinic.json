@@ -60,6 +60,8 @@
     },
     "slot_minutes": 40,
     "days_ahead": 60,
+    "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
+    "allow_same_day": true,
     "primary_location": "bolton",
     "working_hours": {
       "mon": { "open": "16:30", "last_appointment": "20:30" },

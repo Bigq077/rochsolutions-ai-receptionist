@@ -3403,12 +3403,20 @@ _VALID_SERVICES: frozenset[str] = frozenset({"physiotherapy assessment"})
 def _filter_same_day_slots(result: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """Remove today's date from all availability results.
 
-    Same-day bookings are never offered — minimum lead time is next working day.
-    Applied to every check_availability return path before the result reaches
-    the LLM, regardless of date_hint.
+    Default: same-day bookings are not offered (minimum lead time is the next
+    working day) — Theorem's policy. Clinics whose config sets
+    operational.allow_same_day=true (e.g. jv_v1) SKIP this filter and may offer
+    today's remaining slots. (Slots are generated from `now`, so already-passed
+    times today are never included regardless.)
     """
     if "available_days" not in result:
         return result
+    try:
+        from app.clinic_config import get_clinic as _gc_sd
+        if _gc_sd(session.get("clinic_id")).get("allow_same_day"):
+            return result
+    except Exception:
+        pass
     from datetime import date as _date_cls
     today_str = _date_cls.today().isoformat()
     original = result["available_days"]
