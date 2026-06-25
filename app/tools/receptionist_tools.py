@@ -3735,21 +3735,35 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             "note": "Calendar not connected — logged for manual confirmation by clinic team.",
         }
 
-    summary = f"{patient_name} — {service}"
-    description_parts = [f"Phone: {phone}", f"Location: {location.title()}"]
+    # Resolve the internal service_id (e.g. "msk_initial_assessment") to the
+    # caller-facing name (e.g. "Initial Assessment (MSK)") for a readable event.
+    _svc_name = service
+    for _s in (clinic.get("services") or []):
+        if _s.get("service_id") == service or (_s.get("name") or "").lower() == (service or "").lower():
+            _svc_name = _s.get("name") or service
+            break
+
+    summary = f"{patient_name} — {_svc_name}"
+    description_parts = [
+        f"Patient: {patient_name}",
+        f"Phone: {phone}",
+        f"Service: {_svc_name}",
+        f"Location: {location.title()}",
+    ]
     if is_new:
         description_parts.append("New patient")
     if insurer:
         description_parts.append(f"Insurer: {insurer}")
     if policy:
         description_parts.append(f"Policy: {policy}")
+    description_parts.append("— Booked via Susie (AI receptionist); enter into Carepatron.")
     description = "\n".join(description_parts)
 
     calendar_id = _resolve_calendar_id(clinic, location)
 
     try:
         event = await asyncio.to_thread(
-            create_event, tokens, start_dt, end_dt, summary, description, calendar_id
+            create_event, tokens, start_dt, end_dt, summary, description, calendar_id, "public"
         )
         await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside create_event
         event_id = event.get("id", "")

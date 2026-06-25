@@ -206,6 +206,7 @@ def create_event(
     summary: str,
     description: str = "",
     calendar_id: str = DEFAULT_CALENDAR_ID,
+    visibility: str = "default",
 ) -> Dict[str, Any]:
     service = get_calendar_service(stored_tokens)
 
@@ -217,6 +218,9 @@ def create_event(
         "description": description,
         "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
         "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
+        # 'public' gives third-party calendar syncs (e.g. Carepatron) the best
+        # chance of showing the title rather than a generic "Private" block.
+        "visibility": visibility,
     }
 
     created = service.events().insert(calendarId=calendar_id, body=event).execute()
