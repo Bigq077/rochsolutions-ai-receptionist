@@ -3897,24 +3897,20 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     clinic = get_clinic(session.get("clinic_id"))
     location = (args.get("location") or "").lower().strip()
     calendar_id = _resolve_calendar_id(clinic, location)
-    patient_name_norm = (args.get("patient_name") or "").strip().lower()
 
     try:
         events = await asyncio.to_thread(
-            list_upcoming_events, tokens, 60, 25, calendar_id
+            list_upcoming_events, tokens, 60, 50, calendar_id
         )
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-    found = None
-    for ev in events:
-        ev_summary = (ev.get("summary") or "").lower()
-        if patient_name_norm and patient_name_norm in ev_summary:
-            found = ev
-            break
+    # Target the exact event the caller confirmed at lookup: prefer the
+    # appointment_id from lookup_patient, then the phone, then the name.
+    found = _match_gcal_event(events, args, session)
 
     if not found:
-        return {"success": False, "error": "No upcoming appointment found for that name."}
+        return {"success": False, "error": "No upcoming appointment found."}
 
     event_id = found["id"]
     event_summary = found.get("summary", "")
@@ -3970,24 +3966,19 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     clinic = get_clinic(session.get("clinic_id"))
     location = (args.get("location") or "").lower().strip()
     calendar_id = _resolve_calendar_id(clinic, location)
-    patient_name_norm = (args.get("patient_name") or "").strip().lower()
 
     try:
         events = await asyncio.to_thread(
-            list_upcoming_events, tokens, 60, 25, calendar_id
+            list_upcoming_events, tokens, 60, 50, calendar_id
         )
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-    found = None
-    for ev in events:
-        ev_summary = (ev.get("summary") or "").lower()
-        if patient_name_norm and patient_name_norm in ev_summary:
-            found = ev
-            break
+    # Same exact-event targeting as cancel: appointment_id → phone → name.
+    found = _match_gcal_event(events, args, session)
 
     if not found:
-        return {"success": False, "error": "No upcoming appointment found for that name."}
+        return {"success": False, "error": "No upcoming appointment found."}
 
     event_id = found["id"]
 
@@ -4645,11 +4636,137 @@ def _iso_now() -> str:
 # Consolidates: lookup_appointment + lookup_recent_appointment + get_patient_history
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Google-Calendar appointment parsing + lookup (template clinics, e.g. jv_v1)
+# ---------------------------------------------------------------------------
+# Susie's bookings are calendar events: summary "Name — Service",
+# description "Patient: …\nPhone: …\nService: …\nLocation: …".
+
+def _gcal_event_phone(ev: Dict[str, Any]) -> str:
+    for line in (ev.get("description") or "").splitlines():
+        if line.strip().lower().startswith("phone:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _gcal_event_patient_name(ev: Dict[str, Any]) -> str:
+    summary = ev.get("summary") or ""
+    if "—" in summary:
+        return summary.split("—")[0].strip()
+    for line in (ev.get("description") or "").splitlines():
+        if line.strip().lower().startswith("patient:"):
+            return line.split(":", 1)[1].strip()
+    return summary.strip()
+
+
+def _gcal_event_service(ev: Dict[str, Any]) -> str:
+    summary = ev.get("summary") or ""
+    if "—" in summary:
+        return summary.split("—", 1)[1].strip()
+    return ""
+
+
+def _match_gcal_event(events: List[Dict[str, Any]], args: Dict[str, Any],
+                      session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Pick the calendar event a cancel/reschedule targets: prefer the
+    appointment_id confirmed at lookup, then the booked-under phone, then the
+    patient name. Returns the event dict or None."""
+    event_id = (args.get("appointment_id") or session.get("_lookup_appointment_id") or "").strip()
+    if event_id:
+        ev = next((e for e in events if e.get("id") == event_id), None)
+        if ev:
+            return ev
+    pk = _phone_key(args.get("phone") or "")
+    if pk:
+        ev = next((e for e in events if pk == _phone_key(_gcal_event_phone(e))), None)
+        if ev:
+            return ev
+    name_norm = (args.get("patient_name") or "").strip().lower()
+    if name_norm:
+        ev = next((e for e in events if name_norm in (e.get("summary") or "").lower()), None)
+        if ev:
+            return ev
+    return None
+
+
+async def _lookup_patient_gcal(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    """Find an upcoming appointment on the clinic's Google Calendar by phone or
+    name. Mirrors the Acuity lookup_patient contract (found / patient_name /
+    appointment_type / appointment_time / appointment_id / match_count /
+    has_more) and supports next=true stepping through multiple matches."""
+    from app.tools.calendar_google import list_upcoming_events
+    from app.clinic_config import get_clinic
+
+    def _emit(ev: Dict[str, Any], idx: int, total: int) -> Dict[str, Any]:
+        nm = _gcal_event_patient_name(ev)
+        _id = ev.get("id", "")
+        start = (ev.get("start") or {}).get("dateTime", "")
+        svc = _gcal_event_service(ev)
+        session["_lookup_patient_name"] = nm
+        session["_lookup_appointment_id"] = _id
+        session["_lookup_appointment_datetime"] = start
+        session["_lookup_appointment_type"] = svc
+        logger.info("[ms_tools] lookup_patient (gcal): match %d/%d name=%r id=%r", idx + 1, total, nm, _id)
+        return {
+            "found": True,
+            "patient_name": nm,
+            "appointment_type": svc,
+            "appointment_time": start,
+            "appointment_id": _id,
+            "match_count": total,
+            "has_more": idx < total - 1,
+        }
+
+    # Step to the next match (caller said the read-back wasn't theirs).
+    if args.get("next"):
+        matches = session.get("_lookup_matches") or []
+        idx = int(session.get("_lookup_match_index", 0)) + 1
+        if matches and idx < len(matches):
+            session["_lookup_match_index"] = idx
+            return _emit(matches[idx], idx, len(matches))
+        return {"found": False, "exhausted": True,
+                "message": "No further upcoming appointments under that number."}
+
+    name = (args.get("name") or "").strip()
+    phone = (args.get("phone") or "").strip()
+    if not name and not phone:
+        return {"found": False, "message": "Provide name or phone to look up an appointment"}
+
+    tokens = await _get_tokens()
+    if not tokens:
+        return {"found": False, "message": "Calendar not connected"}
+    clinic = get_clinic(session.get("clinic_id"))
+    calendar_id = _resolve_calendar_id(clinic, (args.get("location") or ""))
+    try:
+        events = await asyncio.to_thread(list_upcoming_events, tokens, 60, 50, calendar_id)
+        await _save_gcal_tokens(tokens)
+    except Exception as exc:
+        logger.warning("_lookup_patient_gcal: list_upcoming_events failed: %r", exc)
+        return {"found": False, "message": "Could not retrieve appointments"}
+
+    name_lower = name.lower()
+    pk = _phone_key(phone)
+    matches = [
+        ev for ev in events
+        if (ev.get("start") or {}).get("dateTime")  # skip all-day / busy blocks
+        and ((name_lower and name_lower in _gcal_event_patient_name(ev).lower())
+             or (pk and pk == _phone_key(_gcal_event_phone(ev))))
+    ]
+    matches.sort(key=lambda e: (e.get("start") or {}).get("dateTime", ""))
+
+    if not matches:
+        return {"found": False, "message": f"No upcoming appointment found for {name or phone}"}
+    session["_lookup_matches"] = matches
+    session["_lookup_match_index"] = 0
+    return _emit(matches[0], 0, len(matches))
+
+
 async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """
     Routes based on purpose:
       history   → _exec_get_patient_history (treatment history)
-      cancel / reschedule → find upcoming appointment in Acuity by name or phone
+      cancel / reschedule → find upcoming appointment by name or phone
+        (Acuity for Theorem; Google Calendar for template clinics like jv_v1).
     """
     purpose = args.get("purpose", "history")
 
@@ -4658,7 +4775,7 @@ async def _exec_lookup_patient(args: Dict[str, Any], session: Dict[str, Any]) ->
 
     # cancel / reschedule: look up upcoming appointment
     if session.get("clinic_id") not in ("theorem", "theorem_v2", "theorem_v3"):
-        return {"found": False, "message": "Appointment lookup only available for Theorem clinic"}
+        return await _lookup_patient_gcal(args, session)
 
     adapter = _get_acuity_adapter()
     if not adapter:
