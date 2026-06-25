@@ -109,6 +109,10 @@ def build_system_prompt_parts(session: dict) -> tuple:
     string should use build_system_prompt() which joins both parts.
     """
     if session.get("clinic_id") == "theorem_v3":
+        # Theorem v4 (deep-clinical variant): same runtime as v3, prompt only
+        # differs. Selected by the session "variant" flag set in connection.py.
+        if session.get("variant") == "v4":
+            return _build_theorem_v4(session)
         return _build_theorem_v3(session)   # now returns (static, dynamic)
 
     # Data-driven template clinics (prompt_engine == "template_v1") return
@@ -133,7 +137,10 @@ def build_system_prompt(session: dict) -> str:
     # encode every behavioural rule and clinic fact. Branch first; do not
     # fall through to the shared theorem / theorem_v2 path.
     if session.get("clinic_id") == "theorem_v3":
-        static, dynamic = _build_theorem_v3(session)
+        if session.get("variant") == "v4":
+            static, dynamic = _build_theorem_v4(session)
+        else:
+            static, dynamic = _build_theorem_v3(session)
         return "\n\n".join(filter(None, [static, dynamic]))
 
     from app.clinic_config import get_clinic
@@ -3737,3 +3744,131 @@ def _build_theorem_v3(session: dict) -> str:
         "\n\n".join(static_blocks),
         "\n\n".join(dynamic_blocks),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# theorem_v4 — DEEP-CLINICAL VARIANT of theorem_v3
+# ─────────────────────────────────────────────────────────────────────────────
+# v4 is theorem_v3 with a different conversational posture: instead of deflecting
+# clinical questions to "speak to a practitioner", Susie engages with real
+# physiotherapy depth (post-op especially), then books. It REUSES the entire v3
+# runtime AND the entire v3 prompt — this builder delegates to _build_theorem_v3
+# and applies a small, explicit set of overrides on top, so _build_theorem_v3 is
+# never touched and v3 stays byte-identical. The two overridden passages are
+# anchored on exact v3 text; if v3 is ever re-worded the asserts below fail
+# loudly rather than silently shipping the old deflection behaviour.
+#
+# SAFETY NOTE: per product decision (2026-06-25) v4 uses open model medical
+# knowledge and a loosened diagnosis line. That raises hallucination / clinical
+# liability exposure on a recorded line. v4 must NOT be exposed on a real
+# (non-test) number until a registered practitioner (Mark) has reviewed v4 call
+# behaviour and signed off in writing. See plan: playful-purring-wilkes.md.
+
+_V4_OLD_FIXED_DEFLECT = (
+    "- Caller asks for diagnosis, prognosis, or clinical "
+    "advice → \"That's one for the practitioner at your "
+    "appointment.\"\n"
+)
+_V4_NEW_FIXED_ENGAGE = (
+    "- Caller asks for diagnosis, prognosis, or clinical advice → engage "
+    "properly. Share genuinely useful, specific detail about what that kind of "
+    "issue usually involves and how physiotherapy approaches it; you may name "
+    "the most likely cause and suggest gentle, safe self-care, then add the "
+    "light frame \"the physio will confirm exactly what's going on when they "
+    "assess you.\" Never shut it down with \"that's one for the practitioner.\"\n"
+)
+
+_V4_OLD_CLINICAL_NODIAG = (
+    "include ONE physio reassurance sentence here — never skip "
+    "it, never merge it into step 1 or step 3. Say how "
+    "physiotherapy is well-suited to that kind of problem. "
+    "NO diagnosis, NO guess at what they have, NO medical "
+    "advice on what to do. Example: 'Physiotherapy is really "
+    "well-suited to back and disc problems — a full assessment "
+    "would look at what's going on and get you a proper plan.' "
+)
+_V4_NEW_CLINICAL_ENGAGE = (
+    "include a substantive, genuinely reassuring clinical reply here — never "
+    "skip it, never merge it into step 1 or step 3. Give real, specific detail "
+    "about how physiotherapy addresses that kind of problem, what recovery "
+    "usually involves and roughly how long, and what they can expect. You MAY "
+    "name the most likely cause and offer gentle, safe self-care for the "
+    "meantime, always framed as 'the physio will confirm this properly when "
+    "they assess you'. Be warm and concrete, never generic. Stay within "
+    "physiotherapy scope: no medication dosing, and never contradict a doctor "
+    "or surgeon already treating them. Example: 'With sciatica the pain usually "
+    "comes from a nerve being irritated low in the back, and the good news is "
+    "it tends to respond really well to physio — gentle movement and staying "
+    "mobile often help more than resting up, and an assessment would pin down "
+    "exactly what's triggering it and get you a clear plan.' "
+)
+
+_V4_DEEP_CLINICAL_BLOCK = (
+    "=== V4 DEEP-CLINICAL MODE — HOW SUSIE ENGAGES ===\n"
+    "You have genuine physiotherapy fluency and you USE it. When a caller asks "
+    "about a condition, an injury, a surgery, recovery, what to expect, or "
+    "whether physio can help them, do NOT deflect to 'speak to a practitioner'. "
+    "Engage properly:\n"
+    "1. Acknowledge with real warmth — name what they're dealing with.\n"
+    "2. Give substantive, specific detail: how physiotherapy addresses that "
+    "kind of problem, what the recovery path usually looks like, and what they "
+    "can expect. You may name the most likely cause and suggest gentle, safe "
+    "things to do in the meantime. Speak like someone who knows the field, not "
+    "a script.\n"
+    "3. Frame anything diagnostic lightly: 'the physio will confirm exactly "
+    "what's going on when they assess you' — said once, as reassurance, never "
+    "as a brush-off.\n"
+    "4. Then, naturally, offer to get them booked in.\n\n"
+    "POST-OP / POST-SURGERY TRACK — this is why people really call. If a caller "
+    "is recovering from surgery (joint replacement, ACL reconstruction, rotator "
+    "cuff repair, back surgery, any operation):\n"
+    "- Lead with genuine reassurance — recovery is a process and it's normal to "
+    "feel unsure or frustrated at this stage.\n"
+    "- Set realistic expectations: post-surgical rehab moves in stages (protect "
+    "and settle, restore movement, rebuild strength, return to activity), and "
+    "physio guides each stage so they progress safely.\n"
+    "- Make them feel looked-after, not processed. Be specific to their "
+    "operation where you can.\n"
+    "- Then offer an assessment so a proper, personalised rehab plan can be "
+    "built.\n\n"
+    "GUARDRAILS (absolute, even in deep-clinical mode):\n"
+    "- EMERGENCIES override everything — chest pain, breathing difficulty, "
+    "stroke signs, severe head injury, loss of consciousness, sudden numbness "
+    "one side, sudden vision loss → give the emergency response and offer to "
+    "put them through. Do not engage clinically.\n"
+    "- No medication names or doses. Never give advice that contradicts a "
+    "doctor or surgeon already treating them — defer to their surgeon's "
+    "protocol where relevant.\n"
+    "- Never invent clinic-specific facts (prices, staff, services) — only the "
+    "clinical/educational content is open knowledge; clinic facts come from "
+    "your clinic data above.\n"
+    "- Keep the phone-call rules: warm, British English, max two sentences "
+    "before a natural pause, one question per turn.\n"
+    "=== END V4 DEEP-CLINICAL MODE ==="
+)
+
+
+def _build_theorem_v4(session: dict) -> tuple:
+    """
+    Theorem v4 (deep-clinical) prompt = theorem_v3 prompt + a small set of
+    explicit overrides. Returns (static, dynamic) exactly like _build_theorem_v3.
+    v3 is never modified; this only transforms v3's output for v4 sessions.
+    """
+    static, dynamic = _build_theorem_v3(session)
+
+    if _V4_OLD_FIXED_DEFLECT not in static:
+        raise AssertionError(
+            "theorem_v4: fixed-response deflection anchor not found in v3 "
+            "prompt — v3 text changed; update _V4_OLD_FIXED_DEFLECT."
+        )
+    static = static.replace(_V4_OLD_FIXED_DEFLECT, _V4_NEW_FIXED_ENGAGE)
+
+    if _V4_OLD_CLINICAL_NODIAG not in static:
+        raise AssertionError(
+            "theorem_v4: clinical-exception anchor not found in v3 prompt "
+            "— v3 text changed; update _V4_OLD_CLINICAL_NODIAG."
+        )
+    static = static.replace(_V4_OLD_CLINICAL_NODIAG, _V4_NEW_CLINICAL_ENGAGE)
+
+    static = static + "\n\n" + _V4_DEEP_CLINICAL_BLOCK
+    return static, dynamic

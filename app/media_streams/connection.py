@@ -4825,9 +4825,16 @@ class WebSocketCallHandler:
         if twilio_to:
             initial["twilio_to"] = twilio_to
             # Resolve clinic_id from the dialled number so tools/SMS/config use the right clinic.
-            from app.clinic_config import clinic_id_from_twilio_to
+            from app.clinic_config import clinic_id_from_twilio_to, is_v4_number
             initial["clinic_id"] = clinic_id_from_twilio_to(twilio_to)
-            logger.info("[ms_conn] clinic_id resolved: %s (to=%s)", initial["clinic_id"], twilio_to)
+            # Theorem v4 deep-clinical variant: same clinic_id/runtime as v3,
+            # only the system prompt differs (selected by this flag).
+            if is_v4_number(twilio_to):
+                initial["variant"] = "v4"
+            logger.info(
+                "[ms_conn] clinic_id resolved: %s (to=%s, variant=%s)",
+                initial["clinic_id"], twilio_to, initial.get("variant"),
+            )
 
         # ── Layer 2 fallback: env var override ───────────────────────────
         # If clinic_id is still not resolved (twilio_to was empty through all

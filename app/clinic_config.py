@@ -23,8 +23,13 @@ def _hours_tuple(start_hour: float, end_hour: float):
 TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
     "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
-    "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
+
+    # Theorem v4 (deep-clinical variant): maps to the SAME clinic_id as v3 on
+    # purpose — v4 reuses every v3 runtime path and differs ONLY in the system
+    # prompt, selected by the session "variant" flag (see TWILIO_V4_NUMBERS /
+    # is_v4_number below). Repurposed from the old theorem_v2 test line.
+    "+447366530580": "theorem_v3",    # Theorem v4 test line (deep-clinical variant)
 
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE
@@ -1414,6 +1419,23 @@ def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:
     """
     key = (to_number or "").strip()
     return TWILIO_TO_CLINIC.get(key, "demo")
+
+
+# ── Theorem v4 (deep-clinical variant) ───────────────────────────────────────
+# v4 is NOT a separate clinic_id. It is the theorem_v3 runtime with a different
+# system prompt (deeper physiotherapy fluency, engage-then-book posture, post-op
+# track). Calls on these numbers resolve to clinic_id "theorem_v3" (so all proven
+# runtime routing is unchanged) AND get session["variant"] = "v4", which is the
+# ONLY thing that swaps the prompt builder. Keep this set in sync with any
+# TWILIO_TO_CLINIC entries that map to theorem_v3 for the v4 test line.
+TWILIO_V4_NUMBERS: set = {
+    "+447366530580",   # Theorem v4 test line (repurposed from theorem_v2)
+}
+
+
+def is_v4_number(to_number: Optional[str]) -> bool:
+    """True if the dialled number is a Theorem v4 (deep-clinical) test line."""
+    return (to_number or "").strip() in TWILIO_V4_NUMBERS
 
 
 def get_acuity_config(clinic_id: str = "theorem") -> dict:
