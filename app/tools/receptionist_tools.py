@@ -1268,6 +1268,30 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
         dur = props.get("duration_minutes")
         if isinstance(dur, dict):
             dur["description"] = f"Appointment length in minutes. Defaults to {slot_min}."
+        # Single-site template clinics use the Google-calendar availability path,
+        # which honours after_date / day_window to shift and bound the search
+        # window. The Acuity-era static schema only exposed date_hint, so the LLM
+        # could not act on "next week" / "not this week" and always got the
+        # earliest slots. Expose them here. jv-only: Theorem returns the static
+        # schema above (this code only runs when single_location_template != None).
+        if t2.get("name") == "check_availability":
+            props["after_date"] = {
+                "type": "string",
+                "description": (
+                    "Earliest date to offer, as YYYY-MM-DD. Pass this when the "
+                    "caller cannot be seen before a certain date — e.g. for "
+                    "'next week' or 'not this week', pass next Monday's date "
+                    "(see DATE AWARENESS in the system prompt). Leave unset when "
+                    "the caller is happy with the soonest available."
+                ),
+            }
+            props["day_window"] = {
+                "type": "integer",
+                "description": (
+                    "Number of days from the search start to include. Pass 7 to "
+                    "bound results to a single week (e.g. 'next week')."
+                ),
+            }
         out.append(t2)
     return out
 
