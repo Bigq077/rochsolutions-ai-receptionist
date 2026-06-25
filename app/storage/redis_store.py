@@ -154,12 +154,54 @@ async def save_session(call_sid: str, session: Dict[str, Any]) -> None:
 # ============================
 # Generic JSON helpers (OAuth, etc.)
 # ============================
+# In-memory fallback for local dev WITHOUT Redis (e.g. ngrok test rig). In
+# production redis_client is set, so NONE of this runs. It lets the OAuth state
+# + google_tokens persist instead of silently no-op'ing (the cause of "Invalid
+# OAuth state"). It also mirrors to a local file so the Google token survives a
+# server restart locally — no re-auth on every code change. The file lives
+# outside Redis-backed deployments and is git-ignored.
+import time as _time
+import os as _os
+_MEM_JSON: Dict[str, tuple] = {}  # key -> (value, expires_at|None)
+_MEM_FILE = _os.path.join(_os.path.dirname(__file__), "..", "..", ".local_kv.json")
+
+
+def _mem_load() -> None:
+    if redis_client:
+        return
+    try:
+        with open(_MEM_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        now = _time.time()
+        for k, pair in raw.items():
+            value, exp = pair[0], pair[1]
+            if exp is None or now <= exp:
+                _MEM_JSON[k] = (value, exp)
+    except Exception:
+        pass
+
+
+def _mem_persist() -> None:
+    if redis_client:
+        return
+    try:
+        with open(_MEM_FILE, "w", encoding="utf-8") as f:
+            json.dump({k: [v, exp] for k, (v, exp) in _MEM_JSON.items()}, f)
+    except Exception:
+        pass
+
+
+_mem_load()
+
+
 async def redis_set_json(
     key: str,
     value: Dict[str, Any],
     ttl_seconds: Optional[int] = None,
 ) -> None:
     if not redis_client:
+        _MEM_JSON[key] = (value, (_time.time() + ttl_seconds) if ttl_seconds else None)
+        _mem_persist()
         return
 
     payload = json.dumps(value)
@@ -171,7 +213,14 @@ async def redis_set_json(
 
 async def redis_get_json(key: str) -> Optional[Dict[str, Any]]:
     if not redis_client:
-        return None
+        entry = _MEM_JSON.get(key)
+        if not entry:
+            return None
+        value, expires_at = entry
+        if expires_at is not None and _time.time() > expires_at:
+            _MEM_JSON.pop(key, None)
+            return None
+        return value if isinstance(value, dict) else None
 
     raw = await redis_client.get(key)
     if not raw:
@@ -194,6 +243,8 @@ async def redis_delete(key: str) -> None:
     Safe no-op if Redis isn't configured.
     """
     if not redis_client:
+        _MEM_JSON.pop(key, None)
+        _mem_persist()
         return
     try:
         await redis_client.delete(key)

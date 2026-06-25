@@ -19,3 +19,5 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+# Local-dev no-Redis token cache (never commit OAuth tokens)
+.local_kv.json
