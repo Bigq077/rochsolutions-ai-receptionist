@@ -5878,17 +5878,16 @@ class WebSocketCallHandler:
                         # reschedule/cancel intents.
                         if self.session.get("v3_awaiting_phone_confirm"):
                             self.session["v3_awaiting_phone_confirm"] = False
-                            _utt_lower = utterance.lower()
                             _calling_number = self.session.get(
                                 "twilio_from_local", ""
                             )
-                            if (
-                                "use this" in _utt_lower
-                                or "yes" in _utt_lower
-                                or "yeah" in _utt_lower
-                                or "yep" in _utt_lower
-                                or "yup" in _utt_lower
-                            ):
+                            # Use the shared robust matcher (not a brittle inline
+                            # substring check): it catches STT truncations like
+                            # "this number" / "that number" for "use this number",
+                            # bare affirmatives, and excludes negatives. The old
+                            # inline check missed "this number" and dropped the
+                            # caller into the keypad path as if they'd said "no".
+                            if _is_use_this_number(utterance):
                                 # Caller confirmed → use calling number
                                 self.session["lookup_phone"] = _calling_number
                                 _filler = _random.choice(FILLER_PHRASES)
