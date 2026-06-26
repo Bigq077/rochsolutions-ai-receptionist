@@ -5009,6 +5009,28 @@ class WebSocketCallHandler:
 
             llm = LLMStream()
 
+            # ── Single-site auto-confirm (one-time, at call start) ───────────
+            # Single-site template clinics (e.g. jv_v1 → Bolton) have no clinic-
+            # selection step. Confirm the one location up front so the ENTIRE
+            # two-clinic location machinery — the FAQ "Which clinic?" gate, the
+            # biased-confirm + DTMF "Awlstuh or Redditch" rungs, and the answer-
+            # resolver — stays dormant on EVERY path, including FAQ-only calls
+            # (the booking-ack path used to be the only thing that confirmed it,
+            # so a pure-FAQ caller hit the gate). Do NOT set v3_location_asked —
+            # that drives the two-clinic answer-resolver; confirmed-only is
+            # enough to suppress the gate. theorem_v3 (multi-site) is unaffected:
+            # single_location_template returns None, making this a no-op.
+            from app.clinic_config import single_location_template as _solo_tpl
+            _solo_site = _solo_tpl(clinic_id)
+            if _solo_site and not self.session.get("v3_location_confirmed"):
+                self.session["v3_location_confirmed"] = True
+                self.session["selected_location"] = _solo_site
+                logger.info(
+                    "[ms_conn tpl] single-site %r auto-confirmed at call start "
+                    "— two-clinic location gate suppressed on all paths",
+                    _solo_site,
+                )
+
             try:
                 while not self._stop_event.is_set():
                     try:
