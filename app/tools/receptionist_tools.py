@@ -4032,10 +4032,15 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             ),
         }
 
+    # Human-readable slot label — defined once here so EVERY branch and return
+    # can use it safely. Previously it was only assigned inside the no-tokens
+    # branch, so a calendar-connected booking that referenced it raised
+    # UnboundLocalError ("cannot access local variable 'booked_label'").
+    booked_label = start_dt.strftime("%A %d %B at %H:%M")
+
     if not tokens:
         # Calendar not connected — log intent to Sheets so the clinic can follow up,
         # then tell Claude the booking succeeded so it doesn't loop with "slot unavailable".
-        booked_label = start_dt.strftime("%A %d %B at %H:%M")
         try:
             from app.tools.handoff import send_to_sheet
             await asyncio.to_thread(
