@@ -22,16 +22,13 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
-    "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
+    # +447426779875 is Theorem's number on main/theorem services. On THIS
+    # branch (deployed only to the Vital Edge Render service) it is reassigned
+    # to Vital Edge per the operator's instruction. ⚠️ Do NOT merge this branch
+    # into main — that would steal the number from Theorem.
+    "+447426779875": "vital_edge",    # Vital Edge Therapy (Kingston) — provisional booking model
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
-
-    # Vital Edge Therapy (Kingston) — provisional booking model.
-    # TBC: the inbound Twilio number that forwards to Susie is not yet
-    # provisioned (the call rings Jonathan's mobile +447545862307 first, then
-    # falls back to the AI). Replace the placeholder below with the real Twilio
-    # "To" number before go-live, then uncomment.
-    # "+44XXXXXXXXXX": "vital_edge",
 
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE

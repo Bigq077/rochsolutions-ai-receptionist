@@ -207,11 +207,35 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
                 f"Always location='{_only}'."
             )
     else:
-        lines.append("MODALITY DETERMINATION:")
+        # Multi-modality clinic, but each SERVICE supports only a subset of
+        # modalities (e.g. acupuncture is in-clinic only — it has no remote
+        # option). Only offer the in-clinic-vs-remote choice for services that
+        # can actually be done remotely; everything else goes straight to
+        # in-clinic. Driven by each service's available_as list.
+        remote_ok: List[str] = []
+        in_clinic_only: List[str] = []
+        for svc in clinic.get("services", []) or []:
+            if svc.get("available") is False:
+                continue
+            avail = svc.get("available_as") or []
+            nm = svc.get("name", svc.get("service_id", ""))
+            (remote_ok if "remote" in avail else in_clinic_only).append(nm)
         lines.append(
-            "If the caller has not stated a preference, ask: "
-            f"'{pf.get('modality_question', '')}'"
+            "MODALITY DETERMINATION — depends on the SERVICE the caller wants:"
         )
+        if remote_ok:
+            lines.append(
+                "REMOTE-CAPABLE services — if the caller has not stated a "
+                f"preference, ask: '{pf.get('modality_question', '')}' "
+                "These services: " + ", ".join(remote_ok) + "."
+            )
+        if in_clinic_only:
+            lines.append(
+                "IN-CLINIC-ONLY services — NEVER ask in-clinic vs remote and "
+                "NEVER offer a remote, video, or phone option for these; go "
+                f"straight to in-clinic at {tk['primary_location_id']}. These "
+                "services: " + ", ".join(in_clinic_only) + "."
+            )
         lines.append(
             f"In-clinic → location='{tk['primary_location_id']}'. "
             "Remote → location='remote'. Home visit → location='home_visit'."
@@ -529,8 +553,13 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
     return (
         "MODALITY RULE\n"
         f"{tk['clinic_name']} has one clinic site: {tk['primary_location_name']}. "
-        "Before checking availability, confirm the appointment modality. "
-        f"Ask: '{pf.get('modality_question','')}' Once confirmed, never ask again."
+        "Whether to confirm modality depends on the SERVICE requested (see the "
+        "REMOTE-CAPABLE vs IN-CLINIC-ONLY lists in SERVICE MAPPING). For a "
+        "remote-capable service, confirm the modality before checking "
+        f"availability — ask: '{pf.get('modality_question','')}'. For an "
+        "IN-CLINIC-ONLY service (e.g. acupuncture, sports massage), do NOT ask "
+        "and do NOT offer remote/video/phone — go straight to in-clinic. Once "
+        "confirmed, never ask again."
     )
 
 
