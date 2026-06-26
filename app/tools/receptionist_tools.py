@@ -838,6 +838,15 @@ TOOL_BOOK_APPOINTMENT = {
                 "type": "integer",
                 "description": "Appointment length in minutes. Defaults to 50.",
             },
+            "insurer_name": {
+                "type": "string",
+                "description": (
+                    "Name of the caller's private health insurer if they mentioned "
+                    "one (e.g. 'Aviva', 'Bupa'). Pass the insurer NAME the caller "
+                    "actually said. Do NOT pass any pre-authorisation, membership or "
+                    "policy code — the clinic collects those later, never by phone."
+                ),
+            },
         },
         "required": ["patient_name", "phone", "location", "service", "slot_iso"],
     },
@@ -3921,6 +3930,44 @@ async def _book_appointment_provisional(
 # Executor: book_appointment
 # ---------------------------------------------------------------------------
 
+async def _ping_owner_insurance(
+    clinic: Dict[str, Any],
+    patient_name: str,
+    phone: str,
+    start_dt: "datetime",
+    service: str,
+    insurer: str,
+) -> None:
+    """
+    SMS-ping the clinic owner (Marcus) when an INSURANCE booking is made, so they
+    can follow up to collect the pre-auth / membership details and confirm cover.
+    Non-fatal; no-op if no owner_notification_sms is configured. We deliberately
+    do NOT include any code (Susie never takes one by phone) — the owner collects
+    it directly. (Option B insurance handling.)
+    """
+    try:
+        from app.notifications.owner_notify import notify_owner
+        svc_name = service
+        for _s in (clinic.get("services") or []):
+            if _s.get("service_id") == service or (_s.get("name") or "").lower() == (service or "").lower():
+                svc_name = _s.get("name") or service
+                break
+        name = clinic.get("sms_name") or clinic.get("display_name") or "Clinic"
+        when_str = start_dt.strftime("%a %d %b at %H:%M")
+        msg = (
+            f"\U0001F3E5 {name} — INSURANCE booking, please follow up\n"
+            f"Name: {patient_name or '—'}\n"
+            f"Phone: {phone or '—'}\n"
+            f"Insurer: {insurer or '—'}\n"
+            f"Appointment: {when_str} — {svc_name}\n"
+            "Action: collect the pre-authorisation / membership details and confirm "
+            "cover before the appointment. (Susie did NOT take any code by phone.)"
+        )
+        await notify_owner(clinic, msg)
+    except Exception as e:
+        logger.warning("insurance owner ping failed (non-fatal): %r", e)
+
+
 async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
@@ -4031,6 +4078,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
                 )
             except Exception as e:
                 logger.warning("book_appointment (no calendar) address reminder failed (non-fatal): %r", e)
+
+        # Insurance booking — ping Marcus so he can collect pre-auth/cover details (Option B).
+        if insurer:
+            await _ping_owner_insurance(clinic, patient_name, phone, start_dt, service, insurer)
 
         return {
             "success": True,
@@ -4146,6 +4197,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             )
         except Exception as e:
             logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)
+
+    # Insurance booking — ping Marcus so he can collect pre-auth/cover details (Option B).
+    if insurer:
+        await _ping_owner_insurance(clinic, patient_name, phone, start_dt, service, insurer)
 
     # Sheets log — non-blocking
     try:
