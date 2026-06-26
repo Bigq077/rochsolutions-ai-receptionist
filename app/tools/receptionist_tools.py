@@ -5038,6 +5038,33 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     if not patient_name or not phone:
         return {"error": "Name and phone are required for the waitlist."}
 
+    # Heads-up SMS to the clinic (transfer_phone, e.g. Marcus) so a waitlist /
+    # coming-soon enquiry actually reaches a human — without this the entry just
+    # sits in Redis and nobody follows up, so "the team will be in touch" is an
+    # empty promise. Fire-and-forget, non-fatal, deduped to one per call.
+    if not session.get("_waitlist_pinged"):
+        try:
+            from app.clinic_config import get_clinic
+            from app.notifications.sms import send_sms
+            _clinic = get_clinic(session.get("clinic_id"))
+            _tp = _clinic.get("transfer_phone", "")
+            if _tp:
+                _what = (service or notes or "an enquiry").strip()
+                asyncio.create_task(send_sms(
+                    to=_tp,
+                    message=(
+                        f"📋 Waitlist/enquiry — {patient_name} ({phone}): {_what}. "
+                        f"Please follow up."
+                    ),
+                ))
+                session["_waitlist_pinged"] = True
+                logger.info(
+                    "waitlist practitioner ping queued to ***%s",
+                    _tp[-4:] if _tp else "????",
+                )
+        except Exception as e:
+            logger.warning("waitlist practitioner ping failed (non-fatal): %r", e)
+
     try:
         from app.storage.redis_store import redis_client
         if redis_client:
