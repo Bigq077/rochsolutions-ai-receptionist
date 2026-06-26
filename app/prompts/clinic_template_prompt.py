@@ -247,11 +247,20 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             dp = _duration_pricing(svc)
             opts = [m for m, _ in dp]
             lines.append("")
+            _opts_phrase = " or ".join(f"{m}-minute ({_gbp(p)})" for m, p in dp)
             lines.append(
                 f"DURATION QUESTION FOR {svc.get('name','').upper()}: "
                 f"ask whether they'd like a {opts[0]}-minute "
                 f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
                 f"({_gbp(dp[-1][1])}) session."
+            )
+            lines.append(
+                f"DURATIONS ARE FIXED: the ONLY session lengths are "
+                f"{_opts_phrase}. NEVER offer, mention, or invent any other "
+                "length (there is no 30-minute session). The number of available "
+                "time slots is NOT a number of durations — each slot is a start "
+                "time, and the caller's chosen length applies to whichever slot "
+                "they pick."
             )
             break
     return "\n".join(lines)

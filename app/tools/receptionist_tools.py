@@ -3726,6 +3726,7 @@ async def _check_availability_published(
 
     candidates = []
     slot_event_map: Dict[str, str] = {}
+    seen_starts: set = set()
     for ev in events or []:
         start_raw = (ev.get("start") or {}).get("dateTime")
         if not start_raw:
@@ -3741,9 +3742,17 @@ async def _check_availability_published(
             continue
         if s_dt <= now or s_dt < w_start or s_dt > w_end:
             continue
+        # Collapse multiple published events that share the same start time into
+        # ONE offerable slot. Two identical starts made Susie invent a fake
+        # "30-minute vs an hour" distinction — the duration is the caller's
+        # 60/90 choice, not a property of the published slot.
+        start_iso = s_dt.isoformat()
+        if start_iso in seen_starts:
+            continue
+        seen_starts.add(start_iso)
         candidates.append((s_dt, e_dt))
         if ev.get("id"):
-            slot_event_map[s_dt.isoformat()] = ev["id"]
+            slot_event_map[start_iso] = ev["id"]
 
     candidates.sort(key=lambda t: t[0])
     # Remember which published event backs each offered slot, so book_appointment
