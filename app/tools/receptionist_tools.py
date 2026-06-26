@@ -838,6 +838,18 @@ TOOL_BOOK_APPOINTMENT = {
                 "type": "integer",
                 "description": "Appointment length in minutes. Defaults to 50.",
             },
+            "followup_note": {
+                "type": "string",
+                "description": (
+                    "Optional. A short note for the practitioner to follow up on "
+                    "AFTER this booking — set this whenever the caller raised "
+                    "something that needs the practitioner's input but should NOT "
+                    "delay the booking (e.g. a clinical question you couldn't "
+                    "answer, a request for specific equipment, an insurance query). "
+                    "The patient is booked in directly; the practitioner is pinged "
+                    "with this note to follow up. Leave unset for routine bookings."
+                ),
+            },
         },
         "required": ["patient_name", "phone", "location", "service", "slot_iso"],
     },
@@ -1238,7 +1250,21 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
     clinic = get_clinic(clinic_id)
     mods = clinic.get("modalities") or []
     has_remote = "remote" in mods
-    loc_enum = [solo] + (["remote"] if has_remote else [])
+    # Home visits are bookable if any service lists 'home_visit' in available_as.
+    # They book exactly like a normal slot (same calendar + clinic hours); the
+    # only extras are a patient address-request SMS and a practitioner ping,
+    # handled in _exec_book_appointment. Without 'home_visit' in the enum the LLM
+    # has no valid location when a caller asks for one and the booking stalls.
+    has_home_visit = any(
+        "home_visit" in (s.get("available_as") or [])
+        for s in (clinic.get("services") or [])
+        if s.get("available") is not False
+    )
+    loc_enum = (
+        [solo]
+        + (["remote"] if has_remote else [])
+        + (["home_visit"] if has_home_visit else [])
+    )
     slot_min = int(clinic.get("slot_minutes", 40))
     svc_ids = [
         s.get("service_id")
@@ -1251,7 +1277,9 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
     )
     loc_desc = (
         f"Appointment location: '{solo}' for in-clinic"
-        + (", or 'remote' for a video/phone appointment." if has_remote else ".")
+        + (", 'remote' for a video/phone appointment" if has_remote else "")
+        + (", 'home_visit' for a visit to the patient's home" if has_home_visit else "")
+        + "."
     )
 
     out = []
@@ -3908,6 +3936,54 @@ async def _book_appointment_provisional(
     }
 
 
+async def _send_practitioner_followup_ping(
+    clinic: Dict[str, Any],
+    patient_name: str,
+    phone: str,
+    service: str,
+    location: str,
+    booked_label: str,
+    followup_note: str = "",
+) -> None:
+    """
+    Ping the practitioner (clinic.transfer_phone, e.g. Marcus) AFTER a booking
+    when the appointment needs human follow-up — a home visit (Marcus must
+    coordinate travel and the patient will text their address), or any query the
+    caller raised that Susie flagged via book_appointment(followup_note=...).
+
+    The patient is ALWAYS booked in directly first — Susie never gatekeeps a
+    booking behind the practitioner. This is just the heads-up so the
+    practitioner follows up after. Fire-and-forget, non-fatal.
+    """
+    is_home_visit = (location or "").lower() == "home_visit"
+    note = (followup_note or "").strip()
+    if not is_home_visit and not note:
+        return
+    try:
+        from app.notifications.sms import send_sms
+        transfer_phone = clinic.get("transfer_phone", "")
+        if not transfer_phone:
+            return
+        reasons = []
+        if is_home_visit:
+            reasons.append("HOME VISIT — confirm travel; patient will text their address")
+        if note:
+            reasons.append(note)
+        body = (
+            f"🔔 {patient_name or 'A patient'} ({phone or 'no number'}) just booked "
+            f"{service or 'an appointment'} for {booked_label}. "
+            f"Needs follow-up: {' | '.join(reasons)}."
+        )
+        asyncio.create_task(send_sms(to=transfer_phone, message=body))
+        logger.info(
+            "practitioner follow-up ping queued to ***%s (home_visit=%s, note=%s)",
+            transfer_phone[-4:] if transfer_phone else "????",
+            is_home_visit, bool(note),
+        )
+    except Exception as e:
+        logger.warning("practitioner follow-up ping failed (non-fatal): %r", e)
+
+
 # ---------------------------------------------------------------------------
 # Executor: book_appointment
 # ---------------------------------------------------------------------------
@@ -4007,8 +4083,9 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         except Exception as e:
             logger.warning("book_appointment (no calendar) SMS failed (non-fatal): %r", e)
 
-        # Home visit — schedule the 30-min address-request nudge too.
-        if "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
+        # Home visit — schedule the 30-min address-request nudge too. Gated on
+        # location too (a home_visit of any service, not just the home_visit svc).
+        if location == "home_visit" or "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
             try:
                 from app.notifications.scheduler import schedule_address_reminder
                 await schedule_address_reminder(
@@ -4017,6 +4094,13 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
                 )
             except Exception as e:
                 logger.warning("book_appointment (no calendar) address reminder failed (non-fatal): %r", e)
+
+        # Ping the practitioner if this booking needs follow-up (home visit or a
+        # flagged note) — patient is booked in directly regardless.
+        await _send_practitioner_followup_ping(
+            clinic, patient_name, phone, service, location, booked_label,
+            args.get("followup_note", ""),
+        )
 
         return {
             "success": True,
@@ -4122,8 +4206,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     except Exception as e:
         logger.warning("book_appointment reminder scheduling failed (non-fatal): %r", e)
 
-    # Home visits need the patient's address — schedule a 30-min nudge to text it.
-    if "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
+    # Home visits need the patient's address — schedule a 30-min nudge to text
+    # it. Gated on location too (a home_visit of any service, not just the
+    # dedicated home_visit service).
+    if location == "home_visit" or "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
         try:
             from app.notifications.scheduler import schedule_address_reminder
             await schedule_address_reminder(
@@ -4132,6 +4218,13 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             )
         except Exception as e:
             logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)
+
+    # Ping the practitioner if this booking needs follow-up (home visit or a
+    # flagged note) — patient is booked in directly regardless.
+    await _send_practitioner_followup_ping(
+        clinic, patient_name, phone, service, location, booked_label,
+        args.get("followup_note", ""),
+    )
 
     # Sheets log — non-blocking
     try:

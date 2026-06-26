@@ -466,6 +466,21 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "me to put you through to the clinic, or take your number for a "
         "callback?' Then act on the answer — transfer_to_human or "
         "add_to_waitlist with a note.",
+        "",
+        "NEEDS-PRACTITIONER FOLLOW-UP — NEVER GATEKEEP A BOOKING: The whole "
+        "point of this service is that callers book in DIRECTLY without the "
+        "practitioner having to get involved first. So when a caller raises "
+        "something that genuinely needs the practitioner's input — a clinical "
+        "judgement you can't answer, whether a specific condition or piece of "
+        "equipment is suitable, a special request — do NOT say they 'need to "
+        "discuss it with the practitioner before booking', and do NOT tell them "
+        "to 'mention it when booking'. Instead: (1) give any general "
+        "reassurance you can, (2) go ahead and BOOK them in as normal, (3) say "
+        "you'll pass the message on and the practitioner will get back to them "
+        "AFTER they've booked in, and (4) when you call book_appointment, set "
+        "followup_note to a short summary of what they need. That note pings "
+        "the practitioner to follow up. The patient is always booked first; "
+        "the practitioner follows up after — never the other way round.",
         "Never hedge clinic policy with: generally, usually, likely, probably, "
         "typically, most clinics. Sensation descriptions like 'most people find "
         "it well tolerated' are fine.",
