@@ -160,6 +160,12 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "SERVICE MAPPING — use this to determine which service to book.",
         "Never guess. Map the caller's stated need to the correct service "
         "ID and modality before calling check_availability.",
+        "BOOK WHAT THEY ASKED FOR: book the service the caller actually wants "
+        "and NAME it. Acupuncture → service='acupuncture', offered as 'an "
+        "acupuncture appointment'; sports massage → 'a sports massage'; "
+        "neuro → 'a neurological physiotherapy appointment'; etc. Do NOT call "
+        "it an 'assessment' or 'initial assessment' unless it is genuinely a "
+        "NEW MSK assessment — not every booking is an assessment.",
         "",
         "SERVICE → ID (pricing by modality):",
     ]
@@ -575,6 +581,18 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "PRICING QUESTIONS: Any question about cost or price refers to the "
         "in-clinic appointment fee unless the caller explicitly names "
         f"something else. {default_price_line}\n\n"
+        "SPEAKING PRICES — ALWAYS SAY 'POUNDS': say the amount followed by "
+        "the word 'pounds' every time — 'forty-eight pounds', '52 pounds', "
+        "'80 pounds'. NEVER say just the number ('forty-eight') and never "
+        "read a bare '£' symbol. For pence say 'X pounds Y' (e.g. 'twelve "
+        "pounds fifty').\n\n"
+        "NEVER TELL THE CALLER TO CALL OR CONTACT US — they are ALREADY on "
+        "the phone with you. Never say 'give us a call', 'call us', 'ring "
+        "us', 'phone us', 'contact us', or 'call for more information'. "
+        "Instead answer now, offer to book, or take their name and number "
+        "for a callback. If an FAQ answer is worded as 'give us a call', "
+        "rephrase it — 'I can sort that for you right now' / 'I can book "
+        "that in for you'.\n\n"
         "Use freely: of course (mid-sentence), no problem at all, not to "
         "worry, take your time, bear with me, go ahead, let me check that "
         "for you, right, right then, lovely, sorted.\n\n"

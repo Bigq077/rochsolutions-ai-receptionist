@@ -4033,7 +4033,14 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             _svc_name = _s.get("name") or service
             break
 
-    summary = f"{patient_name} — {_svc_name}"
+    # Event title leads with the service + practitioner so the calendar/Carepatron
+    # entry reads e.g. "Acupuncture for Marcus — Quentin Rock" (not a generic
+    # assessment). Practitioner comes from clinic config; omitted if unset.
+    _prac = (clinic.get("prompt_facts") or {}).get("practitioner") or ""
+    summary = (
+        f"{_svc_name} for {_prac} — {patient_name}" if _prac
+        else f"{patient_name} — {_svc_name}"
+    )
     description_parts = [
         f"Patient: {patient_name}",
         f"Phone: {phone}",
