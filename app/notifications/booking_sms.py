@@ -259,6 +259,8 @@ async def send_cancellation_confirmation(
     patient_name: str,
     appointment_time: datetime,
     is_late_cancellation: bool = False,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> bool:
     """
     Send cancellation confirmation SMS.
@@ -274,9 +276,14 @@ async def send_cancellation_confirmation(
     """
     try:
         if is_late_cancellation:
-            message = format_late_cancellation_warning(patient_name)
+            message = format_late_cancellation_warning(
+                patient_name, clinic_name=clinic_name, clinic_phone=clinic_phone,
+            )
         else:
-            message = format_cancellation_confirmation(patient_name, appointment_time)
+            message = format_cancellation_confirmation(
+                patient_name, appointment_time,
+                clinic_name=clinic_name, clinic_phone=clinic_phone,
+            )
         
         await send_sms(to=patient_phone, message=message)
         
@@ -298,6 +305,8 @@ async def send_reschedule_confirmation(
     old_time: datetime,
     new_time: datetime,
     location: str,
+    clinic_name: Optional[str] = None,
+    clinic_phone: Optional[str] = None,
 ) -> bool:
     """
     Send reschedule confirmation SMS.
@@ -320,6 +329,8 @@ async def send_reschedule_confirmation(
             old_time=old_time,
             new_time=new_time,
             location=location_short,
+            clinic_name=clinic_name,
+            clinic_phone=clinic_phone,
         )
         
         await send_sms(to=patient_phone, message=message)

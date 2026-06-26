@@ -77,6 +77,18 @@ def _tokens(clinic: Dict[str, Any]) -> Dict[str, str]:
         "primary_location_id": (primary_city or "the clinic").lower(),
         "default_price_line": pf.get("pricing_default_line", ""),
         "tagline": pf.get("tagline", ""),
+        # Clinic-type-specific caller-facing phrases. Default to the original
+        # physio wording so existing clinics (jv_v1) stay byte-for-byte
+        # unchanged; a massage/other clinic overrides these in prompt_facts.
+        "booking_offer_line": pf.get("booking_offer_line")
+            or f"book an assessment so {practitioner} can take a proper look",
+        "clinical_fit_line": pf.get("clinical_fit_line")
+            or (f"Physiotherapy with {practitioner} is really well-suited to "
+                "that kind of problem — a full assessment would look at what's "
+                "going on and get you a proper plan."),
+        # Provisional-booking support (google_calendar_provisional clinics).
+        "booking_system": clinic.get("booking_system", ""),
+        "booking_pending_message": pf.get("booking_pending_message", ""),
     }
 
 
@@ -85,6 +97,20 @@ def _tokens(clinic: Dict[str, Any]) -> Dict[str, str]:
 # ─────────────────────────────────────────────────────────────────────────
 def _gbp(v: Any) -> str:
     return f"£{v}" if v is not None else ""
+
+
+def _duration_pricing(svc: Dict[str, Any]) -> List[Tuple[int, Any]]:
+    """For a service with multiple bookable durations, return [(minutes, price)]
+    read generically from typical_duration_minutes_options + the matching
+    '<n>min_in_clinic_gbp' pricing keys. Works for any pair (30/60, 60/90, …),
+    not just the old hardcoded 30/60."""
+    opts = svc.get("typical_duration_minutes_options") or []
+    p = svc.get("pricing", {}) or {}
+    return [(int(o), p.get(f"{int(o)}min_in_clinic_gbp")) for o in opts]
+
+
+def _has_duration_options(svc: Dict[str, Any]) -> bool:
+    return bool(svc.get("typical_duration_minutes_options"))
 
 
 def _service_price_summary(svc: Dict[str, Any], modalities: List[str] = None) -> str:
@@ -96,11 +122,9 @@ def _service_price_summary(svc: Dict[str, Any], modalities: List[str] = None) ->
     parts: List[str] = []
     if p.get("in_clinic_gbp") is not None:
         parts.append(f"in-clinic {_gbp(p['in_clinic_gbp'])}")
-    if p.get("30min_in_clinic_gbp") is not None or p.get("60min_in_clinic_gbp") is not None:
-        if p.get("30min_in_clinic_gbp") is not None:
-            parts.append(f"30 mins {_gbp(p['30min_in_clinic_gbp'])}")
-        if p.get("60min_in_clinic_gbp") is not None:
-            parts.append(f"60 mins {_gbp(p['60min_in_clinic_gbp'])}")
+    for mins, price in _duration_pricing(svc):
+        if price is not None:
+            parts.append(f"{mins} mins {_gbp(price)}")
     if p.get("remote_gbp") is not None:
         parts.append(f"remote {_gbp(p['remote_gbp'])}")
     if p.get("price_gbp") is not None:
@@ -155,27 +179,49 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             f"{', '.join(coming_soon)} → NOT BOOKABLE — coming soon. "
             f"Take name and number for {tk['practitioner']} to follow up."
         )
+    # Services Susie does NOT book — take a callback instead (data-driven).
+    if pf.get("other_services_line"):
+        lines.append("")
+        lines.append("OTHER SERVICES — NOT BOOKABLE BY YOU:")
+        lines.append(pf["other_services_line"])
     lines.append("")
-    lines.append("MODALITY DETERMINATION:")
-    lines.append(
-        "If the caller has not stated a preference, ask: "
-        f"'{pf.get('modality_question', '')}'"
-    )
-    lines.append(
-        f"In-clinic → location='{tk['primary_location_id']}'. "
-        "Remote → location='remote'. Home visit → location='home_visit'."
-    )
-    # Sports-massage style duration question (any service with duration options)
+    # Single-modality clinics (e.g. in-clinic only) skip the modality question
+    # entirely — there is nothing to ask.
+    _modalities = clinic.get("modalities") or []
+    if len(_modalities) <= 1:
+        _only = _modalities[0] if _modalities else "in_clinic"
+        if _only == "in_clinic":
+            lines.append(
+                "MODALITY: in-clinic only — never ask in-clinic vs remote, never "
+                f"offer remote or home visits. Always location='{tk['primary_location_id']}'."
+            )
+        else:
+            lines.append(
+                f"MODALITY: {_only} only — never ask which modality. "
+                f"Always location='{_only}'."
+            )
+    else:
+        lines.append("MODALITY DETERMINATION:")
+        lines.append(
+            "If the caller has not stated a preference, ask: "
+            f"'{pf.get('modality_question', '')}'"
+        )
+        lines.append(
+            f"In-clinic → location='{tk['primary_location_id']}'. "
+            "Remote → location='remote'. Home visit → location='home_visit'."
+        )
+    # Duration question — any service with multiple bookable durations (30/60,
+    # 60/90, …). Reads the actual options + matching '<n>min_in_clinic_gbp' keys.
     for svc in clinic.get("services", []) or []:
-        if svc.get("typical_duration_minutes_options"):
-            opts = svc["typical_duration_minutes_options"]
-            p = svc.get("pricing", {})
+        if _has_duration_options(svc):
+            dp = _duration_pricing(svc)
+            opts = [m for m, _ in dp]
             lines.append("")
             lines.append(
                 f"DURATION QUESTION FOR {svc.get('name','').upper()}: "
                 f"ask whether they'd like a {opts[0]}-minute "
-                f"({_gbp(p.get('30min_in_clinic_gbp'))}) or {opts[-1]}-minute "
-                f"({_gbp(p.get('60min_in_clinic_gbp'))}) session."
+                f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
+                f"({_gbp(dp[-1][1])}) session."
             )
             break
     return "\n".join(lines)
@@ -194,8 +240,12 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         dur_s = f" — {dur} mins" if dur else ""
         if p.get("in_clinic_gbp") is not None:
             in_clinic.append(f"{nm}{dur_s}: {_gbp(p['in_clinic_gbp'])}")
-        if p.get("30min_in_clinic_gbp") is not None:
-            in_clinic.append(f"{nm} — 30 mins: {_gbp(p['30min_in_clinic_gbp'])} | 60 mins: {_gbp(p.get('60min_in_clinic_gbp'))}")
+        if _has_duration_options(svc):
+            dp = _duration_pricing(svc)
+            in_clinic.append(
+                f"{nm} — "
+                + " | ".join(f"{m} mins: {_gbp(price)}" for m, price in dp if price is not None)
+            )
         if p.get("price_gbp") is not None and "remote" in (svc.get("available_as") or []):
             remote.append(f"{nm}{dur_s}: {_gbp(p['price_gbp'])}")
         elif p.get("price_gbp") is not None:
@@ -300,6 +350,29 @@ def _render_policies(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
 def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     ins = clinic.get("insurance", {}) or {}
     steps = ins.get("what_ai_should_do") or []
+    # Self-pay-only clinics must NOT claim to accept insurance — render a
+    # self-pay block instead so the prompt never contradicts the FAQ.
+    self_pay_only = bool(ins.get("self_pay_only")) or (
+        ins.get("bupa_accepted") is False
+        and ins.get("other_insurers_accepted") is False
+        and bool(ins)
+    )
+    if self_pay_only:
+        out = [
+            "INSURANCE / PAYMENT",
+            ins.get("self_pay_message")
+            or (f"{tk['clinic_name']} is a self-pay clinic and does not work "
+                "with insurance providers."),
+        ]
+        if steps:
+            out.append("When a caller mentions insurance:")
+            for i, s in enumerate(steps, 1):
+                out.append(f"{i}. {s}")
+        out.append(
+            "Do NOT say we accept insurance or work with insurers. Payment is "
+            "made directly by the client on the day."
+        )
+        return "\n".join(out)
     out = ["INSURANCE PROTOCOL",
            f"{tk['clinic_name']} accepts private health insurance referrals"
            + (", including Bupa." if ins.get("bupa_accepted") else ".")]
@@ -426,6 +499,17 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
     confirmed_flag = keys.get("confirmed_flag", "modality_confirmed")
     value_key = keys.get("value_key", "modality")
     labels = clinic.get("modality_labels", {}) or {}
+    modalities = clinic.get("modalities") or []
+    # Single-modality clinic (e.g. in-clinic only): there is nothing to ask.
+    if len(modalities) <= 1:
+        only = modalities[0] if modalities else "in_clinic"
+        label = labels.get(only, only.replace("_", " "))
+        return (
+            "MODALITY RULE\n"
+            f"{tk['clinic_name']} offers {label} appointments only. Never ask "
+            "which modality, never offer remote or home visits. Proceed "
+            "straight to timing and availability."
+        )
     confirmed = session.get(confirmed_flag, False)
     value = (session.get(value_key) or "").lower().strip()
     if confirmed and value:
@@ -453,6 +537,9 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     tone = tk["persona_tone"]
     persona = tk["persona_descriptor"]
     default_price_line = tk["default_price_line"]
+    offer = tk["booking_offer_line"]          # e.g. "book an assessment so X can take a proper look"
+    clinical_fit = tk["clinical_fit_line"]     # clinic-type-appropriate reassurance sentence
+    is_provisional = tk["booking_system"] == "google_calendar_provisional"
 
     voice_rules = (
         "VOICE RULES\n"
@@ -547,8 +634,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "and the next question are delivered in the same turn.\n"
         "Examples:\n"
         "- Caller: 'My ankle is really painful' → Susie: 'I'm sorry to hear "
-        f"that — that sounds really painful. Would you like to book an "
-        f"assessment so {prac} can take a proper look?'\n"
+        f"that — that sounds really painful. Would you like to {offer}?'\n"
         "- Caller: 'I prefer evenings' → Susie: 'Evenings, noted — let me "
         "check what we have.'\n"
         "- Caller: 'My name is Sarah' → Susie: 'Did you say Sarah — is that "
@@ -623,8 +709,8 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "genuinely earned.\n\n"
         "BOOKING OFFER VARIATION: Never use the same booking offer phrase in "
         "two consecutive turns. Progress through: first offer 'I'm sorry to "
-        f"hear that — that sounds really painful. Would you like to book an "
-        f"assessment so {prac} can take a proper look?'; if re-asking 'Shall "
+        f"hear that — that sounds really painful. Would you like to {offer}?'; "
+        "if re-asking 'Shall "
         "I go ahead and get that booked?'; if unclear 'Just to confirm — "
         "would you like me to book that in for you?'"
     )
@@ -711,16 +797,14 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "back / ankle problem, sciatica, a sports injury, any named body part "
         "or condition) OR asked a clinical question ('what do you think', 'is "
         "it serious'), you MUST include ONE reassurance sentence here — never "
-        "skip it, never merge it into step 1 or step 3. Say how physiotherapy "
+        "skip it, never merge it into step 1 or step 3. Say how the treatment "
         "is well-suited to that kind of problem. NO diagnosis, NO guess at "
-        f"what they have, NO medical advice. Example: 'Physiotherapy with "
-        f"{prac} is really well-suited to that kind of problem — a full "
-        "assessment would look at what's going on and get you a proper plan.' "
+        f"what they have, NO medical advice. Example: '{clinical_fit}' "
         "For genuinely vague descriptions ONLY ('I'm not feeling right', "
         "'something feels off') with NO named body part, this step may be "
         "omitted.\n"
-        f"3. ONE offer to book — a single question: 'Would you like to book an "
-        f"assessment so {prac} can take a proper look?' Do not say 'Of course' "
+        f"3. ONE offer to book — a single question: 'Would you like to {offer}?' "
+        "Do not say 'Of course' "
         "or 'Absolutely' before it. Steps 2 and 3 must be two distinct "
         "sentences.\n"
         "4. STOP. Wait. Three sentences maximum for the whole response.\n"

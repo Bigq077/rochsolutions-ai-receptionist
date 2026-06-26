@@ -139,6 +139,28 @@ def build_sms(session: dict) -> str:
         "redditch": "51 Bromsgrove Road, Redditch, B97 4RH",
     }
     clinic_address = _location_addresses.get(_loc) or CLINIC_ADDRESS
+
+    # Data-driven template clinics (prompt_engine == "template_v1", e.g. jv_v1)
+    # carry their own branding/address/phone in clinic.json. Theorem env vars and
+    # the hardcoded alcester/redditch map don't apply to them, so resolve the SMS
+    # clinic name, phone and address (→ Maps link) straight from the clinic config.
+    # Theorem/demo are unaffected (they have no template_v1 prompt_engine).
+    try:
+        from app.clinic_config import get_clinic
+        _clinic = get_clinic(session.get("clinic_id"))
+        if _clinic.get("prompt_engine") == "template_v1":
+            clinic_name  = _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
+            clinic_phone = _clinic.get("phone") or clinic_phone
+            _locs  = _clinic.get("locations") or []
+            _match = next(
+                (l for l in _locs if str(l.get("location_id", "")).lower() == _loc),
+                (_locs[0] if _locs else None),
+            )
+            if _match and _match.get("address_full"):
+                clinic_address = _match["address_full"]
+    except Exception:
+        pass
+
     maps_link      = build_maps_link(clinic_address)
 
     # Pending full name?  Only the caller's first name is collected on the

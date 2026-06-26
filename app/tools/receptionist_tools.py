@@ -3726,7 +3726,30 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["collected"]["phone"] = phone
         session["collected"]["service"] = service
         session["collected"]["slot"] = start_dt.isoformat()
+        session["selected_slot"] = start_dt.isoformat()
         session["calendar_status"] = "manual_followup"
+
+        # Still send the confirmation SMS — the caller was told "all booked" and a
+        # human enters it into the booking system, so they get the same confirmation
+        # text as a calendar-backed booking. Non-fatal; build_sms uses the session.
+        try:
+            from app.notifications.booking_sms import send_booking_confirmation
+            await send_booking_confirmation(
+                patient_phone=phone,
+                patient_name=patient_name,
+                appointment_time=start_dt,
+                location=location.title(),
+                service=service,
+                is_new_patient=is_new,
+                has_insurance=bool(insurer),
+                insurer=insurer or None,
+                clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
+                clinic_phone=clinic.get("phone"),
+                session=session,
+            )
+            session["confirmation_sms_sent"] = True
+        except Exception as e:
+            logger.warning("book_appointment (no calendar) SMS failed (non-fatal): %r", e)
 
         return {
             "success": True,
@@ -3777,6 +3800,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     session["collected"]["phone"] = phone
     session["collected"]["service"] = service
     session["collected"]["slot"] = args["slot_iso"]
+    # Populate the top-level slot key build_sms() reads for the 📅/⏰ lines —
+    # mirrors the Acuity path (see _book_appointment_acuity); without it the
+    # confirmation SMS renders blank date/time ("—").
+    session["selected_slot"] = args["slot_iso"]
     if insurer:
         session["collected"]["insurer"] = insurer
     if policy:
@@ -3926,13 +3953,17 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     # SMS notification — non-fatal
     try:
         from app.notifications.booking_sms import send_cancellation_confirmation
+        from app.clinic_config import get_clinic as _get_clinic_sms
         from datetime import datetime as _dt
+        _c_sms = _get_clinic_sms(session.get("clinic_id"))
         appt_time = _dt.fromisoformat(event_start.replace("Z", "+00:00")) if event_start else None
         if appt_time:
             await send_cancellation_confirmation(
                 patient_phone=args.get("phone", ""),
                 patient_name=args.get("patient_name", ""),
                 appointment_time=appt_time,
+                clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
+                clinic_phone=_c_sms.get("phone"),
             )
     except Exception as e:
         logger.warning("cancel_appointment SMS failed (non-fatal): %r", e)
@@ -4000,6 +4031,8 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     # SMS notification — non-fatal
     try:
         from app.notifications.booking_sms import send_reschedule_confirmation
+        from app.clinic_config import get_clinic as _get_clinic_sms
+        _c_sms = _get_clinic_sms(session.get("clinic_id"))
         old_start_str = (found.get("start") or {}).get("dateTime", "")
         if old_start_str:
             old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
@@ -4009,6 +4042,8 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
                 old_time=old_time,
                 new_time=new_start,
                 location=location.title(),
+                clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
+                clinic_phone=_c_sms.get("phone"),
             )
     except Exception as e:
         logger.warning("reschedule_appointment SMS failed (non-fatal): %r", e)
