@@ -300,6 +300,32 @@ def list_events_for_day(
     return resp.get("items", [])
 
 
+def update_event(
+    stored_tokens: Dict[str, Any],
+    event_id: str,
+    summary: Optional[str] = None,
+    description: Optional[str] = None,
+    calendar_id: str = DEFAULT_CALENDAR_ID,
+) -> Dict[str, Any]:
+    """
+    Patch an event's summary and/or description in place. Used by the
+    provisional booking flow to flip a published "available" slot into a
+    "PENDING CONFIRMATION — <name>" booking so it both drops out of the
+    available set and shows the request to the clinic owner.
+    """
+    service = get_calendar_service(stored_tokens)
+    body: Dict[str, Any] = {}
+    if summary is not None:
+        body["summary"] = summary
+    if description is not None:
+        body["description"] = description
+    if not body:
+        return {}
+    return service.events().patch(
+        calendarId=calendar_id, eventId=event_id, body=body
+    ).execute()
+
+
 def patch_event_time(
     stored_tokens: Dict[str, Any],
     event_id: str,

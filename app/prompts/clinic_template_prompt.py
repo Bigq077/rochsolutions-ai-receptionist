@@ -751,8 +751,12 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "duration_minutes?) — only after readback confirmed. patient_name "
         "MUST be the caller's FULL name (first name and surname) exactly as "
         "given — never just the first name, even if CALL STATE shows only the "
-        "first name. SMS confirmation automatic.\n\n"
-        "cancel_appointment(patient_name, phone, location, appointment_id?) "
+        "first name. "
+        + ("This sends a PROVISIONAL request to the clinic — it does not "
+           "confirm the appointment; the practitioner confirms with the "
+           "caller directly.\n\n" if is_provisional
+           else "SMS confirmation automatic.\n\n")
+        + "cancel_appointment(patient_name, phone, location, appointment_id?) "
         "— after lookup confirmed and caller said cancel. Pass "
         "appointment_id from lookup_patient directly.\n\n"
         "reschedule_appointment(patient_name, phone, location, new_slot_iso, "
@@ -775,6 +779,26 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     )
 
     loc_spoken = tk["primary_location_id"].capitalize()
+    if is_provisional:
+        _pending = tk["booking_pending_message"] or (
+            "I've noted your preferred time and sent it to "
+            f"{prac} to confirm — your booking isn't finalised until you hear "
+            "from him."
+        )
+        booking_success = (
+            "On success the booking is PROVISIONAL — it is NOT confirmed. Say "
+            f"exactly: '{_pending}' Do NOT say 'all booked', 'confirmed', "
+            "'you're booked in', or that a confirmation text has been sent — "
+            "none of that is true for this clinic. Do NOT mention the location "
+            "again."
+        )
+    else:
+        booking_success = (
+            "On success say exactly: 'All booked — you're in for [day] the "
+            "[ordinal] at [time]. I've just sent you a confirmation text. We'll "
+            "see you then — take care.' Do NOT ask the caller to reply with "
+            "their name, and do NOT mention the location again."
+        )
     booking_flow = (
         "BOOKING FLOW\n"
         "HARD RULE — NEW/RETURNING QUESTION IS PERMANENTLY BANNED FROM THIS "
@@ -921,10 +945,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "that's…' or 'Right, so…'. Wait for explicit yes; if corrected, "
         "re-state and wait again.\n"
         "10. Call book_appointment immediately after yes — do NOT speak "
-        "before calling. On success say exactly: 'All booked — you're in for "
-        "[day] the [ordinal] at [time]. I've just sent you a confirmation "
-        "text. We'll see you then — take care.' Do NOT ask the caller to reply "
-        "with their name, and do NOT mention the location again. On failure: "
+        "before calling. " + booking_success + " On failure: "
         "'I'm sorry — there was a problem locking that in. Please call back "
         "and we'll get it sorted for you.'"
     )
@@ -1106,8 +1127,14 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
         )
     if (session.get("acuity_booking_id")
             or session.get("booking_id")
-            or session.get("calendar_status") == "created"):
-        state.append("a booking has been made this call")
+            or session.get("calendar_status") in ("created", "provisional")):
+        if session.get("calendar_status") == "provisional":
+            state.append(
+                "a PROVISIONAL booking request has been made this call — do NOT "
+                "re-offer booking; it is awaiting the practitioner's confirmation"
+            )
+        else:
+            state.append("a booking has been made this call")
     if session.get("turn_count", 0) == 0:
         state.append(
             f"GREETING: Open with exactly: '{pf.get('greeting','')}' Warm, "

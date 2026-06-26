@@ -3530,6 +3530,14 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         _acuity_result = await _check_availability_acuity(args, session)
         return _filter_same_day_slots(_acuity_result, session)
 
+    # Provisional clinics (e.g. vital_edge) read the slots the practitioner has
+    # PUBLISHED to a dedicated Google calendar, rather than generating slots
+    # from fixed working_hours. Susie offers only what genuinely exists.
+    from app.clinic_config import get_clinic as _gc_prov
+    _prov_clinic = _gc_prov(session.get("clinic_id"))
+    if _prov_clinic.get("booking_system") == "google_calendar_provisional":
+        return await _check_availability_published(args, session, _prov_clinic)
+
     from app.tools.slots import (
         generate_candidate_slots,
         filter_free_slots,
@@ -3659,6 +3667,248 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Provisional clinics: availability is READ from a published Google calendar
+# ---------------------------------------------------------------------------
+
+# Booking-marker prefixes Susie writes onto a published slot when it is taken,
+# so it drops out of the available set on subsequent reads.
+_PROVISIONAL_TAKEN_PREFIXES = ("PENDING", "BOOKED", "CONFIRMED")
+
+
+def _parse_event_dt(raw: str):
+    """Parse a Google event dateTime string to an aware Europe/London datetime."""
+    return datetime.fromisoformat((raw or "").replace("Z", "+00:00")).astimezone(LONDON_TZ)
+
+
+async def _check_availability_published(
+    args: Dict[str, Any], session: Dict[str, Any], clinic: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Availability for google_calendar_provisional clinics: every (timed) event on
+    the dedicated availability calendar is a bookable slot, EXCEPT ones already
+    flipped to PENDING/BOOKED. We never generate slots from working_hours, so
+    Susie can only ever offer times the practitioner has actually published.
+    """
+    from app.tools.calendar_google import list_upcoming_events
+    from app.tools.slots import format_slot
+
+    location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+    _pref = (args.get("date_hint") or args.get("preference") or "").strip()
+    calendar_id = _resolve_calendar_id(clinic, location)
+    days_ahead = int(clinic.get("days_ahead") or 21)
+
+    now = datetime.now(LONDON_TZ)
+    w_start = now
+    after_date_str = (args.get("after_date") or "").strip()
+    if after_date_str:
+        try:
+            from datetime import date as _d
+            _ad = LONDON_TZ.localize(datetime.combine(_d.fromisoformat(after_date_str), datetime.min.time()))
+            if _ad > w_start:
+                w_start = _ad
+        except Exception as e:
+            logger.warning("_check_availability_published: bad after_date=%r — ignoring: %r", after_date_str, e)
+    day_window = args.get("day_window")
+    w_end = (w_start + timedelta(days=int(day_window))) if day_window else (now + timedelta(days=days_ahead))
+
+    tokens = await _get_tokens()
+    if not tokens:
+        return {"error": "Calendar not connected — unable to read availability.", "slots": []}
+
+    try:
+        events = await asyncio.to_thread(
+            list_upcoming_events, tokens, days_ahead, 75, calendar_id
+        )
+        await _save_gcal_tokens(tokens)
+    except Exception as e:
+        logger.error("_check_availability_published: list events error: %r", e)
+        return {"error": "Couldn't read availability just now — please try again.", "slots": []}
+
+    candidates = []
+    slot_event_map: Dict[str, str] = {}
+    for ev in events or []:
+        start_raw = (ev.get("start") or {}).get("dateTime")
+        if not start_raw:
+            continue  # all-day / date-only blocks are not bookable slots
+        summary = (ev.get("summary") or "").strip().upper()
+        if summary.startswith(_PROVISIONAL_TAKEN_PREFIXES):
+            continue  # already requested/booked — not offerable
+        try:
+            s_dt = _parse_event_dt(start_raw)
+            end_raw = (ev.get("end") or {}).get("dateTime")
+            e_dt = _parse_event_dt(end_raw) if end_raw else (s_dt + timedelta(minutes=int(clinic.get("slot_minutes") or 60)))
+        except Exception:
+            continue
+        if s_dt <= now or s_dt < w_start or s_dt > w_end:
+            continue
+        candidates.append((s_dt, e_dt))
+        if ev.get("id"):
+            slot_event_map[s_dt.isoformat()] = ev["id"]
+
+    candidates.sort(key=lambda t: t[0])
+    # Remember which published event backs each offered slot, so book_appointment
+    # can flip that exact event to PENDING.
+    session["_provisional_slot_events"] = slot_event_map
+
+    if not candidates:
+        return {
+            "error": "No published slots in that window — take the caller's name, "
+                     "number and preferred days and add them to the waitlist.",
+            "slots": [],
+        }
+
+    presented = _select_presented_tuples(candidates, preference=_pref)
+    days_data = _build_days_data(candidates, preference=_pref)
+    session["last_offered_slots"] = [{"start": s[0].isoformat(), "end": s[1].isoformat()} for s in presented]
+    session["slot_labels"] = [format_slot(s) for s in presented]
+    session["available_days"] = days_data
+    return _filter_same_day_slots(
+        {"available_days": days_data, "total_days": len(days_data)},
+        session,
+    )
+
+
+async def _book_appointment_provisional(
+    args: Dict[str, Any], session: Dict[str, Any], clinic: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Provisional booking: write the chosen PUBLISHED slot to the calendar as a
+    PENDING event and notify the owner. Never tells the caller it's confirmed,
+    and never sends a caller confirmation SMS — the practitioner confirms
+    directly. Returns success so Susie speaks the pending message.
+    """
+    from app.tools.calendar_google import create_event, update_event
+    from app.notifications.owner_notify import notify_owner, build_booking_request_message
+
+    patient_name = (args.get("patient_name") or "").strip()
+    phone = (args.get("phone") or "").strip()
+    service = args.get("service") or "Deep Tissue Massage"
+    duration = int(args.get("duration_minutes") or clinic.get("slot_minutes") or 60)
+    notes = (args.get("notes") or "").strip()
+
+    if not patient_name or not phone:
+        return {"success": False, "error": "patient_name and phone are required."}
+
+    try:
+        start_dt = _resolve_slot_iso(args.get("slot_iso", ""), session)
+        end_dt = start_dt + timedelta(minutes=duration)
+    except Exception as e:
+        return {"success": False, "error": f"Invalid slot datetime: {e}"}
+
+    now_london = datetime.now(LONDON_TZ)
+    if start_dt <= now_london:
+        return {
+            "success": False,
+            "error": (
+                f"Cannot book a slot in the past "
+                f"({start_dt.strftime('%a %d %b at %H:%M')}). "
+                "Please check availability again for current options."
+            ),
+        }
+
+    location = (
+        args.get("location") or session.get("selected_location")
+        or clinic.get("primary_location") or ""
+    ).lower().strip()
+    calendar_id = _resolve_calendar_id(clinic, location)
+
+    # Caller-facing service name for a readable event.
+    svc_name = service
+    for s in (clinic.get("services") or []):
+        if s.get("service_id") == service or (s.get("name") or "").lower() == (service or "").lower():
+            svc_name = s.get("name") or service
+            break
+
+    summary = f"PENDING CONFIRMATION — {patient_name} — {svc_name} ({duration} min)"
+    description = "\n".join(
+        [
+            "PROVISIONAL booking requested via Susie (AI receptionist) — NOT yet confirmed.",
+            f"Patient: {patient_name}",
+            f"Phone: {phone}",
+            f"Service: {svc_name} ({duration} min)",
+            f"Requested: {start_dt.strftime('%A %d %B %Y at %H:%M')}",
+        ]
+        + ([f"Notes: {notes}"] if notes else [])
+        + ["Confirm directly with the client (WhatsApp/phone)."]
+    )
+
+    tokens = await _get_tokens()
+    event_id = None
+    calendar_written = False
+    if tokens:
+        slot_map = session.get("_provisional_slot_events") or {}
+        src_event_id = slot_map.get(start_dt.isoformat())
+        try:
+            if src_event_id:
+                # Flip the published availability slot into a PENDING booking so
+                # it both drops out of availability and shows the request.
+                ev = await asyncio.to_thread(
+                    update_event, tokens, src_event_id, summary, description, calendar_id
+                )
+                event_id = (ev or {}).get("id") or src_event_id
+            else:
+                ev = await asyncio.to_thread(
+                    create_event, tokens, start_dt, end_dt, summary, description, calendar_id, "default"
+                )
+                event_id = (ev or {}).get("id", "")
+            await _save_gcal_tokens(tokens)
+            calendar_written = True
+        except Exception as e:
+            logger.error("provisional booking calendar write failed: %r", e)
+
+    # Always log to Sheets so the request is never lost, even if the write failed.
+    booked_label = start_dt.strftime("%A %d %B at %H:%M")
+    try:
+        from app.tools.handoff import send_to_sheet
+        await asyncio.to_thread(
+            send_to_sheet,
+            patient_name, phone, "BOOK_PROVISIONAL",
+            f"PROVISIONAL: {svc_name} ({duration} min) on {booked_label}"
+            + (f" | Notes: {notes}" if notes else "")
+            + ("" if calendar_written else " | (calendar write FAILED — action manually)"),
+            session.get("call_sid", ""),
+            "Vital Edge AI Receptionist",
+        )
+    except Exception as e:
+        logger.warning("provisional booking Sheets log failed (non-fatal): %r", e)
+
+    # Session state — mark provisional and SUPPRESS the caller confirmation SMS.
+    session.setdefault("collected", {})
+    session["collected"]["name"] = patient_name
+    session["collected"]["phone"] = phone
+    session["collected"]["service"] = service
+    session["collected"]["slot"] = start_dt.isoformat()
+    session["selected_slot"] = start_dt.isoformat()
+    session["calendar_event_id"] = event_id or ""
+    session["calendar_status"] = "provisional"
+    session["provisional_booking"] = True
+    session["confirmation_sms_sent"] = True  # never send the caller a "confirmed" text
+
+    # Notify the owner immediately (SMS now; WhatsApp later). Non-fatal.
+    try:
+        await notify_owner(
+            clinic,
+            build_booking_request_message(
+                clinic=clinic, patient_name=patient_name, phone=phone,
+                when=start_dt, duration_minutes=duration, service=svc_name, notes=notes,
+            ),
+        )
+    except Exception as e:
+        logger.warning("provisional owner notify failed (non-fatal): %r", e)
+
+    return {
+        "success": True,
+        "provisional": True,
+        "booked_slot": booked_label,
+        "note": (
+            "PROVISIONAL request logged and owner notified. Tell the caller it is "
+            "NOT confirmed — the practitioner will confirm with them directly and "
+            "may offer a similar time."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Executor: book_appointment
 # ---------------------------------------------------------------------------
 
@@ -3667,12 +3917,18 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
         return await _book_appointment_acuity(args, session)
 
-    from app.tools.calendar_google import create_event
-    from app.notifications.booking_sms import send_booking_confirmation
     from app.clinic_config import get_clinic
 
-    tokens = await _get_tokens()
     clinic = get_clinic(session.get("clinic_id"))
+    # Provisional clinics never auto-confirm — book the published slot as PENDING
+    # and notify the owner, who confirms with the caller directly.
+    if clinic.get("booking_system") == "google_calendar_provisional":
+        return await _book_appointment_provisional(args, session, clinic)
+
+    from app.tools.calendar_google import create_event
+    from app.notifications.booking_sms import send_booking_confirmation
+
+    tokens = await _get_tokens()
     location = (args.get("location") or "").lower().strip()
     patient_name = args.get("patient_name", "")
     phone = args.get("phone", "")
@@ -3971,6 +4227,18 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     # Prevent smart router from sending a duplicate follow-up SMS
     session["confirmation_sms_sent"] = True
 
+    # Provisional clinics: keep the owner informed of the cancellation.
+    if clinic.get("booking_system") == "google_calendar_provisional":
+        try:
+            from app.notifications.owner_notify import notify_owner
+            await notify_owner(
+                clinic,
+                f"❌ {clinic.get('sms_name') or 'Clinic'} — booking CANCELLED via Susie. "
+                f"{args.get('patient_name','')} ({args.get('phone','')}) — was {event_start or event_summary}.",
+            )
+        except Exception as e:
+            logger.warning("provisional cancel owner notify failed (non-fatal): %r", e)
+
     return {
         "success": True,
         "cancelled_event": event_summary,
@@ -4050,6 +4318,20 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
 
     # Prevent smart router from sending a duplicate follow-up SMS
     session["confirmation_sms_sent"] = True
+
+    # Provisional clinics: the new time is still subject to the owner's
+    # confirmation — notify them of the change.
+    if clinic.get("booking_system") == "google_calendar_provisional":
+        try:
+            from app.notifications.owner_notify import notify_owner
+            await notify_owner(
+                clinic,
+                f"🔄 {clinic.get('sms_name') or 'Clinic'} — booking RESCHEDULE requested via Susie. "
+                f"{args.get('patient_name','')} ({args.get('phone','')}) → "
+                f"{new_start.strftime('%a %d %b at %H:%M')}. Please confirm with the client.",
+            )
+        except Exception as e:
+            logger.warning("provisional reschedule owner notify failed (non-fatal): %r", e)
 
     return {
         "success": True,

@@ -26,6 +26,13 @@ TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
 
+    # Vital Edge Therapy (Kingston) — provisional booking model.
+    # TBC: the inbound Twilio number that forwards to Susie is not yet
+    # provisioned (the call rings Jonathan's mobile +447545862307 first, then
+    # falls back to the AI). Replace the placeholder below with the real Twilio
+    # "To" number before go-live, then uncomment.
+    # "+44XXXXXXXXXX": "vital_edge",
+
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE
     # 1. Add their Twilio number and a clinic_id (slug, no spaces)
