@@ -411,8 +411,15 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         for i, s in enumerate(steps, 1):
             out.append(f"{i}. {s}")
     out.append(
-        "Do NOT say we can't accept insurance. The pre-authorisation code is "
-        "the only requirement before the first appointment."
+        "Do NOT say we can't accept insurance. NEVER take a pre-authorisation, "
+        "membership or policy code by phone (transcription mangles them — a "
+        "wrong code is worse than none) and NEVER say cover is confirmed or "
+        "'all good'. Note ONLY the insurer the caller actually named, book the "
+        "appointment as normal, tell them 'Okay, that's noted — Marcus will be "
+        "in touch to collect the rest of your insurance details', and pass a "
+        "followup_note to book_appointment summarising it (e.g. 'INSURANCE: "
+        "Aviva — wants to use private insurance; collect pre-auth and confirm "
+        "cover') so Marcus is pinged automatically."
     )
     return "\n".join(out)
 

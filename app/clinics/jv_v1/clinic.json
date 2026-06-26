@@ -112,7 +112,7 @@
     { "q": "Is there parking?", "a": "Yes — there is free 24/7 on-site parking at Flexspace Bolton. No need to worry about finding a space or paying for parking." },
     { "q": "Do you offer evening or weekend appointments?", "a": "Yes — we offer evening appointments on weekdays and Saturday morning slots. Contact us and we'll find a time that works for you." },
     { "q": "How much does it cost?", "a": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website." },
-    { "q": "Do you accept private health insurance?", "a": "Yes — we accept private healthcare referrals. You'll need to get a pre-authorisation code from your insurer and confirm your cover before your first appointment. Give us a call and we can help guide you through the process." },
+    { "q": "Do you accept private health insurance?", "a": "Yes — we accept private healthcare referrals. I can get you booked in now, and Marcus will be in touch to take your insurer details and sort the rest." },
     { "q": "Can you come to me?", "a": "Yes — we offer home visits across Bolton and the Greater Manchester area. A 60-minute combined assessment and treatment session at your home is £80. Please mention this when booking." },
     { "q": "Can I have a remote appointment?", "a": "Yes — we offer video and phone consultations for £40 per session. These are available to patients anywhere in the UK or worldwide, and are ideal for follow-ups or if you can't make it in person." },
     { "q": "What conditions do you treat?", "a": "We treat a wide range of musculoskeletal and neurological conditions — from back pain, neck pain, and sports injuries to multiple sclerosis, stroke rehabilitation, and vestibular conditions. If you're unsure whether we can help, give us a call and Marcus will advise you." },
@@ -308,13 +308,14 @@
     "model": "Self-pay with private health insurance accepted",
     "bupa_accepted": true,
     "other_insurers_accepted": true,
-    "protocol": "Caller must obtain a pre-authorisation code from their insurer and confirm their cover before the first appointment.",
+    "protocol": "Option B handling: confirm referrals accepted, book the appointment normally, note the insurer NAME only, tell the caller Marcus will be in touch to collect the rest of the insurance details, and pass a followup_note to book_appointment so Marcus is pinged. Never take a pre-auth/membership/policy code by phone; never confirm cover.",
     "what_ai_should_do": [
-      "Confirm private healthcare referrals are accepted.",
-      "Ask the caller to get a pre-authorisation code from their insurer.",
-      "Advise them to confirm their eligibility and cover before the first appointment.",
-      "Offer to book provisionally while they obtain the authorisation code.",
-      "Collect insurer name for the booking notes."
+      "Confirm we accept private health insurance referrals — never turn the caller away.",
+      "Book the appointment normally so the slot is secured.",
+      "Note the insurer's NAME only — exactly what the caller said; do NOT add insurers they didn't mention.",
+      "Do NOT ask for or take a pre-authorisation, membership or policy code over the phone, and do NOT say cover is confirmed or 'all good'.",
+      "Tell the caller: 'Okay, that's noted — Marcus will be in touch to collect the rest of your insurance details.'",
+      "When booking, pass a followup_note to book_appointment summarising it, e.g. followup_note='INSURANCE: Aviva — wants to use private insurance; collect pre-auth and confirm cover'. Marcus is pinged automatically."
     ]
   },
   "call_handling": {
