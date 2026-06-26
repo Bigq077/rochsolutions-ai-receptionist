@@ -797,7 +797,14 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "On success say exactly: 'All booked — you're in for [day] the "
             "[ordinal] at [time]. I've just sent you a confirmation text. We'll "
             "see you then — take care.' Do NOT ask the caller to reply with "
-            "their name, and do NOT mention the location again."
+            "their name, and do NOT mention the location again. "
+            "HOME VISIT EXCEPTION: if this booking is a HOME VISIT, the closing "
+            "MUST also ask them to text their address (we collect it by text, "
+            "not on the call, so it is accurate). Say instead: 'All booked — "
+            "you're in for [day] the [ordinal] at [time]. As it's a home visit, "
+            "could you text us your full home address and postcode so we can get "
+            "that to the team? I've just sent you a confirmation text — take "
+            "care.'"
         )
     booking_flow = (
         "BOOKING FLOW\n"

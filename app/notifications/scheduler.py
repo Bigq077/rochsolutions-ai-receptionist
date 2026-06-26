@@ -47,6 +47,7 @@ except ImportError:
 REMINDERS_KEY_PREFIX = "reminder:"
 PENDING_REMINDERS_SET = "pending_reminders"
 PENDING_NAME_REMINDERS_SET = "pending_name_reminders"
+PENDING_ADDRESS_REMINDERS_SET = "pending_address_reminders"
 
 
 # ============================================================================
@@ -523,6 +524,77 @@ async def process_name_confirm_reminders() -> int:
         return 0
 
 
+async def schedule_address_reminder(
+    phone: str,
+    first_name: str,
+    delay_minutes: int = 30,
+) -> None:
+    """
+    Schedule a nudge SMS asking a home-visit patient to text their full address
+    + postcode, delay_minutes from now. Stored in a Redis sorted set scored by
+    send-at timestamp. Fired regardless of whether they have replied (we have no
+    inbound-SMS handling yet to detect a reply), so the copy is phrased
+    'if you haven't already'. Safe no-op if Redis is unavailable.
+    """
+    from app.storage.redis_store import redis_client as _ar
+    if not _ar:
+        logger.warning("[ADDR_REMINDER] Redis unavailable — cannot schedule nudge for %r", phone)
+        return
+    try:
+        send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
+        payload = json.dumps({"phone": phone, "first_name": first_name})
+        await _ar.zadd(PENDING_ADDRESS_REMINDERS_SET, {payload: send_at})
+        logger.info(
+            "[ADDR_REMINDER] scheduled: phone=%r delay=%dmin send_at=%s",
+            phone, delay_minutes, datetime.utcfromtimestamp(send_at).isoformat(),
+        )
+    except Exception as _e:
+        logger.error("[ADDR_REMINDER] schedule failed (non-fatal): %r", _e)
+
+
+async def process_address_reminders() -> int:
+    """
+    Send any home-visit address nudge SMSes whose send-at time has passed.
+    Called by the background worker every interval.
+    """
+    from app.storage.redis_store import redis_client as _ar
+    if not _ar:
+        return 0
+    try:
+        now_ts = datetime.utcnow().timestamp()
+        due: list = await _ar.zrangebyscore(PENDING_ADDRESS_REMINDERS_SET, 0, now_ts)
+        if not due:
+            return 0
+
+        from app.notifications.sms import send_sms
+
+        sent = 0
+        for payload_str in due:
+            try:
+                data = json.loads(payload_str)
+                phone = data.get("phone", "")
+                first_name = data.get("first_name") or "there"
+                await send_sms(
+                    to=phone,
+                    message=(
+                        f"Hi {first_name}, just making sure we have everything for "
+                        "your home visit — if you haven't already, please reply with "
+                        "your full home address and postcode so we can finalise it. "
+                        "Thanks!"
+                    ),
+                )
+                logger.info("[ADDR_REMINDER] nudge sent: phone=%r", phone)
+                await _ar.zrem(PENDING_ADDRESS_REMINDERS_SET, payload_str)
+                sent += 1
+            except Exception as _e:
+                logger.error("[ADDR_REMINDER] error for payload=%r: %r", payload_str, _e)
+
+        return sent
+    except Exception as _e:
+        logger.error("[ADDR_REMINDER] process_address_reminders failed: %r", _e)
+        return 0
+
+
 async def start_reminder_worker(interval_seconds: int = 300):
     """Start background worker - only if Redis is available."""
     if not REDIS_AVAILABLE:
@@ -539,6 +611,9 @@ async def start_reminder_worker(interval_seconds: int = 300):
             name_nudges = await process_name_confirm_reminders()
             if name_nudges > 0:
                 logger.info("Reminder worker sent %d name-confirm nudge(s)", name_nudges)
+            addr_nudges = await process_address_reminders()
+            if addr_nudges > 0:
+                logger.info("Reminder worker sent %d address nudge(s)", addr_nudges)
         except Exception as e:
             logger.error(f"Reminder worker error: {e}", exc_info=True)
 

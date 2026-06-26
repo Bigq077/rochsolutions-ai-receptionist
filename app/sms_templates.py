@@ -36,6 +36,20 @@ BOOKING_CONFIRMATION_SMS = (
     "See you soon!\n— {clinic_name}"
 )
 
+# Home-visit confirmation — the visit is at the patient's home, so no clinic
+# address / Maps link; instead ask them to text their full address + postcode.
+HOME_VISIT_CONFIRMATION_SMS = (
+    "Hi {patient_name} 👋\n\n"
+    "Your home visit is confirmed:\n\n"
+    "📅 {appointment_date}\n"
+    "⏰ {appointment_time}\n"
+    "🏠 At your home address\n\n"
+    "Please reply to this message with your full home address and postcode so "
+    "we can finalise your visit.\n\n"
+    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
+    "See you soon!\n— {clinic_name}"
+)
+
 # Explicit full-name request — inserted only when the caller's full name is
 # still pending (only first name was captured on the call).
 FULL_NAME_REQUEST_NOTE = (
@@ -176,6 +190,21 @@ def build_sms(session: dict) -> str:
         pending_full_name,
         "requests" if pending_full_name else "omits",
     )
+
+    # Home visits happen at the patient's home, not the clinic — so the clinic
+    # address / Maps link don't apply. Use a tailored body that asks the patient
+    # to text their full address + postcode (collected by SMS, not voice, to
+    # avoid transcription errors). The 30-min address nudge is scheduled by the
+    # booking executor.
+    _svc = (collected.get("service") or "").lower()
+    if "home_visit" in _svc or "home visit" in _svc:
+        return HOME_VISIT_CONFIRMATION_SMS.format(
+            patient_name     = patient_name,
+            clinic_name      = clinic_name,
+            appointment_date = appointment_date,
+            appointment_time = appointment_time,
+            clinic_phone     = clinic_phone,
+        )
 
     body = BOOKING_CONFIRMATION_SMS.format(
         patient_name      = patient_name,

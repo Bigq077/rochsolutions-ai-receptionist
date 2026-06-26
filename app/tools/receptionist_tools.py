@@ -4007,6 +4007,17 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         except Exception as e:
             logger.warning("book_appointment (no calendar) SMS failed (non-fatal): %r", e)
 
+        # Home visit — schedule the 30-min address-request nudge too.
+        if "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
+            try:
+                from app.notifications.scheduler import schedule_address_reminder
+                await schedule_address_reminder(
+                    phone=phone,
+                    first_name=(patient_name.split()[0] if patient_name else "there"),
+                )
+            except Exception as e:
+                logger.warning("book_appointment (no calendar) address reminder failed (non-fatal): %r", e)
+
         return {
             "success": True,
             "booked_slot": booked_label,
@@ -4103,6 +4114,17 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         )
     except Exception as e:
         logger.warning("book_appointment reminder scheduling failed (non-fatal): %r", e)
+
+    # Home visits need the patient's address — schedule a 30-min nudge to text it.
+    if "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
+        try:
+            from app.notifications.scheduler import schedule_address_reminder
+            await schedule_address_reminder(
+                phone=phone,
+                first_name=(patient_name.split()[0] if patient_name else "there"),
+            )
+        except Exception as e:
+            logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)
 
     # Sheets log — non-blocking
     try:
