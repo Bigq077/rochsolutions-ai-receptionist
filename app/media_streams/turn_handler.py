@@ -433,6 +433,24 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                     "(closing confirmation), not a redundant tail"
                 )
 
+    # ── Gate 5d: repeated FAQ booking-CTA strip (P4) ─────────────────────────
+    # Pre-booking, the model tacks a booking CTA onto nearly every FAQ answer
+    # despite the prompt's "offer once" rule (observed Call 4, 2026-06-27: CTA on
+    # 4 consecutive service answers). v3_cta_count is incremented per turn
+    # (connection.py:8087); once a CTA has already been offered this call (>=1),
+    # strip any further CTA tail. The FIRST offer is preserved (count 0). elif so
+    # it never runs during booking_flow (5c owns that path). Only strip when
+    # substantive content remains, so a turn that is itself the booking offer is
+    # never nuked (same empty-guard as 5c).
+    elif int(session.get("v3_cta_count") or 0) >= 1:
+        _offer_cleaned = _BOOKING_OFFER_RE.sub("", result)
+        if _offer_cleaned != result and _offer_cleaned.strip():
+            logger.info(
+                "[ms_gate5] removed repeated FAQ booking offer (v3_cta_count=%s)",
+                session.get("v3_cta_count"),
+            )
+            result = _offer_cleaned
+
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)
     result = _LEADING_JUNK_RE.sub("", result)
