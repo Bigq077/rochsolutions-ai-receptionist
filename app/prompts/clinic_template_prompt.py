@@ -316,6 +316,59 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     return "\n".join(out)
 
 
+_DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday",
+              "saturday", "sunday"]
+
+
+def _to_12h(hhmm: Any) -> str:
+    """'16:30' -> '4:30pm', '09:30' -> '9:30am', '13:00' -> '1pm'. '' on bad input."""
+    if not isinstance(hhmm, str) or ":" not in hhmm:
+        return ""
+    try:
+        h, m = (int(x) for x in hhmm.split(":")[:2])
+    except Exception:
+        return ""
+    ap = "am" if h < 12 else "pm"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d}{ap}" if m else f"{h12}{ap}"
+
+
+def _render_per_day_hours(clinic: Dict[str, Any]) -> str:
+    """Per-day opening hours read from clinic.json opening_hours, so Susie can
+    give the exact days+times when explicitly asked (P6) instead of the generic
+    spoken summary. The end time shown is the last bookable appointment."""
+    oh = clinic.get("opening_hours") or {}
+    loc_hours = None
+    for v in oh.values():
+        if isinstance(v, dict) and any(d in v for d in _DAY_ORDER):
+            loc_hours = v
+            break
+    if not loc_hours:
+        return ""
+    lines: List[str] = []
+    for d in _DAY_ORDER:
+        spec = loc_hours.get(d)
+        if spec is None:
+            continue
+        if isinstance(spec, str):
+            if spec.strip().lower() == "closed":
+                lines.append(f"{d.capitalize()}: closed")
+            continue
+        if isinstance(spec, dict):
+            o = _to_12h(spec.get("open"))
+            l = _to_12h(spec.get("last_appointment") or spec.get("close"))
+            if o and l:
+                lines.append(f"{d.capitalize()}: {o} to {l}")
+    if not lines:
+        return ""
+    return (
+        "PER-DAY OPENING HOURS (the second time is the LAST bookable "
+        "appointment, not closing): " + "; ".join(lines) + ". Give these exact "
+        "per-day times when the caller explicitly asks for your opening hours, "
+        "days, or times; otherwise use the short spoken hours summary above."
+    )
+
+
 def _render_clinic_info(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     loc = (clinic.get("locations") or [{}])[0]
@@ -349,6 +402,9 @@ def _render_clinic_info(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             out.append("Serves " + ", ".join(loc["serves_areas"]) + ".")
     out.append("")
     out.append(pf.get("hours_summary_spoken", ""))
+    per_day = _render_per_day_hours(clinic)
+    if per_day:
+        out.append(per_day)
     if pf.get("tagline"):
         out.append(f"Tagline: {pf['tagline']}.")
     return "\n".join([x for x in out if x != ""] or [""])
@@ -855,7 +911,12 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "checked for THAT day only. Put just the time of day (if given) in "
         "date_hint. Then present that day's slots; if the caller's exact time "
         "isn't on the grid, offer the nearest times that day — never say the "
-        "day is unavailable when it has slots.\n\n"
+        "day is unavailable when it has slots.\n"
+        "This applies EVEN WHEN the concrete date is wrapped in an open-ended "
+        "preamble like 'anytime', 'whenever', or 'sometime in the next few "
+        "weeks'. If the caller names a specific date at all (e.g. 'anytime in "
+        "the next three weeks — say the 16th of July'), TARGET that named date "
+        "with after_date; do NOT ignore it and just offer the soonest slot.\n\n"
         "book_appointment(patient_name, phone, location, service, slot_iso, "
         "duration_minutes?) — only after readback confirmed. patient_name "
         "MUST be the caller's FULL name (first name and surname) exactly as "
