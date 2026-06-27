@@ -57,6 +57,14 @@ FULL_NAME_REQUEST_NOTE = (
     "your booking details.\n\n"
 )
 
+# Silent-misspelling recovery (P5). When a new patient's full name WAS captured
+# on the call, STT may still have misheard the spelling and the verbal flow
+# never reads the surname back — so give a low-friction way to correct it.
+SPELLING_CONFIRM_NOTE = (
+    "We've booked you in as {full_name}. If that's spelled differently, just "
+    "reply with the correct spelling.\n\n"
+)
+
 
 def build_maps_link(address: str) -> str:
     """Return a Google Maps URL for address, or '' if address is empty."""
@@ -159,10 +167,12 @@ def build_sms(session: dict) -> str:
     # the hardcoded alcester/redditch map don't apply to them, so resolve the SMS
     # clinic name, phone and address (→ Maps link) straight from the clinic config.
     # Theorem/demo are unaffected (they have no template_v1 prompt_engine).
+    _is_template_clinic = False
     try:
         from app.clinic_config import get_clinic
         _clinic = get_clinic(session.get("clinic_id"))
         if _clinic.get("prompt_engine") == "template_v1":
+            _is_template_clinic = True
             clinic_name  = _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
             clinic_phone = _clinic.get("phone") or clinic_phone
             _locs  = _clinic.get("locations") or []
@@ -182,13 +192,24 @@ def build_sms(session: dict) -> str:
     # has already been confirmed (contains a space) the SMS must NOT re-ask.
     _full_name_confirmed = bool(name_raw) and (" " in name_raw)
     pending_full_name    = not _full_name_confirmed
-    full_name_request    = FULL_NAME_REQUEST_NOTE if pending_full_name else ""
+    if pending_full_name:
+        full_name_request = FULL_NAME_REQUEST_NOTE
+    elif _is_template_clinic and first_visit:
+        # P5: new patient whose full name WAS captured — the surname is never
+        # read back on the call, so a silent STT misspelling has no recovery
+        # path. Offer a low-friction correction in the SMS. Scoped to template
+        # clinics + new patients so theorem/demo and returning callers are
+        # unchanged.
+        full_name_request = SPELLING_CONFIRM_NOTE.format(full_name=name_raw)
+    else:
+        full_name_request = ""
 
     import logging as _logging_sms
     _logging_sms.getLogger(__name__).info(
-        "BOOKING_CONFIRM pending_full_name=%s → SMS %s full-name instruction",
-        pending_full_name,
-        "requests" if pending_full_name else "omits",
+        "BOOKING_CONFIRM pending_full_name=%s template=%s new=%s → full-name line: %s",
+        pending_full_name, _is_template_clinic, first_visit,
+        "request" if pending_full_name else
+        ("spelling-confirm" if (_is_template_clinic and first_visit) else "omitted"),
     )
 
     # Home visits happen at the patient's home, not the clinic — so the clinic
