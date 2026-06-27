@@ -96,6 +96,8 @@
     "practitioner_credentials": "VTCT Level 3 in Soft Tissue Therapy, accredited Sports Massage Therapist",
     "persona_tone": "Professional, restorative, warm British",
     "persona_descriptor": "a warm, professional receptionist",
+    "persona_character": "You are warm, calm, and quietly assured — the kind of receptionist a high-end private clinic employs, not a call centre. When someone asks a question, you answer it fully and naturally, then stop. You do not fill the silence after an answer with generic closers or booking pushes. You trust the caller to lead — if they want to book, they will say so. You are unhurried, attentive, and never salesy. Think less scripted agent, more personal concierge.",
+    "payment_timing_note": "Payment is arranged before the appointment — Jonathan will confirm the details when he gets in touch to confirm the booking.",
     "pricing_default_line": "Default to the 60-minute Deep Tissue Massage fee (£125) when a caller asks 'how much is an appointment'.",
     "default_price_summary": "A 60-minute Deep Tissue Massage is £125, and a 90-minute session is £175.",
     "tagline": "Relax, Rejuvenate, and Restore Your Body",
@@ -120,7 +122,7 @@
     { "q": "Does it hurt?", "a": "Most people find it well tolerated. Jonathan adjusts pressure throughout the session based on your feedback and comfort level." },
     { "q": "How long is the session?", "a": "Deep Tissue Massage sessions are either 60 minutes at £125 or 90 minutes at £175. Jonathan can advise which is most appropriate for your needs." },
     { "q": "Do I need a GP referral?", "a": "No — you can book directly with us." },
-    { "q": "Do you accept Bupa or insurance?", "a": "Vital Edge Therapy is a self-pay clinic — we do not work with insurance providers directly. If you have private health insurance, you're welcome to check with your insurer, but in most cases this type of treatment will not be covered. Payment is made directly by you on the day." },
+    { "q": "Do you accept Bupa or insurance?", "a": "Vital Edge Therapy is a self-pay clinic — we do not work with insurance providers directly. If you have private health insurance, you're welcome to check with your insurer, but in most cases this type of treatment will not be covered." },
     { "q": "Can you come to me?", "a": "We are a clinic-based practice — all sessions are at our Kingston location. If you have specific requirements, I can take your details and Jonathan will call you back to discuss." },
     { "q": "What should I wear?", "a": "Wear loose, comfortable clothing. Jonathan will advise on anything specific depending on the area being treated." },
     { "q": "Can I drive after my appointment?", "a": "Usually yes — Jonathan will advise on the day depending on what treatment you have had." },
@@ -199,11 +201,11 @@
     "self_pay_only": true,
     "bupa_accepted": false,
     "other_insurers_accepted": false,
-    "self_pay_message": "Vital Edge Therapy is a self-pay clinic and does not work with any insurance providers. Clients with private health insurance should check with their own insurer, but in most cases this treatment will not be covered. Payment is made directly by the client at the time of the appointment.",
+    "self_pay_message": "Vital Edge Therapy is a self-pay clinic and does not work with any insurance providers. Clients with private health insurance should check with their own insurer, but in most cases this treatment will not be covered.",
     "what_ai_should_do": [
       "Explain Vital Edge Therapy is self-pay only and does not work with insurers.",
       "Suggest the caller checks with their own insurer if they have private cover, but note it is usually not covered.",
-      "Confirm payment is made directly on the day."
+      "Confirm payment is arranged before the appointment — Jonathan will sort the details when he confirms the booking."
     ]
   },
   "call_handling": {

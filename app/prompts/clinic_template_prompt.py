@@ -154,6 +154,17 @@ def _render_identity(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     )
 
 
+def _render_persona_character(clinic: Dict[str, Any]) -> str:
+    """Optional premium-persona block. Rendered only when persona_character is
+    set in prompt_facts. Placed near the top of the static prompt to shape
+    every subsequent response."""
+    pf = clinic.get("prompt_facts", {}) or {}
+    char = pf.get("persona_character", "")
+    if not char:
+        return ""
+    return f"PERSONA CHARACTER\n{char}"
+
+
 def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     lines = [
@@ -344,7 +355,7 @@ def _render_clinic_info(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         out.append(
             f"{loc.get('name','')}: {loc.get('address_full','')}. "
             f"{loc.get('parking','')}. "
-            + ("Wheelchair accessible. " if loc.get("wheelchair_accessible") else "")
+            + ("Wheelchair accessible. " if loc.get("wheelchair_accessible") is True else "Not wheelchair accessible. " if loc.get("wheelchair_accessible") is False else "")
             + (f"Entry: {loc.get('access_instructions','')}" if loc.get("access_instructions") else "")
         )
         if loc.get("serves_areas"):
@@ -407,9 +418,12 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             out.append("When a caller mentions insurance:")
             for i, s in enumerate(steps, 1):
                 out.append(f"{i}. {s}")
+        payment_note = (clinic.get("prompt_facts") or {}).get(
+            "payment_timing_note",
+            "Payment is made directly by the client.",
+        )
         out.append(
-            "Do NOT say we accept insurance or work with insurers. Payment is "
-            "made directly by the client on the day."
+            f"Do NOT say we accept insurance or work with insurers. {payment_note}"
         )
         return "\n".join(out)
     out = ["INSURANCE PROTOCOL",
@@ -500,13 +514,21 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "booking. Example, immediately after a mid-booking FAQ answer: "
         "'…Anyway, what day or time were you thinking?'",
         "",
-        "Otherwise (no booking in progress yet), after answering an FAQ close "
-        "with a single natural booking call-to-action — 'Would you like to "
-        "book an appointment?' — UNLESS booking has already been offered twice "
-        "this call, or there is an active slot offer on the table (then omit "
-        "the CTA and continue that flow). After two or more factual answers in "
-        "a row with no booking signal, make the offer once; if declined or "
-        "ignored, don't offer again.",
+        "Otherwise (no booking in progress yet): after answering any factual "
+        "or informational question — location, hours, pricing, parking, "
+        "policies, FAQ — END YOUR REPLY WITH THE ANSWER AND NOTHING ELSE. "
+        "Do NOT append 'Is there anything else I can help with?', 'Would you "
+        "like to book an appointment?', 'Would you like to arrange an "
+        "appointment?', or any generic sign-off. These closers are robotic "
+        "and undermine the premium feel of the clinic. Let the caller lead "
+        "— if they want to book, they will say so. Trust the silence.\n\n"
+        "A natural move toward booking is appropriate at most ONCE per call, "
+        "only when the caller has asked two or more questions and seems "
+        "genuinely interested — and even then, phrase it as a warm, "
+        "unhurried offer rather than a CTA: e.g. 'I'd be happy to check "
+        "what Jonathan has available if any of that appeals?' Once offered "
+        "and not taken up, do NOT offer again unless the caller raises it. "
+        "If there is an active slot offer on the table, omit this entirely.",
         "",
         "If genuinely unknown: 'I don't have that exact detail — would you like "
         "me to put you through to the clinic, or take your number for a "
@@ -1297,6 +1319,7 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
     spine = _spine(clinic, tk, dc)
 
     static_blocks: List[str] = [
+        _render_persona_character(clinic),
         _render_service_mapping(clinic, tk),
         _render_identity(clinic, tk),
         _render_provisional_booking(clinic, tk),

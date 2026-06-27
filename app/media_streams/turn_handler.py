@@ -48,6 +48,22 @@ _BANNED_SENTENCE_RE = [
     ("one_moment",    re.compile(r"[^.!?]*\bone moment please\b[^.!?]*[.!?]?",   re.IGNORECASE)),
     ("are_you_there", re.compile(r"[^.!?]*\bare you still there\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("still_there",   re.compile(r"[^.!?]*\bstill there\b[^.!?]*[.!?]?",         re.IGNORECASE)),
+    # Robotic generic sign-offs — strip as standalone sentences so they never
+    # reach TTS.  A premium clinic receptionist ends an answer with the answer,
+    # not a scripted closer.  Matches both "Is there anything else I can help
+    # with?" and "Is there anything else I can help you with?" variants.
+    ("is_there_anything_else",
+     re.compile(r"[^.!?]*\bis there anything else (?:I can|you(?:'d like me to)?) help\b[^.!?]*[.!?]?",
+                re.IGNORECASE)),
+    # "Would you like to arrange an appointment?" — booking-push variant not
+    # already covered by Gate 5c's _BOOKING_OFFER_RE.  Strip globally (the
+    # prompt controls when and how a natural booking offer is made).
+    ("would_you_like_to_arrange",
+     re.compile(r"[^.!?]*\bwould you like to arrange an appointment\b[^.!?]*[.!?]?",
+                re.IGNORECASE)),
+    ("would_you_like_to_book_appt",
+     re.compile(r"[^.!?]*\bwould you like to book an appointment\b[^.!?]*[.!?]?",
+                re.IGNORECASE)),
     # "Lovely, [name]" acknowledgement — patronising opener, banned everywhere
     ("lovely_opener", re.compile(r"^[Ll]ovely[,\s!]+",                            re.IGNORECASE)),
     # Internal/meta orchestration text — must never reach caller TTS
