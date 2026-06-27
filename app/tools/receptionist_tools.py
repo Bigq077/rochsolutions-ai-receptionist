@@ -4499,7 +4499,26 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
 
     try:
         new_start = _resolve_slot_iso(args.get("new_slot_iso", ""), session)
-        new_end = new_start + timedelta(minutes=int(args["duration_minutes"]))
+        # P2: preserve the ORIGINAL appointment's duration. The model's
+        # duration_minutes arg defaults to the initial-assessment length (40) and
+        # would silently lengthen e.g. a 30-min treatment session to 40 min on
+        # reschedule. Derive the true length from the existing event; fall back to
+        # the arg only if the original end time is unavailable.
+        _dur_minutes = None
+        _orig_start_s = (found.get("start") or {}).get("dateTime", "")
+        _orig_end_s = (found.get("end") or {}).get("dateTime", "")
+        if _orig_start_s and _orig_end_s:
+            try:
+                _os = datetime.fromisoformat(_orig_start_s.replace("Z", "+00:00"))
+                _oe = datetime.fromisoformat(_orig_end_s.replace("Z", "+00:00"))
+                _delta_min = int(round((_oe - _os).total_seconds() / 60))
+                if _delta_min > 0:
+                    _dur_minutes = _delta_min
+            except (ValueError, TypeError):
+                _dur_minutes = None
+        if _dur_minutes is None:
+            _dur_minutes = int(args["duration_minutes"])
+        new_end = new_start + timedelta(minutes=_dur_minutes)
     except Exception as e:
         return {"success": False, "error": f"Invalid new slot datetime: {e}"}
 

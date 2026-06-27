@@ -54,6 +54,13 @@ _BANNED_SENTENCE_RE = [
     ("lookup_already_done",   re.compile(r"[^.!?]*\blookup (?:has )?already (?:been )?done\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),
     ("lookup_already_ran",    re.compile(r"[^.!?]*\blookup(?:_appointment)? already ran\b[^.!?]*[.!?]?",    re.IGNORECASE)),
+    # Internal reasoning spoken aloud on the cancel/reschedule path (GLOBAL FAIL 6),
+    # observed Call 7 (2026-06-27): "I need to look up the patient details first
+    # before confirming…". "look up the patient" / "look up the/your details" is
+    # internal-only vocabulary — Susie addresses the caller, never "the patient" —
+    # so stripping the whole sentence is safe. (Legit "look up your appointment"
+    # is NOT matched.)
+    ("lookup_reasoning_leak", re.compile(r"[^.!?]*\blook up (?:the |your )?(?:patient|details)\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("rc_stage_leak",         re.compile(r"[^.!?]*\brc_stage\b[^.!?]*[.!?]?",                               re.IGNORECASE)),
     # CALL STATE internal labels (BOOKING FLOW ACTIVE, CTA COUNT, etc.) spoken
     # aloud — Sonnet occasionally paraphrases the injected CALL STATE block into
