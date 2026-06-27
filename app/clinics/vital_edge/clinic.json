@@ -64,7 +64,8 @@
     "slot_minutes": 60,
     "_slot_increment_note": "Not used for slot generation — availability is read from the published calendar. Kept for contract compatibility.",
     "slot_increment_minutes": 60,
-    "days_ahead": 21,
+    "_days_ahead_note": "Jonathan releases availability ~2 weeks ahead and will not take bookings further out. Hard ceiling enforced in _check_availability_published.",
+    "days_ahead": 14,
     "_same_day_note": "Same-day allowed if a published slot exists (doc Section 6). The read path excludes past times.",
     "allow_same_day": true,
     "primary_location": "kingston",
@@ -108,7 +109,9 @@
     "modality_question": "",
     "hours_summary_spoken": "Jonathan's availability varies from week to week — let me check what slots are currently available for you.",
     "closing_practitioner_line": "You're in good hands with Jonathan.",
-    "booking_pending_message": "I've noted your preferred time. This has been sent to Jonathan for confirmation — he'll be in touch shortly via WhatsApp or phone to confirm your appointment. Your booking isn't finalised until you hear from him, and he may suggest a similar time if that one isn't free."
+    "booking_pending_message": "I've noted your preferred time and sent it to Jonathan. Your appointment is subject to his confirmation — it isn't finalised until you hear from him via WhatsApp or phone, and he may suggest a similar time if that one isn't free. He'll also arrange payment with you beforehand, so there's nothing to pay right now.",
+    "booking_horizon_note": "Jonathan releases his availability about two weeks in advance, so I can only take bookings up to roughly a fortnight ahead. For anything further out, I can take your details and Jonathan will be in touch when he opens up later dates.",
+    "payment_arrangement_note": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment. Nothing is taken on this call."
   },
   "faq": [
     { "q": "When are you open / what are your hours?", "a": "Jonathan's availability varies from week to week — I can check what slots are currently available for you. What days tend to work best?" },
@@ -121,7 +124,8 @@
     { "q": "Can you come to me?", "a": "We are a clinic-based practice — all sessions are at our Kingston location. If you have specific requirements, I can take your details and Jonathan will call you back to discuss." },
     { "q": "What should I wear?", "a": "Wear loose, comfortable clothing. Jonathan will advise on anything specific depending on the area being treated." },
     { "q": "Can I drive after my appointment?", "a": "Usually yes — Jonathan will advise on the day depending on what treatment you have had." },
-    { "q": "How do I pay?", "a": "We accept cash, debit card, and credit card via our secure Worldpay terminal. Receipts are provided." },
+    { "q": "How do I pay?", "a": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment, so there's nothing to pay during this call. We accept cash, debit card, and credit card via our secure Worldpay terminal, and receipts are provided." },
+    { "q": "How far in advance can I book?", "a": "Jonathan releases his availability about two weeks ahead, so I can take bookings up to roughly a fortnight in advance. If you'd like something further out, I can take your details and he'll be in touch when he opens up later dates." },
     { "q": "Is there parking?", "a": "There is paid parking available close by. Kingston station is about a 20-minute walk away, and there are bus stops and tube connections nearby." },
     { "q": "What happens in the first session?", "a": "Jonathan will take a brief consultation at the start to understand your goals and any areas of concern, then tailor the session to your needs from the outset." },
     { "q": "How many sessions will I need?", "a": "That varies depending on your individual needs. Jonathan will advise after your first session whether a regular treatment plan would benefit you. Many clients see meaningful results after just one session." },

@@ -3704,9 +3704,13 @@ async def _check_availability_published(
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
     calendar_id = _resolve_calendar_id(clinic, location)
-    days_ahead = int(clinic.get("days_ahead") or 21)
+    days_ahead = int(clinic.get("days_ahead") or 14)
 
     now = datetime.now(LONDON_TZ)
+    # Hard booking horizon: the practitioner only releases availability ~2 weeks
+    # ahead and will not take bookings further out. Enforce it here so a specific
+    # far-future after_date can't slip past the window.
+    horizon = now + timedelta(days=days_ahead)
     w_start = now
     after_date_str = (args.get("after_date") or "").strip()
     if after_date_str:
@@ -3717,8 +3721,24 @@ async def _check_availability_published(
                 w_start = _ad
         except Exception as e:
             logger.warning("_check_availability_published: bad after_date=%r — ignoring: %r", after_date_str, e)
+    if w_start > horizon:
+        return {
+            "error": "beyond_booking_horizon",
+            "message": (
+                f"That date is more than {days_ahead} days away. Jonathan only "
+                "releases his availability about two weeks ahead, so you can only "
+                "offer bookings up to roughly a fortnight from today. Explain this "
+                "to the caller, and offer to take their details (add_to_waitlist) "
+                "so Jonathan can be in touch when he opens up later dates. Do NOT "
+                "offer any slot beyond the two-week horizon."
+            ),
+            "slots": [],
+        }
     day_window = args.get("day_window")
-    w_end = (w_start + timedelta(days=int(day_window))) if day_window else (now + timedelta(days=days_ahead))
+    w_end = (w_start + timedelta(days=int(day_window))) if day_window else horizon
+    # Never let an explicit day_window push the window past the 2-week horizon.
+    if w_end > horizon:
+        w_end = horizon
 
     tokens = await _get_tokens()
     if not tokens:

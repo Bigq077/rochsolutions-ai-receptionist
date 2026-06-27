@@ -432,6 +432,37 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     return "\n".join(out)
 
 
+def _render_provisional_booking(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Rules specific to the provisional (request-and-confirm) booking model:
+    subject-to-confirmation framing, the ~2-week booking horizon, and the
+    payment-arranged-in-advance awareness. Empty for non-provisional clinics."""
+    if clinic.get("booking_system") != "google_calendar_provisional":
+        return ""
+    pf = clinic.get("prompt_facts", {}) or {}
+    prac = tk["practitioner"]
+    out = [
+        "PROVISIONAL BOOKING — HOW THIS CLINIC BOOKS",
+        f"Every booking here is a REQUEST, not a confirmed appointment. {prac} "
+        "confirms each one with the caller directly afterwards. Make the caller "
+        "aware the slot is SUBJECT TO CONFIRMATION — both at the readback (the CTA "
+        f"is 'shall I put that request through to {prac} to confirm?') and in the "
+        "closing message. Never tell the caller they are 'booked in' or 'confirmed'.",
+    ]
+    if pf.get("booking_horizon_note"):
+        out.append(
+            "BOOKING HORIZON: " + pf["booking_horizon_note"] + " If the caller "
+            "asks for a date further ahead than that, do NOT offer a slot — explain "
+            "the roughly two-week limit and offer to take their details "
+            "(add_to_waitlist) so they're contacted when later dates open."
+        )
+    if pf.get("payment_arrangement_note"):
+        out.append(
+            "PAYMENT: " + pf["payment_arrangement_note"] + " Make the caller aware "
+            "of this, but never take card details or any payment on the call."
+        )
+    return "\n".join(out)
+
+
 def _render_coming_soon(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     names = [s.get("name", "") for s in (clinic.get("services") or []) if s.get("available") is False]
     if not names:
@@ -841,6 +872,12 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     )
 
     loc_spoken = tk["primary_location_id"].capitalize()
+    # Provisional clinics set the "subject to confirmation" expectation at the
+    # readback, before the caller says yes — not just in the closing message.
+    readback_cta = (
+        f"shall I put that request through to {prac} to confirm?"
+        if is_provisional else "shall I go ahead and book that in?"
+    )
     if is_provisional:
         _pending = tk["booking_pending_message"] or (
             "I've noted your preferred time and sent it to "
@@ -1016,8 +1053,8 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "if the appointment is REMOTE, say 'on a video or phone call' in place "
         "of a location: "
         f"'So that's James, Thursday the 7th of May at half past six in the "
-        f"evening — shall I go ahead and book that in?' End "
-        "with 'Shall I go ahead and book that in?'. Never start with Perfect, "
+        f"evening — {readback_cta}' End "
+        f"with '{readback_cta[0].upper() + readback_cta[1:]}'. Never start with Perfect, "
         "Great, Brilliant, Wonderful, Excellent, Fantastic — start with 'So "
         "that's…' or 'Right, so…'. Wait for explicit yes; if corrected, "
         "re-state and wait again.\n"
@@ -1262,6 +1299,7 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
     static_blocks: List[str] = [
         _render_service_mapping(clinic, tk),
         _render_identity(clinic, tk),
+        _render_provisional_booking(clinic, tk),
         spine["booking_flow"],
         spine["tools"],
         spine["reschedule_cancel"],
