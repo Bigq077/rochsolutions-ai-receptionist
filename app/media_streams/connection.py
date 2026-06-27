@@ -5151,8 +5151,28 @@ class WebSocketCallHandler:
                     # out-of-order stall).  A genuine reply is always enqueued
                     # AFTER the response audio plays (well after _last_turn_done_at),
                     # so this never drops a real answer.
+                    # P7 exemption: while collecting the caller's name, a short
+                    # trailing word (e.g. the surname "Rock" said a beat after
+                    # "…my surname is") arrives as a same-breath straggler and
+                    # would be dropped, forcing repeated re-asks for a one-word
+                    # surname. During name collection, let a 1-2 word fragment
+                    # through so the surname is captured. Scoped tightly (name
+                    # collection + short) so the general straggler guard is
+                    # otherwise unchanged.
+                    _name_ctx = (
+                        (self.session.get("last_question") or "").lower()
+                        + " "
+                        + (self.session.get("last_bot_prompt") or "").lower()
+                    )
+                    _in_name_collection = any(
+                        w in _name_ctx
+                        for w in ("your name", "first name", "surname",
+                                  "full name", "take your name")
+                    )
+                    _short_fragment = 0 < len(utterance.split()) <= 2
                     if (
                         not _synthetic
+                        and not (_in_name_collection and _short_fragment)
                         and self._last_turn_done_at > 0.0
                         and _enqueue_ts > 0.0
                         and _enqueue_ts < self._last_turn_done_at
@@ -5164,6 +5184,18 @@ class WebSocketCallHandler:
                             utterance[:60],
                         )
                         continue
+                    if (
+                        _in_name_collection and _short_fragment
+                        and not _synthetic
+                        and self._last_turn_done_at > 0.0
+                        and _enqueue_ts > 0.0
+                        and _enqueue_ts < self._last_turn_done_at
+                    ):
+                        logger.info(
+                            "[ms_conn] same-breath straggler KEPT (name collection,"
+                            " short fragment — likely surname): %r",
+                            utterance[:60],
+                        )
 
                     # Spec N — concurrent LLM guard.
                     # If a turn is already in-flight (from transcript acceptance
