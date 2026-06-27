@@ -8551,9 +8551,18 @@ class WebSocketCallHandler:
                             # a booking word OR the previous question Susie asked
                             # already contained booking context (handles "yeah" /
                             # "yes please" responses to "would you like to book?").
+                            # P20: returning-patient booking phrasings that contain
+                            # no "book"/"appointment" word. Without these, "I've
+                            # been before, need another session" failed this guard,
+                            # so only a bare "Right —" was spoken and the call
+                            # stalled ~14s in dead air (GLOBAL FAIL 9, Call 2).
+                            # Excludes FAQ-risky words ("follow-up", "same problem")
+                            # — see the hijack warning above.
                             _caller_booking_words = re.search(
                                 r"\b(?:book|booking|appointment|reschedule"
-                                r"|cancel|move|change)\b",
+                                r"|cancel|move|change|been before|seen before"
+                                r"|another session|another appointment"
+                                r"|need another)\b",
                                 utterance, re.IGNORECASE,
                             )
                             _last_q_lower = (
