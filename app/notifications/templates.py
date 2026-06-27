@@ -28,6 +28,22 @@ def _cp(clinic_phone: Optional[str]) -> str:
     return clinic_phone or _DEFAULT_CLINIC_PHONE
 
 
+def _first(patient_name: Optional[str]) -> str:
+    """
+    Greeting name — first token only.
+
+    SMS greetings should read "Hi Quentin", not "Hi Quentin Rock". Booking/
+    reminder callers already pass a first name, but the cancel/reschedule paths
+    pass the full name looked up from the calendar, so normalise here at the
+    rendering boundary. Empty / "none" / "unknown" → "there" (preserves the
+    prior fallback behaviour).
+    """
+    name = (patient_name or "").strip()
+    if not name or name.lower() in {"none", "unknown"}:
+        return "there"
+    return name.split()[0]
+
+
 # ============================================================================
 # ✅ BOOKING CONFIRMATION
 # ============================================================================
@@ -198,7 +214,7 @@ def format_reschedule_confirmation(
     phone = _cp(clinic_phone)
     name  = _cn(clinic_name)
 
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     loc_clause = f" at our {loc_str} clinic" if loc_str else ""
     return (
         f"Hi {_greeting}, your appointment has been moved to "
@@ -223,7 +239,7 @@ def format_cancellation_confirmation(
     phone = _cp(clinic_phone)
     name  = _cn(clinic_name)
 
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     msg = (
         f"Hi {_greeting}, your appointment on {day_name} {day_num} {month} "
         f"at {time_str} has been cancelled as requested."
@@ -243,7 +259,7 @@ def format_late_cancellation_warning(
     clinic_phone: Optional[str] = None,
 ) -> str:
     """Late cancellation warning (within 24 hours)."""
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     return (
         f"Hi {_greeting}, your appointment has been cancelled. "
         f"As this was within 24 hours, our £25 cancellation fee applies. "
@@ -323,7 +339,7 @@ def format_reached_confirmation_sms(
 ) -> str:
     """⏸️ Caller reached 'shall I go ahead and book?' but call ended before confirming."""
     phone = _cp(clinic_phone)
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     return (
         f"Hi {_greeting}, it looks like we got cut off just before confirming your "
         f"appointment. Call us back or reply to this message and we'll get it booked "
@@ -342,7 +358,7 @@ def format_no_audio_sms(
 ) -> str:
     """🔇 Safety net graceful close — call ended because system couldn't hear caller."""
     phone = _cp(clinic_phone)
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     return (
         f"Hi {_greeting}, we weren't able to hear you during your call — "
         f"it may have been a connection issue on the line. Please call us back "

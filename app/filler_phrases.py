@@ -7,6 +7,7 @@ Two lists:
   - THINKING_FILLERS_PRIMARY   — played when check_availability is called
   - THINKING_FILLERS_SECONDARY — played if the API takes > 4 seconds
   - BOOKING_WRITE_FILLERS      — played when book_appointment is called
+  - LOOKUP_FILLERS             — played when lookup_patient is called
 
 Usage:
     from app.filler_phrases import with_filler, THINKING_FILLERS_PRIMARY, BOOKING_WRITE_FILLERS
@@ -37,6 +38,18 @@ THINKING_FILLERS_SECONDARY: List[str] = [
     "Nearly there…",
     "Just a moment longer…",
     "Almost got it…",
+]
+
+# lookup_patient is used both to FIND an appointment and while acting on one
+# (cancel / reschedule confirmation). These must read sensibly in BOTH cases,
+# so they avoid "checking the diary / what's free" phrasing (which is wrong once
+# the appointment is already found and we're cancelling it) — P17.
+LOOKUP_FILLERS: List[str] = [
+    "One moment while I check that for you…",
+    "Just pulling that up for you…",
+    "Let me find that for you…",
+    "Bear with me just a moment…",
+    "Let me sort that for you…",
 ]
 
 BOOKING_WRITE_FILLERS: List[str] = [

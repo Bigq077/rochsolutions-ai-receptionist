@@ -1377,13 +1377,17 @@ class LLMStream:
             with_filler,
             THINKING_FILLERS_PRIMARY,
             BOOKING_WRITE_FILLERS,
+            LOOKUP_FILLERS,
         )
 
         # Tools that get filler phrases → list to draw from
         _FILLER_TOOLS = {
             "check_availability": THINKING_FILLERS_PRIMARY,
             "book_appointment":   BOOKING_WRITE_FILLERS,
-            "lookup_patient":     THINKING_FILLERS_PRIMARY,
+            # lookup_patient uses generic "finding that for you" fillers — it
+            # runs both when finding an appointment AND on the cancel/reschedule
+            # confirmation wait, where "checking the diary" wording is wrong (P17).
+            "lookup_patient":     LOOKUP_FILLERS,
         }
 
         result_blocks: List[dict] = []
