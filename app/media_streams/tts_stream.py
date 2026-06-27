@@ -70,6 +70,11 @@ logger = logging.getLogger(__name__)
 # "Alcester" that slips through.
 _TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = [
     (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
+    # P22: speak prices as "X pounds", never the bare "£" symbol (logs showed
+    # "£48" read oddly). Decimal form first so it wins over the integer form;
+    # 2-digit pence only (e.g. "£12.50" → "12 pounds 50").
+    (_re.compile(r"£(\d+)\.(\d{2})"), r"\1 pounds \2"),
+    (_re.compile(r"£(\d+)"), r"\1 pounds"),
 ]
 
 # OpenAI fallback path.
@@ -78,6 +83,9 @@ _TTS_SUBSTITUTIONS_ELEVENLABS: list[tuple] = [
 #   "Awlstuh": "Awl" → /ɔːl/ (rhymes with "ball"), "stuh" → /stə/ (schwa).
 _TTS_SUBSTITUTIONS_OPENAI: list[tuple] = [
     (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
+    # P22: speak prices as "X pounds" (see ElevenLabs table above).
+    (_re.compile(r"£(\d+)\.(\d{2})"), r"\1 pounds \2"),
+    (_re.compile(r"£(\d+)"), r"\1 pounds"),
 ]
 
 
