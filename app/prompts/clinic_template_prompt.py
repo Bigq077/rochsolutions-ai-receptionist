@@ -381,6 +381,23 @@ def _render_policies(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     )
     if pf.get("competitor_positioning"):
         out.append(f"Affordable positioning: {pf['competitor_positioning']}")
+    # Unconfirmed (TBC) policy fields — Susie must NEVER invent a value for
+    # these. Surfacing them by name stops the model fabricating, e.g., a
+    # "no deposit required" answer when the deposit policy is still TBC.
+    tbc_fields = [
+        k.replace("_", " ")
+        for k, v in pol.items()
+        if isinstance(v, str) and "tbc" in v.lower()
+    ]
+    if tbc_fields:
+        out.append(
+            "UNCONFIRMED POLICIES — NEVER STATE OR GUESS A VALUE FOR THESE, "
+            "they are not yet confirmed: " + ", ".join(tbc_fields) + ". If a "
+            "caller asks about one (e.g. whether a deposit is required), do NOT "
+            "say yes and do NOT say no — say you'll check with "
+            f"{tk['practitioner']} and make a note for follow-up. Inventing an "
+            "answer here is a serious error."
+        )
     return "\n".join(out)
 
 
@@ -412,7 +429,11 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         return "\n".join(out)
     out = ["INSURANCE PROTOCOL",
            f"{tk['clinic_name']} accepts private health insurance referrals"
-           + (", including Bupa." if ins.get("bupa_accepted") else ".")]
+           + (", including Bupa." if ins.get("bupa_accepted") else "."),
+           "MANDATORY — this is the COMPLETE, authoritative insurance answer and "
+           "OVERRIDES any shorter insurance line in the FAQ. Do NOT summarise it "
+           "away: every time a caller mentions insurance you must carry out ALL "
+           "of the steps below, not just confirm that you accept it."]
     if steps:
         out.append("When a caller mentions insurance:")
         for i, s in enumerate(steps, 1):
