@@ -107,7 +107,7 @@
     "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
     "booking_offer_line": "book a session with Jonathan",
     "clinical_fit_line": "A deep tissue massage with Jonathan is really well-suited to that kind of tension — he tailors every session to what's going on for you.",
-    "other_services_line": "Vital Edge Therapy is a MASSAGE THERAPY clinic — Jonathan ONLY offers massage treatments. He does NOT offer acupuncture, reiki, psychotherapy, energy healing, physiotherapy, or any non-massage therapy. If a caller asks for any of those, politely say it's not something the clinic offers — Jonathan is a massage therapist. Alongside Deep Tissue Massage, Jonathan also offers Stress Buster Massage, Muscle / Nerve Injury Massage, Sports Massage, and Facial Release Massage. You book Deep Tissue Massage only. For any of the OTHER massage types, acknowledge warmly, explain you handle Deep Tissue Massage bookings directly, and take the caller's name and number so Jonathan can call back to arrange it (use add_to_waitlist with a note naming the massage they want).",
+    "other_services_line": "NON-MASSAGE ENQUIRIES ONLY. Vital Edge is a massage-only clinic — Jonathan does NOT offer acupuncture, reiki, psychotherapy, energy healing, physiotherapy, or any non-massage therapy. If a caller asks for any of those, politely say it's not something the clinic offers — Jonathan is a massage therapist — and do not book or take a callback for it. IMPORTANT: every MASSAGE type in the SERVICE MAPPING above (Deep Tissue, Stress Buster, Muscle / Nerve Injury, Sports, Facial Release) IS fully bookable by you through the normal booking flow — they are NOT 'other services'. If a caller names a specific massage (e.g. a sports massage), book THAT one normally and pass its service ID to book_appointment so it lands on Jonathan's calendar. NEVER divert a massage to a 'I'll take your details and Jonathan will call you back' callback — that is only for non-massage enquiries, which are simply declined.",
     "modality_question": "",
     "hours_summary_spoken": "Jonathan's availability varies from week to week — let me check what slots are currently available for you.",
     "closing_practitioner_line": "You're in good hands with Jonathan.",
@@ -133,7 +133,7 @@
     { "q": "How many sessions will I need?", "a": "That varies depending on your individual needs. Jonathan will advise after your first session whether a regular treatment plan would benefit you. Many clients see meaningful results after just one session." },
     { "q": "What is your cancellation policy?", "a": "We require at least 24 hours' notice to cancel or rearrange. Cancellations made with less than 24 hours' notice, or no-shows, are charged the full session fee." },
     { "q": "Can I speak to Jonathan before booking?", "a": "Yes — Jonathan is happy to offer a brief complimentary phone call to discuss your needs before your first appointment. I can note your details and he will call you back." },
-    { "q": "Do you offer other treatments beyond Deep Tissue Massage?", "a": "Jonathan offers a few other massage types — Stress Buster, Muscle and Nerve Injury, Sports, and Facial Release massage. I book Deep Tissue Massage directly, so for any of the others I can take your details and Jonathan will call you back to arrange it." },
+    { "q": "Do you offer other treatments beyond Deep Tissue Massage?", "a": "Yes — Jonathan offers a few massage types: Deep Tissue, Stress Buster, Muscle and Nerve Injury, Sports, and Facial Release. I can book any of them for you, just let me know which you'd like." },
     { "q": "Do you offer acupuncture, reiki or physiotherapy?", "a": "That's not something we offer — Vital Edge is a massage therapy clinic, so Jonathan focuses on massage treatments like deep tissue and sports massage." }
   ],
   "team_and_availability": {
@@ -154,7 +154,7 @@
     "admin_staff": [],
     "booking_notes": [
       "Single practitioner — all appointments are with Jonathan.",
-      "Vital Edge is a massage-only clinic. Only Deep Tissue Massage (60 or 90 min) is bookable by the AI. Jonathan also offers Stress Buster, Muscle/Nerve Injury, Sports, and Facial Release massage — arranged directly with Jonathan via a callback. He does NOT offer acupuncture, reiki, psychotherapy or any non-massage therapy.",
+      "Vital Edge is a massage-only clinic. ALL massage types are bookable by the AI through the same normal flow: Deep Tissue (60/90 min, £125/£175), Stress Buster (75 min), Muscle/Nerve Injury (30 min), Sports (90 min), Facial Release (45 min). The specific massage requested is named on the calendar event + Jonathan's SMS. Jonathan does NOT offer acupuncture, reiki, psychotherapy or any non-massage therapy — those are declined, not booked. Pricing is held only for Deep Tissue; for the other massages Jonathan confirms the price (payment is arranged beforehand).",
       "Bookings are PROVISIONAL — Jonathan confirms each one directly with the client. Susie must never tell the caller the appointment is confirmed."
     ]
   },
@@ -164,7 +164,7 @@
     "preferred_handling": "Offer only slots published to the 'Vital Edge — Available' calendar. Book the chosen slot as a PENDING event and notify Jonathan immediately. Jonathan confirms with the client directly.",
     "calendars_by_location": false,
     "never_autobook": [
-      "Any service other than Deep Tissue Massage (take name and number for Jonathan)",
+      "Any non-massage service (acupuncture, reiki, psychotherapy, etc.) — these are declined, not booked",
       "Anyone under 18"
     ]
   },
@@ -180,6 +180,46 @@
         "60min_in_clinic_gbp": 125,
         "90min_in_clinic_gbp": 175
       },
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "stress_buster_massage",
+      "name": "Stress Buster Massage",
+      "typical_duration_minutes": 75,
+      "for_patients": "Both",
+      "description": "A deep but slow full-body massage with a relaxing rhythm to soothe away muscle tension, leaving the body invigorated and relaxed.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "muscle_nerve_injury_massage",
+      "name": "Muscle / Nerve Injury Massage",
+      "typical_duration_minutes": 30,
+      "for_patients": "Both",
+      "description": "A gentle, relaxing massage that enhances circulation and reduces stress, supporting recovery from muscle and nerve injury.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "sports_massage",
+      "name": "Sports Massage",
+      "typical_duration_minutes": 90,
+      "for_patients": "Both",
+      "description": "A targeted therapy ideal for athletes and active individuals to enhance performance, aid recovery, and help prevent injuries.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "facial_release_massage",
+      "name": "Facial Release Massage",
+      "typical_duration_minutes": 45,
+      "for_patients": "Both",
+      "description": "A specialised technique to release tension in the facial muscles and promote relaxation.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
       "available_as": ["in_clinic"]
     }
   ],
@@ -214,7 +254,7 @@
       "Caller requests to speak to Jonathan directly",
       "Caller is distressed or in crisis",
       "Complex clinical question beyond the AI's scope",
-      "Enquiry about any service other than Deep Tissue Massage (take name and number)",
+      "Enquiry about a non-massage service (acupuncture, reiki, etc.) — decline politely, do not transfer",
       "Enquiry about home visits or outcall",
       "Caller under 18 attempting to book"
     ],
@@ -228,7 +268,7 @@
       "Whether a specific condition is safe to treat without assessment",
       "Specific medication or supplement advice",
       "Prognosis or recovery timescales",
-      "Pricing for any service other than Deep Tissue Massage"
+      "An invented price for any massage other than Deep Tissue (Deep Tissue is £125/60min, £175/90min; for the other massages say Jonathan confirms the price — never guess a figure)"
     ]
   },
   "brand_and_tone": {

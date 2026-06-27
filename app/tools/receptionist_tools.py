@@ -3821,8 +3821,22 @@ async def _book_appointment_provisional(
     patient_name = (args.get("patient_name") or "").strip()
     phone = (args.get("phone") or "").strip()
     service = args.get("service") or "Deep Tissue Massage"
-    duration = int(args.get("duration_minutes") or clinic.get("slot_minutes") or 60)
     notes = (args.get("notes") or "").strip()
+
+    # Resolve the friendly service name AND a per-service default duration from
+    # clinic.json, so a named massage (e.g. sports_massage → 90 min) lands on the
+    # calendar with the right length even when the LLM doesn't pass
+    # duration_minutes. Falls back to the clinic slot length.
+    svc_name = service
+    svc_default_dur = None
+    for s in (clinic.get("services") or []):
+        if s.get("service_id") == service or (s.get("name") or "").lower() == (service or "").lower():
+            svc_name = s.get("name") or service
+            svc_default_dur = s.get("typical_duration_minutes")
+            if not svc_default_dur and s.get("typical_duration_minutes_options"):
+                svc_default_dur = s["typical_duration_minutes_options"][0]
+            break
+    duration = int(args.get("duration_minutes") or svc_default_dur or clinic.get("slot_minutes") or 60)
 
     if not patient_name or not phone:
         return {"success": False, "error": "patient_name and phone are required."}
@@ -3849,13 +3863,6 @@ async def _book_appointment_provisional(
         or clinic.get("primary_location") or ""
     ).lower().strip()
     calendar_id = _resolve_calendar_id(clinic, location)
-
-    # Caller-facing service name for a readable event.
-    svc_name = service
-    for s in (clinic.get("services") or []):
-        if s.get("service_id") == service or (s.get("name") or "").lower() == (service or "").lower():
-            svc_name = s.get("name") or service
-            break
 
     summary = f"PENDING CONFIRMATION — {patient_name} — {svc_name} ({duration} min)"
     description = "\n".join(

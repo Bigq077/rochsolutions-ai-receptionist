@@ -186,6 +186,12 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             coming_soon.append(svc.get("name", svc.get("service_id", "")))
             continue
         summary = _service_price_summary(svc, clinic.get("modalities"))
+        # When a service has no price (e.g. a provisional clinic that holds
+        # pricing only for its headline service), fall back to showing the
+        # session length so duration questions can still be answered. Priced
+        # services are unchanged.
+        if not summary and svc.get("typical_duration_minutes"):
+            summary = f"{svc['typical_duration_minutes']} mins"
         sid = svc.get("service_id", "")
         nm = svc.get("name", sid)
         who = svc.get("for_patients", "")

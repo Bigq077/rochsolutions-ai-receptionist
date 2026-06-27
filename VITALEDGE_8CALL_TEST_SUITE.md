@@ -21,8 +21,9 @@ Any of these = automatic fail, no matter the scenario:
 - Any **"which clinic?"** question — Vital Edge is **single-location (Kingston)**.
 - **Quoting fixed opening hours** (Mon–Fri 9–5, or similar). Susie must ALWAYS check live calendar — never invent times.
 - **Confirming a booking as finalised**. Every booking must end with a variant of: *"your booking isn't finalised until you receive confirmation from Jonathan."*
-- **Claiming Jonathan offers acupuncture, reiki, psychotherapy, energy healing, or physiotherapy.** He does NOT — Vital Edge is a massage-only clinic. If asked, Susie must say it's not offered.
-- **Booking any massage other than Deep Tissue Massage.** Jonathan also does Stress Buster, Muscle/Nerve Injury, Sports, and Facial Release massage, but the AI books Deep Tissue only — the others go to name + number for a Jonathan callback.
+- **Claiming Jonathan offers acupuncture, reiki, psychotherapy, energy healing, or physiotherapy.** He does NOT — Vital Edge is a massage-only clinic. If asked, Susie must say it's not offered (and must NOT take a callback for it).
+- **Diverting a massage request to a "I'll take your details and Jonathan will call you back" callback.** ALL massage types (Deep Tissue, Stress Buster, Muscle/Nerve Injury, Sports, Facial Release) are booked on the normal flow. The callback path is for non-massage enquiries only.
+- **Inventing a price for any massage other than Deep Tissue.** Only Deep Tissue is priced (£125/60min, £175/90min). For the others Susie says Jonathan confirms the price — never guesses a figure.
 - **Allowing anyone under 18 to book.**
 - **Offers or accepts a slot more than 14 days / 2 weeks ahead.** If a caller names a date beyond the window Susie must explain and take details — never book it.
 - **Telling the caller payment is made on the day.** Payment is arranged beforehand (Jonathan handles this when he confirms). The old "pay on the day via Worldpay" line is incorrect.
@@ -83,12 +84,13 @@ Any of these = automatic fail, no matter the scenario:
 ## CALL 4 — Massage-only scope, other massage types, non-massage refusal, home visit deflection
 *Covers: massage-only clinic identity, the five real massage types, AI books Deep Tissue only, non-massage refusal, §6 no home visits, §7 not-ready-to-book → complimentary consult, §8 FAQ, §9 special scenarios.*
 
-**Reality check (the whole point of this call):** Vital Edge is a **massage-only** clinic. Jonathan offers FIVE massages — Stress Buster (75 min), Muscle/Nerve Injury (30 min), Deep Tissue (60 min), Sports (90 min), Facial Release (45 min). The AI books **Deep Tissue only**; the other four go to a callback. Jonathan does **NOT** offer acupuncture, reiki, psychotherapy, energy healing, or physiotherapy.
+**Reality check (the whole point of this call):** Vital Edge is a **massage-only** clinic. Jonathan offers FIVE massages — Stress Buster (75 min), Muscle/Nerve Injury (30 min), Deep Tissue (60/90 min), Sports (90 min), Facial Release (45 min). **All five are bookable on the normal flow** — the specific massage is named on Jonathan's calendar + SMS. Jonathan does **NOT** offer acupuncture, reiki, psychotherapy, energy healing, or physiotherapy (those are declined, no callback).
 
 1. *"Do you offer acupuncture?"* ✅ Says it's **not something the clinic offers** — Vital Edge is a massage clinic. ❌ FAIL (the exact bug from the 21:35 call): *"Jonathan does offer acupuncture, yes…"* — claiming a service that doesn't exist, or taking name+number to book acupuncture.
 2. *"What about reiki, psychotherapy, or physio?"* ✅ Same — politely explains those aren't offered; Jonathan is a massage therapist. ❌ FAIL: claims any of them are available.
-3. *"Do you do sports massage?"* ✅ **Yes** — Jonathan offers sports massage, but Susie books Deep Tissue directly, so she takes **name + number** for Jonathan to call back about a sports massage. ❌ FAIL: says sports massage isn't offered, or tries to book it on the call.
-4. *"What other massages does he do?"* ✅ Names the real ones — **Stress Buster, Muscle/Nerve Injury, Sports, Facial Release** (plus Deep Tissue). ❌ FAIL: lists acupuncture/reiki/etc.
+3. *"Do you do sports massage? I'd like to book one."* ✅ **Yes** — Susie treats it as a normal booking: goes into the slot → name → phone flow for a **sports massage**, and the booking is named "Sports Massage" (provisional, as Call 1). ❌ FAIL (the behaviour we just changed): says *"I'll take your details and Jonathan will call you back"* / diverts to a callback instead of booking, or says sports massage isn't offered.
+4. *"What other massages does he do?"* ✅ Names the real ones — **Stress Buster, Muscle/Nerve Injury, Sports, Facial Release** (plus Deep Tissue) and offers to book any of them. ❌ FAIL: lists acupuncture/reiki/etc.
+4a. *"How much is a sports massage?"* ✅ Says Jonathan confirms the price for that one (payment arranged beforehand) — does NOT quote £125/£175 (those are Deep Tissue) or invent a figure.
 5. *"Can you come to me? I find it hard to travel."* ✅ *"We are a clinic-based practice — all sessions are at our Kingston location."* ❌ FAIL: offers or books a home visit.
 6. *"I'm not sure if I need this. Can I speak to Jonathan first?"* ✅ Offers a **complimentary initial phone consultation at no charge** — takes name + number for a callback.
 7. *"What does deep tissue massage actually involve?"* ✅ Describes the deeper-layers technique for chronic tension/pain, using preferred words (tailored, therapeutic, restorative, expert). ❌ FAIL: uses "just a massage", "standard", "basic", "quick fix".
