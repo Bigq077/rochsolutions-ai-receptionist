@@ -107,7 +107,7 @@
     "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
     "booking_offer_line": "book a session with Jonathan",
     "clinical_fit_line": "A deep tissue massage with Jonathan is really well-suited to that kind of tension — he tailors every session to what's going on for you.",
-    "other_services_line": "Jonathan also offers a range of other therapies including acupuncture, psychotherapy, reiki and energy healing. You do NOT book these. If a caller asks about any service other than Deep Tissue Massage, acknowledge warmly, explain you handle Deep Tissue Massage bookings, and take their name and number for Jonathan to call back (use add_to_waitlist with a note).",
+    "other_services_line": "Vital Edge Therapy is a MASSAGE THERAPY clinic — Jonathan ONLY offers massage treatments. He does NOT offer acupuncture, reiki, psychotherapy, energy healing, physiotherapy, or any non-massage therapy. If a caller asks for any of those, politely say it's not something the clinic offers — Jonathan is a massage therapist. Alongside Deep Tissue Massage, Jonathan also offers Stress Buster Massage, Muscle / Nerve Injury Massage, Sports Massage, and Facial Release Massage. You book Deep Tissue Massage only. For any of the OTHER massage types, acknowledge warmly, explain you handle Deep Tissue Massage bookings directly, and take the caller's name and number so Jonathan can call back to arrange it (use add_to_waitlist with a note naming the massage they want).",
     "modality_question": "",
     "hours_summary_spoken": "Jonathan's availability varies from week to week — let me check what slots are currently available for you.",
     "closing_practitioner_line": "You're in good hands with Jonathan.",
@@ -133,7 +133,8 @@
     { "q": "How many sessions will I need?", "a": "That varies depending on your individual needs. Jonathan will advise after your first session whether a regular treatment plan would benefit you. Many clients see meaningful results after just one session." },
     { "q": "What is your cancellation policy?", "a": "We require at least 24 hours' notice to cancel or rearrange. Cancellations made with less than 24 hours' notice, or no-shows, are charged the full session fee." },
     { "q": "Can I speak to Jonathan before booking?", "a": "Yes — Jonathan is happy to offer a brief complimentary phone call to discuss your needs before your first appointment. I can note your details and he will call you back." },
-    { "q": "Do you offer other treatments beyond Deep Tissue Massage?", "a": "Jonathan offers a range of specialist therapies. Bookings for those are arranged directly with Jonathan — I can take your details and he will call you back to discuss what is right for you." }
+    { "q": "Do you offer other treatments beyond Deep Tissue Massage?", "a": "Jonathan offers a few other massage types — Stress Buster, Muscle and Nerve Injury, Sports, and Facial Release massage. I book Deep Tissue Massage directly, so for any of the others I can take your details and Jonathan will call you back to arrange it." },
+    { "q": "Do you offer acupuncture, reiki or physiotherapy?", "a": "That's not something we offer — Vital Edge is a massage therapy clinic, so Jonathan focuses on massage treatments like deep tissue and sports massage." }
   ],
   "team_and_availability": {
     "practitioners": [
@@ -153,7 +154,7 @@
     "admin_staff": [],
     "booking_notes": [
       "Single practitioner — all appointments are with Jonathan.",
-      "Only Deep Tissue Massage (60 or 90 min) is bookable by the AI. All other therapies are arranged directly with Jonathan — take name and number for a callback.",
+      "Vital Edge is a massage-only clinic. Only Deep Tissue Massage (60 or 90 min) is bookable by the AI. Jonathan also offers Stress Buster, Muscle/Nerve Injury, Sports, and Facial Release massage — arranged directly with Jonathan via a callback. He does NOT offer acupuncture, reiki, psychotherapy or any non-massage therapy.",
       "Bookings are PROVISIONAL — Jonathan confirms each one directly with the client. Susie must never tell the caller the appointment is confirmed."
     ]
   },
@@ -261,7 +262,11 @@
       "jonathern"
     ],
     "services": {
-      "deep_tissue_massage": ["deep tissue", "deep tissue massage", "deep tissue sports massage", "deep tishoo massage", "deep-tissue"],
+      "deep_tissue_massage": ["deep tissue", "deep tissue massage", "deep tishoo massage", "deep-tissue"],
+      "stress_buster_massage": ["stress buster", "stress buster massage", "stressbuster"],
+      "muscle_nerve_injury_massage": ["muscle injury massage", "nerve injury massage", "muscle and nerve massage", "muscle nerve massage"],
+      "sports_massage": ["sports massage", "sport massage", "deep tissue sports massage"],
+      "facial_release_massage": ["facial release", "facial release massage", "facial massage"],
       "worldpay": ["world pay", "world-pay"],
       "crescent_road": ["crescent rode", "cresent road"]
     }
