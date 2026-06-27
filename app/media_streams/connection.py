@@ -639,6 +639,33 @@ def _is_patience_response(text: str) -> bool:
     return any(s in t for s in _PATIENCE_SIGNALS)
 
 
+# Building-access keypad context — a prompt that mentions the door/entry keypad
+# (e.g. "use the top keypad to enter the access code") must NOT be mistaken for
+# a request to type a PHONE NUMBER on the keypad, or a digit pressed afterwards
+# is misread as phone entry (P10).
+_BUILDING_KEYPAD_CONTEXT: tuple = (
+    "access code", "entry code", "entrance", "top keypad",
+    "main door", "the building", "waiting area", "take a seat",
+)
+# Phone-number keypad context — the genuine "type your number" prompts.
+_PHONE_KEYPAD_CONTEXT: tuple = (
+    "number", "phone", "digit", "type the", "type it",
+)
+
+
+def _is_phone_keypad_prompt(text: str) -> bool:
+    """True only when a bot prompt is asking the caller to TYPE THEIR PHONE
+    NUMBER on the keypad — not when it merely mentions the building-entry
+    keypad. Stops a building-access keypad mention from arming phone-DTMF
+    capture (P10)."""
+    t = (text or "").lower()
+    if "keypad" not in t:
+        return False
+    if any(w in t for w in _BUILDING_KEYPAD_CONTEXT):
+        return False
+    return any(w in t for w in _PHONE_KEYPAD_CONTEXT)
+
+
 # Inline alias booking-intent gate.
 # Only confirms a location alias when the same transcript contains at
 # least one booking intent signal.  Pure FAQ questions that happen to
@@ -4515,11 +4542,11 @@ class WebSocketCallHandler:
             _is_freeform(self.session.get("clinic_id"))
             and not self.session.get("v3_phone_dtmf_active")
             and not self.session.get("v3_dtmf_slot_map")
-            and "keypad" in self.session.get("last_bot_prompt", "").lower()
+            and _is_phone_keypad_prompt(self.session.get("last_bot_prompt", ""))
         ):
             logger.info(
                 "[ms_conn] theorem_v3: auto-activating v3_phone_dtmf_active "
-                "(last_bot_prompt contains 'keypad')"
+                "(last_bot_prompt is a phone-number keypad prompt)"
             )
             self.session["v3_phone_dtmf_active"] = True
 
