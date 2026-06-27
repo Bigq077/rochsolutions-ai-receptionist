@@ -8186,14 +8186,21 @@ class WebSocketCallHandler:
                             # was active.  This prevents the flag from being lost
                             # if the caller speaks mid-collection and a fresh LLM
                             # turn runs without an active slot map.
+                            # P10: only arm phone-DTMF when the keypad mention is a
+                            # PHONE-NUMBER prompt ("type the number on your keypad",
+                            # "press the star key") — NOT the building-access line
+                            # "use the top keypad to enter the code", which has no
+                            # "type"/"star key" and was falsely arming DTMF (Call 4/5).
+                            _last_bot_lc = _last_bot.lower()
                             if (
                                 not self.session.get("v3_phone_dtmf_active")
-                                and "keypad" in _last_bot.lower()
+                                and "keypad" in _last_bot_lc
+                                and ("type" in _last_bot_lc or "star key" in _last_bot_lc)
                             ):
                                 self.session["v3_phone_dtmf_active"] = True
                                 logger.info(
                                     "[ms_conn] v3_phone_dtmf_active = True"
-                                    " (keypad mention detected in response)"
+                                    " (phone-number keypad prompt detected)"
                                 )
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
@@ -9886,7 +9893,12 @@ class WebSocketCallHandler:
                     "sounds uncomfortable", "sounds painful",
                     "sorry to hear", "that must be", "must be difficult",
                     "that sounds really", "really uncomfortable",
-                    "really painful", "sorry about that",
+                    "really painful",
+                    # NB: "sorry about that" deliberately NOT here (P7). It is a
+                    # generic conversational apology, not clinical empathy — it was
+                    # arming the un-interruptible guard on lines like "Sorry about
+                    # that — I was just giving you a moment…", locking the caller
+                    # out of correcting a mis-captured name (Call 5, 2026-06-27).
                 )
                 _ct_lower = chunk_text.lower()
                 _has_slot_content = bool(
