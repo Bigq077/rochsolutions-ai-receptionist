@@ -166,6 +166,13 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "neuro → 'a neurological physiotherapy appointment'; etc. Do NOT call "
         "it an 'assessment' or 'initial assessment' unless it is genuinely a "
         "NEW MSK assessment — not every booking is an assessment.",
+        "BOOK THE SAME SERVICE YOU CHECKED: the service passed to "
+        "book_appointment MUST match the one you passed to check_availability — "
+        "never silently switch service between checking and booking. A RETURNING "
+        "caller (been before, same condition) takes a follow-up / treatment "
+        "service, NEVER a [New]-patient initial assessment. Match the modality "
+        "too: only book a service under a location it is actually offered in "
+        "(an initial assessment, for example, cannot be a remote appointment).",
         "",
         "SERVICE → ID (pricing by modality):",
     ]
@@ -699,7 +706,13 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "caller.\n\n"
         "The only thing that should appear is the final spoken answer. "
         "Filter slots silently. Check availability silently. Speak only the "
-        "result."
+        "result.\n\n"
+        "NEVER SPEAK A BRACKET PLACEHOLDER. Tokens like [name], [date], "
+        "[time], [ordinal], [day] in the example phrasings are fill-ins — "
+        "always substitute the real value before speaking. If you do not have "
+        "the value (e.g. a lookup did not return the name), do NOT read the "
+        "bracket aloud and do NOT guess — ask for it plainly ('Could I take "
+        "your name?'). A spoken '[name]' is always a bug."
     )
 
     acknowledgement_rule = (

@@ -594,6 +594,35 @@ def _resolve_calendar_id(clinic: Dict[str, Any], location: str) -> str:
     )
 
 
+def _find_service_def(clinic: Dict[str, Any], service: str) -> Optional[Dict[str, Any]]:
+    """Resolve a service arg (service_id or caller-facing name) to its clinic.json
+    definition. Returns None if not found."""
+    svc = (service or "").strip().lower()
+    if not svc:
+        return None
+    for s in (clinic.get("services") or []):
+        if (s.get("service_id") or "").lower() == svc or (s.get("name") or "").lower() == svc:
+            return s
+    return None
+
+
+def _service_supports_location(svc_def: Dict[str, Any], location: str) -> bool:
+    """True if a service is bookable under the given booking location/modality,
+    tolerant of the varied `available_as` token families in clinic.json
+    (e.g. 'home_visit', 'home_visit_bolton_and_greater_manchester',
+    'outdoor_bolton'). Used to reject impossible service×modality bookings (P2)."""
+    loc = (location or "").strip().lower()
+    if not loc:
+        return True  # no modality to validate against
+    tokens = [str(t).strip().lower() for t in (svc_def.get("available_as") or [])]
+    if not tokens:
+        return True  # service doesn't declare modalities — don't block
+    for tok in tokens:
+        if tok == loc or tok.startswith(loc + "_") or loc.startswith(tok):
+            return True
+    return False
+
+
 def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
     """
     Parse slot_iso as an ISO 8601 datetime.
@@ -3578,6 +3607,13 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     from app.clinic_config import get_clinic
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+    # Pin the service+modality the caller is actually being shown slots for, so
+    # book_appointment books the SAME service. Without this the model defaulted
+    # to msk_initial_assessment at booking even for a returning patient whose
+    # availability was checked as msk_treatment_session (P2).
+    if _raw_service:
+        session["_checked_service"] = _raw_service
+        session["_checked_location"] = location
     day_window_days = int(args.get("day_window") or 7)
     # Day/time preference (e.g. "Thursday afternoon") — passed to both
     # presentation builders so available_days honours it, mirroring the Acuity
@@ -4012,6 +4048,59 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     is_new = bool(args.get("is_new_patient", False))
     insurer = (args.get("insurer_name") or "").strip()
     policy = (args.get("policy_number") or "").strip()
+
+    # ── Service×modality guard (P2) ────────────────────────────────────────
+    # Reject impossible combinations (e.g. msk_initial_assessment booked
+    # "remote", which clinic.json does not allow) and correct the common
+    # failure where the model defaults to the wrong service at booking time
+    # despite checking availability for a different one. If the requested
+    # service can't be booked under this modality but the service we actually
+    # showed slots for (pinned at check_availability) can, substitute it;
+    # otherwise ask the model to re-resolve. Never surfaced to the caller.
+    # Normalise the booking location to an available_as modality token. The
+    # location enum the model sees is the physical site id ('bolton') for
+    # in-clinic, plus 'remote'/'home_visit'; clinic.json declares availability
+    # as 'in_clinic'/'remote'/'home_visit'. Map any physical site id (or the
+    # primary location) to 'in_clinic' so the guard doesn't reject the normal
+    # in-clinic path.
+    _loc_ids = {(l.get("location_id") or "").lower() for l in (clinic.get("locations") or [])}
+    _primary_loc = (clinic.get("primary_location") or "").lower()
+    _loc_for_check = location
+    if location and (location in _loc_ids or location == _primary_loc):
+        _loc_for_check = "in_clinic"
+
+    _svc_def = _find_service_def(clinic, service)
+    if _svc_def and _loc_for_check and not _service_supports_location(_svc_def, _loc_for_check):
+        _pinned = (session.get("_checked_service") or "").strip()
+        _pinned_def = _find_service_def(clinic, _pinned) if _pinned else None
+        if (
+            _pinned_def
+            and _pinned.lower() != (service or "").lower()
+            and _service_supports_location(_pinned_def, _loc_for_check)
+        ):
+            logger.warning(
+                "[ms_tools] book_appointment service×modality fix: %r not available "
+                "as %r — substituting checked service %r",
+                service, _loc_for_check, _pinned,
+            )
+            service = _pinned
+            _svc_def = _pinned_def
+        else:
+            logger.warning(
+                "[ms_tools] book_appointment rejected: service %r not available as %r",
+                service, _loc_for_check,
+            )
+            _avail = ", ".join(str(t) for t in (_svc_def.get("available_as") or [])) or "none"
+            return {
+                "success": False,
+                "error": (
+                    f"'{service}' cannot be booked as '{location}' "
+                    f"(it is only available as: {_avail}). "
+                    f"Re-resolve the correct service for this modality and call "
+                    f"book_appointment again with that service. Do NOT mention this "
+                    f"correction to the caller."
+                ),
+            }
 
     # Resolve slot_iso — handles ISO strings, labels, and slot indices
     try:
@@ -5121,16 +5210,28 @@ def _gcal_event_phone(ev: Dict[str, Any]) -> str:
 
 
 def _gcal_event_patient_name(ev: Dict[str, Any]) -> str:
-    summary = ev.get("summary") or ""
-    if "—" in summary:
-        return summary.split("—")[0].strip()
+    # Read the patient name from the structured `description` ("Patient: …"),
+    # which book_appointment always writes. Splitting the summary is unreliable
+    # because the title ordering depends on whether a practitioner is set
+    # ("Service for Prac — Patient" vs "Patient — Service"), which previously
+    # made cancel/reschedule lookups return the SERVICE as the name (P14).
     for line in (ev.get("description") or "").splitlines():
         if line.strip().lower().startswith("patient:"):
             return line.split(":", 1)[1].strip()
+    # Fallback for legacy/externally-created events with no structured
+    # description: assume the historical "Patient — Service" ordering.
+    summary = ev.get("summary") or ""
+    if "—" in summary:
+        return summary.split("—")[0].strip()
     return summary.strip()
 
 
 def _gcal_event_service(ev: Dict[str, Any]) -> str:
+    # Read the service from the structured `description` ("Service: …") for the
+    # same reason as the patient name above (P14).
+    for line in (ev.get("description") or "").splitlines():
+        if line.strip().lower().startswith("service:"):
+            return line.split(":", 1)[1].strip()
     summary = ev.get("summary") or ""
     if "—" in summary:
         return summary.split("—", 1)[1].strip()
