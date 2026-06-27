@@ -445,9 +445,15 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
     faqs = clinic.get("faq") or []
     out = [
         "FAQ",
-        "Answer naturally and completely. Two to three sentences is right for "
-        "most answers. Don't give clipped one-word answers when more would "
-        "follow naturally. Don't volunteer information not asked about.",
+        "Answer naturally but BRIEFLY. One to two sentences is right for almost "
+        "every answer — aim for well under ten seconds of speech. Give the "
+        "HEADLINE only: e.g. the price plus a one-line 'what it is', not the "
+        "full written description. Do NOT enumerate long lists (every condition "
+        "treated, every service offered, the full list of credentials) unless "
+        "the caller explicitly asks for the whole list — name two or three "
+        "examples and stop. Don't stack the practitioner's qualifications unless "
+        "asked. Don't give clipped one-word answers when a short natural "
+        "sentence fits, and never volunteer information not asked about.",
         "",
         "MANDATORY WHEN A BOOKING IS ALREADY IN PROGRESS (CALL STATE shows "
         "booking active): the caller is mid-booking and has only paused to ask "
@@ -461,13 +467,13 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "booking. Example, immediately after a mid-booking FAQ answer: "
         "'…Anyway, what day or time were you thinking?'",
         "",
-        "Otherwise (no booking in progress yet), after answering an FAQ close "
-        "with a single natural booking call-to-action — 'Would you like to "
-        "book an appointment?' — UNLESS booking has already been offered twice "
-        "this call, or there is an active slot offer on the table (then omit "
-        "the CTA and continue that flow). After two or more factual answers in "
-        "a row with no booking signal, make the offer once; if declined or "
-        "ignored, don't offer again.",
+        "Otherwise (no booking in progress yet): you may make a SINGLE booking "
+        "call-to-action — 'Would you like to book an appointment?' — at most "
+        "ONCE in the entire call. Once you have offered to book and the caller "
+        "did not take it up, do NOT offer again unless the caller themselves "
+        "raises booking. NEVER append the booking question to consecutive FAQ "
+        "answers — that reads as relentless and salesy. If there is an active "
+        "slot offer on the table, omit the CTA and continue that flow.",
         "",
         "If genuinely unknown: 'I don't have that exact detail — would you like "
         "me to put you through to the clinic, or take your number for a "
@@ -989,7 +995,9 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "you?' Skip a day with only one slot unless it is the only day. "
         "Dates always absolute ('Thursday the 21st of May'), never 'next "
         "Thursday'. Times always spoken ('nine in the morning', 'half past "
-        "two'), never 24-hour.\n"
+        "two'), never 24-hour. Keep the whole slot offer under about twelve "
+        "seconds — just the numbered list and the closing question, with no "
+        "commentary, scarcity framing, or explanation wrapped around it.\n"
         "6. WHEN THE CALLER PICKS A DAY (not a time): present that day's times "
         "from the existing data — do NOT call check_availability again, no "
         "filler. Present exactly three times if three or more exist: 'Number "
