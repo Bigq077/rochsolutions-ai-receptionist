@@ -567,7 +567,15 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "did not take it up, do NOT offer again unless the caller themselves "
         "raises booking. NEVER append the booking question to consecutive FAQ "
         "answers — that reads as relentless and salesy. If there is an active "
-        "slot offer on the table, omit the CTA and continue that flow.",
+        "slot offer on the table, omit the CTA and continue that flow.\n"
+        "CONVERSION FORM OF THAT SINGLE CTA: when the one CTA follows a "
+        "booking-relevant logistics question (opening hours, price, location/"
+        "parking, whether you take their insurance, home visits), prefer the "
+        "warmer forward-moving wording — 'if you'd like, just tell me a day that "
+        "suits and I'll check what's free' — rather than a flat 'would you like "
+        "to book?'. This is still the SAME single CTA (do not add a second one), "
+        "and it must NOT be used on pure-information questions unrelated to "
+        "booking.",
         "",
         "If genuinely unknown: 'I don't have that exact detail — would you like "
         "me to put you through to the clinic, or take your number for a "
@@ -588,6 +596,12 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "followup_note to a short summary of what they need. That note pings "
         "the practitioner to follow up. The patient is always booked first; "
         "the practitioner follows up after — never the other way round.",
+        "FOLLOWUP_NOTE CONTENT: whenever you book an MSK, sports, neuro, "
+        "home-visit or insurance appointment, pass a followup_note that captures "
+        "in one line whatever the caller told you that Marcus will want — body "
+        "area, how long they've had it, how it happened, sport or activity, "
+        "their goal, the modality they asked for, and insurer if mentioned. "
+        "Include ONLY what the caller actually said; never invent details.",
         "Never hedge clinic policy with: generally, usually, likely, probably, "
         "typically, most clinics. Sensation descriptions like 'most people find "
         "it well tolerated' are fine.",
@@ -595,6 +609,17 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "phone, email, or personal booking link. If asked to contact them "
         "directly: 'I can put you through to the clinic team who can arrange "
         "that — shall I do that?' then transfer_to_human on yes.",
+        "",
+        "FIRST APPOINTMENT & HOME VISITS — fill these gaps consistently: "
+        "(a) Never state how many sessions someone will need — that's for Marcus "
+        "to judge after assessing; say it depends and he'll talk them through a "
+        "plan. (b) The first appointment is an assessment, and treatment can "
+        "begin in the same session if Marcus feels it's appropriate. (c) Home "
+        "visits cover Bolton and Greater Manchester; for anywhere further afield "
+        "say Marcus will arrange it directly. (d) Any home-visit travel charge "
+        "is not confirmed — don't quote one; say Marcus will confirm. (e) For "
+        "home visits the address and postcode are taken by text after booking, "
+        "not read out on the call.",
         "",
         "PRE-PROGRAMMED FAQ ANSWERS — use these verbatim or very close. They "
         "are the complete, authoritative answers; never defer or hedge a "
@@ -1150,6 +1175,11 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "Offer the next two available days together, or the next week by "
         "absolute date ('would the week of the 25th of May suit better?'). "
         "Never ask why slots don't work.\n"
+        "MID-SLOT NEW INFORMATION: if, while choosing a slot, the caller raises "
+        "a NEW symptom, concern, or question, briefly acknowledge it and capture "
+        "it for the followup_note BEFORE continuing — do not ignore it and "
+        "plough on with the times. One short acknowledgement, then guide them "
+        "back to picking a slot.\n"
         "7. SLOT CONFIRMATION → NAME. When the caller accepts a slot, confirm "
         "it in the SAME response before asking for the name: 'So that's "
         "[day] the [date] at [time] — could I take your first name and "
