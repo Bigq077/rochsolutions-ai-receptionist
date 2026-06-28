@@ -4415,6 +4415,12 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     event_summary = found.get("summary", "")
     event_start = (found.get("start") or {}).get("dateTime", "")
 
+    # Patient name for notifications must come from the appointment itself, never
+    # the model's arg — it sometimes passes a placeholder ("the caller", "lookup
+    # result name") which would render as "Hi lookup"/"Hi the". Fall back to "" so
+    # the template greeting becomes "there", never a placeholder.
+    _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
+
     try:
         await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
     except Exception as e:
@@ -4432,7 +4438,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
         if appt_time:
             await send_cancellation_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=args.get("patient_name", ""),
+                patient_name=_appt_name,
                 appointment_time=appt_time,
                 clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
                 clinic_phone=_c_sms.get("phone"),
@@ -4450,7 +4456,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
             await notify_owner(
                 clinic,
                 f"❌ {clinic.get('sms_name') or 'Clinic'} — booking CANCELLED via Susie. "
-                f"{args.get('patient_name','')} ({args.get('phone','')}) — was {event_start or event_summary}.",
+                f"{_appt_name} ({args.get('phone','')}) — was {event_start or event_summary}.",
             )
         except Exception as e:
             logger.warning("provisional cancel owner notify failed (non-fatal): %r", e)
@@ -4497,6 +4503,12 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
 
     event_id = found["id"]
 
+    # Patient name for notifications must come from the appointment itself, never
+    # the model's arg — it sometimes passes a placeholder ("the caller", "lookup
+    # result name") which would render as "Hi the"/"Hi lookup". Fall back to "" so
+    # the template greeting becomes "there", never a placeholder.
+    _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
+
     try:
         new_start = _resolve_slot_iso(args.get("new_slot_iso", ""), session)
         # P2: preserve the ORIGINAL appointment's duration. The model's
@@ -4541,7 +4553,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
             await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=_safe_first_name(session, args.get("patient_name") or ""),
+                patient_name=_appt_name,
                 old_time=old_time,
                 new_time=new_start,
                 location=location.title(),
@@ -4562,7 +4574,7 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             await notify_owner(
                 clinic,
                 f"🔄 {clinic.get('sms_name') or 'Clinic'} — booking RESCHEDULE requested via Susie. "
-                f"{args.get('patient_name','')} ({args.get('phone','')}) → "
+                f"{_appt_name} ({args.get('phone','')}) → "
                 f"{new_start.strftime('%a %d %b at %H:%M')}. Please confirm with the client.",
             )
         except Exception as e:
