@@ -15,13 +15,28 @@ CLINIC_NAME    = os.getenv("CLINIC_NAME",    "the clinic")   # MARK_REVIEW
 CLINIC_ADDRESS = os.getenv("CLINIC_ADDRESS", "")              # MARK_REVIEW
 CLINIC_PHONE   = os.getenv("CLINIC_PHONE",   "")              # MARK_REVIEW
 
-FIRST_VISIT_NOTE = (
-    "As it's your first visit, please arrive 5 mins early and bring any "
-    "relevant medical records or scan results.\n\n"
+# Branded short links per location (MARK_REVIEW — set up the redirects before
+# go-live). Each must redirect to that location's Google Maps page. Plain SMS
+# cannot mask a URL behind anchor text, so a short branded link is the clean,
+# clickable alternative to a long Google Maps URL. Env-overridable so the real
+# short domain can be supplied without a code change.
+MAPS_SHORT_URL_ALCESTER = os.getenv("MAPS_SHORT_URL_ALCESTER", "https://bit.ly/theorem-alcester")
+MAPS_SHORT_URL_REDDITCH = os.getenv("MAPS_SHORT_URL_REDDITCH", "https://bit.ly/theorem-redditch")
+_location_short_links = {
+    "alcester": MAPS_SHORT_URL_ALCESTER,
+    "redditch": MAPS_SHORT_URL_REDDITCH,
+}
+
+# Fees / surcharges note (shown to new and unknown callers in place of the old
+# first-visit arrival note). Wording confirmed by Mark/Quentin.
+FEES_NOTE = (
+    "Fees: £85, credit/debit cards taken.\n"
+    "Surcharges: +£45 for Laser or Shockwave Therapy.\n"
+    "Cancellations with less than 24hrs notice are charged.\n"
+    "Evening appointments £10 (from 5pm).\n\n"
 )
 # Returning-on-plan patients: warm welcome-back, no arrival-time fuss
 RETURNING_PLAN_NOTE = "Great to have you back — see you at your appointment! 🙌\n\n"
-RETURNING_VISIT_NOTE = ""
 
 BOOKING_CONFIRMATION_SMS = (
     "Hi {patient_name} 👋\n\n"
@@ -29,10 +44,9 @@ BOOKING_CONFIRMATION_SMS = (
     "📅 {appointment_date}\n"
     "⏰ {appointment_time}\n"
     "📍 {clinic_address}\n\n"
-    "{first_visit_note}"
+    "{info_note}"
     "{full_name_request}"
     "Maps: {maps_link}\n\n"
-    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
     "See you soon!\n— {clinic_name}"
 )
 
@@ -118,28 +132,28 @@ def build_sms(session: dict) -> str:
     if not appointment_time:
         appointment_time = "—"
 
-    # First-visit / returning-plan note selection.
-    # Priority: returning_plan flag (set by RETURNING_PLAN_LOOKUP) → patient_type
-    # field → safe default of FIRST_VISIT_NOTE for unknown callers.
+    # Note selection. Every caller — new, returning, or on a plan — gets the
+    # fees note. Returning-on-plan patients also get a warm welcome-back line
+    # ahead of it.
     if session.get("returning_plan"):
-        note = RETURNING_PLAN_NOTE
+        note = RETURNING_PLAN_NOTE + FEES_NOTE
     else:
-        _pt         = (collected.get("patient_type") or "").upper()
-        first_visit = (_pt == "NEW") if _pt else True   # default True if unknown
-        note        = FIRST_VISIT_NOTE if first_visit else RETURNING_VISIT_NOTE
+        note = FEES_NOTE
 
     # Clinic-level values — address resolved from selected_location for
     # two-clinic setups (theorem_v2); falls back to CLINIC_ADDRESS env var
     # for single-clinic deployments.
     clinic_name  = CLINIC_NAME
-    clinic_phone = CLINIC_PHONE
     _loc = (session.get("selected_location") or "").lower()
     _location_addresses = {
         "alcester": "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
         "redditch": "51 Bromsgrove Road, Redditch, B97 4RH",
     }
     clinic_address = _location_addresses.get(_loc) or CLINIC_ADDRESS
-    maps_link      = build_maps_link(clinic_address)
+
+    # Maps link: prefer the location's branded short link; fall back to the full
+    # Google Maps URL if no short link is configured for this location.
+    maps_link = _location_short_links.get(_loc) or build_maps_link(clinic_address)
 
     # Pending full name?  Only the caller's first name is collected on the
     # call, so the stored name is typically a single token.  When a full name
@@ -161,9 +175,8 @@ def build_sms(session: dict) -> str:
         appointment_date  = appointment_date,
         appointment_time  = appointment_time,
         clinic_address    = clinic_address,
-        first_visit_note  = note,
+        info_note         = note,
         full_name_request = full_name_request,
         maps_link         = maps_link,
-        clinic_phone      = clinic_phone,
     )
     return body
