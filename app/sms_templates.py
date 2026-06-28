@@ -50,6 +50,20 @@ HOME_VISIT_CONFIRMATION_SMS = (
     "See you soon!\n— {clinic_name}"
 )
 
+# Remote (video / phone) confirmation — the consultation is not at the clinic,
+# so the clinic address / Maps link and the "arrive early / bring records" note
+# don't apply. The practitioner makes contact at the appointment time.
+REMOTE_CONFIRMATION_SMS = (
+    "Hi {patient_name} 👋\n\n"
+    "Your remote appointment with {clinic_name} is confirmed:\n\n"
+    "📅 {appointment_date}\n"
+    "⏰ {appointment_time}\n"
+    "💻 Video / phone consultation — {clinic_name} will be in touch at your "
+    "appointment time with how to join.\n\n"
+    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
+    "See you soon!\n— {clinic_name}"
+)
+
 # Explicit full-name request — inserted only when the caller's full name is
 # still pending (only first name was captured on the call).
 FULL_NAME_REQUEST_NOTE = (
@@ -212,14 +226,31 @@ def build_sms(session: dict) -> str:
         ("spelling-confirm" if (_is_template_clinic and first_visit) else "omitted"),
     )
 
+    # Modality is recorded by the booking executor as collected["location"]
+    # ("bolton" / "remote" / "home_visit"); the service string also carries
+    # "home_visit" for the dedicated home-visit service. Both are checked so a
+    # home visit of ANY service (e.g. acupuncture at home) is detected too.
+    _svc = (collected.get("service") or "").lower()
+    _loc_modality = (collected.get("location") or "").lower()
+
     # Home visits happen at the patient's home, not the clinic — so the clinic
     # address / Maps link don't apply. Use a tailored body that asks the patient
     # to text their full address + postcode (collected by SMS, not voice, to
     # avoid transcription errors). The 30-min address nudge is scheduled by the
     # booking executor.
-    _svc = (collected.get("service") or "").lower()
-    if "home_visit" in _svc or "home visit" in _svc:
+    if "home_visit" in _svc or "home visit" in _svc or _loc_modality == "home_visit":
         return HOME_VISIT_CONFIRMATION_SMS.format(
+            patient_name     = patient_name,
+            clinic_name      = clinic_name,
+            appointment_date = appointment_date,
+            appointment_time = appointment_time,
+            clinic_phone     = clinic_phone,
+        )
+
+    # Remote (video / phone) consultations are not at the clinic — no address /
+    # Maps link / arrival note. Detected from the booking modality.
+    if _loc_modality in ("remote", "video", "phone", "online", "virtual"):
+        return REMOTE_CONFIRMATION_SMS.format(
             patient_name     = patient_name,
             clinic_name      = clinic_name,
             appointment_date = appointment_date,

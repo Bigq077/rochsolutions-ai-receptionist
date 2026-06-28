@@ -4251,6 +4251,9 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     session["collected"]["name"] = patient_name
     session["collected"]["phone"] = phone
     session["collected"]["service"] = service
+    # Record the booking modality ("bolton"/"remote"/"home_visit") so build_sms()
+    # picks the right confirmation template (remote → no clinic address/Maps).
+    session["collected"]["location"] = location
     session["collected"]["slot"] = args["slot_iso"]
     # Populate the top-level slot key build_sms() reads for the 📅/⏰ lines —
     # mirrors the Acuity path (see _book_appointment_acuity); without it the
@@ -4551,12 +4554,23 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
         old_start_str = (found.get("start") or {}).get("dateTime", "")
         if old_start_str:
             old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
+            # Location clause must reflect the appointment's TRUE modality (read
+            # from the event), not the model's arg — a remote/home appointment
+            # must never be labelled "at our Bolton clinic". For remote/home (or
+            # an unknown legacy event) pass "" so the clause is omitted.
+            _evt_loc = _gcal_event_location(found)
+            _sms_location = (
+                "" if _evt_loc.lower() in (
+                    "remote", "video", "phone", "online", "virtual",
+                    "home_visit", "home visit",
+                ) else _evt_loc.title()
+            )
             await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
                 patient_name=_appt_name,
                 old_time=old_time,
                 new_time=new_start,
-                location=location.title(),
+                location=_sms_location,
                 clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
                 clinic_phone=_c_sms.get("phone"),
             )
@@ -5236,6 +5250,16 @@ def _iso_now() -> str:
 def _gcal_event_phone(ev: Dict[str, Any]) -> str:
     for line in (ev.get("description") or "").splitlines():
         if line.strip().lower().startswith("phone:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _gcal_event_location(ev: Dict[str, Any]) -> str:
+    """Read the modality from the event description's "Location:" line
+    (book_appointment writes "Location: Bolton/Remote/Home_Visit"). Empty when
+    absent (legacy/external events)."""
+    for line in (ev.get("description") or "").splitlines():
+        if line.strip().lower().startswith("location:"):
             return line.split(":", 1)[1].strip()
     return ""
 
