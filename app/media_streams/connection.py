@@ -331,6 +331,12 @@ _NAME_REQUEST_PHRASES: tuple = (
     "what is your first name",
     "could i get your name",
     "first name",
+    # P29: surname collection is still the name phase — without these the bot's
+    # "could I take your surname as well?" was not recognised as a name request,
+    # so the system flipped to the phone phase and the surname fragment was
+    # dropped (forcing repeated re-asks). Keep the name context alive for it.
+    "surname",
+    "last name",
 )
 
 # Spec J — short confirming responses the patient may give AFTER the system
@@ -5895,6 +5901,10 @@ class WebSocketCallHandler:
                             bool(self.session.get("post_slot_confirmation_pending"))
                             or "your name" in _lq_ctx
                             or "first name" in _lq_ctx
+                            # P29: a one-word surname must pass through during
+                            # surname collection, not be dropped as noise.
+                            or "surname" in _lq_ctx
+                            or "last name" in _lq_ctx
                         )
                         _yesno_step = any(
                             _m in _lq_ctx
