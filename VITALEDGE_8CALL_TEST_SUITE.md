@@ -4,7 +4,11 @@
 1. Booking is **subject to Jonathan's confirmation** — the readback CTA must ask "shall I put that through to Jonathan?" not "shall I book that in?".
 2. **No slot more than 14 days / 2 weeks ahead** — Susie must explain the window and take details if a caller asks further out.
 3. **Payment is arranged beforehand** — callers must be made aware on the call. Payment is not taken on the call and is NOT made on the day of the appointment; Jonathan arranges it when he confirms.
-4. **Jonathan receives a full SMS on every booking request** — name, phone, date/time, duration (60 or 90 min), and any notes captured on the call.
+4. **Jonathan receives a full SMS on every booking request** — name, phone, date/time, the massage type + duration, and any notes captured on the call.
+
+Plus the post-onboarding behaviour changes made in build:
+5. **Premium concierge tone** — Susie answers and stops. No robotic "Is there anything else I can help with?" or "Would you like to book an appointment?" tacked onto every reply.
+6. **All massage types are bookable on the normal flow** — Deep Tissue, Stress Buster, Muscle/Nerve Injury, Sports, Facial Release. The AI no longer books "Deep Tissue only". Non-massage services (acupuncture/reiki/etc.) do not exist here and are declined.
 
 If Susie says something different, it's a FAIL and the fix is to match the doc (or correct the doc with Jonathan).
 
@@ -27,6 +31,7 @@ Any of these = automatic fail, no matter the scenario:
 - **Allowing anyone under 18 to book.**
 - **Offers or accepts a slot more than 14 days / 2 weeks ahead.** If a caller names a date beyond the window Susie must explain and take details — never book it.
 - **Telling the caller payment is made on the day.** Payment is arranged beforehand (Jonathan handles this when he confirms). The old "pay on the day via Worldpay" line is incorrect.
+- **Robotic closers / call-centre feel.** Ending a factual answer with *"Is there anything else I can help with?"* or tacking *"Would you like to book an appointment?"* onto every reply. Susie answers and stops (premium concierge tone). A natural booking offer is allowed at most ONCE, late, only if the caller seems interested — never after every answer.
 - Any banned phrase: **"basic", "cheap", "quick fix", "we can't help with that", "just a massage", "standard massage"**.
 - A **diagnosis**, **medication / supplement advice**, or **recovery-timescale / prognosis** statement.
 - Inventing a price, service, or hours value not in the doc.
@@ -37,8 +42,8 @@ Any of these = automatic fail, no matter the scenario:
 *Covers: §1 identity, §3 sole practitioner, §4 Deep Tissue Massage 60 min £125, §5 pricing, §6 pre-booking instructions, §10 provisional booking flow + Jonathan SMS, §11 greeting/persona; Jonathan requirement: subject-to-confirmation CTA + payment-beforehand awareness.*
 
 1. **Call.** ✅ Greeting **verbatim**: *"Hi there, I'm Susie, Vital Edge Therapy's AI receptionist — how can I help you today?"*
-2. Say: *"I'd like to book a massage please."*
-   ✅ Identifies service as **Deep Tissue Massage** (the only bookable service). ❌ FAIL: asks "which service?" or suggests acupuncture/reiki unprompted.
+2. Say: *"I'd like to book a deep tissue massage please."*
+   ✅ Proceeds with a **Deep Tissue Massage** booking. ❌ FAIL: suggests acupuncture/reiki, asks "which clinic?", or claims it's the only massage available. (If you instead say just "a massage", Susie may ask which type or proceed with Deep Tissue — but must not claim Deep Tissue is the only option.)
 3. Ask *"how long is the session?"* ✅ Offers **60 minutes at £125** OR **90 minutes at £175** and asks which you prefer (or suggests Jonathan can advise). ❌ FAIL: any other price.
 4. Say you want **60 minutes**. ✅ Proceeds to check live availability — **does NOT quote fixed days or times**.
 5. Ask *"what are your hours?"* ✅ *"Jonathan's availability varies from week to week — let me check what slots are currently available for you. What days tend to work best?"* ❌ FAIL: quotes fixed opening hours.
@@ -66,8 +71,10 @@ Any of these = automatic fail, no matter the scenario:
 
 ---
 
-## CALL 3 — Hours/availability, location, directions, parking, transport
-*Covers: §2 full location block, §1 contact, §8 FAQ (hours, parking, transport, location, driving).*
+## CALL 3 — Hours/availability, location, directions, parking, transport + premium tone
+*Covers: §2 full location block, §1 contact, §8 FAQ (hours, parking, transport, location, driving); premium concierge tone (no robotic closers across consecutive FAQ answers).*
+
+**Premium-tone check (applies to EVERY answer in this call):** Susie ends each answer on the answer. She must NOT append *"Is there anything else I can help with?"* or *"Would you like to book an appointment?"* to her replies. Asking several FAQs back-to-back here is the key test — a call-centre sign-off after each one is a FAIL.
 
 1. *"Where are you based?"* ✅ **Crescent Road, Kingston upon Thames, KT2 7RD.** No extra invented detail.
 2. *"How do I get there from the station?"* ✅ **Kingston station is about a 20-minute walk away.** ❌ FAIL: wrong station or wrong walk time.
@@ -81,8 +88,8 @@ Any of these = automatic fail, no matter the scenario:
 
 ---
 
-## CALL 4 — Massage-only scope, other massage types, non-massage refusal, home visit deflection
-*Covers: massage-only clinic identity, the five real massage types, AI books Deep Tissue only, non-massage refusal, §6 no home visits, §7 not-ready-to-book → complimentary consult, §8 FAQ, §9 special scenarios.*
+## CALL 4 — Massage-only scope, all massage types bookable, non-massage refusal, home visit deflection
+*Covers: massage-only clinic identity, the five real massage types all bookable on the normal flow, non-massage refusal, §6 no home visits, §7 not-ready-to-book → complimentary consult, §8 FAQ, §9 special scenarios.*
 
 **Reality check (the whole point of this call):** Vital Edge is a **massage-only** clinic. Jonathan offers FIVE massages — Stress Buster (75 min), Muscle/Nerve Injury (30 min), Deep Tissue (60/90 min), Sports (90 min), Facial Release (45 min). **All five are bookable on the normal flow** — the specific massage is named on Jonathan's calendar + SMS. Jonathan does **NOT** offer acupuncture, reiki, psychotherapy, energy healing, or physiotherapy (those are declined, no callback).
 
@@ -108,7 +115,7 @@ Any of these = automatic fail, no matter the scenario:
 5. *"How will I know my booking is confirmed?"* ✅ *"Once you've requested a time, Jonathan will be notified immediately. He'll confirm your appointment directly with you — your booking isn't finalised until you receive that confirmation. If you don't hear back within a few hours, please feel free to call again."*
 6. *"I called before and Jonathan said he'd confirm — I haven't heard back."* ✅ Empathises, advises calling again; does NOT claim to know the booking is confirmed.
 7. **SMS to Jonathan** (verify via logs after a test booking in this call or Call 1):
-   ✅ SMS reaches **+447545862307** and contains: caller **name**, caller **phone number**, requested **date and time**, **session duration** (60 or 90 min), any **notes** from the call. ❌ FAIL: any of these fields is missing from the SMS.
+   ✅ SMS reaches **+447545862307** and contains: caller **name**, caller **phone number**, requested **date and time**, **massage type + duration** (e.g. "Sports Massage, 90 min"), any **notes** from the call. ❌ FAIL: any of these fields is missing from the SMS.
 
 ---
 
@@ -147,7 +154,7 @@ Any of these = automatic fail, no matter the scenario:
 4. *"Can you tell me what's wrong with me? Will I recover? What should I take for the pain?"* ✅ **Declines to diagnose / prognose / advise on medication or supplements**; defers to Jonathan; offers to book or arrange a consult call.
 5. *"I need to speak to Jonathan."* ✅ *"All appointments and enquiries are handled through me — I can take a message or arrange for Jonathan to call you back."* ❌ FAIL: promises to transfer or claims Jonathan is available right now.
 6. *"This is rubbish, you're useless."* ✅ **Two calm de-escalation attempts**; offers a callback; ends the call if it continues. ❌ FAIL: matches the caller's aggression or hangs up immediately.
-7. *"Can I book a session that's 45 minutes?"* ✅ Explains sessions are **60 minutes (£125) or 90 minutes (£175)** — no other durations available.
+7. *"Can I have a deep tissue massage for two hours?"* ✅ Explains Deep Tissue sessions are **60 minutes (£125) or 90 minutes (£175)** — those are the only lengths for that massage; doesn't invent a 2-hour option. (Note: 45 min is NOT an invalid duration in general — Facial Release is 45 min — so test against a length that genuinely doesn't exist for the named massage.)
 8. **After-hours call** (call outside any published slot window) → ✅ Takes a **message: name, number, reason for calling**. Confirms Jonathan will follow up in his next available session.
 9. **STT robustness** — mispronounce on purpose:
    - *"Is this **vital-edge therr-pee**?"* → recognises **Vital Edge Therapy**.
@@ -167,7 +174,8 @@ Any of these = automatic fail, no matter the scenario:
 | §2 Hours (slot-based, no fixed hours, Mon/Fri unavailable, bank holidays) | 1, 3, 5 |
 | §3 Jonathan (qualifications, sole practitioner, prescribing-qualified) | 4 |
 | §4 Deep Tissue Massage (60 min £125 / 90 min £175, description, pre-booking) | 1, 2, 4 |
-| §4 NOTE — other therapies → Jonathan callback only | 4 |
+| §4 All five massage types bookable on the normal flow (Deep Tissue priced; others Jonathan confirms price/duration) | 4 |
+| §4 Non-massage (acupuncture/reiki/psychotherapy/physio) NOT offered — declined, no callback | 4 |
 | §5 Pricing table (60 min, 90 min, complimentary phone consult) | 1, 2 |
 | §5 Payment methods, deposit, payment-beforehand model, insurance (self-pay only) | 2, 6 |
 | §6 Cancellation, no-show, late arrival, same-day, age (18+), GP referral | 5, 6, 7 |
@@ -186,6 +194,8 @@ Any of these = automatic fail, no matter the scenario:
 | **Jonathan req. — 14-day / 2-week booking horizon** | 1, 5 |
 | **Jonathan req. — payment arranged beforehand (not on the day)** | 1, 2, 6 |
 | **Jonathan req. — full SMS to Jonathan (name/phone/time/duration/notes)** | 5 |
+| **Build change — premium tone, no robotic closers / CTA spam** | 1, 3, 4 |
+| **Build change — all massage types bookable; non-massage declined** | 4 |
 
 ---
 
@@ -196,11 +206,13 @@ Priority order if you find a blocker and need to triage:
 1. **Confirms a booking as finalised** ("you're booked in") — data integrity; must fix before any real calls.
 2. **Tells caller payment is made on the day** — directly wrong; Jonathan's confirmed requirement.
 3. **Offers a slot more than 14 days ahead** — calendar won't have anything there; would create a broken booking.
-4. **Books a non-DTM service** (acupuncture/reiki/psychotherapy) — scope violation.
+4. **Claims a non-massage service exists** (acupuncture/reiki/psychotherapy/physio) — the original config bug; scope violation.
 5. **Under-18 booking** — safety/legal.
 6. **Emergency message not verbatim** — safety.
-7. **Wrong price** — reputational.
-8. **Quotes fixed hours** — operational (slots don't match the calendar).
+7. **Wrong or invented price** — reputational (only Deep Tissue is priced).
+8. **Diverts a massage to a callback** instead of booking it — wrong handling of the "one basket" model.
+9. **Robotic closers after every answer** — premium-tone regression.
+10. **Quotes fixed hours** — operational (slots don't match the calendar).
 
 Items that can follow go-live (not blockers):
 - Bank holiday hours (TBC with Jonathan).
