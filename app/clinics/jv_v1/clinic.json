@@ -151,11 +151,11 @@
   "booking": {
     "system": "Carepatron",
     "booking_url": "book.carepatron.com/Joint-Venture-Physiotherapy/Marcus",
-    "booking_window_months": "TBC with Marcus",
+    "booking_window_months": 2,
     "preferred_handling": "Book directly into Carepatron where possible.",
     "patient_notes_supported": "TBC — Carepatron supports clinical notes",
     "sms_confirmation_on_booking": "TBC with Marcus",
-    "same_day_booking": "TBC with Marcus",
+    "same_day_booking": "Yes — same-day booking available (subject to slot availability)",
     "calendars_by_location": false,
     "calendars_by_service": "TBC — confirm Carepatron appointment type structure with Marcus",
     "never_autobook": [

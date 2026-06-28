@@ -4048,6 +4048,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     is_new = bool(args.get("is_new_patient", False))
     insurer = (args.get("insurer_name") or "").strip()
     policy = (args.get("policy_number") or "").strip()
+    followup_note = (args.get("followup_note") or "").strip()
 
     # ── Service×modality guard (P2) ────────────────────────────────────────
     # Reject impossible combinations (e.g. msk_initial_assessment booked
@@ -4231,6 +4232,11 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         description_parts.append(f"Insurer: {insurer}")
     if policy:
         description_parts.append(f"Policy: {policy}")
+    # Surface the caller's concern in the calendar event itself (P3/#9) so Marcus
+    # sees it in Carepatron, not only in the practitioner-ping SMS (which can be
+    # missed). The same note still drives the ping via _send_practitioner_followup_ping.
+    if followup_note:
+        description_parts.append(f"Follow-up: {followup_note}")
     description_parts.append("— Booked via Susie (AI receptionist); enter into Carepatron.")
     description = "\n".join(description_parts)
 
