@@ -87,7 +87,7 @@ PRACTITIONERS = {
         "name": "Mark",
         "full_name": "Mark",
         "credentials": "MSc, BSc (Hons) HCPC, MCSP, AACP, MACS",
-        "role": "Physiotherapist & Clinical Lead",
+        "role": "Founder, Physiotherapist & Prescriber, injection therapy",
         "specialties": [
             "Musculoskeletal physiotherapy",
             "Sports injuries",
@@ -95,8 +95,8 @@ PRACTITIONERS = {
             "Holistic assessment",
         ],
         "available": {
-            "alcester": ["monday", "tuesday", "wednesday"],
-            "redditch": ["monday", "tuesday", "wednesday"],
+            "alcester": ["monday", "tuesday", "wednesday", "friday"],
+            "redditch": ["thursday"],
         },
     },
     "leanne": {
@@ -109,8 +109,8 @@ PRACTITIONERS = {
             "Post-natal rehabilitation",
         ],
         "available": {
-            "alcester": ["thursday"],
-            "redditch": ["thursday"],
+            "alcester": ["thursday"],   # Thursday evenings only
+            "redditch": [],             # Leanne is not available at Redditch
         },
     },
     # Friday/Saturday coverage - TBC by client
@@ -123,12 +123,12 @@ PRACTITIONERS = {
 
 PRICING = {
     "physiotherapy_assessment": {
-        "price": "£75",
+        "price": "£85",
         "duration": "50 minutes",
         "description": "Comprehensive initial assessment with treatment",
     },
     "physiotherapy_followup": {
-        "price": "£75",
+        "price": "£85",
         "duration": "50 minutes",
         "description": "Follow-up physiotherapy session",
     },
@@ -139,7 +139,7 @@ PRICING = {
         "requires": "Initial physiotherapy assessment",
     },
     "psychotherapy": {
-        "price": "£75",
+        "price": "£85",
         "duration": "50 minutes",
         "description": "Psychotherapy session",
     },
@@ -166,9 +166,9 @@ PRICING = {
 }
 
 PRICING_SUMMARY = (
-    "Physiotherapy sessions are £75 for 50 minutes. "
+    "Physiotherapy sessions are £85 for 50 minutes. "
     "Rehabilitation sessions are £65. "
-    "Psychotherapy is £75. "
+    "Psychotherapy is £85, available at Alcester only. "
     "If we use specialist equipment — shockwave or laser therapy — "
     "there's an additional £45 for that. "
     "Prescribing consultations are £12.50. "
@@ -278,7 +278,7 @@ INSURANCE_INFO = {
 SERVICES = {
     "physiotherapy_assessment": {
         "name": "Physiotherapy Assessment",
-        "price": "£75",
+        "price": "£85",
         "duration": "50 minutes",
         "short": (
             "It's a full 50-minute assessment. "
@@ -303,7 +303,7 @@ SERVICES = {
             "shockwave therapy, or laser therapy. "
             "\n\n"
             "It's collaborative. You're involved in every step. "
-            "Sessions are 50 minutes and cost £75."
+            "Sessions are 50 minutes and cost £85."
         ),
         "good_for": [
             "First-time patients",
@@ -316,7 +316,7 @@ SERVICES = {
 
     "physiotherapy_followup": {
         "name": "Physiotherapy Follow-up",
-        "price": "£75",
+        "price": "£85",
         "duration": "50 minutes",
         "short": (
             "Follow-up sessions are where the real progress happens. "
@@ -342,7 +342,7 @@ SERVICES = {
             "If you need imaging like an MRI or ultrasound, "
             "we'll make sure you get the right support to access that too. "
             "\n\n"
-            "Sessions are 50 minutes and cost £75."
+            "Sessions are 50 minutes and cost £85."
         ),
         "good_for": [
             "Existing patients continuing treatment",
@@ -499,7 +499,7 @@ SERVICES = {
 
     "psychotherapy": {
         "name": "Psychotherapy",
-        "price": "£75",
+        "price": "£85",
         "duration": "50 minutes",
         "short": (
             "Psychotherapy gives you a safe, confidential space "
@@ -522,7 +522,7 @@ SERVICES = {
             "But also the emotional side of physical pain — "
             "because the two are often more connected than people realise. "
             "\n\n"
-            "Sessions are 50 minutes and cost £75."
+            "Sessions are 50 minutes and cost £85."
         ),
         "good_for": [
             "Stress and anxiety",

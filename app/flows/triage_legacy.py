@@ -814,7 +814,7 @@ SERVICE_EXPLANATIONS: Dict[str, Dict[str, str]] = {
             "That might include manual therapy, exercises, and soft tissue work. "
             "We can also bring in acupuncture, shockwave, or laser therapy when it makes sense. "
             "\n\n"
-            "Sessions are 50 minutes and £75."
+            "Sessions are 50 minutes and £85."
         ),
     },
 
@@ -836,7 +836,7 @@ SERVICE_EXPLANATIONS: Dict[str, Dict[str, str]] = {
             "If at any point we feel you'd benefit from a specialist — "
             "a surgeon, GP, or advanced imaging — we'll help arrange that. "
             "\n\n"
-            "Sessions are 50 minutes and £75."
+            "Sessions are 50 minutes and £85."
         ),
     },
 
@@ -947,7 +947,7 @@ SERVICE_EXPLANATIONS: Dict[str, Dict[str, str]] = {
             "We work with stress, anxiety, depression, trauma, life transitions, "
             "and the emotional side of living with chronic pain. "
             "\n\n"
-            "Sessions are 50 minutes and £75."
+            "Sessions are 50 minutes and £85."
         ),
     },
 
@@ -1067,7 +1067,7 @@ INSURANCE_CHECK_WARNING = (
 INSURANCE_BUPA_RESPONSE = (
     "Unfortunately we're not able to accept Bupa directly. "
     "You're still very welcome to book as a private patient and pay the session fee. "
-    "It's £75 for 50 minutes. "
+    "It's £85 for 50 minutes. "
     "Would you still like to go ahead, or would you like some time to think about it?"
 )
 
@@ -1754,9 +1754,9 @@ def faq_answer(intent: str, clinic: Dict[str, Any], session: Optional[Dict[str, 
 
     if intent == "FAQ_PRICES":
         return (
-            "Physiotherapy sessions are £75 for 50 minutes. "
+            "Physiotherapy sessions are £85 for 50 minutes. "
             "Rehabilitation sessions are £65. "
-            "Psychotherapy is £75. "
+            "Psychotherapy is £85. "
             "If we use specialist equipment — shockwave or laser — "
             "there's an additional £45 for that. "
             "Prescribing consultations are £12.50."
@@ -2602,7 +2602,7 @@ async def triage_turn(
             session[f"fallback_count_{FAQ_DETOUR}"] = 0
             t_norm = _norm(user_said)
             if _contains_any(t_norm, ["physiotherapy assessment", "physio assessment", "initial assessment"]):
-                ans = "A physiotherapy assessment is £75 for 50 minutes."
+                ans = "A physiotherapy assessment is £85 for 50 minutes."
             else:
                 ans = faq_answer("FAQ_PRICES", clinic, session)
             _say(ans, session, tone="none")
@@ -2965,7 +2965,7 @@ async def triage_turn(
             session["faq_last_topic"] = "FAQ_PRICES"
             t_norm = _norm(user_said)
             if _contains_any(t_norm, ["physiotherapy assessment", "physio assessment", "initial assessment"]):
-                return _say("A physiotherapy assessment is £75 for 50 minutes.", session, tone="none")
+                return _say("A physiotherapy assessment is £85 for 50 minutes.", session, tone="none")
             return _say(faq_answer("FAQ_PRICES", clinic, session), session, tone="none")
 
         # ── FAQ continuation check (pre-LLM) ─────────────────────────────────

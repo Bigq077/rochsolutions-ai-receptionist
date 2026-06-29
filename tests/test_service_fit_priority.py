@@ -357,25 +357,29 @@ class TestMinorReferenceDetection:
 
 
 # ---------------------------------------------------------------------------
-# 9. Child policy gate — Theorem Health (no_children=True) must decline
+# 9. Child policy gate — Theorem Health sees patients aged 7 and over
 # ---------------------------------------------------------------------------
 
 class TestChildPolicyGate:
     """Verify that the clinic config child policy is accessible and correct."""
 
-    def test_theorem_patient_policies_no_children_true(self):
+    def test_theorem_patient_policies_min_age_7(self):
         from app.clinic_config import get_clinic
         clinic = get_clinic("theorem")
-        assert clinic.get("patient_policies", {}).get("no_children") is True
+        policies = clinic.get("patient_policies", {})
+        assert policies.get("no_children") is False
+        assert policies.get("min_patient_age") == 7
 
     def test_theorem_children_policy_faq_exists(self):
         from app.clinic_config import get_clinic
         clinic = get_clinic("theorem")
         policy_text = clinic.get("faq", {}).get("children_policy", "")
         assert policy_text != "", "children_policy FAQ must exist for Theorem"
-        assert "adult" in policy_text.lower() or "paediatric" in policy_text.lower()
+        assert "7" in policy_text or "paediatric" in policy_text.lower()
 
-    def test_theorem_v2_inherits_no_children(self):
+    def test_theorem_v2_inherits_min_age_7(self):
         from app.clinic_config import get_clinic
         clinic = get_clinic("theorem_v2")
-        assert clinic.get("patient_policies", {}).get("no_children") is True
+        policies = clinic.get("patient_policies", {})
+        assert policies.get("no_children") is False
+        assert policies.get("min_patient_age") == 7

@@ -144,7 +144,7 @@ async def test_faq_prices_answered_in_detour():
     session = _faq_detour_session()
     with patch("app.flows.triage_legacy.get_clinic", return_value={"name": "Demo", "locations": []}):
         reply, updated = await triage_turn("how much do sessions cost?", session)
-    assert "75" in reply or "65" in reply  # price figures
+    assert "85" in reply or "65" in reply  # price figures
     assert updated.get("faq_last_topic") == "FAQ_PRICES"
     assert updated.get(f"fallback_count_{FAQ_DETOUR}", 0) == 0
 
@@ -185,7 +185,7 @@ async def test_partial_price_signal_answered():
     session = _faq_detour_session()
     with patch("app.flows.triage_legacy.get_clinic", return_value={"name": "Demo", "locations": []}):
         reply, updated = await triage_turn("how much does it", session)
-    assert "75" in reply or "fee" in reply.lower() or updated.get("faq_last_topic") == "FAQ_PRICES"
+    assert "85" in reply or "fee" in reply.lower() or updated.get("faq_last_topic") == "FAQ_PRICES"
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ async def test_multi_question_faq_continuity():
     with patch("app.flows.triage_legacy.get_clinic", return_value=clinic_mock):
         # Turn 1 — direct FAQ question
         r1, session = await triage_turn("how much does it cost?", session)
-        assert "75" in r1 or "65" in r1
+        assert "85" in r1 or "65" in r1
 
         # Turn 2 — transition phrase
         r2, session = await triage_turn("that brings me to my next question", session)

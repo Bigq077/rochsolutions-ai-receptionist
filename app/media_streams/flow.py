@@ -146,9 +146,9 @@ _CAPABILITY_PHRASES = (
 
 # ── FAQ child policy: deterministic fallback if clinic config faq entry absent ──
 _FAQ_CHILD_POLICY_ANSWER = (
-    "We see adults only \u2014 we don\u2019t currently offer paediatric physiotherapy. "
-    "If you\u2019re looking for physiotherapy for a child, your GP can refer to an NHS "
-    "paediatric service, or you could search for a private paediatric physio clinic in your area."
+    "We see patients aged 7 and over. For children under 7, please contact the clinic "
+    "directly and we\u2019d also recommend speaking to your GP about a paediatric "
+    "physiotherapy referral."
 )
 # Named-service keywords — if any of these appear in the transcript, let the LLM
 # answer with just that service's price.  Otherwise use _FAQ_PRICES_NO_SERVICE.
@@ -3419,7 +3419,7 @@ FAQ_FLOW: List[Dict[str, Any]] = [
             "check if the caller's most recent message named a specific service. "
             "If yes, give ONLY that service's price and duration in one sentence. "
             "If no specific service was named, say: "
-            "'Our sessions start from £75 for a physiotherapy assessment. "
+            "'Our sessions start from £85 for a physiotherapy assessment. "
             "Was there a particular service you wanted the price for?'\n"
             "Do NOT end with 'Is there anything else I can help you with?' — "
             "the system handles follow-up automatically.\n"
@@ -5393,7 +5393,7 @@ class FlowEngine:
             # recovery replays the actual spoken content, not an old unrelated question.
             # watchdog_eligible=False — the answer is declarative, not reply-seeking, so
             # the no-input watchdog must NOT replay it as "Sorry, I didn't catch that.
-            # A physio assessment is 50 minutes and costs £75." (real bug family).
+            # A physio assessment is 50 minutes and costs £85." (real bug family).
             # A real follow-up prompt (e.g. "Anything else?") written afterwards will
             # naturally overwrite the marker via a new _store_last_question call with
             # watchdog_eligible=True and the watchdog will arm against that instead.

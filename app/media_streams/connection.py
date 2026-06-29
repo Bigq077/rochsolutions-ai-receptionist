@@ -10266,7 +10266,7 @@ class WebSocketCallHandler:
                 if _has_question_w or _loc_active_w:
                     # Only arm on a genuine question OR an active clinic prompt —
                     # avoids WATCHDOG_SUPPRESSED noise for purely informational
-                    # responses like "It's £75." or "Free parking is available."
+                    # responses like "It's £85." or "Free parking is available."
                     if self.session.get("v3_awaiting_use_this_clinic"):
                         # Biased confirm is armed (soft-candidate / use-this-
                         # clinic path). The watchdog fire path speaks the rung-1

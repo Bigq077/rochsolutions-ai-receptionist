@@ -387,7 +387,7 @@ def format_price_inquiry_sms(
     phone = _cp(clinic_phone)
     return (
         f"Hi, you called {name} earlier asking about our prices. "
-        f"A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+        f"A 50-min physio appointment is £85 — most patients see results within 2–3 sessions. "
         f"Ready to book? Call us back anytime, we'd love to help. {phone}"
     )
 
@@ -411,7 +411,7 @@ def format_insurance_inquiry_sms(
         return (
             f"Hi, you called {name} about Bupa cover. "
             f"Unfortunately we can't bill Bupa directly, but many patients pay privately "
-            f"at £75 and find it great value. "
+            f"at £85 and find it great value. "
             f"If you'd like to chat it through, give us a call — no pressure at all. {phone}"
         )
 

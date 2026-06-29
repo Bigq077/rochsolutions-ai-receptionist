@@ -541,7 +541,19 @@ class TestTheoremScenarios:
         )
         assert result.action == ASK_CHILD_AGE
 
-    def test_son_ankle_minor_age_declined(self, theorem):
+    def test_son_under_7_age_declined(self, theorem):
+        """Under 7 → declined (Theorem sees patients aged 7 and over)."""
+        result = evaluate_service_fit(
+            session={},
+            clinic=theorem,
+            child_related=True,
+            age=5,
+            reason="ankle sprain",
+        )
+        assert result.action == POLICY_DISALLOW
+
+    def test_son_age_15_allowed(self, theorem):
+        """A 15-year-old is over the minimum age of 7 → seen."""
         result = evaluate_service_fit(
             session={},
             clinic=theorem,
@@ -549,10 +561,10 @@ class TestTheoremScenarios:
             age=15,
             reason="ankle sprain",
         )
-        assert result.action == POLICY_DISALLOW
+        assert result.action == ALLOW_ASSESSMENT_FIRST
 
     def test_son_adult_age_allowed(self, theorem):
-        """'My son is 19' — Theorem adults-only clinic should see him."""
+        """'My son is 19' — over the minimum age, so Theorem should see him."""
         result = evaluate_service_fit(
             session={},
             clinic=theorem,

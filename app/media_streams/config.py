@@ -596,7 +596,7 @@ CLINIC_CONFIG: dict = {
             "name": "Alcester",
             "address": (
                 "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD. "
-                "Large leisure centre — look for the Everyone Active signage and the big car park out front."
+                "Large leisure centre — look for the Everyone Active sport centre and Theorem Health signage and the big car park out front."
             ),
             "hours": {
                 "monday":    {"open": "08:30", "close": "21:00"},
@@ -648,7 +648,7 @@ CLINIC_CONFIG: dict = {
         {
             "name": "Physiotherapy Assessment",
             "duration_minutes": 50,
-            "price_gbp": 75.00,
+            "price_gbp": 85.00,
             "description": (
                 "Holistic assessment including physical mobility, strength, and emotional well-being. "
                 "We'll identify the issue and create a tailored treatment plan."
@@ -657,7 +657,7 @@ CLINIC_CONFIG: dict = {
         {
             "name": "Physiotherapy Follow-up",
             "duration_minutes": 50,
-            "price_gbp": 75.00,
+            "price_gbp": 85.00,
         },
         {
             "name": "Remedial Rehabilitation",
@@ -672,12 +672,12 @@ CLINIC_CONFIG: dict = {
         {
             "name": "Acupuncture",
             "duration_minutes": 50,
-            "price_gbp": 75.00,
+            "price_gbp": 85.00,
         },
         {
             "name": "Psychotherapy",
             "duration_minutes": 50,
-            "price_gbp": 75.00,
+            "price_gbp": 85.00,
         },
     ],
     "surcharges": {
@@ -685,7 +685,7 @@ CLINIC_CONFIG: dict = {
         "laser":     {"name": "Class IV Laser Therapy", "amount_gbp": 45.00},
     },
     "pricing_summary": (
-        "Physio sessions are £75 for 50 minutes. Rehab sessions are £65. "
+        "Physio sessions are £85 for 50 minutes. Rehab sessions are £65. "
         "Prescribing is £12.50. Laser and shockwave may add a £45 surcharge."
     ),
     "insurance_note": (
@@ -699,7 +699,7 @@ CLINIC_CONFIG: dict = {
         "We're not an emergency service."
     ),
     "practitioners": {
-        "mark":   {"name": "Mark Dyer",  "days": ["monday", "tuesday", "wednesday"]},
+        "mark":   {"name": "Mark Dyer",  "days": ["monday", "tuesday", "wednesday", "friday"]},
         "leanne": {"name": "Leanne",     "days": ["thursday"]},
     },
 }
@@ -835,19 +835,19 @@ Address: 51 Bromsgrove Road, Redditch, B97 4RH (next to Smile Dental Care)
 Hours: Mon/Tue/Fri 9am–5pm, Wed/Thu 9am–7pm, Sat 9am–5pm. Closed Sundays.
 Parking: Street parking on Bromsgrove Road. Station car park ~3 min walk (£3–£4.50/day).
 
-Practitioners: Mark Dyer (Mon/Tue/Wed) and Leanne (Thu).
+Practitioners: Mark Dyer (Alcester Mon/Tue/Wed/Fri, Redditch Thu) and Leanne (Alcester Thursday evenings only; not at Redditch).
 
 Services:
-- Physiotherapy Assessment (50 min, £75) — holistic, physical + emotional well-being lens
-- Physiotherapy Follow-up (50 min, £75)
+- Physiotherapy Assessment (50 min, £85) — holistic, physical + emotional well-being lens
+- Physiotherapy Follow-up (50 min, £85)
 - Remedial Rehabilitation (50 min, £65)
 - Prescribing Consultation (20 min, £12.50)
 - Shockwave Therapy (£45 surcharge during session)
 - Class IV Laser Therapy (£45 surcharge during session)
-- Acupuncture (50 min, £75)
-- Psychotherapy (50 min, £75) — includes hypnotherapy and spiritual healing
+- Acupuncture (50 min, £85)
+- Psychotherapy (50 min, £85, Alcester only) — includes hypnotherapy and spiritual healing
 
-Pricing: Physio £75 / 50 min. Rehab £65. Prescribing £12.50. Specialist equipment £45 surcharge.
+Pricing: Physio £85 / 50 min. Rehab £65. Prescribing £12.50. Specialist equipment £45 surcharge.
 Insurance: Self-pay clinic. Bupa not accepted. Insurance referrals need manual approval.
 Cancellation: 24 hours' notice required — otherwise the full fee is charged.
 What to bring: Shorts or loose clothing if possible.

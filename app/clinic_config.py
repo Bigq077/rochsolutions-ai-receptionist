@@ -201,7 +201,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "name": "Alcester",
                 "address": (
                     "We're at The Greig Leisure Centre, Kinwarton Road, Awlstuh, B49 6AD. "
-                    "It's a large leisure centre — look for the Everyone Active signage and the big car park out front. "
+                    "It's a large leisure centre — look for the Everyone Active sport centre and Theorem Health signage and the big car park out front. "
                     "Awlstuh sits at the junction of the A46 and the A435, so it's easy to reach from most directions. "
                     "From Stratford-upon-Avon it's about 8 miles, roughly 15 minutes. "
                     "From Redditch about 9 miles, 15 to 20 minutes. "
@@ -286,12 +286,12 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Practitioner preferences (location-keyed)
         "practitioner_days": {
             "alcester": {
-                "Mark":   ["mon", "tue", "wed"],
-                "Leanne": ["thu", "fri"],
+                "Mark":   ["mon", "tue", "wed", "fri"],
+                "Leanne": ["thu"],   # Thursday evenings only
             },
             "redditch": {
                 "Mark":   ["thu"],
-                "Leanne": ["mon"],
+                "Leanne": [],        # Leanne is not available at Redditch
             },
         },
 
@@ -300,10 +300,11 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "new_patient_threshold_years": 2,        # 2+ years since last visit = treated as new
             "different_injury_requires_new_assessment": True,
             "records_follow_patient_across_locations": True,
-            # Authoritative age policy: clinic sees patients aged 15+.
-            # 15, 16, 17 allowed; under 15 disallowed.
+            # Authoritative age policy: clinic sees patients aged 7 and over.
+            # Under 7: contact the clinic directly and/or speak to GP about
+            # a paediatric physiotherapy referral.
             "no_children": False,
-            "min_patient_age": 15,
+            "min_patient_age": 7,
         },
 
         # Payment
@@ -329,10 +330,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "Patients can write a short narrative during booking if they need to explain.",
             "Callers may request a specific practitioner (Mark or Leanne) — honour that preference.",
             "All conditions use the same appointment type in Acuity regardless of presenting complaint.",
-            "Alcester: Mark Mon/Tue/Wed, Leanne Thu/Fri. Redditch: Leanne Mon, Mark Thu.",
+            "Alcester: Mark Mon/Tue/Wed/Fri, Leanne Thursday evenings. Redditch: Mark Thu; Leanne not available at Redditch.",
             "Bookings are separated by clinic location in Acuity.",
             "Insurance referrals always require manual approval.",
-            "Adults only — no paediatric patients.",
+            "Patients aged 7 and over; under-7s should contact the clinic directly and/or speak to their GP about a paediatric physiotherapy referral.",
             "If the AI can't fully help, direct to website and/or take a message/offer a callback/escalate to staff.",
         ],
 
@@ -415,21 +416,22 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
         # Pricing & policies (from website, updated Oct 2021)
         "pricing_summary": (
-            "New patient or new condition assessment: £75 for 50 minutes. "
-            "Standard follow-up appointments: £75 for 40 minutes. "
+            "New patient or new condition assessment: £85 for 50 minutes. "
+            "Standard follow-up appointments: £85 for 40 minutes. "
             "Rehabilitation sessions: £65 for 50 minutes. "
             "Prescribing consultations: £12.50. "
-            "Standalone shockwave or Class IV Laser session: £120 for 30 minutes. "
+            "Standalone shockwave or Class IV Laser session: £130 for 30 minutes. "
             "If shockwave or Class IV Laser is used within a standard session, a £45 surcharge applies. "
-            "Package of 4 x shockwave and Class IV Laser Therapy: £420. "
-            "Advanced one-hour treatments (Reiki, Energy Healing, Hypnotherapy, Wellness Massage, "
+            "Package of 4 x shockwave and Class IV Laser Therapy: £468. "
+            "Wellness and Stress Relief Massage with In-light Therapy: £85 for one hour, Alcester only. "
+            "Other advanced one-hour treatments (Reiki, Energy Healing, Hypnotherapy, "
             "Auricular Acupuncture) are also available — enquire for pricing."
         ),
         # Structured pricing used by the intake/recommendation booking flow
         "service_prices": {
             "initial_assessment": {
                 "label":    "physiotherapy assessment",
-                "price":    "£75",
+                "price":    "£85",
                 "duration": "50 minutes",
                 "blurb": (
                     "We'll do a full holistic assessment — physical and emotional — "
@@ -438,7 +440,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             },
             "follow_up": {
                 "label":    "follow-up physiotherapy session",
-                "price":    "£75",
+                "price":    "£85",
                 "duration": "50 minutes",
                 "blurb": (
                     "We'll check your progress, adjust the plan, and continue treatment."
@@ -463,23 +465,23 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             },
         },
         "pricing_details": {
-            "new_patient_assessment_gbp": 75.0,
+            "new_patient_assessment_gbp": 85.0,
             "new_patient_duration_mins": 50,
-            "standard_followup_gbp": 75.0,
+            "standard_followup_gbp": 85.0,
             "standard_followup_duration_mins": 40,
             "rehab_session_gbp": 65.0,
             "rehab_duration_mins": 50,
             "prescribing_gbp": 12.50,
             "specialist_equipment_surcharge_gbp": 45.0,
-            "standalone_shockwave_laser_gbp": 120.0,
+            "standalone_shockwave_laser_gbp": 130.0,
             "standalone_shockwave_laser_duration_mins": 30,
-            "package_4x_shockwave_laser_gbp": 420.0,
+            "package_4x_shockwave_laser_gbp": 468.0,
             "package_validity_months": 6,
             "package_cooling_off_days": 14,
             "notes": [
                 "£45 surcharge added to session bill if shockwave or Class IV Laser is used within a standard session.",
-                "Standalone shockwave/laser: £120 for 30 minutes.",
-                "Package of 4x shockwave and Class IV Laser: £420 (non-transferable, 6-month validity).",
+                "Standalone shockwave/laser: £130 for 30 minutes.",
+                "Package of 4x shockwave and Class IV Laser: £468 (non-transferable, 6-month validity).",
                 "Invoices raised immediately after consultation.",
                 "Packages invoiced; due within 7 days.",
                 "Late/non-payment charges apply.",
@@ -634,7 +636,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "be contributing. "
                 "By the end of that first session, you'll have a clear diagnosis, a personalised "
                 "treatment plan, and you'll usually start hands-on treatment in that very same appointment. "
-                "The cost is £75 for the 50 minutes."
+                "The cost is £85 for the 50 minutes."
             ),
 
             # ── Do I need a GP referral? ────────────────────────────────────────
@@ -673,11 +675,11 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             "practitioners": (
                 "We have two chartered physiotherapists. "
                 "Mark Dyer is the founder — he holds an MSc and is HCPC-registered. "
-                "He works at Awlstuh on Mondays, Tuesdays, and Wednesdays, "
+                "He works at Awlstuh on Mondays, Tuesdays, Wednesdays, and Fridays, "
                 "and at Redditch on Thursdays. "
                 "Leanne is also a chartered physiotherapist and HCPC-registered. "
-                "She works at Awlstuh on Thursdays and Fridays, "
-                "and at Redditch on Mondays. "
+                "She works at Awlstuh on Thursday evenings only, "
+                "and isn't available at Redditch. "
                 "Both are qualified prescribers. "
                 "If you'd like to see a specific practitioner, just let me know and I'll look for "
                 "slots with them."
@@ -731,7 +733,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "It's commonly used alongside physiotherapy for musculoskeletal conditions — "
                 "particularly chronic pain, muscle tension, headaches, and conditions that haven't "
                 "fully responded to other treatments. "
-                "Sessions are 50 minutes and cost £75. "
+                "Sessions are 50 minutes and cost £85. "
                 "You'd normally start with a physiotherapy assessment first, "
                 "and acupuncture may then be incorporated into your treatment plan."
             ),
@@ -745,7 +747,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "At Theorem the approach is holistic — physical and emotional health are seen as "
                 "connected — so psychotherapy can be offered alongside physiotherapy, or as a "
                 "standalone service. "
-                "Sessions are 50 minutes and cost £75. "
+                "Sessions are 50 minutes, cost £85, and are available at Alcester only. "
                 "You can book directly — no referral needed."
             ),
 
@@ -765,7 +767,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             # ── Do you offer packages or block booking discounts? ─────────────
             "packages_discounts": (
                 "Yes — we do have one package available: four sessions of combined shockwave "
-                "and Class IV Laser Therapy for £420, which works out cheaper than booking them individually. "
+                "and Class IV Laser Therapy for £468, which works out cheaper than booking them individually. "
                 "Packages are valid for six months from the date of purchase and are non-transferable. "
                 "There's a two-week cooling-off period if you change your mind. "
                 "Other than that, individual sessions are priced as standard — "
@@ -788,9 +790,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Do you see children? ───────────────────────────────────────────
             "children_policy": (
-                "Yes — we see patients aged 15 and over. "
-                "For anyone under 15, we'd recommend speaking to your GP about a paediatric "
-                "physiotherapy referral."
+                "We see patients aged 7 and over. "
+                "For anyone under 7, please contact the clinic directly and we'd also "
+                "recommend speaking to your GP about a paediatric physiotherapy referral."
             ),
 
             # ── What happens on my first visit? ───────────────────────────────
@@ -807,14 +809,14 @@ CLINICS: Dict[str, Dict[str, Any]] = {
 
             # ── Can you explain the surcharge? ────────────────────────────────
             "surcharge_explained": (
-                "The base session fee is £75 — that covers the full physiotherapy consultation "
+                "The base session fee is £85 — that covers the full physiotherapy consultation "
                 "and any hands-on treatment. "
                 "A £45 surcharge applies on top if your physiotherapist uses shockwave therapy "
                 "or Class IV Laser during that session — that's decided in the room, not at booking, "
                 "and you'll always be told before it's applied. "
                 "Alternatively, if you want shockwave or laser as a standalone treatment, "
-                "that's a separate 30-minute booking at £120. "
-                "There's also a package of four combined shockwave and laser sessions for £420 "
+                "that's a separate 30-minute booking at £130. "
+                "There's also a package of four combined shockwave and laser sessions for £468 "
                 "if you need a course of treatment."
             ),
 
@@ -914,7 +916,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "A physiotherapy session is with Mark or Leanne — a qualified chartered physiotherapist. "
                 "It covers assessment, diagnosis, hands-on treatment, and planning. "
                 "Your first assessment is 50 minutes; follow-up sessions are 40 minutes. "
-                "Both are £75. "
+                "Both are £85. "
                 "A rehabilitation session is with one of our rehabilitation instructors — "
                 "it's more exercise and movement focused, designed to rebuild your strength and function "
                 "once the treatment plan is established. "
@@ -1001,7 +1003,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
             # ── Do you offer packages or discounts? ────────────────────────────
             "packages_discounts": (
                 "Yes — we have one package: four sessions of combined shockwave and "
-                "Class IV Laser Therapy for £420. "
+                "Class IV Laser Therapy for £468. "
                 "Packages are valid for six months and are non-transferable. "
                 "Other than that, sessions are individually priced — "
                 "there aren't general block booking discounts."
@@ -1013,8 +1015,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "Reiki and Energy Healing, Wellness and Stress Relief Massage with In-light Therapy, "
                 "and Auricular Acupuncture for stress relief. "
                 "These are separate from our physiotherapy services. "
-                "For pricing and availability, get in touch by phone or email "
-                "at info@theoremhealth.co.uk."
+                "The Wellness and Stress Relief Massage is £85 and available at Alcester only. "
+                "For Reiki, Energy Healing, Auricular Acupuncture, and other advanced treatment "
+                "pricing or availability, get in touch by phone or email at info@theoremhealth.co.uk."
             ),
         },
     },
@@ -1075,13 +1078,13 @@ THEOREM_PRACTITIONERS = {
         "name": "Mark",
         "full_name": "Mark Dyer",
         "title": "MSc, BSc (Hons) HCPC, Mcsp, AACP, Macs",
-        "role": "Physiotherapist & Prescriber",
+        "role": "Founder, Physiotherapist & Prescriber, injection therapy",
         "prescribes": True,
         # Flat union for filter_slots_by_practitioner_availability
-        "available_days": ["mon", "tue", "wed", "thu"],
+        "available_days": ["mon", "tue", "wed", "thu", "fri"],
         # Per-location breakdown
         "location_days": {
-            "alcester": ["mon", "tue", "wed"],
+            "alcester": ["mon", "tue", "wed", "fri"],
             "redditch": ["thu"],
         },
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_MARK"),
@@ -1094,11 +1097,11 @@ THEOREM_PRACTITIONERS = {
         "role": "Chartered Physiotherapist & Prescriber",
         "prescribes": True,
         # Flat union for filter_slots_by_practitioner_availability
-        "available_days": ["mon", "thu", "fri"],
+        "available_days": ["thu"],   # Alcester Thursday evenings only
         # Per-location breakdown
         "location_days": {
-            "alcester": ["thu", "fri"],
-            "redditch": ["mon"],
+            "alcester": ["thu"],
+            "redditch": [],          # Leanne is not available at Redditch
         },
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_LEANNE"),
     },
@@ -1110,7 +1113,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "id": "physio_assessment",
         "name": "Physiotherapy Assessment",
         "duration_minutes": 50,
-        "price_gbp": 75.00,
+        "price_gbp": 85.00,
         "description": (
             "Holistic assessment including physical mobility, strength, and emotional well-being. "
             "We'll identify the issue and create a tailored treatment plan."
@@ -1125,7 +1128,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "id": "physio_followup",
         "name": "Physiotherapy Follow-up",
         "duration_minutes": 50,
-        "price_gbp": 75.00,
+        "price_gbp": 85.00,
         "description": (
             "Progress tracking and treatment plan adjustment. "
             "We'll fine-tune your interventions for optimal recovery."
@@ -1172,7 +1175,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "id": "acupuncture",
         "name": "Acupuncture",
         "duration_minutes": 50,
-        "price_gbp": 75.00,
+        "price_gbp": 85.00,
         "description": "Fine needles placed at specific points to balance energy flow and promote healing.",
         "category": "physiotherapy",
         "new_patients": False,
@@ -1183,7 +1186,7 @@ THEOREM_APPOINTMENT_TYPES = {
         "id": "psychotherapy",
         "name": "Psychotherapy",
         "duration_minutes": 50,
-        "price_gbp": 75.00,
+        "price_gbp": 85.00,
         "description": (
             "Safe space to explore thoughts and emotions using techniques "
             "including hypnotherapy and spiritual healing."

@@ -25,14 +25,17 @@ All items verified complete as of 2026-03-24.
 - [x] Alcester opening hours correct — Mon–Fri 08:30–21:00, closed weekends
 - [x] Redditch opening hours correct — Mon/Tue/Fri 09:00–17:00, Wed/Thu 09:00–19:00, Sat 09:00–17:00, closed Sundays
 - [x] All appointment types with correct prices:
-  - Physiotherapy Assessment: 50 min, £75
-  - Physiotherapy Follow-up: 50 min, £75
+  - Physiotherapy Assessment: 50 min, £85
+  - Physiotherapy Follow-up: 50 min, £85
   - Remedial Rehabilitation: 50 min, £65
   - Prescribing Consultation: 20 min, £12.50
-  - Acupuncture: 50 min, £75
-  - Psychotherapy: 50 min, £75
+  - Acupuncture: 50 min, £85
+  - Psychotherapy: 50 min, £85 (Alcester only)
   - Shockwave Therapy surcharge: £45
   - Class IV Laser surcharge: £45
+  - Standalone shockwave or Class IV Laser: 30 min, £130
+  - Package of 4 combined shockwave + Class IV Laser: £468
+  - Wellness and Stress Relief Massage with In-light Therapy: 60 min, £85 (Alcester only)
 - [x] Transfer number from `CLINIC_CONFIG["transfer_number"]` only (`+447870166861`) — never hardcoded elsewhere
 
 ---

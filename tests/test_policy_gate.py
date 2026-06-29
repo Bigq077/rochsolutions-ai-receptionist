@@ -218,15 +218,15 @@ class TestServiceFitAllow:
         assert result.action == SERVICE_FIT_ALLOW
 
 
-# ── 6. Theorem Health integration: must always disallow children ─────────────────
+# ── 6. Theorem Health integration: sees patients aged 7 and over ─────────────────
 
 class TestTheoremHealthPolicy:
     """
-    Theorem has no_children=True (adults only).
+    Theorem has no_children=False, min_patient_age=7 (sees patients aged 7+).
 
-    Age-unknown → ASK_CHILD_AGE (the caller's son could be 19).
-    Age confirmed minor (< 18) → SERVICE_FIT_DISALLOW with FAQ text.
-    Age confirmed adult (>= 18) → SERVICE_FIT_ALLOW.
+    Age-unknown → ASK_CHILD_AGE (the caller's child could be over 7).
+    Age confirmed under 7 → SERVICE_FIT_DISALLOW with FAQ text.
+    Age confirmed 7 or over → SERVICE_FIT_ALLOW.
     """
 
     def _theorem_clinic(self) -> dict:
@@ -244,27 +244,32 @@ class TestTheoremHealthPolicy:
         result = evaluate_policy_gate(s, self._theorem_clinic())
         assert result.action == ASK_CHILD_AGE
 
-    def test_theorem_minor_age_declined(self):
-        s = _session(child_related=True, service_fit=True, age=12)
+    def test_theorem_under_7_declined(self):
+        s = _session(child_related=True, service_fit=True, age=5)
         result = evaluate_policy_gate(s, self._theorem_clinic())
         assert result.action == SERVICE_FIT_DISALLOW
 
-    def test_theorem_minor_age_15_declined(self):
+    def test_theorem_age_8_allowed(self):
+        s = _session(child_related=True, service_fit=True, age=8)
+        result = evaluate_policy_gate(s, self._theorem_clinic())
+        assert result.action == SERVICE_FIT_ALLOW
+
+    def test_theorem_age_15_allowed(self):
         s = _session(child_related=True, service_fit=True, age=15)
         result = evaluate_policy_gate(s, self._theorem_clinic())
-        assert result.action == SERVICE_FIT_DISALLOW
+        assert result.action == SERVICE_FIT_ALLOW
 
     def test_theorem_adult_son_age_19_allowed(self):
         s = _session(child_related=True, service_fit=True, age=19)
         result = evaluate_policy_gate(s, self._theorem_clinic())
         assert result.action == SERVICE_FIT_ALLOW
 
-    def test_theorem_response_text_is_configured_faq_when_minor(self):
-        s = _session(child_related=True, service_fit=True, age=10)
+    def test_theorem_response_text_is_configured_faq_when_under_7(self):
+        s = _session(child_related=True, service_fit=True, age=5)
         result = evaluate_policy_gate(s, self._theorem_clinic())
         expected = self._theorem_clinic().get("faq", {}).get("children_policy", "")
         assert result.response_text == expected
-        assert "adult" in result.response_text.lower()
+        assert "7" in result.response_text
 
     def test_theorem_adult_booking_not_gated(self):
         s = _session(child_related=False, booking=True)
