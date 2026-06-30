@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+# Physiotherapy caller-concern handling (red-flag net + must-not-say + objection
+# scripts). Pure-data renderer — safe on the prompt-build hot path.
+from app.clinics.theorem.caller_concerns import build_concern_handling_block
+
 
 # ───────────────────────────────────────────────────────────────────────────
 # Dedicated slot-formatting system prompt for the post-check_availability
@@ -2238,8 +2242,8 @@ def _build_theorem_v3(session: dict) -> str:
     policies = (
         "POLICIES\n"
         "Cancellation needs at least 24 hours notice. Less than 24 "
-        "hours or no-show = 75% fee. Reschedule under 24 hours "
-        "counts as a cancellation.\n"
+        "hours or no-show = full session fee (100%). Reschedule under "
+        "24 hours counts as a cancellation.\n"
         "No same-day booking — minimum one day's notice required.\n"
         "No clinic waitlist policy, but you can take callback "
         "details.\n"
@@ -3693,8 +3697,13 @@ def _build_theorem_v3(session: dict) -> str:
     # ── STATIC block — large, content never changes within a call ────────────
     # Cached by llm_stream.py with cache_control: ephemeral so only turn 1
     # pays the full input cost.  Do NOT put any session-derived content here.
+    # Physio caller-concern handling: red-flag net + must-not-say + objection
+    # scripts. Lean, content-static, rendered from app/clinics/theorem/
+    # caller_concerns.py (pure data) so it stays in sync without prompt edits.
+    concern_handling = build_concern_handling_block()
     static_blocks = [
         treatment_override,
+        concern_handling,
         identity,
         booking_flow,
         tools,
