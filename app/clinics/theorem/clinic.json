@@ -95,7 +95,7 @@
     {
       "service_id": "physio_followup",
       "name": "Physiotherapy - Follow-up Session",
-      "typical_duration_minutes": 50,
+      "typical_duration_minutes": 40,
       "for_patients": ["New", "Returning", "Both"],
       "description": "In our physiotherapy follow-up sessions, we track progress and adjust your treatment plan as needed. We re-evaluate mobility, strength and overall well-being, ensuring interventions (exercises, manual therapy, or advanced techniques) are fine tuned for optimal recovery. Each follow-up is a collaborative checkpoint with continued support and refinement to keep you steadily on track. If we determine you need a specialist (such as a surgeon or GP), we facilitate referral and support onward care. If advanced imaging is needed (MRI or ultrasound), we help ensure a smooth path to the best possible treatment.",
       "pre_booking_notes": "If you can, bring shorts or wear loose clothing — but don’t worry if you can’t.",

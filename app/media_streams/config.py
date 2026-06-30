@@ -656,7 +656,7 @@ CLINIC_CONFIG: dict = {
         },
         {
             "name": "Physiotherapy Follow-up",
-            "duration_minutes": 50,
+            "duration_minutes": 40,
             "price_gbp": 85.00,
         },
         {
@@ -839,7 +839,7 @@ Practitioners: Mark Dyer (Alcester Mon/Tue/Wed/Fri, Redditch Thu) and Leanne (Al
 
 Services:
 - Physiotherapy Assessment (50 min, £85) — holistic, physical + emotional well-being lens
-- Physiotherapy Follow-up (50 min, £85)
+- Physiotherapy Follow-up (40 min, £85)
 - Remedial Rehabilitation (50 min, £65)
 - Prescribing Consultation (20 min, £12.50)
 - Shockwave Therapy (£45 surcharge during session)

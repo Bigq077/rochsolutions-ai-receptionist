@@ -2238,8 +2238,8 @@ def _build_theorem_v3(session: dict) -> str:
     policies = (
         "POLICIES\n"
         "Cancellation needs at least 24 hours notice. Less than 24 "
-        "hours or no-show = 75% fee. Reschedule under 24 hours "
-        "counts as a cancellation.\n"
+        "hours or no-show = full session fee (100%). Reschedule under "
+        "24 hours counts as a cancellation.\n"
         "No same-day booking — minimum one day's notice required.\n"
         "No clinic waitlist policy, but you can take callback "
         "details.\n"

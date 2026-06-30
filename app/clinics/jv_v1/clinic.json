@@ -1,0 +1,383 @@
+{
+  "_notes": "MARK_REVIEW: Items tagged TBC must be confirmed with Marcus before go-live. Search for 'TBC' to find every gap.",
+  "clinic_id": "jv_v1",
+  "clinic_name": "Joint Venture Physiotherapy",
+  "brand_names": [
+    "Joint Venture Physiotherapy",
+    "Joint Venture Physio",
+    "JV Physiotherapy",
+    "JV Physio"
+  ],
+  "primary_phone": "+44 7586 605462",
+  "contact_email": "Jointventurephysiotherapy@gmail.com",
+  "websites": [
+    "https://jointventurephysiotherapy.co.uk"
+  ],
+  "company_number": "TBC",
+  "locations": [
+    {
+      "location_id": "bolton",
+      "name": "Flexspace Bolton",
+      "address_full": "Flexspace Bolton (Lythgoe House), Manchester Road, Bolton, BL3 2NZ",
+      "postcode": "BL3 2NZ",
+      "access_instructions": "Patients are given an access code for the main entrance. Use the top keypad to enter the code, then take a seat in the waiting area.",
+      "parking": "Free 24/7 on-site parking",
+      "wheelchair_accessible": true,
+      "serves_areas": ["Bolton", "Walkden", "Worsley", "Salford", "Greater Manchester"],
+      "nearest_city": "Bolton (20-25 minutes from Manchester by car)",
+      "road_access": "Manchester Road (A6), Bolton town centre"
+    }
+  ],
+  "opening_hours": {
+    "bolton": {
+      "_note": "Confirmed with Marcus 2026-06-23. Times are OPEN and LAST APPOINTMENT (last appt is bookable). Evenings Mon-Fri, Saturday mornings.",
+      "monday":    { "open": "16:30", "last_appointment": "20:30", "note": "Evening appointments" },
+      "tuesday":   { "open": "17:00", "last_appointment": "20:30", "note": "Evening appointments" },
+      "wednesday": { "open": "17:30", "last_appointment": "20:30", "note": "Evening appointments" },
+      "thursday":  { "open": "16:30", "last_appointment": "20:30", "note": "Evening appointments" },
+      "friday":    { "open": "16:30", "last_appointment": "19:30", "note": "Evening appointments" },
+      "saturday":  { "open": "09:30", "last_appointment": "13:30", "note": "Saturday mornings" },
+      "sunday":    "Closed"
+    },
+    "last_appointment": "8:30pm weekday evenings (Friday 7:30pm), 1:30pm Saturday",
+    "bank_holidays":    "TBC — varies by week, confirm with Marcus"
+  },
+  "operational": {
+    "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
+    "timezone": "Europe/London",
+    "sms_name": "Joint Venture Physiotherapy",
+    "phone": "+44 7586 605462",
+    "transfer_phone": "+447586605462",
+    "booking_system": "google_calendar",
+    "_calendar_id_note": "Dedicated JV business account jointventurephysiotherapy@gmail.com — Marcus's Carepatron is two-way synced to it (his appointments appear as busy; Susie's bookings sync back). Susie's google_tokens MUST be OAuthed as this same account (re-run /auth/google/start signed in as jointventurephysiotherapy@gmail.com). No personal-calendar pollution.",
+    "calendar_id": "jointventurephysiotherapy@gmail.com",
+    "_digest_note": "End-of-day email of the day's calendar bookings so the agency enters them into Carepatron. Set email_to (or env DIGEST_EMAIL_TO) before go-live; sends once daily at hour:minute London. Requires SMTP_* env + google_tokens connected.",
+    "digest": {
+      "enabled": true,
+      "email_to": "",
+      "hour": 21,
+      "minute": 30
+    },
+    "slot_minutes": 40,
+    "_slot_increment_note": "Appointments last 40 mins, but offer slots on the hour (every 60 mins) for simplicity. Slots anchor to each day's opening time.",
+    "slot_increment_minutes": 60,
+    "days_ahead": 60,
+    "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
+    "allow_same_day": true,
+    "primary_location": "bolton",
+    "working_hours": {
+      "mon": { "open": "16:30", "last_appointment": "20:30" },
+      "tue": { "open": "17:00", "last_appointment": "20:30" },
+      "wed": { "open": "17:30", "last_appointment": "20:30" },
+      "thu": { "open": "16:30", "last_appointment": "20:30" },
+      "fri": { "open": "16:30", "last_appointment": "19:30" },
+      "sat": { "open": "09:30", "last_appointment": "13:30" },
+      "sun": null
+    }
+  },
+  "prompt_engine": "template_v1",
+  "prompt_mode": "modality_gate",
+  "modalities": ["in_clinic", "remote"],
+  "modality_labels": {
+    "in_clinic": "in-clinic at Bolton",
+    "remote": "remote (video/phone)"
+  },
+  "modality_session_keys": {
+    "confirmed_flag": "jv_modality_confirmed",
+    "value_key": "jv_modality"
+  },
+  "prompt_facts": {
+    "identity_descriptor": "a private physiotherapy clinic based in Bolton",
+    "sole_practitioner": true,
+    "practitioner": "Marcus",
+    "practitioner_credentials": "Masters in Advanced Clinical Practice, HCPC Registered PH104377, CSP member. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
+    "persona_tone": "Warm, confident, Northern British",
+    "persona_descriptor": "a warm, capable Northern British receptionist",
+    "pricing_default_line": "Default to the in-clinic assessment fee (£52) for new patients asking 'how much is an appointment'.",
+    "default_price_summary": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website.",
+    "tagline": "Your Recovery Is Our Joint Venture",
+    "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics — a genuine differentiator. Reference it when appropriate, never apologise for pricing.",
+    "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I help you today?",
+    "ai_self_response": "Yes, I'm an AI receptionist for Joint Venture Physiotherapy — I can answer questions and book appointments for you.",
+    "clinical_deflection_response": "That's one for Marcus to assess properly at your appointment.",
+    "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
+    "booking_offer": "Would you like to book an assessment so Marcus can take a proper look?",
+    "modality_question": "Would you like to come into our Bolton clinic, or have a remote video or phone appointment?",
+    "hours_summary_spoken": "We offer evening appointments Monday to Friday and Saturday morning slots — let me check what's available for you.",
+    "closing_practitioner_line": "You're in good hands with Marcus."
+  },
+  "faq": [
+    { "q": "Do I need a GP referral?", "a": "No — you can book directly with us without a referral. Just call or book online and we'll get you seen as soon as possible." },
+    { "q": "How do I access the clinic?", "a": "We're at Flexspace Bolton, Lythgoe House, Manchester Road, Bolton, BL3 2NZ. On arrival you'll be given the access code for the main entrance — use the top keypad, then come in and take a seat in the waiting area." },
+    { "q": "Is there parking?", "a": "Yes — there is free 24/7 on-site parking at Flexspace Bolton. No need to worry about finding a space or paying for parking." },
+    { "q": "Do you offer evening or weekend appointments?", "a": "Yes — we offer evening appointments on weekdays and Saturday morning slots. Contact us and we'll find a time that works for you." },
+    { "q": "How much does it cost?", "a": "An initial MSK assessment is £52 for 40 minutes. Follow-up sessions are £46 for 30 minutes. We are 10 to 20 percent more affordable than other local physiotherapy clinics. Full pricing is on our website." },
+    { "q": "Do you accept private health insurance?", "a": "Yes — we accept private healthcare referrals. I can get you booked in now, and Marcus will be in touch to take your insurer details and sort the rest." },
+    { "q": "Can you come to me?", "a": "Yes — we offer home visits across Bolton and the Greater Manchester area. A 60-minute combined assessment and treatment session at your home is £80. Please mention this when booking." },
+    { "q": "Can I have a remote appointment?", "a": "Yes — we offer video and phone consultations for £40 per session. These are available to patients anywhere in the UK or worldwide, and are ideal for follow-ups or if you can't make it in person." },
+    { "q": "What conditions do you treat?", "a": "We treat a wide range of musculoskeletal and neurological conditions — from back pain, neck pain, and sports injuries to multiple sclerosis, stroke rehabilitation, and vestibular conditions. If you're unsure whether we can help, give us a call and Marcus will advise you." },
+    { "q": "Who will I see?", "a": "All appointments are with Marcus, our Clinical Lead. Marcus has a Masters in Advanced Clinical Practice and a background in elite sport, the NHS, and private practice — you're in expert hands." },
+    { "q": "How do I book?", "a": "You can book online at our website, or give us a call and we'll sort it for you. We have evening and Saturday morning slots available." },
+    { "q": "What should I wear?", "a": "Wear comfortable, loose clothing that allows easy access to the area being treated. Marcus will let you know if anything specific is needed for your appointment." },
+    { "q": "Do you offer discounts?", "a": "Yes — we offer discounts for patients under 18 and students. Please mention this when booking." },
+    { "q": "Can I drive after my appointment?", "a": "In most cases yes, but Marcus will advise you depending on what treatment you've had." },
+    { "q": "What is your cancellation policy?", "a": "We require at least 24 hours notice to cancel or rearrange. Cancellations with less than 24 hours notice or no-shows may be charged the full session fee." },
+    { "q": "Should I eat before my appointment?", "a": "No special preparation needed — just eat as you normally would. For acupuncture, avoid a heavy meal immediately beforehand." },
+    { "q": "What happens at my first appointment?", "a": "Marcus will take a full history, assess your movement and strength, and put together a tailored treatment plan — the whole thing takes about 40 minutes for an MSK assessment." }
+  ],
+  "team_and_availability": {
+    "practitioners": [
+      {
+        "name": "Marcus",
+        "surname_note": "TBC — STT variant 'marcus smith' seen; confirm correct surname before go-live",
+        "title": "Clinical Lead & Physiotherapist",
+        "qualifications": "Masters in Advanced Clinical Practice, HCPC Registered (PH104377), CSP member",
+        "background": "Elite sport, private practice, NHS, clinical leadership and education. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
+        "prescribing_qualified": true,
+        "prescribing_scope": "Acupuncture and corticosteroid injections",
+        "locations": ["bolton"],
+        "is_sole_practitioner": true,
+        "days_available": "Monday to Friday evenings, Saturday mornings — exact schedule TBC with Marcus",
+        "notes": "All appointments are with Marcus."
+      }
+    ],
+    "admin_staff": [],
+    "booking_notes": [
+      "Single practitioner — all appointments are with Marcus.",
+      "Appointments available in-clinic (Bolton), remotely (video/phone), and via home visit (Bolton and Greater Manchester).",
+      "Corticosteroid injections are coming soon — not yet bookable."
+    ]
+  },
+  "booking": {
+    "system": "Carepatron",
+    "booking_url": "book.carepatron.com/Joint-Venture-Physiotherapy/Marcus",
+    "booking_window_months": 2,
+    "preferred_handling": "Book directly into Carepatron where possible.",
+    "patient_notes_supported": "TBC — Carepatron supports clinical notes",
+    "sms_confirmation_on_booking": "TBC with Marcus",
+    "same_day_booking": "Yes — same-day booking available (subject to slot availability)",
+    "calendars_by_location": false,
+    "calendars_by_service": "TBC — confirm Carepatron appointment type structure with Marcus",
+    "never_autobook": [
+      "Corticosteroid injections (coming soon — not yet available)",
+      "Insurance referral appointments (if applicable — confirm with Marcus)"
+    ]
+  },
+  "services": [
+    {
+      "service_id": "msk_initial_assessment",
+      "name": "Initial Assessment (Musculoskeletal)",
+      "typical_duration_minutes": 40,
+      "for_patients": "New",
+      "description": "A thorough physiotherapy assessment of your musculoskeletal condition, leading to an accurate diagnosis and a personalised treatment plan. Marcus will take a full history, carry out a physical examination, and agree next steps with you.",
+      "pre_booking_notes": "Wear comfortable, loose clothing that allows easy access to the area being assessed.",
+      "pricing": {
+        "in_clinic_gbp": 52,
+        "remote_gbp": null,
+        "home_visit_gbp": 80
+      },
+      "available_as": ["in_clinic", "home_visit"]
+    },
+    {
+      "service_id": "msk_treatment_session",
+      "name": "MSK Treatment Session",
+      "typical_duration_minutes": 30,
+      "for_patients": "Returning",
+      "description": "A focused follow-up session to continue your rehabilitation, deliver hands-on manual therapy, and progress your exercise programme. Tailored to your current stage of recovery.",
+      "pre_booking_notes": "Wear comfortable clothing. Bring any relevant scan reports or GP letters if you have them.",
+      "pricing": {
+        "in_clinic_gbp": 46,
+        "remote_gbp": 40,
+        "home_visit_gbp": 80
+      },
+      "available_as": ["in_clinic", "remote", "home_visit"]
+    },
+    {
+      "service_id": "virtual_appointment",
+      "name": "Virtual Appointment",
+      "typical_duration_minutes": 30,
+      "for_patients": "Both",
+      "description": "A video or phone consultation with Marcus — ideal for those outside Bolton and Manchester, or for review appointments that do not require hands-on treatment. Available to patients anywhere in the UK or worldwide.",
+      "pre_booking_notes": "You will receive a video link by email before the appointment. Have a quiet space and, if possible, wear clothing that allows you to show the affected area.",
+      "pricing": {
+        "price_gbp": 40
+      },
+      "available_as": ["remote"]
+    },
+    {
+      "service_id": "acupuncture",
+      "name": "Acupuncture",
+      "typical_duration_minutes": 30,
+      "for_patients": "Both",
+      "description": "Safe, evidence-based treatment using fine sterile needles to relieve pain, reduce tension, improve circulation, and promote healing. Delivered by Marcus, who is qualified to provide acupuncture as part of a comprehensive treatment plan.",
+      "pre_booking_notes": "Wear loose clothing. Avoid heavy meals immediately before the session.",
+      "pricing": {
+        "in_clinic_gbp": 48,
+        "home_visit_gbp": 70,
+        "package": "6 in-clinic sessions for £250"
+      },
+      "available_as": ["in_clinic", "home_visit"]
+    },
+    {
+      "service_id": "sports_massage",
+      "name": "Sports Massage",
+      "typical_duration_minutes_options": [30, 60],
+      "for_patients": "Both",
+      "description": "Specialist hands-on massage techniques to alleviate muscle tension, improve flexibility, support injury recovery, and enhance athletic performance. Tailored to your specific needs — whether you need deep tissue work, relaxation, or recovery support.",
+      "pre_booking_notes": "Wear or bring shorts or a vest if the lower body or back is being treated.",
+      "pricing": {
+        "30min_in_clinic_gbp": 40,
+        "60min_in_clinic_gbp": 55
+      },
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "neuro_assessment",
+      "name": "Neurological Physiotherapy — Initial Assessment",
+      "typical_duration_minutes": 60,
+      "for_patients": "New",
+      "description": "Specialist physiotherapy for neurological conditions including multiple sclerosis, stroke, functional neurological disorder (FND), and vestibular conditions. Marcus will carry out a comprehensive assessment and develop a tailored rehabilitation programme to improve function, movement, and quality of life.",
+      "pre_booking_notes": "Wear comfortable clothing. Bring any relevant letters from consultants or neurologists if you have them.",
+      "pricing": {
+        "in_clinic_gbp": 80,
+        "remote_gbp": 70
+      },
+      "available_as": ["in_clinic", "remote", "home_visit"]
+    },
+    {
+      "service_id": "neuro_followup",
+      "name": "Neurological Physiotherapy — Follow-up",
+      "typical_duration_minutes": 60,
+      "for_patients": "Returning",
+      "description": "Follow-up neurological physiotherapy session to continue your rehabilitation programme, reassess progress, and adjust interventions as needed.",
+      "pricing": {
+        "in_clinic_gbp": 65,
+        "remote_gbp": 60
+      },
+      "available_as": ["in_clinic", "remote", "home_visit"]
+    },
+    {
+      "service_id": "outdoor_sports_rehab",
+      "name": "Outdoor Sports Rehabilitation",
+      "typical_duration_minutes": 45,
+      "for_patients": "Returning",
+      "description": "End-stage rehabilitation for sporting injuries, carried out outdoors with a focus on enhancing performance and safely returning to play. Ideal for athletes who are near full recovery and need sport-specific conditioning before returning to training or competition.",
+      "pre_booking_notes": "Wear appropriate outdoor sportswear and footwear for your sport.",
+      "pricing": {
+        "price_gbp": 55
+      },
+      "available_as": ["outdoor_bolton"]
+    },
+    {
+      "service_id": "home_visit",
+      "name": "Home Visit — Assessment & Treatment",
+      "typical_duration_minutes": 60,
+      "for_patients": "Both",
+      "description": "Full physiotherapy assessment and treatment delivered at your home. Perfect for patients who find it difficult to travel, or those who prefer the convenience of care at home. Available across Bolton and the Manchester region.",
+      "pre_booking_notes": "Ensure there is a clear space where Marcus can work — a firm chair or clear floor area is ideal.",
+      "pricing": {
+        "msk_gbp": 80,
+        "acupuncture_gbp": 70,
+        "travel_surcharge_note": "Travel may apply for locations outside Bolton — confirm with Marcus"
+      },
+      "available_as": ["home_visit_bolton_and_greater_manchester"]
+    },
+    {
+      "service_id": "corticosteroid_injections",
+      "_status": "COMING SOON — do not book; take enquirer name and number for Marcus to follow up when available",
+      "name": "Corticosteroid Injections",
+      "available": false
+    }
+  ],
+  "pricing_and_policies": {
+    "competitor_positioning": "10-20% more affordable than other local physiotherapy clinics with no compromise on quality",
+    "u18_student_discount": "Available on request — mention when booking",
+    "payment_methods": ["card", "cash", "bank_transfer_by_prior_arrangement"],
+    "deposit_required": "TBC with Marcus",
+    "cancellation_policy": "Minimum 24 hours notice required",
+    "late_cancellation_fee": "100% of appointment fee (less than 24 hours notice)",
+    "no_show_fee": "100% of appointment fee",
+    "late_arrival_policy": "If more than 15 minutes late, session may not proceed but full charge may still apply",
+    "returning_patient_definition": "Same condition = returning patient. New or unrelated condition = new assessment recommended.",
+    "chaperone": "Patients may bring a friend or family member to any appointment",
+    "minimum_age": "No minimum age — discounts available for under 18",
+    "gp_referral_required": false,
+    "reports_and_letters": "TBC with Marcus"
+  },
+  "insurance": {
+    "model": "Self-pay with private health insurance accepted",
+    "bupa_accepted": true,
+    "other_insurers_accepted": true,
+    "protocol": "Option B handling: confirm referrals accepted, book the appointment normally, note the insurer NAME only, tell the caller Marcus will be in touch to collect the rest of the insurance details, and pass a followup_note to book_appointment so Marcus is pinged. Never take a pre-auth/membership/policy code by phone; never confirm cover.",
+    "what_ai_should_do": [
+      "Confirm we accept private health insurance referrals — never turn the caller away.",
+      "Book the appointment normally so the slot is secured.",
+      "Note the insurer's NAME only — exactly what the caller said; do NOT add insurers they didn't mention.",
+      "Do NOT ask for or take a pre-authorisation, membership or policy code over the phone, and do NOT say cover is confirmed or 'all good'.",
+      "Tell the caller: 'Okay, that's noted — Marcus will be in touch to collect the rest of your insurance details.'",
+      "When booking, pass a followup_note to book_appointment summarising it, e.g. followup_note='INSURANCE: Aviva — wants to use private insurance; collect pre-auth and confirm cover'. Marcus is pinged automatically."
+    ]
+  },
+  "call_handling": {
+    "transfer_to_human_triggers": [
+      "Caller requests to speak to Marcus directly",
+      "Complex clinical question the AI cannot safely answer",
+      "Caller is distressed or in crisis",
+      "Corticosteroid injection enquiry (coming soon — take details only)",
+      "Three understanding failures or two failed lookups"
+    ],
+    "emergency_message": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
+    "if_cant_answer": "Acknowledge the question, explain Marcus will be in touch, and offer to take the caller's name and number for a callback.",
+    "if_all_slots_full": "Take caller's name, number, and preferred times — offer to add them to the waiting list and confirm Marcus will follow up.",
+    "after_hours": "Take a message with name, number, and reason for calling. Confirm Marcus will call back during the next available business hours.",
+    "who_handles_followups": "Marcus",
+    "ai_must_never_answer": [
+      "Clinical diagnosis",
+      "Whether a specific condition is safe to treat without assessment",
+      "Specific medication advice",
+      "Prognosis or recovery timescales (beyond general guidance)"
+    ]
+  },
+  "brand_and_tone": {
+    "tagline": "Your Recovery Is Our Joint Venture",
+    "care_philosophy": "Personalised expert care for every patient — in-clinic, at home, or online. Flexible appointments, a broad range of treatments, and prices 10-20% below local competitors.",
+    "tone_words": ["Professional", "Approachable", "Affordable"],
+    "ai_persona_name": "Susie",
+    "ai_voice_type": "Warm, confident, Northern British tone",
+    "lead_practitioner": "Marcus",
+    "phrases_never_use": ["cheap", "budget", "basic", "we can't help with that"],
+    "phrases_use_freely": ["personalised", "tailored", "flexible", "affordable", "expert", "recovery", "in your own time", "wherever suits you"]
+  },
+  "stt_variants": {
+    "clinic_name": [
+      "joint venture physio",
+      "joint venture",
+      "JV physio",
+      "JV physiotherapy",
+      "joint vencher physio",
+      "joint venture fizzy-oh"
+    ],
+    "bolton": [
+      "bolten",
+      "boltan",
+      "bol-ton",
+      "bolton greater manchester"
+    ],
+    "marcus": [
+      "markus",
+      "the physio"
+    ],
+    "services": {
+      "acupuncture": ["acupunture", "acu-puncture"],
+      "neurological": ["neurological", "neuro", "nerve condition"],
+      "carepatron": ["care patron", "cair patron"],
+      "msk": ["em ess kay", "musculoskeletal"],
+      "flexspace": ["flex space", "fleck space", "flecks space"]
+    }
+  },
+  "reporting": {
+    "google_sheets_call_summaries": "TBC",
+    "missed_call_tracking": "TBC",
+    "notifications_for_manual_followups": "TBC"
+  }
+}

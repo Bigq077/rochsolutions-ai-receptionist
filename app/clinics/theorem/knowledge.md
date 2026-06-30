@@ -28,7 +28,7 @@ Just as a mathematical theorem combines principles for a proven solution, Theore
 
 ## Pricing & policies
 - Physiotherapy assessment: £85 (50 minutes)
-- Physiotherapy follow-up: £85 (50 minutes)
+- Physiotherapy follow-up: £85 (40 minutes)
 - Remedial rehabilitation: £65 (50 minutes)
 - Prescribing consultation: £12.50
 - Acupuncture: £85 (50 minutes)

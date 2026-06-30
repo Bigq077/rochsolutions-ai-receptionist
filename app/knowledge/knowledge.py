@@ -129,7 +129,7 @@ PRICING = {
     },
     "physiotherapy_followup": {
         "price": "£85",
-        "duration": "50 minutes",
+        "duration": "40 minutes",
         "description": "Follow-up physiotherapy session",
     },
     "rehabilitation": {
@@ -317,7 +317,7 @@ SERVICES = {
     "physiotherapy_followup": {
         "name": "Physiotherapy Follow-up",
         "price": "£85",
-        "duration": "50 minutes",
+        "duration": "40 minutes",
         "short": (
             "Follow-up sessions are where the real progress happens. "
             "We check in on how you're doing, "

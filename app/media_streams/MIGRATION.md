@@ -26,7 +26,7 @@ All items verified complete as of 2026-03-24.
 - [x] Redditch opening hours correct — Mon/Tue/Fri 09:00–17:00, Wed/Thu 09:00–19:00, Sat 09:00–17:00, closed Sundays
 - [x] All appointment types with correct prices:
   - Physiotherapy Assessment: 50 min, £85
-  - Physiotherapy Follow-up: 50 min, £85
+  - Physiotherapy Follow-up: 40 min, £85
   - Remedial Rehabilitation: 50 min, £65
   - Prescribing Consultation: 20 min, £12.50
   - Acupuncture: 50 min, £85
