@@ -6,6 +6,10 @@ from typing import Dict, Any, Optional
 import os
 import copy as _copy
 
+# Canonical source of truth for Theorem clinic facts. Pure data, no app deps —
+# safe to import here. Used to keep structured prices in a single place.
+from app.clinics.theorem import canonical as theorem_canonical
+
 
 def _hours_tuple(start_hour: float, end_hour: float):
     """
@@ -314,7 +318,7 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         "late_payment_charge": True,
         "deposit_required": False,
         "payment_plans": False,
-        "cancellation_fee_pct": 75,            # 75% of session fee if <24h notice
+        "cancellation_fee_pct": 100,           # full session fee if <24h notice or no-show
         "cancellation_notice_hours": 24,       # minimum notice to avoid fee
         "reschedule_notice_hours": 24,         # rescheduling with <24h notice = treated as cancellation
         "same_day_booking_allowed": False,     # minimum 24h notice required
@@ -485,16 +489,16 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "Invoices raised immediately after consultation.",
                 "Packages invoiced; due within 7 days.",
                 "Late/non-payment charges apply.",
-                "Cancellation with <24h notice: 75% of session fee charged.",
+                "Cancellation with <24h notice or no-show: full session fee charged.",
             ],
         },
 
         "cancellation_policy": (
             "We require at least 24 hours' notice to cancel or rearrange an appointment. "
             "If you cancel with less than 24 hours' notice, or don't attend, "
-            "a charge of 75% of the session fee applies. "
+            "the full session fee applies. "
             "For prepaid or package appointments cancelled at short notice, "
-            "the 75% penalty is deducted from your credit balance. "
+            "the full-fee penalty is deducted from your credit balance. "
             "Packages are non-transferable, valid for 6 months from purchase, "
             "and have a 2-week cooling-off period. "
             "Please refer to our website for full terms and conditions."
@@ -1127,7 +1131,7 @@ THEOREM_APPOINTMENT_TYPES = {
     "physio_followup": {
         "id": "physio_followup",
         "name": "Physiotherapy Follow-up",
-        "duration_minutes": 50,
+        "duration_minutes": 40,
         "price_gbp": 85.00,
         "description": (
             "Progress tracking and treatment plan adjustment. "
@@ -1197,6 +1201,25 @@ THEOREM_APPOINTMENT_TYPES = {
         "acuity_appointment_type_id": None,
     },
 }
+
+# ── Canonical price sync ────────────────────────────────────────────────────
+# Single source of truth: derive booking prices from
+# app/clinics/theorem/canonical.py so prices live in exactly one place.
+# Maps Acuity appointment-type ids → canonical service ids. Any type not listed
+# keeps its literal above (none currently). Tests assert these stay in sync.
+_CANONICAL_PRICE_MAP = {
+    "physio_assessment": "physio_assessment",
+    "physio_followup":   "physio_followup",
+    "remedial_rehab":    "remedial_rehab",
+    "rehab_pt":          "remedial_rehab",
+    "prescribing":       "prescribing",
+    "acupuncture":       "acupuncture",
+    "psychotherapy":     "psychotherapy",
+}
+for _apt_id, _canon_id in _CANONICAL_PRICE_MAP.items():
+    _canon_price = theorem_canonical.get_price(_canon_id)
+    if _apt_id in THEOREM_APPOINTMENT_TYPES and _canon_price is not None:
+        THEOREM_APPOINTMENT_TYPES[_apt_id]["price_gbp"] = float(_canon_price)
 
 # Specialist equipment surcharges (applied during session, not at booking)
 THEOREM_SURCHARGES = {
