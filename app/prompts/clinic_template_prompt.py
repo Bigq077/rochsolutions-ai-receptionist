@@ -1323,7 +1323,10 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "that's…' or 'Right, so…'. Wait for explicit yes; if corrected, "
         "re-state and wait again.\n"
         "10. Call book_appointment immediately after yes — do NOT speak "
-        "before calling. " + booking_success + " On failure: "
+        "before calling. The location you pass to book_appointment MUST be the "
+        "SAME modality you checked availability for: if the caller chose "
+        "remote/video/phone, pass location='remote'; never revert to the "
+        "in-clinic default. " + booking_success + " On failure: "
         "'I'm sorry — there was a problem locking that in. Please call back "
         "and we'll get it sorted for you.'"
     )

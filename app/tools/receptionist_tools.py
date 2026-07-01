@@ -4042,6 +4042,21 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 
     tokens = await _get_tokens()
     location = (args.get("location") or "").lower().strip()
+    # BUG-5: carry the confirmed modality into the booking. The model sometimes
+    # reverts to the in-clinic default (a physical site) at book time even after
+    # the caller chose remote/video/phone or a home visit — availability was
+    # already checked for that modality (_checked_location, pinned by
+    # check_availability). If the checked modality is remote/home but the book
+    # location is an in-clinic site, trust the checked modality so the calendar
+    # event, price and SMS template all match what the caller actually booked.
+    _REMOTE_HOME = ("remote", "video", "phone", "online", "virtual", "home_visit", "home visit")
+    _checked_mod = (session.get("_checked_location") or "").lower().strip()
+    if _checked_mod in _REMOTE_HOME and location not in _REMOTE_HOME:
+        logger.info(
+            "[book] modality reconciled: book location %r → %r (matches checked availability)",
+            location, _checked_mod,
+        )
+        location = _checked_mod
     patient_name = args.get("patient_name", "")
     phone = args.get("phone", "")
     service = args.get("service", "physiotherapy")
