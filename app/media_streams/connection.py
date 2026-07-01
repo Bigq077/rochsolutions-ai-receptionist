@@ -690,6 +690,18 @@ _TTS_DONE_SENTINEL = object()
 # duplicate emission.  Normal dedup remains active for every other chunk.
 _WATCHDOG_REASK_MARKER = "\x01WDG_REASK\x01"
 
+# Prefix marker prepended to a TTS text chunk that must finish playing in
+# full before any barge-in teardown is allowed — e.g. the v3 greeting's
+# mandatory "press 1 to speak to Mark" disclosure (production sign-off
+# sweep, CALL 1 / Issue 1).  _tts_loop strips the marker and arms
+# self._barge_protected_active for that single chunk only; the flag is
+# checked alongside self._clinical_response_active in the barge-in guard
+# inside _on_partial_transcript.  Deliberately a marker (set at the source
+# that queues the text) rather than a text-content match, so it can never
+# collide with unrelated "press 1" wording elsewhere (e.g. the DTMF
+# clinic-selection ladder), which must remain barge-in-responsive.
+_BARGE_PROTECTED_MARKER = "\x01BARGE_PROTECTED\x01"
+
 # ---------------------------------------------------------------------------
 # Spec O — strip leading affirmation before watchdog re-ask construction
 # Applies only to the copy used for the re-ask; last_bot_prompt / last_question
@@ -3881,6 +3893,13 @@ class WebSocketCallHandler:
         # caller always hears the full empathy acknowledgement before Susie listens
         # to the next input.  Reset to False at the start of each new TTS chunk.
         self._clinical_response_active: bool = False
+        # Barge-in disclosure protection: True while a TTS chunk queued with
+        # _BARGE_PROTECTED_MARKER (e.g. the v3 greeting's press-1 disclosure)
+        # is being synthesised/played.  Same suppression effect as
+        # _clinical_response_active but armed by an explicit marker at the
+        # queueing source rather than by matching chunk text content.
+        # Reset to False at the start of each new TTS chunk.
+        self._barge_protected_active: bool = False
 
         # Keypad idle-finalize: scheduled when the DTMF buffer has enough digits
         # to plausibly be a complete number but the caller has paused.  If no
@@ -9646,6 +9665,13 @@ class WebSocketCallHandler:
                         )
                         continue
 
+                # Barge-protected marker: strip it here so downstream text
+                # processing (subs, splitting, synthesis) never sees it.
+                # The arm/reset step lives with the clinical guard below.
+                _barge_protected_chunk = chunk_text.startswith(_BARGE_PROTECTED_MARKER)
+                if _barge_protected_chunk:
+                    chunk_text = chunk_text[len(_BARGE_PROTECTED_MARKER):]
+
                 # SPEC 4 / Bug 1: apply phonetic substitution to chunk_text NOW
                 # so that every downstream tracking variable — dedup comparison,
                 # _last_tts_chunk, and _tts_text_pending (→ tts_finished log,
@@ -9784,6 +9810,20 @@ class WebSocketCallHandler:
                         chunk_text[:60],
                     )
                 # ── end clinical barge-in protection ──────────────────────────
+
+                # ── Barge-protected marker guard ────────────────────────────
+                # Reset for each new chunk, same as _clinical_response_active
+                # above — armed only when THIS chunk was tagged at the source
+                # with _BARGE_PROTECTED_MARKER (stripped earlier in this
+                # iteration).  Self-clearing: the next dequeued item resets it.
+                self._barge_protected_active = _barge_protected_chunk
+                if _barge_protected_chunk:
+                    logger.info(
+                        "[ms_conn] barge-protected chunk"
+                        " — barge-in guard armed: %r",
+                        chunk_text[:60],
+                    )
+                # ── end barge-protected marker guard ────────────────────────
 
                 # Notify silence handler ONCE per chunk (not per sub-chunk).
                 # on_tts_started() is paired with exactly one on_tts_finished() call
@@ -10447,13 +10487,15 @@ class WebSocketCallHandler:
             )
 
         # ── Clinical barge-in guard ────────────────────────────────────────
-        # When a clinical/empathy response is active, do NOT cancel the TTS.
-        # The caller hears the full empathy acknowledgement; their barge-in
-        # text is processed normally on the NEXT final transcript event.
-        if self._clinical_response_active:
+        # When a clinical/empathy response is active, or the current chunk
+        # was marked barge-protected at the source (_BARGE_PROTECTED_MARKER
+        # — e.g. the v3 greeting's press-1 disclosure), do NOT cancel the
+        # TTS. The caller hears the full response; their barge-in text is
+        # processed normally on the NEXT final transcript event.
+        if self._clinical_response_active or self._barge_protected_active:
             logger.info(
                 "[ms_conn] barge-in suppressed"
-                " — clinical response completing: %r",
+                " — protected response completing: %r",
                 self._current_tts_text[:60],
             )
             return
@@ -10811,7 +10853,7 @@ class WebSocketCallHandler:
             self.session["v3_intro_dtmf_active"] = True
 
             await save_session(self.call_sid, self.session)
-            await self.tts_text_queue.put(_v3_greeting)
+            await self.tts_text_queue.put(_BARGE_PROTECTED_MARKER + _v3_greeting)
             return
 
         # ────────────────────────────────────────────────────────────────────
