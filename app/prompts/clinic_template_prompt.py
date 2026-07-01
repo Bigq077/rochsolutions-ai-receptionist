@@ -225,18 +225,43 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             )
     else:
         # Multi-modality clinic, but each SERVICE supports only a subset of
-        # modalities (e.g. acupuncture is in-clinic only — it has no remote
-        # option). Only offer the in-clinic-vs-remote choice for services that
-        # can actually be done remotely; everything else goes straight to
-        # in-clinic. Driven by each service's available_as list.
+        # modalities. Two INDEPENDENT axes: (1) remote-capable? (video/phone)
+        # (2) home-visit-capable? A service can be neither (truly in-clinic
+        # only, e.g. sports massage), or not-remote-but-home-capable (e.g.
+        # acupuncture, msk initial assessment). Do NOT collapse "not remote"
+        # into "in-clinic only" — that wrongly denies home visits.
+        #
+        # NOTE: home visits are delivered via a dedicated "home_visit" service
+        # and/or a per-service home_visit_gbp rate — they are NOT necessarily a
+        # top-level modality (jv_v1 lists modalities=[in_clinic, remote] yet
+        # still does acupuncture/msk home visits). Detect either signal.
         remote_ok: List[str] = []
+        home_capable: List[str] = []  # not remote, but bookable as a home visit
         in_clinic_only: List[str] = []
+        _home_on = "home_visit" in (clinic.get("modalities") or []) or any(
+            (s.get("service_id") == "home_visit"
+             or (s.get("pricing") or {}).get("home_visit_gbp") is not None)
+            and s.get("available") is not False
+            for s in clinic.get("services", []) or []
+        )
         for svc in clinic.get("services", []) or []:
             if svc.get("available") is False:
                 continue
+            # The dedicated Home Visit service IS the home-visit vehicle; it is
+            # not an in-clinic/remote choice, so keep it out of these buckets.
+            if svc.get("service_id") == "home_visit":
+                continue
             avail = svc.get("available_as") or []
             nm = svc.get("name", svc.get("service_id", ""))
-            (remote_ok if "remote" in avail else in_clinic_only).append(nm)
+            hp = (svc.get("pricing") or {}).get("home_visit_gbp")
+            if "remote" in avail:
+                remote_ok.append(nm)
+            elif _home_on and (hp is not None or "home_visit" in avail):
+                home_capable.append(
+                    f"{nm} (home visit {_gbp(hp)})" if hp is not None else nm
+                )
+            else:
+                in_clinic_only.append(nm)
         lines.append(
             "MODALITY DETERMINATION — depends on the SERVICE the caller wants:"
         )
@@ -246,12 +271,22 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
                 f"preference, ask: '{pf.get('modality_question', '')}' "
                 "These services: " + ", ".join(remote_ok) + "."
             )
+        if home_capable:
+            lines.append(
+                "IN-CLINIC-OR-HOME services — NOT remote-capable, so NEVER ask "
+                "about or offer a remote, video, or phone option for these. "
+                f"Default to in-clinic at {tk['primary_location_id']}, BUT they "
+                "CAN be done as a home visit: if the caller asks for or needs it "
+                "at home, confirm the home visit at the stated price and set "
+                "location='home_visit'. These services: "
+                + ", ".join(home_capable) + "."
+            )
         if in_clinic_only:
             lines.append(
-                "IN-CLINIC-ONLY services — NEVER ask in-clinic vs remote and "
-                "NEVER offer a remote, video, or phone option for these; go "
-                f"straight to in-clinic at {tk['primary_location_id']}. These "
-                "services: " + ", ".join(in_clinic_only) + "."
+                "IN-CLINIC-ONLY services — NEVER ask about or offer a remote, "
+                "video, phone, OR home-visit option for these; go straight to "
+                f"in-clinic at {tk['primary_location_id']}. These services: "
+                + ", ".join(in_clinic_only) + "."
             )
         lines.append(
             f"In-clinic → location='{tk['primary_location_id']}'. "
@@ -714,12 +749,14 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
         "MODALITY RULE\n"
         f"{tk['clinic_name']} has one clinic site: {tk['primary_location_name']}. "
         "Whether to confirm modality depends on the SERVICE requested (see the "
-        "REMOTE-CAPABLE vs IN-CLINIC-ONLY lists in SERVICE MAPPING). For a "
-        "remote-capable service, confirm the modality before checking "
-        f"availability — ask: '{pf.get('modality_question','')}'. For an "
-        "IN-CLINIC-ONLY service (e.g. acupuncture, sports massage), do NOT ask "
-        "and do NOT offer remote/video/phone — go straight to in-clinic. Once "
-        "confirmed, never ask again."
+        "REMOTE-CAPABLE / IN-CLINIC-OR-HOME / IN-CLINIC-ONLY lists in SERVICE "
+        "MAPPING). For a remote-capable service, confirm the modality before "
+        f"checking availability — ask: '{pf.get('modality_question','')}'. For "
+        "a service that is not remote-capable (e.g. acupuncture, sports "
+        "massage), do NOT ask about or offer remote/video/phone — default to "
+        "in-clinic; but if that service is ALSO home-visit-capable (see the "
+        "IN-CLINIC-OR-HOME list) and the caller asks for or needs it at home, "
+        "book it as a home visit. Once confirmed, never ask again."
     )
 
 
