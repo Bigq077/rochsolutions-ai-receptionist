@@ -4438,9 +4438,10 @@ class WebSocketCallHandler:
                 self.session["v3_intro_dtmf_active"] = False
                 if digit == "1":
                     logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
-                    await self.tts_text_queue.put(
-                        "Transferring you to Mark now — one moment."
-                    )
+                    # F17: the hand-off line is now emitted once at the
+                    # _on_transfer_request choke point (unified G18 wording), so we
+                    # no longer queue a separate DTMF line here — that would stack
+                    # two lines before the dial.
                     self.session["transfer_requested_by_caller"] = True
                     await self._on_transfer_request()
                 return
@@ -10915,6 +10916,16 @@ class WebSocketCallHandler:
             })
             return
         logger.info("[ms_conn] transfer authorised — initiating")
+        # F17: deterministic G18 hand-off line, spoken via TTS on the live stream.
+        # This is the single choke point for EVERY transfer path (LLM tool, DTMF
+        # press-1, silence, emergency), so emitting it here guarantees the caller
+        # hears it regardless of gate5 (which strips the LLM's "bear with me"
+        # prose) and regardless of TRANSFER_DISABLED (which suppresses the TwiML
+        # <Say> on staging).  The prod TwiML <Say> in realtime._handle_transfer
+        # remains as the post-redirect delivery.  See sweep F17.
+        await self.tts_text_queue.put(
+            "Putting you through now — please stay on the line."
+        )
         try:
             from app.routes.realtime import _handle_transfer
             await _handle_transfer(self.call_sid, self.session)
