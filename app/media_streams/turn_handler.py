@@ -398,17 +398,28 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             logger.info("[ms_gate5] removed banned phrase (%s)", desc)
             result = cleaned
 
-    # ── Gate 5c: redundant booking-offer strip during active booking ─────────
-    # Only fires when the caller is already booking — never on pre-booking FAQ
-    # turns where the CTA is the desired close.
-    if session.get("booking_flow_active"):
+    # ── Gate 5c: strip an out-of-place booking-offer CTA ─────────────────────
+    # A trailing "would you like to book?" is only wanted in two situations:
+    #   • a concern turn (v3_treatment_mentioned) — the assessment offer IS the
+    #     desired close (sweep Calls 9/12/14 passed with it); keep it.
+    #   • a standalone booking question that is the WHOLE response — keep it
+    #     (whole-response guard below).
+    # It must be stripped when it is tacked onto:
+    #   • a mid-booking FAQ answer (booking_flow_active) — redundant; existing.
+    #   • a pure informational FAQ answer (neither flag) — F13: the price /
+    #     parking / hours booking push (sweep Calls 4 & 5, FAIL-level). On those
+    #     turns BOTH booking_flow_active and v3_treatment_mentioned are absent
+    #     (connection.py:7681-7699), which is exactly how we tell an FAQ answer
+    #     apart from a concern turn.
+    _booking_active = bool(session.get("booking_flow_active"))
+    _concern_turn = bool(session.get("v3_treatment_mentioned"))
+    if _booking_active or not _concern_turn:
         _offer_cleaned = _BOOKING_OFFER_RE.sub("", result)
         if _offer_cleaned != result:
-            # Gate 5c removes a REDUNDANT trailing CTA tacked onto an FAQ answer
-            # mid-booking (e.g. "...eighty parking spaces. Would you like to
-            # book?").  It must NOT eat the legitimate closing confirmation
+            # Whole-response guard: never eat a CTA that IS the entire reply — a
+            # legitimate standalone booking question or the closing confirmation
             # ("shall I go ahead and book that in?").  _BOOKING_OFFER_RE spans
-            # [^.!?]* on both sides, so when that confirmation is the whole
+            # [^.!?]* on both sides, so when the confirmation is the whole
             # response it matches end-to-end and strips to empty — the caller
             # then hears the deaf-sounding "Sorry, I didn't quite catch that"
             # fallback, killing a completed booking (Test 1, 2026-06-12: caller
@@ -416,14 +427,16 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             # Only strip when substantive content remains.
             if _offer_cleaned.strip():
                 logger.info(
-                    "[ms_gate5] removed redundant booking offer "
-                    "(booking_flow_active)"
+                    "[ms_gate5] removed out-of-place booking offer "
+                    "(booking_flow_active=%s, concern=%s)",
+                    _booking_active,
+                    _concern_turn,
                 )
                 result = _offer_cleaned
             else:
                 logger.info(
                     "[ms_gate5] booking offer KEPT — it is the whole response "
-                    "(closing confirmation), not a redundant tail"
+                    "(standalone booking question / closing confirmation)"
                 )
 
     result = result.replace("\n", " ")
