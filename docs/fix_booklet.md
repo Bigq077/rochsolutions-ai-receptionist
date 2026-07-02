@@ -20,7 +20,7 @@ and are their own cleanup track. Every entry below states its net effect on this
 
 ---
 
-## F13 — Booking-CTA appended to pure-FAQ answers  ⚠️ prompt fix kept · gate REVERTED (regressed concern turn) · re-verify pending
+## F13 — Booking-CTA appended to pure-FAQ answers  ✅ SIGNED OFF (prompt-only, phone-verified 2026-07-02)
 **Priority:** HIGH (professionalism / conversion). **Sweep:** Group 2; Calls 4 (prices) & 5 (parking) — FAIL-level.
 
 ### Symptom (from sweep)
@@ -94,9 +94,14 @@ behaviour); it is phone-verified.
 | 2 | "Do you have parking?" | ✅ parking answer, no booking push. *(Side issue: "alcester" resolved `intent=booking` and detoured to "day or time?" before the parking answer — location/re-queue friction, Group 4, not F13.)* |
 | 3 | "I've hurt my shoulder" (control) | ❌ gate logged `removed out-of-place booking offer (…concern=False)` and **stripped a legit booking offer** → **regression** → gate reverted. |
 
-**After the revert deploys, re-run the same 3 turns** on staging `+447366263180`
-(10s STT smoke call first). Expected: turns 1 & 2 unchanged (prompt); **turn 3 now offers
-the assessment** — no `[ms_gate5] removed out-of-place booking offer` line anywhere.
+**Re-verify after revert (call `CA8b7099…`, 2026-07-02 21:29, prompt-only deploy) — ALL PASS:**
+| Turn | Said | Result |
+|---|---|---|
+| 1 | "How much is a session?" | ✅ "£85… Is there anything else I can help you with?" — no push, no gate line. |
+| 2 | "Do you have parking?" | ✅ "free parking… ~eighty spaces… anything else?" — no push. Detour did NOT recur (FAQ re-queued cleanly; last time's detour was STT-driven "al foster"→intent=booking). |
+| 3 | "I've hurt my shoulder" | ✅ "…an assessment would look at what's going on… **Would you like to book one with Mark?**" — CTA restored, concern flow intact. |
+
+→ **F13 SIGNED OFF.** Prompt-only fix; concern flow preserved; no gate residue.
 
 ### Commits
 - Commit 1 (gate + test): **made, then REVERTED** after the phone test.
@@ -110,3 +115,62 @@ the assessment** — no `[ms_gate5] removed out-of-place booking offer` line any
 - Follow-up idea (not now): to re-add a deterministic FAQ-CTA guard safely, set a
   `session` flag marking a clinical-complaint turn *upstream* of the response stream, then
   gate on it — instead of inferring concern from `v3_treatment_mentioned`.
+
+---
+
+## F17 — Silent transfer: verbatim G18 line not spoken  ⚙️ code done · re-verify pending
+**Priority:** HIGH (safety). **Sweep:** Group 1 (safety-script line guarantees); Call 6.
+
+### Symptom (from sweep)
+On "can I just speak to someone" the LLM called `transfer_to_human` and the call bridged
+with **no spoken line** — the required verbatim G18 line *"Putting you through now — please
+stay on the line."* was never delivered. Silent transfer on a safety path.
+
+### Root cause
+The LLM transfer path had **no deterministic spoken line**:
+- Its intended line is LLM prose — the prompt says *"…just bear with me"*
+  ([susie_system_prompt.py:1538](../app/prompts/susie_system_prompt.py#L1538)) — and gate5's
+  `bear_with_me` pattern ([turn_handler.py:45](../app/media_streams/turn_handler.py#L45))
+  strips the whole sentence → silence.
+- The only deterministic line, the TwiML `<Say>` ([realtime.py:466](../app/routes/realtime.py#L466)),
+  is (a) suppressed on staging — `TRANSFER_DISABLED` returns at
+  [realtime.py:443](../app/routes/realtime.py#L443) *before* the TwiML is built — and (b) only
+  fires *after* the REST redirect, so a dead-air gap precedes it in prod.
+- DTMF press-1 works only because it queued a TTS line before dialing
+  ([connection.py:4442](../app/media_streams/connection.py#L4442)) — audio on the live stream,
+  independent of gate5 and the kill-switch.
+
+`_on_transfer_request` ([connection.py:10907](../app/media_streams/connection.py#L10907)) is
+the single choke point for ALL transfer paths (LLM tool via
+[connection.py:9329](../app/media_streams/connection.py#L9329), DTMF, silence, emergency).
+
+### Fix (one commit) — decision: KEEP BOTH lines (safe)
+`app/media_streams/connection.py`:
+1. In `_on_transfer_request`, after the guard passes and before `_handle_transfer`, queue the
+   verbatim G18 line to `tts_text_queue`. TTS on the live stream bypasses gate5 AND plays even
+   when the dial is suppressed on staging → guaranteed + phone-verifiable.
+2. Removed the DTMF-path line ([old 4442](../app/media_streams/connection.py#L4442)) so it
+   doesn't stack two lines before the dial — all paths now emit the one unified G18 line.
+
+The prod TwiML `<Say>` in `realtime._handle_transfer` is **kept** as the post-redirect delivery
+(chosen over a dial-only TwiML: safest "line always delivered"; accepts a possible brief
+overlap in prod — overlap ≫ silence on a safety path).
+
+### Test (TDD) — `tests/test_transfer_line_spoken.py` (new, 2 tests)
+- `test_authorised_transfer_speaks_g18_line` — RED before, GREEN after: an authorised transfer
+  enqueues the verbatim line, then dials.
+- `test_blocked_transfer_speaks_nothing` — guard: a blocked transfer speaks nothing / no dial.
+
+### Verification
+- **Automated:** 2/2 F17 tests pass; `test_transfer_disabled_gate.py` still 4/4 (kill-switch
+  intact); full suite **90 failed / 1004 passed** = pre-existing 90 + our 2 new → **0 regressions**.
+- **Phone (PENDING — after deploy):** staging `+447366263180`. Because `TRANSFER_DISABLED` is
+  set on staging, the **dial stays suppressed but the TTS line now plays** — that's the point.
+  1. Press **1** at the greeting → must HEAR *"Putting you through now — please stay on the
+     line."* then `[realtime] transfer SUPPRESSED — TRANSFER_DISABLED set` (no dial, no SMS).
+  2. "Can I just speak to someone?" → same verbatim line spoken, then SUPPRESSED.
+  Log: expect the line queued to TTS on both; ZERO `Messages.json` / dial to +447870166861.
+
+### Commits
+- Fix + test: _(pending)._
+- Booklet: _(pending)._
