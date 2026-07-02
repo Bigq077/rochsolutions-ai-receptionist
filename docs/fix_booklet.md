@@ -118,7 +118,7 @@ behaviour); it is phone-verified.
 
 ---
 
-## F17 — Silent transfer: verbatim G18 line not spoken  ⚙️ code done · re-verify pending
+## F17 — Silent transfer: verbatim G18 line not spoken  ✅ SIGNED OFF (phone-verified both paths 2026-07-02)
 **Priority:** HIGH (safety). **Sweep:** Group 1 (safety-script line guarantees); Call 6.
 
 ### Symptom (from sweep)
@@ -164,13 +164,13 @@ overlap in prod — overlap ≫ silence on a safety path).
 ### Verification
 - **Automated:** 2/2 F17 tests pass; `test_transfer_disabled_gate.py` still 4/4 (kill-switch
   intact); full suite **90 failed / 1004 passed** = pre-existing 90 + our 2 new → **0 regressions**.
-- **Phone (PENDING — after deploy):** staging `+447366263180`. Because `TRANSFER_DISABLED` is
-  set on staging, the **dial stays suppressed but the TTS line now plays** — that's the point.
-  1. Press **1** at the greeting → must HEAR *"Putting you through now — please stay on the
-     line."* then `[realtime] transfer SUPPRESSED — TRANSFER_DISABLED set` (no dial, no SMS).
-  2. "Can I just speak to someone?" → same verbatim line spoken, then SUPPRESSED.
-  Log: expect the line queued to TTS on both; ZERO `Messages.json` / dial to +447870166861.
+- **Phone — BOTH PATHS PASS (2026-07-02, staging, TRANSFER_DISABLED set):**
+  | Path | Call | Result |
+  |---|---|---|
+  | DTMF press-1 | `CAfd864352…` 21:52 | ✅ `transfer SUPPRESSED` + `synthesise_chunk 'Putting you through now — please stay on the line.'` — old "Transferring you to Mark now…" wording gone. No dial/SMS. |
+  | LLM "speak to someone" | `CAa796799a…` 21:54 | ✅ gate5 `removed banned phrase (bear_with_me)` (root cause still strips the prose) **then** `synthesise_chunk 'Putting you through now — please stay on the line.'` fires anyway. `transfer SUPPRESSED`. No dial/SMS. |
+  → The exact Call-6 silent-transfer path now speaks the verbatim line. **F17 SIGNED OFF.**
 
 ### Commits
-- Fix + test: _(pending)._
-- Booklet: _(pending)._
+- Fix + test (`Fix F17: speak verbatim G18 transfer line…`): **DONE.**
+- Booklet: _(this commit)._
