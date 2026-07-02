@@ -20,7 +20,7 @@ and are their own cleanup track. Every entry below states its net effect on this
 
 ---
 
-## F13 — Booking-CTA appended to pure-FAQ answers  ✅ code done · phone re-test pending
+## F13 — Booking-CTA appended to pure-FAQ answers  ⚠️ prompt fix kept · gate REVERTED (regressed concern turn) · re-verify pending
 **Priority:** HIGH (professionalism / conversion). **Sweep:** Group 2; Calls 4 (prices) & 5 (parking) — FAIL-level.
 
 ### Symptom (from sweep)
@@ -44,9 +44,22 @@ was True (mid-booking), so a pure-FAQ turn — where **both** `booking_flow_acti
 and `v3_treatment_mentioned` are absent ([connection.py:7681-7699](../app/media_streams/connection.py#L7681-L7699)) —
 sailed straight through.
 
-### Fix — two commits (gate first for a hard guarantee, then prompt to remove the contradiction)
+### Fix — FINAL: prompt-only (the gate was tried, regressed, and reverted)
+Phone re-test (call `CAbc1f0122…`, 2026-07-02 21:11) showed the **prompt fix alone**
+handled the FAQ turns (turn 1 price produced NO CTA — gate never fired), while the
+**gate over-stripped a legitimate concern-turn booking offer** on "I've hurt my
+shoulder" (`concern=False` → offer removed). The gate keyed off `v3_treatment_mentioned`,
+which does NOT fire on a plain injury description (only treatment-word mentions,
+connection.py:7681). No reliable clinical signal is available at strip time
+(`_clinical_response_active` is computed per-chunk downstream and isn't in `session`).
+**Decision: revert the gate, keep the prompt fix** — smallest correct change; a fix
+that breaks the concern flow is not a fix. F13 is now prompt-only (no unit test;
+phone-verified). Determinism can be re-added later via a proper upstream
+clinical-complaint session flag if F13 ever recurs.
 
-**Commit 1 — deterministic gate (TDD).**
+<details><summary>Reverted gate approach (commit 1 — kept for the record)</summary>
+
+**Commit 1 — deterministic gate (TDD).** REVERTED.
 `app/media_streams/turn_handler.py` → `sanitise_response`, Gate 5c.
 Was: strip the trailing booking-offer CTA only when `booking_flow_active`.
 Now: strip it **unless it's a concern turn** — i.e. keep the CTA only when
@@ -56,8 +69,9 @@ confirmation ("shall I go ahead and book that in?") from being stripped to empty
 - Discriminator logic: pure informational FAQ = neither flag set → strip.
   Concern turn = `v3_treatment_mentioned` → keep (Calls 9/12/14 want the offer).
   Mid-booking = `booking_flow_active` → strip redundant tail (unchanged).
+</details>
 
-**Commit 2 — prompt reconciliation.**
+**Commit 2 — prompt reconciliation (KEPT — this is the fix).**
 `app/prompts/susie_system_prompt.py` around [:2292](../app/prompts/susie_system_prompt.py#L2292).
 Added an explicit exclusion so the "close with a CTA after an FAQ" rule now agrees
 with the 1141/1467 rule: purely INFORMATIONAL questions (prices, hours, parking,
@@ -65,39 +79,34 @@ location, directions, services) get **no** CTA — end with "Is there anything e
 can help you with?" instead. Offer booking only on a described concern/injury or an
 explicit booking ask.
 
-### Test (TDD) — `tests/test_faq_booking_cta.py` (new, 5 tests)
-- `test_faq_price_answer_strips_trailing_cta` — RED before, GREEN after (F13 core).
-- `test_faq_parking_answer_strips_trailing_cta` — RED before, GREEN after (F13 core).
-- `test_concern_turn_keeps_booking_cta` — guard: `v3_treatment_mentioned` keeps the offer.
-- `test_standalone_booking_question_kept` — guard: whole-response CTA is kept.
-- `test_booking_flow_active_still_strips_redundant` — guard: existing mid-booking behaviour unchanged.
+### Test — removed with the gate revert
+`tests/test_faq_booking_cta.py` was added with the gate (commit 1) and is removed by the
+revert. Its `test_concern_turn_keeps_booking_cta` guard used `v3_treatment_mentioned=True`,
+which a real concern turn does NOT set — so the suite was green but did not represent the
+actual concern turn, and missed the regression. **Lesson: unit-test fixtures must match the
+real session state a live turn produces.** The prompt-only fix has no unit test (prompt
+behaviour); it is phone-verified.
 
-### Verification
-- **Automated (local, no deploy needed):** 5/5 F13 tests pass. Full suite = **90 failed
-  / 1002 passed** with the fix vs **90** pre-existing at baseline → **0 new failures,
-  0 regressions**. Prompt module imports cleanly after the edit.
-- **Phone re-test requires a DEPLOY first.** Staging runs the **deployed** commit, not
-  the working tree — a phone call only exercises a change once it is
-  **committed → pushed → Render has redeployed** staging. Order: commit both fixes →
-  push → wait for Render deploy → 10s STT smoke call → then run the calls below on
-  staging `+447366263180`.
-- **Phone (PENDING — Jules to run after deploy):**
-  1. "How much is a session?" → £85 answer, **no** "would you like to book?" — ends
-     "Is there anything else I can help you with?"
-  2. "Do you have parking?" → clinic gate → parking answer, **no** booking push.
-  3. Control: "I've hurt my shoulder" → concern response **should still** offer an
-     assessment (CTA must NOT disappear here).
-  Log check: `[ms_gate5] removed out-of-place booking offer (booking_flow_active=False, concern=False)`
-  on FAQ turns; absent on the concern turn.
+### Verification — phone re-test (call `CAbc1f0122…`, 2026-07-02 21:11, deployed staging)
+| Turn | Said | Result |
+|---|---|---|
+| 1 | "How much is a session?" | ✅ "£85 for fifty minutes…" + "Is there anything else I can help you with?" — **no CTA** (gate never fired → **prompt fix did it**). |
+| 2 | "Do you have parking?" | ✅ parking answer, no booking push. *(Side issue: "alcester" resolved `intent=booking` and detoured to "day or time?" before the parking answer — location/re-queue friction, Group 4, not F13.)* |
+| 3 | "I've hurt my shoulder" (control) | ❌ gate logged `removed out-of-place booking offer (…concern=False)` and **stripped a legit booking offer** → **regression** → gate reverted. |
+
+**After the revert deploys, re-run the same 3 turns** on staging `+447366263180`
+(10s STT smoke call first). Expected: turns 1 & 2 unchanged (prompt); **turn 3 now offers
+the assessment** — no `[ms_gate5] removed out-of-place booking offer` line anywhere.
 
 ### Commits
-- Commit 1: _(pending — gate fix + test)_
-- Commit 2: _(pending — prompt reconciliation)_
+- Commit 1 (gate + test): **made, then REVERTED** after the phone test.
+- Commit 2 (prompt reconciliation): **KEPT** — this is the fix.
+- Revert commit: _(pending — `git revert` of commit 1)._
 
 ### Notes / blast radius
-- Gate 5c now runs on more turns (any non-concern turn, not just mid-booking). Mitigated
-  by the whole-response guard (keeps standalone booking questions) and by
-  `_BOOKING_OFFER_RE` only matching explicit *offer* phrasings, not booking-flow
-  questions ("which clinic?", "what day or time?").
-- Per-chunk limitation (pre-existing): if the CTA is split across TTS chunks the regex
-  may not match within one chunk. Not introduced here; watch on phone re-test.
+- Final state touches only the prompt ([susie_system_prompt.py:2292](../app/prompts/susie_system_prompt.py#L2292)) —
+  `turn_handler.py` returns to its original gate-5c behaviour (strip only when
+  `booking_flow_active`).
+- Follow-up idea (not now): to re-add a deterministic FAQ-CTA guard safely, set a
+  `session` flag marking a clinical-complaint turn *upstream* of the response stream, then
+  gate on it — instead of inferring concern from `v3_treatment_mentioned`.
