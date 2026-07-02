@@ -29,12 +29,21 @@ regression waiting to happen.
 
 **5. Make one change.** Scoped to this single issue. Nothing else.
 
-**6. Verify — twice.** Run the relevant test (`pytest` for units, or
-`python tests/auto/run_tests.py` for call scenarios), **then re-make the call**. Confirm the
-fix *and* that the rest of the suite still passes. A fix that breaks another flow is not a fix.
+**6. Test locally — the pre-commit gate.** Run the relevant test (`pytest` for units, or
+`python tests/auto/run_tests.py` for call scenarios). Confirm the fix's own test passes
+*and* that the rest of the suite still passes. A fix that breaks another flow is not a fix.
 
-**7. Commit small.** One logical fix per commit, with a clear message. Small commits make
-regressions easy to spot, bisect, and undo.
+**7. Commit small, then deploy.** One logical fix per commit, with a clear message — small
+commits make regressions easy to spot, bisect, and undo. Push so Render redeploys staging.
+⚠️ **Staging runs the DEPLOYED commit, not your working tree** — so you must
+commit → push → let Render deploy *before* a phone call can exercise the change. You cannot
+phone-verify uncommitted edits.
+
+**8. Re-make the call — the real sign-off gate.** On deployed staging, re-make the call and
+pull its Render log (§5). Confirm expected vs actual. This — not the commit — is what signs
+the fix off for prod/`main`. **If it still fails:** treat it as a fresh issue — diagnose from
+the new log, then either fix-forward with another small commit or revert this one (small
+commits make that clean). Never carry an unverified fix to `main`.
 
 ---
 
