@@ -174,3 +174,48 @@ overlap in prod — overlap ≫ silence on a safety path).
 ### Commits
 - Fix + test (`Fix F17: speak verbatim G18 transfer line…`): **DONE.**
 - Booklet: _(this commit)._
+
+---
+
+## F20 — book_appointment not gated on a clear YES  ⚙️ code done · re-verify pending
+**Priority:** HIGH (safety). **Sweep:** Group 1; Call 8 (user-raised).
+
+### Symptom / root cause
+The book guard ([llm_stream.py:1477](../app/media_streams/llm_stream.py#L1477)) blocked
+`book_appointment` unless `last_bot_prompt` contained "shall i go ahead" / "book that in"
+— i.e. it only checked the confirmation **question was asked**, never that the caller
+**said yes**. Once asked, a weak/ambiguous/negative *verbal* reply could still book.
+(Silence was already safe: no transcript → no turn.)
+
+### Fix (one commit) — `app/media_streams/llm_stream.py`
+1. New `_book_confirmation_ok(session, last_user_text)` — allows booking only when the
+   confirm question was asked AND the caller's reply is a clear yes, reusing fast_path's
+   `_YES_PATTERNS` / `_NO_PATTERNS` as `is_yes and not is_no`. Ambiguous (both/neither) or
+   empty → False (block).
+2. Guard now calls that helper; two distinct block messages — `confirmation_required`
+   (question not asked, unchanged) and `affirmation_required` (asked, but no clear yes →
+   re-ask and wait for a clear yes).
+3. Threaded the caller's last utterance into `_execute_tools` via a new `last_user_text`
+   param — extracted at the single call site ([llm_stream.py:903](../app/media_streams/llm_stream.py#L903))
+   from `messages`.
+- **Bias:** a false block just re-asks (safe); a false allow is a wrong booking → ambiguity blocks.
+
+### Test (TDD) — `tests/test_book_affirmative_gate.py` (new, 4 tests)
+- clear yes ("yes please") → books; negative ("no, change it") → blocked;
+  ambiguous ("um not sure") → blocked; confirm-not-asked + "yes" → blocked (existing behaviour).
+
+### Verification
+- **Automated:** 4/4 pass; full suite **90 failed / 1008 passed** = pre-existing 90 + our 4
+  → **0 regressions**.
+- **⚠️ Phone — SAFE SUBSET ONLY (Acuity NOT isolated on staging).** A genuine `book_appointment`
+  creates a REAL appointment on Mark's Acuity (sweep Group 7). So on staging:
+  - **DO test the negative path:** drive to "…shall I go ahead and book that in?", then say
+    "no, change the time" or "um, I'm not sure" → PASS = Susie does NOT book, re-asks/corrects;
+    no real appointment. (If it misfired, log would show `book_appointment BLOCKED — no clear YES`.)
+  - **DO NOT say a clean "yes"** at the confirm on staging — it would book for real. The positive
+    "clear yes books" path is covered by the unit test, not by phone.
+  - 🟡 hang up before any real booking.
+
+### Commits
+- Fix + test: _(pending)._
+- Booklet: _(pending)._
