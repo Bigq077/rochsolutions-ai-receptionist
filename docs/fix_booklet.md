@@ -177,7 +177,7 @@ overlap in prod — overlap ≫ silence on a safety path).
 
 ---
 
-## F20 — book_appointment not gated on a clear YES  ⚙️ code done · re-verify pending
+## F20 — book_appointment not gated on a clear YES  ✅ SIGNED OFF (unit-proven + phone-safe 2026-07-02)
 **Priority:** HIGH (safety). **Sweep:** Group 1; Call 8 (user-raised).
 
 ### Symptom / root cause
@@ -215,6 +215,56 @@ The book guard ([llm_stream.py:1477](../app/media_streams/llm_stream.py#L1477)) 
   - **DO NOT say a clean "yes"** at the confirm on staging — it would book for real. The positive
     "clear yes books" path is covered by the unit test, not by phone.
   - 🟡 hang up before any real booking.
+- **Phone result (call `CA86363383…`, 2026-07-02 22:19):** drove to readback
+  *"…shall I go ahead and book that in?"*, then said **"do a different time"** → LLM called
+  `check_availability` (offered other times), **NOT** `book_appointment` → **nothing booked** ✅.
+  The guard itself wasn't triggered (the model declined to book on its own — expected on a clean
+  correction); had it tried, "different" → `is_no` → block. So: **guard logic = unit-proven;
+  end-to-end safety = phone-confirmed.** Sign-off stands for a defense-in-depth guard.
+- Side-observation (not F20): correction was clunky — `check_availability BLOCKED — name+phone
+  already collected` fired 2× + one 11.9s TTS. `booking_details_already_complete` interaction +
+  long-TTS → F21 territory; logged for later.
+
+### Commits
+- Fix + test: **DONE** (`Fix F20: require a clear YES before book_appointment fires`).
+- Booklet: **DONE.**
+
+---
+
+## F23 — Chirpy dead-air re-ask right after a 999 escalation  ⚙️ code done · re-verify pending
+**Priority:** MED (safety-tone). **Sweep:** Group 1; Call 10.
+
+### Symptom / root cause
+After firm 999/A&E instructions, caller silence made `_silence_safety_net` fire its generic
+reset *"Sorry, I can't quite hear you — how can I help today?"* ([connection.py:11190](../app/media_streams/connection.py#L11190)),
+undercutting the emergency. `medical_emergency_detected` is never set on the LLM red-flag path
+(the 999 text is model-generated), so the reliable signal is the content of `last_bot_prompt`
+(the full spoken reply, set at [llm_stream.py:496](../app/media_streams/llm_stream.py#L496)).
+
+### Fix (one commit) — `app/media_streams/connection.py`
+- New static `_emergency_reask_override(session)` → returns a calm re-anchor
+  (*"If this feels like an emergency, please call 999 or go to A and E now — I'm still here if
+  you need me."*) when `last_bot_prompt` contains `999` / `a and e` / `a&e` / `emergency
+  service`; `None` otherwise (normal turns untouched — specific markers → low false-positive).
+- `_silence_safety_net` checks it **first**, before the location/slot/generic branches.
+- Called via the **class** (`WebSocketCallHandler._emergency_reask_override`), not `self` — the
+  dead-air test drives the net with a `SimpleNamespace` stand-in, and `self.<newmethod>` would
+  `AttributeError`. (Caught by the suite: it broke 4 dead-air tests until fixed — good guard.)
+
+### Test (TDD) — `tests/test_emergency_reask_suppression.py` (new, 4 tests)
+- emergency `last_bot_prompt` (999 / A&E) → override returns a 999-bearing phrase, no "how can I
+  help today"; normal prompt / empty → `None`.
+
+### Verification
+- **Automated:** 4/4 pass; `test_dead_air_safety_net.py` back to its baseline 2-fail/8-pass
+  (the 2 are pre-existing, unrelated); full suite **90 failed / 1012 passed** = 90 baseline + 4
+  → **0 regressions**.
+- **Phone (PENDING — after deploy):** staging `+447366263180`. Safe (no booking/transfer).
+  1. Trigger a red flag, e.g. *"My back went and now I've got numbness around my saddle area
+     and I can't control my bladder"* → Susie gives the 999/A&E redirect.
+  2. **Go silent ~12-20s.** PASS = the dead-air re-ask is the calm emergency re-anchor
+     (*"…please call 999 or go to A and E now — I'm still here…"*), **NOT** "how can I help today?".
+  Log: `[ms_safety_net]` fires with the emergency phrase; no "how can I help today".
 
 ### Commits
 - Fix + test: _(pending)._
