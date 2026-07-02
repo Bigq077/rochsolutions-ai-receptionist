@@ -231,7 +231,7 @@ The book guard ([llm_stream.py:1477](../app/media_streams/llm_stream.py#L1477)) 
 
 ---
 
-## F23 — Chirpy dead-air re-ask right after a 999 escalation  ⚙️ code done · re-verify pending
+## F23 — Chirpy dead-air re-ask right after a 999 escalation  ✅ SIGNED OFF (phone-verified 2026-07-02)
 **Priority:** MED (safety-tone). **Sweep:** Group 1; Call 10.
 
 ### Symptom / root cause
@@ -265,7 +265,14 @@ undercutting the emergency. `medical_emergency_detected` is never set on the LLM
   2. **Go silent ~12-20s.** PASS = the dead-air re-ask is the calm emergency re-anchor
      (*"…please call 999 or go to A and E now — I'm still here…"*), **NOT** "how can I help today?".
   Log: `[ms_safety_net]` fires with the emergency phrase; no "how can I help today".
+- **Phone result (call `CA59944a8e…`, 2026-07-02 22:53):** cauda-equina red flag → Susie escalated
+  ("red flag symptom that needs urgent medical attention…get urgent help now"); after ~16.8s silence
+  `[ms_safety_net]` fired **"If this feels like an emergency, please call 999 or go to A and E now —
+  I'm still here if you need me."** — NOT "how can I help today?". ✅ **F23 SIGNED OFF.**
+- Side-observation (not F23, pre-existing): a stray `tts_finished … "Those symptoms need urgent
+  medical attention right away…"` appeared at call-start (22:53:07) before the caller spoke — looks
+  like a leftover TTS fragment; not from this change (only the re-ask wording moved). Worth a glance.
 
 ### Commits
-- Fix + test: _(pending)._
-- Booklet: _(pending)._
+- Fix + test: **DONE** (`Fix F23: calm re-anchor instead of chirpy reset after a 999 escalation`).
+- Booklet: **DONE.**
