@@ -1456,15 +1456,31 @@ class LLMStream:
                         "[ms_llm] check_availability BLOCKED — name+phone already "
                         "collected; forcing booking readback call_sid=%s", call_sid,
                     )
+                    # BUG-14: inject the KNOWN full name + location from session so
+                    # the forced readback can't drop them. The old template left the
+                    # model to reconstruct everything from history and it dropped the
+                    # surname AND the whole slot → "So that's Quentin, —". The slot
+                    # day/date/time is not stored in session on the template path, so
+                    # it still comes from history — but instruct hard it MUST be
+                    # included and never left blank.
+                    _rb_name = (_col.get("full_name") or _col.get("name") or "").strip()
+                    _rb_loc = (session.get("selected_location") or "").strip().title()
+                    _rb_name_txt = _rb_name or "[full name INCLUDING surname]"
+                    _rb_loc_clause = f" at {_rb_loc}" if _rb_loc else ""
                     result = {
                         "error": "booking_details_already_complete",
                         "message": (
                             "Name and phone number are already confirmed. "
-                            "Do NOT call check_availability. "
-                            "Produce the booking summary immediately using the slot "
-                            "already agreed in conversation history: "
-                            "'So that\\'s [Name] — [day] the [ordinal] of [month] at "
-                            "[time] at [location] — shall I go ahead and book that in?'"
+                            "Do NOT call check_availability. Produce the booking "
+                            "summary now, using this EXACT shape and filling the "
+                            "day/date/time from the slot the caller already agreed "
+                            "to earlier in this conversation. You MUST include the "
+                            "specific day, date and time — never leave them blank — "
+                            "and use the full name including surname exactly as "
+                            "confirmed (do NOT shorten to the first name only): "
+                            f"\"So that's {_rb_name_txt}, [day] the [ordinal] of "
+                            f"[month] at [time]{_rb_loc_clause} — shall I go ahead "
+                            "and book that in?\""
                         ),
                     }
                 elif tool_name == "check_availability" and session.get("last_offered_slots"):
