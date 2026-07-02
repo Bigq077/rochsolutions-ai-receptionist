@@ -10954,6 +10954,26 @@ class WebSocketCallHandler:
         finally:
             self._stop_event.set()
 
+    @staticmethod
+    def _emergency_reask_override(session: Dict[str, Any]) -> Optional[str]:
+        """F23: when the previous response was an emergency escalation (999 /
+        A&E), the dead-air re-ask must NOT chirp 'how can I help today?' — that
+        undercuts the gravity (sweep Call 10).  Returns a calm re-anchor to use
+        instead; None on any normal turn (leaves existing re-ask logic intact).
+
+        medical_emergency_detected is not set on the LLM red-flag path (the 999
+        text is model-generated), so we key off the content of last_bot_prompt —
+        the full spoken reply, which contains 999 / A and E / emergency service.
+        """
+        _lb = (session.get("last_bot_prompt") or "").lower()
+        _EMERGENCY_MARKERS = ("999", "a and e", "a&e", "emergency service")
+        if any(m in _lb for m in _EMERGENCY_MARKERS):
+            return (
+                "If this feels like an emergency, please call 999 or go to "
+                "A and E now — I'm still here if you need me."
+            )
+        return None
+
     # ========================================================================
     # Global 10-second silence safety net
     # ========================================================================
@@ -11148,7 +11168,17 @@ class WebSocketCallHandler:
                     # the last stored question (if any) or a neutral "still there?"
                     # prompt so we never ask about "days" before any slots have been
                     # shown to the caller.
-                    if self.session.get("v3_location_q_active"):
+                    # Reference via the class (not self) so the safety net stays
+                    # callable when driven with a stand-in self in tests.
+                    _emergency_phrase = WebSocketCallHandler._emergency_reask_override(
+                        self.session
+                    )
+                    if _emergency_phrase is not None:
+                        # F23: last response was a 999/A&E escalation — replace the
+                        # generic "how can I help today?" reset with a calm
+                        # emergency re-anchor so the gravity isn't undercut.
+                        _phrase_1 = _emergency_phrase
+                    elif self.session.get("v3_location_q_active"):
                         # Location still unresolved (STT can't catch the clinic
                         # name — "ousto"/"ouston"/"the clinic").  Do NOT fall
                         # through to the generic "how can I help today?" reset:
