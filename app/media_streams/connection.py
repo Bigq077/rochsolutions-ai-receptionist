@@ -1510,6 +1510,16 @@ def _faq_needs_clinic(utterance: str) -> bool:
         return False
     return bool(_FAQ_CLINIC_SPECIFIC_RE.search(utterance))
 
+
+def _location_ladder_exhausted(session: Dict[str, Any]) -> bool:
+    """Escape-hatch predicate for the clinic-question ladder (sweep Call 12).
+
+    Ladder: reask_count 0 → rung 2 biased confirm, 1 → rung 3 DTMF keypad.
+    Once the keypad has been offered (reask_count >= 2), a further unrecognized
+    utterance must NOT re-fire the keypad forever — it breaks out to the LLM so
+    the caller can escape the clinic loop.  Returns True when exhausted."""
+    return int(session.get("v3_location_reask_count", 0) or 0) >= 2
+
 # ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
 # When a caller names a specific treatment alongside booking intent, the
@@ -7423,14 +7433,37 @@ class WebSocketCallHandler:
                                         # the location question stays pending
                                         # and Susie will re-ask after the
                                         # LLM answers the FAQ.
-                                        if _transcript_is_question(utterance):
-                                            logger.info(
-                                                "[ms_conn v3] location"
-                                                " intercept — Haiku unknown"
-                                                " + question detected,"
-                                                " routing to LLM: %r",
-                                                utterance[:60],
-                                            )
+                                        # Escape hatch (sweep Call 12): if the
+                                        # keypad rung has already been offered and
+                                        # the caller STILL isn't giving a clinic,
+                                        # stop looping the keypad — route to the
+                                        # LLM and clear the sticky clinic gate so
+                                        # they break out of the loop.
+                                        _loc_escape = _location_ladder_exhausted(
+                                            self.session
+                                        )
+                                        if _transcript_is_question(utterance) or _loc_escape:
+                                            if _loc_escape:
+                                                self.session["v3_location_asked"] = False
+                                                self.session["v3_location_q_active"] = False
+                                                self.session["v3_awaiting_use_this_clinic"] = False
+                                                self.session["v3_awaiting_location_dtmf"] = False
+                                                self.session["v3_location_reask_count"] = 0
+                                                logger.info(
+                                                    "[ms_conn v3] location ladder"
+                                                    " ESCAPE HATCH — keypad"
+                                                    " exhausted, clearing clinic"
+                                                    " gate and routing to LLM: %r",
+                                                    utterance[:60],
+                                                )
+                                            else:
+                                                logger.info(
+                                                    "[ms_conn v3] location"
+                                                    " intercept — Haiku unknown"
+                                                    " + question detected,"
+                                                    " routing to LLM: %r",
+                                                    utterance[:60],
+                                                )
                                             self._filler_breath_injected = (
                                                 False
                                             )
