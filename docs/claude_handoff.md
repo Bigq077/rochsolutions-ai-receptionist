@@ -57,29 +57,38 @@ pbpaste | grep -vE 'httpx|raw slot\(s\)|barge-in: partial|Redis (read|write) err
 - `TRANSFER_DISABLED` (staging kill-switch) suppresses the live dial + heads-up SMS; the
   transfer TTS line still plays (that's how F17 is phone-verifiable on staging).
 
-## Status — as of 2026-07-02/03
-**Today's 4-item safety spine — ALL SIGNED OFF (TDD + phone-verified):**
-- **F13** — no booking-CTA on pure-FAQ answers. Prompt-only fix
-  (susie_system_prompt.py ~L2292). NOTE: a deterministic gate was tried and **reverted** for
-  regressing the concern-turn CTA (`v3_treatment_mentioned` doesn't fire on plain injuries).
-- **F17** — deterministic G18 transfer line ("Putting you through now — please stay on the
-  line.") emitted at the `_on_transfer_request` choke point (connection.py). Prod TwiML `<Say>` kept.
-- **F20** — `book_appointment` requires a clear YES (`_book_confirmation_ok` in llm_stream.py,
-  reusing fast_path `_YES_PATTERNS`/`_NO_PATTERNS`; caller utterance threaded via new
-  `last_user_text` param).
-- **F23** — after a 999/A&E escalation, the dead-air re-ask is a calm re-anchor, not "how can I
-  help today?" (`_emergency_reask_override` in connection.py, gating `_silence_safety_net`).
+## Status — as of 2026-07-03 (end of day 2)
+**8 fixes SIGNED OFF (TDD + phone-verified), all validated in the full 14-call sweep:**
+- **F13** — no booking-CTA on pure-FAQ answers. Prompt-only (susie_system_prompt.py ~L2292); a
+  deterministic gate was tried and **reverted** (regressed concern-turn CTA).
+- **F14** — bank-holiday/closure FAQ no longer triggers "which clinic?" (`_faq_needs_clinic` +
+  `_FAQ_CLINIC_INDEPENDENT_RE`, connection.py).
+- **F17** — deterministic G18 transfer line at `_on_transfer_request` choke point.
+- **F20** — `book_appointment` requires a clear YES (`_book_confirmation_ok`, llm_stream.py).
+- **F23** — calm 999 re-anchor instead of chirpy reset (`_emergency_reask_override`).
+- **F24/F26** — practitioner-deflection scoped to clinical only; logistics answered
+  (online→theoremhealth.co.uk, phone/video→in-person) via get_clinic_info.
+- **F25** — Wellness Massage + Psychotherapy stated Awlstuh-only; generic massage clarifies.
+- **Clinic-loop escape hatch** — `_location_ladder_exhausted`: after the keypad rung, a further
+  unrecognized utterance breaks out to the LLM instead of looping the keypad. **PARTIAL** (see v2).
 
-**Deferred backlog (next sessions), priority order** — details in [fix_booklet.md] / [sweep_findings.md]:
-1. **F21** — long / un-bargeable TTS (8–18.7s single responses). Needs a design call
-   (split/shorten vs allow barge after sentence 1 on clinical turns).
-2. **F24 / F26** — "That's one for the practitioner" catch-all over-used; a few question types
-   unanswered ("online?", "over the phone?").
-3. **F25** — massage service naming ("sports" vs "wellness") + enforce Alcester-only gating.
-4. **Group 4 / F16** — location-resolution & "this clinic" friction (own investigation).
-5. **Infra / Quentin track (not Susie code):** I2 `/twilio/status`→prod 403 every call;
-   I5 `GOOGLE_SERVICE_ACCOUNT_JSON` invalid on staging; **Acuity isolation** (above);
-   missing filler `.ulaw` clips; no Python version pin.
+**14-call sweep COMPLETE** — safety spine (Calls 6, 10) + canonical facts (Call 4) + all fixes
+verified. Full result table + verdict at the bottom of [fix_booklet.md].
+
+**NEXT UP — v2 clinic-resolver (Group 4), the top priority.** The keypad call-killer is fixed but
+three gaps remain (the resolver bit Jules twice during the sweep — Calls 12 & the force-verify):
+1. **Indifference doesn't resolve** — "whichever / either / you pick / whatever's easiest / both"
+   resolve to NOTHING. **Highest-value single fix: map indifference → default Alcester.** START HERE.
+2. **Sticky re-ask** — after the escape clears the gate, `booking_flow_active`+unresolved clinic
+   re-fires the clinic question on the next utterance (`location gate fired — intent=booking`).
+3. **Spoken-clinic friction** — a clear "redditch"/"this clinic" needs the ladder; inconsistent
+   ("alter" resolved cleanly in Call 8). Needs a resolver pass.
+
+**Then / deferred:**
+- **F21** — long/un-bargeable TTS (8–18s, EVERY slot/clinical/objection call — biggest UX drag).
+  Needs a design call (split/shorten vs allow barge after sentence 1 on clinical turns).
+- **Infra / Quentin (not Susie code):** I2 `/twilio/status`→prod 403; I5 `GOOGLE_SERVICE_ACCOUNT_JSON`
+  invalid on staging; **Acuity isolation** (a real `book_appointment` books a real appt).
 
 **Loose observations logged (not yet fixed):** Turn-2 location detour ("alcester"→intent=booking,
 STT-driven → Group 4); clunky booking-correction (multiple check_availability blocks + long TTS →
