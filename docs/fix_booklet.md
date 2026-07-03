@@ -279,7 +279,7 @@ undercutting the emergency. `medical_emergency_detected` is never set on the LLM
 
 ---
 
-## F25 — Massage naming + Alcester-only mis-gate  ⚙️ code done · phone-verify pending
+## F25 — Massage naming + Alcester-only mis-gate  ✅ SIGNED OFF (phone-verified 2026-07-03)
 **Priority:** LOW-MED. **Sweep:** Group 6 (canonical consistency) + location mis-gate; Calls 12 & 14.
 
 ### Symptom / root cause
@@ -316,7 +316,14 @@ relies on. Behaviour itself is phone-verified.
   2. "Can I book the stress relief massage?" → states it's **Awlstuh only**, does **NOT** ask
      "which clinic?".
   3. "I just need a massage" → **clarifies** goal (pain vs relaxation), doesn't blurt "sports massage".
+- **Phone result (call `CA95602172…`, 2026-07-03 17:48) — ALL 3 PASS:**
+  | Turn | Said | Result |
+  |---|---|---|
+  | 1 | "psychotherapy at Redditch?" | ✅ "available at Awlstuh only, so Redditch wouldn't…" |
+  | 2 | "book the stress relief massage" | ✅ "Wellness and Stress Relief Massage is also at Awlstuh only… not at Redditch" — **no "which clinic?"** |
+  | 3 | "I just need a massage" | ✅ clarifies: "…a specific pain/injury or more of a relaxation and wellness massage?" — no "sports massage" |
+  → The "which clinic" mis-gate was LLM behaviour (no deterministic gate); the prompt rule fixed it. **F25 SIGNED OFF.**
 
 ### Commits
-- Fix + test: _(pending)._
-- Booklet: _(pending)._
+- Fix + test: **DONE** (`Fix F25: Alcester-only massage/psychotherapy no clinic-ask + naming consistency`).
+- Booklet: **DONE.**
