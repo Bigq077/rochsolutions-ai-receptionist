@@ -359,7 +359,7 @@ def _choose_template(
     # Flags
     asked_about_price     = _check_price_question(faq_data, session)
     asked_about_insurance = _check_insurance_question(faq_data, insurance_data, session)
-    bupa_mentioned        = _check_bupa_mention(faq_data, insurance_data)
+    bupa_mentioned        = _check_bupa_mention(faq_data, insurance_data, session)
 
     ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
 
@@ -492,16 +492,32 @@ def _choose_template(
 # DETECTION HELPERS
 # ============================================================================
 
+def _recent_user_texts(session: Dict) -> list:
+    """
+    Lowercased recent CALLER utterances, drawn from BOTH conversation records:
+      • session["turns"]                — {"user": ...} (theorem/flow.py)
+      • session["conversation_history"] — {"role": "user", "content": ...} (media
+        streams / template clinics like jv)
+    Without the conversation_history source the price/insurance detectors were
+    blind on the media path, so those calls fell back to the generic template.
+    """
+    texts: list = []
+    for turn in (session.get("turns", []) or [])[-8:]:
+        if isinstance(turn, dict) and turn.get("user"):
+            texts.append(str(turn["user"]).lower())
+    for turn in (session.get("conversation_history", []) or [])[-16:]:
+        if isinstance(turn, dict) and turn.get("role") == "user" and turn.get("content"):
+            texts.append(str(turn["content"]).lower())
+    return texts
+
+
 def _check_price_question(faq_data: list, session: Dict) -> bool:
     """Check if patient asked about pricing."""
     keywords = {"price", "cost", "how much", "fee", "charge", "expensive", "£"}
     for turn in faq_data:
         if isinstance(turn, dict) and any(k in turn.get("question", "").lower() for k in keywords):
             return True
-    for turn in (session.get("turns", []) or [])[-6:]:
-        if isinstance(turn, dict) and any(k in turn.get("user", "").lower() for k in keywords):
-            return True
-    return False
+    return any(any(k in t for k in keywords) for t in _recent_user_texts(session))
 
 
 def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dict) -> bool:
@@ -512,20 +528,17 @@ def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dic
     for turn in faq_data:
         if isinstance(turn, dict) and any(k in turn.get("question", "").lower() for k in keywords):
             return True
-    for turn in (session.get("turns", []) or [])[-6:]:
-        if isinstance(turn, dict) and any(k in turn.get("user", "").lower() for k in keywords):
-            return True
-    return False
+    return any(any(k in t for k in keywords) for t in _recent_user_texts(session))
 
 
-def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
+def _check_bupa_mention(faq_data: list, insurance_data: Dict, session: Dict) -> bool:
     """Check if Bupa was specifically mentioned."""
     if ((insurance_data or {}).get("insurer_name") or "").lower() == "bupa":
         return True
     for turn in faq_data:
         if isinstance(turn, dict) and "bupa" in turn.get("question", "").lower():
             return True
-    return False
+    return any("bupa" in t for t in _recent_user_texts(session))
 
 
 def _booking_has_progressed(session: Dict, collected: Dict) -> bool:
