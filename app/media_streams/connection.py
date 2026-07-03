@@ -11496,7 +11496,12 @@ class WebSocketCallHandler:
             try:
                 import os as _os
                 from app.notifications.sms import send_sms as _send_sms
-                _staff_phone = _os.getenv("THEOREM_NOTIFICATION_SMS")
+                from app.clinic_config import get_clinic as _get_clinic
+                _clinic_cfg  = _get_clinic(self.session.get("clinic_id")) or {}
+                # Practitioner's number (clinic.transfer_phone, same source as the
+                # booking follow-up ping); fall back to the legacy env var.
+                _staff_phone = _clinic_cfg.get("transfer_phone") or _os.getenv("THEOREM_NOTIFICATION_SMS")
+                _prac        = _clinic_cfg.get("practitioner") or "Mark"
                 _caller      = (
                     self.session.get("twilio_from_local")
                     or self.session.get("twilio_from")
@@ -11506,7 +11511,7 @@ class WebSocketCallHandler:
                     await _send_sms(
                         to=_staff_phone,
                         message=(
-                            f"Hi Mark, a caller just asked to speak to you "
+                            f"Hi {_prac}, a caller just asked to speak to you "
                             f"but didn't get through. Their number is {_caller}. "
                             f"Give them a call back when you get a chance. — Susie"
                         ),
