@@ -276,3 +276,47 @@ undercutting the emergency. `medical_emergency_detected` is never set on the LLM
 ### Commits
 - Fix + test: **DONE** (`Fix F23: calm re-anchor instead of chirpy reset after a 999 escalation`).
 - Booklet: **DONE.**
+
+---
+
+## F25 — Massage naming + Alcester-only mis-gate  ⚙️ code done · phone-verify pending
+**Priority:** LOW-MED. **Sweep:** Group 6 (canonical consistency) + location mis-gate; Calls 12 & 14.
+
+### Symptom / root cause
+Two prompt-behaviour symptoms (the underlying DATA was already correct):
+- **Naming drift** — Call 12 "I just need a massage" → Susie said "Sports massage"; Call 14
+  "stress relief massage" → "wellness massage with in-light therapy". Inconsistent.
+- **Location mis-gate** — Call 14: asked "which clinic?" for the Wellness Massage, which is
+  **Awlstuh (Alcester) only** (canonical `wellness_massage.locations == ["alcester"]`).
+
+The canonical source is right ([canonical.py:248](../app/clinics/theorem/canonical.py#L248)) AND the
+prompt facts block already says *"Wellness Massage… Awlstuh only"* — the LLM just wasn't acting on
+it. So this is prompt-tuning, not a code path. (NB "sports massage" = a JV-clinic service /
+soft-tissue-within-physio; theorem's standalone relaxation service is the Wellness & Stress Relief
+Massage.)
+
+### Fix (one commit) — prompt-only + a data lock
+`app/prompts/susie_system_prompt.py` (services facts block, ~L2237): added two rules —
+1. **SINGLE-LOCATION SERVICES:** Wellness Massage + Psychotherapy are Awlstuh ONLY → never ask
+   "which clinic?"; go straight to Awlstuh, don't offer Redditch.
+2. **GENERIC MASSAGE:** on a bare "a massage" request, clarify goal (pain/injury → physio
+   assessment; relaxation → Wellness & Stress Relief Massage, Awlstuh, enquiry-led); don't label
+   it "sports massage" unprompted.
+
+### Test — regression lock (not red→green; prompt behaviour isn't unit-testable)
+`tests/test_theorem_canonical.py` (+2): `test_single_location_services_are_alcester_only`
+(wellness_massage + psychotherapy stay `["alcester"]`) and `test_dual_location_services_still_list_both`
+(acupuncture/shockwave keep both — the rule mustn't over-reach). Locks the data the prompt rule
+relies on. Behaviour itself is phone-verified.
+
+### Verification
+- **Automated:** canonical suite 27 pass (+2); full suite **90 failed / 1014 passed** → 0 regressions.
+- **Phone (PENDING — after deploy):** staging `+447366263180`, safe (no booking/transfer needed):
+  1. "Do you do psychotherapy at Redditch?" → **Alcester/Awlstuh only** (offers Awlstuh, not Redditch).
+  2. "Can I book the stress relief massage?" → states it's **Awlstuh only**, does **NOT** ask
+     "which clinic?".
+  3. "I just need a massage" → **clarifies** goal (pain vs relaxation), doesn't blurt "sports massage".
+
+### Commits
+- Fix + test: _(pending)._
+- Booklet: _(pending)._
