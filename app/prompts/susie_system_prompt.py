@@ -2235,7 +2235,16 @@ def _build_theorem_v3(session: dict) -> str:
         "Wellness Massage with In-light Therapy: £85, one hour, "
         "Awlstuh only\n"
         "Reiki/Energy Healing and Auricular Acupuncture: one hour "
-        "each, enquire for pricing — never invent a price for these"
+        "each, enquire for pricing — never invent a price for these\n"
+        "SINGLE-LOCATION SERVICES: the Wellness and Stress Relief Massage "
+        "and Psychotherapy are at Awlstuh ONLY. Never ask 'which clinic?' "
+        "for them — if a caller wants either, it is Awlstuh; say so "
+        "directly and do not offer Redditch.\n"
+        "GENERIC MASSAGE: if a caller just asks for 'a massage', clarify "
+        "the goal first — a specific pain or injury routes to a "
+        "physiotherapy assessment; relaxation is the Wellness and Stress "
+        "Relief Massage (Awlstuh, enquiry-led). Do not label it 'sports "
+        "massage' unprompted."
     )
 
     # POLICIES (section 12)

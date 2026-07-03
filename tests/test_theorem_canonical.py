@@ -220,3 +220,26 @@ def test_clinic_config_booking_prices_in_sync_with_canonical():
         assert THEOREM_APPOINTMENT_TYPES[apt_id]["price_gbp"] == price, (
             f"{apt_id} price drifted from canonical"
         )
+
+
+# ── 9. F25: single-location services are Alcester-only (regression lock) ──────
+# The Wellness & Stress Relief Massage and Psychotherapy are Awlstuh-only. The
+# F25 prompt rule ("never ask which clinic for these") relies on this being the
+# canonical truth; lock it so it can't silently drift to dual-location.
+
+def test_single_location_services_are_alcester_only():
+    assert c.SERVICES["wellness_massage"]["locations"] == ["alcester"], (
+        "Wellness Massage must stay Alcester-only (F25)"
+    )
+    assert c.SERVICES["psychotherapy"]["locations"] == ["alcester"], (
+        "Psychotherapy must stay Alcester-only (F25)"
+    )
+
+
+def test_dual_location_services_still_list_both():
+    # Guard the other side: services offered at both sites must keep both, so
+    # the single-location rule never over-reaches.
+    for sid in ("acupuncture", "standalone_shockwave_laser"):
+        assert set(c.SERVICES[sid]["locations"]) == {"alcester", "redditch"}, (
+            f"{sid} should be available at both clinics"
+        )
