@@ -30,6 +30,7 @@ BOOKING_CONFIRMATION_SMS = (
     "⏰ {appointment_time}\n"
     "📍 {clinic_address}\n\n"
     "{first_visit_note}"
+    "{fees_note}"
     "{full_name_request}"
     "Maps: {maps_link}\n\n"
     "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
@@ -182,9 +183,14 @@ def build_sms(session: dict) -> str:
     # clinic name, phone and address (→ Maps link) straight from the clinic config.
     # Theorem/demo are unaffected (they have no template_v1 prompt_engine).
     _is_template_clinic = False
+    # Optional per-clinic fees / policy line for the in-clinic confirmation.
+    # Driven from clinic.json ("sms_fees_note"); "" for clinics that don't set it
+    # so their message is byte-identical (theorem/demo have no such key).
+    fees_note = ""
     try:
         from app.clinic_config import get_clinic
         _clinic = get_clinic(session.get("clinic_id"))
+        fees_note = _clinic.get("sms_fees_note") or ""
         if _clinic.get("prompt_engine") == "template_v1":
             _is_template_clinic = True
             clinic_name  = _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
@@ -265,6 +271,7 @@ def build_sms(session: dict) -> str:
         appointment_time  = appointment_time,
         clinic_address    = clinic_address,
         first_visit_note  = note,
+        fees_note         = fees_note,
         full_name_request = full_name_request,
         maps_link         = maps_link,
         clinic_phone      = clinic_phone,
