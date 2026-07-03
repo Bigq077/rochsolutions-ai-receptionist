@@ -413,5 +413,51 @@ Only fixes the clinic-INDEPENDENT (holiday) case. The deeper "for both / any cli
 (a clinic-specific question where the caller says "both") is a separate Group-4 item.
 
 ### Commits
+- Fix + test: **DONE** (`Fix F14: don't gate clinic-independent (bank-holiday) FAQs…`).
+- Booklet: **DONE.** Phone: **VERIFIED** in restarted sweep Call 4 — "open on easter monday" → "closed on all UK bank holidays", no which-clinic. **F14 SIGNED OFF.**
+
+---
+
+## F16b — Clinic-question loop: no escape from the "Awlstuh or Redditch?" keypad  ⚙️ code done · verify in sweep
+**Priority:** HIGH (call-killer — surfaced by the restarted sweep). **Sweep:** Group 4; Call 12.
+
+### Symptom (restarted sweep, call `CAd2dbf547…`)
+After a treatment mention Susie asked "Awlstuh or Redditch?"; from then on **every** non-clinic
+utterance got swallowed by the location ladder — "i just need a massage", "how many sessions",
+"can mark look at it over the phone" all returned **"press 1 for Awlstuh, or 2 for Redditch"** on
+loop. The caller could not break out and abandoned ("horrible to get out of that pit").
+
+### Root cause ([connection.py:7481-7534](../app/media_streams/connection.py#L7481))
+The "Haiku unknown non-question" ladder is `reask_count 0 → rung 2 biased confirm`,
+`>= 1 → rung 3 DTMF keypad` — but there is **no rung beyond 3 and no cap**, so once at the keypad,
+every further unrecognized utterance **re-fires the keypad forever**. Compounded by the Haiku
+resolver mis-classifying some questions ("can mark look at it over the phone first") as
+"non-question", sending them to the keypad instead of the LLM.
+
+### Fix (one commit) — escape hatch, `app/media_streams/connection.py`
+- New `_location_ladder_exhausted(session)` → True once `v3_location_reask_count >= 2` (keypad
+  already offered).
+- In the location intercept, the LLM route now fires on `_transcript_is_question(utterance) OR
+  ladder-exhausted`. On escape it **clears the sticky clinic gate** (`v3_location_asked`,
+  `v3_location_q_active`, `v3_awaiting_*`, resets reask_count) and routes to the LLM — so a
+  persistent sidebar/question **breaks out** instead of keypad-looping.
+- Sequence is now: rung 2 (biased confirm) → rung 3 (keypad, once) → **escape to LLM**. Did NOT
+  touch the delicate Haiku classifier (lower risk).
+
+### Test (TDD) — `tests/test_location_ladder_escape.py` (new, 3 tests)
+reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escape); missing key → False.
+(Predicate unit-tested; the escape wiring is phone-verified by re-running Call 12.)
+
+### Verification
+- **Automated:** 3/3 pass; full suite **90 failed / 1027 passed** → 0 regressions.
+- **Phone (PENDING):** re-run Call 12 — after the keypad prompt, asking a different question must
+  get **answered** (break out), not loop the keypad.
+
+### Note
+This is the escape hatch, not a full fix of the resolver. The **spoken-clinic-name friction**
+(a clear "redditch"/"this clinic" needing the ladder; inconsistent — "alter" resolved cleanly in
+Call 8) remains in the **v2 batch** for a focused resolver pass.
+
+### Commits
 - Fix + test: _(pending)._
 - Booklet: _(pending)._
