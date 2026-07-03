@@ -330,7 +330,7 @@ relies on. Behaviour itself is phone-verified.
 
 ---
 
-## F24/F26 — Deflection over-used / logistics questions unanswered  ⚙️ code done · phone-verify pending
+## F24/F26 — Deflection over-used / logistics questions unanswered  ✅ SIGNED OFF (phone-verified 2026-07-03)
 **Priority:** MED. **Sweep:** Group 5; Calls 12 (F24) & 14 (F26).
 
 ### Symptom / root cause
@@ -364,7 +364,16 @@ module exposes both topics. Locks the facts the rule routes to. Behaviour is pho
   3. (repetition) ask two clinical Qs in a row ("what's causing it?", "how many sessions?") → she may
      use the practitioner line for genuinely clinical ones, but should not robotically chain it onto a
      logistics question.
+- **Phone result (call `CAeb3755ee…`, 2026-07-03 18:06) — ALL PASS:**
+  | Turn | Said | Result |
+  |---|---|---|
+  | 1 | "look at it over the phone first?" | ✅ "We don't offer phone or video consultations — Mark sees patients in person…" (answered, not deflected) |
+  | 2 | "book online?" | ✅ "Yes, you can book online at theoremhealth.co.uk, or I can get…" |
+  | 3 | "what's causing my knee pain?" | ✅ "That's one for the practitioner…" (genuinely clinical → correct) |
+  | 4 | "how many sessions?" | ✅ **varied**: "That's something Mark would advise on once he's assessed you… depends on what's going on" — no robotic repeat |
+  → Logistics answered, deflection correctly scoped, anti-repeat working. **F24/F26 SIGNED OFF.**
+  (Side: T1/T2/T4 ran 7–8.6s TTS — deferred F21 long-TTS pattern, not F24/F26.)
 
 ### Commits
-- Fix + test: _(pending)._
-- Booklet: _(pending)._
+- Fix + test: **DONE** (`Fix F24/F26: scope practitioner-deflection to clinical only, answer logistics`).
+- Booklet: **DONE.**
