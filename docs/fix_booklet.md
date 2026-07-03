@@ -327,3 +327,44 @@ relies on. Behaviour itself is phone-verified.
 ### Commits
 - Fix + test: **DONE** (`Fix F25: Alcester-only massage/psychotherapy no clinic-ask + naming consistency`).
 - Booklet: **DONE.**
+
+---
+
+## F24/F26 — Deflection over-used / logistics questions unanswered  ⚙️ code done · phone-verify pending
+**Priority:** MED. **Sweep:** Group 5; Calls 12 (F24) & 14 (F26).
+
+### Symptom / root cause
+- **F24** (Call 12): the FIXED RESPONSE *"That's one for the practitioner at your appointment"*
+  ([susie_system_prompt.py:2371](../app/prompts/susie_system_prompt.py#L2371)) — meant for
+  diagnosis/prognosis/clinical advice — was **mis-applied to a logistics question** ("can Mark look
+  at it over the phone first?", which is really "are appointments in-person?"), and fired 3× verbatim.
+- **F26** (Call 14): "can I book **online**?" wasn't answered.
+
+Not missing data: `get_clinic_info` already exposes topics `online_consultations` ("No — in-person
+only", [clinic_config.py:790](../app/clinic_config.py#L790)) and `online_booking` ("Yes — at
+theoremhealth.co.uk or by phone", [clinic_config.py:783](../app/clinic_config.py#L783)). The LLM was
+just routing these logistics questions to the clinical-deflection instead of the facts.
+
+### Fix (one commit) — prompt scope rule + a facts lock
+`app/prompts/susie_system_prompt.py` (after the deflection FIXED RESPONSE): added a **SCOPE** note —
+the practitioner line is ONLY for genuinely clinical questions; logistics/factual questions get a real
+answer via `get_clinic_info` (phone/video → `online_consultations` = in-person only; book online →
+`online_booking`; home visits/letters → route to team), and don't repeat the line back-to-back.
+
+### Test — regression lock (`tests/test_logistics_faqs.py`, 3 tests)
+`online_booking` present + mentions the website; `online_consultations` says in-person only; the tool
+module exposes both topics. Locks the facts the rule routes to. Behaviour is phone-verified.
+
+### Verification
+- **Automated:** 3/3 pass; full suite **90 failed / 1017 passed** → 0 regressions.
+- **Phone (PENDING — after deploy):** staging `+447366263180`, safe:
+  1. "Can Mark look at it over the phone first?" → **in-person only** (no phone/video), offers to book
+     — NOT "that's one for the practitioner".
+  2. "Can I book online?" → **Yes, at theoremhealth.co.uk, or by phone now** — a real answer.
+  3. (repetition) ask two clinical Qs in a row ("what's causing it?", "how many sessions?") → she may
+     use the practitioner line for genuinely clinical ones, but should not robotically chain it onto a
+     logistics question.
+
+### Commits
+- Fix + test: _(pending)._
+- Booklet: _(pending)._
