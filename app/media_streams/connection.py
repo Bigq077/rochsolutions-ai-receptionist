@@ -1486,6 +1486,30 @@ _FAQ_CLINIC_SPECIFIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# F14 — clinic-INDEPENDENT questions that must NOT trigger the "which clinic?"
+# gate even though they contain a clinic-specific keyword like "open".  Bank
+# holidays close BOTH clinics identically, so "open on easter monday" is the
+# same answer regardless of clinic — gating it sent the caller into an
+# inescapable which-clinic ladder (sweep Call 4, turn 8).  Specific holiday
+# terms only, to keep false-positives near zero.
+_FAQ_CLINIC_INDEPENDENT_RE = re.compile(
+    r"\b(?:"
+    r"bank\s+holidays?|"
+    r"easter|good\s+friday|christmas|xmas|boxing\s+day|"
+    r"new\s*year|jubilee|may\s+day"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _faq_needs_clinic(utterance: str) -> bool:
+    """Whether an FAQ needs the 'which clinic?' gate.  A clinic-specific topic
+    (parking/address/hours/transport) gates — UNLESS the utterance is about a
+    bank holiday / closure, which is identical at both clinics (F14)."""
+    if _FAQ_CLINIC_INDEPENDENT_RE.search(utterance):
+        return False
+    return bool(_FAQ_CLINIC_SPECIFIC_RE.search(utterance))
+
 # ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
 # When a caller names a specific treatment alongside booking intent, the
@@ -7783,9 +7807,8 @@ class WebSocketCallHandler:
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
-                                and bool(
-                                    _FAQ_CLINIC_SPECIFIC_RE.search(utterance)
-                                )
+                                and _faq_needs_clinic(utterance)  # F14: skips
+                                # clinic-independent closure/holiday questions
                             ):
                                 _faq_clinic_q = _LOC_RUNG1_OPEN
                                 await self.tts_text_queue.put(_faq_clinic_q)
