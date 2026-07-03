@@ -221,7 +221,7 @@ async def send_smart_followup_sms(
 
     # Clinic branding
     _clinic      = get_clinic(session.get("clinic_id"))
-    clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name")
+    clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name") or _clinic.get("clinic_name")
     clinic_phone = _clinic.get("phone")
     hours_summary = _clinic.get("hours_summary")  # e.g. "Mon–Fri 8:30am–9pm"
 
@@ -294,6 +294,12 @@ async def send_smart_followup_sms(
         logger.info("📩 Confirmation SMS already sent during call — skipping follow-up")
         return False
 
+    # Idempotency: this router can be invoked from two places (the media-stream
+    # cleanup path AND the /twilio/status webhook). Only the first one may send.
+    if session.get("followup_sms_sent"):
+        logger.info("📩 Follow-up SMS already sent — skipping duplicate")
+        return False
+
     # ── CHOOSE TEMPLATE ──────────────────────────────────────────────────────
 
     message = _choose_template(
@@ -317,6 +323,7 @@ async def send_smart_followup_sms(
 
     try:
         await send_sms(to=patient_phone, message=message)
+        session["followup_sms_sent"] = True   # idempotency latch (mirrored to /status)
         logger.info("✅ Smart SMS sent [%s] → ***%s", outcome, patient_phone[-4:] if patient_phone else "????")
         return True
     except Exception as e:

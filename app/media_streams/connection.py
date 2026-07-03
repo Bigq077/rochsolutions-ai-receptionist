@@ -11437,6 +11437,28 @@ class WebSocketCallHandler:
         else:
             self.session["call_outcome"] = "no_action"
 
+        # End-of-call personalised SMS — parity with theorem's /twilio/status
+        # path, fired here (self-contained) so it does NOT depend on the Twilio
+        # number's status-callback being configured. Idempotent via
+        # session["followup_sms_sent"] (set inside the router, then persisted +
+        # mirrored below) so if /twilio/status is ALSO wired it won't double-send.
+        # The router self-filters: booked/cancelled/confirmation-already-sent →
+        # no send; <15s → no send. Non-fatal — never block cleanup.
+        try:
+            if not self.session.get("followup_sms_sent"):
+                # The media path has no Twilio CallDuration until /status, so
+                # supply our own call-timer duration for the router's <15s guard.
+                if not self.session.get("twilio_duration_sec") and self._call_logger is not None:
+                    from datetime import datetime as _dt, timezone as _tz
+                    _dur_s = (_dt.now(_tz.utc) - self._call_logger._start_utc).total_seconds()
+                    self.session["twilio_duration_sec"] = str(int(_dur_s))
+                from app.tools.call_summary import build_call_summary
+                from app.notifications.smart_sms_router import send_smart_followup_sms
+                _eos_summary = build_call_summary(self.session)
+                await send_smart_followup_sms(session=self.session, summary=_eos_summary)
+        except Exception as _eosms_exc:
+            logger.warning("[ms_conn] end-of-call SMS failed (non-fatal): %r", _eosms_exc)
+
         try:
             await save_session(self.call_sid, self.session)
         except Exception as exc:
