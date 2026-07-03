@@ -63,6 +63,12 @@
       "hour": 21,
       "minute": 30
     },
+    "_owner_alerts_note": "Real-time SMS heads-up to Marcus the moment a call books (sent BEFORE the patient confirmation) or a booking needs manual entry. phone falls back to transfer_phone if blank. Transfer/distress callers are already alerted via the transfer_to_human path.",
+    "owner_alerts": {
+      "enabled": true,
+      "phone": "+447586605462",
+      "events": ["booking", "manual_followup"]
+    },
     "slot_minutes": 40,
     "_slot_increment_note": "Appointments last 40 mins, but offer slots on the hour (every 60 mins) for simplicity. Slots anchor to each day's opening time.",
     "slot_increment_minutes": 60,

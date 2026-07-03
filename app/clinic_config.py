@@ -1311,6 +1311,7 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["booking_system"] = op.get("booking_system", "manual_handoff")
     clinic["calendar_id"] = op.get("calendar_id")
     clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config
+    clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
     clinic["slot_minutes"] = slot_minutes
     # Slot-offering increment (spacing between offered start times). Defaults to

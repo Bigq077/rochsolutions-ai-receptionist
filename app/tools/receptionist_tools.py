@@ -2460,6 +2460,18 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         # Suppressed when called as part of a reschedule (caller gets a reschedule
         # confirmation instead, sent by _reschedule_appointment_acuity).
         if not args.get("_suppress_sms"):
+            # Owner heads-up FIRST — before the patient confirmation.
+            # No-op unless the clinic enables owner_alerts.
+            from app.notifications.owner_alert import notify_owner
+            await notify_owner(
+                session,
+                event="booking",
+                patient_name=patient_name,
+                when_label=booking.start_time.strftime("%A %d %B at %H:%M"),
+                service=service,
+                location=location,
+                is_new_patient=is_new,
+            )
             try:
                 await send_booking_confirmation(
                     patient_phone=phone,
@@ -3991,6 +4003,12 @@ async def _send_practitioner_followup_ping(
     booking behind the practitioner. This is just the heads-up so the
     practitioner follows up after. Fire-and-forget, non-fatal.
     """
+    # When the clinic uses real-time owner_alerts for bookings, the consolidated
+    # notify_owner(event="booking") call already texted the owner (carrying any
+    # follow-up note), so skip this to avoid a duplicate SMS to the same number.
+    from app.notifications.owner_alert import owner_alerts_enabled
+    if owner_alerts_enabled(clinic, "booking"):
+        return
     is_home_visit = (location or "").lower() == "home_visit"
     note = (followup_note or "").strip()
     if not is_home_visit and not note:
@@ -4171,6 +4189,20 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["selected_slot"] = start_dt.isoformat()
         session["calendar_status"] = "manual_followup"
 
+        # Owner heads-up FIRST — Marcus is alerted (needs manual entry) before the
+        # patient confirmation. No-op unless the clinic enables owner_alerts.
+        from app.notifications.owner_alert import notify_owner
+        await notify_owner(
+            session,
+            event="manual_followup",
+            patient_name=patient_name,
+            when_label=booked_label,
+            service=service,
+            location=location,
+            is_new_patient=is_new,
+            note=followup_note,
+        )
+
         # Still send the confirmation SMS — the caller was told "all booked" and a
         # human enters it into the booking system, so they get the same confirmation
         # text as a calendar-backed booking. Non-fatal; build_sms uses the session.
@@ -4286,6 +4318,20 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["collected"]["policy_number"] = policy
     session["calendar_event_id"] = event_id
     session["calendar_status"] = "created"
+
+    # Owner heads-up FIRST — Marcus is alerted before the patient confirmation.
+    # No-op unless the clinic enables owner_alerts (Theorem etc. unaffected).
+    from app.notifications.owner_alert import notify_owner
+    await notify_owner(
+        session,
+        event="booking",
+        patient_name=patient_name,
+        when_label=booked_label,
+        service=_svc_name,
+        location=location,
+        is_new_patient=is_new,
+        note=followup_note,
+    )
 
     # Confirmation SMS — failure must never fail the booking
     try:
