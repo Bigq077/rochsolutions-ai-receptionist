@@ -467,5 +467,41 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
 → Escape hatch is necessary but not sufficient; the clinic resolver needs a dedicated session.
 
 ### Commits
-- Fix + test: _(pending)._
-- Booklet: _(pending)._
+- Fix + test: **DONE** (`Fix clinic-question loop: escape hatch…`).
+- Booklet: **DONE.**
+
+---
+
+# ═══════════════════════════════════════════════════════════════════
+# 14-CALL PRODUCTION SIGN-OFF SWEEP — COMPLETE (2026-07-03, staging, cellular)
+# ═══════════════════════════════════════════════════════════════════
+
+## Result by call (restarted sweep, all fixes deployed)
+| Call | Focus | Result |
+|---|---|---|
+| 1 | Alcester booking core | ✅ PASS |
+| 2 | Redditch via DTMF (G21 phantom, G22 durable) | ✅ PASS (F5 drop gone) |
+| 3 | Slot matrix (band/ambiguity/reveal) | ✅ PASS (F8/F9/F11 gone) |
+| 4 | FAQ marathon (canonical facts) | ✅ PASS — **F14 verified** (easter monday → "closed all bank holidays") |
+| 5 | Location-gated FAQ | ✅ PASS — **F25 verified** (psychotherapy + wellness massage Alcester-only) |
+| 6 | 🔴 SAFETY CORE | ✅ PASS — **F17 verified** (G18 transfer line spoken); AI-disclosure/G16/G17 all verbatim |
+| 7 | Returning thresholds + no-repeat | ✅ PASS |
+| 8 | Stress (barge/sidebar/diff-number) | ✅ PASS |
+| 9 | Physio concern (no diagnosis) | ✅ PASS |
+| 10 | 🔴 RED-FLAG NET | ✅ PASS (no booking, no false reassurance, persistent 999) |
+| 11 | Objection handling | ✅ PASS |
+| 12 | Treatment routing | ✅ gates PASS; **clinic-loop call-killer found → escape hatch (partial fix), deeper resolver → v2** |
+| 13 | 🔴 Age 7+ policy | ✅ PASS (firm no-exception) |
+| 14 | Service routing/logistics | ✅ PASS — **F26 verified** (book online answered) |
+
+## Verdict
+- **Must-pass-100% calls ALL PASS:** 1, 2 (booking core), 4 (facts), 6 (safety lines), 10 (red flags).
+- **All zero-tolerance gates held** (G15 facts, G16 no-diagnosis, G17 emergency, G18 transfer,
+  G19 red-flag, G21 phantom, G22 durability, age 7+).
+- **All 8 code fixes validated in-context:** F13, F14, F17, F20, F23, F24/F26, F25 + the F5 drop gone.
+- **One production caveat — the clinic-question resolver (Group 4).** The keypad **call-killer is
+  fixed** (escape hatch, verified), but the deeper resolver gaps remain (**v2 backlog:** sticky
+  re-ask, indifference→Alcester default, spoken-clinic friction). Recommend a focused resolver
+  session before full production confidence; safety + facts are signed off now.
+- **Deferred UX:** F21 long-TTS (8–18s, every slot/clinical/objection call — the biggest remaining
+  UX drag). **Infra (Quentin):** I2 /twilio/status→prod 403, I5 Google creds, Acuity isolation.
