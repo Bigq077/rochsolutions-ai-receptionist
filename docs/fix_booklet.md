@@ -450,13 +450,21 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
 
 ### Verification
 - **Automated:** 3/3 pass; full suite **90 failed / 1027 passed** → 0 regressions.
-- **Phone (PENDING):** re-run Call 12 — after the keypad prompt, asking a different question must
-  get **answered** (break out), not loop the keypad.
+- **Phone — ESCAPE FIRES ✅, but PARTIAL** (force-verify call `CA28632fbb…`, 2026-07-03 20:21):
+  rung 2 → rung 3 keypad → `location ladder ESCAPE HATCH — keypad exhausted… routing to LLM` →
+  answered "sports massage → assessment", `loc_active=False`. **The keypad loop is broken.** BUT the
+  call still ended badly (see v2 gaps).
 
-### Note
-This is the escape hatch, not a full fix of the resolver. The **spoken-clinic-name friction**
-(a clear "redditch"/"this clinic" needing the ladder; inconsistent — "alter" resolved cleanly in
-Call 8) remains in the **v2 batch** for a focused resolver pass.
+### v2 resolver backlog (NOT fixed — top priority for the focused Group-4 pass)
+1. **Sticky re-ask** — after the escape clears the gate, `booking_flow_active` is still True + clinic
+   unresolved, so the *next* utterance re-fires the clinic question (`location gate fired —
+   intent=booking`). Escape breaks one loop; the question returns.
+2. **Indifference doesn't resolve** — "whichever / whatever's easiest / either / both / you pick"
+   (what a real caller says with no preference) resolve to **nothing** — no "you pick" path →
+   caller can get stuck again. Proposed fix: indifference → default **Alcester**.
+3. **Spoken-clinic friction** — clear "redditch" / "this clinic" needing the ladder; inconsistent
+   ("alter" resolved cleanly in Call 8). Needs a resolver pass.
+→ Escape hatch is necessary but not sufficient; the clinic resolver needs a dedicated session.
 
 ### Commits
 - Fix + test: _(pending)._
