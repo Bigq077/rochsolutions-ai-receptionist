@@ -377,3 +377,41 @@ module exposes both topics. Locks the facts the rule routes to. Behaviour is pho
 ### Commits
 - Fix + test: **DONE** (`Fix F24/F26: scope practitioner-deflection to clinical only, answer logistics`).
 - Booklet: **DONE.**
+
+---
+
+## F14 — Bank-holiday question triggers inescapable "which clinic?" loop  ⚙️ code done · verify in sweep
+**Priority:** HIGH (call-killer — surfaced by the final sweep). **Sweep:** Group 4; Call 4 turn 8.
+
+### Symptom (final sweep, call `CAa09271e9…`, turn 8)
+"are any of the two clinics open on easter monday" → `FAQ clinic gate: no clinic confirmed —
+injecting 'Which clinic?'` → "for both" wasn't accepted → biased-confirm → keypad ladder →
+caller couldn't escape and **abandoned the call**. Turns 1–7 (all canonical facts + F13 no-push)
+were flawless; turn 8 killed it.
+
+### Root cause
+The deterministic FAQ clinic-gate `_FAQ_CLINIC_SPECIFIC_RE` ([connection.py:1478](../app/media_streams/connection.py#L1478))
+matches "open" → so "open on **easter monday**" gates on clinic. But a bank holiday closes **both**
+clinics identically → the answer is clinic-independent → it should never gate.
+
+### Fix (one commit) — `app/media_streams/connection.py`
+- New `_FAQ_CLINIC_INDEPENDENT_RE` (bank holiday / easter / christmas / etc.) + `_faq_needs_clinic(utterance)`
+  predicate: a clinic-specific topic gates UNLESS a holiday/closure term is present.
+- Gate condition now calls `_faq_needs_clinic(utterance)` instead of the raw regex.
+
+### Test (TDD) — `tests/test_faq_clinic_gate.py` (new, 7 tests)
+Parking/hours/address → gate; easter monday / bank holidays / christmas → NO gate; price → no gate.
+(One iteration: `bank\s+holiday` missed the plural "holidays" — fixed to `holidays?`.)
+
+### Verification
+- **Automated:** 7/7 pass; full suite **90 failed / 1024 passed** → 0 regressions.
+- **Phone:** re-run Call 4 to turn 8 — "open on easter monday" must answer **"closed on all UK bank
+  holidays"** directly (no "which clinic?"). Verified in the restarted sweep.
+
+### Note
+Only fixes the clinic-INDEPENDENT (holiday) case. The deeper "for both / any clinic" ladder handling
+(a clinic-specific question where the caller says "both") is a separate Group-4 item.
+
+### Commits
+- Fix + test: _(pending)._
+- Booklet: _(pending)._
