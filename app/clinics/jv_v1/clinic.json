@@ -8,12 +8,14 @@
     "JV Physiotherapy",
     "JV Physio"
   ],
-  "primary_phone": "+44 7586 605462",
+  "primary_phone": "+44 7367 002651",
   "contact_email": "Jointventurephysiotherapy@gmail.com",
   "websites": [
     "https://jointventurephysiotherapy.co.uk"
   ],
   "sms_fees_note": "Assessment: £52 (40 mins), card payments taken.\nCancellations with less than 24hrs notice are charged the full appointment fee.\n\n",
+  "sms_assessment_price": "£52",
+  "sms_assessment_duration": "40",
   "hours_summary": "evenings Mon–Fri and Saturday mornings",
   "practitioner": "Marcus",
   "company_number": "TBC",
@@ -49,7 +51,7 @@
     "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
     "timezone": "Europe/London",
     "sms_name": "Joint Venture Physiotherapy",
-    "phone": "+44 7586 605462",
+    "phone": "+44 7367 002651",
     "transfer_phone": "+447586605462",
     "booking_system": "google_calendar",
     "_calendar_id_note": "Dedicated JV business account jointventurephysiotherapy@gmail.com — Marcus's Carepatron is two-way synced to it (his appointments appear as busy; Susie's bookings sync back). Susie's google_tokens MUST be OAuthed as this same account (re-run /auth/google/start signed in as jointventurephysiotherapy@gmail.com). No personal-calendar pollution.",

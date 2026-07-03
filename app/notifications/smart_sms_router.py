@@ -363,6 +363,21 @@ def _choose_template(
 
     ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
 
+    # Clinic-specific copy inputs (price/insurance). Defaults reproduce the
+    # original Theorem copy; a clinic overrides via clinic.json. jv: £52/40-min +
+    # no outcome claim, and Option-B insurance (accepts referrals incl. Bupa).
+    _c            = get_clinic(session.get("clinic_id")) or {}
+    _ins_cfg      = _c.get("insurance") or {}
+    _accepts_ref  = bool(_ins_cfg.get("other_insurers_accepted") or _ins_cfg.get("bupa_accepted"))
+    _prac         = _c.get("practitioner")
+    _price        = _c.get("sms_assessment_price")
+    _dur          = _c.get("sms_assessment_duration")
+    _price_line   = (
+        f"An assessment is {_price} for {_dur} minutes. "
+        if (_price and _dur)
+        else "A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+    )
+
     # ── ROUTING ──────────────────────────────────────────────────────────────
 
     # 1. HUMAN CALLBACK REQUESTED
@@ -406,7 +421,8 @@ def _choose_template(
     # 7. FAQ — BUPA SPECIFICALLY
     if bupa_mentioned:
         return templates.format_insurance_inquiry_sms(
-            patient_name=patient_name, bupa_mentioned=True, **ck)
+            patient_name=patient_name, bupa_mentioned=True,
+            accepts_referrals=_accepts_ref, practitioner=_prac, **ck)
 
     # 8. FAQ — INSURANCE (non-Bupa)
     if asked_about_insurance:
@@ -414,12 +430,15 @@ def _choose_template(
             patient_name=patient_name,
             insurer=insurer or None,
             bupa_mentioned=False,
+            accepts_referrals=_accepts_ref,
+            practitioner=_prac,
             **ck,
         )
 
     # 9. FAQ — PRICE
     if asked_about_price:
         return templates.format_price_inquiry_sms(
+            price_line=_price_line,
             patient_name=patient_name, **ck)
 
     # 10. NO AUDIO — safety net graceful close (connection issue, not abandoned)

@@ -397,13 +397,20 @@ def format_price_inquiry_sms(
     service: Optional[str] = None,
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    price_line: str = "A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. ",
 ) -> str:
-    """💰 Price enquiry — didn't book."""
+    """💰 Price enquiry — didn't book.
+
+    price_line is a full clause (with trailing space) so a clinic can override the
+    price/duration AND drop any outcome claim (e.g. jv, whose non-diagnostic rules
+    forbid "see results within N sessions"). Default reproduces the original text
+    for clinics that don't override — byte-identical.
+    """
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
     return (
         f"Hi, you called {name} earlier asking about our prices. "
-        f"A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+        f"{price_line}"
         f"Ready to book? Call us back anytime, we'd love to help. {phone}"
     )
 
@@ -418,10 +425,34 @@ def format_insurance_inquiry_sms(
     bupa_mentioned: bool = False,
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    accepts_referrals: bool = False,
+    practitioner: Optional[str] = None,
 ) -> str:
-    """🏥 Insurance enquiry / 🚫 Bupa — didn't book."""
+    """🏥 Insurance enquiry / 🚫 Bupa — didn't book.
+
+    accepts_referrals=True → clinic accepts private-insurance referrals (incl.
+    Bupa), so use an Option-B message: confirm we accept the referral, no
+    billing-mechanism promise, practitioner follows up to collect details. Used by
+    jv. Default False reproduces the original "can't bill Bupa / pay-and-claim"
+    copy — byte-identical for clinics that don't override.
+    """
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
+
+    if accepts_referrals:
+        _who = practitioner or "our team"
+        if insurer:
+            insurer_clause = f", including {insurer},"
+        elif bupa_mentioned:
+            insurer_clause = ", including Bupa,"
+        else:
+            insurer_clause = ""
+        return (
+            f"Hi, you called {name} about using your health insurance. "
+            f"Good news — we accept private health insurance referrals{insurer_clause}. "
+            f"Give us a call back whenever you'd like to book, and {_who} will be in touch "
+            f"to sort out the insurance details with you. {phone}"
+        )
 
     if bupa_mentioned:
         return (
