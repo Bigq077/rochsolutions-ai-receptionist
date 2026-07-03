@@ -11459,6 +11459,37 @@ class WebSocketCallHandler:
         except Exception as _eosms_exc:
             logger.warning("[ms_conn] end-of-call SMS failed (non-fatal): %r", _eosms_exc)
 
+        # End-of-call → Google Sheets call log — parity with theorem's
+        # /twilio/status: build_call_summary → build_actionable_summary_row
+        # (15-col row + Claude one-liner) → append to the CallSummaries tab of
+        # GOOGLE_SHEETS_ID. Self-contained (jv's TwiML has no status callback).
+        # Idempotent via session["call_summary_logged"] (set + mirrored below so a
+        # configured /twilio/status won't double-log). Scheduled as a background
+        # task with a session snapshot so the summary LLM call never delays WS
+        # cleanup. Fully non-fatal — a Sheets/LLM error must never break teardown.
+        try:
+            if not self.session.get("call_summary_logged"):
+                self.session["call_summary_logged"] = True
+                import copy as _copy_ss
+                _ss_snapshot = _copy_ss.deepcopy(self.session)
+
+                async def _log_call_to_sheets(_snap):
+                    try:
+                        from app.tools.call_summary import build_call_summary as _bcs
+                        from app.tools.actionable_summary import build_actionable_summary_row as _bar
+                        from app.tools.handoff import fire_and_forget_append_summary_row as _ffa
+                        _summ = _bcs(_snap)
+                        _summ["_raw_session"] = _snap
+                        _row = await _bar(_summ)
+                        _ffa(_row)
+                        logger.info("[ms_conn] call-summary row queued to Sheets")
+                    except Exception as _e:
+                        logger.warning("[ms_conn] sheets call-log failed (non-fatal): %r", _e)
+
+                asyncio.create_task(_log_call_to_sheets(_ss_snapshot))
+        except Exception as _sheet_exc:
+            logger.warning("[ms_conn] sheets call-log scheduling failed: %r", _sheet_exc)
+
         try:
             await save_session(self.call_sid, self.session)
         except Exception as exc:
