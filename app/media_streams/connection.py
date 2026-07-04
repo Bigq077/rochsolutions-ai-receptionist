@@ -593,6 +593,43 @@ def _is_location_indifference(text: str) -> bool:
     return bool(_LOCATION_INDIFFERENCE_RE.search(text))
 
 
+# ── Deictic "this clinic" (v2-3 / F16) ───────────────────────────────────────
+# A caller answering "Awlstuh or Redditch?" with "this clinic please" / "this
+# one" / "the one I called" means the site they dialled — but that names no
+# clinic alias, so it missed the fast path, went to the biased-confirm rung,
+# then dead air, then the keypad, resolving only on DTMF '1' (~30s friction,
+# sweep Call 5).  Like v2-1 indifference, resolve it DIRECTLY to the default
+# clinic (Alcester, the primary Mon–Fri site).
+#
+# Runs only at the OPEN rung: at the biased-confirm rung "this clinic" means
+# "yes, use the biased one" and is handled by the use-this-clinic confirm gate
+# (v3_awaiting_use_this_clinic), which is checked before this path is reached.
+# This predicate only DETECTS the phrase — the guard that uses it also checks
+# `not _transcript_is_question(...)`, so "what's the address of this clinic?"
+# still routes to the LLM.
+_LOCATION_DEICTIC_RE = re.compile(
+    r"\bthis (?:clinic|one|place|site|branch)\b"
+    r"|\bthis here\b"
+    r"|\bthe (?:one|clinic|place) i (?:called|rang|rung|dialled|dialed|phoned)\b"
+    r"|\bthe one i'?m (?:calling|ringing|phoning)\b"
+    r"|\bone i called\b",
+    re.IGNORECASE,
+)
+
+
+def _is_deictic_current_clinic(text: str) -> bool:
+    """True when the caller refers to "this"/the dialled clinic rather than
+    naming Awlstuh or Redditch ("this clinic", "this one", "the one I called").
+
+    Deterministic; used only in the location-resolution intercept at the open
+    rung.  A True result means: take the default clinic (same as indifference).
+    Detection only — question-routing is the caller's responsibility.
+    """
+    if not text:
+        return False
+    return bool(_LOCATION_DEICTIC_RE.search(text))
+
+
 # Use-this-clinic confirm gates.
 # _USE_THIS_CLINIC_AFFIRMATIVES — the ONLY responses that trigger clinic
 # confirmation.  Everything else (rejections, questions, ambiguous answers)
@@ -1563,6 +1600,35 @@ def _location_ladder_exhausted(session: Dict[str, Any]) -> bool:
     utterance must NOT re-fire the keypad forever — it breaks out to the LLM so
     the caller can escape the clinic loop.  Returns True when exhausted."""
     return int(session.get("v3_location_reask_count", 0) or 0) >= 2
+
+
+def _location_gate_should_fire(session: Dict[str, Any]) -> bool:
+    """Single source of truth for the booking→location gate (connection.py, the
+    `_v3_gate_fired` site): ask "Awlstuh or Redditch?" when the caller wants to
+    book but no clinic has been asked for or confirmed yet."""
+    return bool(
+        session.get("v3_booking_intent", False)
+        and not session.get("v3_location_asked", False)
+        and not session.get("v3_location_confirmed", False)
+    )
+
+
+def _disengage_location_gate(session: Dict[str, Any]) -> None:
+    """Stand the clinic-location gate FULLY down so it does not re-fire next turn.
+
+    Used by the ladder escape hatch (v2-2, sweep Call 12): once the keypad is
+    exhausted and we hand the caller to the LLM, clearing v3_location_asked alone
+    is not enough — v3_booking_intent stays True and _location_gate_should_fire()
+    re-arms rung 1 on the caller's very next utterance (the 'sticky re-ask' that
+    trapped the tester in an outer loop).  Clear the booking-intent latch too.
+    Booking still resumes normally: a fresh booking cue re-sets v3_booking_intent
+    via the booking-ack path, which re-asks the clinic (they do need one)."""
+    session["v3_location_asked"] = False
+    session["v3_location_q_active"] = False
+    session["v3_awaiting_use_this_clinic"] = False
+    session["v3_awaiting_location_dtmf"] = False
+    session["v3_location_reask_count"] = 0
+    session["v3_booking_intent"] = False
 
 # ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
@@ -6096,14 +6162,8 @@ class WebSocketCallHandler:
                         if self.session.get("v3_location_q_active"):
                             self.session["_location_q_patient_spoke"] = True
 
-                        _v3_gate_fired = (
-                            self.session.get("v3_booking_intent", False)
-                            and not self.session.get(
-                                "v3_location_asked", False
-                            )
-                            and not self.session.get(
-                                "v3_location_confirmed", False
-                            )
+                        _v3_gate_fired = _location_gate_should_fire(
+                            self.session
                         )
                         # Caller is answering the location question we just
                         # asked — intercept to guarantee only the ack plays
@@ -7349,24 +7409,42 @@ class WebSocketCallHandler:
                                         )
                                         _resolved = "unknown"
 
-                                    # ── Indifference → default clinic ────────
-                                    # "whichever / either / you pick / I don't
-                                    # mind / both / doesn't matter" name no
-                                    # clinic (Haiku returns unknown) but ARE a
-                                    # decision.  Don't loop the re-ask ladder —
-                                    # take the default clinic and fall through
-                                    # the normal resolved path below.
+                                    # ── Vague answer → default clinic ────────
+                                    # A caller who names no clinic (Haiku unknown)
+                                    # but IS making a decision must not loop the
+                                    # re-ask ladder — take the default clinic and
+                                    # fall through the normal resolved path below.
+                                    #   • indifference: "whichever / either / you
+                                    #     pick / I don't mind / both" (v2-1)
+                                    #   • deictic: "this clinic / this one / the
+                                    #     one I called" (v2-3 / F16)
+                                    # Guarded by `not _transcript_is_question` so a
+                                    # genuine question ("what's the address of this
+                                    # clinic?") still routes to the LLM below.
                                     if (
                                         _resolved == "unknown"
-                                        and _is_location_indifference(utterance)
+                                        and not _transcript_is_question(utterance)
                                     ):
-                                        _resolved = _DEFAULT_CLINIC
-                                        logger.info(
-                                            "[ms_conn v3] location indifference"
-                                            " — %r → default clinic %s",
-                                            utterance[:60],
-                                            _resolved,
-                                        )
+                                        if _is_location_indifference(utterance):
+                                            _resolved = _DEFAULT_CLINIC
+                                            logger.info(
+                                                "[ms_conn v3] location"
+                                                " indifference — %r → default"
+                                                " clinic %s",
+                                                utterance[:60],
+                                                _resolved,
+                                            )
+                                        elif _is_deictic_current_clinic(
+                                            utterance
+                                        ):
+                                            _resolved = _DEFAULT_CLINIC
+                                            logger.info(
+                                                "[ms_conn v3] deictic 'this"
+                                                " clinic' — %r → default"
+                                                " clinic %s",
+                                                utterance[:60],
+                                                _resolved,
+                                            )
 
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
@@ -7507,16 +7585,18 @@ class WebSocketCallHandler:
                                         )
                                         if _transcript_is_question(utterance) or _loc_escape:
                                             if _loc_escape:
-                                                self.session["v3_location_asked"] = False
-                                                self.session["v3_location_q_active"] = False
-                                                self.session["v3_awaiting_use_this_clinic"] = False
-                                                self.session["v3_awaiting_location_dtmf"] = False
-                                                self.session["v3_location_reask_count"] = 0
+                                                # v2-2: FULL stand-down (also
+                                                # clears v3_booking_intent) so the
+                                                # gate can't re-fire rung 1 next
+                                                # turn — the sticky re-ask.
+                                                _disengage_location_gate(
+                                                    self.session
+                                                )
                                                 logger.info(
                                                     "[ms_conn v3] location ladder"
                                                     " ESCAPE HATCH — keypad"
-                                                    " exhausted, clearing clinic"
-                                                    " gate and routing to LLM: %r",
+                                                    " exhausted, standing gate"
+                                                    " down and routing to LLM: %r",
                                                     utterance[:60],
                                                 )
                                             else:
