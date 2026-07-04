@@ -505,3 +505,36 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
   session before full production confidence; safety + facts are signed off now.
 - **Deferred UX:** F21 long-TTS (8–18s, every slot/clinical/objection call — the biggest remaining
   UX drag). **Infra (Quentin):** I2 /twilio/status→prod 403, I5 Google creds, Acuity isolation.
+
+---
+
+# ═══════════════════════════════════════════════════════════════════
+# v2 CLINIC-RESOLVER (Group 4) — focused pass (2026-07-04)
+# ═══════════════════════════════════════════════════════════════════
+
+## v2-1 · Indifference → default clinic ✅ SIGNED OFF
+- **Finding:** at "Awlstuh or Redditch?", a caller who declines to choose ("whichever /
+  whatever's easiest / either / both / you pick / I don't mind / doesn't matter") got asked the
+  **same question again** — the loop that trapped the tester twice in the sweep (Call 12 + force-verify).
+- **Root cause:** the Haiku location resolver returns `unknown` for these (they name no clinic).
+  `unknown` + not-a-question fell into the re-ask ladder (rung 2 biased confirm → rung 3 keypad),
+  so indifference — which *is* a decision — was treated as an unintelligible answer.
+- **Change** (`app/media_streams/connection.py`): new deterministic predicate
+  `_is_location_indifference()` + `_LOCATION_INDIFFERENCE_RE` + `_DEFAULT_CLINIC = "alcester"`
+  (near `_transcript_is_question`). One guard inserted right after `_resolved` is computed, before
+  the `if _resolved != "unknown":` check: if `unknown` **and** indifference → set
+  `_resolved = _DEFAULT_CLINIC` and **fall through the existing resolved path** (ack "Awlstuh." +
+  advance to time preference). No new branch in the resolved flow — reuses the tested path.
+  Alcester = the resolver's own ambiguity tie-break (open 5 days/wk vs Redditch's 1), so the
+  deterministic default matches the LLM's ambiguity default.
+- **Test:** `tests/test_location_indifference.py` — 39 cases (30 indifference phrases detected,
+  8 non-indifference incl. questions & clinic names rejected, default==alcester).
+- **Verification:** automated **90 failed / 1066 passed** → **0 regressions** (baseline held exactly).
+  Phone ✅ (call `CA5fa771b2…`, 2026-07-04 01:09): "whichever is easiest" →
+  `location indifference — 'whichever is easiest' → default clinic alcester` →
+  `Haiku resolved location: alcester` → "Awlstuh." → straight to time preference. **No re-ask,
+  no keypad.** Full booking flow then ran clean to the confirm (hung up before "yes" — Acuity live).
+- **Commit:** `c04c45c` (fix + test). Booklet: this entry.
+- **Notes:** ack is the shared "Awlstuh." readback — natural after "you pick" but could be warmed
+  ("Awlstuh it is.") in a later polish; kept minimal to reuse the tested path. Gaps v2-2 (sticky
+  re-ask) and v2-3 (spoken-clinic friction) remain — next in this pass.
