@@ -57,8 +57,8 @@ pbpaste | grep -vE 'httpx|raw slot\(s\)|barge-in: partial|Redis (read|write) err
 - `TRANSFER_DISABLED` (staging kill-switch) suppresses the live dial + heads-up SMS; the
   transfer TTS line still plays (that's how F17 is phone-verifiable on staging).
 
-## Status — as of 2026-07-03 (end of day 2)
-**8 fixes SIGNED OFF (TDD + phone-verified), all validated in the full 14-call sweep:**
+## Status — as of 2026-07-04 (v2 resolver, gap 1/3 done). Ship target: Monday 2026-07-06.
+**8 sweep fixes + v2-1 SIGNED OFF (TDD + phone-verified), all validated in the full 14-call sweep:**
 - **F13** — no booking-CTA on pure-FAQ answers. Prompt-only (susie_system_prompt.py ~L2292); a
   deterministic gate was tried and **reverted** (regressed concern-turn CTA).
 - **F14** — bank-holiday/closure FAQ no longer triggers "which clinic?" (`_faq_needs_clinic` +
@@ -75,14 +75,19 @@ pbpaste | grep -vE 'httpx|raw slot\(s\)|barge-in: partial|Redis (read|write) err
 **14-call sweep COMPLETE** — safety spine (Calls 6, 10) + canonical facts (Call 4) + all fixes
 verified. Full result table + verdict at the bottom of [fix_booklet.md].
 
-**NEXT UP — v2 clinic-resolver (Group 4), the top priority.** The keypad call-killer is fixed but
-three gaps remain (the resolver bit Jules twice during the sweep — Calls 12 & the force-verify):
-1. **Indifference doesn't resolve** — "whichever / either / you pick / whatever's easiest / both"
-   resolve to NOTHING. **Highest-value single fix: map indifference → default Alcester.** START HERE.
-2. **Sticky re-ask** — after the escape clears the gate, `booking_flow_active`+unresolved clinic
-   re-fires the clinic question on the next utterance (`location gate fired — intent=booking`).
-3. **Spoken-clinic friction** — a clear "redditch"/"this clinic" needs the ladder; inconsistent
-   ("alter" resolved cleanly in Call 8). Needs a resolver pass.
+**v2 clinic-resolver (Group 4) — IN PROGRESS. Gap 1 of 3 SIGNED OFF (2026-07-04).**
+- ✅ **v2-1 Indifference → default clinic** — "whichever/either/you pick/whatever's easiest/both/
+  I don't mind/doesn't matter" now resolve to Alcester instead of re-asking. Deterministic
+  `_is_location_indifference()` + `_LOCATION_INDIFFERENCE_RE` + `_DEFAULT_CLINIC` in connection.py;
+  one guard before the `_resolved != "unknown"` check reuses the tested resolved path. Test:
+  `tests/test_location_indifference.py` (39). Commit `c04c45c`. Phone-verified (call `CA5fa771b2…`).
+- ⏭ **v2-2 Sticky re-ask [NEXT — highest remaining value]** — after the escape hatch clears the
+  gate, `booking_flow_active`+unresolved clinic re-fires the clinic question on the next utterance
+  (`location gate fired — intent=booking`). Escape breaks one loop; the question returns. Start
+  read-only in the escape-hatch block (connection.py ~7442) + the `location gate fired` condition
+  (~6090) to see why the gate re-arms.
+- ⏭ **v2-3 Spoken-clinic friction** — a clear "redditch"/"this clinic" sometimes still needs the
+  ladder; inconsistent ("alter" resolved cleanly in Call 8). Lower severity, resolver-tuning pass.
 
 **Then / deferred:**
 - **F21** — long/un-bargeable TTS (8–18s, EVERY slot/clinical/objection call — biggest UX drag).
