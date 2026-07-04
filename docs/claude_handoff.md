@@ -58,10 +58,10 @@ pbpaste | grep -vE 'httpx|raw slot\(s\)|barge-in: partial|Redis (read|write) err
   transfer TTS line still plays (that's how F17 is phone-verifiable on staging).
 
 ## Status — as of 2026-07-04 (v2 resolver COMPLETE + F25 naming). Ship target: Monday 2026-07-06.
-> **Headline: SHIP-READY.** 12 fixes done. 9 phone-verified; 3 (v2-2/v2-3/F25-naming) TDD-green and
-> awaiting ONE staging phone-verify pass before Monday. F21 deferred (redesign, 4/10 impact — see below).
-> ⚠️ **Unpushed:** commits `43e0558` (v2-3, carries v2-2 code) + `d915d82` (F25-naming) are local-only —
-> push to deploy, then verify. The v2-2 TEST file needs committing (see git note at end of Status).
+> **Headline: SHIP-READY.** 12 fixes done, 0 test regressions (baseline 90). **11 phone-verified**;
+> v2-2 is code/unit-verified (its trigger path is now rarely reachable by design — v2-1/v2-3 catch
+> vague answers upstream). Batch verified on call `CA564aa12a…` (2026-07-04 02:01): v2-3 deictic ✅,
+> F25 name ✅. F21 deferred (redesign, 4/10 impact — see below).
 
 **8 sweep fixes + v2-1 SIGNED OFF (TDD + phone-verified), all validated in the full 14-call sweep:**
 - **F13** — no booking-CTA on pure-FAQ answers. Prompt-only (susie_system_prompt.py ~L2292); a

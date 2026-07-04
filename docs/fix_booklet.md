@@ -553,8 +553,11 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
   Booking still resumes: a fresh booking cue re-sets the intent latch via the booking-ack path.
 - **Test:** `tests/test_location_gate_sticky_reask.py` — 6 cases (gate fires/silent matrix; disengage
   clears every flag incl. booking_intent; disengage → gate stays silent next turn).
-- **Verification:** automated **90 failed / 1072 passed** → **0 regressions**.  Phone: **PENDING**
-  (batched with v2-3 + F25-naming — one staging verify pass before Monday).
+- **Verification:** automated **90 failed / 1072 passed** → **0 regressions**.  Phone: **code-verified,
+  not phone-triggered** (call `CA564aa12a…`, 2026-07-04 02:01).  The escape/stand-down path is now hard
+  to reach *by design* — v2-1 (indifference) + v2-3 (deictic) resolve vague answers upstream before the
+  ladder can exhaust.  Covered by 6 unit tests and is a strict superset of the already-phone-verified
+  escape hatch (it adds the `v3_booking_intent` clear).
 - **Commit:** code rode into `43e0558` (bundled with v2-3 — the separate v2-2 commit was skipped);
   test `tests/test_location_gate_sticky_reask.py` committed separately after the fact.
 
@@ -571,7 +574,9 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
   Deictic → `_DEFAULT_CLINIC`, same resolved path.
 - **Test:** `tests/test_location_deictic_clinic.py` — 22 cases (14 deictic detected, 8 non-deictic
   incl. named clinics rejected).
-- **Verification:** automated **90 failed / 1094 passed** → **0 regressions**.  Phone: **PENDING** (batch).
+- **Verification:** automated **90 failed / 1094 passed** → **0 regressions**.  Phone ✅ (call
+  `CA564aa12a…`, 2026-07-04 02:02): "the one i called" → `deictic 'this clinic' … → default clinic
+  alcester` → "Awlstuh." → time preference. No keypad, no ladder.
 - **Commit:** `43e0558` (fix + test).
 
 ## F25-naming · Canonical massage name in v3 prompt ✅ CODE-COMPLETE (phone-verify optional)
@@ -583,8 +588,10 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
   `susie_system_prompt.py`).  Prompt-only; "Awlstuh" phonetic spelling kept.
 - **Test:** `tests/test_theorem_canonical.py::test_v3_prompt_massage_price_line_is_canonical` — asserts
   the built prompt contains `SERVICES["wellness_massage"]["name"]` and not the drifted form.
-- **Verification:** automated **90 failed / 1095 passed** → **0 regressions**.  Phone: low-risk
-  (text-only fact), verify opportunistically.
+- **Verification:** automated **90 failed / 1095 passed** → **0 regressions**.  Phone ✅ (call
+  `CA564aa12a…`, 2026-07-04 02:03): "how much the wellness … massage" → *"The Wellness and Stress
+  Relief Massage is £85 for an hour — and it's available at Awlstuh only."*  Canonical name spoken;
+  answered the FAQ then returned to the pending slot question (no spurious booking CTA).
 - **Commit:** `d915d82` (fix + test).
 
 ## F21 · Long / un-bargeable TTS → DEFERRED (redesign, not a bug fix)
