@@ -57,7 +57,12 @@ pbpaste | grep -vE 'httpx|raw slot\(s\)|barge-in: partial|Redis (read|write) err
 - `TRANSFER_DISABLED` (staging kill-switch) suppresses the live dial + heads-up SMS; the
   transfer TTS line still plays (that's how F17 is phone-verifiable on staging).
 
-## Status — as of 2026-07-04 (v2 resolver, gap 1/3 done). Ship target: Monday 2026-07-06.
+## Status — as of 2026-07-04 (v2 resolver COMPLETE + F25 naming). Ship target: Monday 2026-07-06.
+> **Headline: SHIP-READY.** 12 fixes done. 9 phone-verified; 3 (v2-2/v2-3/F25-naming) TDD-green and
+> awaiting ONE staging phone-verify pass before Monday. F21 deferred (redesign, 4/10 impact — see below).
+> ⚠️ **Unpushed:** commits `43e0558` (v2-3, carries v2-2 code) + `d915d82` (F25-naming) are local-only —
+> push to deploy, then verify. The v2-2 TEST file needs committing (see git note at end of Status).
+
 **8 sweep fixes + v2-1 SIGNED OFF (TDD + phone-verified), all validated in the full 14-call sweep:**
 - **F13** — no booking-CTA on pure-FAQ answers. Prompt-only (susie_system_prompt.py ~L2292); a
   deterministic gate was tried and **reverted** (regressed concern-turn CTA).
@@ -75,25 +80,34 @@ pbpaste | grep -vE 'httpx|raw slot\(s\)|barge-in: partial|Redis (read|write) err
 **14-call sweep COMPLETE** — safety spine (Calls 6, 10) + canonical facts (Call 4) + all fixes
 verified. Full result table + verdict at the bottom of [fix_booklet.md].
 
-**v2 clinic-resolver (Group 4) — IN PROGRESS. Gap 1 of 3 SIGNED OFF (2026-07-04).**
+**v2 clinic-resolver (Group 4) — COMPLETE (all 3 gaps + F25 naming), 2026-07-04.**
 - ✅ **v2-1 Indifference → default clinic** — "whichever/either/you pick/whatever's easiest/both/
-  I don't mind/doesn't matter" now resolve to Alcester instead of re-asking. Deterministic
-  `_is_location_indifference()` + `_LOCATION_INDIFFERENCE_RE` + `_DEFAULT_CLINIC` in connection.py;
-  one guard before the `_resolved != "unknown"` check reuses the tested resolved path. Test:
-  `tests/test_location_indifference.py` (39). Commit `c04c45c`. Phone-verified (call `CA5fa771b2…`).
-- ⏭ **v2-2 Sticky re-ask [NEXT — highest remaining value]** — after the escape hatch clears the
-  gate, `booking_flow_active`+unresolved clinic re-fires the clinic question on the next utterance
-  (`location gate fired — intent=booking`). Escape breaks one loop; the question returns. Start
-  read-only in the escape-hatch block (connection.py ~7442) + the `location gate fired` condition
-  (~6090) to see why the gate re-arms.
-- ⏭ **v2-3 Spoken-clinic friction** — a clear "redditch"/"this clinic" sometimes still needs the
-  ladder; inconsistent ("alter" resolved cleanly in Call 8). Lower severity, resolver-tuning pass.
+  I don't mind/doesn't matter" resolve to Alcester instead of re-asking. `_is_location_indifference()`
+  + `_LOCATION_INDIFFERENCE_RE` + `_DEFAULT_CLINIC`. Test `tests/test_location_indifference.py` (39).
+  Commit `c04c45c`. **Phone-verified** (call `CA5fa771b2…`).
+- ✅ **v2-2 Sticky re-ask** — escape hatch now stands the gate FULLY down. Extracted
+  `_location_gate_should_fire()` (single source of truth) + `_disengage_location_gate()` which also
+  clears `v3_booking_intent`, so the gate can't re-arm rung 1 next turn. Test
+  `tests/test_location_gate_sticky_reask.py` (6). Code in commit `43e0558`. **Phone-verify PENDING.**
+- ✅ **v2-3 Deictic "this clinic" (F16)** — "this clinic/one", "the one I called" → default clinic;
+  guard now wrapped in `not _transcript_is_question` so questions still route to the LLM.
+  `_is_deictic_current_clinic()` + `_LOCATION_DEICTIC_RE`. Test `tests/test_location_deictic_clinic.py`
+  (22). Commit `43e0558`. **Phone-verify PENDING.**
+- ✅ **F25 naming (Group 6)** — v3 prompt massage price line reconciled to canonical
+  "Wellness and Stress Relief Massage". Test in `tests/test_theorem_canonical.py`. Commit `d915d82`.
+  **Phone-verify optional** (text-only fact).
 
-**Then / deferred:**
-- **F21** — long/un-bargeable TTS (8–18s, EVERY slot/clinical/objection call — biggest UX drag).
-  Needs a design call (split/shorten vs allow barge after sentence 1 on clinical turns).
+**Deferred (post-ship):**
+- **F21** — long/un-bargeable TTS. **DEFERRED as re-design, not a bug fix (impact 4/10).** Both fixes
+  touch signed-off behaviour: "barge after sentence 1" edits the timing-critical barge-in guard;
+  "shorten" fights the clinical gates (empathy+physio+offer are spec-mandated). Take it first in a
+  focused post-ship session with real phone-iteration on barge timing.
 - **Infra / Quentin (not Susie code):** I2 `/twilio/status`→prod 403; I5 `GOOGLE_SERVICE_ACCOUNT_JSON`
   invalid on staging; **Acuity isolation** (a real `book_appointment` books a real appt).
+
+**⚠️ Git note (2026-07-04):** the v2-2 commit was skipped, so its CODE rode into `43e0558` (the v2-3
+commit) and its TEST (`tests/test_location_gate_sticky_reask.py`) was committed separately afterward.
+Bundle is functionally intact; just not 1-commit-per-fix clean. `43e0558` + `d915d82` are unpushed.
 
 **Loose observations logged (not yet fixed):** Turn-2 location detour ("alcester"→intent=booking,
 STT-driven → Group 4); clunky booking-correction (multiple check_availability blocks + long TTS →

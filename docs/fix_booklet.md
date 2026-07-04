@@ -538,3 +538,63 @@ reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escap
 - **Notes:** ack is the shared "Awlstuh." readback — natural after "you pick" but could be warmed
   ("Awlstuh it is.") in a later polish; kept minimal to reuse the tested path. Gaps v2-2 (sticky
   re-ask) and v2-3 (spoken-clinic friction) remain — next in this pass.
+
+## v2-2 · Full gate stand-down on escape (no sticky re-ask) ✅ CODE-COMPLETE (phone-verify pending)
+- **Finding:** even after the keypad-loop escape hatch fired, the caller got asked "Awlstuh or
+  Redditch?" AGAIN on the very next utterance — an OUTER loop (sweep Call 12).
+- **Root cause:** the booking→location gate fires when
+  `v3_booking_intent AND not v3_location_asked AND not v3_location_confirmed`.  The escape hatch
+  cleared `v3_location_asked` (+ the awaiting flags + reask_count) but left `v3_booking_intent=True`
+  and never confirmed a clinic → the gate re-armed rung 1 next turn.
+- **Change** (`app/media_streams/connection.py`): extract the gate predicate as a single source of
+  truth `_location_gate_should_fire(session)` (wired at the `_v3_gate_fired` site) + new
+  `_disengage_location_gate(session)` which performs the 5 escape clears **plus
+  `v3_booking_intent = False`**.  Escape now calls the helper instead of 5 inline assignments.
+  Booking still resumes: a fresh booking cue re-sets the intent latch via the booking-ack path.
+- **Test:** `tests/test_location_gate_sticky_reask.py` — 6 cases (gate fires/silent matrix; disengage
+  clears every flag incl. booking_intent; disengage → gate stays silent next turn).
+- **Verification:** automated **90 failed / 1072 passed** → **0 regressions**.  Phone: **PENDING**
+  (batched with v2-3 + F25-naming — one staging verify pass before Monday).
+- **Commit:** code rode into `43e0558` (bundled with v2-3 — the separate v2-2 commit was skipped);
+  test `tests/test_location_gate_sticky_reask.py` committed separately after the fact.
+
+## v2-3 · Deictic "this clinic" → default clinic (F16) ✅ CODE-COMPLETE (phone-verify pending)
+- **Finding (F16):** "this clinic please" (meaning the dialled site) did NOT resolve → biased-confirm
+  → dead air → keypad → resolved only on DTMF '1'.  ~30s friction (sweep Call 5).
+- **Root cause:** "this clinic"/"this one" name no clinic alias, so `_v3_extract_location` missed and
+  Haiku returned unknown → the re-ask ladder.  ("this clinic" is the confirm trigger only at the
+  biased-confirm rung, where `v3_awaiting_use_this_clinic` is True — a different path.)
+- **Change** (`app/media_streams/connection.py`): new `_is_deictic_current_clinic()` +
+  `_LOCATION_DEICTIC_RE` ("this clinic/one/place/site/branch", "the one I called/rang/dialled…").
+  Folded into the v2-1 vague-answer guard, now wrapped in **`not _transcript_is_question(...)`** so a
+  genuine question ("what's the address of this clinic?") still routes to the LLM (hardens v2-1 too).
+  Deictic → `_DEFAULT_CLINIC`, same resolved path.
+- **Test:** `tests/test_location_deictic_clinic.py` — 22 cases (14 deictic detected, 8 non-deictic
+  incl. named clinics rejected).
+- **Verification:** automated **90 failed / 1094 passed** → **0 regressions**.  Phone: **PENDING** (batch).
+- **Commit:** `43e0558` (fix + test).
+
+## F25-naming · Canonical massage name in v3 prompt ✅ CODE-COMPLETE (phone-verify optional)
+- **Finding (F25 naming half, Group 6):** the wellness massage was named inconsistently — the v3
+  prompt's price line said "Wellness **Massage** with In-light Therapy", dropping "and Stress Relief",
+  diverging from `canonical.py` ("Wellness and Stress Relief Massage") and the prompt's own other lines.
+- **Root cause:** single-source-of-truth drift in one prompt price line (`susie_system_prompt.py`).
+- **Change:** reconcile the price line to the canonical name (`_build_theorem_v3`,
+  `susie_system_prompt.py`).  Prompt-only; "Awlstuh" phonetic spelling kept.
+- **Test:** `tests/test_theorem_canonical.py::test_v3_prompt_massage_price_line_is_canonical` — asserts
+  the built prompt contains `SERVICES["wellness_massage"]["name"]` and not the drifted form.
+- **Verification:** automated **90 failed / 1095 passed** → **0 regressions**.  Phone: low-risk
+  (text-only fact), verify opportunistically.
+- **Commit:** `d915d82` (fix + test).
+
+## F21 · Long / un-bargeable TTS → DEFERRED (redesign, not a bug fix)
+- **Impact rating (Claude, asked directly): 4/10.** Real UX drag, high frequency (every
+  clinical/objection/policy turn), but **no failed calls, no wrong bookings, no safety impact** — pure
+  annoyance, not make-or-break.  Contrast the clinic-loop (7–8/10, callers abandoned) which is now fixed.
+- **Why deferred, not fixed:** both candidate fixes touch behaviour we JUST signed off, two days before
+  ship — (a) "barge after sentence 1" edits the barge-in guard, the most timing-sensitive path in the
+  pipeline; (b) "shorten responses" fights the clinical gates (empathy + physio-reassurance + booking
+  offer are spec-mandated).  The risk of the fix currently exceeds the cost of the bug.  This is
+  **re-design territory, outside the bug-fix remit.**
+- **Recommendation:** ship without it; take it first in a focused post-ship session with real
+  phone-iteration on barge timing.
