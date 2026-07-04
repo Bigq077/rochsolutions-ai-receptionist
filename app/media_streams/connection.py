@@ -549,6 +549,50 @@ def _transcript_is_question(text: str) -> bool:
     return t.endswith("?") or any(s in t for s in _QUESTION_SIGNALS)
 
 
+# ── Location indifference (v2 clinic-resolver, Group-4 fix) ──────────────────
+# When Susie asks "Awlstuh or Redditch?" some callers decline to choose —
+# "whichever", "either", "you pick", "whatever's easiest", "I don't mind",
+# "both", "doesn't matter".  The Haiku resolver returns "unknown" for these
+# (they name no clinic), which previously climbed the re-ask ladder and asked
+# the SAME question again — the loop that trapped the tester twice in the
+# sign-off sweep.  Indifference IS a decision: resolve to the default clinic
+# (Alcester — open 5 days/week vs Redditch's 1, matching the resolver's own
+# ambiguity tie-break) so the caller moves on instead of looping.
+#
+# This predicate runs ONLY inside the location-resolution intercept, where the
+# conversational context is already "which clinic?", so tokens like "either" /
+# "both" are unambiguous.  Questions are handled by _transcript_is_question
+# upstream, so "which is closer?" never reaches here as indifference.
+_DEFAULT_CLINIC: str = "alcester"
+
+_LOCATION_INDIFFERENCE_RE = re.compile(
+    r"\b(?:whichever|whatever|either|both)\b"
+    r"|\byou (?:pick|choose|decide)\b"
+    r"|\byour (?:pick|choice|call)\b"
+    r"|\bup to you\b"
+    r"|\b(?:don'?t|do not) (?:mind|care)\b"
+    r"|\bno (?:preference|difference)\b"
+    r"|\bdoesn'?t matter\b"
+    r"|\bdoes not matter\b"
+    r"|\bmakes no difference\b"
+    r"|\bany (?:one|of them|of those|clinic)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_location_indifference(text: str) -> bool:
+    """True when the caller declines to choose a clinic ("whichever", "either",
+    "you pick", "I don't mind", "both", "doesn't matter").
+
+    Deterministic; used only inside the location-resolution intercept, where the
+    context is already "which clinic?".  A True result means: take the default
+    clinic and stop re-asking.
+    """
+    if not text:
+        return False
+    return bool(_LOCATION_INDIFFERENCE_RE.search(text))
+
+
 # Use-this-clinic confirm gates.
 # _USE_THIS_CLINIC_AFFIRMATIVES — the ONLY responses that trigger clinic
 # confirmation.  Everything else (rejections, questions, ambiguous answers)
@@ -7304,6 +7348,25 @@ class WebSocketCallHandler:
                                             _loc_err,
                                         )
                                         _resolved = "unknown"
+
+                                    # ── Indifference → default clinic ────────
+                                    # "whichever / either / you pick / I don't
+                                    # mind / both / doesn't matter" name no
+                                    # clinic (Haiku returns unknown) but ARE a
+                                    # decision.  Don't loop the re-ask ladder —
+                                    # take the default clinic and fall through
+                                    # the normal resolved path below.
+                                    if (
+                                        _resolved == "unknown"
+                                        and _is_location_indifference(utterance)
+                                    ):
+                                        _resolved = _DEFAULT_CLINIC
+                                        logger.info(
+                                            "[ms_conn v3] location indifference"
+                                            " — %r → default clinic %s",
+                                            utterance[:60],
+                                            _resolved,
+                                        )
 
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
