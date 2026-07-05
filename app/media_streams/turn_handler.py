@@ -420,8 +420,16 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             # then hears the deaf-sounding "Sorry, I didn't quite catch that"
             # fallback, killing a completed booking (Test 1, 2026-06-12: caller
             # entered phone via DTMF, confirmation stripped → abandoned).
-            # Only strip when substantive content remains.
-            if _offer_cleaned.strip():
+            # Only strip when substantive content remains AND that remainder
+            # still carries a question. If removing the offer would leave a
+            # statement with no question, the caller is handed a dead-end they
+            # can't act on — so KEEP the offer; forward motion beats mild
+            # redundancy. (2026-07-04: a condition-mention turn mid-booking —
+            # "…Marcus will assess and set a plan. Would you like to get booked
+            # in?" — had its only question stripped, leaving 7s of silence and
+            # the caller hung up.) The empty-remainder case (the closing
+            # confirmation IS the whole response) is also caught here.
+            if _offer_cleaned.strip() and "?" in _offer_cleaned:
                 logger.info(
                     "[ms_gate5] removed redundant booking offer "
                     "(booking_flow_active)"
@@ -429,8 +437,8 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                 result = _offer_cleaned
             else:
                 logger.info(
-                    "[ms_gate5] booking offer KEPT — it is the whole response "
-                    "(closing confirmation), not a redundant tail"
+                    "[ms_gate5] booking offer KEPT — stripping would leave no "
+                    "question (avoid dead-end)"
                 )
 
     # ── Gate 5d: repeated FAQ booking-CTA strip (P4) ─────────────────────────

@@ -11437,6 +11437,14 @@ class WebSocketCallHandler:
         else:
             self.session["call_outcome"] = "no_action"
 
+        # The media stream only exists once the call has actually connected, so
+        # by cleanup the call has COMPLETED (caller hung up / we ended). Mark it
+        # so build_call_summary → infer_call_outcome classifies non-booking calls
+        # as "abandoned"/"faq_only" rather than falling through to "failed" (which
+        # sends the wrong "sorry, technical issue" SMS). setdefault so any explicit
+        # status set earlier wins.
+        self.session.setdefault("call_status", "completed")
+
         # End-of-call personalised SMS — parity with theorem's /twilio/status
         # path, fired here (self-contained) so it does NOT depend on the Twilio
         # number's status-callback being configured. Idempotent via
