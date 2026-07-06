@@ -41,3 +41,16 @@ TRANSFER_FALLBACK_NUMBER = os.getenv("TRANSFER_FALLBACK_NUMBER", "+447502211207"
 # Sentry DSN — set to enable error reporting to Sentry.io.
 # Leave unset (or empty) to disable Sentry entirely.
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
+# Phase 1 — durable call capture (see Susie_Call_Observability_Spec_for_Jules.md §5.1).
+# When enabled AND DATABASE_URL is set, each completed call is persisted to a
+# Postgres `calls` table (transcript + metadata) in the teardown path, additively
+# and after the call ends. Default OFF so production behaviour is unchanged until
+# a store is provisioned. With the flag OFF or DATABASE_URL empty, capture is a
+# fast no-op — no new latency or failure modes on the live call path.
+OBS_CAPTURE_ENABLED = os.getenv("OBS_CAPTURE_ENABLED", "false").lower() == "true"
+
+# Connection string for the durable observability store (managed Postgres, EU
+# region — see spec §7). Empty until provisioned; capture no-ops while unset.
+# SQLAlchemy URL form, e.g. postgresql+psycopg2://user:pass@host:5432/dbname
+DATABASE_URL = os.getenv("DATABASE_URL", "")

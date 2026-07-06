@@ -11236,6 +11236,20 @@ class WebSocketCallHandler:
                     reason = "caller_hung_up"
                 call_logger.complete(success=success, reason=reason)
                 await call_logger.flush()
+
+                # Phase 1 — durable capture (spec §5.1). Additive, post-call,
+                # flag-gated (OBS_CAPTURE_ENABLED, default OFF) and no-op when
+                # unconfigured. capture_call_async never raises and runs the DB
+                # write off the event loop, so it adds no latency or failure mode
+                # to the live path. Guarded again here belt-and-braces.
+                try:
+                    from app.obs.store import capture_call_async
+                    await capture_call_async(
+                        call_logger.build_record(),
+                        self.session.get("turns") or [],
+                    )
+                except Exception as _obs_exc:
+                    logger.error("[ms_conn] obs capture error: %r", _obs_exc)
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 
