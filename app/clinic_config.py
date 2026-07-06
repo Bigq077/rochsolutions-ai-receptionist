@@ -1039,6 +1039,15 @@ CLINICS["theorem_v2"] = _copy.deepcopy(CLINICS["theorem"])
 # theorem_v3: identical to theorem_v2 — mapped to +447380841468.
 CLINICS["theorem_v3"] = _copy.deepcopy(CLINICS["theorem_v2"])
 
+# Owner (Mark) heads-up SMS on booking / cancellation / reschedule. Data-driven
+# and self-gating via owner_alert.notify_owner — only theorem_v3 (the live line)
+# opts in; legacy/test theorem clinics stay silent. Phone = Mark's mobile.
+CLINICS["theorem_v3"]["owner_alerts"] = {
+    "enabled": True,
+    "phone": "+447870166861",
+    "events": ["booking", "cancellation", "reschedule"],
+}
+
 
 # ============================================================================
 # BOOKING SUBSYSTEM CONFIGURATION

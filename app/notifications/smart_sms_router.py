@@ -294,6 +294,22 @@ async def send_smart_followup_sms(
         logger.info("📩 Confirmation SMS already sent during call — skipping follow-up")
         return False
 
+    # ── EMERGENCY SAFEGUARDING ───────────────────────────────────────────────
+    # If Susie directed the caller to 999/A&E at any point, never send a booking
+    # nudge. Send a calm, caring follow-up instead. Runs after the booked/cancelled
+    # early-returns above, so it only ever replaces a would-be follow-up nudge.
+    if _call_had_emergency(session):
+        safe_message = templates.format_emergency_safe_sms(
+            patient_name=patient_name, clinic_name=clinic_name, clinic_phone=clinic_phone,
+        )
+        try:
+            await send_sms(to=patient_phone, message=safe_message)
+            logger.info("🚑 Emergency escalation detected — sent caring safe-message, suppressed booking nudge")
+            return True
+        except Exception as e:
+            logger.error("❌ Failed to send emergency safe-SMS: %r", e)
+            return False
+
     # ── CHOOSE TEMPLATE ──────────────────────────────────────────────────────
 
     message = _choose_template(
@@ -465,6 +481,28 @@ def _choose_template(
 # ============================================================================
 # DETECTION HELPERS
 # ============================================================================
+
+# Markers of an emergency escalation in Susie's spoken replies. The 999/A&E line
+# is LLM-generated (no session flag exists), so the transcript content is the
+# reliable signal. Kept in sync with the live prompt's emergency wording.
+_EMERGENCY_MARKERS = ("999", "a and e", "a&e", "emergency service")
+
+
+def _call_had_emergency(session: Dict) -> bool:
+    """True if Susie escalated the caller to 999/A&E at any point in the call.
+
+    Scans the durable assistant transcript (session['turns'], appended per turn
+    and never trimmed) plus last_bot_prompt as a belt-and-braces fallback. Purely
+    read-only over post-call session data — no effect on the live call path.
+    """
+    texts = []
+    for t in (session.get("turns") or []):
+        if isinstance(t, dict) and t.get("role") == "assistant":
+            texts.append(str(t.get("text") or ""))
+    texts.append(str(session.get("last_bot_prompt") or ""))
+    blob = " ".join(texts).lower()
+    return any(marker in blob for marker in _EMERGENCY_MARKERS)
+
 
 def _check_price_question(faq_data: list, session: Dict) -> bool:
     """Check if patient asked about pricing."""

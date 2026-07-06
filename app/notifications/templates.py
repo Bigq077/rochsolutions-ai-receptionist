@@ -336,6 +336,23 @@ def format_reached_confirmation_sms(
     )
 
 
+def format_emergency_safe_sms(
+    patient_name: str,
+    clinic_name:  Optional[str] = None,
+    clinic_phone: Optional[str] = None,
+) -> str:
+    """🚑 Emergency escalation — caller was directed to 999/A&E. A calm, caring
+    follow-up that NEVER nudges booking (safeguarding)."""
+    name     = _cn(clinic_name)
+    phone    = _cp(clinic_phone)
+    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    return (
+        f"Hi {_greeting}, thanks for calling {name}. If this feels urgent or serious, "
+        f"please call 999 or go to A&E — we're not an emergency service. Whenever "
+        f"you're ready and it's the right time, we're here to help. Take care. {phone}"
+    )
+
+
 # ============================================================================
 # 🔇 NO AUDIO — SYSTEM COULDN'T HEAR CALLER (GRACEFUL CLOSE)
 # ============================================================================

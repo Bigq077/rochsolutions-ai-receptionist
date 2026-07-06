@@ -2322,22 +2322,25 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
 
         # Owner heads-up SMS (e.g. Mark) — fires the moment a booking confirms,
         # BEFORE the patient confirmation. Data-driven & self-gating: a no-op for
-        # any clinic without an `owner_alerts` config block (Theorem has none) and
-        # never raises. Extra try/guard is belt-and-braces.
-        try:
-            from app.notifications.owner_alert import notify_owner
-            _own_when = booking.start_time.strftime("%a %d %b, %I:%M%p").replace(" 0", " ").lower()
-            await notify_owner(
-                session,
-                event="booking",
-                patient_name=patient_name,
-                when_label=_own_when,
-                service=service,
-                location=location,
-                is_new_patient=is_new,
-            )
-        except Exception as _oa_err:
-            logger.warning("owner_alert booking notify failed (non-fatal): %r", _oa_err)
+        # any clinic without an `owner_alerts` config block, and never raises.
+        # Suppressed when this booking is the internal leg of a reschedule
+        # (_suppress_sms) so a reschedule fires ONE "reschedule" alert, not a
+        # spurious "booking" one too.
+        if not args.get("_suppress_sms"):
+            try:
+                from app.notifications.owner_alert import notify_owner
+                _own_when = booking.start_time.strftime("%a %d %b, %I:%M%p").replace(" 0", " ").lower()
+                await notify_owner(
+                    session,
+                    event="booking",
+                    patient_name=patient_name,
+                    when_label=_own_when,
+                    service=service,
+                    location=location,
+                    is_new_patient=is_new,
+                )
+            except Exception as _oa_err:
+                logger.warning("owner_alert booking notify failed (non-fatal): %r", _oa_err)
 
         # Confirmation SMS — non-fatal.
         # Suppressed when called as part of a reschedule (caller gets a reschedule
@@ -2994,6 +2997,38 @@ async def _cancel_reminders_for(
         logger.warning("reminder cancellation failed (non-fatal): %r", e)
 
 
+def _friendly_when(iso_str: str) -> str:
+    """Format an ISO datetime string as a short human label for owner alerts
+    (e.g. 'wed 10 jul, 2:00pm'). Falls back to the raw string on any parse error."""
+    try:
+        return (
+            datetime.fromisoformat((iso_str or "").replace("Z", "+00:00"))
+            .strftime("%a %d %b, %I:%M%p").replace(" 0", " ").lower()
+        )
+    except Exception:
+        return iso_str or ""
+
+
+async def _owner_alert_cancellation(session: Dict[str, Any], args: Dict[str, Any],
+                                    appt_type: str, appt_time_str: str) -> None:
+    """Fire a 'cancellation' owner heads-up (e.g. to Mark). Suppressed on the
+    internal cancel leg of a reschedule (_suppress_sms) so a reschedule only ever
+    emits one 'reschedule' alert. Self-gating & non-fatal — never affects cancel."""
+    if args.get("_suppress_sms"):
+        return
+    try:
+        from app.notifications.owner_alert import notify_owner
+        await notify_owner(
+            session,
+            event="cancellation",
+            patient_name=_safe_first_name(session, args.get("patient_name") or ""),
+            when_label=_friendly_when(appt_time_str),
+            service=appt_type or "appointment",
+        )
+    except Exception as _oa_err:
+        logger.warning("owner_alert cancellation notify failed (non-fatal): %r", _oa_err)
+
+
 async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
     """cancel_appointment via Acuity Scheduling (Theorem clinic)."""
     from datetime import date as _date
@@ -3061,6 +3096,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 appt_type, appt_time_str,
             )
             await _cancel_reminders_for(session, args, appt_time_str)
+            await _owner_alert_cancellation(session, args, appt_type, appt_time_str)
             return {"success": True, "cancelled": appt_type, "was_at": appt_time_str}
         # End RC fast-path — fall through to legacy name-search below
 
@@ -3106,6 +3142,7 @@ async def _cancel_appointment_acuity(args: Dict[str, Any], session: Dict[str, An
                 _explicit_appt_id, _appt_time_str,
             )
             await _cancel_reminders_for(session, args, _appt_time_str)
+            await _owner_alert_cancellation(session, args, _appt_type, _appt_time_str)
             return {"success": True, "cancelled": _appt_type, "was_at": _appt_time_str}
 
         patient_name_lower = (args.get("patient_name") or "").strip().lower()
@@ -3333,6 +3370,22 @@ async def _reschedule_appointment_acuity(args: Dict[str, Any], session: Dict[str
         logger.warning("_reschedule_appointment_acuity SMS failed (non-fatal): %r", e)
 
     session["confirmation_sms_sent"] = True
+
+    # Owner heads-up (e.g. Mark): a SINGLE 'reschedule' alert for the whole
+    # operation. The internal book + cancel legs above were called with
+    # _suppress_sms=True, so neither fired its own owner alert. Non-fatal.
+    try:
+        from app.notifications.owner_alert import notify_owner
+        await notify_owner(
+            session,
+            event="reschedule",
+            patient_name=_safe_first_name(session, _resched_name),
+            when_label=str(book_result.get("booked_slot") or ""),
+            service=args.get("service", ""),
+            location=_normalize_location(args.get("location") or session.get("selected_location", "")),
+        )
+    except Exception as _oa_err:
+        logger.warning("owner_alert reschedule notify failed (non-fatal): %r", _oa_err)
 
     return {
         "success":           True,
