@@ -222,7 +222,7 @@ async def send_smart_followup_sms(
     # Clinic branding
     _clinic      = get_clinic(session.get("clinic_id"))
     clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name")
-    clinic_phone = _clinic.get("phone")
+    clinic_phone = _clinic.get("sms_phone") or _clinic.get("phone")
     hours_summary = _clinic.get("hours_summary")  # e.g. "Mon–Fri 8:30am–9pm"
 
     # Call duration

@@ -2354,7 +2354,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                     has_insurance=bool(insurer),
                     insurer=insurer or None,
                     clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                    clinic_phone=clinic.get("phone"),
+                    clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
                     session=session,
                 )
             except Exception as e:
@@ -2391,7 +2391,7 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
                 has_insurance=bool(insurer),
                 insurer=insurer or None,
                 clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
-                clinic_phone=clinic.get("phone"),
+                clinic_phone=clinic.get("sms_phone") or clinic.get("phone"),
             )
         except Exception as e:
             logger.warning("_book_appointment_acuity reminder scheduling failed (non-fatal): %r", e)

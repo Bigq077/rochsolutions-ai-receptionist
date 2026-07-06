@@ -153,6 +153,9 @@ CLINICS: Dict[str, Dict[str, Any]] = {
         # Branding / contact — used in SMS messages
         "sms_name": "Theorem Health and Wellness",
         "phone":    "07870 166861",
+        # Callback number printed in patient SMS (rebook/reschedule/etc.) — the AI
+        # receptionist line, NOT Mark's mobile. SMS senders prefer this over "phone".
+        "sms_phone": "07366 530580",
         "transfer_phone": "+447870166861",   # E.164 — Twilio dials this for live transfers
 
         # Booking system / routing
