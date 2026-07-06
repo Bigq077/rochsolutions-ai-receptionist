@@ -143,7 +143,12 @@ def build_sms(session: dict) -> str:
     # Clinic-level values — address resolved from selected_location for
     # two-clinic setups (theorem_v2); falls back to CLINIC_ADDRESS env var
     # for single-clinic deployments.
-    clinic_name  = CLINIC_NAME
+    # Clinic name: resolve from clinic config (consistent with every other SMS),
+    # falling back to the CLINIC_NAME env var, then a generic default. This avoids
+    # the "the clinic" bug when CLINIC_NAME isn't set on the host.
+    from app.clinic_config import get_clinic
+    _clinic_cfg = get_clinic(session.get("clinic_id")) or {}
+    clinic_name  = _clinic_cfg.get("sms_name") or _clinic_cfg.get("display_name") or CLINIC_NAME
     _loc = (session.get("selected_location") or "").lower()
     _location_addresses = {
         "alcester": "The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
