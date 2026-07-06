@@ -1343,6 +1343,73 @@ _NAME_JUNK = {
 }
 
 
+# Inbound-SMS opt-out keywords — the text is still forwarded to staff, but we
+# send no auto-acknowledgement back (carrier compliance).
+_SMS_OPT_OUT = {"stop", "stopall", "unsubscribe", "quit"}
+
+
+async def _handle_general_inbound_sms(
+    *, sender: str, norm_phone: str, body: str, message_sid: str,
+    clinic: dict, send_sms,
+) -> None:
+    """
+    A general inbound patient text (NOT an in-flow name reply). Never dropped:
+    forward it to the clinic's staff number so a human can respond, log it to
+    Sheets, and send the patient a light acknowledgement. Every step is
+    clinic-aware and independently non-fatal.
+    """
+    sms_name        = (clinic.get("sms_name") or clinic.get("display_name")
+                       or "the clinic")
+    staff_phone     = (clinic.get("transfer_phone") or "").strip()
+    reception_phone = (clinic.get("phone") or "").strip()
+    _is_opt_out     = body.strip().lower() in _SMS_OPT_OUT
+
+    # Loop guard: never forward/ack a text that came FROM one of our own numbers.
+    _own = {p.replace(" ", "") for p in (staff_phone, reception_phone) if p}
+    if norm_phone and norm_phone.replace(" ", "") in _own:
+        logger.info("[SMS_INBOUND] sender is a clinic number — skipping forward/ack")
+        return
+
+    fwd_msg = (f"New text to {sms_name} from {sender}:\n"
+               f"\"{body}\"\nReply to them directly on {sender}.")
+
+    # 1. Forward to staff so a human can respond.
+    if staff_phone:
+        try:
+            await send_sms(to=staff_phone, message=fwd_msg)
+            logger.info("[SMS_INBOUND] forwarded to staff ***%s", staff_phone[-4:])
+        except Exception as _fe:
+            logger.warning("[SMS_INBOUND] forward-to-staff failed (non-fatal): %r", _fe)
+    else:
+        logger.warning("[SMS_INBOUND] no transfer_phone configured — inbound text NOT forwarded")
+
+    # 2. Log to Sheets (best-effort; non-fatal).
+    try:
+        import asyncio as _asyncio
+        from app.tools.handoff import send_to_sheet
+        await _asyncio.to_thread(
+            send_to_sheet, "", sender, "inbound_sms", body, message_sid, sms_name,
+        )
+    except Exception as _le:
+        logger.warning("[SMS_INBOUND] sheet log failed (non-fatal): %r", _le)
+
+    # 3. Light acknowledgement to the patient — no timeframe promise, phone-first
+    #    nudge. Suppressed for opt-out keywords.
+    if _is_opt_out:
+        logger.info("[SMS_INBOUND] opt-out keyword — forwarded but no auto-ack")
+        return
+    ack_msg = "Thanks — we've received your message and passed it to the team."
+    if reception_phone:
+        ack_msg += f" For bookings or anything urgent, please call us on {reception_phone}."
+    ack_msg += f" — {sms_name}"
+    try:
+        await send_sms(to=norm_phone, message=ack_msg)
+        logger.info("[SMS_INBOUND] ack sent to patient ***%s",
+                    norm_phone[-4:] if norm_phone else "????")
+    except Exception as _ae:
+        logger.warning("[SMS_INBOUND] patient ack failed (non-fatal): %r", _ae)
+
+
 @router.post("/sms/inbound")
 async def sms_inbound(request: Request) -> PlainTextResponse:
     """
@@ -1368,6 +1435,18 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         body,
     )
 
+    # Idempotency: Twilio can retry the inbound webhook — process each message
+    # once so we never double-forward to staff, double-ack, or double-PUT Acuity.
+    if message_sid and not await acquire_once_lock(
+        f"sms_inbound:{message_sid}", ttl_seconds=600
+    ):
+        logger.info("[SMS_INBOUND] duplicate sid=%r — skipping", message_sid)
+        return PlainTextResponse("ok")
+
+    # Resolve which clinic this number belongs to so forwarding/branding is
+    # clinic-aware (falls back to {} → safe generic copy).
+    _clinic = get_clinic(clinic_id_from_twilio_to(form.get("To") or "")) or {}
+
     try:
         from app.flows.triage_legacy import normalize_phone
         from app.storage.redis_store import (
@@ -1380,9 +1459,11 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         pending = await get_pending_name_confirmation(norm_phone)
 
         if not pending:
-            logger.info(
-                "[SMS_INBOUND] no pending record for phone=%r — ignoring",
-                norm_phone,
+            # No in-flow name reply pending — this is a general patient text.
+            # Do NOT drop it: forward to staff, log it, acknowledge.
+            await _handle_general_inbound_sms(
+                sender=sender, norm_phone=norm_phone, body=body,
+                message_sid=message_sid, clinic=_clinic, send_sms=send_sms,
             )
             return PlainTextResponse("ok")
 
