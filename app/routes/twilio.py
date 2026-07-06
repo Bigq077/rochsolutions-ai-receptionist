@@ -1349,6 +1349,40 @@ _NAME_JUNK = {
 _SMS_OPT_OUT = {"stop", "stopall", "unsubscribe", "quit"}
 
 
+# Rough UK-postcode matcher — used only to decide whether a home-visit patient's
+# reply looks like an address worth writing onto their calendar event.
+_UK_POSTCODE_RE = re.compile(r"\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}\b")
+
+
+async def _attach_address_to_event(ctx: dict, address_body: str, norm_phone: str) -> bool:
+    """Best-effort: append a texted home-visit address onto the booking's calendar
+    event (reconstructs old+new from the stored description — no read needed) and
+    mark the context so a later text isn't re-appended. Non-fatal."""
+    event_id = ctx.get("event_id")
+    if not event_id or ctx.get("address_captured"):
+        return False
+    try:
+        import asyncio as _asyncio
+        from app.tools.receptionist_tools import _get_tokens
+        from app.tools.calendar_google import update_event
+        from app.storage.redis_store import set_recent_booking_context
+        toks = await _get_tokens()
+        if not toks:
+            return False
+        new_desc = (ctx.get("description") or "") + f"\n\nHome visit address (via SMS): {address_body}"
+        await _asyncio.to_thread(
+            update_event, toks, event_id, None, new_desc, ctx.get("calendar_id") or "primary",
+        )
+        await set_recent_booking_context(
+            norm_phone, {**ctx, "address_captured": True, "is_home_visit": False},
+        )
+        logger.info("[SMS_INBOUND] home-visit address written to event %s", event_id)
+        return True
+    except Exception as _ee:
+        logger.warning("[SMS_INBOUND] event address-attach failed (non-fatal): %r", _ee)
+        return False
+
+
 async def _handle_general_inbound_sms(
     *, sender: str, norm_phone: str, body: str, message_sid: str,
     clinic: dict, send_sms,
@@ -1357,10 +1391,13 @@ async def _handle_general_inbound_sms(
     A general inbound patient text (not an in-flow name reply). NEVER dropped:
     forward it to the clinic's practitioner so a human can respond, log it, and
     send the patient a light acknowledgement. Every step is non-fatal and
-    clinic-aware (each clinic forwards to its own transfer_phone).
+    clinic-aware. If the sender recently booked (any appointment type), the
+    forward is labelled with that booking; a home-visit patient replying with an
+    address gets it written onto their calendar event.
     """
     sms_name        = (clinic.get("sms_name") or clinic.get("display_name")
                        or clinic.get("clinic_name") or "the clinic")
+    practitioner    = clinic.get("practitioner") or "the team"
     staff_phone     = (clinic.get("transfer_phone") or "").strip()
     reception_phone = (clinic.get("phone") or "").strip()
     _is_opt_out     = body.strip().lower() in _SMS_OPT_OUT
@@ -1371,17 +1408,42 @@ async def _handle_general_inbound_sms(
         logger.info("[SMS_INBOUND] sender is a clinic number — skipping forward/ack")
         return
 
+    # Context: did this number recently book? Label the forward accordingly.
+    ctx = None
+    try:
+        from app.storage.redis_store import get_recent_booking_context
+        ctx = await get_recent_booking_context(norm_phone)
+    except Exception:
+        ctx = None
+
+    fwd_msg = None
+    ack_msg = None
+    if ctx:
+        _name    = ctx.get("name") or "A patient"
+        _slot    = ctx.get("slot") or ""
+        _service = ctx.get("service") or "their appointment"
+        _is_home = bool(ctx.get("is_home_visit"))
+        if _is_home and _UK_POSTCODE_RE.search(body):
+            # Looks like the home-visit address → forward labelled + write to event.
+            fwd_msg = (f"🏠 Home-visit address from {_name} (visit {_slot}):\n"
+                       f"\"{body}\"\nReply to them on {sender}.")
+            ack_msg = (f"Got it, thanks — we've passed your address to {practitioner} "
+                       f"for your home visit. — {sms_name}")
+            await _attach_address_to_event(ctx, body, norm_phone)
+        elif _is_home:
+            fwd_msg = (f"New text from {_name} (home visit {_slot}):\n"
+                       f"\"{body}\"\nReply to them on {sender}.")
+        else:
+            fwd_msg = (f"New text from {_name} (booked {_service}, {_slot}):\n"
+                       f"\"{body}\"\nReply to them on {sender}.")
+    if fwd_msg is None:
+        fwd_msg = (f"New text to {sms_name} from {sender}:\n"
+                   f"\"{body}\"\nReply to them directly on {sender}.")
+
     # 1. Forward to the practitioner so a human can respond.
     if staff_phone:
         try:
-            await send_sms(
-                to=staff_phone,
-                message=(
-                    f"New text to {sms_name} from {sender}:\n"
-                    f"\"{body}\"\n"
-                    f"Reply to them directly on {sender}."
-                ),
-            )
+            await send_sms(to=staff_phone, message=fwd_msg)
             logger.info("[SMS_INBOUND] forwarded to practitioner ***%s", staff_phone[-4:])
         except Exception as _fe:
             logger.warning("[SMS_INBOUND] forward-to-practitioner failed (non-fatal): %r", _fe)
@@ -1398,18 +1460,18 @@ async def _handle_general_inbound_sms(
     except Exception as _le:
         logger.warning("[SMS_INBOUND] sheet log failed (non-fatal): %r", _le)
 
-    # 3. Light acknowledgement to the patient — no timeframe promise, and a
-    #    phone-first nudge (calling is the channel that actually works).
-    #    Suppressed for opt-out keywords.
+    # 3. Light acknowledgement to the patient — no timeframe promise; a phone-
+    #    first nudge for generic texts. Suppressed for opt-out keywords.
     if _is_opt_out:
         logger.info("[SMS_INBOUND] opt-out keyword — forwarded but no auto-ack")
         return
-    try:
-        _ack = "Thanks — we've received your message and passed it to the team."
+    if ack_msg is None:
+        ack_msg = "Thanks — we've received your message and passed it to the team."
         if reception_phone:
-            _ack += f" For bookings or anything urgent, please call us on {reception_phone}."
-        _ack += f" — {sms_name}"
-        await send_sms(to=norm_phone, message=_ack)
+            ack_msg += f" For bookings or anything urgent, please call us on {reception_phone}."
+        ack_msg += f" — {sms_name}"
+    try:
+        await send_sms(to=norm_phone, message=ack_msg)
         logger.info("[SMS_INBOUND] ack sent to patient ***%s",
                     norm_phone[-4:] if norm_phone else "????")
     except Exception as _ae:

@@ -4383,6 +4383,32 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         except Exception as e:
             logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)
 
+    # Remember this booking (any type) keyed by the caller's phone, so that if
+    # the patient later TEXTS the clinic, the inbound-SMS handler can label the
+    # forward with their appointment — and, for a home visit, write a texted
+    # address back onto this calendar event. Non-fatal.
+    try:
+        from app.flows.triage_legacy import normalize_phone as _np_ctx
+        from app.storage.redis_store import set_recent_booking_context
+        _is_home_ctx = (
+            location == "home_visit"
+            or "home_visit" in (service or "").lower()
+            or "home visit" in (service or "").lower()
+        )
+        await set_recent_booking_context(_np_ctx(phone), {
+            "name": patient_name,
+            "service": _svc_name or service,
+            "location": location,
+            "slot": booked_label,
+            "event_id": event_id,
+            "calendar_id": calendar_id,
+            "description": description,
+            "is_home_visit": _is_home_ctx,
+            "clinic_id": session.get("clinic_id") or "",
+        })
+    except Exception as e:
+        logger.warning("book_appointment recent-booking context store failed (non-fatal): %r", e)
+
     # Ping the practitioner if this booking needs follow-up (home visit or a
     # flagged note) — patient is booked in directly regardless.
     await _send_practitioner_followup_ping(
