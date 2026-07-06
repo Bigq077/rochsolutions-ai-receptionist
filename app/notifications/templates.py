@@ -5,7 +5,7 @@ Every function accepts optional clinic_name and clinic_phone kwargs so the
 correct branding appears in every message regardless of which clinic is active.
 
 Demo clinic  : "Roch Physio Clinic" / 07366 530580
-Theorem Health: "Theorem Health"     / 07870 166861
+Theorem Health: "Theorem Health"     / 07380 841468 (AI line, not Mark's mobile)
 """
 
 from datetime import datetime
@@ -17,7 +17,12 @@ from typing import Optional
 # ============================================================================
 
 _DEFAULT_CLINIC_NAME  = "Theorem Health"
-_DEFAULT_CLINIC_PHONE = "07366 530580"
+# Theorem AI-receptionist line (+447380841468) — the number patients call, not
+# Mark's mobile. Fallback for SMS senders that don't pass clinic_phone
+# (cancellation / reschedule / callback via booking_sms). NOTE: this is a shared
+# default — if this deploy ever serves a second live clinic, thread clinic_phone
+# through booking_sms instead of relying on this.
+_DEFAULT_CLINIC_PHONE = "07380 841468"
 
 
 def _cn(clinic_name: Optional[str]) -> str:
