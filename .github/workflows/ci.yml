@@ -1,0 +1,44 @@
+name: CI
+
+# Gate every PR into main. autoDeploy is ON in Render, so a red merge would ship
+# straight to production — this workflow is the safety gate that prevents that.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # 3.13+ is required: requirements.txt pins audioop-lts (the backport of
+          # audioop, which Python removed in 3.13), which only publishes wheels for
+          # >=3.13. This matches the app's target runtime.
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run offline unit tests
+        # Phase 0 baseline: fast, credential-free unit tests only.
+        # As phases land, add their test paths here (and the Phase 4 replay/scenario
+        # suite once it can run without a live server).
+        run: |
+          pytest -q app/booking/tests
+
+      # --- Expand coverage as the observability build progresses ---
+      # Phase 1 (capture/replay):   pytest -q tests/capture
+      # Phase 3 (judge):            pytest -q tests/judge
+      # Phase 4 (regression suite): python tests/auto/run_tests.py --ci

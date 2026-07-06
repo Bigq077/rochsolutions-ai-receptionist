@@ -89,6 +89,7 @@ rapidfuzz>=3.0.0
 # ============================================================================
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+respx>=0.21.0  # httpx mocking for offline provider-contract tests (app/booking/tests)
 
 # ============================================================================
 # Additional Dependencies (if needed - uncomment to use)

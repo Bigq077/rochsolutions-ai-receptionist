@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.booking.models import Slot, Booking, BookingRequest, AppointmentType
+from app.booking.booking.models import Slot, Booking, BookingRequest, AppointmentType
 
 
 def test_slot_model():

@@ -6,9 +6,9 @@ import httpx
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
-from app.booking.providers.acuity import AcuityAdapter
-from app.booking.models import BookingRequest
-from app.booking.exceptions import (
+from app.booking.booking.providers.acuity import AcuityAdapter
+from app.booking.booking.models import BookingRequest
+from app.booking.booking.exceptions import (
     ProviderAuthError,
     ProviderRateLimited,
     ProviderUnavailable,

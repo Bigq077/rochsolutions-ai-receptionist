@@ -5,9 +5,9 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.booking.service import BookingService
-from app.booking.models import Booking, BookingRequest, Slot
-from app.booking.exceptions import SlotUnavailable
+from app.booking.booking.service import BookingService
+from app.booking.booking.models import Booking, BookingRequest, Slot
+from app.booking.booking.exceptions import SlotUnavailable
 
 
 @pytest.fixture
