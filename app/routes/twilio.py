@@ -1370,8 +1370,23 @@ async def _handle_general_inbound_sms(
         logger.info("[SMS_INBOUND] sender is a clinic number — skipping forward/ack")
         return
 
-    fwd_msg = (f"New text to {sms_name} from {sender}:\n"
-               f"\"{body}\"\nReply to them directly on {sender}.")
+    # If this number recently booked, label the forward with their appointment.
+    ctx = None
+    try:
+        from app.storage.redis_store import get_recent_booking_context
+        ctx = await get_recent_booking_context(norm_phone)
+    except Exception:
+        ctx = None
+
+    if ctx:
+        _n    = ctx.get("name") or "A patient"
+        _svc  = ctx.get("service") or "their appointment"
+        _slot = ctx.get("slot") or ""
+        fwd_msg = (f"New text from {_n} (booked {_svc}, {_slot}):\n"
+                   f"\"{body}\"\nReply to them on {sender}.")
+    else:
+        fwd_msg = (f"New text to {sms_name} from {sender}:\n"
+                   f"\"{body}\"\nReply to them directly on {sender}.")
 
     # 1. Forward to staff so a human can respond.
     if staff_phone:
