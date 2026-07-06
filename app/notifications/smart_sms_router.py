@@ -239,6 +239,33 @@ async def send_smart_followup_sms(
 
     # ── FILTER RULES ─────────────────────────────────────────────────────────
 
+    # EMERGENCY SAFEGUARDING — highest priority. If Susie directed the caller to
+    # 999/A&E at any point, send a calm caring follow-up (never a booking nudge).
+    # Sent to the caller's OWN number (their caller-ID) even if they never
+    # confirmed one, so a person in distress is always reached. Runs before every
+    # other filter so it can't be swallowed by a missing phone or a "booked"
+    # outcome. Still skips genuine misdials (<15s).
+    if duration >= 15 and _call_had_emergency(session):
+        _emerg_to = (
+            patient_phone
+            or session.get("twilio_from_local")
+            or session.get("twilio_from")
+            or ""
+        )
+        if _emerg_to and not _emerg_to.startswith("client:"):
+            safe_message = templates.format_emergency_safe_sms(
+                patient_name=patient_name, clinic_name=clinic_name, clinic_phone=clinic_phone,
+            )
+            try:
+                await send_sms(to=_emerg_to, message=safe_message)
+                logger.info("🚑 Emergency escalation — caring safe-message → ***%s (nudge suppressed)", _emerg_to[-4:])
+                return True
+            except Exception as e:
+                logger.error("❌ Failed to send emergency safe-SMS: %r", e)
+                return False
+        logger.info("🚑 Emergency escalation but no usable caller number — no SMS sent")
+        return False
+
     if not patient_phone:
         logger.info("📵 No phone number — skipping SMS")
         return False
@@ -293,22 +320,6 @@ async def send_smart_followup_sms(
     if session.get("confirmation_sms_sent"):
         logger.info("📩 Confirmation SMS already sent during call — skipping follow-up")
         return False
-
-    # ── EMERGENCY SAFEGUARDING ───────────────────────────────────────────────
-    # If Susie directed the caller to 999/A&E at any point, never send a booking
-    # nudge. Send a calm, caring follow-up instead. Runs after the booked/cancelled
-    # early-returns above, so it only ever replaces a would-be follow-up nudge.
-    if _call_had_emergency(session):
-        safe_message = templates.format_emergency_safe_sms(
-            patient_name=patient_name, clinic_name=clinic_name, clinic_phone=clinic_phone,
-        )
-        try:
-            await send_sms(to=patient_phone, message=safe_message)
-            logger.info("🚑 Emergency escalation detected — sent caring safe-message, suppressed booking nudge")
-            return True
-        except Exception as e:
-            logger.error("❌ Failed to send emergency safe-SMS: %r", e)
-            return False
 
     # ── CHOOSE TEMPLATE ──────────────────────────────────────────────────────
 
