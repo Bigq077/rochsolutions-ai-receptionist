@@ -19,7 +19,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # 3.13+ is required: requirements.txt pins audioop-lts (the backport of
+          # audioop, which Python removed in 3.13), which only publishes wheels for
+          # >=3.13. This matches the app's target runtime.
+          python-version: "3.13"
           cache: pip
 
       - name: Install dependencies
