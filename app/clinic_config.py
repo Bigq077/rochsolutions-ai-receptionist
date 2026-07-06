@@ -27,6 +27,7 @@ TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
+    "+447366263180": "theorem_v3",    # Staging test line (investigate/susie-call-flows) — purchased specifically for this
 
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE

@@ -430,7 +430,17 @@ async def _handle_transfer(call_sid: str, session: Dict[str, Any]) -> None:
     """
     from twilio.rest import Client as TwilioClient
     from app.clinic_config import get_clinic
-    from app.config import TRANSFER_FALLBACK_NUMBER
+    from app.config import TRANSFER_FALLBACK_NUMBER, TRANSFER_DISABLED
+
+    # Safety kill-switch (staging): suppress the live dial entirely — no call leg
+    # is placed to anyone. Production leaves TRANSFER_DISABLED unset, so this is
+    # a no-op there.
+    if TRANSFER_DISABLED:
+        logger.warning(
+            "[realtime] transfer SUPPRESSED — TRANSFER_DISABLED set; not dialing call_sid=%s",
+            call_sid,
+        )
+        return
 
     clinic = get_clinic(session.get("clinic_id"))
     transfer_phone = clinic.get("transfer_phone") or TRANSFER_FALLBACK_NUMBER

@@ -549,6 +549,87 @@ def _transcript_is_question(text: str) -> bool:
     return t.endswith("?") or any(s in t for s in _QUESTION_SIGNALS)
 
 
+# ── Location indifference (v2 clinic-resolver, Group-4 fix) ──────────────────
+# When Susie asks "Awlstuh or Redditch?" some callers decline to choose —
+# "whichever", "either", "you pick", "whatever's easiest", "I don't mind",
+# "both", "doesn't matter".  The Haiku resolver returns "unknown" for these
+# (they name no clinic), which previously climbed the re-ask ladder and asked
+# the SAME question again — the loop that trapped the tester twice in the
+# sign-off sweep.  Indifference IS a decision: resolve to the default clinic
+# (Alcester — open 5 days/week vs Redditch's 1, matching the resolver's own
+# ambiguity tie-break) so the caller moves on instead of looping.
+#
+# This predicate runs ONLY inside the location-resolution intercept, where the
+# conversational context is already "which clinic?", so tokens like "either" /
+# "both" are unambiguous.  Questions are handled by _transcript_is_question
+# upstream, so "which is closer?" never reaches here as indifference.
+_DEFAULT_CLINIC: str = "alcester"
+
+_LOCATION_INDIFFERENCE_RE = re.compile(
+    r"\b(?:whichever|whatever|either|both)\b"
+    r"|\byou (?:pick|choose|decide)\b"
+    r"|\byour (?:pick|choice|call)\b"
+    r"|\bup to you\b"
+    r"|\b(?:don'?t|do not) (?:mind|care)\b"
+    r"|\bno (?:preference|difference)\b"
+    r"|\bdoesn'?t matter\b"
+    r"|\bdoes not matter\b"
+    r"|\bmakes no difference\b"
+    r"|\bany (?:one|of them|of those|clinic)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_location_indifference(text: str) -> bool:
+    """True when the caller declines to choose a clinic ("whichever", "either",
+    "you pick", "I don't mind", "both", "doesn't matter").
+
+    Deterministic; used only inside the location-resolution intercept, where the
+    context is already "which clinic?".  A True result means: take the default
+    clinic and stop re-asking.
+    """
+    if not text:
+        return False
+    return bool(_LOCATION_INDIFFERENCE_RE.search(text))
+
+
+# ── Deictic "this clinic" (v2-3 / F16) ───────────────────────────────────────
+# A caller answering "Awlstuh or Redditch?" with "this clinic please" / "this
+# one" / "the one I called" means the site they dialled — but that names no
+# clinic alias, so it missed the fast path, went to the biased-confirm rung,
+# then dead air, then the keypad, resolving only on DTMF '1' (~30s friction,
+# sweep Call 5).  Like v2-1 indifference, resolve it DIRECTLY to the default
+# clinic (Alcester, the primary Mon–Fri site).
+#
+# Runs only at the OPEN rung: at the biased-confirm rung "this clinic" means
+# "yes, use the biased one" and is handled by the use-this-clinic confirm gate
+# (v3_awaiting_use_this_clinic), which is checked before this path is reached.
+# This predicate only DETECTS the phrase — the guard that uses it also checks
+# `not _transcript_is_question(...)`, so "what's the address of this clinic?"
+# still routes to the LLM.
+_LOCATION_DEICTIC_RE = re.compile(
+    r"\bthis (?:clinic|one|place|site|branch)\b"
+    r"|\bthis here\b"
+    r"|\bthe (?:one|clinic|place) i (?:called|rang|rung|dialled|dialed|phoned)\b"
+    r"|\bthe one i'?m (?:calling|ringing|phoning)\b"
+    r"|\bone i called\b",
+    re.IGNORECASE,
+)
+
+
+def _is_deictic_current_clinic(text: str) -> bool:
+    """True when the caller refers to "this"/the dialled clinic rather than
+    naming Awlstuh or Redditch ("this clinic", "this one", "the one I called").
+
+    Deterministic; used only in the location-resolution intercept at the open
+    rung.  A True result means: take the default clinic (same as indifference).
+    Detection only — question-routing is the caller's responsibility.
+    """
+    if not text:
+        return False
+    return bool(_LOCATION_DEICTIC_RE.search(text))
+
+
 # Use-this-clinic confirm gates.
 # _USE_THIS_CLINIC_AFFIRMATIVES — the ONLY responses that trigger clinic
 # confirmation.  Everything else (rejections, questions, ambiguous answers)
@@ -689,6 +770,18 @@ _TTS_DONE_SENTINEL = object()
 # replay of the same question is a deliberate recovery, not an accidental
 # duplicate emission.  Normal dedup remains active for every other chunk.
 _WATCHDOG_REASK_MARKER = "\x01WDG_REASK\x01"
+
+# Prefix marker prepended to a TTS text chunk that must finish playing in
+# full before any barge-in teardown is allowed — e.g. the v3 greeting's
+# mandatory "press 1 to speak to Mark" disclosure (production sign-off
+# sweep, CALL 1 / Issue 1).  _tts_loop strips the marker and arms
+# self._barge_protected_active for that single chunk only; the flag is
+# checked alongside self._clinical_response_active in the barge-in guard
+# inside _on_partial_transcript.  Deliberately a marker (set at the source
+# that queues the text) rather than a text-content match, so it can never
+# collide with unrelated "press 1" wording elsewhere (e.g. the DTMF
+# clinic-selection ladder), which must remain barge-in-responsive.
+_BARGE_PROTECTED_MARKER = "\x01BARGE_PROTECTED\x01"
 
 # ---------------------------------------------------------------------------
 # Spec O — strip leading affirmation before watchdog re-ask construction
@@ -1473,6 +1566,69 @@ _FAQ_CLINIC_SPECIFIC_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+# F14 — clinic-INDEPENDENT questions that must NOT trigger the "which clinic?"
+# gate even though they contain a clinic-specific keyword like "open".  Bank
+# holidays close BOTH clinics identically, so "open on easter monday" is the
+# same answer regardless of clinic — gating it sent the caller into an
+# inescapable which-clinic ladder (sweep Call 4, turn 8).  Specific holiday
+# terms only, to keep false-positives near zero.
+_FAQ_CLINIC_INDEPENDENT_RE = re.compile(
+    r"\b(?:"
+    r"bank\s+holidays?|"
+    r"easter|good\s+friday|christmas|xmas|boxing\s+day|"
+    r"new\s*year|jubilee|may\s+day"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _faq_needs_clinic(utterance: str) -> bool:
+    """Whether an FAQ needs the 'which clinic?' gate.  A clinic-specific topic
+    (parking/address/hours/transport) gates — UNLESS the utterance is about a
+    bank holiday / closure, which is identical at both clinics (F14)."""
+    if _FAQ_CLINIC_INDEPENDENT_RE.search(utterance):
+        return False
+    return bool(_FAQ_CLINIC_SPECIFIC_RE.search(utterance))
+
+
+def _location_ladder_exhausted(session: Dict[str, Any]) -> bool:
+    """Escape-hatch predicate for the clinic-question ladder (sweep Call 12).
+
+    Ladder: reask_count 0 → rung 2 biased confirm, 1 → rung 3 DTMF keypad.
+    Once the keypad has been offered (reask_count >= 2), a further unrecognized
+    utterance must NOT re-fire the keypad forever — it breaks out to the LLM so
+    the caller can escape the clinic loop.  Returns True when exhausted."""
+    return int(session.get("v3_location_reask_count", 0) or 0) >= 2
+
+
+def _location_gate_should_fire(session: Dict[str, Any]) -> bool:
+    """Single source of truth for the booking→location gate (connection.py, the
+    `_v3_gate_fired` site): ask "Awlstuh or Redditch?" when the caller wants to
+    book but no clinic has been asked for or confirmed yet."""
+    return bool(
+        session.get("v3_booking_intent", False)
+        and not session.get("v3_location_asked", False)
+        and not session.get("v3_location_confirmed", False)
+    )
+
+
+def _disengage_location_gate(session: Dict[str, Any]) -> None:
+    """Stand the clinic-location gate FULLY down so it does not re-fire next turn.
+
+    Used by the ladder escape hatch (v2-2, sweep Call 12): once the keypad is
+    exhausted and we hand the caller to the LLM, clearing v3_location_asked alone
+    is not enough — v3_booking_intent stays True and _location_gate_should_fire()
+    re-arms rung 1 on the caller's very next utterance (the 'sticky re-ask' that
+    trapped the tester in an outer loop).  Clear the booking-intent latch too.
+    Booking still resumes normally: a fresh booking cue re-sets v3_booking_intent
+    via the booking-ack path, which re-asks the clinic (they do need one)."""
+    session["v3_location_asked"] = False
+    session["v3_location_q_active"] = False
+    session["v3_awaiting_use_this_clinic"] = False
+    session["v3_awaiting_location_dtmf"] = False
+    session["v3_location_reask_count"] = 0
+    session["v3_booking_intent"] = False
 
 # ---------------------------------------------------------------------------
 # Spec Y — treatment-specific booking bypass
@@ -3881,6 +4037,13 @@ class WebSocketCallHandler:
         # caller always hears the full empathy acknowledgement before Susie listens
         # to the next input.  Reset to False at the start of each new TTS chunk.
         self._clinical_response_active: bool = False
+        # Barge-in disclosure protection: True while a TTS chunk queued with
+        # _BARGE_PROTECTED_MARKER (e.g. the v3 greeting's press-1 disclosure)
+        # is being synthesised/played.  Same suppression effect as
+        # _clinical_response_active but armed by an explicit marker at the
+        # queueing source rather than by matching chunk text content.
+        # Reset to False at the start of each new TTS chunk.
+        self._barge_protected_active: bool = False
 
         # Keypad idle-finalize: scheduled when the DTMF buffer has enough digits
         # to plausibly be a complete number but the caller has paused.  If no
@@ -4419,9 +4582,10 @@ class WebSocketCallHandler:
                 self.session["v3_intro_dtmf_active"] = False
                 if digit == "1":
                     logger.info("[ms_conn] theorem_v3: intro digit=1 — transferring to Mark")
-                    await self.tts_text_queue.put(
-                        "Transferring you to Mark now — one moment."
-                    )
+                    # F17: the hand-off line is now emitted once at the
+                    # _on_transfer_request choke point (unified G18 wording), so we
+                    # no longer queue a separate DTMF line here — that would stack
+                    # two lines before the dial.
                     self.session["transfer_requested_by_caller"] = True
                     await self._on_transfer_request()
                 return
@@ -5998,14 +6162,8 @@ class WebSocketCallHandler:
                         if self.session.get("v3_location_q_active"):
                             self.session["_location_q_patient_spoke"] = True
 
-                        _v3_gate_fired = (
-                            self.session.get("v3_booking_intent", False)
-                            and not self.session.get(
-                                "v3_location_asked", False
-                            )
-                            and not self.session.get(
-                                "v3_location_confirmed", False
-                            )
+                        _v3_gate_fired = _location_gate_should_fire(
+                            self.session
                         )
                         # Caller is answering the location question we just
                         # asked — intercept to guarantee only the ack plays
@@ -7251,6 +7409,43 @@ class WebSocketCallHandler:
                                         )
                                         _resolved = "unknown"
 
+                                    # ── Vague answer → default clinic ────────
+                                    # A caller who names no clinic (Haiku unknown)
+                                    # but IS making a decision must not loop the
+                                    # re-ask ladder — take the default clinic and
+                                    # fall through the normal resolved path below.
+                                    #   • indifference: "whichever / either / you
+                                    #     pick / I don't mind / both" (v2-1)
+                                    #   • deictic: "this clinic / this one / the
+                                    #     one I called" (v2-3 / F16)
+                                    # Guarded by `not _transcript_is_question` so a
+                                    # genuine question ("what's the address of this
+                                    # clinic?") still routes to the LLM below.
+                                    if (
+                                        _resolved == "unknown"
+                                        and not _transcript_is_question(utterance)
+                                    ):
+                                        if _is_location_indifference(utterance):
+                                            _resolved = _DEFAULT_CLINIC
+                                            logger.info(
+                                                "[ms_conn v3] location"
+                                                " indifference — %r → default"
+                                                " clinic %s",
+                                                utterance[:60],
+                                                _resolved,
+                                            )
+                                        elif _is_deictic_current_clinic(
+                                            utterance
+                                        ):
+                                            _resolved = _DEFAULT_CLINIC
+                                            logger.info(
+                                                "[ms_conn v3] deictic 'this"
+                                                " clinic' — %r → default"
+                                                " clinic %s",
+                                                utterance[:60],
+                                                _resolved,
+                                            )
+
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
                                         _ack = f"{_disp}."
@@ -7379,14 +7574,39 @@ class WebSocketCallHandler:
                                         # the location question stays pending
                                         # and Susie will re-ask after the
                                         # LLM answers the FAQ.
-                                        if _transcript_is_question(utterance):
-                                            logger.info(
-                                                "[ms_conn v3] location"
-                                                " intercept — Haiku unknown"
-                                                " + question detected,"
-                                                " routing to LLM: %r",
-                                                utterance[:60],
-                                            )
+                                        # Escape hatch (sweep Call 12): if the
+                                        # keypad rung has already been offered and
+                                        # the caller STILL isn't giving a clinic,
+                                        # stop looping the keypad — route to the
+                                        # LLM and clear the sticky clinic gate so
+                                        # they break out of the loop.
+                                        _loc_escape = _location_ladder_exhausted(
+                                            self.session
+                                        )
+                                        if _transcript_is_question(utterance) or _loc_escape:
+                                            if _loc_escape:
+                                                # v2-2: FULL stand-down (also
+                                                # clears v3_booking_intent) so the
+                                                # gate can't re-fire rung 1 next
+                                                # turn — the sticky re-ask.
+                                                _disengage_location_gate(
+                                                    self.session
+                                                )
+                                                logger.info(
+                                                    "[ms_conn v3] location ladder"
+                                                    " ESCAPE HATCH — keypad"
+                                                    " exhausted, standing gate"
+                                                    " down and routing to LLM: %r",
+                                                    utterance[:60],
+                                                )
+                                            else:
+                                                logger.info(
+                                                    "[ms_conn v3] location"
+                                                    " intercept — Haiku unknown"
+                                                    " + question detected,"
+                                                    " routing to LLM: %r",
+                                                    utterance[:60],
+                                                )
                                             self._filler_breath_injected = (
                                                 False
                                             )
@@ -7763,9 +7983,8 @@ class WebSocketCallHandler:
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
-                                and bool(
-                                    _FAQ_CLINIC_SPECIFIC_RE.search(utterance)
-                                )
+                                and _faq_needs_clinic(utterance)  # F14: skips
+                                # clinic-independent closure/holiday questions
                             ):
                                 _faq_clinic_q = _LOC_RUNG1_OPEN
                                 await self.tts_text_queue.put(_faq_clinic_q)
@@ -9646,6 +9865,13 @@ class WebSocketCallHandler:
                         )
                         continue
 
+                # Barge-protected marker: strip it here so downstream text
+                # processing (subs, splitting, synthesis) never sees it.
+                # The arm/reset step lives with the clinical guard below.
+                _barge_protected_chunk = chunk_text.startswith(_BARGE_PROTECTED_MARKER)
+                if _barge_protected_chunk:
+                    chunk_text = chunk_text[len(_BARGE_PROTECTED_MARKER):]
+
                 # SPEC 4 / Bug 1: apply phonetic substitution to chunk_text NOW
                 # so that every downstream tracking variable — dedup comparison,
                 # _last_tts_chunk, and _tts_text_pending (→ tts_finished log,
@@ -9784,6 +10010,20 @@ class WebSocketCallHandler:
                         chunk_text[:60],
                     )
                 # ── end clinical barge-in protection ──────────────────────────
+
+                # ── Barge-protected marker guard ────────────────────────────
+                # Reset for each new chunk, same as _clinical_response_active
+                # above — armed only when THIS chunk was tagged at the source
+                # with _BARGE_PROTECTED_MARKER (stripped earlier in this
+                # iteration).  Self-clearing: the next dequeued item resets it.
+                self._barge_protected_active = _barge_protected_chunk
+                if _barge_protected_chunk:
+                    logger.info(
+                        "[ms_conn] barge-protected chunk"
+                        " — barge-in guard armed: %r",
+                        chunk_text[:60],
+                    )
+                # ── end barge-protected marker guard ────────────────────────
 
                 # Notify silence handler ONCE per chunk (not per sub-chunk).
                 # on_tts_started() is paired with exactly one on_tts_finished() call
@@ -10447,13 +10687,15 @@ class WebSocketCallHandler:
             )
 
         # ── Clinical barge-in guard ────────────────────────────────────────
-        # When a clinical/empathy response is active, do NOT cancel the TTS.
-        # The caller hears the full empathy acknowledgement; their barge-in
-        # text is processed normally on the NEXT final transcript event.
-        if self._clinical_response_active:
+        # When a clinical/empathy response is active, or the current chunk
+        # was marked barge-protected at the source (_BARGE_PROTECTED_MARKER
+        # — e.g. the v3 greeting's press-1 disclosure), do NOT cancel the
+        # TTS. The caller hears the full response; their barge-in text is
+        # processed normally on the NEXT final transcript event.
+        if self._clinical_response_active or self._barge_protected_active:
             logger.info(
                 "[ms_conn] barge-in suppressed"
-                " — clinical response completing: %r",
+                " — protected response completing: %r",
                 self._current_tts_text[:60],
             )
             return
@@ -10811,7 +11053,7 @@ class WebSocketCallHandler:
             self.session["v3_intro_dtmf_active"] = True
 
             await save_session(self.call_sid, self.session)
-            await self.tts_text_queue.put(_v3_greeting)
+            await self.tts_text_queue.put(_BARGE_PROTECTED_MARKER + _v3_greeting)
             return
 
         # ────────────────────────────────────────────────────────────────────
@@ -10873,6 +11115,16 @@ class WebSocketCallHandler:
             })
             return
         logger.info("[ms_conn] transfer authorised — initiating")
+        # F17: deterministic G18 hand-off line, spoken via TTS on the live stream.
+        # This is the single choke point for EVERY transfer path (LLM tool, DTMF
+        # press-1, silence, emergency), so emitting it here guarantees the caller
+        # hears it regardless of gate5 (which strips the LLM's "bear with me"
+        # prose) and regardless of TRANSFER_DISABLED (which suppresses the TwiML
+        # <Say> on staging).  The prod TwiML <Say> in realtime._handle_transfer
+        # remains as the post-redirect delivery.  See sweep F17.
+        await self.tts_text_queue.put(
+            "Putting you through now — please stay on the line."
+        )
         try:
             from app.routes.realtime import _handle_transfer
             await _handle_transfer(self.call_sid, self.session)
@@ -10900,6 +11152,26 @@ class WebSocketCallHandler:
             pass
         finally:
             self._stop_event.set()
+
+    @staticmethod
+    def _emergency_reask_override(session: Dict[str, Any]) -> Optional[str]:
+        """F23: when the previous response was an emergency escalation (999 /
+        A&E), the dead-air re-ask must NOT chirp 'how can I help today?' — that
+        undercuts the gravity (sweep Call 10).  Returns a calm re-anchor to use
+        instead; None on any normal turn (leaves existing re-ask logic intact).
+
+        medical_emergency_detected is not set on the LLM red-flag path (the 999
+        text is model-generated), so we key off the content of last_bot_prompt —
+        the full spoken reply, which contains 999 / A and E / emergency service.
+        """
+        _lb = (session.get("last_bot_prompt") or "").lower()
+        _EMERGENCY_MARKERS = ("999", "a and e", "a&e", "emergency service")
+        if any(m in _lb for m in _EMERGENCY_MARKERS):
+            return (
+                "If this feels like an emergency, please call 999 or go to "
+                "A and E now — I'm still here if you need me."
+            )
+        return None
 
     # ========================================================================
     # Global 10-second silence safety net
@@ -11095,7 +11367,17 @@ class WebSocketCallHandler:
                     # the last stored question (if any) or a neutral "still there?"
                     # prompt so we never ask about "days" before any slots have been
                     # shown to the caller.
-                    if self.session.get("v3_location_q_active"):
+                    # Reference via the class (not self) so the safety net stays
+                    # callable when driven with a stand-in self in tests.
+                    _emergency_phrase = WebSocketCallHandler._emergency_reask_override(
+                        self.session
+                    )
+                    if _emergency_phrase is not None:
+                        # F23: last response was a 999/A&E escalation — replace the
+                        # generic "how can I help today?" reset with a calm
+                        # emergency re-anchor so the gravity isn't undercut.
+                        _phrase_1 = _emergency_phrase
+                    elif self.session.get("v3_location_q_active"):
                         # Location still unresolved (STT can't catch the clinic
                         # name — "ousto"/"ouston"/"the clinic").  Do NOT fall
                         # through to the generic "how can I help today?" reset:

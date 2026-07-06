@@ -220,3 +220,47 @@ def test_clinic_config_booking_prices_in_sync_with_canonical():
         assert THEOREM_APPOINTMENT_TYPES[apt_id]["price_gbp"] == price, (
             f"{apt_id} price drifted from canonical"
         )
+
+
+# ── 9. F25: single-location services are Alcester-only (regression lock) ──────
+# The Wellness & Stress Relief Massage and Psychotherapy are Awlstuh-only. The
+# F25 prompt rule ("never ask which clinic for these") relies on this being the
+# canonical truth; lock it so it can't silently drift to dual-location.
+
+def test_single_location_services_are_alcester_only():
+    assert c.SERVICES["wellness_massage"]["locations"] == ["alcester"], (
+        "Wellness Massage must stay Alcester-only (F25)"
+    )
+    assert c.SERVICES["psychotherapy"]["locations"] == ["alcester"], (
+        "Psychotherapy must stay Alcester-only (F25)"
+    )
+
+
+def test_dual_location_services_still_list_both():
+    # Guard the other side: services offered at both sites must keep both, so
+    # the single-location rule never over-reaches.
+    for sid in ("acupuncture", "standalone_shockwave_laser"):
+        assert set(c.SERVICES[sid]["locations"]) == {"alcester", "redditch"}, (
+            f"{sid} should be available at both clinics"
+        )
+
+
+# ── 10. F25 naming half: v3 prompt price line uses the canonical massage name ─
+# The wellness massage's canonical name is "Wellness and Stress Relief Massage"
+# (canonical.py). The v3 prompt's price line had drifted to "Wellness Massage
+# with In-light Therapy" — dropping "and Stress Relief" — contradicting both the
+# canonical name and the prompt's own downstream references (sweep Call 12/14
+# terminology inconsistency). Lock the price line to the canonical name.
+
+def test_v3_prompt_massage_price_line_is_canonical():
+    from app.prompts.susie_system_prompt import _build_theorem_v3
+
+    prompt = _build_theorem_v3({})[0]
+    canonical_name = c.SERVICES["wellness_massage"]["name"]
+    assert canonical_name == "Wellness and Stress Relief Massage"
+    # The canonical name must appear...
+    assert canonical_name in prompt
+    # ...and the drifted price-line form must be gone. (The canonical descriptive
+    # form is "Wellness and Stress Relief Massage with In-light Therapy", which
+    # does NOT contain the contiguous substring below.)
+    assert "Wellness Massage with In-light" not in prompt

@@ -1,0 +1,607 @@
+# Susie Fix Booklet
+
+> Running record of each fix made in the sweep-remediation sessions, so **Jules and
+> Quentin can exchange info** without re-reading diffs. One entry per finding.
+> Source backlog: [docs/sweep_findings.md](sweep_findings.md) (FINAL COMPILE, grouped by root cause).
+> Workflow: [docs/playbook.md](playbook.md) — diagnose → failing test first (TDD) → one change → verify → one commit.
+
+**Entry template:** Finding · Root cause · Change (file/fn) · Test · Verified (auto/phone) · Commit · Notes.
+
+---
+
+## ⚠️ Branch baseline note (read first)
+As of the start of the 2026-07-02 fix session, branch `investigate/susie-call-flows`
+already has **~90 pre-existing failing tests** (in `test_name_collector.py`,
+`test_silence_handler.py`, `test_sms_templates.py`, `test_soft_context.py`,
+`test_returning_treatment_plan_exit.py`, and others). **These are NOT caused by any
+fix in this booklet** — verified by stashing each change and re-running (baseline =
+90 failed, after each fix = still 90 + our own passing tests). They pre-date our work
+and are their own cleanup track. Every entry below states its net effect on this count.
+
+---
+
+## F13 — Booking-CTA appended to pure-FAQ answers  ✅ SIGNED OFF (prompt-only, phone-verified 2026-07-02)
+**Priority:** HIGH (professionalism / conversion). **Sweep:** Group 2; Calls 4 (prices) & 5 (parking) — FAIL-level.
+
+### Symptom (from sweep)
+On plain informational questions Susie tacked on a booking push:
+- Call 4: *"It's £85 for fifty minutes. **Would you like to book an appointment?**"*
+- Call 5: parking answer + *"**Would you like to book an appointment?**"*
+The sweep's Call 4 FAIL criterion is "booking push before turn 10"; Call 5 expects
+"answers parking (NOT booking)". Correctly suppressed on treatment/concern turns
+(Calls 9/12/14) — so it was specific to *non-treatment* FAQ answers.
+
+### Root cause (what the sweep didn't have)
+The v3 system prompt **contradicts itself**:
+- [susie_system_prompt.py:1141](../app/prompts/susie_system_prompt.py#L1141) & [:1467](../app/prompts/susie_system_prompt.py#L1467)
+  say *do NOT* offer booking after an informational answer.
+- [susie_system_prompt.py:2292-2304](../app/prompts/susie_system_prompt.py#L2292) said the opposite:
+  *"after answering any FAQ question, close with a booking call-to-action."*
+
+The model followed the 2292 instruction on price/parking. The deterministic guard
+(Gate 5c in `sanitise_response`) only stripped the CTA when `booking_flow_active`
+was True (mid-booking), so a pure-FAQ turn — where **both** `booking_flow_active`
+and `v3_treatment_mentioned` are absent ([connection.py:7681-7699](../app/media_streams/connection.py#L7681-L7699)) —
+sailed straight through.
+
+### Fix — FINAL: prompt-only (the gate was tried, regressed, and reverted)
+Phone re-test (call `CAbc1f0122…`, 2026-07-02 21:11) showed the **prompt fix alone**
+handled the FAQ turns (turn 1 price produced NO CTA — gate never fired), while the
+**gate over-stripped a legitimate concern-turn booking offer** on "I've hurt my
+shoulder" (`concern=False` → offer removed). The gate keyed off `v3_treatment_mentioned`,
+which does NOT fire on a plain injury description (only treatment-word mentions,
+connection.py:7681). No reliable clinical signal is available at strip time
+(`_clinical_response_active` is computed per-chunk downstream and isn't in `session`).
+**Decision: revert the gate, keep the prompt fix** — smallest correct change; a fix
+that breaks the concern flow is not a fix. F13 is now prompt-only (no unit test;
+phone-verified). Determinism can be re-added later via a proper upstream
+clinical-complaint session flag if F13 ever recurs.
+
+<details><summary>Reverted gate approach (commit 1 — kept for the record)</summary>
+
+**Commit 1 — deterministic gate (TDD).** REVERTED.
+`app/media_streams/turn_handler.py` → `sanitise_response`, Gate 5c.
+Was: strip the trailing booking-offer CTA only when `booking_flow_active`.
+Now: strip it **unless it's a concern turn** — i.e. keep the CTA only when
+`booking_flow_active is False AND v3_treatment_mentioned is True`. The existing
+**whole-response guard** still protects a standalone booking question / the closing
+confirmation ("shall I go ahead and book that in?") from being stripped to empty.
+- Discriminator logic: pure informational FAQ = neither flag set → strip.
+  Concern turn = `v3_treatment_mentioned` → keep (Calls 9/12/14 want the offer).
+  Mid-booking = `booking_flow_active` → strip redundant tail (unchanged).
+</details>
+
+**Commit 2 — prompt reconciliation (KEPT — this is the fix).**
+`app/prompts/susie_system_prompt.py` around [:2292](../app/prompts/susie_system_prompt.py#L2292).
+Added an explicit exclusion so the "close with a CTA after an FAQ" rule now agrees
+with the 1141/1467 rule: purely INFORMATIONAL questions (prices, hours, parking,
+location, directions, services) get **no** CTA — end with "Is there anything else I
+can help you with?" instead. Offer booking only on a described concern/injury or an
+explicit booking ask.
+
+### Test — removed with the gate revert
+`tests/test_faq_booking_cta.py` was added with the gate (commit 1) and is removed by the
+revert. Its `test_concern_turn_keeps_booking_cta` guard used `v3_treatment_mentioned=True`,
+which a real concern turn does NOT set — so the suite was green but did not represent the
+actual concern turn, and missed the regression. **Lesson: unit-test fixtures must match the
+real session state a live turn produces.** The prompt-only fix has no unit test (prompt
+behaviour); it is phone-verified.
+
+### Verification — phone re-test (call `CAbc1f0122…`, 2026-07-02 21:11, deployed staging)
+| Turn | Said | Result |
+|---|---|---|
+| 1 | "How much is a session?" | ✅ "£85 for fifty minutes…" + "Is there anything else I can help you with?" — **no CTA** (gate never fired → **prompt fix did it**). |
+| 2 | "Do you have parking?" | ✅ parking answer, no booking push. *(Side issue: "alcester" resolved `intent=booking` and detoured to "day or time?" before the parking answer — location/re-queue friction, Group 4, not F13.)* |
+| 3 | "I've hurt my shoulder" (control) | ❌ gate logged `removed out-of-place booking offer (…concern=False)` and **stripped a legit booking offer** → **regression** → gate reverted. |
+
+**Re-verify after revert (call `CA8b7099…`, 2026-07-02 21:29, prompt-only deploy) — ALL PASS:**
+| Turn | Said | Result |
+|---|---|---|
+| 1 | "How much is a session?" | ✅ "£85… Is there anything else I can help you with?" — no push, no gate line. |
+| 2 | "Do you have parking?" | ✅ "free parking… ~eighty spaces… anything else?" — no push. Detour did NOT recur (FAQ re-queued cleanly; last time's detour was STT-driven "al foster"→intent=booking). |
+| 3 | "I've hurt my shoulder" | ✅ "…an assessment would look at what's going on… **Would you like to book one with Mark?**" — CTA restored, concern flow intact. |
+
+→ **F13 SIGNED OFF.** Prompt-only fix; concern flow preserved; no gate residue.
+
+### Commits
+- Commit 1 (gate + test): **made, then REVERTED** after the phone test.
+- Commit 2 (prompt reconciliation): **KEPT** — this is the fix.
+- Revert commit: _(pending — `git revert` of commit 1)._
+
+### Notes / blast radius
+- Final state touches only the prompt ([susie_system_prompt.py:2292](../app/prompts/susie_system_prompt.py#L2292)) —
+  `turn_handler.py` returns to its original gate-5c behaviour (strip only when
+  `booking_flow_active`).
+- Follow-up idea (not now): to re-add a deterministic FAQ-CTA guard safely, set a
+  `session` flag marking a clinical-complaint turn *upstream* of the response stream, then
+  gate on it — instead of inferring concern from `v3_treatment_mentioned`.
+
+---
+
+## F17 — Silent transfer: verbatim G18 line not spoken  ✅ SIGNED OFF (phone-verified both paths 2026-07-02)
+**Priority:** HIGH (safety). **Sweep:** Group 1 (safety-script line guarantees); Call 6.
+
+### Symptom (from sweep)
+On "can I just speak to someone" the LLM called `transfer_to_human` and the call bridged
+with **no spoken line** — the required verbatim G18 line *"Putting you through now — please
+stay on the line."* was never delivered. Silent transfer on a safety path.
+
+### Root cause
+The LLM transfer path had **no deterministic spoken line**:
+- Its intended line is LLM prose — the prompt says *"…just bear with me"*
+  ([susie_system_prompt.py:1538](../app/prompts/susie_system_prompt.py#L1538)) — and gate5's
+  `bear_with_me` pattern ([turn_handler.py:45](../app/media_streams/turn_handler.py#L45))
+  strips the whole sentence → silence.
+- The only deterministic line, the TwiML `<Say>` ([realtime.py:466](../app/routes/realtime.py#L466)),
+  is (a) suppressed on staging — `TRANSFER_DISABLED` returns at
+  [realtime.py:443](../app/routes/realtime.py#L443) *before* the TwiML is built — and (b) only
+  fires *after* the REST redirect, so a dead-air gap precedes it in prod.
+- DTMF press-1 works only because it queued a TTS line before dialing
+  ([connection.py:4442](../app/media_streams/connection.py#L4442)) — audio on the live stream,
+  independent of gate5 and the kill-switch.
+
+`_on_transfer_request` ([connection.py:10907](../app/media_streams/connection.py#L10907)) is
+the single choke point for ALL transfer paths (LLM tool via
+[connection.py:9329](../app/media_streams/connection.py#L9329), DTMF, silence, emergency).
+
+### Fix (one commit) — decision: KEEP BOTH lines (safe)
+`app/media_streams/connection.py`:
+1. In `_on_transfer_request`, after the guard passes and before `_handle_transfer`, queue the
+   verbatim G18 line to `tts_text_queue`. TTS on the live stream bypasses gate5 AND plays even
+   when the dial is suppressed on staging → guaranteed + phone-verifiable.
+2. Removed the DTMF-path line ([old 4442](../app/media_streams/connection.py#L4442)) so it
+   doesn't stack two lines before the dial — all paths now emit the one unified G18 line.
+
+The prod TwiML `<Say>` in `realtime._handle_transfer` is **kept** as the post-redirect delivery
+(chosen over a dial-only TwiML: safest "line always delivered"; accepts a possible brief
+overlap in prod — overlap ≫ silence on a safety path).
+
+### Test (TDD) — `tests/test_transfer_line_spoken.py` (new, 2 tests)
+- `test_authorised_transfer_speaks_g18_line` — RED before, GREEN after: an authorised transfer
+  enqueues the verbatim line, then dials.
+- `test_blocked_transfer_speaks_nothing` — guard: a blocked transfer speaks nothing / no dial.
+
+### Verification
+- **Automated:** 2/2 F17 tests pass; `test_transfer_disabled_gate.py` still 4/4 (kill-switch
+  intact); full suite **90 failed / 1004 passed** = pre-existing 90 + our 2 new → **0 regressions**.
+- **Phone — BOTH PATHS PASS (2026-07-02, staging, TRANSFER_DISABLED set):**
+  | Path | Call | Result |
+  |---|---|---|
+  | DTMF press-1 | `CAfd864352…` 21:52 | ✅ `transfer SUPPRESSED` + `synthesise_chunk 'Putting you through now — please stay on the line.'` — old "Transferring you to Mark now…" wording gone. No dial/SMS. |
+  | LLM "speak to someone" | `CAa796799a…` 21:54 | ✅ gate5 `removed banned phrase (bear_with_me)` (root cause still strips the prose) **then** `synthesise_chunk 'Putting you through now — please stay on the line.'` fires anyway. `transfer SUPPRESSED`. No dial/SMS. |
+  → The exact Call-6 silent-transfer path now speaks the verbatim line. **F17 SIGNED OFF.**
+
+### Commits
+- Fix + test (`Fix F17: speak verbatim G18 transfer line…`): **DONE.**
+- Booklet: _(this commit)._
+
+---
+
+## F20 — book_appointment not gated on a clear YES  ✅ SIGNED OFF (unit-proven + phone-safe 2026-07-02)
+**Priority:** HIGH (safety). **Sweep:** Group 1; Call 8 (user-raised).
+
+### Symptom / root cause
+The book guard ([llm_stream.py:1477](../app/media_streams/llm_stream.py#L1477)) blocked
+`book_appointment` unless `last_bot_prompt` contained "shall i go ahead" / "book that in"
+— i.e. it only checked the confirmation **question was asked**, never that the caller
+**said yes**. Once asked, a weak/ambiguous/negative *verbal* reply could still book.
+(Silence was already safe: no transcript → no turn.)
+
+### Fix (one commit) — `app/media_streams/llm_stream.py`
+1. New `_book_confirmation_ok(session, last_user_text)` — allows booking only when the
+   confirm question was asked AND the caller's reply is a clear yes, reusing fast_path's
+   `_YES_PATTERNS` / `_NO_PATTERNS` as `is_yes and not is_no`. Ambiguous (both/neither) or
+   empty → False (block).
+2. Guard now calls that helper; two distinct block messages — `confirmation_required`
+   (question not asked, unchanged) and `affirmation_required` (asked, but no clear yes →
+   re-ask and wait for a clear yes).
+3. Threaded the caller's last utterance into `_execute_tools` via a new `last_user_text`
+   param — extracted at the single call site ([llm_stream.py:903](../app/media_streams/llm_stream.py#L903))
+   from `messages`.
+- **Bias:** a false block just re-asks (safe); a false allow is a wrong booking → ambiguity blocks.
+
+### Test (TDD) — `tests/test_book_affirmative_gate.py` (new, 4 tests)
+- clear yes ("yes please") → books; negative ("no, change it") → blocked;
+  ambiguous ("um not sure") → blocked; confirm-not-asked + "yes" → blocked (existing behaviour).
+
+### Verification
+- **Automated:** 4/4 pass; full suite **90 failed / 1008 passed** = pre-existing 90 + our 4
+  → **0 regressions**.
+- **⚠️ Phone — SAFE SUBSET ONLY (Acuity NOT isolated on staging).** A genuine `book_appointment`
+  creates a REAL appointment on Mark's Acuity (sweep Group 7). So on staging:
+  - **DO test the negative path:** drive to "…shall I go ahead and book that in?", then say
+    "no, change the time" or "um, I'm not sure" → PASS = Susie does NOT book, re-asks/corrects;
+    no real appointment. (If it misfired, log would show `book_appointment BLOCKED — no clear YES`.)
+  - **DO NOT say a clean "yes"** at the confirm on staging — it would book for real. The positive
+    "clear yes books" path is covered by the unit test, not by phone.
+  - 🟡 hang up before any real booking.
+- **Phone result (call `CA86363383…`, 2026-07-02 22:19):** drove to readback
+  *"…shall I go ahead and book that in?"*, then said **"do a different time"** → LLM called
+  `check_availability` (offered other times), **NOT** `book_appointment` → **nothing booked** ✅.
+  The guard itself wasn't triggered (the model declined to book on its own — expected on a clean
+  correction); had it tried, "different" → `is_no` → block. So: **guard logic = unit-proven;
+  end-to-end safety = phone-confirmed.** Sign-off stands for a defense-in-depth guard.
+- Side-observation (not F20): correction was clunky — `check_availability BLOCKED — name+phone
+  already collected` fired 2× + one 11.9s TTS. `booking_details_already_complete` interaction +
+  long-TTS → F21 territory; logged for later.
+
+### Commits
+- Fix + test: **DONE** (`Fix F20: require a clear YES before book_appointment fires`).
+- Booklet: **DONE.**
+
+---
+
+## F23 — Chirpy dead-air re-ask right after a 999 escalation  ✅ SIGNED OFF (phone-verified 2026-07-02)
+**Priority:** MED (safety-tone). **Sweep:** Group 1; Call 10.
+
+### Symptom / root cause
+After firm 999/A&E instructions, caller silence made `_silence_safety_net` fire its generic
+reset *"Sorry, I can't quite hear you — how can I help today?"* ([connection.py:11190](../app/media_streams/connection.py#L11190)),
+undercutting the emergency. `medical_emergency_detected` is never set on the LLM red-flag path
+(the 999 text is model-generated), so the reliable signal is the content of `last_bot_prompt`
+(the full spoken reply, set at [llm_stream.py:496](../app/media_streams/llm_stream.py#L496)).
+
+### Fix (one commit) — `app/media_streams/connection.py`
+- New static `_emergency_reask_override(session)` → returns a calm re-anchor
+  (*"If this feels like an emergency, please call 999 or go to A and E now — I'm still here if
+  you need me."*) when `last_bot_prompt` contains `999` / `a and e` / `a&e` / `emergency
+  service`; `None` otherwise (normal turns untouched — specific markers → low false-positive).
+- `_silence_safety_net` checks it **first**, before the location/slot/generic branches.
+- Called via the **class** (`WebSocketCallHandler._emergency_reask_override`), not `self` — the
+  dead-air test drives the net with a `SimpleNamespace` stand-in, and `self.<newmethod>` would
+  `AttributeError`. (Caught by the suite: it broke 4 dead-air tests until fixed — good guard.)
+
+### Test (TDD) — `tests/test_emergency_reask_suppression.py` (new, 4 tests)
+- emergency `last_bot_prompt` (999 / A&E) → override returns a 999-bearing phrase, no "how can I
+  help today"; normal prompt / empty → `None`.
+
+### Verification
+- **Automated:** 4/4 pass; `test_dead_air_safety_net.py` back to its baseline 2-fail/8-pass
+  (the 2 are pre-existing, unrelated); full suite **90 failed / 1012 passed** = 90 baseline + 4
+  → **0 regressions**.
+- **Phone (PENDING — after deploy):** staging `+447366263180`. Safe (no booking/transfer).
+  1. Trigger a red flag, e.g. *"My back went and now I've got numbness around my saddle area
+     and I can't control my bladder"* → Susie gives the 999/A&E redirect.
+  2. **Go silent ~12-20s.** PASS = the dead-air re-ask is the calm emergency re-anchor
+     (*"…please call 999 or go to A and E now — I'm still here…"*), **NOT** "how can I help today?".
+  Log: `[ms_safety_net]` fires with the emergency phrase; no "how can I help today".
+- **Phone result (call `CA59944a8e…`, 2026-07-02 22:53):** cauda-equina red flag → Susie escalated
+  ("red flag symptom that needs urgent medical attention…get urgent help now"); after ~16.8s silence
+  `[ms_safety_net]` fired **"If this feels like an emergency, please call 999 or go to A and E now —
+  I'm still here if you need me."** — NOT "how can I help today?". ✅ **F23 SIGNED OFF.**
+- Side-observation (not F23, pre-existing): a stray `tts_finished … "Those symptoms need urgent
+  medical attention right away…"` appeared at call-start (22:53:07) before the caller spoke — looks
+  like a leftover TTS fragment; not from this change (only the re-ask wording moved). Worth a glance.
+
+### Commits
+- Fix + test: **DONE** (`Fix F23: calm re-anchor instead of chirpy reset after a 999 escalation`).
+- Booklet: **DONE.**
+
+---
+
+## F25 — Massage naming + Alcester-only mis-gate  ✅ SIGNED OFF (phone-verified 2026-07-03)
+**Priority:** LOW-MED. **Sweep:** Group 6 (canonical consistency) + location mis-gate; Calls 12 & 14.
+
+### Symptom / root cause
+Two prompt-behaviour symptoms (the underlying DATA was already correct):
+- **Naming drift** — Call 12 "I just need a massage" → Susie said "Sports massage"; Call 14
+  "stress relief massage" → "wellness massage with in-light therapy". Inconsistent.
+- **Location mis-gate** — Call 14: asked "which clinic?" for the Wellness Massage, which is
+  **Awlstuh (Alcester) only** (canonical `wellness_massage.locations == ["alcester"]`).
+
+The canonical source is right ([canonical.py:248](../app/clinics/theorem/canonical.py#L248)) AND the
+prompt facts block already says *"Wellness Massage… Awlstuh only"* — the LLM just wasn't acting on
+it. So this is prompt-tuning, not a code path. (NB "sports massage" = a JV-clinic service /
+soft-tissue-within-physio; theorem's standalone relaxation service is the Wellness & Stress Relief
+Massage.)
+
+### Fix (one commit) — prompt-only + a data lock
+`app/prompts/susie_system_prompt.py` (services facts block, ~L2237): added two rules —
+1. **SINGLE-LOCATION SERVICES:** Wellness Massage + Psychotherapy are Awlstuh ONLY → never ask
+   "which clinic?"; go straight to Awlstuh, don't offer Redditch.
+2. **GENERIC MASSAGE:** on a bare "a massage" request, clarify goal (pain/injury → physio
+   assessment; relaxation → Wellness & Stress Relief Massage, Awlstuh, enquiry-led); don't label
+   it "sports massage" unprompted.
+
+### Test — regression lock (not red→green; prompt behaviour isn't unit-testable)
+`tests/test_theorem_canonical.py` (+2): `test_single_location_services_are_alcester_only`
+(wellness_massage + psychotherapy stay `["alcester"]`) and `test_dual_location_services_still_list_both`
+(acupuncture/shockwave keep both — the rule mustn't over-reach). Locks the data the prompt rule
+relies on. Behaviour itself is phone-verified.
+
+### Verification
+- **Automated:** canonical suite 27 pass (+2); full suite **90 failed / 1014 passed** → 0 regressions.
+- **Phone (PENDING — after deploy):** staging `+447366263180`, safe (no booking/transfer needed):
+  1. "Do you do psychotherapy at Redditch?" → **Alcester/Awlstuh only** (offers Awlstuh, not Redditch).
+  2. "Can I book the stress relief massage?" → states it's **Awlstuh only**, does **NOT** ask
+     "which clinic?".
+  3. "I just need a massage" → **clarifies** goal (pain vs relaxation), doesn't blurt "sports massage".
+- **Phone result (call `CA95602172…`, 2026-07-03 17:48) — ALL 3 PASS:**
+  | Turn | Said | Result |
+  |---|---|---|
+  | 1 | "psychotherapy at Redditch?" | ✅ "available at Awlstuh only, so Redditch wouldn't…" |
+  | 2 | "book the stress relief massage" | ✅ "Wellness and Stress Relief Massage is also at Awlstuh only… not at Redditch" — **no "which clinic?"** |
+  | 3 | "I just need a massage" | ✅ clarifies: "…a specific pain/injury or more of a relaxation and wellness massage?" — no "sports massage" |
+  → The "which clinic" mis-gate was LLM behaviour (no deterministic gate); the prompt rule fixed it. **F25 SIGNED OFF.**
+
+### Commits
+- Fix + test: **DONE** (`Fix F25: Alcester-only massage/psychotherapy no clinic-ask + naming consistency`).
+- Booklet: **DONE.**
+
+---
+
+## F24/F26 — Deflection over-used / logistics questions unanswered  ✅ SIGNED OFF (phone-verified 2026-07-03)
+**Priority:** MED. **Sweep:** Group 5; Calls 12 (F24) & 14 (F26).
+
+### Symptom / root cause
+- **F24** (Call 12): the FIXED RESPONSE *"That's one for the practitioner at your appointment"*
+  ([susie_system_prompt.py:2371](../app/prompts/susie_system_prompt.py#L2371)) — meant for
+  diagnosis/prognosis/clinical advice — was **mis-applied to a logistics question** ("can Mark look
+  at it over the phone first?", which is really "are appointments in-person?"), and fired 3× verbatim.
+- **F26** (Call 14): "can I book **online**?" wasn't answered.
+
+Not missing data: `get_clinic_info` already exposes topics `online_consultations` ("No — in-person
+only", [clinic_config.py:790](../app/clinic_config.py#L790)) and `online_booking` ("Yes — at
+theoremhealth.co.uk or by phone", [clinic_config.py:783](../app/clinic_config.py#L783)). The LLM was
+just routing these logistics questions to the clinical-deflection instead of the facts.
+
+### Fix (one commit) — prompt scope rule + a facts lock
+`app/prompts/susie_system_prompt.py` (after the deflection FIXED RESPONSE): added a **SCOPE** note —
+the practitioner line is ONLY for genuinely clinical questions; logistics/factual questions get a real
+answer via `get_clinic_info` (phone/video → `online_consultations` = in-person only; book online →
+`online_booking`; home visits/letters → route to team), and don't repeat the line back-to-back.
+
+### Test — regression lock (`tests/test_logistics_faqs.py`, 3 tests)
+`online_booking` present + mentions the website; `online_consultations` says in-person only; the tool
+module exposes both topics. Locks the facts the rule routes to. Behaviour is phone-verified.
+
+### Verification
+- **Automated:** 3/3 pass; full suite **90 failed / 1017 passed** → 0 regressions.
+- **Phone (PENDING — after deploy):** staging `+447366263180`, safe:
+  1. "Can Mark look at it over the phone first?" → **in-person only** (no phone/video), offers to book
+     — NOT "that's one for the practitioner".
+  2. "Can I book online?" → **Yes, at theoremhealth.co.uk, or by phone now** — a real answer.
+  3. (repetition) ask two clinical Qs in a row ("what's causing it?", "how many sessions?") → she may
+     use the practitioner line for genuinely clinical ones, but should not robotically chain it onto a
+     logistics question.
+- **Phone result (call `CAeb3755ee…`, 2026-07-03 18:06) — ALL PASS:**
+  | Turn | Said | Result |
+  |---|---|---|
+  | 1 | "look at it over the phone first?" | ✅ "We don't offer phone or video consultations — Mark sees patients in person…" (answered, not deflected) |
+  | 2 | "book online?" | ✅ "Yes, you can book online at theoremhealth.co.uk, or I can get…" |
+  | 3 | "what's causing my knee pain?" | ✅ "That's one for the practitioner…" (genuinely clinical → correct) |
+  | 4 | "how many sessions?" | ✅ **varied**: "That's something Mark would advise on once he's assessed you… depends on what's going on" — no robotic repeat |
+  → Logistics answered, deflection correctly scoped, anti-repeat working. **F24/F26 SIGNED OFF.**
+  (Side: T1/T2/T4 ran 7–8.6s TTS — deferred F21 long-TTS pattern, not F24/F26.)
+
+### Commits
+- Fix + test: **DONE** (`Fix F24/F26: scope practitioner-deflection to clinical only, answer logistics`).
+- Booklet: **DONE.**
+
+---
+
+## F14 — Bank-holiday question triggers inescapable "which clinic?" loop  ⚙️ code done · verify in sweep
+**Priority:** HIGH (call-killer — surfaced by the final sweep). **Sweep:** Group 4; Call 4 turn 8.
+
+### Symptom (final sweep, call `CAa09271e9…`, turn 8)
+"are any of the two clinics open on easter monday" → `FAQ clinic gate: no clinic confirmed —
+injecting 'Which clinic?'` → "for both" wasn't accepted → biased-confirm → keypad ladder →
+caller couldn't escape and **abandoned the call**. Turns 1–7 (all canonical facts + F13 no-push)
+were flawless; turn 8 killed it.
+
+### Root cause
+The deterministic FAQ clinic-gate `_FAQ_CLINIC_SPECIFIC_RE` ([connection.py:1478](../app/media_streams/connection.py#L1478))
+matches "open" → so "open on **easter monday**" gates on clinic. But a bank holiday closes **both**
+clinics identically → the answer is clinic-independent → it should never gate.
+
+### Fix (one commit) — `app/media_streams/connection.py`
+- New `_FAQ_CLINIC_INDEPENDENT_RE` (bank holiday / easter / christmas / etc.) + `_faq_needs_clinic(utterance)`
+  predicate: a clinic-specific topic gates UNLESS a holiday/closure term is present.
+- Gate condition now calls `_faq_needs_clinic(utterance)` instead of the raw regex.
+
+### Test (TDD) — `tests/test_faq_clinic_gate.py` (new, 7 tests)
+Parking/hours/address → gate; easter monday / bank holidays / christmas → NO gate; price → no gate.
+(One iteration: `bank\s+holiday` missed the plural "holidays" — fixed to `holidays?`.)
+
+### Verification
+- **Automated:** 7/7 pass; full suite **90 failed / 1024 passed** → 0 regressions.
+- **Phone:** re-run Call 4 to turn 8 — "open on easter monday" must answer **"closed on all UK bank
+  holidays"** directly (no "which clinic?"). Verified in the restarted sweep.
+
+### Note
+Only fixes the clinic-INDEPENDENT (holiday) case. The deeper "for both / any clinic" ladder handling
+(a clinic-specific question where the caller says "both") is a separate Group-4 item.
+
+### Commits
+- Fix + test: **DONE** (`Fix F14: don't gate clinic-independent (bank-holiday) FAQs…`).
+- Booklet: **DONE.** Phone: **VERIFIED** in restarted sweep Call 4 — "open on easter monday" → "closed on all UK bank holidays", no which-clinic. **F14 SIGNED OFF.**
+
+---
+
+## F16b — Clinic-question loop: no escape from the "Awlstuh or Redditch?" keypad  ⚙️ code done · verify in sweep
+**Priority:** HIGH (call-killer — surfaced by the restarted sweep). **Sweep:** Group 4; Call 12.
+
+### Symptom (restarted sweep, call `CAd2dbf547…`)
+After a treatment mention Susie asked "Awlstuh or Redditch?"; from then on **every** non-clinic
+utterance got swallowed by the location ladder — "i just need a massage", "how many sessions",
+"can mark look at it over the phone" all returned **"press 1 for Awlstuh, or 2 for Redditch"** on
+loop. The caller could not break out and abandoned ("horrible to get out of that pit").
+
+### Root cause ([connection.py:7481-7534](../app/media_streams/connection.py#L7481))
+The "Haiku unknown non-question" ladder is `reask_count 0 → rung 2 biased confirm`,
+`>= 1 → rung 3 DTMF keypad` — but there is **no rung beyond 3 and no cap**, so once at the keypad,
+every further unrecognized utterance **re-fires the keypad forever**. Compounded by the Haiku
+resolver mis-classifying some questions ("can mark look at it over the phone first") as
+"non-question", sending them to the keypad instead of the LLM.
+
+### Fix (one commit) — escape hatch, `app/media_streams/connection.py`
+- New `_location_ladder_exhausted(session)` → True once `v3_location_reask_count >= 2` (keypad
+  already offered).
+- In the location intercept, the LLM route now fires on `_transcript_is_question(utterance) OR
+  ladder-exhausted`. On escape it **clears the sticky clinic gate** (`v3_location_asked`,
+  `v3_location_q_active`, `v3_awaiting_*`, resets reask_count) and routes to the LLM — so a
+  persistent sidebar/question **breaks out** instead of keypad-looping.
+- Sequence is now: rung 2 (biased confirm) → rung 3 (keypad, once) → **escape to LLM**. Did NOT
+  touch the delicate Haiku classifier (lower risk).
+
+### Test (TDD) — `tests/test_location_ladder_escape.py` (new, 3 tests)
+reask_count 0/1 → not exhausted (ladder still used); >= 2 → exhausted (escape); missing key → False.
+(Predicate unit-tested; the escape wiring is phone-verified by re-running Call 12.)
+
+### Verification
+- **Automated:** 3/3 pass; full suite **90 failed / 1027 passed** → 0 regressions.
+- **Phone — ESCAPE FIRES ✅, but PARTIAL** (force-verify call `CA28632fbb…`, 2026-07-03 20:21):
+  rung 2 → rung 3 keypad → `location ladder ESCAPE HATCH — keypad exhausted… routing to LLM` →
+  answered "sports massage → assessment", `loc_active=False`. **The keypad loop is broken.** BUT the
+  call still ended badly (see v2 gaps).
+
+### v2 resolver backlog (NOT fixed — top priority for the focused Group-4 pass)
+1. **Sticky re-ask** — after the escape clears the gate, `booking_flow_active` is still True + clinic
+   unresolved, so the *next* utterance re-fires the clinic question (`location gate fired —
+   intent=booking`). Escape breaks one loop; the question returns.
+2. **Indifference doesn't resolve** — "whichever / whatever's easiest / either / both / you pick"
+   (what a real caller says with no preference) resolve to **nothing** — no "you pick" path →
+   caller can get stuck again. Proposed fix: indifference → default **Alcester**.
+3. **Spoken-clinic friction** — clear "redditch" / "this clinic" needing the ladder; inconsistent
+   ("alter" resolved cleanly in Call 8). Needs a resolver pass.
+→ Escape hatch is necessary but not sufficient; the clinic resolver needs a dedicated session.
+
+### Commits
+- Fix + test: **DONE** (`Fix clinic-question loop: escape hatch…`).
+- Booklet: **DONE.**
+
+---
+
+# ═══════════════════════════════════════════════════════════════════
+# 14-CALL PRODUCTION SIGN-OFF SWEEP — COMPLETE (2026-07-03, staging, cellular)
+# ═══════════════════════════════════════════════════════════════════
+
+## Result by call (restarted sweep, all fixes deployed)
+| Call | Focus | Result |
+|---|---|---|
+| 1 | Alcester booking core | ✅ PASS |
+| 2 | Redditch via DTMF (G21 phantom, G22 durable) | ✅ PASS (F5 drop gone) |
+| 3 | Slot matrix (band/ambiguity/reveal) | ✅ PASS (F8/F9/F11 gone) |
+| 4 | FAQ marathon (canonical facts) | ✅ PASS — **F14 verified** (easter monday → "closed all bank holidays") |
+| 5 | Location-gated FAQ | ✅ PASS — **F25 verified** (psychotherapy + wellness massage Alcester-only) |
+| 6 | 🔴 SAFETY CORE | ✅ PASS — **F17 verified** (G18 transfer line spoken); AI-disclosure/G16/G17 all verbatim |
+| 7 | Returning thresholds + no-repeat | ✅ PASS |
+| 8 | Stress (barge/sidebar/diff-number) | ✅ PASS |
+| 9 | Physio concern (no diagnosis) | ✅ PASS |
+| 10 | 🔴 RED-FLAG NET | ✅ PASS (no booking, no false reassurance, persistent 999) |
+| 11 | Objection handling | ✅ PASS |
+| 12 | Treatment routing | ✅ gates PASS; **clinic-loop call-killer found → escape hatch (partial fix), deeper resolver → v2** |
+| 13 | 🔴 Age 7+ policy | ✅ PASS (firm no-exception) |
+| 14 | Service routing/logistics | ✅ PASS — **F26 verified** (book online answered) |
+
+## Verdict
+- **Must-pass-100% calls ALL PASS:** 1, 2 (booking core), 4 (facts), 6 (safety lines), 10 (red flags).
+- **All zero-tolerance gates held** (G15 facts, G16 no-diagnosis, G17 emergency, G18 transfer,
+  G19 red-flag, G21 phantom, G22 durability, age 7+).
+- **All 8 code fixes validated in-context:** F13, F14, F17, F20, F23, F24/F26, F25 + the F5 drop gone.
+- **One production caveat — the clinic-question resolver (Group 4).** The keypad **call-killer is
+  fixed** (escape hatch, verified), but the deeper resolver gaps remain (**v2 backlog:** sticky
+  re-ask, indifference→Alcester default, spoken-clinic friction). Recommend a focused resolver
+  session before full production confidence; safety + facts are signed off now.
+- **Deferred UX:** F21 long-TTS (8–18s, every slot/clinical/objection call — the biggest remaining
+  UX drag). **Infra (Quentin):** I2 /twilio/status→prod 403, I5 Google creds, Acuity isolation.
+
+---
+
+# ═══════════════════════════════════════════════════════════════════
+# v2 CLINIC-RESOLVER (Group 4) — focused pass (2026-07-04)
+# ═══════════════════════════════════════════════════════════════════
+
+## v2-1 · Indifference → default clinic ✅ SIGNED OFF
+- **Finding:** at "Awlstuh or Redditch?", a caller who declines to choose ("whichever /
+  whatever's easiest / either / both / you pick / I don't mind / doesn't matter") got asked the
+  **same question again** — the loop that trapped the tester twice in the sweep (Call 12 + force-verify).
+- **Root cause:** the Haiku location resolver returns `unknown` for these (they name no clinic).
+  `unknown` + not-a-question fell into the re-ask ladder (rung 2 biased confirm → rung 3 keypad),
+  so indifference — which *is* a decision — was treated as an unintelligible answer.
+- **Change** (`app/media_streams/connection.py`): new deterministic predicate
+  `_is_location_indifference()` + `_LOCATION_INDIFFERENCE_RE` + `_DEFAULT_CLINIC = "alcester"`
+  (near `_transcript_is_question`). One guard inserted right after `_resolved` is computed, before
+  the `if _resolved != "unknown":` check: if `unknown` **and** indifference → set
+  `_resolved = _DEFAULT_CLINIC` and **fall through the existing resolved path** (ack "Awlstuh." +
+  advance to time preference). No new branch in the resolved flow — reuses the tested path.
+  Alcester = the resolver's own ambiguity tie-break (open 5 days/wk vs Redditch's 1), so the
+  deterministic default matches the LLM's ambiguity default.
+- **Test:** `tests/test_location_indifference.py` — 39 cases (30 indifference phrases detected,
+  8 non-indifference incl. questions & clinic names rejected, default==alcester).
+- **Verification:** automated **90 failed / 1066 passed** → **0 regressions** (baseline held exactly).
+  Phone ✅ (call `CA5fa771b2…`, 2026-07-04 01:09): "whichever is easiest" →
+  `location indifference — 'whichever is easiest' → default clinic alcester` →
+  `Haiku resolved location: alcester` → "Awlstuh." → straight to time preference. **No re-ask,
+  no keypad.** Full booking flow then ran clean to the confirm (hung up before "yes" — Acuity live).
+- **Commit:** `c04c45c` (fix + test). Booklet: this entry.
+- **Notes:** ack is the shared "Awlstuh." readback — natural after "you pick" but could be warmed
+  ("Awlstuh it is.") in a later polish; kept minimal to reuse the tested path. Gaps v2-2 (sticky
+  re-ask) and v2-3 (spoken-clinic friction) remain — next in this pass.
+
+## v2-2 · Full gate stand-down on escape (no sticky re-ask) ✅ CODE-COMPLETE (phone-verify pending)
+- **Finding:** even after the keypad-loop escape hatch fired, the caller got asked "Awlstuh or
+  Redditch?" AGAIN on the very next utterance — an OUTER loop (sweep Call 12).
+- **Root cause:** the booking→location gate fires when
+  `v3_booking_intent AND not v3_location_asked AND not v3_location_confirmed`.  The escape hatch
+  cleared `v3_location_asked` (+ the awaiting flags + reask_count) but left `v3_booking_intent=True`
+  and never confirmed a clinic → the gate re-armed rung 1 next turn.
+- **Change** (`app/media_streams/connection.py`): extract the gate predicate as a single source of
+  truth `_location_gate_should_fire(session)` (wired at the `_v3_gate_fired` site) + new
+  `_disengage_location_gate(session)` which performs the 5 escape clears **plus
+  `v3_booking_intent = False`**.  Escape now calls the helper instead of 5 inline assignments.
+  Booking still resumes: a fresh booking cue re-sets the intent latch via the booking-ack path.
+- **Test:** `tests/test_location_gate_sticky_reask.py` — 6 cases (gate fires/silent matrix; disengage
+  clears every flag incl. booking_intent; disengage → gate stays silent next turn).
+- **Verification:** automated **90 failed / 1072 passed** → **0 regressions**.  Phone: **code-verified,
+  not phone-triggered** (call `CA564aa12a…`, 2026-07-04 02:01).  The escape/stand-down path is now hard
+  to reach *by design* — v2-1 (indifference) + v2-3 (deictic) resolve vague answers upstream before the
+  ladder can exhaust.  Covered by 6 unit tests and is a strict superset of the already-phone-verified
+  escape hatch (it adds the `v3_booking_intent` clear).
+- **Commit:** code rode into `43e0558` (bundled with v2-3 — the separate v2-2 commit was skipped);
+  test `tests/test_location_gate_sticky_reask.py` committed separately after the fact.
+
+## v2-3 · Deictic "this clinic" → default clinic (F16) ✅ CODE-COMPLETE (phone-verify pending)
+- **Finding (F16):** "this clinic please" (meaning the dialled site) did NOT resolve → biased-confirm
+  → dead air → keypad → resolved only on DTMF '1'.  ~30s friction (sweep Call 5).
+- **Root cause:** "this clinic"/"this one" name no clinic alias, so `_v3_extract_location` missed and
+  Haiku returned unknown → the re-ask ladder.  ("this clinic" is the confirm trigger only at the
+  biased-confirm rung, where `v3_awaiting_use_this_clinic` is True — a different path.)
+- **Change** (`app/media_streams/connection.py`): new `_is_deictic_current_clinic()` +
+  `_LOCATION_DEICTIC_RE` ("this clinic/one/place/site/branch", "the one I called/rang/dialled…").
+  Folded into the v2-1 vague-answer guard, now wrapped in **`not _transcript_is_question(...)`** so a
+  genuine question ("what's the address of this clinic?") still routes to the LLM (hardens v2-1 too).
+  Deictic → `_DEFAULT_CLINIC`, same resolved path.
+- **Test:** `tests/test_location_deictic_clinic.py` — 22 cases (14 deictic detected, 8 non-deictic
+  incl. named clinics rejected).
+- **Verification:** automated **90 failed / 1094 passed** → **0 regressions**.  Phone ✅ (call
+  `CA564aa12a…`, 2026-07-04 02:02): "the one i called" → `deictic 'this clinic' … → default clinic
+  alcester` → "Awlstuh." → time preference. No keypad, no ladder.
+- **Commit:** `43e0558` (fix + test).
+
+## F25-naming · Canonical massage name in v3 prompt ✅ CODE-COMPLETE (phone-verify optional)
+- **Finding (F25 naming half, Group 6):** the wellness massage was named inconsistently — the v3
+  prompt's price line said "Wellness **Massage** with In-light Therapy", dropping "and Stress Relief",
+  diverging from `canonical.py` ("Wellness and Stress Relief Massage") and the prompt's own other lines.
+- **Root cause:** single-source-of-truth drift in one prompt price line (`susie_system_prompt.py`).
+- **Change:** reconcile the price line to the canonical name (`_build_theorem_v3`,
+  `susie_system_prompt.py`).  Prompt-only; "Awlstuh" phonetic spelling kept.
+- **Test:** `tests/test_theorem_canonical.py::test_v3_prompt_massage_price_line_is_canonical` — asserts
+  the built prompt contains `SERVICES["wellness_massage"]["name"]` and not the drifted form.
+- **Verification:** automated **90 failed / 1095 passed** → **0 regressions**.  Phone ✅ (call
+  `CA564aa12a…`, 2026-07-04 02:03): "how much the wellness … massage" → *"The Wellness and Stress
+  Relief Massage is £85 for an hour — and it's available at Awlstuh only."*  Canonical name spoken;
+  answered the FAQ then returned to the pending slot question (no spurious booking CTA).
+- **Commit:** `d915d82` (fix + test).
+
+## F21 · Long / un-bargeable TTS → DEFERRED (redesign, not a bug fix)
+- **Impact rating (Claude, asked directly): 4/10.** Real UX drag, high frequency (every
+  clinical/objection/policy turn), but **no failed calls, no wrong bookings, no safety impact** — pure
+  annoyance, not make-or-break.  Contrast the clinic-loop (7–8/10, callers abandoned) which is now fixed.
+- **Why deferred, not fixed:** both candidate fixes touch behaviour we JUST signed off, two days before
+  ship — (a) "barge after sentence 1" edits the barge-in guard, the most timing-sensitive path in the
+  pipeline; (b) "shorten responses" fights the clinical gates (empathy + physio-reassurance + booking
+  offer are spec-mandated).  The risk of the fix currently exceeds the cost of the bug.  This is
+  **re-design territory, outside the bug-fix remit.**
+- **Recommendation:** ship without it; take it first in a focused post-ship session with real
+  phone-iteration on barge timing.

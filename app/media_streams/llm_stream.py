@@ -900,8 +900,33 @@ class LLMStream:
 
             # ── Execute tools ─────────────────────────────────────────────
             # Pass tts_text_queue so filler phrases play during API latency.
+            # F20: also pass the caller's most recent utterance so the
+            # book_appointment guard can require a clear yes (not merely that
+            # the confirmation question was asked).  Scan back past the just-
+            # appended assistant turn and any tool_result user-messages to the
+            # last real caller text.
+            _last_user_text = ""
+            for _m in reversed(messages):
+                if not (isinstance(_m, dict) and _m.get("role") == "user"):
+                    continue
+                _c = _m.get("content", "")
+                if isinstance(_c, str):
+                    if _c:
+                        _last_user_text = _c
+                        break
+                    continue
+                if isinstance(_c, list):
+                    _txt = next(
+                        (b.get("text", "") for b in _c
+                         if isinstance(b, dict) and b.get("type") == "text"),
+                        "",
+                    )
+                    if _txt:
+                        _last_user_text = _txt
+                        break
             tool_result_blocks = await self._execute_tools(
                 tool_uses, session, call_sid, tts_text_queue=tts_text_queue,
+                last_user_text=_last_user_text,
             )
             messages.append({"role": "user", "content": tool_result_blocks})
 
@@ -1359,6 +1384,7 @@ class LLMStream:
         session: Dict[str, Any],
         call_sid: Optional[str],
         tts_text_queue: Optional[asyncio.Queue] = None,
+        last_user_text: str = "",
     ) -> List[dict]:
         """
         Execute all tool calls and return the tool_result blocks for Anthropic.
@@ -1474,43 +1500,59 @@ class LLMStream:
                         ),
                         "available_days": session.get("available_days", {}),
                     }
-                elif tool_name == "book_appointment" and not (
-                    "shall i go ahead" in (session.get("last_bot_prompt") or "").lower()
-                    or "book that in" in (session.get("last_bot_prompt") or "").lower()
+                elif tool_name == "book_appointment" and not self._book_confirmation_ok(
+                    session, last_user_text
                 ):
                     # Booking confirmation guard.
                     #
-                    # book_appointment must only fire after the system has
-                    # explicitly asked the booking confirmation question
-                    # ("Shall I go ahead and book that in?") AND received an
-                    # affirmative response to THAT specific question.
+                    # book_appointment must only fire when BOTH hold:
+                    #   1. the system asked the confirmation question this turn
+                    #      ("Shall I go ahead and book that in?"), AND
+                    #   2. the caller answered it with a clear, unambiguous YES.
                     #
-                    # The failure case this prevents: the summary readback is
-                    # barged in on mid-sentence and the barge-in contains "yes"
-                    # — the LLM can misconstrue that affirmative as booking
-                    # confirmation and immediately fire book_appointment.
-                    #
-                    # Guard: if last_bot_prompt does not contain the booking
-                    # confirmation phrases, block the call and instruct the LLM
-                    # to ask the confirmation question first.
+                    # (1) alone was the previous guard — but it let a weak /
+                    # ambiguous / negative verbal reply still book once the
+                    # question had been asked (sweep F20). (2) closes that: an
+                    # ambiguous or negative answer blocks and the LLM re-asks.
+                    # A false block just re-asks (safe); a false allow is a wrong
+                    # booking, so ambiguity blocks.
+                    _lbp = (session.get("last_bot_prompt") or "").lower()
+                    _asked = "shall i go ahead" in _lbp or "book that in" in _lbp
                     _lbp_preview = (session.get("last_bot_prompt") or "")[:80]
-                    logger.warning(
-                        "[ms_llm] book_appointment BLOCKED — booking confirmation "
-                        "question not yet asked (last_bot_prompt=%r)",
-                        _lbp_preview,
-                    )
-                    result = {
-                        "status": "confirmation_required",
-                        "message": (
-                            "book_appointment cannot fire yet. The booking "
-                            "confirmation question has not been asked in the "
-                            "current turn. You MUST ask: "
-                            "\"Shall I go ahead and book that in?\" "
-                            "and wait for the caller to say yes before calling "
-                            "book_appointment. Do not book without this explicit "
-                            "confirmation."
-                        ),
-                    }
+                    if not _asked:
+                        logger.warning(
+                            "[ms_llm] book_appointment BLOCKED — confirmation "
+                            "question not yet asked (last_bot_prompt=%r)",
+                            _lbp_preview,
+                        )
+                        result = {
+                            "status": "confirmation_required",
+                            "message": (
+                                "book_appointment cannot fire yet. The booking "
+                                "confirmation question has not been asked in the "
+                                "current turn. You MUST ask: "
+                                "\"Shall I go ahead and book that in?\" "
+                                "and wait for the caller to say yes before calling "
+                                "book_appointment. Do not book without this explicit "
+                                "confirmation."
+                            ),
+                        }
+                    else:
+                        logger.warning(
+                            "[ms_llm] book_appointment BLOCKED — no clear YES from "
+                            "caller (last_user_text=%r)", (last_user_text or "")[:80],
+                        )
+                        result = {
+                            "status": "affirmation_required",
+                            "message": (
+                                "book_appointment cannot fire — the caller has not "
+                                "clearly confirmed. Their last reply was not an "
+                                "unambiguous yes. Do NOT book. Re-ask "
+                                "\"Shall I go ahead and book that in?\" and wait for "
+                                "a clear yes (e.g. yes, yep, go ahead, that's right) "
+                                "before calling book_appointment."
+                            ),
+                        }
                 elif tool_name == "escalate_to_claude":
                     result = await self._exec_escalate(args, session)
                 else:
@@ -1574,6 +1616,21 @@ class LLMStream:
             })
 
         return result_blocks
+
+    @staticmethod
+    def _book_confirmation_ok(session: Dict[str, Any], last_user_text: str) -> bool:
+        """F20: book_appointment may fire only when BOTH hold — the confirmation
+        question was asked this turn, AND the caller's last reply is a clear,
+        unambiguous yes.  Reuses fast_path's yes/no patterns; ambiguous (both or
+        neither) or empty → False (block)."""
+        _lbp = (session.get("last_bot_prompt") or "").lower()
+        if not ("shall i go ahead" in _lbp or "book that in" in _lbp):
+            return False
+        from app.media_streams.fast_path import _YES_PATTERNS, _NO_PATTERNS
+        _t = (last_user_text or "").lower()
+        _is_yes = any(p in _t for p in _YES_PATTERNS)
+        _is_no = any(p in _t for p in _NO_PATTERNS)
+        return _is_yes and not _is_no
 
     async def _exec_escalate(
         self,
