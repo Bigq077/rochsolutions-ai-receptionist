@@ -2320,6 +2320,25 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             except Exception as _pn_err:
                 logger.warning("[PENDING_NAME] create failed (non-fatal): %r", _pn_err)
 
+        # Owner heads-up SMS (e.g. Mark) — fires the moment a booking confirms,
+        # BEFORE the patient confirmation. Data-driven & self-gating: a no-op for
+        # any clinic without an `owner_alerts` config block (Theorem has none) and
+        # never raises. Extra try/guard is belt-and-braces.
+        try:
+            from app.notifications.owner_alert import notify_owner
+            _own_when = booking.start_time.strftime("%a %d %b, %I:%M%p").replace(" 0", " ").lower()
+            await notify_owner(
+                session,
+                event="booking",
+                patient_name=patient_name,
+                when_label=_own_when,
+                service=service,
+                location=location,
+                is_new_patient=is_new,
+            )
+        except Exception as _oa_err:
+            logger.warning("owner_alert booking notify failed (non-fatal): %r", _oa_err)
+
         # Confirmation SMS — non-fatal.
         # Suppressed when called as part of a reschedule (caller gets a reschedule
         # confirmation instead, sent by _reschedule_appointment_acuity).
