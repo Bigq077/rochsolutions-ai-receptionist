@@ -2341,6 +2341,24 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
             except Exception as e:
                 logger.warning("_book_appointment_acuity SMS failed (non-fatal): %r", e)
 
+        # Remember this booking so a later inbound text can be labelled with the
+        # patient's appointment (see _handle_general_inbound_sms). Runs for
+        # reschedules too (refreshes to the new slot). Non-fatal.
+        try:
+            from app.flows.triage_legacy import normalize_phone as _np_ctx
+            from app.storage.redis_store import set_recent_booking_context
+            _slot_label = booking.start_time.strftime("%a %d %b, %I:%M%p").replace(" 0", " ").lower()
+            await set_recent_booking_context(_np_ctx(phone), {
+                "name": patient_name,
+                "service": service,
+                "slot": _slot_label,
+                "appointment_id": booking.provider_booking_id,
+                "clinic_id": session.get("clinic_id") or "",
+                "is_home_visit": False,
+            })
+        except Exception as _rbc_err:
+            logger.warning("recent-booking context store failed (non-fatal): %r", _rbc_err)
+
         # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
         # Fires for reschedules too (new appointment time gets its own reminders).
         try:

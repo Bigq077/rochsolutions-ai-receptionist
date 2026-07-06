@@ -255,6 +255,44 @@ def _pending_name_key(normalized_phone: str) -> str:
     return f"pending_name:{normalized_phone}"
 
 
+# ── Recent-booking context ───────────────────────────────────────────────────
+# A small blob stored on a successful booking, keyed by the caller's phone, so
+# that if the patient later TEXTS the clinic the inbound-SMS handler can label
+# the staff forward with their appointment. Best-effort; safe no-op without Redis.
+_RECENT_BOOKING_TTL = 60 * 60 * 24 * 7  # 7 days
+
+
+def _recent_booking_key(normalized_phone: str) -> str:
+    return f"recent_booking:{normalized_phone}"
+
+
+async def set_recent_booking_context(normalized_phone: str, ctx: Dict[str, Any]) -> None:
+    """Store the caller's most recent booking context. Non-blocking; no-op if
+    Redis is unavailable."""
+    if not redis_client or not normalized_phone:
+        return
+    try:
+        await redis_client.set(
+            _recent_booking_key(normalized_phone), json.dumps(ctx), ex=_RECENT_BOOKING_TTL
+        )
+    except Exception:
+        pass
+
+
+async def get_recent_booking_context(normalized_phone: str) -> Optional[Dict[str, Any]]:
+    """Retrieve the caller's most recent booking context. None if absent."""
+    if not redis_client or not normalized_phone:
+        return None
+    try:
+        raw = await redis_client.get(_recent_booking_key(normalized_phone))
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 async def create_pending_name_confirmation(
     phone: str,
     first_name: str,
