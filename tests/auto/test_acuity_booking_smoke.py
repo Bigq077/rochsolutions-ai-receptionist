@@ -30,6 +30,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# Creates a real (immediately-cancelled) Acuity booking — excluded from CI by
+# pytest.ini's default `-m "not integration"` (also self-skips without creds).
+pytestmark = pytest.mark.integration
+
 ACUITY_USER_ID = os.getenv("ACUITY_USER_ID", "").strip()
 ACUITY_API_KEY = os.getenv("ACUITY_API_KEY", "").strip()
 

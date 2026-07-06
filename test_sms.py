@@ -8,9 +8,14 @@ import asyncio
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import pytest
 
 # Load environment variables
 load_dotenv()
+
+# Sends real SMS via live Twilio — never run in CI. Excluded by pytest.ini's
+# default `-m "not integration"`; run explicitly with `pytest -m integration`.
+pytestmark = pytest.mark.integration
 
 # Import SMS functions
 from app.notifications.booking_sms import (
