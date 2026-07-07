@@ -490,6 +490,44 @@ def _is_open_availability_utterance(text: str) -> bool:
     return any(s in t for s in _OPEN_AVAILABILITY_SIGNALS)
 
 
+def _is_modality_switch_utterance(text: str) -> bool:
+    """True if the caller is switching appointment modality (in-person ↔ remote).
+
+    When this fires DURING slot selection, the slots already presented were
+    fetched for the OLD modality and are stale — remote and in-clinic
+    availability genuinely differ (Call 2, 2026-07-07: in-person Sat 11th vs
+    video Fri 10th).
+
+    Detects switch *intent*, not a bare mention: an informational question
+    such as "what do I need for a video call?" must NOT invalidate the slot
+    cache.  Two ways to match — an unambiguous switch phrase on its own, or a
+    modality noun together with a switch cue.  Bare 'phone' is never matched,
+    so phone-number talk can't false-trigger it.
+    """
+    t = text.lower()
+    # Unambiguous switch phrases — safe standalone.
+    if any(s in t for s in (
+        "over video", "on video", "by video", "via video",
+        "over the phone", "on the phone",
+        "come in", "in person", "in-person", "in clinic",
+        "at the clinic", "face to face", "remotely",
+        "switch to video", "switch to phone",
+    )):
+        return True
+    # Compositional: a modality noun PLUS a switch cue.  Keeps bare mentions
+    # inside questions from firing.
+    _noun = any(n in t for n in (
+        "video", "online", "remote", "phone call", "phone consult",
+        "phone appointment", "phone session",
+    ))
+    _cue = any(c in t for c in (
+        "instead", "rather", "actually", "switch", "change it",
+        "change to", "can we do it", "could we do it", "can i do it",
+        "make it",
+    ))
+    return _noun and _cue
+
+
 def _extract_time_preference(text: str) -> "str | None":
     """Extract an explicit time-of-day preference from *text*.
 
@@ -5597,6 +5635,28 @@ class WebSocketCallHandler:
                             # fires → 10-15s dead air until the safety net kicks in.
                             self._silence_handler.on_llm_finished()
                             continue
+                        elif _is_modality_switch_utterance(utterance):
+                            # Caller changed modality (in-person ↔ video/phone)
+                            # AFTER slots were presented.  Those slots were
+                            # fetched for the OLD modality and availability
+                            # genuinely differs (Call 2, 2026-07-07), so they
+                            # are now stale.  Mark them stale + drop the DTMF
+                            # slot map (so a stale in-person slot can't be
+                            # picked for a video booking) and fall through to
+                            # the LLM, which acknowledges the switch.  The next
+                            # open-availability phrase then re-fetches for the
+                            # new modality instead of being suppressed as a
+                            # "duplicate" (see slots_stale_modality_switch gate
+                            # in the open-availability guard below).
+                            logger.info(
+                                "[ms_conn] modality switch during slot selection"
+                                " — marking cached slots stale for re-fetch: %r",
+                                utterance,
+                            )
+                            self.session["slots_stale_modality_switch"] = True
+                            self.session.pop("v3_dtmf_slot_map", None)
+                            # Fall through to normal LLM dispatch below
+                            # (do NOT continue).
                         else:
                             # No slot signal BUT the utterance is meaningful
                             # (4+ words OR contains a communicative word such as
@@ -5643,6 +5703,9 @@ class WebSocketCallHandler:
                                 _is_open_availability_utterance(utterance)
                                 and not _is_slot_rejection_or_alternative(utterance)
                                 and not _looks_like_new_question
+                                and not self.session.get(
+                                    "slots_stale_modality_switch"
+                                )
                             ):
                                 logger.info(
                                     "[ms_conn v3] open-availability continuation"
@@ -5650,6 +5713,17 @@ class WebSocketCallHandler:
                                     " this turn: %r",
                                     utterance,
                                 )
+                                # Re-arm the question timer so a suppressed
+                                # continuation gets an IMMEDIATE re-ask instead
+                                # of falling to the 10-15s dead-air safety net
+                                # (Call 2 gap).  Mirrors the short-fragment
+                                # branch above.
+                                _last_q = self.session.get("last_question", "")
+                                if _last_q and self._silence_handler is not None:
+                                    self._silence_handler.set_state(
+                                        self.session.get("state", "default")
+                                    )
+                                    self._silence_handler.on_question_asked(_last_q)
                                 self.llm_in_flight = False
                                 self._llm_busy = False
                                 self.session["llm_generation_active"] = False

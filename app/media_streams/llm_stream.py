@@ -601,6 +601,10 @@ class LLMStream:
                 session["v3_dtmf_slot_map"] = _slot_map
                 session["v3_awaiting_slot_selection"] = True
                 _slot_map_count = len(_slot_map)
+                # Fresh slots have now been presented for the CURRENT modality,
+                # so the "stale after modality switch" mark no longer applies —
+                # clear it so normal open-availability suppression resumes.
+                session.pop("slots_stale_modality_switch", None)
                 # Save the first offered day's ISO date for FAQ-detour recovery.
                 # If the caller asks a FAQ mid-selection (clearing the slot map),
                 # this lets CALL STATE redirect check_availability to only that day.
