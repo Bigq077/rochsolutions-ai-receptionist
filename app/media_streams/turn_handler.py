@@ -459,6 +459,34 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             )
             result = _offer_cleaned
 
+    # ── Booking-readback DATE enforcement ────────────────────────────────────
+    # The final confirmation ("So that's <name>, <slot> — shall I go ahead and
+    # book that in?") is model free-text and occasionally drifts the DATE away
+    # from the slot the caller actually confirmed at the name-request readback
+    # (Call 2026-07-07: confirmed "Wednesday the 15th" but the booking readback
+    # spoke "the 16th"). Once the phone is confirmed we are in the booking-
+    # readback phase; if a chunk carries a "<weekday> the <ordinal> of <month>"
+    # date, force it to the confirmed slot's date. The booking itself is already
+    # protected by _resolve_slot_iso (a hallucinated slot is rejected and forced
+    # back to a real offered slot) — this only keeps the SPOKEN date consistent
+    # with what was agreed. Runs per-chunk; the readback date sits in one chunk.
+    _READBACK_DATE_RE = r"[A-Za-z]+day\s+the\s+\d{1,2}(?:st|nd|rd|th)\s+of\s+[A-Za-z]+"
+    _conf_slot = session.get("v3_confirmed_slot_phrase") or ""
+    if _conf_slot and session.get("phone_confirmed"):
+        _dm = re.search(_READBACK_DATE_RE, _conf_slot)
+        if _dm:
+            _canon_date = _dm.group(0)
+            _date_corrected = re.sub(
+                _READBACK_DATE_RE, lambda _m: _canon_date, result
+            )
+            if _date_corrected != result:
+                logger.info(
+                    "[ms_gate5] booking readback date corrected to confirmed "
+                    "slot: %r",
+                    _canon_date,
+                )
+                result = _date_corrected
+
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)
     result = _LEADING_JUNK_RE.sub("", result)
