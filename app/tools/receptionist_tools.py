@@ -88,6 +88,7 @@ def _spoken_slot_time(hhmm: str) -> str:
         else "in the evening"
     )
     hour_word = _HOUR_WORDS[h % 12 or 12]
+    next_word = _HOUR_WORDS[(h + 1) % 12 or 12]
     if m == 0:
         return f"{hour_word} {part}"
     if m == 15:
@@ -96,8 +97,18 @@ def _spoken_slot_time(hhmm: str) -> str:
         return f"half past {hour_word} {part}"
     if m == 45:
         # "quarter to" the NEXT hour, keeping the reading's time-of-day label.
-        next_word = _HOUR_WORDS[(h + 1) % 12 or 12]
         return f"quarter to {next_word} {part}"
+    # Remaining five-minute grid values spoken conversationally ("ten past
+    # seven", "twenty to eight") instead of as digits ("seven 10", "six 05").
+    # A service length + inter-appointment break routinely lands slots on these
+    # minutes — e.g. a 60-min neuro assessment strides 65 min → :00, :05, :10 …
+    _min_past = {5: "five", 10: "ten", 20: "twenty", 25: "twenty-five"}
+    _min_to = {35: "twenty-five", 40: "twenty", 50: "ten", 55: "five"}
+    if m in _min_past:
+        return f"{_min_past[m]} past {hour_word} {part}"
+    if m in _min_to:
+        return f"{_min_to[m]} to {next_word} {part}"
+    # Off-grid minute (rare) — plain, unambiguous fallback.
     return f"{hour_word} {m:02d} {part}"
 
 
