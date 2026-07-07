@@ -4281,6 +4281,15 @@ class WebSocketCallHandler:
             await self._stop_event.wait()
         except Exception as exc:
             logger.error("[ms_conn] handle(): unexpected error: %r", exc)
+            # Phase 2 (spec §5.2): a pipeline exception → Sentry (technical channel)
+            # AND flag the session so the teardown alert router raises an operator
+            # SMS. Both are no-ops unless SENTRY_DSN / OBS_ALERTS_ENABLED are set.
+            try:
+                self.session["pipeline_error"] = True
+                from app.obs.alerts import capture_exception
+                capture_exception(exc)
+            except Exception:
+                pass
         finally:
             for t in tasks:
                 if not t.done():
@@ -11532,6 +11541,16 @@ class WebSocketCallHandler:
                     )
                 except Exception as _obs_exc:
                     logger.error("[ms_conn] obs capture error: %r", _obs_exc)
+
+                # Phase 2 — failure alerting (spec §5.2). Same safety profile as
+                # capture: post-call, flag-gated (OBS_ALERTS_ENABLED, default OFF),
+                # never raises, only messages the operator channels. Evaluates the
+                # completed call against the §5.2 conditions and dispatches.
+                try:
+                    from app.obs.alerts import route_call
+                    await route_call(call_logger.build_record(), self.session)
+                except Exception as _al_exc:
+                    logger.error("[ms_conn] obs alert error: %r", _al_exc)
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 
