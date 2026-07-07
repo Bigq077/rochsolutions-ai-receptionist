@@ -70,8 +70,9 @@ def _spoken_slot_time(hhmm: str) -> str:
     "midday", "one in the afternoon", "five in the evening") so the Haiku slot
     formatter copies labels verbatim instead of converting times itself — which
     let it drop/invent slots (e.g. rendering [09,10,11,12,13] as 09,10,12,13,14
-    and booking a non-existent 2pm).  Slots are on the hour in practice; :30 and
-    other minutes are handled defensively.
+    and booking a non-existent 2pm).  Slots land on the hour, :15, :30 and :45
+    (a service length + inter-appointment break rarely divides the hour evenly);
+    all four are spoken naturally, other minutes handled defensively.
     """
     try:
         h, m = map(int, hhmm.split(":"))
@@ -89,8 +90,14 @@ def _spoken_slot_time(hhmm: str) -> str:
     hour_word = _HOUR_WORDS[h % 12 or 12]
     if m == 0:
         return f"{hour_word} {part}"
+    if m == 15:
+        return f"quarter past {hour_word} {part}"
     if m == 30:
         return f"half past {hour_word} {part}"
+    if m == 45:
+        # "quarter to" the NEXT hour, keeping the reading's time-of-day label.
+        next_word = _HOUR_WORDS[(h + 1) % 12 or 12]
+        return f"quarter to {next_word} {part}"
     return f"{hour_word} {m:02d} {part}"
 
 
