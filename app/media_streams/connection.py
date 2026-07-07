@@ -5278,6 +5278,19 @@ class WebSocketCallHandler:
                         w in _name_ctx
                         for w in ("your name", "first name", "surname",
                                   "full name", "take your name")
+                    ) or (
+                        # State-based fallback: by the time this straggler is
+                        # dequeued the bot prompt may have advanced to a name-
+                        # CONFIRMATION question ("Did you say Quentin — is that
+                        # right?") that no longer contains a name keyword, so the
+                        # last_bot_prompt scan above misses it and the surname is
+                        # dropped (Call 2, 2026-07-07: "rock" lost here). If a slot
+                        # is locked and we have NOT yet advanced to phone
+                        # collection, we are still gathering the name — keep a
+                        # short trailing fragment (the surname).
+                        bool(self.session.get("v3_confirmed_slot_phrase"))
+                        and not self.session.get("phone_confirmed")
+                        and not self.session.get("v3_phone_dtmf_active")
                     )
                     _short_fragment = 0 < len(utterance.split()) <= 2
                     if (

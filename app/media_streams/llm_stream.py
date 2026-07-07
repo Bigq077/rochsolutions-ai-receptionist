@@ -149,6 +149,58 @@ def _date_hints_differ_materially(hint_a: str, hint_b: str) -> bool:
     return _extract_week_reference(hint_a) != _extract_week_reference(hint_b)
 
 
+# Words that signal the caller wants a DIFFERENT / new slot (a real reason to
+# re-run check_availability after a slot is already confirmed).  Used by the
+# slot-locked guard so a genuine slot change still searches while a spurious
+# re-search during name collection is blocked.  Matched on whole words only.
+_NEW_SLOT_INTENT_WORDS: frozenset = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "morning", "afternoon", "evening", "noon", "midday", "tonight",
+    "tomorrow", "today", "week", "weekend", "o'clock",
+    "earlier", "later", "sooner", "soonest", "another", "other", "different",
+    "instead", "change", "move", "reschedule", "else", "no", "not", "nope",
+    "wrong", "actually", "next", "following", "available", "slot", "when",
+    "day", "date", "time",
+})
+
+
+def _last_user_text(messages) -> str:
+    """Return the most recent caller TEXT utterance from the message list,
+    skipping tool_result-only user turns (which carry no spoken text)."""
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            if c.strip():
+                return c
+            continue
+        if isinstance(c, list):
+            parts = [
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            joined = " ".join(p for p in parts if p).strip()
+            if joined:
+                return joined
+    return ""
+
+
+def _caller_wants_new_slot(messages) -> bool:
+    """True if the caller's latest utterance signals they want a different slot
+    (a new-date word or any digit) — i.e. a legitimate reason to re-search
+    availability even though a slot is already confirmed."""
+    txt = _last_user_text(messages).lower()
+    if not txt:
+        return False
+    if any(ch.isdigit() for ch in txt):
+        return True
+    words = set(re.findall(r"[a-z']+", txt))
+    return bool(words & _NEW_SLOT_INTENT_WORDS)
+
+
 # ---------------------------------------------------------------------------
 # Anthropic client singleton
 # ---------------------------------------------------------------------------
@@ -1506,6 +1558,39 @@ class LLMStream:
                     result = {
                         "error": "booking_details_already_complete",
                         "message": _rb_msg,
+                    }
+                elif (
+                    tool_name == "check_availability"
+                    and session.get("v3_confirmed_slot_phrase")
+                    and not session.get("last_offered_slots")
+                    and not _caller_wants_new_slot(messages)
+                ):
+                    # Slot-locked guard: the caller has already agreed a specific
+                    # slot (v3_confirmed_slot_phrase set by the connection layer)
+                    # and we are now collecting the name/number.  A re-run of
+                    # check_availability here is spurious (Call 2, 2026-07-07:
+                    # after "yes that's right" the model re-searched, cancelling
+                    # the surname question and glitching into "Sorry, I didn't
+                    # quite catch that").  Blocked UNLESS the caller signalled a
+                    # new date/time (handled above by _caller_wants_new_slot) or
+                    # fresh slots were offered this turn (last_offered_slots) — a
+                    # real slot change still searches.
+                    logger.warning(
+                        "[ms_llm] check_availability BLOCKED — slot already "
+                        "confirmed (%r), name collection in progress, no new-date "
+                        "intent call_sid=%s",
+                        session.get("v3_confirmed_slot_phrase"), call_sid,
+                    )
+                    result = {
+                        "status": "slot_already_confirmed",
+                        "message": (
+                            "A specific appointment slot is already confirmed with "
+                            "the caller (\""
+                            + str(session.get("v3_confirmed_slot_phrase"))
+                            + "\"). Do NOT call check_availability. Continue "
+                            "collecting the caller's first name, surname and phone "
+                            "number, then read back the booking summary."
+                        ),
                     }
                 elif tool_name == "check_availability" and session.get("last_offered_slots"):
                     logger.warning(
