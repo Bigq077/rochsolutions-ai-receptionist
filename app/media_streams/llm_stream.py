@@ -1471,9 +1471,26 @@ class LLMStream:
                     _rb_loc = (session.get("selected_location") or "").strip().title()
                     _rb_name_txt = _rb_name or "[full name INCLUDING surname]"
                     _rb_loc_clause = f" at {_rb_loc}" if _rb_loc else ""
-                    result = {
-                        "error": "booking_details_already_complete",
-                        "message": (
+                    # DEFECT-3 fix: the connection layer captures the exact slot the
+                    # caller agreed to (from the name-request readback) into
+                    # v3_confirmed_slot_phrase.  When present, inject it verbatim so
+                    # the model can never dead-end into "I don't have a slot
+                    # confirmed for you yet" (Call 1, 2026-07-07).  Falls back to the
+                    # old reconstruct-from-history template when it is absent, so the
+                    # existing behaviour is unchanged whenever the slot was not
+                    # captured.
+                    _rb_slot = (session.get("v3_confirmed_slot_phrase") or "").strip()
+                    if _rb_slot:
+                        _rb_msg = (
+                            "Name, phone number and the appointment slot are all "
+                            "already confirmed. Do NOT call check_availability and "
+                            "do NOT ask for the day or time again. Say EXACTLY this, "
+                            "then stop: "
+                            f"\"So that's {_rb_name_txt}, {_rb_slot}"
+                            f"{_rb_loc_clause} — shall I go ahead and book that in?\""
+                        )
+                    else:
+                        _rb_msg = (
                             "Name and phone number are already confirmed. "
                             "Do NOT call check_availability. Produce the booking "
                             "summary now, using this EXACT shape and filling the "
@@ -1485,7 +1502,10 @@ class LLMStream:
                             f"\"So that's {_rb_name_txt}, [day] the [ordinal] of "
                             f"[month] at [time]{_rb_loc_clause} — shall I go ahead "
                             "and book that in?\""
-                        ),
+                        )
+                    result = {
+                        "error": "booking_details_already_complete",
+                        "message": _rb_msg,
                     }
                 elif tool_name == "check_availability" and session.get("last_offered_slots"):
                     logger.warning(

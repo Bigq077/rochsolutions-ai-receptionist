@@ -8243,6 +8243,57 @@ class WebSocketCallHandler:
                                     "[ms_conn] post_slot_confirmation_pending = True"
                                     " (name request detected in response)"
                                 )
+                                # ── DEFECT-3 fix: persist the confirmed slot ──────
+                                # The name-request readback ("So that's Saturday the
+                                # 18th of July at half past one … could I take your
+                                # name?") is the only place the caller's CHOSEN slot
+                                # is stated in clean text.  It was never stored, so
+                                # once name+phone were collected the booking-readback
+                                # backstop (llm_stream.py ~1460) had no slot to
+                                # summarise and the model could dead-end into "I
+                                # don't have a slot confirmed for you yet" (Call 1,
+                                # 2026-07-07).  Capture the slot phrase here so the
+                                # backstop can inject it verbatim.  Guarded on a
+                                # weekday token so the surname re-ask turns ("Could
+                                # you say your surname as well?"), which also match
+                                # _NAME_REQUEST_PHRASES, never overwrite it.
+                                _pre_idx = min(
+                                    (
+                                        i for i in (
+                                            _last_bot_j.find(p)
+                                            for p in _NAME_REQUEST_PHRASES
+                                        ) if i >= 0
+                                    ),
+                                    default=-1,
+                                )
+                                if _pre_idx > 0:
+                                    _slot_pre = _last_bot[:_pre_idx].strip()
+                                    _slot_low = _slot_pre.lower()
+                                    _has_weekday = any(
+                                        _d in _slot_low for _d in (
+                                            "monday", "tuesday", "wednesday",
+                                            "thursday", "friday", "saturday",
+                                            "sunday",
+                                        )
+                                    )
+                                    if _has_weekday:
+                                        for _pfx in (
+                                            "so that's", "so that is",
+                                            "that's", "that is",
+                                        ):
+                                            if _slot_low.startswith(_pfx):
+                                                _slot_pre = _slot_pre[len(_pfx):]
+                                                break
+                                        _slot_pre = _slot_pre.strip(" ,.'—–-")
+                                        if _slot_pre:
+                                            self.session[
+                                                "v3_confirmed_slot_phrase"
+                                            ] = _slot_pre
+                                            logger.info(
+                                                "[ms_conn] v3_confirmed_slot_phrase"
+                                                " captured: %r",
+                                                _slot_pre,
+                                            )
                                 # Spec K: name request = slot flow complete.
                                 # Transition stage to NONE and clear any residual
                                 # slot map so DTMF digits are not misread as
