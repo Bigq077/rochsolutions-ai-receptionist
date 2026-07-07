@@ -1182,6 +1182,42 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
     return ""
 
 
+def _v3_backfill_surname(caller_utterance: str, first_name: str) -> str:
+    """Recover a surname from a LATER caller utterance, once the first name is
+    already stored.
+
+    The Theorem-shaped capture pipeline reads back only the first name and often
+    locks it before the surname is spoken (Susie asks "…first name and surname?",
+    the caller gives the first name, it confirms, THEN the surname arrives on a
+    separate turn).  For clinics that take a surname on the call (JV) that late
+    surname was silently dropped (Call 2, 2026-07-07: "surname is rock" arrived
+    after "Quentin" had locked).
+
+    This only fires on an EXPLICIT surname cue so it can never grab a stray
+    mid-call word:
+      1. an explicit marker — "surname is rock", "last name rook", or
+      2. a spelled-out surname — "r o c h" → "Roch" (callers spell to correct
+         a mis-heard surname), with the stand-alone words "i"/"a" excluded so
+         ordinary speech never triggers it.
+    Returns a capitalised surname or "".
+    """
+    if not caller_utterance:
+        return ""
+    low = caller_utterance.lower()
+    # 1) Explicit marker → reuse the conservative extractor.
+    if any(mk in low for mk in ("surname", "last name", "family name", "second name")):
+        _s = _v3_extract_surname(caller_utterance, first_name)
+        if _s:
+            return _s
+    # 2) Spelled-out surname ("r o c h" → "Roch").
+    _letters = [c for c in re.findall(r"\b([a-z])\b", low) if c not in ("i", "a")]
+    if len(_letters) >= 2:
+        cand = "".join(_letters)
+        if 2 <= len(cand) <= 25 and cand != (first_name or "").lower():
+            return cand.capitalize()
+    return ""
+
+
 def _v3_try_persist_name(
     session: dict,
     last_bot: str,
@@ -1213,8 +1249,38 @@ def _v3_try_persist_name(
     Called after every run_turn() in the theorem_v3 path so the name is stored
     at the moment of confirmation regardless of whether collect_and_store fired.
     """
-    # Already persisted — nothing to do.
-    if session.get("patient_name") or session.get("collected", {}).get("name"):
+    # ── Name already stored ──────────────────────────────────────────────────
+    # First-write-wins for the FIRST name, but the pipeline frequently captures
+    # a first name only (Susie reads back the first name; the caller gives the
+    # surname on a LATER turn).  For clinics that take a surname on the call (JV)
+    # that late surname used to be silently dropped here — the blanket early
+    # return meant "Quentin" locked and "surname is Rook" that followed was lost
+    # (Call 2, 2026-07-07).  Back-fill the surname onto the stored first name,
+    # bounded to the name→phone window and to an explicit surname cue so it can
+    # never grab a stray later word.
+    _existing = (
+        session.get("patient_name")
+        or session.get("collected", {}).get("name")
+        or ""
+    ).strip()
+    if _existing:
+        if " " in _existing:
+            return False  # a surname is already present — nothing to add
+        # phone_confirmed (NOT collected["phone"], which is pre-filled from the
+        # Twilio caller-ID at call start) marks the end of the name/phone window.
+        if session.get("phone_confirmed"):
+            return False
+        _first = _existing.split()[0]
+        _sur = _v3_backfill_surname(caller_utterance, _first)
+        if _sur:
+            full = f"{_first} {_sur}"
+            session.setdefault("collected", {})["name"] = full
+            session["patient_name"] = full
+            logger.info(
+                "[ms_conn v3] surname back-filled onto stored first name: %r",
+                full,
+            )
+            return True
         return False
 
     if not last_bot:
