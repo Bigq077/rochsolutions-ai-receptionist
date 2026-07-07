@@ -245,6 +245,43 @@ def _phone_step_asked(messages) -> bool:
     return False
 
 
+# Phrases the assistant SPEAKS when asking for the caller's surname (Step 7).
+# Used by the surname backstop as an anti-deadlock fallback: if the model DID
+# ask for the surname but capture missed it, booking still proceeds rather than
+# looping. A false "asked" only relaxes the backstop, never over-blocks.
+_SURNAME_STEP_MARKERS: tuple = (
+    "your surname",
+    "and your surname",
+    "surname",
+    "last name",
+    "family name",
+)
+
+
+def _surname_step_asked(messages) -> bool:
+    """True if the assistant has already asked the caller for their surname
+    anywhere in the recent history. The surname backstop uses this so it can
+    never loop a legitimate booking: once the surname question has been put to
+    the caller, booking proceeds even if the capture pipeline missed the word."""
+    for m in messages or []:
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            text = " ".join(
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            continue
+        low = text.lower()
+        if any(mk in low for mk in _SURNAME_STEP_MARKERS):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Anthropic client singleton
 # ---------------------------------------------------------------------------
@@ -1659,6 +1696,46 @@ class LLMStream:
                             "slots to the caller."
                         ),
                         "available_days": session.get("available_days", {}),
+                    }
+                elif (
+                    tool_name == "book_appointment"
+                    and not session.get("surname_captured")
+                    and " " not in (session.get("patient_name") or "").strip()
+                    and not _surname_step_asked(messages or [])
+                ):
+                    # Surname backstop (JV name redesign, 2026-07-07).
+                    #
+                    # JV requires a surname on the booking, but the capture
+                    # pipeline reads back only the first name and often locks a
+                    # first-name-only record (STT splits "Quentin Rock" across two
+                    # turns). Block book_appointment until a surname word is on
+                    # record so a first-name-only booking never reaches the
+                    # calendar. Placed BEFORE the phone guard so the steer order
+                    # is surname (Step 7) → phone (Step 8) → confirmation.
+                    #
+                    # Signals (all must say "no surname" to block): surname_captured
+                    # flag unset AND no space in patient_name. Anti-deadlock:
+                    # _surname_step_asked yields the moment the model has asked for
+                    # the surname, so a capture miss cannot loop — booking proceeds
+                    # and the next caller word is back-filled as the surname.
+                    # Reschedule/cancel do not call book_appointment, so untouched.
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — surname not captured "
+                        "(patient_name=%r) call_sid=%s",
+                        session.get("patient_name"), call_sid,
+                    )
+                    result = {
+                        "status": "surname_required",
+                        "message": (
+                            "book_appointment cannot fire yet — only the caller's "
+                            "first name is on record and this clinic requires a "
+                            "surname. Do NOT book. Ask for the surname as its own "
+                            "turn: \"And your surname?\" Accept WHATEVER they say "
+                            "silently — do NOT read it back, spell it, confirm it, "
+                            "or ask again. Then read back the booking summary and "
+                            "ask \"Shall I go ahead and book that in?\" before "
+                            "calling book_appointment."
+                        ),
                     }
                 elif (
                     tool_name == "book_appointment"

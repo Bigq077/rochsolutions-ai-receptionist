@@ -1182,7 +1182,9 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
     return ""
 
 
-def _v3_backfill_surname(caller_utterance: str, first_name: str) -> str:
+def _v3_backfill_surname(
+    caller_utterance: str, first_name: str, awaiting_surname: bool = False
+) -> str:
     """Recover a surname from a LATER caller utterance, once the first name is
     already stored.
 
@@ -1215,6 +1217,26 @@ def _v3_backfill_surname(caller_utterance: str, first_name: str) -> str:
         cand = "".join(_letters)
         if 2 <= len(cand) <= 25 and cand != (first_name or "").lower():
             return cand.capitalize()
+    # 3) Bare distinct-word straggler ("rock") — accepted ONLY when the caller
+    #    context proves we are awaiting the surname (an explicit surname/full-name
+    #    cue in the last bot prompt, or a first-name-only name that just locked).
+    #    STT routinely splits "Quentin Rock" into two turns, so the surname
+    #    arrives on its own with no marker and no spelling (JV call 2026-07-07
+    #    14:05).  Requires EXACTLY one token so a multi-word aside ("yes that
+    #    works for me") can never be grabbed, and the token must clear both name
+    #    stoplists.  The surname is never re-asked or read back, so any distinct
+    #    valid word is accepted silently (owner policy 2026-07-07).
+    if awaiting_surname:
+        _toks = re.sub(r"[^a-z'\-\s]", " ", low).split()
+        if len(_toks) == 1:
+            cand = _toks[0]
+            if (
+                2 <= len(cand) <= 25
+                and cand != (first_name or "").lower()
+                and cand not in _SURNAME_STOPWORDS
+                and cand not in _V3_NAME_FALSE_POSITIVES
+            ):
+                return cand.capitalize()
     return ""
 
 
@@ -1271,11 +1293,21 @@ def _v3_try_persist_name(
         if session.get("phone_confirmed"):
             return False
         _first = _existing.split()[0]
-        _sur = _v3_backfill_surname(caller_utterance, _first)
+        # We are in the name→phone window with a first-name-only name. Treat this
+        # as "awaiting the surname" when the last bot prompt explicitly asked for
+        # it OR the first name locked first-name-only this window (flag set below)
+        # — so a bare straggler word ("rock") is accepted as the surname.
+        _awaiting = bool(session.get("v3_awaiting_surname")) or any(
+            k in (last_bot or "").lower()
+            for k in ("surname", "last name", "family name", "full name")
+        )
+        _sur = _v3_backfill_surname(caller_utterance, _first, awaiting_surname=_awaiting)
         if _sur:
             full = f"{_first} {_sur}"
             session.setdefault("collected", {})["name"] = full
             session["patient_name"] = full
+            session["surname_captured"] = True
+            session["v3_awaiting_surname"] = False
             logger.info(
                 "[ms_conn v3] surname back-filled onto stored first name: %r",
                 full,
@@ -1309,6 +1341,15 @@ def _v3_try_persist_name(
                 full = f"{candidate} {surname}" if surname else candidate
                 session.setdefault("collected", {})["name"] = full
                 session["patient_name"] = full
+                if surname:
+                    session["surname_captured"] = True
+                    session["v3_awaiting_surname"] = False
+                else:
+                    # First name locked with no surname yet — mark that we are
+                    # now awaiting it so a following bare straggler word (STT
+                    # splits "Quentin Rock" across two turns) is accepted as the
+                    # surname even when the model did not re-ask for it.
+                    session["v3_awaiting_surname"] = True
                 return True
 
     return False
