@@ -201,6 +201,50 @@ def _caller_wants_new_slot(messages) -> bool:
     return bool(words & _NEW_SLOT_INTENT_WORDS)
 
 
+# Phrases the assistant SPEAKS during the phone step (Step 8) — offering the
+# calling number for confirmation or asking the caller to type a new one.  Used
+# by the phone backstop to tell whether the phone question was ever actually put
+# to the caller.  Matched as substrings against assistant turns in the recent
+# history window; kept broad so any reasonable phrasing of the phone question
+# registers (a false "asked" only relaxes the backstop, never over-blocks).
+_PHONE_STEP_MARKERS: tuple = (
+    "use this number",
+    "best one for your",
+    "best number",
+    "number you're calling on",
+    "number you're calling from",
+    "number you're ringing",
+    "on your keypad",
+    "type the number",
+)
+
+
+def _phone_step_asked(messages) -> bool:
+    """True if the assistant has already put the phone question to the caller
+    (Step 8) anywhere in the recent history — the calling number was offered for
+    confirmation, or a keypad entry was requested.  The phone backstop uses this
+    so it only blocks book_appointment when the phone step was genuinely skipped,
+    and can never loop a legitimate booking: the moment the model asks the phone
+    question this returns True and booking proceeds on the next turn."""
+    for m in messages or []:
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            text = " ".join(
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            continue
+        low = text.lower()
+        if any(mk in low for mk in _PHONE_STEP_MARKERS):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Anthropic client singleton
 # ---------------------------------------------------------------------------
@@ -1609,6 +1653,52 @@ class LLMStream:
                             "slots to the caller."
                         ),
                         "available_days": session.get("available_days", {}),
+                    }
+                elif (
+                    tool_name == "book_appointment"
+                    and not session.get("phone_confirmed")
+                    and not _phone_step_asked(messages or [])
+                ):
+                    # Phone backstop (JV regression, 2026-07-07 11:39).
+                    #
+                    # collected["phone"] is ALWAYS pre-filled from the Twilio
+                    # caller-ID at call start, and nothing at code level requires
+                    # the caller to have actually confirmed a number before
+                    # book_appointment fires — phone collection (prompt Step 8)
+                    # is enforced by the prompt alone.  When the caller front-
+                    # loads the booking (e.g. opens with "book me on this
+                    # number"), the model can collapse slot-accept → readback →
+                    # book, skipping Step 8, and book with an UNCONFIRMED caller-
+                    # ID number (and a first-name-only name).
+                    #
+                    # Block ONLY when BOTH signals agree the phone step was
+                    # skipped: phone_confirmed is unset (no verbal "use this
+                    # number" and no DTMF entry ever landed — the authoritative
+                    # flag, also what the SMS router trusts) AND the phone
+                    # question was never asked anywhere in recent history.  This
+                    # cannot loop a legitimate booking — the instant the model
+                    # asks the phone question (as steered below) _phone_step_asked
+                    # flips True and the next book_appointment proceeds even if
+                    # phone_confirmed has not flipped.  Reschedule/cancel do not
+                    # call book_appointment, so those flows are untouched.
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — phone step skipped "
+                        "(phone_confirmed unset, phone question never asked) "
+                        "call_sid=%s", call_sid,
+                    )
+                    result = {
+                        "status": "phone_confirmation_required",
+                        "message": (
+                            "book_appointment cannot fire yet — the caller's "
+                            "phone number has not been confirmed. Do NOT book "
+                            "and do NOT assume the calling number. Ask the phone "
+                            "question as its own separate turn first: \"Is the "
+                            "number you're calling on the best one for your "
+                            "booking? If so, just say use this number.\" Wait "
+                            "for the caller's answer, then read back the booking "
+                            "summary and ask \"Shall I go ahead and book that "
+                            "in?\" before calling book_appointment."
+                        ),
                     }
                 elif tool_name == "book_appointment" and not (
                     "shall i go ahead" in (session.get("last_bot_prompt") or "").lower()
