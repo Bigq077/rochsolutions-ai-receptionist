@@ -384,6 +384,17 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
 
     # ── Gate 5a: whole-chunk reasoning drop ──────────────────────────────────
     _drop_reason = _get_reasoning_drop_reason(text)
+    # Slot-presentation exemption: the post-check_availability slot list is
+    # legitimately dense with spoken times ("five in the evening, six 05 in the
+    # evening, seven 10 in the evening, eight 15 in the evening"). On a day with
+    # 4+ slots that trips high_time_density (>3 time phrases) and the WHOLE slot
+    # chunk is dropped as "reasoning" → no speech → the caller hears "Sorry,
+    # could you say that again?" and has to repeat (JV neuro call 2026-07-07
+    # 13:20). During the slot pass, ignore high_time_density ONLY — every other
+    # reasoning signal (24h HH:MM timestamps, tick/cross, internal openers and
+    # labels) still drops normally.
+    if _drop_reason == "high_time_density" and session.get("_slot_buf_active"):
+        _drop_reason = ""
     if _drop_reason:
         _preview = (text[:50] + "...") if len(text) > 50 else text
         logger.info(

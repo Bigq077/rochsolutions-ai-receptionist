@@ -847,6 +847,12 @@ class LLMStream:
             _active_q = tts_text_queue
             _call_system  = system_prompt
             _call_dynamic = dynamic_prompt
+            # Flag the post-check_availability slot-presentation pass so Gate 5a
+            # exempts its (legitimately time-dense) output from the
+            # high_time_density reasoning drop. Tied to _last_check_avail — the
+            # exact condition that arms the slot buffer — so it is True ONLY on
+            # the slot pass and reset on every other iteration (no cross-turn leak).
+            session["_slot_buf_active"] = bool(_last_check_avail)
             if _last_check_avail:
                 _slot_buf = asyncio.Queue()
                 _active_q = _slot_buf
