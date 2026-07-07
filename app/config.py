@@ -60,3 +60,17 @@ OBS_CAPTURE_ENABLED = os.getenv("OBS_CAPTURE_ENABLED", "false").lower() == "true
 # region — see spec §7). Empty until provisioned; capture no-ops while unset.
 # SQLAlchemy URL form, e.g. postgresql+psycopg2://user:pass@host:5432/dbname
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# Phase 2 — failure alerting (see Susie_Call_Observability_Spec_for_Jules.md §5.2).
+# When enabled, completed calls matching a failure condition alert the operator
+# (Quentin) via SMS and/or Slack, and pipeline exceptions are captured to Sentry.
+# Default OFF so production behaviour is unchanged. With the flag OFF the alert
+# router is a fast no-op — no messages are ever sent — so it cannot affect any
+# clinic or ping anyone until explicitly turned on.
+OBS_ALERTS_ENABLED = os.getenv("OBS_ALERTS_ENABLED", "false").lower() == "true"
+
+# Where immediate operator alerts go. SMS reuses the existing Twilio path; the
+# Slack webhook is optional. If neither is set, immediate alerts no-op even when
+# the flag is on (nothing to send to).
+OBS_ALERT_SMS_TO = os.getenv("OBS_ALERT_SMS_TO", "")
+OBS_SLACK_WEBHOOK = os.getenv("OBS_SLACK_WEBHOOK", "")
