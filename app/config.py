@@ -74,3 +74,15 @@ OBS_ALERTS_ENABLED = os.getenv("OBS_ALERTS_ENABLED", "false").lower() == "true"
 # the flag is on (nothing to send to).
 OBS_ALERT_SMS_TO = os.getenv("OBS_ALERT_SMS_TO", "")
 OBS_SLACK_WEBHOOK = os.getenv("OBS_SLACK_WEBHOOK", "")
+
+# Phase 3 — LLM-as-judge (see Susie_Call_Observability_Spec_for_Jules.md §5.3).
+# When enabled, each captured call is scored by Claude after teardown against a
+# versioned rubric, and the judgement is stored on the call row. Default OFF, and
+# a no-op without an ANTHROPIC_API_KEY — production behaviour is unchanged until a
+# store (Phase 1) is provisioned and this is turned on. Depends on Phase 1 capture.
+OBS_JUDGE_ENABLED = os.getenv("OBS_JUDGE_ENABLED", "false").lower() == "true"
+
+# Model used by the judge. Defaults to the most capable model; an operator can set
+# a cheaper model (e.g. claude-sonnet-5 / claude-haiku-4-5) to trade some judgement
+# quality for cost at high call volume. Re-run calibration if this changes.
+OBS_JUDGE_MODEL = os.getenv("OBS_JUDGE_MODEL", "claude-opus-4-8")

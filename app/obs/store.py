@@ -80,8 +80,39 @@ def init_db() -> bool:
         _log.warning("[obs.store] init_db skipped — DATABASE_URL not set")
         return False
     Base.metadata.create_all(engine, checkfirst=True)
+    _ensure_new_columns(engine)
     _log.info("[obs.store] schema ensured (calls table)")
     return True
+
+
+# Columns added after the initial Phase 1 schema. create_all(checkfirst=True) only
+# creates missing *tables*, not missing columns on an existing table, so we add
+# them here idempotently. Each ALTER is best-effort: if the column already exists
+# the dialect raises, which we swallow — so re-running migrate is always safe on
+# both SQLite (tests) and Postgres (prod).
+_ADDED_COLUMNS = {
+    "outcome": "VARCHAR(32)",
+    "quality_score": "INTEGER",
+    "intent_resolved": "BOOLEAN",
+    "failure_tags": "JSON",
+    "evidence": "TEXT",
+    "rubric_version": "VARCHAR(16)",
+    "judged_at": "TIMESTAMP",
+}
+
+
+def _ensure_new_columns(engine: Engine) -> None:
+    from sqlalchemy import inspect as _inspect, text as _text
+    existing = {c["name"] for c in _inspect(engine).get_columns("calls")}
+    for name, ddl_type in _ADDED_COLUMNS.items():
+        if name in existing:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(_text(f"ALTER TABLE calls ADD COLUMN {name} {ddl_type}"))
+            _log.info("[obs.store] added column calls.%s", name)
+        except Exception as exc:  # pragma: no cover - defensive (racing migrate)
+            _log.warning("[obs.store] could not add column %s: %r", name, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -191,5 +222,40 @@ def get_call(call_sid: str) -> Optional[Dict[str, Any]]:
     try:
         row = session.get(Call, call_sid)
         return row.to_dict() if row is not None else None
+    finally:
+        session.close()
+
+
+def save_judgement(call_sid: str, judgement: Dict[str, Any]) -> bool:
+    """Write a Phase 3 judge result onto an existing call row.
+
+    Returns True on update, False if no store or the call row does not exist.
+    Raises on a genuine DB error — async callers must guard.
+    """
+    from datetime import datetime, timezone
+
+    engine = _get_engine()
+    if engine is None or _Session is None:
+        return False
+    session: Session = _Session()
+    try:
+        row = session.get(Call, call_sid)
+        if row is None:
+            _log.warning("[obs.store] save_judgement: no row for call_sid=%s", call_sid)
+            return False
+        row.outcome = judgement.get("outcome")
+        row.quality_score = judgement.get("quality_score")
+        row.intent_resolved = judgement.get("intent_resolved")
+        row.failure_tags = judgement.get("failure_tags")
+        row.evidence = judgement.get("evidence")
+        row.rubric_version = judgement.get("rubric_version")
+        row.judged_at = datetime.now(timezone.utc)
+        session.commit()
+        _log.info("[obs.store] judged call_sid=%s score=%s", call_sid,
+                  judgement.get("quality_score"))
+        return True
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()

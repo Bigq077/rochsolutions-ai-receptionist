@@ -90,6 +90,19 @@ class Call(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
+    # --- Phase 3: LLM-as-judge (spec §5.3) ------------------------------------
+    # Populated asynchronously after teardown by app/obs/judge.py. Null until the
+    # call has been scored (or if the judge is disabled).
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    quality_score: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    intent_resolved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    failure_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rubric_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    judged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     def to_dict(self) -> dict:
         """Plain-dict view used by the replay harness and later phases."""
         return {
@@ -114,4 +127,12 @@ class Call(Base):
             "collected": self.collected,
             "transcript": self.transcript or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            # Phase 3 judge fields
+            "outcome": self.outcome,
+            "quality_score": self.quality_score,
+            "intent_resolved": self.intent_resolved,
+            "failure_tags": self.failure_tags,
+            "evidence": self.evidence,
+            "rubric_version": self.rubric_version,
+            "judged_at": self.judged_at.isoformat() if self.judged_at else None,
         }
