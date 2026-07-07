@@ -8316,6 +8316,62 @@ class WebSocketCallHandler:
                             # does NOT ask for a name (e.g. a slot re-offer)
                             # resets the flag correctly.
                             _last_bot_j = _last_bot.lower()
+                            # ── Surname capture from the booking readback ─────
+                            # The final confirmation ("So that's Quentin Rock,
+                            # Wednesday … — shall I go ahead and book that in?") is
+                            # the authoritative place the FULL name is stated.
+                            # Name capture DURING collection is fragile: STT clips
+                            # the name, and the surname is often established via a
+                            # yes/no confirmation of the bot's question ("is your
+                            # surname Rock?" → "yes that's right"), which no caller-
+                            # utterance extractor can read — so the surname was
+                            # still lost to session even when spoken correctly
+                            # (Call, 2026-07-07: readback said "Quentin Rock" but
+                            # stored name = "Quentin"). Upgrade a first-name-only
+                            # stored name to the fuller readback name here; only
+                            # ever EXTEND the existing first name (never replace it
+                            # with something unrelated).
+                            if (
+                                "book that in" in _last_bot_j
+                                or "shall i go ahead" in _last_bot_j
+                            ):
+                                _rbm = re.search(
+                                    r"so that'?s\s+"
+                                    r"([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+){0,2}?)\s*,",
+                                    _last_bot, re.IGNORECASE,
+                                )
+                                if _rbm:
+                                    _rb_full = " ".join(
+                                        w.capitalize()
+                                        for w in _rbm.group(1).split()
+                                    )
+                                    _cur_name = (
+                                        self.session.get("patient_name")
+                                        or self.session.get(
+                                            "collected", {}
+                                        ).get("name")
+                                        or ""
+                                    ).strip()
+                                    if (
+                                        " " in _rb_full
+                                        and (
+                                            not _cur_name
+                                            or (
+                                                " " not in _cur_name
+                                                and _rb_full.lower().startswith(
+                                                    _cur_name.lower()
+                                                )
+                                            )
+                                        )
+                                    ):
+                                        self.session.setdefault(
+                                            "collected", {}
+                                        )["name"] = _rb_full
+                                        self.session["patient_name"] = _rb_full
+                                        logger.info(
+                                            "[ms_conn v3] name upgraded from "
+                                            "booking readback: %r", _rb_full,
+                                        )
                             if any(p in _last_bot_j for p in _NAME_REQUEST_PHRASES):
                                 self.post_slot_confirmation_pending = True
                                 logger.info(
