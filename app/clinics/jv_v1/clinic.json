@@ -70,8 +70,8 @@
       "events": ["booking", "manual_followup"]
     },
     "slot_minutes": 40,
-    "_slot_increment_note": "Appointments last 40 mins, but offer slots on the hour (every 60 mins) for simplicity. Slots anchor to each day's opening time.",
-    "slot_increment_minutes": 60,
+    "_slot_break_note": "Each service is offered at its own length (services[].typical_duration_minutes) plus a 5-min break between appointments. Slots anchor to each day's opening time; the break is spacing only and is never added to the calendar event.",
+    "slot_break_minutes": 5,
     "days_ahead": 60,
     "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
     "allow_same_day": true,

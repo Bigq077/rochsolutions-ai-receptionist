@@ -606,6 +606,22 @@ def _find_service_def(clinic: Dict[str, Any], service: str) -> Optional[Dict[str
     return None
 
 
+def _service_duration_minutes(clinic: Dict[str, Any], service: str, fallback: int) -> int:
+    """Per-service appointment length from clinic.json (typical_duration_minutes).
+
+    Falls back to `fallback` (typically the clinic's slot_minutes) when the
+    service is unknown or declares no duration — so a service without an explicit
+    length behaves exactly as before. This is what drives both the slot grid in
+    check_availability and the calendar-event length in book_appointment, so the
+    slot offered and the event booked are always the same length."""
+    svc = _find_service_def(clinic, service)
+    if svc:
+        d = svc.get("typical_duration_minutes")
+        if d:
+            return int(d)
+    return int(fallback)
+
+
 def _service_supports_location(svc_def: Dict[str, Any], location: str) -> bool:
     """True if a service is bookable under the given booking location/modality,
     tolerant of the varied `available_as` token families in clinic.json
@@ -3634,10 +3650,28 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     clinic = get_clinic(session.get("clinic_id"))
     working_hours = clinic.get("working_hours", {})
-    # Slot length: caller-passed override, else the clinic's configured
-    # slot_minutes (jv_v1 = 40), else 50. Drives slot spacing — a wrong default
-    # is why JV showed 50-min Theorem-spaced slots.
-    duration_min = int(args.get("duration_minutes") or clinic.get("slot_minutes") or 50)
+    _slot_minutes = int(clinic.get("slot_minutes") or 50)
+    _break_min = int(clinic.get("slot_break_minutes") or 0)
+    # Slot length: caller-passed override, else the length configured for THIS
+    # service (services[].typical_duration_minutes), else the clinic slot_minutes.
+    # Per-service so a 30-min treatment and a 60-min neuro assessment grid (and
+    # book) at their true lengths rather than a flat slot_minutes.
+    duration_min = int(
+        args.get("duration_minutes")
+        or _service_duration_minutes(clinic, _raw_service, _slot_minutes)
+    )
+    # Re-anchor each day's closing bound to the service length. working_hours end
+    # was baked as last_appointment + slot_minutes (config default 40). Shift it by
+    # (duration_min - slot_minutes) so the LAST offered start equals last_appointment
+    # for ANY service duration — otherwise a 30-min service would over-offer past
+    # last_appointment and a 60-min service would be truncated before it. Build a
+    # NEW dict; never mutate the shared clinic config.
+    if working_hours and duration_min != _slot_minutes:
+        _delta_h = (duration_min - _slot_minutes) / 60.0
+        working_hours = {
+            _day: ((_hrs[0], _hrs[1] + _delta_h) if _hrs else None)
+            for _day, _hrs in working_hours.items()
+        }
 
     now = datetime.now(LONDON_TZ)
     w_start = now
@@ -3671,6 +3705,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         duration_min=duration_min,
         clinic_working_hours=working_hours,
         increment_min=clinic.get("slot_increment_minutes"),
+        break_min=_break_min,
     )
 
     tokens = await _get_tokens()
@@ -3697,7 +3732,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         busy_raw = await asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id)
         await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside freebusy
         busy_blocks = parse_busy(busy_raw or [])
-        free_slots = filter_free_slots(candidates, busy_blocks)
+        free_slots = filter_free_slots(candidates, busy_blocks, break_min=_break_min)
     except Exception as e:
         # Calendar API failed — fall back to unfiltered candidate slots (same
         # behaviour as when calendar tokens are absent).  This keeps the
@@ -4139,7 +4174,17 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # Resolve slot_iso — handles ISO strings, labels, and slot indices
     try:
         start_dt = _resolve_slot_iso(args.get("slot_iso", ""), session)
-        end_dt = start_dt + timedelta(minutes=int(args.get("duration_minutes", 30)))
+        # Event length = the service's own duration (services[].typical_duration_minutes),
+        # matching the slot length offered in check_availability — so a 30-min treatment
+        # books 30 min and a 60-min neuro assessment books 60, not a flat default.
+        _bk_dur = int(args.get("duration_minutes") or 0)
+        if not _bk_dur:
+            _bk_dur = int(
+                (_svc_def or {}).get("typical_duration_minutes")
+                or clinic.get("slot_minutes")
+                or 30
+            )
+        end_dt = start_dt + timedelta(minutes=_bk_dur)
     except Exception as e:
         return {"success": False, "error": f"Invalid slot datetime: {e}"}
 

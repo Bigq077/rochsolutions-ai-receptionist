@@ -1314,10 +1314,15 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
     clinic["slot_minutes"] = slot_minutes
-    # Slot-offering increment (spacing between offered start times). Defaults to
-    # slot_minutes; set higher (e.g. 60) to offer hourly slots even though the
-    # appointment itself is shorter.
-    clinic["slot_increment_minutes"] = int(op.get("slot_increment_minutes", slot_minutes))
+    # Slot-offering increment (spacing between offered start times). An EXPLICIT
+    # override only — e.g. 60 to force hourly starts. When unset it stays None so
+    # the generator strides by (service duration + slot_break_minutes); defaulting
+    # it to slot_minutes here would clobber that break.
+    _inc = op.get("slot_increment_minutes")
+    clinic["slot_increment_minutes"] = int(_inc) if _inc is not None else None
+    # Gap between consecutive appointments (spacing only — never added to the
+    # calendar event). Default 0 keeps every clinic that doesn't set it identical.
+    clinic["slot_break_minutes"] = int(op.get("slot_break_minutes", 0))
     clinic["days_ahead"] = int(op.get("days_ahead", 60))
     clinic["working_hours"] = _working_hours_to_tuples(op.get("working_hours", {}), slot_minutes)
 

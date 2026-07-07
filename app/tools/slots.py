@@ -85,13 +85,18 @@ def generate_candidate_slots(
     tz=DEFAULT_TZ,
     clinic_working_hours: Optional[dict] = None,
     increment_min: Optional[int] = None,
+    break_min: int = 0,
 ) -> list[tuple[datetime, datetime]]:
     """
     Generate candidate slots inside [window_start, window_end], all tz-aware.
 
     Produced day by day, anchored to each day's OPENING time and spaced
-    `increment_min` apart (defaults to duration_min — e.g. 60 to offer hourly
-    slots even though an appointment is shorter). Each slot lasts duration_min.
+    `increment_min` apart. When no explicit `increment_min` override is given,
+    the stride defaults to `duration_min + break_min` — i.e. the appointment
+    length plus a gap between appointments (e.g. a 40-min service with a 5-min
+    break steps 45 min: 5:00, 5:45, 6:30 …). The break is spacing only; each
+    slot still lasts exactly `duration_min`, so the calendar event stays the
+    true appointment length. Each slot lasts duration_min.
 
     Working-hours bounds support FRACTIONAL hours (16.5 = 16:30, 21.1667 ≈
     21:10), so half-hour openings/closings are respected exactly — a slot is
@@ -101,7 +106,7 @@ def generate_candidate_slots(
     window_start = _ensure_tz(window_start, tz)
     window_end = _ensure_tz(window_end, tz)
 
-    increment = int(increment_min or duration_min)
+    increment = int(increment_min or (duration_min + break_min))
     dur = timedelta(minutes=duration_min)
     step = timedelta(minutes=increment)
     day_keys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -152,16 +157,27 @@ def filter_free_slots(
     candidates: list[tuple[datetime, datetime]],
     busy_blocks: list[tuple[datetime, datetime]],
     tz=DEFAULT_TZ,
+    break_min: int = 0,
 ) -> list[tuple[datetime, datetime]]:
     """
     Filter out candidate slots that overlap with busy blocks.
     Fully safe even if upstream accidentally passes a naive datetime somewhere.
+
+    `break_min` pads every busy block by that many minutes on BOTH sides before
+    the overlap test, so a candidate is rejected if it starts or ends within
+    `break_min` of an existing appointment. This enforces the inter-appointment
+    break against bookings already on the calendar — including ones added
+    manually or of a different length than the service being offered (e.g. a
+    40-min booking 5:00–5:40 padded to 4:55–5:45 leaves 5:45 bookable, exactly
+    the 5-min break). The busy block itself is not widened on the calendar; the
+    padding lives only in this availability test.
     """
     free: list[tuple[datetime, datetime]] = []
 
-    # Normalize busy blocks once
+    # Normalize busy blocks once, padding by the break on both sides.
+    pad = timedelta(minutes=int(break_min or 0))
     norm_busy: list[tuple[datetime, datetime]] = [
-        (_ensure_tz(bs, tz), _ensure_tz(be, tz)) for bs, be in (busy_blocks or [])
+        (_ensure_tz(bs, tz) - pad, _ensure_tz(be, tz) + pad) for bs, be in (busy_blocks or [])
     ]
 
     for s, e in candidates or []:
