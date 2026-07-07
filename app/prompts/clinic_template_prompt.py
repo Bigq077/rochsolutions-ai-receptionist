@@ -267,9 +267,17 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         )
         if remote_ok:
             lines.append(
-                "REMOTE-CAPABLE services — if the caller has not stated a "
-                f"preference, ask: '{pf.get('modality_question', '')}' "
-                "These services: " + ", ".join(remote_ok) + "."
+                "REMOTE-CAPABLE services — these CAN be delivered remotely, but "
+                f"ALWAYS default to an IN-CLINIC appointment at "
+                f"{tk['primary_location_id']}. Do NOT ask 'in-clinic or "
+                "remote?', and NEVER describe or book the appointment as "
+                "remote/video/phone UNLESS the caller has EXPLICITLY asked for a "
+                "remote, video, or phone appointment (e.g. 'can I do it over "
+                "video?', 'a phone consultation'). Only on that explicit request "
+                "do you confirm remote and set location='remote'. Absent such a "
+                "request, treat it as in-clinic silently — do not raise the "
+                "remote option at all. These services: "
+                + ", ".join(remote_ok) + "."
             )
         if home_capable:
             lines.append(
@@ -719,7 +727,6 @@ def _render_stt(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
 
 
 def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
-    pf = clinic.get("prompt_facts", {}) or {}
     keys = clinic.get("modality_session_keys", {}) or {}
     confirmed_flag = keys.get("confirmed_flag", "modality_confirmed")
     value_key = keys.get("value_key", "modality")
@@ -748,15 +755,15 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
     return (
         "MODALITY RULE\n"
         f"{tk['clinic_name']} has one clinic site: {tk['primary_location_name']}. "
-        "Whether to confirm modality depends on the SERVICE requested (see the "
-        "REMOTE-CAPABLE / IN-CLINIC-OR-HOME / IN-CLINIC-ONLY lists in SERVICE "
-        "MAPPING). For a remote-capable service, confirm the modality before "
-        f"checking availability — ask: '{pf.get('modality_question','')}'. For "
-        "a service that is not remote-capable (e.g. acupuncture, sports "
-        "massage), do NOT ask about or offer remote/video/phone — default to "
-        "in-clinic; but if that service is ALSO home-visit-capable (see the "
-        "IN-CLINIC-OR-HOME list) and the caller asks for or needs it at home, "
-        "book it as a home visit. Once confirmed, never ask again."
+        "ALWAYS default every appointment to IN-CLINIC at "
+        f"{tk['primary_location_name']} (location='{tk['primary_location_id']}'). "
+        "Do NOT ask which modality, and NEVER call the appointment remote, "
+        "video, or phone — in the readback or anywhere else — UNLESS the caller "
+        "has EXPLICITLY asked for a remote/video/phone appointment. Only on that "
+        "explicit request do you confirm remote and set location='remote'. A "
+        "service may also be home-visit-capable (see the IN-CLINIC-OR-HOME "
+        "list): book a home visit only if the caller asks for or needs it at "
+        "home. Once a non-default modality is confirmed, never ask again."
     )
 
 
