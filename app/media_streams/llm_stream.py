@@ -959,6 +959,7 @@ class LLMStream:
             # Pass tts_text_queue so filler phrases play during API latency.
             tool_result_blocks = await self._execute_tools(
                 tool_uses, session, call_sid, tts_text_queue=tts_text_queue,
+                messages=messages,
             )
             messages.append({"role": "user", "content": tool_result_blocks})
 
@@ -1420,6 +1421,7 @@ class LLMStream:
         session: Dict[str, Any],
         call_sid: Optional[str],
         tts_text_queue: Optional[asyncio.Queue] = None,
+        messages: Optional[List[dict]] = None,
     ) -> List[dict]:
         """
         Execute all tool calls and return the tool_result blocks for Anthropic.
@@ -1563,7 +1565,7 @@ class LLMStream:
                     tool_name == "check_availability"
                     and session.get("v3_confirmed_slot_phrase")
                     and not session.get("last_offered_slots")
-                    and not _caller_wants_new_slot(messages)
+                    and not _caller_wants_new_slot(messages or [])
                 ):
                     # Slot-locked guard: the caller has already agreed a specific
                     # slot (v3_confirmed_slot_phrase set by the connection layer)
