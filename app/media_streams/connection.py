@@ -849,6 +849,11 @@ _USE_THIS_NUMBER_SIGNALS: tuple = (
     "number im calling", "number i'm on", "number im on",
     "one i'm calling", "one im calling", "calling from",
     "keep this number", "keep that number",
+    # Answers to "…is that the best one for your booking?" — the caller
+    # confirms by echoing "best one"/"best number" rather than "use this
+    # number" (2026-07-07: "yeah that's the best one" fell through, leaving
+    # phone_confirmed unset). Negative intent is still excluded above.
+    "best one", "best number",
 )
 
 # Short bare affirmatives that, in the phone-confirm context (buffer empty,

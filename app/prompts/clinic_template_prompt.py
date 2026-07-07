@@ -1594,6 +1594,42 @@ def _b6_caller_context(session: Dict[str, Any]) -> str:
     return ("CALLER CONTEXT: " + "; ".join(lines)) if lines else ""
 
 
+# Phrases the assistant SPEAKS during the phone step (Step 8).  Kept in sync
+# with llm_stream._PHONE_STEP_MARKERS (duplicated here rather than imported to
+# avoid a media_streams → prompts import cycle).  Used by the phone-step steer
+# below so it suppresses the moment the phone question has actually been put to
+# the caller — mirroring the book_appointment backstop's _phone_step_asked, so
+# the steer can never loop a booking where the question was already asked.
+_PHONE_STEP_MARKERS: Tuple[str, ...] = (
+    "use this number",
+    "best one for your",
+    "best number",
+    "number you're calling on",
+    "number you're calling from",
+    "number you're ringing",
+    "on your keypad",
+    "type the number",
+)
+
+
+def _phone_step_asked(session: Dict[str, Any]) -> bool:
+    """True if the phone question (Step 8) has already been put to the caller in
+    the recent assistant history or the last bot prompt."""
+    for _blob in (
+        session.get("last_bot_prompt") or "",
+        *(
+            m.get("content", "") or ""
+            for m in (session.get("conversation_history") or [])
+            if isinstance(m, dict) and m.get("role") == "assistant"
+        ),
+    ):
+        if isinstance(_blob, str) and any(
+            mk in _blob.lower() for mk in _PHONE_STEP_MARKERS
+        ):
+            return True
+    return False
+
+
 def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     keys = clinic.get("modality_session_keys", {}) or {}
@@ -1647,6 +1683,44 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
         )
     if known:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
+
+    # PHONE STEP OUTSTANDING steer (2026-07-07 JV regression).
+    #
+    # Step 8 (phone) is prompt-only; the sole code enforcement is the
+    # book_appointment backstop, which fires at the tool-call boundary — too
+    # late to stop the model *speaking* the booking readback ("shall I go
+    # ahead and book that in?") without ever asking the phone question first.
+    # On a heavily front-loaded call the model collapses name → readback,
+    # skipping Step 8, and the caller has to prompt for it.
+    #
+    # This steer closes that gap deterministically at generation time: it
+    # appears ONLY in the exact skip state — a slot is confirmed and the name
+    # is captured (booking readback phase), the phone is NOT yet confirmed,
+    # and the phone question has NOT been asked anywhere in recent history.
+    # It mirrors the backstop's dual-signal guard (not phone_confirmed AND not
+    # _phone_step_asked), so it cannot loop: the instant the model asks the
+    # question the marker check suppresses it. In a normal call the phone
+    # question is always asked, so this line never renders — no regression.
+    _name_known = bool(nm or session.get("patient_name"))
+    _slot_confirmed = bool(
+        session.get("v3_confirmed_slot_phrase")
+        or session.get("booking_flow_active")
+    )
+    if (
+        _name_known
+        and _slot_confirmed
+        and not session.get("phone_confirmed")
+        and not _phone_step_asked(session)
+    ):
+        state.append(
+            "PHONE STEP OUTSTANDING — the caller's phone number is NOT yet "
+            "confirmed. Your next turn MUST be the phone question, on its own: "
+            "'Is the number you're calling on the best one for your booking? "
+            "If so, just say use this number.' Do NOT read the booking back "
+            "and do NOT ask 'shall I go ahead and book that in' until the "
+            "phone has been confirmed."
+        )
+
     return ("CALL STATE: " + "; ".join(state)) if state else ""
 
 
