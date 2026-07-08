@@ -4645,6 +4645,13 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
         return {"success": False, "error": str(e)}
 
     session["calendar_status"] = "cancelled"
+    # Mark the cancellation on the session so infer_call_outcome() labels the
+    # CallSummaries row "cancelled" (not "abandoned"). The Acuity cancel path
+    # (_cancel_appointment_acuity) already sets these; the Google-Calendar path
+    # did not, so a caller who hung up right after "your appointment has been
+    # cancelled" was mis-logged as abandoned even though the delete succeeded.
+    session["cancellation_completed"] = True
+    session["cancel_confirmed"] = True
 
     # SMS notification — non-fatal
     try:
