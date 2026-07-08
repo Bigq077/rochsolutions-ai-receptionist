@@ -35,10 +35,17 @@ jobs:
         # Credential-free unit tests only. As phases land, add their test paths
         # here (and the Phase 4 replay/scenario suite once it can run offline).
         run: |
-          pytest -q app/booking/tests tests/capture tests/alerts tests/judge
+          pytest -q app/booking/tests tests/capture tests/alerts tests/judge tests/regression
+
+      - name: Run mined regression scenarios (offline)
+        # Phase 4 (spec §5.4): replay redacted regression scenarios and check
+        # deterministic assertions. No live server / Twilio / Claude, so a fixed
+        # failure can never silently regress.
+        run: |
+          python tests/auto/run_tests.py --ci
 
       # --- Expand coverage as the observability build progresses ---
-      # Phase 1 (capture/replay):   pytest -q tests/capture   [ADDED]
-      # Phase 2 (alerts):           pytest -q tests/alerts    [ADDED]
-      # Phase 3 (judge):            pytest -q tests/judge     [ADDED]
-      # Phase 4 (regression suite): python tests/auto/run_tests.py --ci
+      # Phase 1 (capture/replay):   pytest -q tests/capture              [ADDED]
+      # Phase 2 (alerts):           pytest -q tests/alerts               [ADDED]
+      # Phase 3 (judge):            pytest -q tests/judge                [ADDED]
+      # Phase 4 (regression suite): python tests/auto/run_tests.py --ci  [ADDED]

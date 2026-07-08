@@ -545,7 +545,21 @@ async def main():
         action="store_true",
         dest="real_calls",
     )
+    parser.add_argument(
+        "--ci",
+        help="Offline regression mode (spec §5.4): replay mined regression scenarios "
+             "and check deterministic assertions. No live server / Twilio / Claude. "
+             "Exits non-zero on regression. Used by CI.",
+        action="store_true",
+    )
     args = parser.parse_args()
+
+    # --ci short-circuits the entire live-call path: it delegates to the offline
+    # regression runner (app/obs/regress.py), which replays the redacted transcripts
+    # embedded in mined scenarios. Nothing below (ngrok, Twilio, evaluator) runs.
+    if args.ci:
+        from app.obs.regress import main as _regress_main
+        sys.exit(_regress_main([]))
 
     if args.real_calls:
         # Override the module-level flag so CallRunner uses the real Twilio flow
