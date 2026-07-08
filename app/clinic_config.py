@@ -1429,6 +1429,25 @@ def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:
     return TWILIO_TO_CLINIC.get(key, "demo")
 
 
+def twilio_number_for_clinic(clinic_id: Optional[str]) -> Optional[str]:
+    """The Twilio number assigned to a clinic (reverse of TWILIO_TO_CLINIC).
+
+    Used to send DELAYED/queued outbound SMS (e.g. the home-visit address
+    reminder) FROM the clinic's own line rather than the worker process's
+    ambient TWILIO_PHONE_NUMBER. This matters on a SHARED Redis: the reminder
+    queue is global, so another tenant's worker can pick up this clinic's
+    reminder and would otherwise send it from ITS number — the patient's reply
+    then lands on the wrong line (no inbound webhook) and is lost. Returns None
+    if the clinic has no mapped number (caller falls back to env).
+    """
+    if not clinic_id:
+        return None
+    for _num, _cid in TWILIO_TO_CLINIC.items():
+        if _cid == clinic_id:
+            return _num
+    return None
+
+
 def get_acuity_config(clinic_id: str = "theorem") -> dict:
     """Get Acuity configuration for clinic."""
     return ACUITY_CONFIG.get(clinic_id, ACUITY_CONFIG.get("theorem", {}))

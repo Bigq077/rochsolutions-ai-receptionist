@@ -528,13 +528,20 @@ async def schedule_address_reminder(
     phone: str,
     first_name: str,
     delay_minutes: int = 30,
+    from_number: Optional[str] = None,
+    clinic_id: str = "",
 ) -> None:
     """
     Schedule a nudge SMS asking a home-visit patient to text their full address
     + postcode, delay_minutes from now. Stored in a Redis sorted set scored by
-    send-at timestamp. Fired regardless of whether they have replied (we have no
-    inbound-SMS handling yet to detect a reply), so the copy is phrased
-    'if you haven't already'. Safe no-op if Redis is unavailable.
+    send-at timestamp. Safe no-op if Redis is unavailable.
+
+    from_number pins the sender to the BOOKING clinic's own Twilio line, so the
+    reminder (and the patient's reply) stay on the number whose inbound webhook
+    routes back to this clinic. The reminder queue is a GLOBAL key, so on a
+    shared Redis another tenant's worker may process this entry — without a
+    pinned from_number it would send from that worker's ambient
+    TWILIO_PHONE_NUMBER and the reply would land on the wrong line and be lost.
     """
     from app.storage.redis_store import redis_client as _ar
     if not _ar:
@@ -542,7 +549,10 @@ async def schedule_address_reminder(
         return
     try:
         send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
-        payload = json.dumps({"phone": phone, "first_name": first_name})
+        payload = json.dumps({
+            "phone": phone, "first_name": first_name,
+            "from_number": from_number or "", "clinic_id": clinic_id or "",
+        })
         await _ar.zadd(PENDING_ADDRESS_REMINDERS_SET, {payload: send_at})
         logger.info(
             "[ADDR_REMINDER] scheduled: phone=%r delay=%dmin send_at=%s",
@@ -574,6 +584,11 @@ async def process_address_reminders() -> int:
                 data = json.loads(payload_str)
                 phone = data.get("phone", "")
                 first_name = data.get("first_name") or "there"
+                # Send from the booking clinic's own line (pinned at schedule
+                # time) so the reply routes back to the right number's inbound
+                # webhook — never this worker's ambient number. Falls back to
+                # env when absent (legacy entries queued before this change).
+                from_number = data.get("from_number") or None
                 await send_sms(
                     to=phone,
                     message=(
@@ -582,6 +597,7 @@ async def process_address_reminders() -> int:
                         "your full home address and postcode so we can finalise it. "
                         "Thanks!"
                     ),
+                    from_number=from_number,
                 )
                 logger.info("[ADDR_REMINDER] nudge sent: phone=%r", phone)
                 await _ar.zrem(PENDING_ADDRESS_REMINDERS_SET, payload_str)

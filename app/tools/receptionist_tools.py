@@ -4352,9 +4352,13 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         if location == "home_visit" or "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
             try:
                 from app.notifications.scheduler import schedule_address_reminder
+                from app.clinic_config import twilio_number_for_clinic
+                _cid = clinic.get("clinic_id") or session.get("clinic_id") or ""
                 await schedule_address_reminder(
                     phone=phone,
                     first_name=(patient_name.split()[0] if patient_name else "there"),
+                    from_number=twilio_number_for_clinic(_cid),
+                    clinic_id=_cid,
                 )
             except Exception as e:
                 logger.warning("book_appointment (no calendar) address reminder failed (non-fatal): %r", e)
@@ -4498,9 +4502,13 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     if location == "home_visit" or "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
         try:
             from app.notifications.scheduler import schedule_address_reminder
+            from app.clinic_config import twilio_number_for_clinic
+            _cid = clinic.get("clinic_id") or session.get("clinic_id") or ""
             await schedule_address_reminder(
                 phone=phone,
                 first_name=(patient_name.split()[0] if patient_name else "there"),
+                from_number=twilio_number_for_clinic(_cid),
+                clinic_id=_cid,
             )
         except Exception as e:
             logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)

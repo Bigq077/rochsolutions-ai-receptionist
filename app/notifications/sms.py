@@ -164,11 +164,14 @@ class SMSService:
 
 
 # Convenience function for quick SMS sending
-async def send_sms(to: str, message: str) -> Optional[str]:
+async def send_sms(to: str, message: str, from_number: Optional[str] = None) -> Optional[str]:
     """
     Quick helper to send SMS without creating service instance.
-    
-    Uses environment variables for credentials.
+
+    Uses environment variables for credentials. Pass from_number to override the
+    Twilio sender (e.g. send a queued reminder from the booking clinic's own
+    line instead of the worker's ambient TWILIO_PHONE_NUMBER); when None it
+    falls back to the env number exactly as before.
     """
-    sms_service = SMSService()
+    sms_service = SMSService(from_number=from_number)
     return await sms_service.send_sms(to, message)
