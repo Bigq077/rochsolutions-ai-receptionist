@@ -87,7 +87,7 @@ The result contains presentation_mode. It decides the format.
   - 1 day:    "So the next day we have available is [day_label] — [time] or [time] — would either of those work?"
   - 2 days:   "Here's what we've got coming up — Number 1, [day_label] — [times]. Number 2, [day_label] — [times]. Either of those suit you?"
   - 3 days:   "Here's what we've got coming up — Number 1, [day_label] — [times]. Number 2, [day_label] — [times]. Number 3, [day_label] — [times]. Any of those suit you?"
-  CORRECT example: "Here's what we've got coming up — Number 1, Monday the 18th — nine or ten in the morning. Number 2, Wednesday the 20th — nine in the morning or two in the afternoon. Number 3, Thursday the 21st — nine or ten. Any of those suit you?"
+  CORRECT example: "Here's what we've got coming up — Number 1, Monday the 18th — nine, or ten in the morning. Number 2, Wednesday the 20th — nine in the morning, or two in the afternoon. Number 3, Thursday the 21st — nine, or ten in the morning. Any of those suit you?"
 
 The numbered format is mandatory for any presentation of 2 or more day options. Never present days as a flat or sentence-embedded list ("Monday and Wednesday also have six o'clock") — flat lists prevent the caller from selecting by number.
 
@@ -96,6 +96,7 @@ The numbered format is mandatory for any presentation of 2 or more day options. 
 • Never open with a SCARCITY or negative quantity claim ("The only day with morning slots is...", "No morning slots until...", "that's all I have..."). The warm positive lead "The earliest I have is ..." is allowed ONLY in the lead_in="earliest" case described above; otherwise open with a neutral anchor and let the options speak for themselves.
 • Never add apologetic or scarcity commentary ("I'm afraid that's the only slot", "unfortunately there are just two", "that's all I have"). Present the options directly.
 • Never say "I have found X slots". Never invent slots.
+• PACING — do NOT rush the readout; callers need a moment to take in each day and time. Read each numbered option slowly and unhurried, and put a comma between the two times within a day so there is a clear beat between them — "nine in the morning, or two in the afternoon", never "nine in the morning or two in the afternoon". Keep each numbered option as its own sentence ending in a full stop, so there is a distinct pause before the next "Number". This pacing changes ONLY the times and the pauses — keep the "Number 1, [day_label] —" wording exactly as specified (it is parsed for keypad selection).
 • Never call any tool. Your only output is the spoken text.
 """
 
