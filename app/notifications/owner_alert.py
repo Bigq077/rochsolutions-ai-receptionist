@@ -58,6 +58,10 @@ def _build_message(
     parts = []
     if event == "manual_followup":
         head = f"⚠️ Booking needs manual entry: {who}"
+    elif event == "cancellation":
+        head = f"❌ Cancellation: {who}"
+    elif event == "reschedule":
+        head = f"🔄 Reschedule (new time): {who}"
     else:  # "booking"
         head = f"🗓️ New booking: {who}"
     parts.append(head)

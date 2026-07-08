@@ -4679,6 +4679,30 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
         except Exception as e:
             logger.warning("provisional cancel owner notify failed (non-fatal): %r", e)
 
+    # Owner heads-up on cancellation — no-op unless the clinic enables
+    # owner_alerts for 'cancellation' (JV only: Theorem routes to the Acuity
+    # path above; demo / Vital Edge have no owner_alerts block). Never fatal.
+    try:
+        from app.notifications.owner_alert import notify_owner as _notify_owner_alert
+        from datetime import datetime as _dt_oa
+        _when_oa = ""
+        if event_start:
+            try:
+                _when_oa = _dt_oa.fromisoformat(
+                    event_start.replace("Z", "+00:00")
+                ).strftime("%A %d %B at %H:%M")
+            except (ValueError, TypeError):
+                _when_oa = event_start
+        await _notify_owner_alert(
+            session,
+            event="cancellation",
+            patient_name=_appt_name,
+            when_label=_when_oa,
+            service=event_summary,
+        )
+    except Exception as e:
+        logger.warning("cancel owner_alert failed (non-fatal): %r", e)
+
     return {
         "success": True,
         "cancelled_event": event_summary,
@@ -4808,6 +4832,24 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             )
         except Exception as e:
             logger.warning("provisional reschedule owner notify failed (non-fatal): %r", e)
+
+    # Owner heads-up on reschedule — no-op unless the clinic enables owner_alerts
+    # for 'reschedule' (JV only: Theorem routes to the Acuity path above; demo /
+    # Vital Edge have no owner_alerts block). This is an in-place event move
+    # (patch_event_time), NOT an internal book+cancel, so exactly ONE alert
+    # fires — no double-buzz. Never fatal.
+    try:
+        from app.notifications.owner_alert import notify_owner as _notify_owner_alert
+        await _notify_owner_alert(
+            session,
+            event="reschedule",
+            patient_name=_appt_name,
+            when_label=new_start.strftime("%A %d %B at %H:%M"),
+            service=found.get("summary", ""),
+            location=_gcal_event_location(found),
+        )
+    except Exception as e:
+        logger.warning("reschedule owner_alert failed (non-fatal): %r", e)
 
     return {
         "success": True,
