@@ -704,9 +704,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "Redditch is only open Mondays and Thursdays, "
                 "but it's very convenient if you're near Redditch town centre — "
                 "the train station is about a 5 to 7 minute walk from the clinic. "
-                "If you just want the most availability, Awlstuh is the better bet. "
-                "If Redditch suits your location better and Monday or Thursday works for you, "
-                "that's a perfectly good option too."
+                "I can book you straight in at Awlstuh. "
+                "Redditch appointments aren't bookable through me at the moment — "
+                "you can book those online at theoremhealth.co.uk, or I can put you "
+                "straight through to Mark."
             ),
 
             # ── What is shockwave therapy? ─────────────────────────────────────
@@ -1079,6 +1080,7 @@ THEOREM_LOCATIONS = {
         "short_name": "Alcester",
         "address": "Theorem Health and Wellness, The Greig Leisure Centre, Kinwarton Road, Alcester, B49 6AD",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_ALCESTER"),
+        "bookable": True,
     },
     "redditch": {
         "id": "redditch",
@@ -1086,6 +1088,11 @@ THEOREM_LOCATIONS = {
         "short_name": "Redditch",
         "address": "Theorem Health and Wellness, 51 Bromsgrove Road, Redditch, B97 4RH",
         "acuity_calendar_id": os.getenv("ACUITY_CALENDAR_ID_REDDITCH"),
+        # Redirect-only (Mark, 2026-07-08): Redditch is NOT bookable through
+        # Susie for now. Flip to True to fully restore Redditch booking — this
+        # single flag drives both the prompt redirect block and the code guard
+        # in llm_stream.py. Nothing else needs changing to re-enable.
+        "bookable": False,
     },
 }
 

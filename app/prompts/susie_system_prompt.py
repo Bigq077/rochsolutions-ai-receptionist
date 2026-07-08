@@ -1763,6 +1763,31 @@ def _build_theorem_v3(session: dict) -> str:
     _next_sunday      = _next_monday + _td(days=6)   # last day of next week
     _next_sunday_date = str(_next_sunday.day) + _next_sunday.strftime(" %B %Y")
 
+    # REDDITCH REDIRECT (Mark, 2026-07-08) — Redditch is not bookable through
+    # Susie for now. THEOREM_LOCATIONS['redditch']['bookable'] is the single
+    # toggle: flip it True and this whole block disappears + the code guard in
+    # llm_stream.py stops firing, fully restoring Redditch booking.
+    from app.clinic_config import THEOREM_LOCATIONS as _THEOREM_LOCATIONS
+    _redditch_bookable = _THEOREM_LOCATIONS.get("redditch", {}).get("bookable", True)
+    redditch_redirect = "" if _redditch_bookable else (
+        "REDDITCH — NOT BOOKABLE THROUGH SUSIE (redirect only)\n"
+        "The Redditch clinic cannot be booked, rescheduled, or moved to "
+        "through this line at the moment. The instant a caller wants to book, "
+        "reschedule, or move an appointment TO Redditch — however they phrase "
+        "it, including when they choose Redditch at the clinic question or "
+        "press 2 — do NOT call check_availability or book_appointment for "
+        "Redditch, and do NOT start collecting their details for a Redditch "
+        "booking. Say exactly: \"That clinic isn't bookable through me at the "
+        "moment — you can book online at theoremhealth.co.uk, or do you want "
+        "me to put you straight through to Mark?\" If the caller says yes to "
+        "being put through, call transfer_to_human. If they would rather book "
+        "at Awlstuh instead, carry on and help them with that as normal.\n"
+        "This redirect is for BOOKING only. You STILL answer every other "
+        "Redditch question — hours, address, parking, directions, which "
+        "practitioner is there — normally and helpfully. Only the booking "
+        "itself is redirected."
+    )
+
     # IDENTITY — who Susie is (section 1 — always first)
     identity = (
         "You are Susie, the AI receptionist for Theorem Health and "
@@ -3782,6 +3807,7 @@ def _build_theorem_v3(session: dict) -> str:
         treatment_override,
         concern_handling,
         identity,
+        redditch_redirect,
         booking_flow,
         tools,
         reschedule_cancel,
@@ -3809,6 +3835,6 @@ def _build_theorem_v3(session: dict) -> str:
     if b6: dynamic_blocks.append(b6)
 
     return (
-        "\n\n".join(static_blocks),
+        "\n\n".join(b for b in static_blocks if b),
         "\n\n".join(dynamic_blocks),
     )
