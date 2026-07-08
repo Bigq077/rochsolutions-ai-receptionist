@@ -165,6 +165,55 @@ def _render_persona_character(clinic: Dict[str, Any]) -> str:
     return f"PERSONA CHARACTER\n{char}"
 
 
+def _render_treatment_knowledge(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Optional domain-knowledge block that lets Susie give SPECIFIC, informed
+    treatment recommendations ('which massage is best for X?') instead of vague,
+    uninformational answers. Rendered only when the clinic supplies a
+    `treatment_guidance` object in clinic.json, so physio and other clinics that
+    don't set it are completely unaffected."""
+    tg = clinic.get("treatment_guidance") or {}
+    if not tg:
+        return ""
+    out = ["TREATMENT KNOWLEDGE — GUIDING THE CALLER TO THE RIGHT TREATMENT"]
+    if tg.get("how_to_use"):
+        out.append(tg["how_to_use"])
+    if tg.get("philosophy"):
+        out.append(tg["philosophy"])
+    svcs = tg.get("services") or []
+    if svcs:
+        out.append("")
+        out.append("WHAT EACH TREATMENT IS AND WHO IT SUITS:")
+        for s in svcs:
+            nm = s.get("name", "")
+            feel = s.get("feel", "")
+            best = s.get("best_for", "")
+            line = f"- {nm}"
+            if feel:
+                line += f" — {feel}"
+            if best:
+                line += f" Best for: {best}"
+            out.append(line)
+    recs = tg.get("recommendations") or []
+    if recs:
+        out.append("")
+        out.append("RECOMMENDATION GUIDE — the caller's need → the treatment to suggest:")
+        for r in recs:
+            need = r.get("need", "")
+            book = r.get("book", "")
+            why = r.get("why", "")
+            out.append(f"- {need} → recommend {book}." + (f" {why}" if why else ""))
+    if tg.get("if_unsure"):
+        out.append("")
+        out.append("IF THE CALLER IS UNSURE: " + tg["if_unsure"])
+    if tg.get("pressure_and_comfort"):
+        out.append("")
+        out.append("PRESSURE & COMFORT: " + tg["pressure_and_comfort"])
+    if tg.get("safety"):
+        out.append("")
+        out.append("SAFETY — NON-NEGOTIABLE: " + tg["safety"])
+    return "\n".join(out)
+
+
 def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     lines = [
@@ -1327,6 +1376,7 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
     static_blocks: List[str] = [
         _render_persona_character(clinic),
         _render_service_mapping(clinic, tk),
+        _render_treatment_knowledge(clinic, tk),
         _render_identity(clinic, tk),
         _render_provisional_booking(clinic, tk),
         spine["booking_flow"],
