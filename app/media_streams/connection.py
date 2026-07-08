@@ -11551,6 +11551,18 @@ class WebSocketCallHandler:
                     await route_call(call_logger.build_record(), self.session)
                 except Exception as _al_exc:
                     logger.error("[ms_conn] obs alert error: %r", _al_exc)
+
+                # Phase 3 — LLM-as-judge (spec §5.3). Fire-and-forget so the
+                # (network-bound) Claude call never delays teardown; gated on
+                # OBS_JUDGE_ENABLED (default OFF) and never raises. Reads the row
+                # capture just wrote, scores it, stores the result, and raises a
+                # review alert on a bad call — all off the teardown critical path.
+                try:
+                    from app.obs import judge as _obs_judge
+                    if _obs_judge.is_enabled() and self.call_sid:
+                        asyncio.create_task(_obs_judge.run_and_store(self.call_sid))
+                except Exception as _jd_exc:
+                    logger.error("[ms_conn] obs judge error: %r", _jd_exc)
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 

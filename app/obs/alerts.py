@@ -188,6 +188,19 @@ async def _post_slack(message: str) -> bool:
         return False
 
 
+async def review_alert(message: str) -> bool:
+    """Immediate operator alert for a low-quality call (Phase 3 judge bridge, §5.3).
+
+    Gated on OBS_ALERTS_ENABLED like every other alert — a no-op when the router is
+    off. Sends to the same operator SMS/Slack channels; never a clinic.
+    """
+    if not config.OBS_ALERTS_ENABLED:
+        return False
+    sms = await _send_operator_sms(message)
+    slack = await _post_slack(message)
+    return bool(sms or slack)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------

@@ -1,0 +1,8 @@
+call_sid,human_score,notes
+# Hand-labelled calibration set for the LLM-as-judge (spec §5.3).
+# One row per real call. Reference call_sids ONLY — never put names, phone
+# numbers, or clinical detail in this file (spec §7 / UK GDPR).
+# human_score is 1-5 using judge.RUBRIC_VERSION anchors (5=clean, 3=clumsy, 1=worse off).
+# Run:  python -m app.obs.calibrate
+# Example (delete this row; CAxx… is not a real call):
+# CAexample000000000000000000000000,5,clean booking, natural
