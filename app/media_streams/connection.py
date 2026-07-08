@@ -6380,21 +6380,15 @@ class WebSocketCallHandler:
                                             "(FAQ path): %r",
                                             self.session.get("patient_name"),
                                         )
-                                        # Spec Q: same early activation as
-                                        # normal path — phone collection phase
-                                        # starts at name confirmation.
-                                        if not self.session.get(
-                                            "v3_phone_dtmf_active"
-                                        ):
-                                            self.session[
-                                                "v3_phone_dtmf_active"
-                                            ] = True
-                                            logger.info(
-                                                "[ms_conn] v3_phone_dtmf_active"
-                                                " = True (name confirmed —"
-                                                " phone collection phase,"
-                                                " FAQ path)"
-                                            )
+                                        # NOTE: Spec Q early activation removed
+                                        # here for the same reason as the normal
+                                        # path — under name-first the name is
+                                        # captured at the first turn, so arming
+                                        # phone-DTMF on name-persist mis-fires the
+                                        # keypad nudge during later spoken
+                                        # questions.  Phone DTMF is armed by the
+                                        # keypad-mention triggers when the phone
+                                        # step actually begins.
                                     await save_session(
                                         self.call_sid, self.session
                                     )
@@ -8266,18 +8260,23 @@ class WebSocketCallHandler:
                                     "(normal path): %r",
                                     self.session.get("patient_name"),
                                 )
-                                # Spec Q: activate DTMF at name-confirmed state.
-                                # Phone collection begins the moment the name is
-                                # persisted — digits may arrive before any
-                                # "keypad" mention.  Keypad-mention activation
-                                # (Spec M) remains as a secondary trigger.
-                                if not self.session.get("v3_phone_dtmf_active"):
-                                    self.session["v3_phone_dtmf_active"] = True
-                                    logger.info(
-                                        "[ms_conn] v3_phone_dtmf_active = True"
-                                        " (name confirmed — phone collection"
-                                        " phase)"
-                                    )
+                                # NOTE: Spec Q used to arm v3_phone_dtmf_active
+                                # here on name-persist, assuming "name confirmed
+                                # ⟹ phone step is next".  That held only for the
+                                # old tail-end name flow.  Under name-first
+                                # (name asked at the very first turn) the phone
+                                # step is several spoken questions away
+                                # (clinic → timing → slot → phone), so arming
+                                # phone-DTMF here fired the keypad safety-net
+                                # nudge ("type the number on your keypad") in
+                                # the middle of the *spoken* clinic question and
+                                # suppressed the spoken-input handlers.  Phone
+                                # DTMF is now armed solely by the keypad-mention
+                                # triggers (Spec M @ ~8322 + auto-activate paths
+                                # @ ~4680/6092/8198), which fire exactly when the
+                                # LLM asks the caller to type their number.  The
+                                # eager-dialler case Spec Q protected cannot
+                                # occur under name-first.
                             # ── Spec J: post-slot confirmation flag ───────────
                             # Update post_slot_confirmation_pending based on
                             # whether this response asked for the patient's name.
