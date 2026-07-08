@@ -1105,6 +1105,32 @@ _V3_NAME_FALSE_POSITIVES = frozenset({
 })
 
 
+# Slot/clock lead-words that must never be captured as a FIRST NAME. A booking
+# readback phrased time-first ("So that's quarter to twelve …", "So that's five
+# in the evening …") otherwise makes the name-confirm patterns capture the time
+# word as the caller's name (Call 4, 2026-07-08: name stored as "Quarter").
+# Kept SEPARATE from the surname stoplists so surname capture is unaffected
+# (a real surname like "Noon" is still bookable). Applied ONLY at first-name
+# capture sites — _v3_try_persist_name's pattern loop and the booking-readback
+# upgrade. None of these are real first names, so blocking them cannot drop a
+# genuine name.
+_V3_SLOT_LEAD_WORDS = frozenset({
+    "quarter", "half", "noon", "midday", "midnight", "oclock", "o'clock",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "twenty", "thirty", "forty", "fifty",
+})
+
+# Single leading filler / STT-artifact words that may precede the caller's first
+# name in a name-answer ("it's Sarah Jenkins" → STT "is sarah jenkins"; "yeah
+# Sarah Jenkins"). Used ONLY to let the surname extractor look past ONE such
+# lead word (Call 1, 2026-07-08: surname "Jenkins" dropped because the first
+# name wasn't token[0]).
+_V3_NAME_LEAD_FILLERS = frozenset({
+    "is", "it", "yeah", "yes", "um", "uh", "erm", "so", "well",
+    "my", "hi", "hello", "and", "ok", "okay",
+})
+
+
 # Stop-words that must never be captured as a surname. Combined with
 # _V3_NAME_FALSE_POSITIVES at match time. Conversational/filler tokens that
 # commonly co-occur in a name-answer utterance.
@@ -1176,13 +1202,18 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
         if _ok(cand):
             return cand.capitalize()
 
-    # 3) Bare name "quentin rock" / "quentin james rock" — only when the first
-    #    token matches the readback first name (high confidence).
+    # 3) Bare name "quentin rock" / "quentin james rock" — when the first name
+    #    leads the answer, OR sits just after a single leading filler / STT
+    #    artifact ("is sarah jenkins" from "it's Sarah Jenkins", "yeah sarah
+    #    jenkins"). The surname is the last token. Non-filler leads ("no sarah
+    #    wrong") are NOT trusted, so a correction/aside can't be mis-read.
     tokens = text.split()
-    if 2 <= len(tokens) <= 4 and tokens[0] == first_l:
-        cand = tokens[-1]
-        if _ok(cand):
-            return cand.capitalize()
+    if 2 <= len(tokens) <= 4 and first_l in tokens:
+        idx = tokens.index(first_l)
+        if (idx == 0 or (idx == 1 and tokens[0] in _V3_NAME_LEAD_FILLERS)) and idx < len(tokens) - 1:
+            cand = tokens[-1]
+            if _ok(cand):
+                return cand.capitalize()
 
     return ""
 
@@ -1336,7 +1367,10 @@ def _v3_try_persist_name(
         m = pattern.search(last_bot)
         if m:
             candidate = m.group(1).capitalize()
-            if candidate.lower() not in _V3_NAME_FALSE_POSITIVES:
+            if (
+                candidate.lower() not in _V3_NAME_FALSE_POSITIVES
+                and candidate.lower() not in _V3_SLOT_LEAD_WORDS
+            ):
                 # The readback only ever contains the FIRST name (Susie never
                 # reads the surname back), so recover the surname from the
                 # caller's own utterance and store the FULL name. First name
@@ -8386,7 +8420,13 @@ class WebSocketCallHandler:
                                     r"([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+){0,2}?)\s*,",
                                     _last_bot, re.IGNORECASE,
                                 )
-                                if _rbm:
+                                if _rbm and _rbm.group(1).split()[0].lower() \
+                                        not in _V3_SLOT_LEAD_WORDS:
+                                    # Guard: a TIME-FIRST final readback ("So
+                                    # that's quarter to twelve, …") must not
+                                    # inject a slot phrase as the name (this
+                                    # regex has no false-positive filter of its
+                                    # own — C1 twin of the P1 bug, Call 4).
                                     _rb_full = " ".join(
                                         w.capitalize()
                                         for w in _rbm.group(1).split()
