@@ -46,6 +46,7 @@ def test_dashboard_no_db_returns_2(monkeypatch, capsys):
     store.reset_engine()
     try:
         assert dashboard.main(["--weeks", "8"]) == 2
-        assert "DATABASE_URL not set" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "not set" in err and "DATABASE_URL" in err
     finally:
         store.reset_engine()

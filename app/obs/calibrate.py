@@ -98,7 +98,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     path = Path(argv[0]) if argv else _DEFAULT_LABELS
 
     if not config.DATABASE_URL:
-        print("ERROR: DATABASE_URL not set — no store to calibrate against.", file=sys.stderr)
+        print("ERROR: OBS_DATABASE_URL (or DATABASE_URL) not set — no store to calibrate against.", file=sys.stderr)
         return 2
     if not judge.is_enabled():
         print("ERROR: judge disabled — set OBS_JUDGE_ENABLED=true and ANTHROPIC_API_KEY.",

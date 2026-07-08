@@ -132,7 +132,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if not config.DATABASE_URL:
-        print("ERROR: DATABASE_URL not set — no store to read from.", file=sys.stderr)
+        print("ERROR: OBS_DATABASE_URL (or DATABASE_URL) not set — no store to read from.", file=sys.stderr)
         return 2
 
     call = store.get_call(args.call_sid)

@@ -24,8 +24,8 @@ from app.obs import store
 
 def main() -> int:
     if not config.DATABASE_URL:
-        print("ERROR: DATABASE_URL is not set — nothing to migrate.", file=sys.stderr)
-        print("Set DATABASE_URL (SQLAlchemy URL, e.g. "
+        print("ERROR: OBS_DATABASE_URL (or DATABASE_URL) is not set — nothing to migrate.", file=sys.stderr)
+        print("Set OBS_DATABASE_URL (SQLAlchemy URL, e.g. "
               "postgresql+psycopg2://user:pass@host:5432/db) and retry.", file=sys.stderr)
         return 1
 

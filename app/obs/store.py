@@ -77,7 +77,7 @@ def init_db() -> bool:
     """
     engine = _get_engine()
     if engine is None:
-        _log.warning("[obs.store] init_db skipped — DATABASE_URL not set")
+        _log.warning("[obs.store] init_db skipped — OBS_DATABASE_URL/DATABASE_URL not set")
         return False
     Base.metadata.create_all(engine, checkfirst=True)
     _ensure_new_columns(engine)
