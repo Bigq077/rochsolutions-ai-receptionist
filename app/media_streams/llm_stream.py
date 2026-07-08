@@ -1494,6 +1494,14 @@ class LLMStream:
                 # phone are both confirmed.  At that point the slot is already
                 # agreed — re-running availability causes Haiku's slot buffer to
                 # misfire and ask for the name a second time.
+                #
+                # Gate on session["phone_confirmed"] — the flag set ONLY when the
+                # caller actively confirms their number — NOT collected["phone"],
+                # which is pre-loaded from the Twilio caller-ID at connect and is
+                # therefore always present.  Under name-first (first name stored
+                # at turn 1) the old collected["phone"] check made this guard fire
+                # before any slot was offered, forcing a premature booking readback
+                # that skipped the surname and phone-confirmation steps.
                 _col = session.get("collected") or {}
                 if _location_not_bookable(tool_name, args, session):
                     _loc_nb = str(
@@ -1522,12 +1530,12 @@ class LLMStream:
                     }
                 elif (
                     tool_name == "check_availability"
-                    and _col.get("phone")
+                    and session.get("phone_confirmed")
                     and (_col.get("name") or _col.get("full_name"))
                 ):
                     logger.warning(
-                        "[ms_llm] check_availability BLOCKED — name+phone already "
-                        "collected; forcing booking readback call_sid=%s", call_sid,
+                        "[ms_llm] check_availability BLOCKED — name collected + phone "
+                        "confirmed; forcing booking readback call_sid=%s", call_sid,
                     )
                     result = {
                         "error": "booking_details_already_complete",
