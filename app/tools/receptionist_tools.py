@@ -70,9 +70,10 @@ def _spoken_slot_time(hhmm: str) -> str:
     "midday", "one in the afternoon", "five in the evening") so the Haiku slot
     formatter copies labels verbatim instead of converting times itself — which
     let it drop/invent slots (e.g. rendering [09,10,11,12,13] as 09,10,12,13,14
-    and booking a non-existent 2pm).  Slots land on the hour, :15, :30 and :45
-    (a service length + inter-appointment break rarely divides the hour evenly);
-    all four are spoken naturally, other minutes handled defensively.
+    and booking a non-existent 2pm).  Only :00/:15/:30/:45 use clock-face
+    phrasing ("half past six", "quarter to seven"); every other five-minute
+    value is read digitally ("six twenty-five", "six thirty-five"), never as
+    "twenty-five to seven".
     """
     try:
         h, m = map(int, hhmm.split(":"))
@@ -98,17 +99,20 @@ def _spoken_slot_time(hhmm: str) -> str:
     if m == 45:
         # "quarter to" the NEXT hour, keeping the reading's time-of-day label.
         return f"quarter to {next_word} {part}"
-    # Remaining five-minute grid values spoken conversationally ("ten past
-    # seven", "twenty to eight") instead of as digits ("seven 10", "six 05").
-    # A service length + inter-appointment break routinely lands slots on these
-    # minutes — e.g. a 60-min neuro assessment strides 65 min → :00, :05, :10 …
-    _min_past = {5: "five", 10: "ten", 20: "twenty", 25: "twenty-five"}
-    _min_to = {35: "twenty-five", 40: "twenty", 50: "ten", 55: "five"}
-    if m in _min_past:
-        return f"{_min_past[m]} past {hour_word} {part}"
-    if m in _min_to:
-        return f"{_min_to[m]} to {next_word} {part}"
-    # Off-grid minute (rare) — plain, unambiguous fallback.
+    # Every other minute: read it the way a British caller reads a time off a
+    # screen — digital "[hour] [minutes]" (e.g. "six twenty-five", "six thirty-
+    # five") — NOT the clock-face "twenty-five to seven", which sounds odd for
+    # an appointment slot. Only :00/:15/:30/:45 (handled above) keep the
+    # clock-face phrasing. Minutes under ten keep the spoken "oh" ("six oh
+    # five"); the time-of-day suffix stays for AM/PM clarity.
+    _DIGITAL_MIN = {
+        5: "oh five", 10: "ten", 20: "twenty", 25: "twenty-five",
+        35: "thirty-five", 40: "forty", 50: "fifty", 55: "fifty-five",
+    }
+    _mm = _DIGITAL_MIN.get(m)
+    if _mm is not None:
+        return f"{hour_word} {_mm} {part}"
+    # Off-grid minute (never on a 5-minute grid) — unambiguous digit fallback.
     return f"{hour_word} {m:02d} {part}"
 
 
