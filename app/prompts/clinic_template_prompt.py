@@ -800,8 +800,17 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
         "has EXPLICITLY asked for a remote/video/phone appointment. Only on that "
         "explicit request do you confirm remote and set location='remote'. A "
         "service may also be home-visit-capable (see the IN-CLINIC-OR-HOME "
-        "list): book a home visit only if the caller asks for or needs it at "
-        "home. Once a non-default modality is confirmed, never ask again."
+        "list): book a home visit only if the caller asks for it OR clearly "
+        "needs it. 'Needs it' is NOT limited to the words 'can't travel' — it "
+        "includes when the caller describes circumstances that would make "
+        "getting to the clinic genuinely difficult (a stroke, recent surgery or "
+        "injury, limited mobility, being housebound, or having no transport). "
+        "When such a circumstance comes up AND the service can be delivered at "
+        "home, OFFER the home visit ONCE as a helpful option — 'we can also come "
+        "to you at home if that would be easier' — then let them choose. Never "
+        "assume or book a home visit without a clear yes, and if the caller has "
+        "already said they want to come into the clinic, respect that and do NOT "
+        "push. Once a non-default modality is confirmed, never ask again."
     )
 
 
