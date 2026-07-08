@@ -36,6 +36,13 @@ from pathlib import Path
 # Allow running as a script from repo root: python tests/auto/run_tests.py
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
+# --ci (spec §5.4) short-circuits BEFORE the heavy live-suite imports below
+# (call_runner/evaluator pull in numpy/ngrok/etc. that CI doesn't install). The
+# offline regression runner only needs app.obs, so dispatch to it here and exit.
+if "--ci" in sys.argv:
+    from app.obs.regress import main as _regress_main
+    raise SystemExit(_regress_main([]))
+
 from tests.auto.config import (
     RESULTS_DIR,
     SUSIE_NUMBER,
@@ -545,7 +552,16 @@ async def main():
         action="store_true",
         dest="real_calls",
     )
+    parser.add_argument(
+        "--ci",
+        help="Offline regression mode (spec §5.4): replay mined regression scenarios "
+             "and check deterministic assertions. No live server / Twilio / Claude. "
+             "Exits non-zero on regression. Used by CI.",
+        action="store_true",
+    )
     args = parser.parse_args()
+    # NOTE: --ci is handled by an early short-circuit at module top (before the
+    # heavy live-suite imports), so control never reaches here when it is set.
 
     if args.real_calls:
         # Override the module-level flag so CallRunner uses the real Twilio flow
