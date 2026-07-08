@@ -4186,6 +4186,31 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     if location and (location in _loc_ids or location == _primary_loc):
         _loc_for_check = "in_clinic"
 
+    # ── Service reconciliation (Call 3, 2026-07-08) ────────────────────────
+    # Symmetric with the modality reconciliation above. The slot the caller
+    # picked was generated for the service pinned at check_availability
+    # (_checked_service) — its length and time grid belong to THAT service.
+    # If the model books a DIFFERENT but modality-valid service (e.g. the call
+    # opened on acupuncture, pivoted to a neuro assessment, and the model
+    # reverted to acupuncture at book time), the P2 guard below cannot catch it
+    # because the wrong service is itself bookable under this modality. Trust
+    # the checked service so the event type, duration, price and SMS all match
+    # the slot the caller actually chose. Only reconcile when the checked
+    # service exists and is valid for this modality; otherwise leave it to the
+    # P2 guard (which rejects/re-resolves impossible service×modality combos).
+    _checked_svc = (session.get("_checked_service") or "").strip()
+    if _checked_svc and _checked_svc.lower() != (service or "").lower():
+        _checked_svc_def = _find_service_def(clinic, _checked_svc)
+        if _checked_svc_def and _service_supports_location(
+            _checked_svc_def, _loc_for_check
+        ):
+            logger.warning(
+                "[book] service reconciled: book service %r → %r "
+                "(matches checked availability)",
+                service, _checked_svc,
+            )
+            service = _checked_svc
+
     _svc_def = _find_service_def(clinic, service)
     if _svc_def and _loc_for_check and not _service_supports_location(_svc_def, _loc_for_check):
         _pinned = (session.get("_checked_service") or "").strip()
