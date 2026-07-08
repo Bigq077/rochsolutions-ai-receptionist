@@ -112,6 +112,32 @@ def _spoken_slot_time(hhmm: str) -> str:
     return f"{hour_word} {m:02d} {part}"
 
 
+# An explicit clock time in the caller's preference ("12 o'clock", "half past
+# 12", "around 3", "17:00", "noon") must take precedence over the coarse
+# morning/afternoon/evening band. When BOTH appear in one hint (e.g. "Saturday
+# morning around 12"), banding to hour<12 silently drops the very slot the caller
+# asked for (12:30) and makes Susie claim it's unavailable (Call 4, 2026-07-08).
+# When an explicit time is present we skip the band filter — which only ever
+# RETAINS more slots, never fewer — so the requested slot survives and
+# _resolve_slot_iso / the model pick the nearest. Bare-band hints ("mornings",
+# "Thursday afternoon") contain no clock token, so their behaviour is unchanged.
+_EXPLICIT_CLOCK_RE = re.compile(
+    r"\b\d{1,2}\s*[:.]\s*\d{2}\b"                        # 12:30, 9.30, 17:00
+    r"|\b\d{1,2}\s*(?:o'?clock|am|pm|a\.m\.?|p\.m\.?)\b"  # 12 o'clock, 3pm
+    r"|\b(?:half|quarter|twenty(?:[-\s]five)?|ten|five|\d{1,2})\s+(?:past|to)\s+"
+    r"(?:noon|midday|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b"
+    r"|\b(?:around|about|at|by|near|just after|just before|before|after)\s+\d{1,2}\b"
+    r"|\bnoon\b|\bmidday\b",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_clock(pref: str) -> bool:
+    """True when the caller's preference names a specific clock time (not just a
+    coarse morning/afternoon/evening band)."""
+    return bool(_EXPLICIT_CLOCK_RE.search(pref or ""))
+
+
 def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> list:
     """
     Filter (start_dt, end_dt) tuples to those matching the caller's stated
@@ -157,18 +183,22 @@ def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> lis
     #   morning   = hour < 12
     #   afternoon = 13 <= hour < 17
     #   evening   = hour >= 17
-    if "morning" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
-        if time_filtered:
-            filtered = time_filtered
-    elif "afternoon" in pref:
-        time_filtered = [(s, e) for s, e in filtered if 13 <= s.hour < 17]
-        if time_filtered:
-            filtered = time_filtered
-    elif "evening" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
-        if time_filtered:
-            filtered = time_filtered
+    # Skip the coarse band when the caller named an explicit clock time — the
+    # exact time wins so a boundary slot (e.g. 12:30 for "around 12") is never
+    # dropped. Band-only hints are unaffected. See _has_explicit_clock.
+    if not _has_explicit_clock(pref):
+        if "morning" in pref:
+            time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
+            if time_filtered:
+                filtered = time_filtered
+        elif "afternoon" in pref:
+            time_filtered = [(s, e) for s, e in filtered if 13 <= s.hour < 17]
+            if time_filtered:
+                filtered = time_filtered
+        elif "evening" in pref:
+            time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
+            if time_filtered:
+                filtered = time_filtered
 
     # Fall back to all future slots if preference produced no matches
     if not filtered:
