@@ -38,7 +38,7 @@ _BANNED_SENTENCE_RE = [
      re.compile(
          r"^(?:Absolutely|Certainly|Of course|Sure thing|Sure"
          r"|Wonderful|Fantastic|Exactly|Indeed|Definitely|Totally"
-         r"|Obviously|Clearly|Lovely|Right so|Perfect|Great)"
+         r"|Obviously|Clearly|Right so|Perfect|Great)"
          r"\s*[,!\-—–]\s*",
          re.IGNORECASE,
      )),
@@ -48,8 +48,11 @@ _BANNED_SENTENCE_RE = [
     ("one_moment",    re.compile(r"[^.!?]*\bone moment please\b[^.!?]*[.!?]?",   re.IGNORECASE)),
     ("are_you_there", re.compile(r"[^.!?]*\bare you still there\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("still_there",   re.compile(r"[^.!?]*\bstill there\b[^.!?]*[.!?]?",         re.IGNORECASE)),
-    # "Lovely, [name]" acknowledgement — patronising opener, banned everywhere
-    ("lovely_opener", re.compile(r"^[Ll]ovely[,\s!]+",                            re.IGNORECASE)),
+    # "Lovely, [name]" acknowledgement — patronising name-echo, still banned.
+    # EXCEPTION (name-first, Mark 2026-07-08): a leading "Lovely —" (em/en/hyphen
+    # dash) is the warm call-opening before the first-name ask and is kept; the
+    # negative lookahead preserves it while still stripping "Lovely, Quentin".
+    ("lovely_opener", re.compile(r"^[Ll]ovely(?![\s]*[—–\-])[,!\s]+",             re.IGNORECASE)),
     # Internal/meta orchestration text — must never reach caller TTS
     ("lookup_already_done",   re.compile(r"[^.!?]*\blookup (?:has )?already (?:been )?done\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),

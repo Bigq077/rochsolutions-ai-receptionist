@@ -331,6 +331,13 @@ _NAME_REQUEST_PHRASES: tuple = (
     "what is your first name",
     "could i get your name",
     "first name",
+    # Surname-only asks (name-first flow: first name taken at call open, the
+    # surname is collected at the booking step). These arm the persist gate so
+    # the surname answer on the next turn is appended to the stored first name.
+    "your surname",
+    "surname",
+    "last name",
+    "family name",
 )
 
 # Spec J — short confirming responses the patient may give AFTER the system
@@ -1204,6 +1211,55 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
     return ""
 
 
+_SURNAME_CONTRACTIONS = frozenset({
+    "it's", "that's", "what's", "he's", "she's", "here's", "there's", "let's",
+})
+
+
+def _v3_extract_bare_surname(caller_utterance: str, first_name: str) -> str:
+    """Extract a surname from a SURNAME-ONLY answer (name-first flow).
+
+    Used when the caller has already given their first name at the start of the
+    call and is now answering the booking-stage question "And your surname?".
+    Unlike _v3_extract_surname (which expects a full name answer), the utterance
+    here is typically just the surname — "Roch", "it's Roch", "my surname is
+    Roch spelt r o c h". Returns a capitalised surname, or "" if none found.
+    """
+    if not caller_utterance:
+        return ""
+    text = re.sub(r"[^a-z'\-\s]", " ", caller_utterance.lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    first_l = (first_name or "").lower().split()[0] if first_name else ""
+
+    def _ok(tok: str) -> bool:
+        return (
+            2 <= len(tok) <= 25
+            and tok != first_l
+            and tok not in _SURNAME_STOPWORDS
+            and tok not in _V3_NAME_FALSE_POSITIVES
+            and tok not in _SURNAME_CONTRACTIONS
+        )
+
+    # 1) Explicit marker — most reliable.
+    m = re.search(
+        r"(?:surname|last name|family name|second name)"
+        r"(?:\s+is|\s+was|'s)?\s+(" + _SURNAME_TOKEN + r")",
+        text,
+    )
+    if m and _ok(m.group(1)):
+        return m.group(1).capitalize()
+
+    # 2) Otherwise take the LAST acceptable token — the surname normally comes
+    #    last ("it's Roch", "the surname's Roch", "Roch"). Spelled-out letters
+    #    ("r o c h") are single chars and filtered by the length check.
+    toks = [t for t in text.split() if _ok(t)]
+    if toks:
+        return toks[-1].capitalize()
+    return ""
+
+
 def _v3_try_persist_name(
     session: dict,
     last_bot: str,
@@ -1235,8 +1291,16 @@ def _v3_try_persist_name(
     Called after every run_turn() in the theorem_v3 path so the name is stored
     at the moment of confirmation regardless of whether collect_and_store fired.
     """
-    # Already persisted — nothing to do.
-    if session.get("patient_name") or session.get("collected", {}).get("name"):
+    _existing = (
+        session.get("patient_name")
+        or (session.get("collected") or {}).get("name")
+        or ""
+    )
+    _existing = str(_existing).strip()
+    _has_full_name = len(_existing.split()) >= 2
+
+    # Full name (first + surname) already captured — nothing to do.
+    if _existing and _has_full_name:
         return False
 
     if not last_bot:
@@ -1251,16 +1315,37 @@ def _v3_try_persist_name(
     if not post_slot_pending and not _name_requested_this_turn:
         return False
 
+    # ── Stage 2: first name already stored — append the surname ──────────────
+    # Name-first flow: the first name was persisted at the start of the call and
+    # the caller has now answered the booking-stage "And your surname?".  The
+    # surname lives in the caller's utterance (it is never read back), so take
+    # it directly rather than from a readback pattern.
+    if _existing:
+        # Only when the PREVIOUS turn asked for the name/surname (post_slot_pending
+        # is armed) is the current utterance a surname ANSWER. If instead THIS
+        # turn is the surname question itself (_name_requested_this_turn, but the
+        # flag not yet armed), the utterance is the slot pick — never mine a
+        # surname from it.
+        if not post_slot_pending:
+            return False
+        surname = _v3_extract_bare_surname(caller_utterance, _existing)
+        if surname and surname.lower() != _existing.lower():
+            full = f"{_existing} {surname}"
+            session.setdefault("collected", {})["name"] = full
+            session["patient_name"] = full
+            return True
+        return False
+
+    # ── Stage 1: no name yet — capture the first name from the readback ───────
     for pattern in _V3_NAME_CONFIRM_PATTERNS:
         m = pattern.search(last_bot)
         if m:
             candidate = m.group(1).capitalize()
             if candidate.lower() not in _V3_NAME_FALSE_POSITIVES:
-                # The readback only ever contains the FIRST name (Susie never
-                # reads the surname back), so recover the surname from the
-                # caller's own utterance and store the FULL name. First name
-                # stays authoritative from the readback; surname is best-effort
-                # from the (clean) transcript. Falls back to first-name-only.
+                # First name is authoritative from the readback ("Thanks
+                # Quentin —").  The caller may also have volunteered a surname
+                # in the same breath ("Quentin Roch"); capture it if so, else
+                # store first-name-only and collect the surname at booking.
                 surname = _v3_extract_surname(caller_utterance, candidate)
                 full = f"{candidate} {surname}" if surname else candidate
                 session.setdefault("collected", {})["name"] = full
