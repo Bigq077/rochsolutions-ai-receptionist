@@ -113,10 +113,33 @@ def _has_duration_options(svc: Dict[str, Any]) -> bool:
     return bool(svc.get("typical_duration_minutes_options"))
 
 
-def _service_price_summary(svc: Dict[str, Any], modalities: List[str] = None) -> str:
+def _home_visits_enabled(clinic: Dict[str, Any]) -> bool:
+    """True if the clinic offers home visits at all — via the 'home_visit'
+    modality, a dedicated 'home_visit' service, or any per-service
+    'home_visit_gbp' rate. jv_v1 does home visits WITHOUT listing 'home_visit'
+    in its modalities list, so the price renderers must not gate solely on the
+    modalities list (Call 5, 2026-07-08: home-visit acupuncture quoted the
+    in-clinic £48 instead of £70 because the £70 was suppressed from the prompt).
+    Mirrors the _home_on signal computed inline by _render_service_mapping."""
+    if "home_visit" in (clinic.get("modalities") or []):
+        return True
+    for s in clinic.get("services", []) or []:
+        if s.get("service_id") == "home_visit":
+            return True
+        if (s.get("pricing") or {}).get("home_visit_gbp") is not None:
+            return True
+    return False
+
+
+def _service_price_summary(
+    svc: Dict[str, Any], modalities: List[str] = None, home_enabled: bool = False,
+) -> str:
     """Compact per-service modality pricing, e.g. 'in-clinic £52 | remote £40'.
     Modalities not offered by the clinic (e.g. home_visit when removed) are
-    omitted so Susie never quotes a price for something she can't book."""
+    omitted so Susie never quotes a price for something she can't book.
+    home_enabled surfaces the per-service home-visit rate for clinics that do
+    home visits without listing 'home_visit' in modalities (see
+    _home_visits_enabled)."""
     modalities = modalities if modalities is not None else ["in_clinic", "remote", "home_visit"]
     p = svc.get("pricing", {}) or {}
     parts: List[str] = []
@@ -129,7 +152,7 @@ def _service_price_summary(svc: Dict[str, Any], modalities: List[str] = None) ->
         parts.append(f"remote {_gbp(p['remote_gbp'])}")
     if p.get("price_gbp") is not None:
         parts.append(_gbp(p["price_gbp"]))
-    if p.get("home_visit_gbp") is not None and "home_visit" in modalities:
+    if p.get("home_visit_gbp") is not None and (home_enabled or "home_visit" in modalities):
         parts.append(f"home visit {_gbp(p['home_visit_gbp'])}")
     if p.get("package"):
         parts.append(str(p["package"]))
@@ -187,11 +210,12 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "SERVICE → ID (pricing by modality):",
     ]
     coming_soon: List[str] = []
+    _home_enabled = _home_visits_enabled(clinic)
     for svc in clinic.get("services", []) or []:
         if svc.get("available") is False:
             coming_soon.append(svc.get("name", svc.get("service_id", "")))
             continue
-        summary = _service_price_summary(svc, clinic.get("modalities"))
+        summary = _service_price_summary(svc, clinic.get("modalities"), _home_enabled)
         sid = svc.get("service_id", "")
         nm = svc.get("name", sid)
         who = svc.get("for_patients", "")
@@ -285,8 +309,10 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
                 "about or offer a remote, video, or phone option for these. "
                 f"Default to in-clinic at {tk['primary_location_id']}, BUT they "
                 "CAN be done as a home visit: if the caller asks for or needs it "
-                "at home, confirm the home visit at the stated price and set "
-                "location='home_visit'. These services: "
+                "at home, confirm the home visit and set location='home_visit'. "
+                "Quote the HOME-VISIT price shown in SERVICE → ID for that "
+                "service — NEVER the in-clinic price — whenever the appointment "
+                "is a home visit. These services: "
                 + ", ".join(home_capable) + "."
             )
         if in_clinic_only:
@@ -320,6 +346,7 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
 def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     pol = clinic.get("pricing_and_policies", {}) or {}
+    _home_enabled = _home_visits_enabled(clinic)
     in_clinic, remote, home = [], [], []
     for svc in clinic.get("services", []) or []:
         if svc.get("available") is False:
@@ -342,7 +369,7 @@ def _render_prices(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             in_clinic.append(f"{nm}{dur_s}: {_gbp(p['price_gbp'])}")
         if p.get("remote_gbp") is not None:
             remote.append(f"{nm}{dur_s}: {_gbp(p['remote_gbp'])}")
-        if p.get("home_visit_gbp") is not None and "home_visit" in (clinic.get("modalities") or []):
+        if p.get("home_visit_gbp") is not None and (_home_enabled or "home_visit" in (clinic.get("modalities") or [])):
             home.append(f"{nm}: {_gbp(p['home_visit_gbp'])}")
         if p.get("package"):
             in_clinic.append(f"{nm} package: {p['package']}")
@@ -1397,8 +1424,11 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "9. WARM READBACK. State caller first name, day, date, and time — NOT "
         "the duration, NOT what the assessment involves, and do NOT name the "
         f"town ({cn} is a single site, so 'at {loc_spoken}' adds nothing). Only "
-        "if the appointment is REMOTE, say 'as a remote appointment' in place "
-        "of a location: "
+        "if the appointment is REMOTE, say 'as a remote appointment'; if it is "
+        "a HOME VISIT, say 'as a home visit at your home' — in place of a "
+        "location. ALWAYS state the modality when it is not the normal in-clinic "
+        "appointment (never read a remote or home-visit booking back as if it "
+        "were in-clinic): "
         f"'So that's James, Thursday the 7th of May at half past six in the "
         f"evening — shall I go ahead and book that in?' End "
         "with 'Shall I go ahead and book that in?'. Never start with Perfect, "
