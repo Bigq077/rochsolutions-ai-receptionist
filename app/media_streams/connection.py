@@ -8513,8 +8513,17 @@ class WebSocketCallHandler:
                                     and self.session.get(
                                         "v3_location_confirmed"
                                     )
+                                    # v3 tts_text_queue is a plain asyncio.Queue,
+                                    # so _turn_speech_emitted never flips True on
+                                    # this path and mis-reads every spoken turn as
+                                    # "silent" — re-queuing a duplicate FAQ answer
+                                    # (e.g. Redditch "not bookable" said twice).
+                                    # _turn_real_tts (llm_stream.py) is the
+                                    # authoritative "did run_turn emit audible TTS"
+                                    # signal; only re-queue on a genuinely silent
+                                    # turn (LLM re-asked + deduplicated).
                                     and not self.session.get(
-                                        "_turn_speech_emitted"
+                                        "_turn_real_tts"
                                     )
                                 ):
                                     _requeue_loc = self.session.get(
