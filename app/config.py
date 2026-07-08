@@ -59,7 +59,11 @@ OBS_CAPTURE_ENABLED = os.getenv("OBS_CAPTURE_ENABLED", "false").lower() == "true
 # Connection string for the durable observability store (managed Postgres, EU
 # region — see spec §7). Empty until provisioned; capture no-ops while unset.
 # SQLAlchemy URL form, e.g. postgresql+psycopg2://user:pass@host:5432/dbname
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+#
+# Prefer the dedicated OBS_DATABASE_URL so this never collides with an existing
+# DATABASE_URL already set on the host for another purpose. Falls back to
+# DATABASE_URL when OBS_DATABASE_URL is unset (backwards-compatible).
+DATABASE_URL = os.getenv("OBS_DATABASE_URL") or os.getenv("DATABASE_URL", "")
 
 # Phase 2 — failure alerting (see Susie_Call_Observability_Spec_for_Jules.md §5.2).
 # When enabled, completed calls matching a failure condition alert the operator

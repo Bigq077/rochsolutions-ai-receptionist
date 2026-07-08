@@ -74,7 +74,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if not config.DATABASE_URL:
-        print("ERROR: DATABASE_URL is not set — no store to replay from.", file=sys.stderr)
+        print("ERROR: OBS_DATABASE_URL (or DATABASE_URL) is not set — no store to replay from.", file=sys.stderr)
         return 2
 
     call = load_call(args.call_sid)

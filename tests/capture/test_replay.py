@@ -58,6 +58,6 @@ def test_main_without_database_url_returns_2(monkeypatch, capsys):
         rc = replay.main(["CAfixture0001"])
         err = capsys.readouterr().err
         assert rc == 2
-        assert "DATABASE_URL is not set" in err
+        assert "not set" in err and "DATABASE_URL" in err
     finally:
         store.reset_engine()

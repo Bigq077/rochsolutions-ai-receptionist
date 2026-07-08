@@ -1,10 +1,37 @@
 """Unit tests for app.obs.store — the durable call store."""
 from __future__ import annotations
 
+import importlib
+
 from sqlalchemy import text
 
 from app import config
 from app.obs import store
+
+
+def test_obs_database_url_takes_precedence(monkeypatch):
+    """config.DATABASE_URL prefers OBS_DATABASE_URL over a pre-existing DATABASE_URL."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg2://existing/other")
+    monkeypatch.setenv("OBS_DATABASE_URL", "postgresql+psycopg2://obs/store")
+    reloaded = importlib.reload(config)
+    try:
+        assert reloaded.DATABASE_URL == "postgresql+psycopg2://obs/store"
+    finally:
+        # Restore the module to normal env-free state for other tests.
+        monkeypatch.delenv("OBS_DATABASE_URL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        importlib.reload(config)
+
+
+def test_falls_back_to_database_url_when_obs_unset(monkeypatch):
+    monkeypatch.delenv("OBS_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg2://legacy/db")
+    reloaded = importlib.reload(config)
+    try:
+        assert reloaded.DATABASE_URL == "postgresql+psycopg2://legacy/db"
+    finally:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        importlib.reload(config)
 
 
 def _row_count(store_mod) -> int:
