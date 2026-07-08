@@ -149,6 +149,37 @@ def _date_hints_differ_materially(hint_a: str, hint_b: str) -> bool:
     return _extract_week_reference(hint_a) != _extract_week_reference(hint_b)
 
 
+def _location_not_bookable(tool_name: str, args: dict, session: Dict[str, Any]) -> bool:
+    """Deterministic backstop for the Redditch redirect (Mark, 2026-07-08).
+
+    Returns True when a NEW-booking tool (check_availability / book_appointment)
+    targets a Theorem location flagged ``bookable=False`` in THEOREM_LOCATIONS.
+    This guarantees a non-bookable clinic can never reach Acuity even if the
+    prompt redirect is ignored.  Scoped to new bookings only — cancel/reschedule
+    of an existing appointment at that location are unaffected.  Flip the
+    location's ``bookable`` flag back to True to disable this guard.
+    """
+    if tool_name not in ("check_availability", "book_appointment"):
+        return False
+    if session.get("clinic_id") != "theorem_v3":
+        return False
+    loc = str(
+        (args or {}).get("location")
+        or session.get("selected_location")
+        or ""
+    ).lower().strip()
+    if not loc:
+        return False
+    try:
+        from app.clinic_config import THEOREM_LOCATIONS
+    except Exception:
+        return False
+    entry = THEOREM_LOCATIONS.get(loc)
+    if not entry:
+        return False
+    return not entry.get("bookable", True)
+
+
 # ---------------------------------------------------------------------------
 # Anthropic client singleton
 # ---------------------------------------------------------------------------
@@ -1464,7 +1495,32 @@ class LLMStream:
                 # agreed — re-running availability causes Haiku's slot buffer to
                 # misfire and ask for the name a second time.
                 _col = session.get("collected") or {}
-                if (
+                if _location_not_bookable(tool_name, args, session):
+                    _loc_nb = str(
+                        args.get("location")
+                        or session.get("selected_location") or ""
+                    ).strip()
+                    logger.warning(
+                        "[ms_llm] %s BLOCKED — location %r not bookable "
+                        "(Redditch redirect) call_sid=%s",
+                        tool_name, _loc_nb, call_sid,
+                    )
+                    result = {
+                        "error": "location_not_bookable",
+                        "message": (
+                            "That clinic is not bookable through Susie. Do NOT "
+                            "call check_availability or book_appointment for it, "
+                            "and do not collect booking details for it. Tell the "
+                            "caller exactly: \"That clinic isn't bookable through "
+                            "me at the moment — you can book online at "
+                            "theoremhealth.co.uk, or do you want me to put you "
+                            "straight through to Mark?\" If the caller says yes "
+                            "to being put through, call transfer_to_human. If "
+                            "they would rather book at Awlstuh, help them with "
+                            "that instead."
+                        ),
+                    }
+                elif (
                     tool_name == "check_availability"
                     and _col.get("phone")
                     and (_col.get("name") or _col.get("full_name"))
