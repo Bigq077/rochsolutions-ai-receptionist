@@ -226,6 +226,34 @@ def get_call(call_sid: str) -> Optional[Dict[str, Any]]:
         session.close()
 
 
+def list_calls(
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    clinic_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return stored calls as dicts, filtered by start time / clinic (for reporting).
+
+    Ordered oldest-first by start_utc. Empty list if no store is configured.
+    """
+    engine = _get_engine()
+    if engine is None or _Session is None:
+        return []
+    from sqlalchemy import select
+    session: Session = _Session()
+    try:
+        stmt = select(Call)
+        if since is not None:
+            stmt = stmt.where(Call.start_utc >= since)
+        if until is not None:
+            stmt = stmt.where(Call.start_utc < until)
+        if clinic_id is not None:
+            stmt = stmt.where(Call.clinic_id == clinic_id)
+        stmt = stmt.order_by(Call.start_utc)
+        return [row.to_dict() for row in session.scalars(stmt)]
+    finally:
+        session.close()
+
+
 def save_judgement(call_sid: str, judgement: Dict[str, Any]) -> bool:
     """Write a Phase 3 judge result onto an existing call row.
 
