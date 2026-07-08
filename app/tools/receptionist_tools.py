@@ -4482,6 +4482,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
     try:
         from app.notifications.scheduler import schedule_appointment_reminders
+        from app.clinic_config import twilio_number_for_clinic
         await schedule_appointment_reminders(
             patient_phone=phone,
             patient_name=patient_name,
@@ -4492,6 +4493,9 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             insurer=insurer or None,
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
             clinic_phone=clinic.get("phone"),
+            from_number=twilio_number_for_clinic(
+                clinic.get("clinic_id") or session.get("clinic_id") or ""
+            ),
         )
     except Exception as e:
         logger.warning("book_appointment reminder scheduling failed (non-fatal): %r", e)

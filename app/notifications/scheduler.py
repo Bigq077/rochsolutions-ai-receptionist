@@ -64,6 +64,7 @@ async def schedule_appointment_reminders(
     insurer: Optional[str] = None,
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    from_number: Optional[str] = None,
 ) -> bool:
     """
     Schedule all appointment reminders (24hr and same-day).
@@ -122,6 +123,7 @@ async def schedule_appointment_reminders(
                 insurer=insurer,
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
+                from_number=from_number,
             )
             reminders_scheduled.append(reminder_id_24hr)
             logger.info(f"24hr reminder scheduled for {reminder_24hr}")
@@ -140,6 +142,7 @@ async def schedule_appointment_reminders(
                 insurer=None,
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
+                from_number=from_number,
             )
             reminders_scheduled.append(reminder_id_2hr)
             logger.info(f"2hr reminder scheduled for {reminder_2hr}")
@@ -172,6 +175,7 @@ async def _schedule_reminder(
     insurer: Optional[str] = None,
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    from_number: Optional[str] = None,
 ) -> str:
     """Schedule a single reminder in Redis."""
     if not REDIS_AVAILABLE or not redis_client:
@@ -192,6 +196,7 @@ async def _schedule_reminder(
         "insurer": insurer,
         "clinic_name": clinic_name,
         "clinic_phone": clinic_phone,
+        "from_number": from_number or "",
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -403,6 +408,8 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
     insurer = reminder_data.get("insurer")
     clinic_name = reminder_data.get("clinic_name")
     clinic_phone = reminder_data.get("clinic_phone")
+    # Pinned booking-clinic sender (falls back to env for legacy/absent entries)
+    from_number = reminder_data.get("from_number") or None
 
     try:
         if reminder_type == "24hr":
@@ -416,6 +423,7 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
                 insurer=insurer,
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
+                from_number=from_number,
             )
         elif reminder_type == "2hr":
             success = await send_same_day_reminder(
@@ -425,6 +433,7 @@ async def _send_reminder(reminder_data: Dict[str, Any]) -> bool:
                 location=location,
                 clinic_name=clinic_name,
                 clinic_phone=clinic_phone,
+                from_number=from_number,
             )
         else:
             logger.error(f"Unknown reminder type: {reminder_type}")
@@ -450,11 +459,13 @@ async def schedule_name_confirm_reminder(
     phone: str,
     first_name: str,
     delay_minutes: int = 30,
+    from_number: Optional[str] = None,
 ) -> None:
     """
     Schedule a name-confirmation nudge SMS to be sent delay_minutes from now.
     Stores phone+first_name in a Redis sorted set scored by send-at timestamp.
-    Safe no-op if Redis is unavailable.
+    Safe no-op if Redis is unavailable. from_number pins the sender to the
+    booking clinic's own line (shared-Redis tenant safety); None → env fallback.
     """
     from app.storage.redis_store import redis_client as _ar
     if not _ar:
@@ -462,7 +473,8 @@ async def schedule_name_confirm_reminder(
         return
     try:
         send_at = (datetime.utcnow() + timedelta(minutes=delay_minutes)).timestamp()
-        payload = json.dumps({"phone": phone, "first_name": first_name})
+        payload = json.dumps({"phone": phone, "first_name": first_name,
+                              "from_number": from_number or ""})
         await _ar.zadd(PENDING_NAME_REMINDERS_SET, {payload: send_at})
         logger.info(
             "[NAME_REMINDER] scheduled: phone=%r delay=%dmin send_at=%s",
@@ -496,6 +508,7 @@ async def process_name_confirm_reminders() -> int:
                 data = json.loads(payload_str)
                 phone = data.get("phone", "")
                 first_name = data.get("first_name") or "there"
+                from_number = data.get("from_number") or None
 
                 pending = await get_pending_name_confirmation(phone)
                 if pending and pending.get("status") == "pending":
@@ -506,6 +519,7 @@ async def process_name_confirm_reminders() -> int:
                             "message with your full first name and surname to confirm "
                             "your appointment with us."
                         ),
+                        from_number=from_number,
                     )
                     logger.info("[NAME_REMINDER] nudge sent: phone=%r", phone)
                 else:

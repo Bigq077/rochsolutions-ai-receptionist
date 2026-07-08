@@ -138,6 +138,7 @@ async def send_24hr_reminder(
     insurer: Optional[str] = None,
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    from_number: Optional[str] = None,
 ) -> bool:
     """
     Send 24-hour reminder SMS.
@@ -170,24 +171,24 @@ async def send_24hr_reminder(
             clinic_phone=clinic_phone,
         )
         
-        await send_sms(to=patient_phone, message=message)
-        
+        await send_sms(to=patient_phone, message=message, from_number=from_number)
+
         # If new patient, send additional "what to bring" reminder
         if is_new_patient:
             # Wait a moment then send second message
             import asyncio
             await asyncio.sleep(2)
-            
+
             what_to_bring_msg = format_what_to_bring_reminder(patient_name)
-            await send_sms(to=patient_phone, message=what_to_bring_msg)
-        
+            await send_sms(to=patient_phone, message=what_to_bring_msg, from_number=from_number)
+
         # If insurance patient, send insurance reminder
         if has_insurance and insurer:
             import asyncio
             await asyncio.sleep(2)
-            
+
             insurance_msg = format_insurance_reminder(patient_name, insurer)
-            await send_sms(to=patient_phone, message=insurance_msg)
+            await send_sms(to=patient_phone, message=insurance_msg, from_number=from_number)
         
         logger.info(
             f"24hr reminder sent to {patient_phone}",
@@ -215,6 +216,7 @@ async def send_same_day_reminder(
     location: str,
     clinic_name: Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    from_number: Optional[str] = None,
 ) -> bool:
     """
     Send same-day reminder (2 hours before appointment).
@@ -238,9 +240,9 @@ async def send_same_day_reminder(
             clinic_name=clinic_name,
             clinic_phone=clinic_phone,
         )
-        
-        await send_sms(to=patient_phone, message=message)
-        
+
+        await send_sms(to=patient_phone, message=message, from_number=from_number)
+
         logger.info(f"Same-day reminder sent to {patient_phone}")
         
         return True
