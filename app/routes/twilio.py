@@ -1353,11 +1353,45 @@ _SMS_OPT_OUT = {"stop", "stopall", "unsubscribe", "quit"}
 # reply looks like an address worth writing onto their calendar event.
 _UK_POSTCODE_RE = re.compile(r"\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}\b")
 
+# Street-type words that mark a message as address content even without a
+# postcode (so a split address — street line then postcode on a separate text —
+# is still captured in full onto the calendar).
+_ADDRESS_KEYWORDS = (
+    " road", " street", " lane", " avenue", " ave", " close", " drive",
+    " way", " court", " place", " terrace", " crescent", " flat",
+    " apartment", " house", " gardens", " grove", " hill", " square", " row",
+)
 
-async def _attach_address_to_event(ctx: dict, address_body: str, norm_phone: str) -> bool:
+
+def _looks_like_address(body: str) -> bool:
+    """True when an inbound text looks like part of a home-visit address:
+    a UK postcode, OR a numbered line (a digit + at least two words), OR a
+    street-type keyword. Bare acknowledgements ('thanks', 'yes please') do not
+    match, so they still forward to the practitioner but are not written to the
+    calendar."""
+    low = f" {(body or '').lower().strip()} "
+    if _UK_POSTCODE_RE.search(body or ""):
+        return True
+    if any(kw in low for kw in _ADDRESS_KEYWORDS):
+        return True
+    if any(c.isdigit() for c in (body or "")) and len((body or "").split()) >= 2:
+        return True
+    return False
+
+
+_ADDR_LABEL = "Home visit address (via SMS):"
+
+
+async def _attach_address_to_event(
+    ctx: dict, address_body: str, norm_phone: str, finalize: bool = True,
+) -> bool:
     """Best-effort: append a texted home-visit address onto the booking's calendar
-    event (reconstructs old+new from the stored description — no read needed) and
-    mark the context so a later text isn't re-appended. Non-fatal."""
+    event and grow the stored description so a SPLIT address (street on one text,
+    postcode on the next) accumulates in full rather than the last part
+    overwriting the first. The first part is written under the label; later parts
+    append as continuation lines. finalize=True (a postcode arrived → address
+    complete) marks the context done so nothing further is appended; while
+    finalize=False the window stays open for the remaining part(s). Non-fatal."""
     event_id = ctx.get("event_id")
     if not event_id or ctx.get("address_captured"):
         return False
@@ -1369,14 +1403,26 @@ async def _attach_address_to_event(ctx: dict, address_body: str, norm_phone: str
         toks = await _get_tokens()
         if not toks:
             return False
-        new_desc = (ctx.get("description") or "") + f"\n\nHome visit address (via SMS): {address_body}"
+        base = ctx.get("description") or ""
+        if _ADDR_LABEL in base:
+            new_desc = base + f"\n{address_body}"                 # continuation line
+        else:
+            new_desc = base + f"\n\n{_ADDR_LABEL} {address_body}"  # first part
         await _asyncio.to_thread(
             update_event, toks, event_id, None, new_desc, ctx.get("calendar_id") or "primary",
         )
+        # Persist the GROWN description so the next part appends to it (never
+        # overwrites); keep the window open until a postcode finalises it.
         await set_recent_booking_context(
-            norm_phone, {**ctx, "address_captured": True, "is_home_visit": False},
+            norm_phone,
+            {**ctx, "description": new_desc,
+             "address_captured": bool(finalize),
+             "is_home_visit": (not finalize)},
         )
-        logger.info("[SMS_INBOUND] home-visit address written to event %s", event_id)
+        logger.info(
+            "[SMS_INBOUND] home-visit address %s to event %s",
+            "written" if finalize else "part appended", event_id,
+        )
         return True
     except Exception as _ee:
         logger.warning("[SMS_INBOUND] event address-attach failed (non-fatal): %r", _ee)
@@ -1423,13 +1469,17 @@ async def _handle_general_inbound_sms(
         _slot    = ctx.get("slot") or ""
         _service = ctx.get("service") or "their appointment"
         _is_home = bool(ctx.get("is_home_visit"))
-        if _is_home and _UK_POSTCODE_RE.search(body):
-            # Looks like the home-visit address → forward labelled + write to event.
+        if _is_home and _looks_like_address(body):
+            # Looks like (part of) the home-visit address → forward labelled +
+            # write to event. A postcode marks the address complete (finalise);
+            # a street-only part keeps the window open so the postcode text that
+            # follows appends rather than the last part overwriting the first.
+            _has_postcode = bool(_UK_POSTCODE_RE.search(body))
             fwd_msg = (f"🏠 Home-visit address from {_name} (visit {_slot}):\n"
                        f"\"{body}\"\nReply to them on {sender}.")
             ack_msg = (f"Got it, thanks — we've passed your address to {practitioner} "
                        f"for your home visit. — {sms_name}")
-            await _attach_address_to_event(ctx, body, norm_phone)
+            await _attach_address_to_event(ctx, body, norm_phone, finalize=_has_postcode)
         elif _is_home:
             fwd_msg = (f"New text from {_name} (home visit {_slot}):\n"
                        f"\"{body}\"\nReply to them on {sender}.")
