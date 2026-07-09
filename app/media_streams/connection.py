@@ -8414,6 +8414,47 @@ class WebSocketCallHandler:
                                     "[ms_conn] v3_phone_dtmf_active = True"
                                     " (keypad mention detected in response)"
                                 )
+                            # ── Spec R: arm the location ladder when the LLM
+                            # itself asks the clinic question ─────────────────
+                            # Under name-first the deterministic location gate
+                            # does not fire: v3_booking_intent is never latched
+                            # via the booking-ack path because the greeting-ack
+                            # opener ("Brilliant —") is not one of
+                            # _V3_ACK_PHRASES.  The LLM asks "Awlstuh or
+                            # Redditch?" itself, but the ladder state was never
+                            # armed — so a silent or unclear clinic answer fell
+                            # to the GENERIC watchdog re-ask ("Sorry, I didn't
+                            # catch that. …which clinic…") instead of the
+                            # long-standing biased ladder ("did you say the
+                            # Awlstuh clinic? — just say use this clinic") and
+                            # the DTMF keypad fallback.  Detect the LLM's clinic
+                            # question and arm the gate state so BOTH the
+                            # watchdog (~3300) and the silence handler (~2372)
+                            # escalate the proper location ladder, and the
+                            # caller's answer routes through the LOCATION ANSWER
+                            # INTERCEPT.  Covers every path that asks a clinic
+                            # question (booking, reschedule, cancel).
+                            _lb_low_locq = _last_bot.lower()
+                            if (
+                                not self.session.get("v3_location_confirmed")
+                                and not self.session.get("v3_location_asked")
+                                and (
+                                    "which clinic" in _lb_low_locq
+                                    or "awlstuh or redditch" in _lb_low_locq
+                                    or "redditch or awlstuh" in _lb_low_locq
+                                    or "alcester or redditch" in _lb_low_locq
+                                    or "redditch or alcester" in _lb_low_locq
+                                )
+                            ):
+                                self.session["v3_location_asked"] = True
+                                self.session["v3_location_q_active"] = True
+                                self.session["v3_location_reask_count"] = 0
+                                self.session["_location_q_patient_spoke"] = False
+                                logger.info(
+                                    "[ms_conn v3] location ladder armed from"
+                                    " LLM clinic question (name-first path)"
+                                    " — re-asks now escalate rung2/rung3 + DTMF"
+                                )
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
                             # acknowledgement (no question), immediately queue
