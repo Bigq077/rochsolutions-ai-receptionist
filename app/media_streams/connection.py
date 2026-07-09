@@ -4536,12 +4536,7 @@ class WebSocketCallHandler:
                 _ack = f"{_disp}."
                 _intent = self.session.get("v3_caller_intent", "booking")
                 if _intent in ("reschedule", "cancel"):
-                    _next_q = (
-                        "Is the number you're calling on "
-                        "the one associated with your "
-                        "booking? If so, just say "
-                        "'use this number'."
-                    )
+                    _next_q = self._resched_phone_q()
                     self.session["v3_awaiting_phone_confirm"] = True
                 else:
                     # FAQ-before-clinic: if the caller asked a clinic-specific
@@ -4984,6 +4979,29 @@ class WebSocketCallHandler:
         logger.info(
             "[ms_conn v3] injected phone context for %s lookup: %r",
             intent, _ctx_q[:80],
+        )
+
+    def _resched_phone_q(self) -> str:
+        """Phone question for a cancel/reschedule lookup — caller-ID aware.
+
+        When the caller's number reached us (twilio_from_local set) we offer
+        the one-word 'use this number' shortcut, exactly as before.  When it
+        did NOT (caller ID withheld or not forwarded), that shortcut is
+        meaningless — so route straight to deterministic keypad entry instead
+        of asking about 'the number you're calling on', which the caller has
+        no way to confirm.  Mirrors the booking phone step (prompt step 8):
+        no caller ID → keypad path.
+        """
+        if self.session.get("twilio_from_local"):
+            return (
+                "Is the number you're calling on "
+                "the one associated with your "
+                "booking? If so, just say "
+                "'use this number'."
+            )
+        return (
+            "Could you type the number you booked under on your "
+            "keypad? You can press the star key to reset at any time."
         )
 
     async def _fire_name_reask(self) -> None:
@@ -6869,12 +6887,7 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     )
                                     if _intent in ("reschedule", "cancel"):
-                                        _next_q = (
-                                            "Is the number you're calling "
-                                            "on the one associated with "
-                                            "your booking? If so, just "
-                                            "say 'use this number'."
-                                        )
+                                        _next_q = self._resched_phone_q()
                                     else:
                                         # FAQ-before-clinic: re-queue a pending
                                         # clinic-specific FAQ now the clinic is
@@ -9002,12 +9015,7 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     )
                                     if _intent in ("reschedule", "cancel"):
-                                        _next_q = (
-                                            "Is the number you're calling "
-                                            "on the one associated with "
-                                            "your booking? If so, just "
-                                            "say 'use this number'."
-                                        )
+                                        _next_q = self._resched_phone_q()
                                         self.session[
                                             "v3_awaiting_phone_confirm"
                                         ] = True
