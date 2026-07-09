@@ -7157,13 +7157,25 @@ class WebSocketCallHandler:
                                     self.session[
                                         "v3_location_asked"
                                     ] = False
-                                    if self._location_not_bookable(
-                                        _confirmed_loc
+                                    _rc_intent = self.session.get(
+                                        "v3_caller_intent", "booking"
+                                    ) in ("reschedule", "cancel")
+                                    if (
+                                        _was_booking
+                                        and not _rc_intent
+                                        and self._location_not_bookable(
+                                            _confirmed_loc
+                                        )
                                     ):
-                                        # Not bookable (e.g. Redditch): give the
-                                        # redirect the MOMENT the clinic is picked
-                                        # — never ask timing or reach
-                                        # check_availability.  The caller's "yes"
+                                        # NEW BOOKING ONLY: redirect a non-bookable
+                                        # clinic (e.g. Redditch) the MOMENT it is
+                                        # picked — never ask timing or reach
+                                        # check_availability.  FAQ questions (the
+                                        # non-booking else-branch below, which
+                                        # re-queues the pending FAQ and answers it)
+                                        # and reschedule/cancel (the elif branch)
+                                        # are unaffected — only new bookings are
+                                        # blocked at Redditch.  The caller's "yes"
                                         # to the transfer offer then runs the LLM,
                                         # which calls transfer_to_human (the
                                         # redirect is in conversation_history).
