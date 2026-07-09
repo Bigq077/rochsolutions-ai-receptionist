@@ -5004,6 +5004,27 @@ class WebSocketCallHandler:
             "keypad? You can press the star key to reset at any time."
         )
 
+    def _location_not_bookable(self, loc: str) -> bool:
+        """True when a Theorem location is flagged bookable=False (e.g. Redditch).
+
+        Mirrors llm_stream._location_not_bookable so the location-answer
+        intercept can redirect the MOMENT the clinic is picked, instead of
+        acking it, asking for timing, and only discovering it is not bookable
+        when check_availability is blocked.  Returns False for any location not
+        in THEOREM_LOCATIONS (single-location clinics, JV, etc.) so this is a
+        no-op outside Theorem's multi-clinic flow.
+        """
+        if not loc:
+            return False
+        try:
+            from app.clinic_config import THEOREM_LOCATIONS
+        except Exception:
+            return False
+        entry = THEOREM_LOCATIONS.get(loc)
+        if not entry:
+            return False
+        return not entry.get("bookable", True)
+
     async def _fire_name_reask(self) -> None:
         """
         Fires 800 ms after an incomplete name utterance ("my name is…") if no
@@ -7136,9 +7157,44 @@ class WebSocketCallHandler:
                                     self.session[
                                         "v3_location_asked"
                                     ] = False
+                                    if self._location_not_bookable(
+                                        _confirmed_loc
+                                    ):
+                                        # Not bookable (e.g. Redditch): give the
+                                        # redirect the MOMENT the clinic is picked
+                                        # — never ask timing or reach
+                                        # check_availability.  The caller's "yes"
+                                        # to the transfer offer then runs the LLM,
+                                        # which calls transfer_to_human (the
+                                        # redirect is in conversation_history).
+                                        _redirect = (
+                                            "That clinic isn't bookable through "
+                                            "me at the moment — you can book "
+                                            "online at theoremhealth.co.uk, or "
+                                            "do you want me to put you straight "
+                                            "through to Mark?"
+                                        )
+                                        await self.tts_text_queue.put(_redirect)
+                                        self.session["last_bot_prompt"] = _redirect
+                                        self.session["last_question"] = _redirect
+                                        self.session.setdefault(
+                                            "conversation_history", []
+                                        ).append({
+                                            "role": "assistant",
+                                            "content": _redirect,
+                                        })
+                                        self._silence_handler.on_question_asked(
+                                            _redirect
+                                        )
+                                        logger.info(
+                                            "[ms_conn v3] location not bookable"
+                                            " (%s) — redirect emitted at clinic"
+                                            " question, timing Q skipped",
+                                            _confirmed_loc,
+                                        )
                                     # If captured during a booking flow, queue
                                     # next question based on caller intent.
-                                    if _was_booking:
+                                    elif _was_booking:
                                         # Clear any stale FAQ pending utterance:
                                         # the caller has expressed booking
                                         # intent, so a deferred FAQ question is
