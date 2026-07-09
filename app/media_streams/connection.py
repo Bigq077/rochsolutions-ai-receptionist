@@ -10279,6 +10279,25 @@ class WebSocketCallHandler:
                         " — barge-in guard armed: %r",
                         chunk_text[:60],
                     )
+                # Booking/reschedule WRITE filler — arm the same self-clearing
+                # guard so a stray "yes?/hello?" while the write is in flight
+                # can't cancel the turn and re-open the confirmation (the
+                # confirm-spiral Marcus hit). Cancel is excluded on purpose (no
+                # write filler there — its go-ahead is ambiguous).
+                elif any(
+                    p in _ct_lower
+                    for p in (
+                        "locking that in",
+                        "moving that for you",
+                        "booked in for you",
+                        "popping that in the diary",
+                    )
+                ):
+                    self._clinical_response_active = True
+                    logger.info(
+                        "[ms_conn] write filler — barge-in guard armed: %r",
+                        chunk_text[:60],
+                    )
                 # ── end clinical barge-in protection ──────────────────────────
 
                 # Notify silence handler ONCE per chunk (not per sub-chunk).

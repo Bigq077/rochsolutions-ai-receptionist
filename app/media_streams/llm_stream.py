@@ -1262,11 +1262,19 @@ class LLMStream:
             async def _delayed_filler() -> None:
                 await asyncio.sleep(timeout_sec)
                 if not got_first_chunk:
-                    logger.info("[ms_llm] filler phrase triggered (background task)")
                     # Prefix with ACK_FILLER_MARKER so _tts_loop can identify
                     # this chunk and suppress it if a tool-call filler fires
                     # in the same turn and sets _ack_filler_cancelled.
-                    _ack_filler_text = random.choice(FILLER_PHRASES)
+                    # On the turn right after a booking/reschedule "yes", use a
+                    # write-acknowledging filler ("Just locking that in now…")
+                    # instead of the generic "Give me a moment…", which confuses
+                    # a caller who just confirmed and can re-open the readback.
+                    from app.filler_phrases import confirm_write_filler
+                    _ack_filler_text = confirm_write_filler(session) or random.choice(FILLER_PHRASES)
+                    logger.info(
+                        "[ms_llm] filler phrase triggered (background task): %r",
+                        _ack_filler_text[:40],
+                    )
                     await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
                     session["_ack_filler_active"] = True
                     self._last_filler_at = time.monotonic()

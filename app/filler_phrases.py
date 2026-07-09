@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any, Callable, Coroutine, List
+from typing import Any, Callable, Coroutine, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,36 @@ BOOKING_WRITE_FILLERS: List[str] = [
     "Just locking that in now…",
     "Popping that in the diary…",
 ]
+
+
+def confirm_write_filler(session: dict) -> Optional[str]:
+    """Return an action-acknowledging filler for the turn RIGHT AFTER the caller
+    says "yes" to a booking or reschedule readback — or None.
+
+    The generic ack fillers ("Give me a moment…", "Right with you…") are
+    confusing at this exact moment: the caller has just confirmed, so a
+    "please wait" phrase makes them think they weren't heard, and they speak
+    again — which can re-open the confirmation (the Marcus spiral). Playing a
+    write-acknowledging line instead leaves nothing to respond to.
+
+    Detection is deliberately narrow: it keys off the previous assistant turn
+    being the LOCKED confirm CTA ("book that in for you" / "move it for you").
+    CANCEL is intentionally excluded — its go-ahead is the ambiguous
+    reschedule-or-cancel retention question, and the cancel branch is designed
+    to run with no readback/filler (a cancel readback loops; see prompt).
+    """
+    last = ""
+    for _m in reversed(session.get("conversation_history") or []):
+        if _m.get("role") == "assistant":
+            last = (_m.get("content") or "").lower()
+            break
+    if not last:
+        return None
+    if "book that in for you" in last or "book that in" in last:
+        return "Just locking that in now…"
+    if "move it for you" in last or "move that" in last:
+        return "Just moving that for you now…"
+    return None
 
 
 def pick_filler(filler_list: List[str], used: list) -> str:
