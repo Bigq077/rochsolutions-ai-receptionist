@@ -1176,6 +1176,16 @@ _V3_NAME_FALSE_POSITIVES = frozenset({
 })
 
 
+# Leading filler/STT-artefact tokens that may sit before the first name in a
+# same-breath name answer ("yeah Sarah Jenkins", "um Sarah Jenkins", "it's
+# Sarah Jenkins").  Ported from the JV template engine so the surname is still
+# recovered when the utterance does not start cleanly with the first name.
+_V3_NAME_LEAD_FILLERS = frozenset({
+    "is", "it", "yeah", "yes", "um", "uh", "erm", "so", "well",
+    "my", "hi", "hello", "and", "ok", "okay",
+})
+
+
 # Stop-words that must never be captured as a surname. Combined with
 # _V3_NAME_FALSE_POSITIVES at match time. Conversational/filler tokens that
 # commonly co-occur in a name-answer utterance.
@@ -1273,13 +1283,22 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
         if _ok(cand):
             return cand.capitalize()
 
-    # 3) Bare name "quentin rock" / "quentin james rock" — only when the first
-    #    token matches the readback first name (high confidence).
+    # 3) Bare name "quentin rock" / "quentin james rock" — the first name leads
+    #    the answer, OR sits just after a single leading filler / STT artefact
+    #    ("yeah sarah jenkins", "um sarah jenkins", "it's sarah jenkins").  The
+    #    surname is the last token.  A non-filler lead ("no sarah wrong") is NOT
+    #    trusted, so a correction/aside can never be mis-read as the name.
+    #    (JV-parity, 2026-07-10.)
     tokens = text.split()
-    if 2 <= len(tokens) <= 4 and tokens[0] == first_l:
-        cand = tokens[-1]
-        if _ok(cand):
-            return cand.capitalize()
+    if 2 <= len(tokens) <= 4 and first_l in tokens:
+        idx = tokens.index(first_l)
+        if (
+            (idx == 0 or (idx == 1 and tokens[0] in _V3_NAME_LEAD_FILLERS))
+            and idx < len(tokens) - 1
+        ):
+            cand = tokens[-1]
+            if _ok(cand):
+                return cand.capitalize()
 
     return ""
 
@@ -5653,6 +5672,18 @@ class WebSocketCallHandler:
                             self.session.setdefault(
                                 "conversation_history", []
                             ).append({"role": "assistant", "content": _dc_prompt})
+                            # Discard the pre-loaded Twilio caller-ID: the caller
+                            # has explicitly REJECTED the number they're calling
+                            # from, so it must not remain in collected["phone"]
+                            # (where CALL STATE would surface it and the LLM could
+                            # book it) — the typed keypad number replaces it.  This
+                            # makes the decline path behave exactly like the proven
+                            # no-caller-ID keypad path.  phone_confirmed is left
+                            # unset so the caller's typed number, read back by the
+                            # LLM, is what reaches book_appointment.
+                            _dc_col = self.session.setdefault("collected", {})
+                            _dc_col.pop("phone", None)
+                            self.session["phone_from_twilio"] = False
                             # Disarm any residual slot DTMF so the first keypad
                             # digit goes to phone collection, then arm phone DTMF.
                             self.session.pop("v3_dtmf_slot_map",           None)
@@ -5663,8 +5694,9 @@ class WebSocketCallHandler:
                             self.session["v3_phone_dtmf_active"] = True
                             await save_session(self.call_sid, self.session)
                             logger.info(
-                                "[ms_conn v3] booking phone DECLINE — routed to "
-                                "keypad DTMF (no LLM); phone dtmf armed: %r",
+                                "[ms_conn v3] booking phone DECLINE — cleared "
+                                "caller-ID, routed to keypad DTMF (no LLM); "
+                                "phone dtmf armed: %r",
                                 utterance[:60],
                             )
                             if self._silence_handler is not None:
