@@ -22,10 +22,13 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
-    # +447426779875 is Theorem's number on main/theorem services. On THIS
-    # branch (deployed only to the Vital Edge Render service) it is reassigned
-    # to Vital Edge per the operator's instruction. ⚠️ Do NOT merge this branch
-    # into main — that would steal the number from Theorem.
+    # +447426779875 belongs to VITAL EDGE (operator confirmed 2026-07-10). Theorem
+    # has no claim on it — Theorem's live lines are +447380841468 (v3) and
+    # +447366530580 (v2), both mapped below and unaffected.
+    # ⚠️ HOUSEKEEPING: main / jv-v1-onboarding / theorem-canonical-source still
+    # carry a STALE `"+447426779875": "theorem"` entry. Clean that up on main as
+    # its own change — don't rely on merging this branch to do it, and don't
+    # "restore" the theorem mapping here.
     "+447426779875": "vital_edge",    # Vital Edge Therapy (Kingston) — provisional booking model
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
