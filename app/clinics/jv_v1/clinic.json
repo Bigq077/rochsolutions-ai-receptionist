@@ -53,6 +53,14 @@
     "sms_name": "Joint Venture Physiotherapy",
     "phone": "+44 7367 002651",
     "transfer_phone": "+447586605462",
+    "_call_overflow_note": "Human-first overflow: an inbound call rings Marcus's own phone (dial_phone) FIRST; he presses 1 to take it, otherwise (no answer / voicemail / any other key) the call falls through to Susie as a full receptionist after ~ring_timeout seconds. Set enabled=true to activate — brief Marcus to press 1 first. Flip enabled=false to instantly revert to Susie-answers-immediately. JV-only; no other clinic has this block.",
+    "call_overflow": {
+      "enabled": false,
+      "dial_phone": "+447586605462",
+      "ring_timeout": 20,
+      "whisper_text": "Business call from your Susie line. Press 1 to take it, or hang up and Susie will handle it.",
+      "greeting": "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — Marcus isn't free to take your call right now, but I can help. How can I help you today?"
+    },
     "booking_system": "google_calendar",
     "_calendar_id_note": "Dedicated JV business account jointventurephysiotherapy@gmail.com — Marcus's Carepatron is two-way synced to it (his appointments appear as busy; Susie's bookings sync back). Susie's google_tokens MUST be OAuthed as this same account (re-run /auth/google/start signed in as jointventurephysiotherapy@gmail.com). No personal-calendar pollution.",
     "calendar_id": "jointventurephysiotherapy@gmail.com",

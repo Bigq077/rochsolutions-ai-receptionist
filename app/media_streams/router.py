@@ -129,6 +129,67 @@ def _build_ws_url(request: Request) -> str:
     return f"wss://{domain}/ms/stream"
 
 
+def _abs_ms_url(request: Request, path: str) -> str:
+    """Absolute https:// URL for a Twilio action/whisper callback on this host —
+    mirrors _build_ws_url's domain resolution but keeps http(s) for REST hooks."""
+    domain = RENDER_EXTERNAL_URL.strip().rstrip("/")
+    if not domain:
+        host = request.headers.get("host", "localhost")
+        domain = f"https://{host}"
+    elif not domain.startswith("http"):
+        domain = f"https://{domain}"
+    return f"{domain}{path}"
+
+
+async def _cache_call_ids(call_sid: str, caller_number: str, to_number: str) -> None:
+    """Cache From/To keyed by CallSid so the WebSocket handler can resolve them on
+    the 'start' event (Twilio does not forward them reliably through the socket)."""
+    if not call_sid:
+        return
+    try:
+        from .session import _get_redis
+        _redis = _get_redis()
+        if _redis:
+            if caller_number:
+                await _redis.setex(f"ms_caller:{call_sid}", 300, caller_number)
+            if to_number:
+                await _redis.setex(f"ms_to:{call_sid}", 300, to_number)
+            else:
+                logger.warning(
+                    "[ms_router] to_number EMPTY — ms_to not cached call_sid=%s",
+                    call_sid,
+                )
+            logger.info(
+                "[ms_router] cached call_sid=%s from=%s to=%s",
+                call_sid, caller_number, to_number,
+            )
+    except Exception as _exc:
+        logger.warning("[ms_router] Redis cache failed: %r", _exc)
+
+
+def _stream_twiml(
+    request: Request, to_number: str, caller_number: str, overflow: bool = False
+) -> str:
+    """Build the <Connect><Stream> TwiML that hands the call to Susie. Shared by
+    /ms/incoming (AI-first) and /ms/after-dial (AI overflow after a missed ring)."""
+    ws_url = _build_ws_url(request)
+    _params_xml = ""
+    if to_number:
+        _params_xml += f'<Parameter name="twilio_to" value="{to_number}"/>'
+    if caller_number:
+        _params_xml += f'<Parameter name="twilio_from" value="{caller_number}"/>'
+    if overflow:
+        _params_xml += '<Parameter name="overflow" value="true"/>'
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<Response><Connect>"
+        f'<Stream url="{ws_url}">{_params_xml}</Stream>'
+        # <Hangup/> prevents Twilio re-requesting this URL when the WebSocket
+        # closes, which would otherwise create a reconnect loop.
+        "</Connect><Hangup/></Response>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Route 1: TwiML response for incoming calls
 # ---------------------------------------------------------------------------
@@ -159,66 +220,56 @@ async def ms_incoming(request: Request) -> Response:
         return Response(content=twiml, media_type="application/xml")
 
     try:
-        ws_url = _build_ws_url(request)
-        logger.info("[ms_router] incoming call — stream URL: %s", ws_url)
+        # From/To cached to Redis so the WS handler can resolve them on the
+        # "start" event (Twilio doesn't forward them reliably through the socket).
+        form          = await request.form()
+        call_sid      = form.get("CallSid", "")
+        caller_number = form.get("From", "") or form.get("from", "")
+        to_number     = form.get("To",   "") or form.get("to",   "")
+        await _cache_call_ids(call_sid, caller_number, to_number)
 
-        # Cache From and To from the Twilio HTTP POST body into Redis so the
-        # WebSocket handler can retrieve them on the "start" event.
-        # Twilio does NOT reliably forward customParameters or caller numbers
-        # through the WebSocket start payload — Redis is the only reliable
-        # channel for passing this data from the HTTP leg to the WS leg.
-        call_sid      = ""
-        caller_number = ""
-        to_number     = ""
+        # ── Human-first overflow ────────────────────────────────────────────
+        # If this clinic enables call_overflow, ring the practitioner's own
+        # phone FIRST and only hand the call to Susie if they don't press 1 to
+        # take it. Gated per-clinic via clinic.json — every other clinic keeps
+        # answering with Susie immediately (no behaviour change).
         try:
-            form = await request.form()
-            call_sid      = form.get("CallSid", "")
-            caller_number = form.get("From", "") or form.get("from", "")
-            to_number     = form.get("To",   "") or form.get("to",   "")
-            if call_sid:
-                from .session import _get_redis
-                _redis = _get_redis()
-                if _redis:
-                    if caller_number:
-                        await _redis.setex(f"ms_caller:{call_sid}", 300, caller_number)
-                    if to_number:
-                        await _redis.setex(f"ms_to:{call_sid}", 300, to_number)
-                    else:
-                        logger.warning(
-                            "[ms_router] to_number EMPTY — ms_to not cached call_sid=%s "
-                            "(Twilio form keys: %s)",
-                            call_sid, list(form.keys()),
-                        )
-                    logger.info(
-                        "[ms_router] cached call_sid=%s from=%s to=%s",
-                        call_sid, caller_number, to_number,
-                    )
-        except Exception as _exc:
-            logger.warning("[ms_router] Redis cache failed: %r", _exc)
+            from app.clinic_config import clinic_id_from_twilio_to, get_clinic
+            _clinic   = get_clinic(clinic_id_from_twilio_to(to_number)) or {}
+            _overflow = _clinic.get("call_overflow") or {}
+        except Exception as _cx:
+            logger.warning("[ms_router] overflow config lookup failed: %r", _cx)
+            _clinic, _overflow = {}, {}
 
-        # Pass To/From as Stream <Parameter> elements so connection.py can
-        # resolve clinic_id from the dialled number on the "start" event.
-        # Without this, twilio_to is always empty and clinic_id defaults to "demo".
-        _params_xml = ""
-        if to_number:
-            _params_xml += f'<Parameter name="twilio_to" value="{to_number}"/>'
-        if caller_number:
-            _params_xml += f'<Parameter name="twilio_from" value="{caller_number}"/>'
+        _dial_phone = (_overflow.get("dial_phone") or "").strip()
+        if _overflow.get("enabled") and _dial_phone:
+            _timeout   = int(_overflow.get("ring_timeout", 20) or 20)
+            # callerId must be a number we own — use the dialled clinic number
+            # so the practitioner sees it's a work call.
+            _caller_id = (to_number or _clinic.get("phone", "")).replace(" ", "")
+            _screen    = _abs_ms_url(request, f"/ms/screen?parent={call_sid}")
+            _action    = _abs_ms_url(request, "/ms/after-dial")
+            logger.info(
+                "[ms_router] overflow ON — ringing %s first (timeout=%ss) call_sid=%s",
+                _dial_phone, _timeout, call_sid,
+            )
+            dial_twiml = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response>"
+                f'<Dial answerOnBridge="true" timeout="{_timeout}" '
+                f'callerId="{_caller_id}" action="{_action}" method="POST">'
+                f'<Number url="{_screen}">{_dial_phone}</Number>'
+                "</Dial>"
+                "</Response>"
+            )
+            return Response(content=dial_twiml, media_type="application/xml")
 
-        twiml = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            "<Response>"
-            "<Connect>"
-            f'<Stream url="{ws_url}">'
-            f"{_params_xml}"
-            "</Stream>"
-            "</Connect>"
-            # <Hangup/> prevents Twilio re-requesting this URL when the
-            # WebSocket closes, which would otherwise create a reconnect loop.
-            "<Hangup/>"
-            "</Response>"
+        # Default (AI-first): connect straight to Susie.
+        logger.info("[ms_router] incoming call — stream URL: %s", _build_ws_url(request))
+        return Response(
+            content=_stream_twiml(request, to_number, caller_number),
+            media_type="application/xml",
         )
-        return Response(content=twiml, media_type="application/xml")
 
     except Exception as exc:
         logger.error("[ms_router] TwiML build failed: %r — falling back to legacy", exc)
@@ -229,6 +280,117 @@ async def ms_incoming(request: Request) -> Response:
             "</Response>"
         )
         return Response(content=fallback, media_type="application/xml")
+
+
+# ---------------------------------------------------------------------------
+# Overflow screening routes (only reached when a clinic enables call_overflow)
+# ---------------------------------------------------------------------------
+
+@router.post("/ms/screen", dependencies=[Depends(_verify_twilio_signature_ms)])
+async def ms_screen(request: Request) -> Response:
+    """Whisper played on the PRACTITIONER's leg after they answer, before the
+    call bridges. Asks them to press 1 to accept; no key press (or hang-up, or
+    their carrier voicemail) falls through to <Hangup/> so the caller reaches
+    Susie via the <Dial> action. `parent` = the caller-leg CallSid, carried in
+    the query string because this leg has a different CallSid."""
+    parent = request.query_params.get("parent", "")
+    try:
+        form  = await request.form()
+        _from = form.get("From", "") or ""  # the clinic callerId on this leg
+        from app.clinic_config import clinic_id_from_twilio_to, get_clinic
+        _clinic  = get_clinic(clinic_id_from_twilio_to(_from)) or {}
+        _whisper = (_clinic.get("call_overflow") or {}).get("whisper_text") or ""
+    except Exception:
+        _whisper = ""
+    if not _whisper:
+        _whisper = (
+            "Business call from your Susie line. "
+            "Press 1 to take it, or hang up and Susie will handle it."
+        )
+    _gather = _abs_ms_url(request, f"/ms/screen-gather?parent={parent}")
+    twiml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<Response>"
+        f'<Gather numDigits="1" timeout="8" action="{_gather}" method="POST">'
+        f'<Say language="en-GB">{_whisper}</Say>'
+        "</Gather>"
+        "<Hangup/>"
+        "</Response>"
+    )
+    return Response(content=twiml, media_type="application/xml")
+
+
+@router.post("/ms/screen-gather", dependencies=[Depends(_verify_twilio_signature_ms)])
+async def ms_screen_gather(request: Request) -> Response:
+    """Evaluate the practitioner's key press. '1' → mark the call accepted (a
+    Redis flag keyed by the caller-leg CallSid) and return an empty response so
+    the whisper leg completes and Twilio bridges the two parties. Anything else
+    → hang up their leg so the call screens through to Susie."""
+    parent = request.query_params.get("parent", "")
+    form   = await request.form()
+    digits = (form.get("Digits", "") or "").strip()
+    if digits == "1" and parent:
+        try:
+            from .session import _get_redis
+            _redis = _get_redis()
+            if _redis:
+                await _redis.setex(f"marcus_accepted:{parent}", 120, "1")
+        except Exception as _exc:
+            logger.warning("[ms_router] accept-flag set failed: %r", _exc)
+        logger.info("[ms_router] overflow — practitioner accepted (parent=%s)", parent)
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response/>',
+            media_type="application/xml",
+        )
+    logger.info("[ms_router] overflow — not accepted (digits=%r) → screening to Susie", digits)
+    return Response(
+        content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+        media_type="application/xml",
+    )
+
+
+@router.post("/ms/after-dial", dependencies=[Depends(_verify_twilio_signature_ms)])
+async def ms_after_dial(request: Request) -> Response:
+    """<Dial action> handler on the CALLER's leg after the ring finishes. If the
+    practitioner accepted (Redis flag set on the same CallSid), the human call
+    happened — just end. Otherwise hand the caller to Susie as the overflow
+    receptionist. The accept flag — not DialCallStatus — is authoritative: a
+    screened-out call still reports 'completed'."""
+    form        = await request.form()
+    call_sid    = form.get("CallSid", "")
+    dial_status = (form.get("DialCallStatus", "") or "").strip().lower()
+
+    accepted = False
+    if call_sid:
+        try:
+            from .session import _get_redis
+            _redis = _get_redis()
+            if _redis:
+                accepted = bool(await _redis.get(f"marcus_accepted:{call_sid}"))
+        except Exception as _exc:
+            logger.warning("[ms_router] accept-flag read failed: %r", _exc)
+
+    if accepted:
+        logger.info(
+            "[ms_router] after-dial: accepted call ended (status=%s) — hangup call_sid=%s",
+            dial_status, call_sid,
+        )
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+            media_type="application/xml",
+        )
+
+    caller_number = form.get("From", "") or form.get("from", "")
+    to_number     = form.get("To",   "") or form.get("to",   "")
+    await _cache_call_ids(call_sid, caller_number, to_number)
+    logger.info(
+        "[ms_router] after-dial: not accepted (status=%s) — Susie overflow call_sid=%s",
+        dial_status, call_sid,
+    )
+    return Response(
+        content=_stream_twiml(request, to_number, caller_number, overflow=True),
+        media_type="application/xml",
+    )
 
 
 # ---------------------------------------------------------------------------
