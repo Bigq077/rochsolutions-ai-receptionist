@@ -5522,8 +5522,32 @@ class WebSocketCallHandler:
                     # out-of-order stall).  A genuine reply is always enqueued
                     # AFTER the response audio plays (well after _last_turn_done_at),
                     # so this never drops a real answer.
+                    #
+                    # Name-collection exemption (JV parity, 2026-07-10): while
+                    # taking the caller's name, STT routinely splits "Quentin
+                    # Rock" into two FINALs a beat apart ("that would be quentin"
+                    # → then "rock").  The first fires the turn; the trailing
+                    # surname "rock" arrives as a same-breath straggler and WOULD
+                    # be dropped here — silently losing the surname (live call
+                    # 2026-07-10 13:51).  So do NOT drop a short (1-2 word)
+                    # fragment while we are collecting the name: either the last
+                    # prompt names it, OR we locked a first-name-only name and are
+                    # provably awaiting the surname (v3_awaiting_surname).  Scoped
+                    # tightly so the general straggler guard is otherwise intact.
+                    _name_ctx = (
+                        (self.session.get("last_question") or "").lower()
+                        + " "
+                        + (self.session.get("last_bot_prompt") or "").lower()
+                    )
+                    _in_name_collection = any(
+                        w in _name_ctx
+                        for w in ("your name", "first name", "surname",
+                                  "full name", "take your name")
+                    ) or bool(self.session.get("v3_awaiting_surname"))
+                    _short_fragment = 0 < len(utterance.split()) <= 2
                     if (
                         not _synthetic
+                        and not (_in_name_collection and _short_fragment)
                         and self._last_turn_done_at > 0.0
                         and _enqueue_ts > 0.0
                         and _enqueue_ts < self._last_turn_done_at
@@ -5535,6 +5559,23 @@ class WebSocketCallHandler:
                             utterance[:60],
                         )
                         continue
+                    if (
+                        _in_name_collection and _short_fragment
+                        and not _synthetic
+                        and self._last_turn_done_at > 0.0
+                        and _enqueue_ts > 0.0
+                        and _enqueue_ts < self._last_turn_done_at
+                    ):
+                        # Kept: it fell through the drop guard above because it is
+                        # the surname arriving a beat after the first name.  Let
+                        # it reach the Spec N / name-persist path (the LLM turn for
+                        # the first name is usually still in flight, so it lands in
+                        # pending_transcript and back-fills the surname next).
+                        logger.info(
+                            "[ms_conn] same-breath straggler KEPT (name collection,"
+                            " short fragment — likely surname): %r",
+                            utterance[:60],
+                        )
 
                     # Spec N — concurrent LLM guard.
                     # If a turn is already in-flight (from transcript acceptance
