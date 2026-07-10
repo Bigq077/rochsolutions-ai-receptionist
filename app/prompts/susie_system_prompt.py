@@ -2917,10 +2917,10 @@ def _build_theorem_v3(session: dict) -> str:
         "Monday the 14th at nine — could you type your number on "
         "your keypad? You can press the star key to reset at any "
         "time.' "
-        "ONLY if, unusually, the surname was never captured at the "
-        "start (CALL STATE will show SURNAME STILL NEEDED) do you ask "
-        "for it here first: 'So that's [day] the [date] at [time] — "
-        "and could I take your surname?' — otherwise never re-ask it. "
+        "The surname is NEVER re-asked, even if only the first name "
+        "stuck (CALL STATE may show NAME ALREADY TAKEN) — the name was "
+        "taken at the start; proceed with what you have and do not ask "
+        "for their surname here or anywhere later. "
         "NEVER skip straight to a name question when the name is "
         "already known — always state the confirmed slot first. NEVER "
         "open with 'Perfect', "
@@ -3272,21 +3272,20 @@ def _build_theorem_v3(session: dict) -> str:
         "and a surname), acknowledge the time and move straight to "
         "the phone-number step — do NOT re-ask the name: 'Perfect — "
         "five in the evening on the 11th. If you'd like me to use the "
-        "number you're calling from, just say use this number.' If "
-        "only the first name is known (SURNAME STILL NEEDED), "
-        "acknowledge the time and ask ONLY for the surname in the "
-        "same turn: 'Perfect — five in the evening on the 11th — and "
-        "could I take your surname?'\n"
+        "number you're calling from, just say use this number.' The "
+        "same applies if only the first name stuck (CALL STATE may show "
+        "NAME ALREADY TAKEN): do NOT ask for the surname — the name was "
+        "taken at the start; move straight to the phone-number step "
+        "with the name you have.\n"
         "7. NAME AT BOOKING — you already took the caller's FULL "
         "name (first name and surname) at the very start of the "
         "call, so normally there is nothing to collect here. If CALL "
         "STATE shows a full name (a first "
         "name and a surname), do NOT ask again — skip straight to "
-        "the phone-number step (step 8). Only in the fallback case "
-        "where the surname was not captured at the start (CALL STATE "
-        "will say SURNAME STILL NEEDED) do you ask ONLY for "
-        "the surname: 'And could I take your surname?' — do NOT ask "
-        "for their first name again. Only in the rare case where no "
+        "the phone-number step (step 8). If only the first name stuck "
+        "(CALL STATE may show NAME ALREADY TAKEN), the surname is NEVER "
+        "re-asked — skip straight to the phone-number step with the "
+        "first name you have. Only in the rare case where no "
         "name is known at all, ask: 'Could I take your first name "
         "and surname?'. Never read the surname back — do not repeat, "
         "spell, or confirm it. The moment you have the surname the "
@@ -3451,14 +3450,17 @@ def _build_theorem_v3(session: dict) -> str:
     nm = collected.get("full_name") or collected.get("name")
     if nm:
         known.append(f"name={nm}")
-        # Name-first flow: a single-token name = first name only, surname not yet
-        # taken. Signal it so the booking step asks for the surname (not a full
-        # re-ask). Two+ tokens = full name known → booking name step is skipped.
+        # Full-name-at-start flow: a single-token name = only the first name
+        # stuck (surname mis-heard or split by STT). Owner policy: the surname
+        # is NEVER re-asked — accept what we have and book with the first name.
+        # Do NOT re-ask for the surname (or the first name) at the booking step;
+        # a first-name-only booking is fine. Two+ tokens = full name known.
         if len(str(nm).split()) < 2:
             state.append(
-                f"SURNAME STILL NEEDED — you already have the caller's first "
-                f"name ({nm}); at the booking name step ask ONLY for their "
-                f"surname, never their first name again."
+                f"NAME ALREADY TAKEN ({nm}) — the caller's name was taken at "
+                f"the start of the call. Do NOT ask for their name or surname "
+                f"again at any point; proceed straight to the booking with the "
+                f"name you have."
             )
     if collected.get("phone"): known.append(f"phone={collected['phone']}")
     pt = collected.get("patient_type") or session.get("new_or_returning")

@@ -1350,12 +1350,15 @@ def _v3_try_persist_name(
     # turn (STT splits "Quentin Rock" in two) and used to be dropped.  This runs
     # BEFORE the phase gate deliberately: the surname straggler often lands on a
     # turn where the bot's reply no longer mentions a name, which the phase gate
-    # would reject.  It is instead bounded to the name→phone window and to an
+    # would reject.  It is instead bounded to the pre-booking window and to an
     # explicit surname cue, so it can never grab a stray later word.
     if _existing:
-        # phone_confirmed (NOT collected["phone"], which is pre-filled from the
-        # Twilio caller-ID at call start) marks the end of the name/phone window.
-        if session.get("phone_confirmed"):
+        # Bound the back-fill by booking-not-yet-completed rather than the
+        # phone-confirm step.  Under full-name-at-start the phone can be
+        # confirmed ("use this number") BEFORE the surname is spoken — a
+        # trailing surname ("… my surname's Roch") still needs to land, so
+        # phone_confirmed can no longer be the boundary; booking_confirmed is.
+        if session.get("booking_confirmed"):
             return False
         _first = _existing.split()[0]
         # Treat as "awaiting the surname" when the last bot prompt explicitly
@@ -5529,10 +5532,29 @@ class WebSocketCallHandler:
                             self.session.setdefault("collected", {})
                             self.session["collected"]["phone"] = _bk_caller_num
                             self.session["phone_confirmed"] = True
+                            # ── Close the slot-selection window ───────────────
+                            # Under full-name-at-start the slot-confirmation turn
+                            # ("So that's Wednesday the 15th … just say use this
+                            # number") both re-arms v3_awaiting_slot_selection
+                            # (its readback echoes the day, so _flush_slot_buf
+                            # re-extracts a day map) AND asks for no name, so the
+                            # name-request clear (Spec K) never fires.  The window
+                            # then bleeds into the phone step and the slot guard
+                            # (~5783) swallows "use this number" as a meaningless
+                            # fragment → run_turn never runs → dead air → the
+                            # safety net re-asks the slot.  Accepting the phone
+                            # proves we are past slot selection, so tear the
+                            # window down here before falling through to run_turn.
+                            self.session.pop("v3_dtmf_slot_map",           None)
+                            self.session.pop("v3_slot_dtmf_active",        None)
+                            self.session.pop("v3_awaiting_slot_selection", None)
+                            self.session.pop("v3_dtmf_slot_context",       None)
+                            self.slot_map_stage = SlotMapStage.NONE
                             await save_session(self.call_sid, self.session)
                             logger.info(
                                 "[ms_conn v3] booking verbal phone confirm — "
                                 "stored calling number %s + phone_confirmed=True; "
+                                "slot window cleared; "
                                 "LLM will produce booking readback: %r",
                                 _bk_caller_num, utterance[:60],
                             )
