@@ -101,6 +101,9 @@
   },
   "prompt_facts": {
     "identity_descriptor": "a private physiotherapy clinic based in Bolton",
+    "discipline": "physiotherapy",
+    "first_appt_noun": "assessment",
+    "home_visit_area": "Bolton and Greater Manchester",
     "sole_practitioner": true,
     "practitioner": "Marcus",
     "practitioner_credentials": "Masters in Advanced Clinical Practice, HCPC Registered PH104377, CSP member. Former physiotherapist at Hull Kingston Rovers Rugby Club.",
