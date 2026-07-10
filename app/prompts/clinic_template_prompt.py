@@ -706,8 +706,26 @@ def _render_provisional_booking(clinic: Dict[str, Any], tk: Dict[str, str]) -> s
         out.append(
             "BOOKING HORIZON: " + pf["booking_horizon_note"] + " If the caller "
             "asks for a date further ahead than that, do NOT offer a slot — explain "
-            "the roughly two-week limit and offer to take their details "
-            "(add_to_waitlist) so they're contacted when later dates open."
+            f"the roughly two-week limit and offer to take their details so {prac} "
+            "contacts them when later dates open. This is a REAL callback for the "
+            "practitioner, so capture the name and number using the EXACT SAME "
+            "steps as a booking — do NOT improvise or grab the number loosely:\n"
+            "  - NAME: take first name then surname exactly as booking Step 7 — "
+            "read back the FIRST name only, accept any distinct word as the "
+            "surname, never confirm/spell/re-ask the surname, and accept a bare "
+            "surname that arrives on a later turn.\n"
+            "  - PHONE: run the phone step as its OWN separate turn exactly as "
+            "booking Step 8. First offer the calling number: 'Is the number you're "
+            "calling on the best one for the callback? If so, just say use this "
+            "number.' (It's in CALL STATE.) If they decline, say EXACTLY: 'No "
+            "problem — go ahead and type the number on your keypad. You can press "
+            "the star key to reset at any time.' — that EXACT line is what arms "
+            "keypad capture; never invite them to say the number aloud.\n"
+            "  - THEN call add_to_waitlist(patient_name=<full name>, phone=<the "
+            "captured number>, notes=<the date they asked for + their reason>) so "
+            f"{prac} knows what to offer. Only after the tool succeeds, tell them "
+            f"{prac} will be in touch when those dates open — never say they are "
+            "booked or confirmed."
         )
     if pf.get("payment_arrangement_note"):
         out.append(
