@@ -427,17 +427,32 @@ def format_insurance_inquiry_sms(
     clinic_phone: Optional[str] = None,
     accepts_referrals: bool = False,
     practitioner: Optional[str] = None,
+    self_pay_only: bool = False,
 ) -> str:
     """🏥 Insurance enquiry / 🚫 Bupa — didn't book.
 
-    accepts_referrals=True → clinic accepts private-insurance referrals (incl.
-    Bupa), so use an Option-B message: confirm we accept the referral, no
-    billing-mechanism promise, practitioner follows up to collect details. Used by
-    jv. Default False reproduces the original "can't bill Bupa / pay-and-claim"
-    copy — byte-identical for clinics that don't override.
+    Three mutually exclusive models:
+    * self_pay_only=True  → clinic works with NO insurer at all (e.g. vital_edge).
+      Never claim we bill, work with, or pay-and-claim through any provider.
+    * accepts_referrals=True → clinic accepts private-insurance referrals (incl.
+      Bupa), so use an Option-B message: confirm we accept the referral, no
+      billing-mechanism promise, practitioner follows up to collect details (jv).
+    * both False → the original Theorem "can't bill Bupa / pay-and-claim" copy,
+      byte-identical for clinics that don't override.
     """
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
+
+    # Self-pay-only clinics must never imply any insurer relationship, and must
+    # not quote another clinic's price.
+    if self_pay_only:
+        return (
+            f"Hi, you called {name} about insurance. "
+            f"We're a self-pay clinic and don't work with insurance providers. "
+            f"If you have private cover you're welcome to check with your insurer, "
+            f"though this type of treatment usually isn't covered. "
+            f"Happy to get you booked in whenever suits — just give us a call. {phone}"
+        )
 
     if accepts_referrals:
         _who = practitioner or "our team"

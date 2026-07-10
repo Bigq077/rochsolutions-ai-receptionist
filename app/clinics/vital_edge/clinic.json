@@ -15,6 +15,8 @@
     "https://vitaledgetherapy.com"
   ],
   "company_number": "TBC",
+  "_sms_price_line_note": "Full clause used by the end-of-call price-enquiry SMS. Without it the router falls back to Theorem's '50-min physio appointment is £75' copy. No outcome claims (treatment_guidance.safety forbids promising results or a session count).",
+  "sms_price_line": "A 60-minute deep tissue massage with Jonathan is £125, and a 90-minute session is £175. ",
   "locations": [
     {
       "location_id": "kingston",
