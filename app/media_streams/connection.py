@@ -1146,6 +1146,16 @@ _SURNAME_STOPWORDS = frozenset({
 
 _SURNAME_TOKEN = r"[a-z][a-z'\-]{1,24}"
 
+# Connective words that can sit between the surname marker and the surname
+# itself ("my surname WILL BE green") but are NOT in _SURNAME_STOPWORDS, so
+# _ok() would otherwise accept them as the surname.  Only skipped when a real
+# candidate follows — so a caller genuinely surnamed "Will" ("my surname is
+# Will") is still captured.
+_SURNAME_MARKER_FILLER = frozenset({
+    "will", "shall", "gonna", "going", "been", "being", "do", "does", "did",
+    "actually", "probably", "then", "now", "also", "definitely",
+})
+
 
 def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
     """Best-effort surname extraction from the caller's name-answer utterance.
@@ -1179,13 +1189,29 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
 
     # 1) Explicit surname marker — most reliable.
     #    "surname is rock", "last name rock", "family name is o'brien"
+    #    The connective between the marker and the surname is free-form: callers
+    #    say "surname is rock", "surname's rock", "surname would be rock",
+    #    "surname will be rock", "surname, uh, rock".  Requiring a fixed
+    #    (?:is|was|'s) connective silently dropped the surname for every other
+    #    phrasing (verified: "my surname would be rock" → "").  Instead, scan
+    #    forward from the marker and take the FIRST plausible token: every
+    #    connective word ("is", "was", "would", "be", "uh", …) is already in
+    #    _SURNAME_STOPWORDS, so _ok() skips them.  Bounded to the next 4 tokens
+    #    so a distant unrelated word can never be grabbed.
     m = re.search(
-        r"(?:surname|last name|family name|second name)"
-        r"(?:\s+is|\s+was|'s)?\s+(" + _SURNAME_TOKEN + r")",
-        text,
+        r"(?:surname|last name|family name|second name)\b(.*)$", text
     )
-    if m and _ok(m.group(1)):
-        return m.group(1).capitalize()
+    if m:
+        _cands = [t.strip("'-") for t in m.group(1).split()[:4]]
+        _cands = [t for t in _cands if _ok(t)]
+        # Prefer the first non-connective candidate ("surname will be green" →
+        # green, not will).  Fall back to the connective itself only when it is
+        # the sole candidate ("my surname is Will" → Will).
+        _real = [t for t in _cands if t not in _SURNAME_MARKER_FILLER]
+        if _real:
+            return _real[0].capitalize()
+        if _cands:
+            return _cands[0].capitalize()
 
     # 2) "my name is X Y[ Z]", "it's X Y", "i'm X Y", "this is X Y".
     #    Surname = last name-like token of the captured tail.
@@ -1216,47 +1242,62 @@ _SURNAME_CONTRACTIONS = frozenset({
 })
 
 
-def _v3_extract_bare_surname(caller_utterance: str, first_name: str) -> str:
-    """Extract a surname from a SURNAME-ONLY answer (name-first flow).
+def _v3_backfill_surname(
+    caller_utterance: str, first_name: str, awaiting_surname: bool = False
+) -> str:
+    """Recover a surname from a LATER caller utterance, once the first name is
+    already stored.  (Ported from the JV template engine, 2026-07-10.)
 
-    Used when the caller has already given their first name at the start of the
-    call and is now answering the booking-stage question "And your surname?".
-    Unlike _v3_extract_surname (which expects a full name answer), the utterance
-    here is typically just the surname — "Roch", "it's Roch", "my surname is
-    Roch spelt r o c h". Returns a capitalised surname, or "" if none found.
+    The capture pipeline reads back only the first name and often locks it
+    before the surname is spoken (Susie asks "…first name and surname?", the
+    caller gives the first name, it confirms, THEN the surname arrives on a
+    separate turn).  That late surname used to be silently dropped.
+
+    Replaces the older _v3_extract_bare_surname, which took the LAST acceptable
+    token of ANY utterance and could therefore grab a stray mid-call word.  This
+    version only fires on an EXPLICIT cue:
+      1. an explicit marker — "surname is rock", "last name rook", or
+      2. a spelled-out surname — "r o c h" → "Roch" (callers spell to correct a
+         mis-heard surname), with stand-alone "i"/"a" excluded, or
+      3. a bare single-token straggler, ONLY when we are provably awaiting the
+         surname (STT routinely splits "Quentin Rock" across two turns).
+    Returns a capitalised surname or "".
     """
     if not caller_utterance:
         return ""
-    text = re.sub(r"[^a-z'\-\s]", " ", caller_utterance.lower())
-    text = re.sub(r"\s+", " ", text).strip()
-    if not text:
-        return ""
-    first_l = (first_name or "").lower().split()[0] if first_name else ""
-
-    def _ok(tok: str) -> bool:
-        return (
-            2 <= len(tok) <= 25
-            and tok != first_l
-            and tok not in _SURNAME_STOPWORDS
-            and tok not in _V3_NAME_FALSE_POSITIVES
-            and tok not in _SURNAME_CONTRACTIONS
-        )
-
-    # 1) Explicit marker — most reliable.
-    m = re.search(
-        r"(?:surname|last name|family name|second name)"
-        r"(?:\s+is|\s+was|'s)?\s+(" + _SURNAME_TOKEN + r")",
-        text,
-    )
-    if m and _ok(m.group(1)):
-        return m.group(1).capitalize()
-
-    # 2) Otherwise take the LAST acceptable token — the surname normally comes
-    #    last ("it's Roch", "the surname's Roch", "Roch"). Spelled-out letters
-    #    ("r o c h") are single chars and filtered by the length check.
-    toks = [t for t in text.split() if _ok(t)]
-    if toks:
-        return toks[-1].capitalize()
+    low = caller_utterance.lower()
+    # 1) Explicit marker → reuse the conservative extractor.
+    if any(
+        mk in low
+        for mk in ("surname", "last name", "family name", "second name")
+    ):
+        _s = _v3_extract_surname(caller_utterance, first_name)
+        if _s:
+            return _s
+    # 2) Spelled-out surname ("r o c h" → "Roch").
+    _letters = [c for c in re.findall(r"\b([a-z])\b", low) if c not in ("i", "a")]
+    if len(_letters) >= 2:
+        cand = "".join(_letters)
+        if 2 <= len(cand) <= 25 and cand != (first_name or "").lower():
+            return cand.capitalize()
+    # 3) Bare distinct-word straggler ("rock") — accepted ONLY when the caller
+    #    context proves we are awaiting the surname.  Requires EXACTLY one token
+    #    so a multi-word aside ("yes that works for me") can never be grabbed,
+    #    and the token must clear all three name stoplists.  The surname is
+    #    never re-asked or read back, so any distinct valid word is accepted
+    #    silently (owner policy 2026-07-07).
+    if awaiting_surname:
+        _toks = re.sub(r"[^a-z'\-\s]", " ", low).split()
+        if len(_toks) == 1:
+            cand = _toks[0]
+            if (
+                2 <= len(cand) <= 25
+                and cand != (first_name or "").lower()
+                and cand not in _SURNAME_STOPWORDS
+                and cand not in _V3_NAME_FALSE_POSITIVES
+                and cand not in _SURNAME_CONTRACTIONS
+            ):
+                return cand.capitalize()
     return ""
 
 
@@ -1303,6 +1344,43 @@ def _v3_try_persist_name(
     if _existing and _has_full_name:
         return False
 
+    # ── Stage 2: first name already stored — back-fill the surname ───────────
+    # (JV parity, 2026-07-10.)  The readback only ever contains the FIRST name,
+    # so a first-name-only lock is common; the surname then arrives on a LATER
+    # turn (STT splits "Quentin Rock" in two) and used to be dropped.  This runs
+    # BEFORE the phase gate deliberately: the surname straggler often lands on a
+    # turn where the bot's reply no longer mentions a name, which the phase gate
+    # would reject.  It is instead bounded to the name→phone window and to an
+    # explicit surname cue, so it can never grab a stray later word.
+    if _existing:
+        # phone_confirmed (NOT collected["phone"], which is pre-filled from the
+        # Twilio caller-ID at call start) marks the end of the name/phone window.
+        if session.get("phone_confirmed"):
+            return False
+        _first = _existing.split()[0]
+        # Treat as "awaiting the surname" when the last bot prompt explicitly
+        # asked for it, OR the first name locked first-name-only this window
+        # (flag set in Stage 1 below) — so a bare straggler ("rock") is accepted.
+        _awaiting = bool(session.get("v3_awaiting_surname")) or any(
+            k in (last_bot or "").lower()
+            for k in ("surname", "last name", "family name", "full name")
+        )
+        _sur = _v3_backfill_surname(
+            caller_utterance, _first, awaiting_surname=_awaiting
+        )
+        if _sur and _sur.lower() != _first.lower():
+            full = f"{_first} {_sur}"
+            session.setdefault("collected", {})["name"] = full
+            session["patient_name"] = full
+            session["surname_captured"] = True
+            session["v3_awaiting_surname"] = False
+            logger.info(
+                "[ms_conn v3] surname back-filled onto stored first name: %r",
+                full,
+            )
+            return True
+        return False
+
     if not last_bot:
         return False
 
@@ -1315,27 +1393,6 @@ def _v3_try_persist_name(
     if not post_slot_pending and not _name_requested_this_turn:
         return False
 
-    # ── Stage 2: first name already stored — append the surname ──────────────
-    # Name-first flow: the first name was persisted at the start of the call and
-    # the caller has now answered the booking-stage "And your surname?".  The
-    # surname lives in the caller's utterance (it is never read back), so take
-    # it directly rather than from a readback pattern.
-    if _existing:
-        # Only when the PREVIOUS turn asked for the name/surname (post_slot_pending
-        # is armed) is the current utterance a surname ANSWER. If instead THIS
-        # turn is the surname question itself (_name_requested_this_turn, but the
-        # flag not yet armed), the utterance is the slot pick — never mine a
-        # surname from it.
-        if not post_slot_pending:
-            return False
-        surname = _v3_extract_bare_surname(caller_utterance, _existing)
-        if surname and surname.lower() != _existing.lower():
-            full = f"{_existing} {surname}"
-            session.setdefault("collected", {})["name"] = full
-            session["patient_name"] = full
-            return True
-        return False
-
     # ── Stage 1: no name yet — capture the first name from the readback ───────
     for pattern in _V3_NAME_CONFIRM_PATTERNS:
         m = pattern.search(last_bot)
@@ -1345,11 +1402,21 @@ def _v3_try_persist_name(
                 # First name is authoritative from the readback ("Thanks
                 # Quentin —").  The caller may also have volunteered a surname
                 # in the same breath ("Quentin Roch"); capture it if so, else
-                # store first-name-only and collect the surname at booking.
+                # store first-name-only and back-fill the surname when it
+                # arrives on a later turn (Stage 2 above).
                 surname = _v3_extract_surname(caller_utterance, candidate)
                 full = f"{candidate} {surname}" if surname else candidate
                 session.setdefault("collected", {})["name"] = full
                 session["patient_name"] = full
+                if surname:
+                    session["surname_captured"] = True
+                    session["v3_awaiting_surname"] = False
+                else:
+                    # First name locked with no surname yet — mark that we are
+                    # now awaiting it so a following bare straggler word (STT
+                    # splits "Quentin Rock" across two turns) is accepted as
+                    # the surname even when the model did not re-ask for it.
+                    session["v3_awaiting_surname"] = True
                 return True
 
     return False
