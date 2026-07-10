@@ -1186,11 +1186,24 @@ class LLMStream:
             async def _delayed_filler() -> None:
                 await asyncio.sleep(timeout_sec)
                 if not got_first_chunk:
-                    logger.info("[ms_llm] filler phrase triggered (background task)")
                     # Prefix with ACK_FILLER_MARKER so _tts_loop can identify
                     # this chunk and suppress it if a tool-call filler fires
                     # in the same turn and sets _ack_filler_cancelled.
-                    _ack_filler_text = random.choice(FILLER_PHRASES)
+                    # On the turn right after a booking/reschedule "yes", use a
+                    # write-acknowledging filler ("Just locking that in now…")
+                    # instead of the generic "Give me a moment…", which confuses
+                    # a caller who just confirmed and can re-open the readback.
+                    # This is a SUBSTITUTION, not a removal: every other turn
+                    # still gets the normal FILLER_PHRASES pool (no dead air).
+                    from app.filler_phrases import confirm_write_filler
+                    _ack_filler_text = (
+                        confirm_write_filler(session)
+                        or random.choice(FILLER_PHRASES)
+                    )
+                    logger.info(
+                        "[ms_llm] filler phrase triggered (background task): %r",
+                        _ack_filler_text[:40],
+                    )
                     await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
                     session["_ack_filler_active"] = True
                     self._last_filler_at = time.monotonic()
@@ -1445,13 +1458,18 @@ class LLMStream:
             with_filler,
             THINKING_FILLERS_PRIMARY,
             BOOKING_WRITE_FILLERS,
+            LOOKUP_FILLERS,
         )
 
-        # Tools that get filler phrases → list to draw from
+        # Tools that get filler phrases → list to draw from.
+        # lookup_patient keeps a filler (never dead air) but draws from a
+        # NEUTRAL pool: it runs both to find an appointment and while cancelling
+        # one, so "Checking what's free for you…" is wrong in the cancel case
+        # (JV P17 parity).
         _FILLER_TOOLS = {
             "check_availability": THINKING_FILLERS_PRIMARY,
             "book_appointment":   BOOKING_WRITE_FILLERS,
-            "lookup_patient":     THINKING_FILLERS_PRIMARY,
+            "lookup_patient":     LOOKUP_FILLERS,
         }
 
         result_blocks: List[dict] = []

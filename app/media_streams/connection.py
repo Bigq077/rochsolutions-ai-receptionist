@@ -3379,6 +3379,14 @@ class SilenceHandler:
                 else:
                     phrase = _prefix + " — could you say that again?"
 
+            # P15 (JV parity): if Susie just granted the caller patience ("take
+            # your time" / "go ahead whenever you're ready"), a dead-air re-ask
+            # must NOT contradict that with "Sorry, I didn't catch that" — that
+            # implies an audio fault that isn't there, right after we told them
+            # to take their time.  Stay gentle and consistent.
+            if _is_patience_response((_sess or {}).get("last_bot_prompt") or ""):
+                phrase = "No rush — are you still there?"
+
             logger.info("[ms_watchdog] WATCHDOG_FIRE prompt=%r attempt=#%d", phrase[:80], _attempt)
             self.currently_reasking = True
             # ── Clear tts_inhibit before watchdog re-ask ──────────────────────
@@ -11708,6 +11716,15 @@ class WebSocketCallHandler:
                         self.session["last_bot_prompt"] = _phrase_1
                     elif self.session.get("v3_awaiting_slot_selection"):
                         _phrase_1 = "Still with you — which of those days suits you?"
+                    elif _is_patience_response(
+                        self.session.get("last_bot_prompt") or ""
+                    ):
+                        # P15 (JV parity): the caller asked us to wait and Susie
+                        # granted it ("take your time"); a dead-air re-ask must
+                        # stay gentle and consistent — never "I can't quite hear
+                        # you", which contradicts the patience grant and implies
+                        # an audio fault.
+                        _phrase_1 = "No rush — are you still there?"
                     else:
                         _last_q = getattr(self._silence_handler, "last_question", "")
                         # Never replay the opening greeting as a "re-ask".
