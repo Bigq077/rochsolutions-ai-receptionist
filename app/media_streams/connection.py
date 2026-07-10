@@ -7180,11 +7180,13 @@ class WebSocketCallHandler:
                                         # which calls transfer_to_human (the
                                         # redirect is in conversation_history).
                                         _redirect = (
-                                            "That clinic isn't bookable through "
-                                            "me at the moment — you can book "
-                                            "online at theoremhealth.co.uk, or "
-                                            "do you want me to put you straight "
-                                            "through to Mark?"
+                                            "Unfortunately I can't book the "
+                                            "Redditch clinic myself at the "
+                                            "moment — you can book online at "
+                                            "theoremhealth.co.uk, or if you'd "
+                                            "like, I can put you straight "
+                                            "through to Mark and you can book "
+                                            "with him."
                                         )
                                         await self.tts_text_queue.put(_redirect)
                                         self.session["last_bot_prompt"] = _redirect

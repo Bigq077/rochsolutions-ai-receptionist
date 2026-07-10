@@ -705,9 +705,10 @@ CLINICS: Dict[str, Dict[str, Any]] = {
                 "but it's very convenient if you're near Redditch town centre — "
                 "the train station is about a 5 to 7 minute walk from the clinic. "
                 "I can book you straight in at Awlstuh. "
-                "Redditch appointments aren't bookable through me at the moment — "
-                "you can book those online at theoremhealth.co.uk, or I can put you "
-                "straight through to Mark."
+                "Unfortunately I can't book Redditch appointments myself at the "
+                "moment — you can book those online at theoremhealth.co.uk, or if "
+                "you'd like, I can put you straight through to Mark and you can "
+                "book with him."
             ),
 
             # ── What is shockwave therapy? ─────────────────────────────────────
