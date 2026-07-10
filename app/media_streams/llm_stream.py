@@ -793,11 +793,27 @@ class LLMStream:
                 )
                 model = HAIKU
                 _call_system  = SLOT_FORMATTER_SYSTEM_PROMPT
-                _call_dynamic = ""
+                # The formatter replaces the whole system prompt, so Haiku sees
+                # no CALL STATE.  When the caller has already picked a specific
+                # time, the formatter owns the turn and must hand off to the
+                # phone step — and the confirm / keypad handlers key off the
+                # exact wording.  Without knowing whether a caller-ID exists it
+                # improvised ("I just need your phone number"), which matched
+                # neither handler and stranded the booking.  Give it the one
+                # fact it needs to pick the right PHONE HAND-OFF line.
+                _cid_present = bool(
+                    session.get("twilio_from_local")
+                    or session.get("twilio_from")
+                )
+                _call_dynamic = (
+                    "CALLER ID PRESENT — use the 'use this number' hand-off line."
+                    if _cid_present
+                    else "NO CALLER ID — use the keypad hand-off line."
+                )
                 logger.info(
                     "[ms_llm] slot buffer active (post-check_availability) iter=%d"
-                    " — switched to HAIKU + focused slot prompt",
-                    iteration,
+                    " — switched to HAIKU + focused slot prompt (caller_id=%s)",
+                    iteration, _cid_present,
                 )
             _last_check_avail = False  # reset; re-armed below after tool execution
 
