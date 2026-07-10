@@ -45,30 +45,28 @@ if not ELEVENLABS_API_KEY:
 # ---------------------------------------------------------------------------
 # Pronunciation rules — ALIAS type (works on eleven_flash_v2_5 and all models)
 # ---------------------------------------------------------------------------
+def _alias_both_cases(word: str, alias: str) -> list:
+    """Alias rule for both the capitalised and lowercased forms of a word."""
+    return [
+        {"string_to_replace": word,          "type": "alias", "alias": alias},
+        {"string_to_replace": word.lower(),  "type": "alias", "alias": alias.lower()},
+    ]
+
+
 RULES = [
-    # Alcester — both capitalisation forms
-    {
-        "string_to_replace": "Alcester",
-        "type":              "alias",
-        "alias":             "AWL-stuh",
-    },
-    {
-        "string_to_replace": "alcester",
-        "type":              "alias",
-        "alias":             "AWL-stuh",
-    },
-    # Redditch — both capitalisation forms
-    # "Reditch" removes the doubled-d and is closer to /ˈrɛdɪtʃ/
-    {
-        "string_to_replace": "Redditch",
-        "type":              "alias",
-        "alias":             "Reditch",
-    },
-    {
-        "string_to_replace": "redditch",
-        "type":              "alias",
-        "alias":             "reditch",
-    },
+    # ── Theorem places (Alcester / Redditch) ───────────────────────────────
+    # "AWL-stuh" → /ˈɔːlstər/; "Reditch" removes the doubled-d artefact.
+    *_alias_both_cases("Alcester", "AWL-stuh"),
+    *_alias_both_cases("Redditch", "Reditch"),
+    # ── Joint Venture Physiotherapy (jv_v1) terms (P8) ──────────────────────
+    # ElevenLabs (eleven_flash_v2_5) mispronounced these; alias respellings
+    # steer it to the intended British pronunciation. Adjust the alias if a
+    # term still sounds off after a test call.
+    *_alias_both_cases("acupuncture",   "AK-yoo-punk-cher"),
+    *_alias_both_cases("physiotherapy", "fizzee-oh-THERR-uh-pee"),
+    *_alias_both_cases("Lythgoe",       "LITH-goh"),
+    *_alias_both_cases("Walkden",       "WAWK-den"),
+    *_alias_both_cases("Worsley",       "WURZ-lee"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -80,10 +78,12 @@ headers = {
     "Content-Type": "application/json",
 }
 payload = {
-    "name":        "theorem_health_places",
+    "name":        "susie_pronunciations",
     "description": (
-        "Alcester and Redditch pronunciation corrections "
-        "for Susie AI receptionist (eleven_flash_v2_5, alias rules)"
+        "Pronunciation corrections for Susie AI receptionist "
+        "(eleven_flash_v2_5, alias rules): Alcester/Redditch + "
+        "Joint Venture Physiotherapy terms (acupuncture, physiotherapy, "
+        "Lythgoe, Walkden, Worsley)"
     ),
     "rules":       RULES,
 }

@@ -70,6 +70,13 @@ _BANNED_SENTENCE_RE = [
     ("lookup_already_done",   re.compile(r"[^.!?]*\blookup (?:has )?already (?:been )?done\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("let_me_confirm_caller", re.compile(r"[^.!?]*\blet me confirm this with the caller\b[^.!?]*[.!?]?",    re.IGNORECASE)),
     ("lookup_already_ran",    re.compile(r"[^.!?]*\blookup(?:_appointment)? already ran\b[^.!?]*[.!?]?",    re.IGNORECASE)),
+    # Internal reasoning spoken aloud on the cancel/reschedule path (GLOBAL FAIL 6),
+    # observed Call 7 (2026-06-27): "I need to look up the patient details first
+    # before confirming…". "look up the patient" / "look up the/your details" is
+    # internal-only vocabulary — Susie addresses the caller, never "the patient" —
+    # so stripping the whole sentence is safe. (Legit "look up your appointment"
+    # is NOT matched.)
+    ("lookup_reasoning_leak", re.compile(r"[^.!?]*\blook up (?:the |your )?(?:patient|details)\b[^.!?]*[.!?]?", re.IGNORECASE)),
     ("rc_stage_leak",         re.compile(r"[^.!?]*\brc_stage\b[^.!?]*[.!?]?",                               re.IGNORECASE)),
     # CALL STATE internal labels (BOOKING FLOW ACTIVE, CTA COUNT, etc.) spoken
     # aloud — Sonnet occasionally paraphrases the injected CALL STATE block into
@@ -393,6 +400,17 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
 
     # ── Gate 5a: whole-chunk reasoning drop ──────────────────────────────────
     _drop_reason = _get_reasoning_drop_reason(text)
+    # Slot-presentation exemption: the post-check_availability slot list is
+    # legitimately dense with spoken times ("five in the evening, six 05 in the
+    # evening, seven 10 in the evening, eight 15 in the evening"). On a day with
+    # 4+ slots that trips high_time_density (>3 time phrases) and the WHOLE slot
+    # chunk is dropped as "reasoning" → no speech → the caller hears "Sorry,
+    # could you say that again?" and has to repeat (JV neuro call 2026-07-07
+    # 13:20). During the slot pass, ignore high_time_density ONLY — every other
+    # reasoning signal (24h HH:MM timestamps, tick/cross, internal openers and
+    # labels) still drops normally.
+    if _drop_reason == "high_time_density" and session.get("_slot_buf_active"):
+        _drop_reason = ""
     if _drop_reason:
         _preview = (text[:50] + "...") if len(text) > 50 else text
         logger.info(
@@ -429,8 +447,16 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
             # then hears the deaf-sounding "Sorry, I didn't quite catch that"
             # fallback, killing a completed booking (Test 1, 2026-06-12: caller
             # entered phone via DTMF, confirmation stripped → abandoned).
-            # Only strip when substantive content remains.
-            if _offer_cleaned.strip():
+            # Only strip when substantive content remains AND that remainder
+            # still carries a question. If removing the offer would leave a
+            # statement with no question, the caller is handed a dead-end they
+            # can't act on — so KEEP the offer; forward motion beats mild
+            # redundancy. (2026-07-04: a condition-mention turn mid-booking —
+            # "…Marcus will assess and set a plan. Would you like to get booked
+            # in?" — had its only question stripped, leaving 7s of silence and
+            # the caller hung up.) The empty-remainder case (the closing
+            # confirmation IS the whole response) is also caught here.
+            if _offer_cleaned.strip() and "?" in _offer_cleaned:
                 logger.info(
                     "[ms_gate5] removed redundant booking offer "
                     "(booking_flow_active)"
@@ -438,9 +464,55 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                 result = _offer_cleaned
             else:
                 logger.info(
-                    "[ms_gate5] booking offer KEPT — it is the whole response "
-                    "(closing confirmation), not a redundant tail"
+                    "[ms_gate5] booking offer KEPT — stripping would leave no "
+                    "question (avoid dead-end)"
                 )
+
+    # ── Gate 5d: repeated FAQ booking-CTA strip (P4) ─────────────────────────
+    # Pre-booking, the model tacks a booking CTA onto nearly every FAQ answer
+    # despite the prompt's "offer once" rule (observed Call 4, 2026-06-27: CTA on
+    # 4 consecutive service answers). v3_cta_count is incremented per turn
+    # (connection.py:8087); once a CTA has already been offered this call (>=1),
+    # strip any further CTA tail. The FIRST offer is preserved (count 0). elif so
+    # it never runs during booking_flow (5c owns that path). Only strip when
+    # substantive content remains, so a turn that is itself the booking offer is
+    # never nuked (same empty-guard as 5c).
+    elif int(session.get("v3_cta_count") or 0) >= 1:
+        _offer_cleaned = _BOOKING_OFFER_RE.sub("", result)
+        if _offer_cleaned != result and _offer_cleaned.strip():
+            logger.info(
+                "[ms_gate5] removed repeated FAQ booking offer (v3_cta_count=%s)",
+                session.get("v3_cta_count"),
+            )
+            result = _offer_cleaned
+
+    # ── Booking-readback DATE enforcement ────────────────────────────────────
+    # The final confirmation ("So that's <name>, <slot> — shall I go ahead and
+    # book that in?") is model free-text and occasionally drifts the DATE away
+    # from the slot the caller actually confirmed at the name-request readback
+    # (Call 2026-07-07: confirmed "Wednesday the 15th" but the booking readback
+    # spoke "the 16th"). Once the phone is confirmed we are in the booking-
+    # readback phase; if a chunk carries a "<weekday> the <ordinal> of <month>"
+    # date, force it to the confirmed slot's date. The booking itself is already
+    # protected by _resolve_slot_iso (a hallucinated slot is rejected and forced
+    # back to a real offered slot) — this only keeps the SPOKEN date consistent
+    # with what was agreed. Runs per-chunk; the readback date sits in one chunk.
+    _READBACK_DATE_RE = r"[A-Za-z]+day\s+the\s+\d{1,2}(?:st|nd|rd|th)\s+of\s+[A-Za-z]+"
+    _conf_slot = session.get("v3_confirmed_slot_phrase") or ""
+    if _conf_slot and session.get("phone_confirmed"):
+        _dm = re.search(_READBACK_DATE_RE, _conf_slot)
+        if _dm:
+            _canon_date = _dm.group(0)
+            _date_corrected = re.sub(
+                _READBACK_DATE_RE, lambda _m: _canon_date, result
+            )
+            if _date_corrected != result:
+                logger.info(
+                    "[ms_gate5] booking readback date corrected to confirmed "
+                    "slot: %r",
+                    _canon_date,
+                )
+                result = _date_corrected
 
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)

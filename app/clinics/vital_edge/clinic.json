@@ -91,6 +91,8 @@
   },
   "prompt_facts": {
     "identity_descriptor": "a deep tissue massage therapy clinic in Kingston upon Thames",
+    "discipline": "massage therapy",
+    "first_appt_noun": "session",
     "sole_practitioner": true,
     "practitioner": "Jonathan",
     "practitioner_credentials": "VTCT Level 3 in Soft Tissue Therapy, accredited Sports Massage Therapist",

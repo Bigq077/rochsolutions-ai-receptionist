@@ -30,6 +30,7 @@ BOOKING_CONFIRMATION_SMS = (
     "⏰ {appointment_time}\n"
     "📍 {clinic_address}\n\n"
     "{first_visit_note}"
+    "{fees_note}"
     "{full_name_request}"
     "Maps: {maps_link}\n\n"
     "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
@@ -50,11 +51,33 @@ HOME_VISIT_CONFIRMATION_SMS = (
     "See you soon!\n— {clinic_name}"
 )
 
+# Remote (video / phone) confirmation — the consultation is not at the clinic,
+# so the clinic address / Maps link and the "arrive early / bring records" note
+# don't apply. The practitioner makes contact at the appointment time.
+REMOTE_CONFIRMATION_SMS = (
+    "Hi {patient_name} 👋\n\n"
+    "Your remote appointment with {clinic_name} is confirmed:\n\n"
+    "📅 {appointment_date}\n"
+    "⏰ {appointment_time}\n"
+    "💻 Video / phone consultation — {clinic_name} will be in touch at your "
+    "appointment time with how to join.\n\n"
+    "To reschedule, reply to this message or call us on {clinic_phone}.\n\n"
+    "See you soon!\n— {clinic_name}"
+)
+
 # Explicit full-name request — inserted only when the caller's full name is
 # still pending (only first name was captured on the call).
 FULL_NAME_REQUEST_NOTE = (
     "Please reply to this message with your full name so we can complete "
     "your booking details.\n\n"
+)
+
+# Silent-misspelling recovery (P5). When a new patient's full name WAS captured
+# on the call, STT may still have misheard the spelling and the verbal flow
+# never reads the surname back — so give a low-friction way to correct it.
+SPELLING_CONFIRM_NOTE = (
+    "We've booked you in as {full_name}. If that's spelled differently, just "
+    "reply with the correct spelling.\n\n"
 )
 
 
@@ -159,10 +182,17 @@ def build_sms(session: dict) -> str:
     # the hardcoded alcester/redditch map don't apply to them, so resolve the SMS
     # clinic name, phone and address (→ Maps link) straight from the clinic config.
     # Theorem/demo are unaffected (they have no template_v1 prompt_engine).
+    _is_template_clinic = False
+    # Optional per-clinic fees / policy line for the in-clinic confirmation.
+    # Driven from clinic.json ("sms_fees_note"); "" for clinics that don't set it
+    # so their message is byte-identical (theorem/demo have no such key).
+    fees_note = ""
     try:
         from app.clinic_config import get_clinic
         _clinic = get_clinic(session.get("clinic_id"))
+        fees_note = _clinic.get("sms_fees_note") or ""
         if _clinic.get("prompt_engine") == "template_v1":
+            _is_template_clinic = True
             clinic_name  = _clinic.get("sms_name") or _clinic.get("clinic_name") or clinic_name
             clinic_phone = _clinic.get("phone") or clinic_phone
             _locs  = _clinic.get("locations") or []
@@ -182,23 +212,51 @@ def build_sms(session: dict) -> str:
     # has already been confirmed (contains a space) the SMS must NOT re-ask.
     _full_name_confirmed = bool(name_raw) and (" " in name_raw)
     pending_full_name    = not _full_name_confirmed
-    full_name_request    = FULL_NAME_REQUEST_NOTE if pending_full_name else ""
+    if pending_full_name:
+        full_name_request = FULL_NAME_REQUEST_NOTE
+    elif _is_template_clinic and first_visit:
+        # P5: new patient whose full name WAS captured — the surname is never
+        # read back on the call, so a silent STT misspelling has no recovery
+        # path. Offer a low-friction correction in the SMS. Scoped to template
+        # clinics + new patients so theorem/demo and returning callers are
+        # unchanged.
+        full_name_request = SPELLING_CONFIRM_NOTE.format(full_name=name_raw)
+    else:
+        full_name_request = ""
 
     import logging as _logging_sms
     _logging_sms.getLogger(__name__).info(
-        "BOOKING_CONFIRM pending_full_name=%s → SMS %s full-name instruction",
-        pending_full_name,
-        "requests" if pending_full_name else "omits",
+        "BOOKING_CONFIRM pending_full_name=%s template=%s new=%s → full-name line: %s",
+        pending_full_name, _is_template_clinic, first_visit,
+        "request" if pending_full_name else
+        ("spelling-confirm" if (_is_template_clinic and first_visit) else "omitted"),
     )
+
+    # Modality is recorded by the booking executor as collected["location"]
+    # ("bolton" / "remote" / "home_visit"); the service string also carries
+    # "home_visit" for the dedicated home-visit service. Both are checked so a
+    # home visit of ANY service (e.g. acupuncture at home) is detected too.
+    _svc = (collected.get("service") or "").lower()
+    _loc_modality = (collected.get("location") or "").lower()
 
     # Home visits happen at the patient's home, not the clinic — so the clinic
     # address / Maps link don't apply. Use a tailored body that asks the patient
     # to text their full address + postcode (collected by SMS, not voice, to
     # avoid transcription errors). The 30-min address nudge is scheduled by the
     # booking executor.
-    _svc = (collected.get("service") or "").lower()
-    if "home_visit" in _svc or "home visit" in _svc:
+    if "home_visit" in _svc or "home visit" in _svc or _loc_modality == "home_visit":
         return HOME_VISIT_CONFIRMATION_SMS.format(
+            patient_name     = patient_name,
+            clinic_name      = clinic_name,
+            appointment_date = appointment_date,
+            appointment_time = appointment_time,
+            clinic_phone     = clinic_phone,
+        )
+
+    # Remote (video / phone) consultations are not at the clinic — no address /
+    # Maps link / arrival note. Detected from the booking modality.
+    if _loc_modality in ("remote", "video", "phone", "online", "virtual"):
+        return REMOTE_CONFIRMATION_SMS.format(
             patient_name     = patient_name,
             clinic_name      = clinic_name,
             appointment_date = appointment_date,
@@ -213,6 +271,7 @@ def build_sms(session: dict) -> str:
         appointment_time  = appointment_time,
         clinic_address    = clinic_address,
         first_visit_note  = note,
+        fees_note         = fees_note,
         full_name_request = full_name_request,
         maps_link         = maps_link,
         clinic_phone      = clinic_phone,

@@ -70,8 +70,10 @@ def _spoken_slot_time(hhmm: str) -> str:
     "midday", "one in the afternoon", "five in the evening") so the Haiku slot
     formatter copies labels verbatim instead of converting times itself — which
     let it drop/invent slots (e.g. rendering [09,10,11,12,13] as 09,10,12,13,14
-    and booking a non-existent 2pm).  Slots are on the hour in practice; :30 and
-    other minutes are handled defensively.
+    and booking a non-existent 2pm).  Only :00/:15/:30/:45 use clock-face
+    phrasing ("half past six", "quarter to seven"); every other five-minute
+    value is read digitally ("six twenty-five", "six thirty-five"), never as
+    "twenty-five to seven".
     """
     try:
         h, m = map(int, hhmm.split(":"))
@@ -87,11 +89,57 @@ def _spoken_slot_time(hhmm: str) -> str:
         else "in the evening"
     )
     hour_word = _HOUR_WORDS[h % 12 or 12]
+    next_word = _HOUR_WORDS[(h + 1) % 12 or 12]
     if m == 0:
         return f"{hour_word} {part}"
+    if m == 15:
+        return f"quarter past {hour_word} {part}"
     if m == 30:
         return f"half past {hour_word} {part}"
+    if m == 45:
+        # "quarter to" the NEXT hour, keeping the reading's time-of-day label.
+        return f"quarter to {next_word} {part}"
+    # Every other minute: read it the way a British caller reads a time off a
+    # screen — digital "[hour] [minutes]" (e.g. "six twenty-five", "six thirty-
+    # five") — NOT the clock-face "twenty-five to seven", which sounds odd for
+    # an appointment slot. Only :00/:15/:30/:45 (handled above) keep the
+    # clock-face phrasing. Minutes under ten keep the spoken "oh" ("six oh
+    # five"); the time-of-day suffix stays for AM/PM clarity.
+    _DIGITAL_MIN = {
+        5: "oh five", 10: "ten", 20: "twenty", 25: "twenty-five",
+        35: "thirty-five", 40: "forty", 50: "fifty", 55: "fifty-five",
+    }
+    _mm = _DIGITAL_MIN.get(m)
+    if _mm is not None:
+        return f"{hour_word} {_mm} {part}"
+    # Off-grid minute (never on a 5-minute grid) — unambiguous digit fallback.
     return f"{hour_word} {m:02d} {part}"
+
+
+# An explicit clock time in the caller's preference ("12 o'clock", "half past
+# 12", "around 3", "17:00", "noon") must take precedence over the coarse
+# morning/afternoon/evening band. When BOTH appear in one hint (e.g. "Saturday
+# morning around 12"), banding to hour<12 silently drops the very slot the caller
+# asked for (12:30) and makes Susie claim it's unavailable (Call 4, 2026-07-08).
+# When an explicit time is present we skip the band filter — which only ever
+# RETAINS more slots, never fewer — so the requested slot survives and
+# _resolve_slot_iso / the model pick the nearest. Bare-band hints ("mornings",
+# "Thursday afternoon") contain no clock token, so their behaviour is unchanged.
+_EXPLICIT_CLOCK_RE = re.compile(
+    r"\b\d{1,2}\s*[:.]\s*\d{2}\b"                        # 12:30, 9.30, 17:00
+    r"|\b\d{1,2}\s*(?:o'?clock|am|pm|a\.m\.?|p\.m\.?)\b"  # 12 o'clock, 3pm
+    r"|\b(?:half|quarter|twenty(?:[-\s]five)?|ten|five|\d{1,2})\s+(?:past|to)\s+"
+    r"(?:noon|midday|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b"
+    r"|\b(?:around|about|at|by|near|just after|just before|before|after)\s+\d{1,2}\b"
+    r"|\bnoon\b|\bmidday\b",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_clock(pref: str) -> bool:
+    """True when the caller's preference names a specific clock time (not just a
+    coarse morning/afternoon/evening band)."""
+    return bool(_EXPLICIT_CLOCK_RE.search(pref or ""))
 
 
 def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> list:
@@ -139,18 +187,22 @@ def _filter_tuples_by_preference(slot_tuples: list, preference: str = "") -> lis
     #   morning   = hour < 12
     #   afternoon = 13 <= hour < 17
     #   evening   = hour >= 17
-    if "morning" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
-        if time_filtered:
-            filtered = time_filtered
-    elif "afternoon" in pref:
-        time_filtered = [(s, e) for s, e in filtered if 13 <= s.hour < 17]
-        if time_filtered:
-            filtered = time_filtered
-    elif "evening" in pref:
-        time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
-        if time_filtered:
-            filtered = time_filtered
+    # Skip the coarse band when the caller named an explicit clock time — the
+    # exact time wins so a boundary slot (e.g. 12:30 for "around 12") is never
+    # dropped. Band-only hints are unaffected. See _has_explicit_clock.
+    if not _has_explicit_clock(pref):
+        if "morning" in pref:
+            time_filtered = [(s, e) for s, e in filtered if s.hour < 12]
+            if time_filtered:
+                filtered = time_filtered
+        elif "afternoon" in pref:
+            time_filtered = [(s, e) for s, e in filtered if 13 <= s.hour < 17]
+            if time_filtered:
+                filtered = time_filtered
+        elif "evening" in pref:
+            time_filtered = [(s, e) for s, e in filtered if s.hour >= 17]
+            if time_filtered:
+                filtered = time_filtered
 
     # Fall back to all future slots if preference produced no matches
     if not filtered:
@@ -594,6 +646,51 @@ def _resolve_calendar_id(clinic: Dict[str, Any], location: str) -> str:
     )
 
 
+def _find_service_def(clinic: Dict[str, Any], service: str) -> Optional[Dict[str, Any]]:
+    """Resolve a service arg (service_id or caller-facing name) to its clinic.json
+    definition. Returns None if not found."""
+    svc = (service or "").strip().lower()
+    if not svc:
+        return None
+    for s in (clinic.get("services") or []):
+        if (s.get("service_id") or "").lower() == svc or (s.get("name") or "").lower() == svc:
+            return s
+    return None
+
+
+def _service_duration_minutes(clinic: Dict[str, Any], service: str, fallback: int) -> int:
+    """Per-service appointment length from clinic.json (typical_duration_minutes).
+
+    Falls back to `fallback` (typically the clinic's slot_minutes) when the
+    service is unknown or declares no duration — so a service without an explicit
+    length behaves exactly as before. This is what drives both the slot grid in
+    check_availability and the calendar-event length in book_appointment, so the
+    slot offered and the event booked are always the same length."""
+    svc = _find_service_def(clinic, service)
+    if svc:
+        d = svc.get("typical_duration_minutes")
+        if d:
+            return int(d)
+    return int(fallback)
+
+
+def _service_supports_location(svc_def: Dict[str, Any], location: str) -> bool:
+    """True if a service is bookable under the given booking location/modality,
+    tolerant of the varied `available_as` token families in clinic.json
+    (e.g. 'home_visit', 'home_visit_bolton_and_greater_manchester',
+    'outdoor_bolton'). Used to reject impossible service×modality bookings (P2)."""
+    loc = (location or "").strip().lower()
+    if not loc:
+        return True  # no modality to validate against
+    tokens = [str(t).strip().lower() for t in (svc_def.get("available_as") or [])]
+    if not tokens:
+        return True  # service doesn't declare modalities — don't block
+    for tok in tokens:
+        if tok == loc or tok.startswith(loc + "_") or loc.startswith(tok):
+            return True
+    return False
+
+
 def _resolve_slot_iso(slot_iso: str, session: dict) -> "datetime":
     """
     Parse slot_iso as an ISO 8601 datetime.
@@ -845,6 +942,18 @@ TOOL_BOOK_APPOINTMENT = {
                     "one (e.g. 'Aviva', 'Bupa'). Pass the insurer NAME the caller "
                     "actually said. Do NOT pass any pre-authorisation, membership or "
                     "policy code — the clinic collects those later, never by phone."
+                ),
+            },
+            "followup_note": {
+                "type": "string",
+                "description": (
+                    "Optional. A short note for the practitioner to follow up on "
+                    "AFTER this booking — set this whenever the caller raised "
+                    "something that needs the practitioner's input but should NOT "
+                    "delay the booking (e.g. a clinical question you couldn't "
+                    "answer, a request for specific equipment, an insurance query). "
+                    "The patient is booked in directly; the practitioner is pinged "
+                    "with this note to follow up. Leave unset for routine bookings."
                 ),
             },
         },
@@ -1247,7 +1356,21 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
     clinic = get_clinic(clinic_id)
     mods = clinic.get("modalities") or []
     has_remote = "remote" in mods
-    loc_enum = [solo] + (["remote"] if has_remote else [])
+    # Home visits are bookable if any service lists 'home_visit' in available_as.
+    # They book exactly like a normal slot (same calendar + clinic hours); the
+    # only extras are a patient address-request SMS and a practitioner ping,
+    # handled in _exec_book_appointment. Without 'home_visit' in the enum the LLM
+    # has no valid location when a caller asks for one and the booking stalls.
+    has_home_visit = any(
+        "home_visit" in (s.get("available_as") or [])
+        for s in (clinic.get("services") or [])
+        if s.get("available") is not False
+    )
+    loc_enum = (
+        [solo]
+        + (["remote"] if has_remote else [])
+        + (["home_visit"] if has_home_visit else [])
+    )
     slot_min = int(clinic.get("slot_minutes", 40))
     svc_ids = [
         s.get("service_id")
@@ -1260,7 +1383,9 @@ def build_tool_schemas(clinic_id: Optional[str]) -> list:
     )
     loc_desc = (
         f"Appointment location: '{solo}' for in-clinic"
-        + (", or 'remote' for a video/phone appointment." if has_remote else ".")
+        + (", 'remote' for a video/phone appointment" if has_remote else "")
+        + (", 'home_visit' for a visit to the patient's home" if has_home_visit else "")
+        + "."
     )
 
     out = []
@@ -2412,6 +2537,18 @@ async def _book_appointment_acuity(args: Dict[str, Any], session: Dict[str, Any]
         # Suppressed when called as part of a reschedule (caller gets a reschedule
         # confirmation instead, sent by _reschedule_appointment_acuity).
         if not args.get("_suppress_sms"):
+            # Owner heads-up FIRST — before the patient confirmation.
+            # No-op unless the clinic enables owner_alerts.
+            from app.notifications.owner_alert import notify_owner
+            await notify_owner(
+                session,
+                event="booking",
+                patient_name=patient_name,
+                when_label=booking.start_time.strftime("%A %d %B at %H:%M"),
+                service=service,
+                location=location,
+                is_new_patient=is_new,
+            )
             try:
                 await send_booking_confirmation(
                     patient_phone=phone,
@@ -3559,6 +3696,13 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
     from app.clinic_config import get_clinic
 
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
+    # Pin the service+modality the caller is actually being shown slots for, so
+    # book_appointment books the SAME service. Without this the model defaulted
+    # to msk_initial_assessment at booking even for a returning patient whose
+    # availability was checked as msk_treatment_session (P2).
+    if _raw_service:
+        session["_checked_service"] = _raw_service
+        session["_checked_location"] = location
     day_window_days = int(args.get("day_window") or 7)
     # Day/time preference (e.g. "Thursday afternoon") — passed to both
     # presentation builders so available_days honours it, mirroring the Acuity
@@ -3567,10 +3711,28 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
 
     clinic = get_clinic(session.get("clinic_id"))
     working_hours = clinic.get("working_hours", {})
-    # Slot length: caller-passed override, else the clinic's configured
-    # slot_minutes (jv_v1 = 40), else 50. Drives slot spacing — a wrong default
-    # is why JV showed 50-min Theorem-spaced slots.
-    duration_min = int(args.get("duration_minutes") or clinic.get("slot_minutes") or 50)
+    _slot_minutes = int(clinic.get("slot_minutes") or 50)
+    _break_min = int(clinic.get("slot_break_minutes") or 0)
+    # Slot length: caller-passed override, else the length configured for THIS
+    # service (services[].typical_duration_minutes), else the clinic slot_minutes.
+    # Per-service so a 30-min treatment and a 60-min neuro assessment grid (and
+    # book) at their true lengths rather than a flat slot_minutes.
+    duration_min = int(
+        args.get("duration_minutes")
+        or _service_duration_minutes(clinic, _raw_service, _slot_minutes)
+    )
+    # Re-anchor each day's closing bound to the service length. working_hours end
+    # was baked as last_appointment + slot_minutes (config default 40). Shift it by
+    # (duration_min - slot_minutes) so the LAST offered start equals last_appointment
+    # for ANY service duration — otherwise a 30-min service would over-offer past
+    # last_appointment and a 60-min service would be truncated before it. Build a
+    # NEW dict; never mutate the shared clinic config.
+    if working_hours and duration_min != _slot_minutes:
+        _delta_h = (duration_min - _slot_minutes) / 60.0
+        working_hours = {
+            _day: ((_hrs[0], _hrs[1] + _delta_h) if _hrs else None)
+            for _day, _hrs in working_hours.items()
+        }
 
     now = datetime.now(LONDON_TZ)
     w_start = now
@@ -3604,6 +3766,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         duration_min=duration_min,
         clinic_working_hours=working_hours,
         increment_min=clinic.get("slot_increment_minutes"),
+        break_min=_break_min,
     )
 
     tokens = await _get_tokens()
@@ -3630,7 +3793,7 @@ async def _exec_check_availability(args: Dict[str, Any], session: Dict[str, Any]
         busy_raw = await asyncio.to_thread(freebusy, tokens, w_start, w_end, calendar_id)
         await _save_gcal_tokens(tokens)   # persist any token refresh that happened inside freebusy
         busy_blocks = parse_busy(busy_raw or [])
-        free_slots = filter_free_slots(candidates, busy_blocks)
+        free_slots = filter_free_slots(candidates, busy_blocks, break_min=_break_min)
     except Exception as e:
         # Calendar API failed — fall back to unfiltered candidate slots (same
         # behaviour as when calendar tokens are absent).  This keeps the
@@ -3953,6 +4116,60 @@ async def _book_appointment_provisional(
     }
 
 
+async def _send_practitioner_followup_ping(
+    clinic: Dict[str, Any],
+    patient_name: str,
+    phone: str,
+    service: str,
+    location: str,
+    booked_label: str,
+    followup_note: str = "",
+) -> None:
+    """
+    Ping the practitioner (clinic.transfer_phone, e.g. Marcus) AFTER a booking
+    when the appointment needs human follow-up — a home visit (Marcus must
+    coordinate travel and the patient will text their address), or any query the
+    caller raised that Susie flagged via book_appointment(followup_note=...).
+
+    The patient is ALWAYS booked in directly first — Susie never gatekeeps a
+    booking behind the practitioner. This is just the heads-up so the
+    practitioner follows up after. Fire-and-forget, non-fatal.
+    """
+    # When the clinic uses real-time owner_alerts for bookings, the consolidated
+    # notify_owner(event="booking") call already texted the owner (carrying any
+    # follow-up note), so skip this to avoid a duplicate SMS to the same number.
+    from app.notifications.owner_alert import owner_alerts_enabled
+    if owner_alerts_enabled(clinic, "booking"):
+        return
+    is_home_visit = (location or "").lower() == "home_visit"
+    note = (followup_note or "").strip()
+    if not is_home_visit and not note:
+        return
+    try:
+        from app.notifications.sms import send_sms
+        transfer_phone = clinic.get("transfer_phone", "")
+        if not transfer_phone:
+            return
+        reasons = []
+        if is_home_visit:
+            reasons.append("HOME VISIT — confirm travel; patient will text their address")
+        if note:
+            reasons.append(note)
+        body = (
+            f"🔔 {patient_name or 'A patient'} ({phone or 'no number'}) just booked "
+            f"{service or 'an appointment'} for {booked_label}. "
+            f"Needs follow-up: {' | '.join(reasons)}."
+        )
+        asyncio.create_task(send_sms(to=transfer_phone, message=body))
+        logger.info(
+            "practitioner follow-up ping queued to ***%s (home_visit=%s, note=%s)",
+            transfer_phone[-4:] if transfer_phone else "????",
+            is_home_visit, bool(note),
+        )
+    except Exception as e:
+        logger.warning("practitioner follow-up ping failed (non-fatal): %r", e)
+
+
 # ---------------------------------------------------------------------------
 # Executor: book_appointment
 # ---------------------------------------------------------------------------
@@ -4013,17 +4230,121 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
 
     tokens = await _get_tokens()
     location = (args.get("location") or "").lower().strip()
+    # BUG-5: carry the confirmed modality into the booking. The model sometimes
+    # reverts to the in-clinic default (a physical site) at book time even after
+    # the caller chose remote/video/phone or a home visit — availability was
+    # already checked for that modality (_checked_location, pinned by
+    # check_availability). If the checked modality is remote/home but the book
+    # location is an in-clinic site, trust the checked modality so the calendar
+    # event, price and SMS template all match what the caller actually booked.
+    _REMOTE_HOME = ("remote", "video", "phone", "online", "virtual", "home_visit", "home visit")
+    _checked_mod = (session.get("_checked_location") or "").lower().strip()
+    if _checked_mod in _REMOTE_HOME and location not in _REMOTE_HOME:
+        logger.info(
+            "[book] modality reconciled: book location %r → %r (matches checked availability)",
+            location, _checked_mod,
+        )
+        location = _checked_mod
     patient_name = args.get("patient_name", "")
     phone = args.get("phone", "")
     service = args.get("service", "physiotherapy")
     is_new = bool(args.get("is_new_patient", False))
     insurer = (args.get("insurer_name") or "").strip()
     policy = (args.get("policy_number") or "").strip()
+    followup_note = (args.get("followup_note") or "").strip()
+
+    # ── Service×modality guard (P2) ────────────────────────────────────────
+    # Reject impossible combinations (e.g. msk_initial_assessment booked
+    # "remote", which clinic.json does not allow) and correct the common
+    # failure where the model defaults to the wrong service at booking time
+    # despite checking availability for a different one. If the requested
+    # service can't be booked under this modality but the service we actually
+    # showed slots for (pinned at check_availability) can, substitute it;
+    # otherwise ask the model to re-resolve. Never surfaced to the caller.
+    # Normalise the booking location to an available_as modality token. The
+    # location enum the model sees is the physical site id ('bolton') for
+    # in-clinic, plus 'remote'/'home_visit'; clinic.json declares availability
+    # as 'in_clinic'/'remote'/'home_visit'. Map any physical site id (or the
+    # primary location) to 'in_clinic' so the guard doesn't reject the normal
+    # in-clinic path.
+    _loc_ids = {(l.get("location_id") or "").lower() for l in (clinic.get("locations") or [])}
+    _primary_loc = (clinic.get("primary_location") or "").lower()
+    _loc_for_check = location
+    if location and (location in _loc_ids or location == _primary_loc):
+        _loc_for_check = "in_clinic"
+
+    # ── Service reconciliation (Call 3, 2026-07-08) ────────────────────────
+    # Symmetric with the modality reconciliation above. The slot the caller
+    # picked was generated for the service pinned at check_availability
+    # (_checked_service) — its length and time grid belong to THAT service.
+    # If the model books a DIFFERENT but modality-valid service (e.g. the call
+    # opened on acupuncture, pivoted to a neuro assessment, and the model
+    # reverted to acupuncture at book time), the P2 guard below cannot catch it
+    # because the wrong service is itself bookable under this modality. Trust
+    # the checked service so the event type, duration, price and SMS all match
+    # the slot the caller actually chose. Only reconcile when the checked
+    # service exists and is valid for this modality; otherwise leave it to the
+    # P2 guard (which rejects/re-resolves impossible service×modality combos).
+    _checked_svc = (session.get("_checked_service") or "").strip()
+    if _checked_svc and _checked_svc.lower() != (service or "").lower():
+        _checked_svc_def = _find_service_def(clinic, _checked_svc)
+        if _checked_svc_def and _service_supports_location(
+            _checked_svc_def, _loc_for_check
+        ):
+            logger.warning(
+                "[book] service reconciled: book service %r → %r "
+                "(matches checked availability)",
+                service, _checked_svc,
+            )
+            service = _checked_svc
+
+    _svc_def = _find_service_def(clinic, service)
+    if _svc_def and _loc_for_check and not _service_supports_location(_svc_def, _loc_for_check):
+        _pinned = (session.get("_checked_service") or "").strip()
+        _pinned_def = _find_service_def(clinic, _pinned) if _pinned else None
+        if (
+            _pinned_def
+            and _pinned.lower() != (service or "").lower()
+            and _service_supports_location(_pinned_def, _loc_for_check)
+        ):
+            logger.warning(
+                "[ms_tools] book_appointment service×modality fix: %r not available "
+                "as %r — substituting checked service %r",
+                service, _loc_for_check, _pinned,
+            )
+            service = _pinned
+            _svc_def = _pinned_def
+        else:
+            logger.warning(
+                "[ms_tools] book_appointment rejected: service %r not available as %r",
+                service, _loc_for_check,
+            )
+            _avail = ", ".join(str(t) for t in (_svc_def.get("available_as") or [])) or "none"
+            return {
+                "success": False,
+                "error": (
+                    f"'{service}' cannot be booked as '{location}' "
+                    f"(it is only available as: {_avail}). "
+                    f"Re-resolve the correct service for this modality and call "
+                    f"book_appointment again with that service. Do NOT mention this "
+                    f"correction to the caller."
+                ),
+            }
 
     # Resolve slot_iso — handles ISO strings, labels, and slot indices
     try:
         start_dt = _resolve_slot_iso(args.get("slot_iso", ""), session)
-        end_dt = start_dt + timedelta(minutes=int(args.get("duration_minutes", 30)))
+        # Event length = the service's own duration (services[].typical_duration_minutes),
+        # matching the slot length offered in check_availability — so a 30-min treatment
+        # books 30 min and a 60-min neuro assessment books 60, not a flat default.
+        _bk_dur = int(args.get("duration_minutes") or 0)
+        if not _bk_dur:
+            _bk_dur = int(
+                (_svc_def or {}).get("typical_duration_minutes")
+                or clinic.get("slot_minutes")
+                or 30
+            )
+        end_dt = start_dt + timedelta(minutes=_bk_dur)
     except Exception as e:
         return {"success": False, "error": f"Invalid slot datetime: {e}"}
 
@@ -4073,6 +4394,20 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["selected_slot"] = start_dt.isoformat()
         session["calendar_status"] = "manual_followup"
 
+        # Owner heads-up FIRST — Marcus is alerted (needs manual entry) before the
+        # patient confirmation. No-op unless the clinic enables owner_alerts.
+        from app.notifications.owner_alert import notify_owner
+        await notify_owner(
+            session,
+            event="manual_followup",
+            patient_name=patient_name,
+            when_label=booked_label,
+            service=service,
+            location=location,
+            is_new_patient=is_new,
+            note=followup_note,
+        )
+
         # Still send the confirmation SMS — the caller was told "all booked" and a
         # human enters it into the booking system, so they get the same confirmation
         # text as a calendar-backed booking. Non-fatal; build_sms uses the session.
@@ -4095,20 +4430,32 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         except Exception as e:
             logger.warning("book_appointment (no calendar) SMS failed (non-fatal): %r", e)
 
-        # Home visit — schedule the 30-min address-request nudge too.
-        if "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
+        # Home visit — schedule the 30-min address-request nudge too. Gated on
+        # location too (a home_visit of any service, not just the home_visit svc).
+        if location == "home_visit" or "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
             try:
                 from app.notifications.scheduler import schedule_address_reminder
+                from app.clinic_config import twilio_number_for_clinic
+                _cid = clinic.get("clinic_id") or session.get("clinic_id") or ""
                 await schedule_address_reminder(
                     phone=phone,
                     first_name=(patient_name.split()[0] if patient_name else "there"),
+                    from_number=twilio_number_for_clinic(_cid),
+                    clinic_id=_cid,
                 )
             except Exception as e:
                 logger.warning("book_appointment (no calendar) address reminder failed (non-fatal): %r", e)
 
-        # Insurance booking — ping Marcus so he can collect pre-auth/cover details (Option B).
+        # Insurance booking — ping the owner so they can collect pre-auth/cover details (Option B).
         if insurer:
             await _ping_owner_insurance(clinic, patient_name, phone, start_dt, service, insurer)
+
+        # Ping the practitioner if this booking needs follow-up (home visit or a
+        # flagged note) — patient is booked in directly regardless.
+        await _send_practitioner_followup_ping(
+            clinic, patient_name, phone, service, location, booked_label,
+            args.get("followup_note", ""),
+        )
 
         return {
             "success": True,
@@ -4145,6 +4492,11 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         description_parts.append(f"Insurer: {insurer}")
     if policy:
         description_parts.append(f"Policy: {policy}")
+    # Surface the caller's concern in the calendar event itself (P3/#9) so Marcus
+    # sees it in Carepatron, not only in the practitioner-ping SMS (which can be
+    # missed). The same note still drives the ping via _send_practitioner_followup_ping.
+    if followup_note:
+        description_parts.append(f"Follow-up: {followup_note}")
     description_parts.append("— Booked via Susie (AI receptionist); enter into Carepatron.")
     description = "\n".join(description_parts)
 
@@ -4165,6 +4517,9 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     session["collected"]["name"] = patient_name
     session["collected"]["phone"] = phone
     session["collected"]["service"] = service
+    # Record the booking modality ("bolton"/"remote"/"home_visit") so build_sms()
+    # picks the right confirmation template (remote → no clinic address/Maps).
+    session["collected"]["location"] = location
     session["collected"]["slot"] = args["slot_iso"]
     # Populate the top-level slot key build_sms() reads for the 📅/⏰ lines —
     # mirrors the Acuity path (see _book_appointment_acuity); without it the
@@ -4176,6 +4531,20 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         session["collected"]["policy_number"] = policy
     session["calendar_event_id"] = event_id
     session["calendar_status"] = "created"
+
+    # Owner heads-up FIRST — Marcus is alerted before the patient confirmation.
+    # No-op unless the clinic enables owner_alerts (Theorem etc. unaffected).
+    from app.notifications.owner_alert import notify_owner
+    await notify_owner(
+        session,
+        event="booking",
+        patient_name=patient_name,
+        when_label=booked_label,
+        service=_svc_name,
+        location=location,
+        is_new_patient=is_new,
+        note=followup_note,
+    )
 
     # Confirmation SMS — failure must never fail the booking
     try:
@@ -4200,6 +4569,7 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
     # Schedule day-before (24hr) + 2-hour reminders — non-fatal.
     try:
         from app.notifications.scheduler import schedule_appointment_reminders
+        from app.clinic_config import twilio_number_for_clinic
         await schedule_appointment_reminders(
             patient_phone=phone,
             patient_name=patient_name,
@@ -4210,24 +4580,66 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             insurer=insurer or None,
             clinic_name=clinic.get("sms_name") or clinic.get("display_name"),
             clinic_phone=clinic.get("phone"),
+            from_number=twilio_number_for_clinic(
+                clinic.get("clinic_id") or session.get("clinic_id") or ""
+            ),
         )
     except Exception as e:
         logger.warning("book_appointment reminder scheduling failed (non-fatal): %r", e)
 
-    # Home visits need the patient's address — schedule a 30-min nudge to text it.
-    if "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
+    # Home visits need the patient's address — schedule a 30-min nudge to text
+    # it. Gated on location too (a home_visit of any service, not just the
+    # dedicated home_visit service).
+    if location == "home_visit" or "home_visit" in (service or "").lower() or "home visit" in (service or "").lower():
         try:
             from app.notifications.scheduler import schedule_address_reminder
+            from app.clinic_config import twilio_number_for_clinic
+            _cid = clinic.get("clinic_id") or session.get("clinic_id") or ""
             await schedule_address_reminder(
                 phone=phone,
                 first_name=(patient_name.split()[0] if patient_name else "there"),
+                from_number=twilio_number_for_clinic(_cid),
+                clinic_id=_cid,
             )
         except Exception as e:
             logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)
 
-    # Insurance booking — ping Marcus so he can collect pre-auth/cover details (Option B).
+    # Insurance booking — ping the owner so they can collect pre-auth/cover details (Option B).
     if insurer:
         await _ping_owner_insurance(clinic, patient_name, phone, start_dt, service, insurer)
+
+    # Remember this booking (any type) keyed by the caller's phone, so that if
+    # the patient later TEXTS the clinic, the inbound-SMS handler can label the
+    # forward with their appointment — and, for a home visit, write a texted
+    # address back onto this calendar event. Non-fatal.
+    try:
+        from app.flows.triage_legacy import normalize_phone as _np_ctx
+        from app.storage.redis_store import set_recent_booking_context
+        _is_home_ctx = (
+            location == "home_visit"
+            or "home_visit" in (service or "").lower()
+            or "home visit" in (service or "").lower()
+        )
+        await set_recent_booking_context(_np_ctx(phone), {
+            "name": patient_name,
+            "service": _svc_name or service,
+            "location": location,
+            "slot": booked_label,
+            "event_id": event_id,
+            "calendar_id": calendar_id,
+            "description": description,
+            "is_home_visit": _is_home_ctx,
+            "clinic_id": session.get("clinic_id") or "",
+        })
+    except Exception as e:
+        logger.warning("book_appointment recent-booking context store failed (non-fatal): %r", e)
+
+    # Ping the practitioner if this booking needs follow-up (home visit or a
+    # flagged note) — patient is booked in directly regardless.
+    await _send_practitioner_followup_ping(
+        clinic, patient_name, phone, service, location, booked_label,
+        args.get("followup_note", ""),
+    )
 
     # Sheets log — non-blocking
     try:
@@ -4324,12 +4736,25 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     event_summary = found.get("summary", "")
     event_start = (found.get("start") or {}).get("dateTime", "")
 
+    # Patient name for notifications must come from the appointment itself, never
+    # the model's arg — it sometimes passes a placeholder ("the caller", "lookup
+    # result name") which would render as "Hi lookup"/"Hi the". Fall back to "" so
+    # the template greeting becomes "there", never a placeholder.
+    _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
+
     try:
         await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
     except Exception as e:
         return {"success": False, "error": str(e)}
 
     session["calendar_status"] = "cancelled"
+    # Mark the cancellation on the session so infer_call_outcome() labels the
+    # CallSummaries row "cancelled" (not "abandoned"). The Acuity cancel path
+    # (_cancel_appointment_acuity) already sets these; the Google-Calendar path
+    # did not, so a caller who hung up right after "your appointment has been
+    # cancelled" was mis-logged as abandoned even though the delete succeeded.
+    session["cancellation_completed"] = True
+    session["cancel_confirmed"] = True
 
     # SMS notification — non-fatal
     try:
@@ -4341,7 +4766,7 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
         if appt_time:
             await send_cancellation_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=args.get("patient_name", ""),
+                patient_name=_appt_name,
                 appointment_time=appt_time,
                 clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
                 clinic_phone=_c_sms.get("phone"),
@@ -4359,10 +4784,34 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
             await notify_owner(
                 clinic,
                 f"❌ {clinic.get('sms_name') or 'Clinic'} — booking CANCELLED via Susie. "
-                f"{args.get('patient_name','')} ({args.get('phone','')}) — was {event_start or event_summary}.",
+                f"{_appt_name} ({args.get('phone','')}) — was {event_start or event_summary}.",
             )
         except Exception as e:
             logger.warning("provisional cancel owner notify failed (non-fatal): %r", e)
+
+    # Owner heads-up on cancellation — no-op unless the clinic enables
+    # owner_alerts for 'cancellation' (JV only: Theorem routes to the Acuity
+    # path above; demo / Vital Edge have no owner_alerts block). Never fatal.
+    try:
+        from app.notifications.owner_alert import notify_owner as _notify_owner_alert
+        from datetime import datetime as _dt_oa
+        _when_oa = ""
+        if event_start:
+            try:
+                _when_oa = _dt_oa.fromisoformat(
+                    event_start.replace("Z", "+00:00")
+                ).strftime("%A %d %B at %H:%M")
+            except (ValueError, TypeError):
+                _when_oa = event_start
+        await _notify_owner_alert(
+            session,
+            event="cancellation",
+            patient_name=_appt_name,
+            when_label=_when_oa,
+            service=event_summary,
+        )
+    except Exception as e:
+        logger.warning("cancel owner_alert failed (non-fatal): %r", e)
 
     return {
         "success": True,
@@ -4406,9 +4855,34 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
 
     event_id = found["id"]
 
+    # Patient name for notifications must come from the appointment itself, never
+    # the model's arg — it sometimes passes a placeholder ("the caller", "lookup
+    # result name") which would render as "Hi the"/"Hi lookup". Fall back to "" so
+    # the template greeting becomes "there", never a placeholder.
+    _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
+
     try:
         new_start = _resolve_slot_iso(args.get("new_slot_iso", ""), session)
-        new_end = new_start + timedelta(minutes=int(args["duration_minutes"]))
+        # P2: preserve the ORIGINAL appointment's duration. The model's
+        # duration_minutes arg defaults to the initial-assessment length (40) and
+        # would silently lengthen e.g. a 30-min treatment session to 40 min on
+        # reschedule. Derive the true length from the existing event; fall back to
+        # the arg only if the original end time is unavailable.
+        _dur_minutes = None
+        _orig_start_s = (found.get("start") or {}).get("dateTime", "")
+        _orig_end_s = (found.get("end") or {}).get("dateTime", "")
+        if _orig_start_s and _orig_end_s:
+            try:
+                _os = datetime.fromisoformat(_orig_start_s.replace("Z", "+00:00"))
+                _oe = datetime.fromisoformat(_orig_end_s.replace("Z", "+00:00"))
+                _delta_min = int(round((_oe - _os).total_seconds() / 60))
+                if _delta_min > 0:
+                    _dur_minutes = _delta_min
+            except (ValueError, TypeError):
+                _dur_minutes = None
+        if _dur_minutes is None:
+            _dur_minutes = int(args["duration_minutes"])
+        new_end = new_start + timedelta(minutes=_dur_minutes)
     except Exception as e:
         return {"success": False, "error": f"Invalid new slot datetime: {e}"}
 
@@ -4429,12 +4903,23 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
         old_start_str = (found.get("start") or {}).get("dateTime", "")
         if old_start_str:
             old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
+            # Location clause must reflect the appointment's TRUE modality (read
+            # from the event), not the model's arg — a remote/home appointment
+            # must never be labelled "at our Bolton clinic". For remote/home (or
+            # an unknown legacy event) pass "" so the clause is omitted.
+            _evt_loc = _gcal_event_location(found)
+            _sms_location = (
+                "" if _evt_loc.lower() in (
+                    "remote", "video", "phone", "online", "virtual",
+                    "home_visit", "home visit",
+                ) else _evt_loc.title()
+            )
             await send_reschedule_confirmation(
                 patient_phone=args.get("phone", ""),
-                patient_name=_safe_first_name(session, args.get("patient_name") or ""),
+                patient_name=_appt_name,
                 old_time=old_time,
                 new_time=new_start,
-                location=location.title(),
+                location=_sms_location,
                 clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
                 clinic_phone=_c_sms.get("phone"),
             )
@@ -4452,11 +4937,29 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
             await notify_owner(
                 clinic,
                 f"🔄 {clinic.get('sms_name') or 'Clinic'} — booking RESCHEDULE requested via Susie. "
-                f"{args.get('patient_name','')} ({args.get('phone','')}) → "
+                f"{_appt_name} ({args.get('phone','')}) → "
                 f"{new_start.strftime('%a %d %b at %H:%M')}. Please confirm with the client.",
             )
         except Exception as e:
             logger.warning("provisional reschedule owner notify failed (non-fatal): %r", e)
+
+    # Owner heads-up on reschedule — no-op unless the clinic enables owner_alerts
+    # for 'reschedule' (JV only: Theorem routes to the Acuity path above; demo /
+    # Vital Edge have no owner_alerts block). This is an in-place event move
+    # (patch_event_time), NOT an internal book+cancel, so exactly ONE alert
+    # fires — no double-buzz. Never fatal.
+    try:
+        from app.notifications.owner_alert import notify_owner as _notify_owner_alert
+        await _notify_owner_alert(
+            session,
+            event="reschedule",
+            patient_name=_appt_name,
+            when_label=new_start.strftime("%A %d %B at %H:%M"),
+            service=found.get("summary", ""),
+            location=_gcal_event_location(found),
+        )
+    except Exception as e:
+        logger.warning("reschedule owner_alert failed (non-fatal): %r", e)
 
     return {
         "success": True,
@@ -5036,6 +5539,33 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
     if not patient_name or not phone:
         return {"error": "Name and phone are required for the waitlist."}
 
+    # Heads-up SMS to the clinic (transfer_phone, e.g. Marcus) so a waitlist /
+    # coming-soon enquiry actually reaches a human — without this the entry just
+    # sits in Redis and nobody follows up, so "the team will be in touch" is an
+    # empty promise. Fire-and-forget, non-fatal, deduped to one per call.
+    if not session.get("_waitlist_pinged"):
+        try:
+            from app.clinic_config import get_clinic
+            from app.notifications.sms import send_sms
+            _clinic = get_clinic(session.get("clinic_id"))
+            _tp = _clinic.get("transfer_phone", "")
+            if _tp:
+                _what = (service or notes or "an enquiry").strip()
+                asyncio.create_task(send_sms(
+                    to=_tp,
+                    message=(
+                        f"📋 Waitlist/enquiry — {patient_name} ({phone}): {_what}. "
+                        f"Please follow up."
+                    ),
+                ))
+                session["_waitlist_pinged"] = True
+                logger.info(
+                    "waitlist practitioner ping queued to ***%s",
+                    _tp[-4:] if _tp else "????",
+                )
+        except Exception as e:
+            logger.warning("waitlist practitioner ping failed (non-fatal): %r", e)
+
     try:
         from app.storage.redis_store import redis_client
         if redis_client:
@@ -5091,17 +5621,39 @@ def _gcal_event_phone(ev: Dict[str, Any]) -> str:
     return ""
 
 
+def _gcal_event_location(ev: Dict[str, Any]) -> str:
+    """Read the modality from the event description's "Location:" line
+    (book_appointment writes "Location: Bolton/Remote/Home_Visit"). Empty when
+    absent (legacy/external events)."""
+    for line in (ev.get("description") or "").splitlines():
+        if line.strip().lower().startswith("location:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
 def _gcal_event_patient_name(ev: Dict[str, Any]) -> str:
-    summary = ev.get("summary") or ""
-    if "—" in summary:
-        return summary.split("—")[0].strip()
+    # Read the patient name from the structured `description` ("Patient: …"),
+    # which book_appointment always writes. Splitting the summary is unreliable
+    # because the title ordering depends on whether a practitioner is set
+    # ("Service for Prac — Patient" vs "Patient — Service"), which previously
+    # made cancel/reschedule lookups return the SERVICE as the name (P14).
     for line in (ev.get("description") or "").splitlines():
         if line.strip().lower().startswith("patient:"):
             return line.split(":", 1)[1].strip()
+    # Fallback for legacy/externally-created events with no structured
+    # description: assume the historical "Patient — Service" ordering.
+    summary = ev.get("summary") or ""
+    if "—" in summary:
+        return summary.split("—")[0].strip()
     return summary.strip()
 
 
 def _gcal_event_service(ev: Dict[str, Any]) -> str:
+    # Read the service from the structured `description` ("Service: …") for the
+    # same reason as the patient name above (P14).
+    for line in (ev.get("description") or "").splitlines():
+        if line.strip().lower().startswith("service:"):
+            return line.split(":", 1)[1].strip()
     summary = ev.get("summary") or ""
     if "—" in summary:
         return summary.split("—", 1)[1].strip()

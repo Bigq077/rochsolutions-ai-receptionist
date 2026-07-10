@@ -331,6 +331,12 @@ _NAME_REQUEST_PHRASES: tuple = (
     "what is your first name",
     "could i get your name",
     "first name",
+    # P29: surname collection is still the name phase — without these the bot's
+    # "could I take your surname as well?" was not recognised as a name request,
+    # so the system flipped to the phone phase and the surname fragment was
+    # dropped (forcing repeated re-asks). Keep the name context alive for it.
+    "surname",
+    "last name",
 )
 
 # Spec J — short confirming responses the patient may give AFTER the system
@@ -482,6 +488,44 @@ def _is_open_availability_utterance(text: str) -> bool:
     """
     t = text.lower().strip()
     return any(s in t for s in _OPEN_AVAILABILITY_SIGNALS)
+
+
+def _is_modality_switch_utterance(text: str) -> bool:
+    """True if the caller is switching appointment modality (in-person ↔ remote).
+
+    When this fires DURING slot selection, the slots already presented were
+    fetched for the OLD modality and are stale — remote and in-clinic
+    availability genuinely differ (Call 2, 2026-07-07: in-person Sat 11th vs
+    video Fri 10th).
+
+    Detects switch *intent*, not a bare mention: an informational question
+    such as "what do I need for a video call?" must NOT invalidate the slot
+    cache.  Two ways to match — an unambiguous switch phrase on its own, or a
+    modality noun together with a switch cue.  Bare 'phone' is never matched,
+    so phone-number talk can't false-trigger it.
+    """
+    t = text.lower()
+    # Unambiguous switch phrases — safe standalone.
+    if any(s in t for s in (
+        "over video", "on video", "by video", "via video",
+        "over the phone", "on the phone",
+        "come in", "in person", "in-person", "in clinic",
+        "at the clinic", "face to face", "remotely",
+        "switch to video", "switch to phone",
+    )):
+        return True
+    # Compositional: a modality noun PLUS a switch cue.  Keeps bare mentions
+    # inside questions from firing.
+    _noun = any(n in t for n in (
+        "video", "online", "remote", "phone call", "phone consult",
+        "phone appointment", "phone session",
+    ))
+    _cue = any(c in t for c in (
+        "instead", "rather", "actually", "switch", "change it",
+        "change to", "can we do it", "could we do it", "can i do it",
+        "make it",
+    ))
+    return _noun and _cue
 
 
 def _extract_time_preference(text: str) -> "str | None":
@@ -639,6 +683,33 @@ def _is_patience_response(text: str) -> bool:
     return any(s in t for s in _PATIENCE_SIGNALS)
 
 
+# Building-access keypad context — a prompt that mentions the door/entry keypad
+# (e.g. "use the top keypad to enter the access code") must NOT be mistaken for
+# a request to type a PHONE NUMBER on the keypad, or a digit pressed afterwards
+# is misread as phone entry (P10).
+_BUILDING_KEYPAD_CONTEXT: tuple = (
+    "access code", "entry code", "entrance", "top keypad",
+    "main door", "the building", "waiting area", "take a seat",
+)
+# Phone-number keypad context — the genuine "type your number" prompts.
+_PHONE_KEYPAD_CONTEXT: tuple = (
+    "number", "phone", "digit", "type the", "type it",
+)
+
+
+def _is_phone_keypad_prompt(text: str) -> bool:
+    """True only when a bot prompt is asking the caller to TYPE THEIR PHONE
+    NUMBER on the keypad — not when it merely mentions the building-entry
+    keypad. Stops a building-access keypad mention from arming phone-DTMF
+    capture (P10)."""
+    t = (text or "").lower()
+    if "keypad" not in t:
+        return False
+    if any(w in t for w in _BUILDING_KEYPAD_CONTEXT):
+        return False
+    return any(w in t for w in _PHONE_KEYPAD_CONTEXT)
+
+
 # Inline alias booking-intent gate.
 # Only confirms a location alias when the same transcript contains at
 # least one booking intent signal.  Pure FAQ questions that happen to
@@ -778,6 +849,11 @@ _USE_THIS_NUMBER_SIGNALS: tuple = (
     "number im calling", "number i'm on", "number im on",
     "one i'm calling", "one im calling", "calling from",
     "keep this number", "keep that number",
+    # Answers to "…is that the best one for your booking?" — the caller
+    # confirms by echoing "best one"/"best number" rather than "use this
+    # number" (2026-07-07: "yeah that's the best one" fell through, leaving
+    # phone_confirmed unset). Negative intent is still excluded above.
+    "best one", "best number",
 )
 
 # Short bare affirmatives that, in the phone-confirm context (buffer empty,
@@ -1029,6 +1105,32 @@ _V3_NAME_FALSE_POSITIVES = frozenset({
 })
 
 
+# Slot/clock lead-words that must never be captured as a FIRST NAME. A booking
+# readback phrased time-first ("So that's quarter to twelve …", "So that's five
+# in the evening …") otherwise makes the name-confirm patterns capture the time
+# word as the caller's name (Call 4, 2026-07-08: name stored as "Quarter").
+# Kept SEPARATE from the surname stoplists so surname capture is unaffected
+# (a real surname like "Noon" is still bookable). Applied ONLY at first-name
+# capture sites — _v3_try_persist_name's pattern loop and the booking-readback
+# upgrade. None of these are real first names, so blocking them cannot drop a
+# genuine name.
+_V3_SLOT_LEAD_WORDS = frozenset({
+    "quarter", "half", "noon", "midday", "midnight", "oclock", "o'clock",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "twenty", "thirty", "forty", "fifty",
+})
+
+# Single leading filler / STT-artifact words that may precede the caller's first
+# name in a name-answer ("it's Sarah Jenkins" → STT "is sarah jenkins"; "yeah
+# Sarah Jenkins"). Used ONLY to let the surname extractor look past ONE such
+# lead word (Call 1, 2026-07-08: surname "Jenkins" dropped because the first
+# name wasn't token[0]).
+_V3_NAME_LEAD_FILLERS = frozenset({
+    "is", "it", "yeah", "yes", "um", "uh", "erm", "so", "well",
+    "my", "hi", "hello", "and", "ok", "okay",
+})
+
+
 # Stop-words that must never be captured as a surname. Combined with
 # _V3_NAME_FALSE_POSITIVES at match time. Conversational/filler tokens that
 # commonly co-occur in a name-answer utterance.
@@ -1100,14 +1202,77 @@ def _v3_extract_surname(caller_utterance: str, first_name: str) -> str:
         if _ok(cand):
             return cand.capitalize()
 
-    # 3) Bare name "quentin rock" / "quentin james rock" — only when the first
-    #    token matches the readback first name (high confidence).
+    # 3) Bare name "quentin rock" / "quentin james rock" — when the first name
+    #    leads the answer, OR sits just after a single leading filler / STT
+    #    artifact ("is sarah jenkins" from "it's Sarah Jenkins", "yeah sarah
+    #    jenkins"). The surname is the last token. Non-filler leads ("no sarah
+    #    wrong") are NOT trusted, so a correction/aside can't be mis-read.
     tokens = text.split()
-    if 2 <= len(tokens) <= 4 and tokens[0] == first_l:
-        cand = tokens[-1]
-        if _ok(cand):
-            return cand.capitalize()
+    if 2 <= len(tokens) <= 4 and first_l in tokens:
+        idx = tokens.index(first_l)
+        if (idx == 0 or (idx == 1 and tokens[0] in _V3_NAME_LEAD_FILLERS)) and idx < len(tokens) - 1:
+            cand = tokens[-1]
+            if _ok(cand):
+                return cand.capitalize()
 
+    return ""
+
+
+def _v3_backfill_surname(
+    caller_utterance: str, first_name: str, awaiting_surname: bool = False
+) -> str:
+    """Recover a surname from a LATER caller utterance, once the first name is
+    already stored.
+
+    The Theorem-shaped capture pipeline reads back only the first name and often
+    locks it before the surname is spoken (Susie asks "…first name and surname?",
+    the caller gives the first name, it confirms, THEN the surname arrives on a
+    separate turn).  For clinics that take a surname on the call (JV) that late
+    surname was silently dropped (Call 2, 2026-07-07: "surname is rock" arrived
+    after "Quentin" had locked).
+
+    This only fires on an EXPLICIT surname cue so it can never grab a stray
+    mid-call word:
+      1. an explicit marker — "surname is rock", "last name rook", or
+      2. a spelled-out surname — "r o c h" → "Roch" (callers spell to correct
+         a mis-heard surname), with the stand-alone words "i"/"a" excluded so
+         ordinary speech never triggers it.
+    Returns a capitalised surname or "".
+    """
+    if not caller_utterance:
+        return ""
+    low = caller_utterance.lower()
+    # 1) Explicit marker → reuse the conservative extractor.
+    if any(mk in low for mk in ("surname", "last name", "family name", "second name")):
+        _s = _v3_extract_surname(caller_utterance, first_name)
+        if _s:
+            return _s
+    # 2) Spelled-out surname ("r o c h" → "Roch").
+    _letters = [c for c in re.findall(r"\b([a-z])\b", low) if c not in ("i", "a")]
+    if len(_letters) >= 2:
+        cand = "".join(_letters)
+        if 2 <= len(cand) <= 25 and cand != (first_name or "").lower():
+            return cand.capitalize()
+    # 3) Bare distinct-word straggler ("rock") — accepted ONLY when the caller
+    #    context proves we are awaiting the surname (an explicit surname/full-name
+    #    cue in the last bot prompt, or a first-name-only name that just locked).
+    #    STT routinely splits "Quentin Rock" into two turns, so the surname
+    #    arrives on its own with no marker and no spelling (JV call 2026-07-07
+    #    14:05).  Requires EXACTLY one token so a multi-word aside ("yes that
+    #    works for me") can never be grabbed, and the token must clear both name
+    #    stoplists.  The surname is never re-asked or read back, so any distinct
+    #    valid word is accepted silently (owner policy 2026-07-07).
+    if awaiting_surname:
+        _toks = re.sub(r"[^a-z'\-\s]", " ", low).split()
+        if len(_toks) == 1:
+            cand = _toks[0]
+            if (
+                2 <= len(cand) <= 25
+                and cand != (first_name or "").lower()
+                and cand not in _SURNAME_STOPWORDS
+                and cand not in _V3_NAME_FALSE_POSITIVES
+            ):
+                return cand.capitalize()
     return ""
 
 
@@ -1142,8 +1307,48 @@ def _v3_try_persist_name(
     Called after every run_turn() in the theorem_v3 path so the name is stored
     at the moment of confirmation regardless of whether collect_and_store fired.
     """
-    # Already persisted — nothing to do.
-    if session.get("patient_name") or session.get("collected", {}).get("name"):
+    # ── Name already stored ──────────────────────────────────────────────────
+    # First-write-wins for the FIRST name, but the pipeline frequently captures
+    # a first name only (Susie reads back the first name; the caller gives the
+    # surname on a LATER turn).  For clinics that take a surname on the call (JV)
+    # that late surname used to be silently dropped here — the blanket early
+    # return meant "Quentin" locked and "surname is Rook" that followed was lost
+    # (Call 2, 2026-07-07).  Back-fill the surname onto the stored first name,
+    # bounded to the name→phone window and to an explicit surname cue so it can
+    # never grab a stray later word.
+    _existing = (
+        session.get("patient_name")
+        or session.get("collected", {}).get("name")
+        or ""
+    ).strip()
+    if _existing:
+        if " " in _existing:
+            return False  # a surname is already present — nothing to add
+        # phone_confirmed (NOT collected["phone"], which is pre-filled from the
+        # Twilio caller-ID at call start) marks the end of the name/phone window.
+        if session.get("phone_confirmed"):
+            return False
+        _first = _existing.split()[0]
+        # We are in the name→phone window with a first-name-only name. Treat this
+        # as "awaiting the surname" when the last bot prompt explicitly asked for
+        # it OR the first name locked first-name-only this window (flag set below)
+        # — so a bare straggler word ("rock") is accepted as the surname.
+        _awaiting = bool(session.get("v3_awaiting_surname")) or any(
+            k in (last_bot or "").lower()
+            for k in ("surname", "last name", "family name", "full name")
+        )
+        _sur = _v3_backfill_surname(caller_utterance, _first, awaiting_surname=_awaiting)
+        if _sur:
+            full = f"{_first} {_sur}"
+            session.setdefault("collected", {})["name"] = full
+            session["patient_name"] = full
+            session["surname_captured"] = True
+            session["v3_awaiting_surname"] = False
+            logger.info(
+                "[ms_conn v3] surname back-filled onto stored first name: %r",
+                full,
+            )
+            return True
         return False
 
     if not last_bot:
@@ -1162,7 +1367,10 @@ def _v3_try_persist_name(
         m = pattern.search(last_bot)
         if m:
             candidate = m.group(1).capitalize()
-            if candidate.lower() not in _V3_NAME_FALSE_POSITIVES:
+            if (
+                candidate.lower() not in _V3_NAME_FALSE_POSITIVES
+                and candidate.lower() not in _V3_SLOT_LEAD_WORDS
+            ):
                 # The readback only ever contains the FIRST name (Susie never
                 # reads the surname back), so recover the surname from the
                 # caller's own utterance and store the FULL name. First name
@@ -1172,6 +1380,15 @@ def _v3_try_persist_name(
                 full = f"{candidate} {surname}" if surname else candidate
                 session.setdefault("collected", {})["name"] = full
                 session["patient_name"] = full
+                if surname:
+                    session["surname_captured"] = True
+                    session["v3_awaiting_surname"] = False
+                else:
+                    # First name locked with no surname yet — mark that we are
+                    # now awaiting it so a following bare straggler word (STT
+                    # splits "Quentin Rock" across two turns) is accepted as the
+                    # surname even when the model did not re-ask for it.
+                    session["v3_awaiting_surname"] = True
                 return True
 
     return False
@@ -3197,6 +3414,14 @@ class SilenceHandler:
                 else:
                     phrase = _prefix + " — could you say that again?"
 
+            # P15: if Susie just granted the caller patience ("one second" →
+            # "take your time"), a dead-air re-ask must NOT contradict that with
+            # "Sorry, I didn't catch that" / "I can't hear you" (implies an audio
+            # fault that isn't there). Stay gentle and consistent with the
+            # patience just granted.
+            if _is_patience_response((_sess or {}).get("last_bot_prompt") or ""):
+                phrase = "No rush — are you still there?"
+
             logger.info("[ms_watchdog] WATCHDOG_FIRE prompt=%r attempt=#%d", phrase[:80], _attempt)
             self.currently_reasking = True
             # ── Clear tts_inhibit before watchdog re-ask ──────────────────────
@@ -4507,11 +4732,11 @@ class WebSocketCallHandler:
             _is_freeform(self.session.get("clinic_id"))
             and not self.session.get("v3_phone_dtmf_active")
             and not self.session.get("v3_dtmf_slot_map")
-            and "keypad" in self.session.get("last_bot_prompt", "").lower()
+            and _is_phone_keypad_prompt(self.session.get("last_bot_prompt", ""))
         ):
             logger.info(
                 "[ms_conn] theorem_v3: auto-activating v3_phone_dtmf_active "
-                "(last_bot_prompt contains 'keypad')"
+                "(last_bot_prompt is a phone-number keypad prompt)"
             )
             self.session["v3_phone_dtmf_active"] = True
 
@@ -5116,8 +5341,41 @@ class WebSocketCallHandler:
                     # out-of-order stall).  A genuine reply is always enqueued
                     # AFTER the response audio plays (well after _last_turn_done_at),
                     # so this never drops a real answer.
+                    # P7 exemption: while collecting the caller's name, a short
+                    # trailing word (e.g. the surname "Rock" said a beat after
+                    # "…my surname is") arrives as a same-breath straggler and
+                    # would be dropped, forcing repeated re-asks for a one-word
+                    # surname. During name collection, let a 1-2 word fragment
+                    # through so the surname is captured. Scoped tightly (name
+                    # collection + short) so the general straggler guard is
+                    # otherwise unchanged.
+                    _name_ctx = (
+                        (self.session.get("last_question") or "").lower()
+                        + " "
+                        + (self.session.get("last_bot_prompt") or "").lower()
+                    )
+                    _in_name_collection = any(
+                        w in _name_ctx
+                        for w in ("your name", "first name", "surname",
+                                  "full name", "take your name")
+                    ) or (
+                        # State-based fallback: by the time this straggler is
+                        # dequeued the bot prompt may have advanced to a name-
+                        # CONFIRMATION question ("Did you say Quentin — is that
+                        # right?") that no longer contains a name keyword, so the
+                        # last_bot_prompt scan above misses it and the surname is
+                        # dropped (Call 2, 2026-07-07: "rock" lost here). If a slot
+                        # is locked and we have NOT yet advanced to phone
+                        # collection, we are still gathering the name — keep a
+                        # short trailing fragment (the surname).
+                        bool(self.session.get("v3_confirmed_slot_phrase"))
+                        and not self.session.get("phone_confirmed")
+                        and not self.session.get("v3_phone_dtmf_active")
+                    )
+                    _short_fragment = 0 < len(utterance.split()) <= 2
                     if (
                         not _synthetic
+                        and not (_in_name_collection and _short_fragment)
                         and self._last_turn_done_at > 0.0
                         and _enqueue_ts > 0.0
                         and _enqueue_ts < self._last_turn_done_at
@@ -5129,6 +5387,18 @@ class WebSocketCallHandler:
                             utterance[:60],
                         )
                         continue
+                    if (
+                        _in_name_collection and _short_fragment
+                        and not _synthetic
+                        and self._last_turn_done_at > 0.0
+                        and _enqueue_ts > 0.0
+                        and _enqueue_ts < self._last_turn_done_at
+                    ):
+                        logger.info(
+                            "[ms_conn] same-breath straggler KEPT (name collection,"
+                            " short fragment — likely surname): %r",
+                            utterance[:60],
+                        )
 
                     # Spec N — concurrent LLM guard.
                     # If a turn is already in-flight (from transcript acceptance
@@ -5524,6 +5794,28 @@ class WebSocketCallHandler:
                             # fires → 10-15s dead air until the safety net kicks in.
                             self._silence_handler.on_llm_finished()
                             continue
+                        elif _is_modality_switch_utterance(utterance):
+                            # Caller changed modality (in-person ↔ video/phone)
+                            # AFTER slots were presented.  Those slots were
+                            # fetched for the OLD modality and availability
+                            # genuinely differs (Call 2, 2026-07-07), so they
+                            # are now stale.  Mark them stale + drop the DTMF
+                            # slot map (so a stale in-person slot can't be
+                            # picked for a video booking) and fall through to
+                            # the LLM, which acknowledges the switch.  The next
+                            # open-availability phrase then re-fetches for the
+                            # new modality instead of being suppressed as a
+                            # "duplicate" (see slots_stale_modality_switch gate
+                            # in the open-availability guard below).
+                            logger.info(
+                                "[ms_conn] modality switch during slot selection"
+                                " — marking cached slots stale for re-fetch: %r",
+                                utterance,
+                            )
+                            self.session["slots_stale_modality_switch"] = True
+                            self.session.pop("v3_dtmf_slot_map", None)
+                            # Fall through to normal LLM dispatch below
+                            # (do NOT continue).
                         else:
                             # No slot signal BUT the utterance is meaningful
                             # (4+ words OR contains a communicative word such as
@@ -5570,6 +5862,9 @@ class WebSocketCallHandler:
                                 _is_open_availability_utterance(utterance)
                                 and not _is_slot_rejection_or_alternative(utterance)
                                 and not _looks_like_new_question
+                                and not self.session.get(
+                                    "slots_stale_modality_switch"
+                                )
                             ):
                                 logger.info(
                                     "[ms_conn v3] open-availability continuation"
@@ -5577,6 +5872,17 @@ class WebSocketCallHandler:
                                     " this turn: %r",
                                     utterance,
                                 )
+                                # Re-arm the question timer so a suppressed
+                                # continuation gets an IMMEDIATE re-ask instead
+                                # of falling to the 10-15s dead-air safety net
+                                # (Call 2 gap).  Mirrors the short-fragment
+                                # branch above.
+                                _last_q = self.session.get("last_question", "")
+                                if _last_q and self._silence_handler is not None:
+                                    self._silence_handler.set_state(
+                                        self.session.get("state", "default")
+                                    )
+                                    self._silence_handler.on_question_asked(_last_q)
                                 self.llm_in_flight = False
                                 self._llm_busy = False
                                 self.session["llm_generation_active"] = False
@@ -5828,6 +6134,10 @@ class WebSocketCallHandler:
                             bool(self.session.get("post_slot_confirmation_pending"))
                             or "your name" in _lq_ctx
                             or "first name" in _lq_ctx
+                            # P29: a one-word surname must pass through during
+                            # surname collection, not be dropped as noise.
+                            or "surname" in _lq_ctx
+                            or "last name" in _lq_ctx
                         )
                         _yesno_step = any(
                             _m in _lq_ctx
@@ -5878,17 +6188,16 @@ class WebSocketCallHandler:
                         # reschedule/cancel intents.
                         if self.session.get("v3_awaiting_phone_confirm"):
                             self.session["v3_awaiting_phone_confirm"] = False
-                            _utt_lower = utterance.lower()
                             _calling_number = self.session.get(
                                 "twilio_from_local", ""
                             )
-                            if (
-                                "use this" in _utt_lower
-                                or "yes" in _utt_lower
-                                or "yeah" in _utt_lower
-                                or "yep" in _utt_lower
-                                or "yup" in _utt_lower
-                            ):
+                            # Use the shared robust matcher (not a brittle inline
+                            # substring check): it catches STT truncations like
+                            # "this number" / "that number" for "use this number",
+                            # bare affirmatives, and excludes negatives. The old
+                            # inline check missed "this number" and dropped the
+                            # caller into the keypad path as if they'd said "no".
+                            if _is_use_this_number(utterance):
                                 # Caller confirmed → use calling number
                                 self.session["lookup_phone"] = _calling_number
                                 _filler = _random.choice(FILLER_PHRASES)
@@ -8087,12 +8396,125 @@ class WebSocketCallHandler:
                             # does NOT ask for a name (e.g. a slot re-offer)
                             # resets the flag correctly.
                             _last_bot_j = _last_bot.lower()
+                            # ── Surname capture from the booking readback ─────
+                            # The final confirmation ("So that's Quentin Rock,
+                            # Wednesday … — shall I go ahead and book that in?") is
+                            # the authoritative place the FULL name is stated.
+                            # Name capture DURING collection is fragile: STT clips
+                            # the name, and the surname is often established via a
+                            # yes/no confirmation of the bot's question ("is your
+                            # surname Rock?" → "yes that's right"), which no caller-
+                            # utterance extractor can read — so the surname was
+                            # still lost to session even when spoken correctly
+                            # (Call, 2026-07-07: readback said "Quentin Rock" but
+                            # stored name = "Quentin"). Upgrade a first-name-only
+                            # stored name to the fuller readback name here; only
+                            # ever EXTEND the existing first name (never replace it
+                            # with something unrelated).
+                            if (
+                                "book that in" in _last_bot_j
+                                or "shall i go ahead" in _last_bot_j
+                            ):
+                                _rbm = re.search(
+                                    r"so that'?s\s+"
+                                    r"([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+){0,2}?)\s*,",
+                                    _last_bot, re.IGNORECASE,
+                                )
+                                if _rbm and _rbm.group(1).split()[0].lower() \
+                                        not in _V3_SLOT_LEAD_WORDS:
+                                    # Guard: a TIME-FIRST final readback ("So
+                                    # that's quarter to twelve, …") must not
+                                    # inject a slot phrase as the name (this
+                                    # regex has no false-positive filter of its
+                                    # own — C1 twin of the P1 bug, Call 4).
+                                    _rb_full = " ".join(
+                                        w.capitalize()
+                                        for w in _rbm.group(1).split()
+                                    )
+                                    _cur_name = (
+                                        self.session.get("patient_name")
+                                        or self.session.get(
+                                            "collected", {}
+                                        ).get("name")
+                                        or ""
+                                    ).strip()
+                                    if (
+                                        " " in _rb_full
+                                        and (
+                                            not _cur_name
+                                            or (
+                                                " " not in _cur_name
+                                                and _rb_full.lower().startswith(
+                                                    _cur_name.lower()
+                                                )
+                                            )
+                                        )
+                                    ):
+                                        self.session.setdefault(
+                                            "collected", {}
+                                        )["name"] = _rb_full
+                                        self.session["patient_name"] = _rb_full
+                                        logger.info(
+                                            "[ms_conn v3] name upgraded from "
+                                            "booking readback: %r", _rb_full,
+                                        )
                             if any(p in _last_bot_j for p in _NAME_REQUEST_PHRASES):
                                 self.post_slot_confirmation_pending = True
                                 logger.info(
                                     "[ms_conn] post_slot_confirmation_pending = True"
                                     " (name request detected in response)"
                                 )
+                                # ── DEFECT-3 fix: persist the confirmed slot ──────
+                                # The name-request readback ("So that's Saturday the
+                                # 18th of July at half past one … could I take your
+                                # name?") is the only place the caller's CHOSEN slot
+                                # is stated in clean text.  It was never stored, so
+                                # once name+phone were collected the booking-readback
+                                # backstop (llm_stream.py ~1460) had no slot to
+                                # summarise and the model could dead-end into "I
+                                # don't have a slot confirmed for you yet" (Call 1,
+                                # 2026-07-07).  Capture the slot phrase here so the
+                                # backstop can inject it verbatim.  Guarded on a
+                                # weekday token so the surname re-ask turns ("Could
+                                # you say your surname as well?"), which also match
+                                # _NAME_REQUEST_PHRASES, never overwrite it.
+                                _pre_idx = min(
+                                    (
+                                        i for i in (
+                                            _last_bot_j.find(p)
+                                            for p in _NAME_REQUEST_PHRASES
+                                        ) if i >= 0
+                                    ),
+                                    default=-1,
+                                )
+                                if _pre_idx > 0:
+                                    _slot_pre = _last_bot[:_pre_idx].strip()
+                                    _slot_low = _slot_pre.lower()
+                                    _has_weekday = any(
+                                        _d in _slot_low for _d in (
+                                            "monday", "tuesday", "wednesday",
+                                            "thursday", "friday", "saturday",
+                                            "sunday",
+                                        )
+                                    )
+                                    if _has_weekday:
+                                        for _pfx in (
+                                            "so that's", "so that is",
+                                            "that's", "that is",
+                                        ):
+                                            if _slot_low.startswith(_pfx):
+                                                _slot_pre = _slot_pre[len(_pfx):]
+                                                break
+                                        _slot_pre = _slot_pre.strip(" ,.'—–-")
+                                        if _slot_pre:
+                                            self.session[
+                                                "v3_confirmed_slot_phrase"
+                                            ] = _slot_pre
+                                            logger.info(
+                                                "[ms_conn] v3_confirmed_slot_phrase"
+                                                " captured: %r",
+                                                _slot_pre,
+                                            )
                                 # Spec K: name request = slot flow complete.
                                 # Transition stage to NONE and clear any residual
                                 # slot map so DTMF digits are not misread as
@@ -8120,14 +8542,21 @@ class WebSocketCallHandler:
                             # was active.  This prevents the flag from being lost
                             # if the caller speaks mid-collection and a fresh LLM
                             # turn runs without an active slot map.
+                            # P10: only arm phone-DTMF when the keypad mention is a
+                            # PHONE-NUMBER prompt ("type the number on your keypad",
+                            # "press the star key") — NOT the building-access line
+                            # "use the top keypad to enter the code", which has no
+                            # "type"/"star key" and was falsely arming DTMF (Call 4/5).
+                            _last_bot_lc = _last_bot.lower()
                             if (
                                 not self.session.get("v3_phone_dtmf_active")
-                                and "keypad" in _last_bot.lower()
+                                and "keypad" in _last_bot_lc
+                                and ("type" in _last_bot_lc or "star key" in _last_bot_lc)
                             ):
                                 self.session["v3_phone_dtmf_active"] = True
                                 logger.info(
                                     "[ms_conn] v3_phone_dtmf_active = True"
-                                    " (keypad mention detected in response)"
+                                    " (phone-number keypad prompt detected)"
                                 )
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
@@ -8478,9 +8907,18 @@ class WebSocketCallHandler:
                             # a booking word OR the previous question Susie asked
                             # already contained booking context (handles "yeah" /
                             # "yes please" responses to "would you like to book?").
+                            # P20: returning-patient booking phrasings that contain
+                            # no "book"/"appointment" word. Without these, "I've
+                            # been before, need another session" failed this guard,
+                            # so only a bare "Right —" was spoken and the call
+                            # stalled ~14s in dead air (GLOBAL FAIL 9, Call 2).
+                            # Excludes FAQ-risky words ("follow-up", "same problem")
+                            # — see the hijack warning above.
                             _caller_booking_words = re.search(
                                 r"\b(?:book|booking|appointment|reschedule"
-                                r"|cancel|move|change)\b",
+                                r"|cancel|move|change|been before|seen before"
+                                r"|another session|another appointment"
+                                r"|need another)\b",
                                 utterance, re.IGNORECASE,
                             )
                             _last_q_lower = (
@@ -9820,7 +10258,12 @@ class WebSocketCallHandler:
                     "sounds uncomfortable", "sounds painful",
                     "sorry to hear", "that must be", "must be difficult",
                     "that sounds really", "really uncomfortable",
-                    "really painful", "sorry about that",
+                    "really painful",
+                    # NB: "sorry about that" deliberately NOT here (P7). It is a
+                    # generic conversational apology, not clinical empathy — it was
+                    # arming the un-interruptible guard on lines like "Sorry about
+                    # that — I was just giving you a moment…", locking the caller
+                    # out of correcting a mis-captured name (Call 5, 2026-06-27).
                 )
                 _ct_lower = chunk_text.lower()
                 _has_slot_content = bool(
@@ -9834,6 +10277,25 @@ class WebSocketCallHandler:
                     logger.info(
                         "[ms_conn] clinical response active"
                         " — barge-in guard armed: %r",
+                        chunk_text[:60],
+                    )
+                # Booking/reschedule WRITE filler — arm the same self-clearing
+                # guard so a stray "yes?/hello?" while the write is in flight
+                # can't cancel the turn and re-open the confirmation (the
+                # confirm-spiral Marcus hit). Cancel is excluded on purpose (no
+                # write filler there — its go-ahead is ambiguous).
+                elif any(
+                    p in _ct_lower
+                    for p in (
+                        "locking that in",
+                        "moving that for you",
+                        "booked in for you",
+                        "popping that in the diary",
+                    )
+                ):
+                    self._clinical_response_active = True
+                    logger.info(
+                        "[ms_conn] write filler — barge-in guard armed: %r",
                         chunk_text[:60],
                     )
                 # ── end clinical barge-in protection ──────────────────────────
@@ -11191,6 +11653,12 @@ class WebSocketCallHandler:
                         self.session["last_bot_prompt"] = _phrase_1
                     elif self.session.get("v3_awaiting_slot_selection"):
                         _phrase_1 = "Still with you — which of those days suits you?"
+                    elif _is_patience_response(self.session.get("last_bot_prompt") or ""):
+                        # P15: the caller asked us to wait and Susie granted it
+                        # ("take your time"); a dead-air re-ask must stay gentle
+                        # and consistent — never "I can't quite hear you", which
+                        # contradicts the patience grant and implies an audio fault.
+                        _phrase_1 = "No rush — are you still there?"
                     else:
                         _last_q = getattr(self._silence_handler, "last_question", "")
                         # Never replay the opening greeting as a "re-ask".
@@ -11334,6 +11802,67 @@ class WebSocketCallHandler:
         else:
             self.session["call_outcome"] = "no_action"
 
+        # The media stream only exists once the call has actually connected, so
+        # by cleanup the call has COMPLETED (caller hung up / we ended). Mark it
+        # so build_call_summary → infer_call_outcome classifies non-booking calls
+        # as "abandoned"/"faq_only" rather than falling through to "failed" (which
+        # sends the wrong "sorry, technical issue" SMS). setdefault so any explicit
+        # status set earlier wins.
+        self.session.setdefault("call_status", "completed")
+
+        # End-of-call personalised SMS — parity with theorem's /twilio/status
+        # path, fired here (self-contained) so it does NOT depend on the Twilio
+        # number's status-callback being configured. Idempotent via
+        # session["followup_sms_sent"] (set inside the router, then persisted +
+        # mirrored below) so if /twilio/status is ALSO wired it won't double-send.
+        # The router self-filters: booked/cancelled/confirmation-already-sent →
+        # no send; <15s → no send. Non-fatal — never block cleanup.
+        try:
+            if not self.session.get("followup_sms_sent"):
+                # The media path has no Twilio CallDuration until /status, so
+                # supply our own call-timer duration for the router's <15s guard.
+                if not self.session.get("twilio_duration_sec") and self._call_logger is not None:
+                    from datetime import datetime as _dt, timezone as _tz
+                    _dur_s = (_dt.now(_tz.utc) - self._call_logger._start_utc).total_seconds()
+                    self.session["twilio_duration_sec"] = str(int(_dur_s))
+                from app.tools.call_summary import build_call_summary
+                from app.notifications.smart_sms_router import send_smart_followup_sms
+                _eos_summary = build_call_summary(self.session)
+                await send_smart_followup_sms(session=self.session, summary=_eos_summary)
+        except Exception as _eosms_exc:
+            logger.warning("[ms_conn] end-of-call SMS failed (non-fatal): %r", _eosms_exc)
+
+        # End-of-call → Google Sheets call log — parity with theorem's
+        # /twilio/status: build_call_summary → build_actionable_summary_row
+        # (15-col row + Claude one-liner) → append to the CallSummaries tab of
+        # GOOGLE_SHEETS_ID. Self-contained (jv's TwiML has no status callback).
+        # Idempotent via session["call_summary_logged"] (set + mirrored below so a
+        # configured /twilio/status won't double-log). Scheduled as a background
+        # task with a session snapshot so the summary LLM call never delays WS
+        # cleanup. Fully non-fatal — a Sheets/LLM error must never break teardown.
+        try:
+            if not self.session.get("call_summary_logged"):
+                self.session["call_summary_logged"] = True
+                import copy as _copy_ss
+                _ss_snapshot = _copy_ss.deepcopy(self.session)
+
+                async def _log_call_to_sheets(_snap):
+                    try:
+                        from app.tools.call_summary import build_call_summary as _bcs
+                        from app.tools.actionable_summary import build_actionable_summary_row as _bar
+                        from app.tools.handoff import fire_and_forget_append_summary_row as _ffa
+                        _summ = _bcs(_snap)
+                        _summ["_raw_session"] = _snap
+                        _row = await _bar(_summ)
+                        _ffa(_row)
+                        logger.info("[ms_conn] call-summary row queued to Sheets")
+                    except Exception as _e:
+                        logger.warning("[ms_conn] sheets call-log failed (non-fatal): %r", _e)
+
+                asyncio.create_task(_log_call_to_sheets(_ss_snapshot))
+        except Exception as _sheet_exc:
+            logger.warning("[ms_conn] sheets call-log scheduling failed: %r", _sheet_exc)
+
         try:
             await save_session(self.call_sid, self.session)
         except Exception as exc:
@@ -11371,7 +11900,12 @@ class WebSocketCallHandler:
             try:
                 import os as _os
                 from app.notifications.sms import send_sms as _send_sms
-                _staff_phone = _os.getenv("THEOREM_NOTIFICATION_SMS")
+                from app.clinic_config import get_clinic as _get_clinic
+                _clinic_cfg  = _get_clinic(self.session.get("clinic_id")) or {}
+                # Practitioner's number (clinic.transfer_phone, same source as the
+                # booking follow-up ping); fall back to the legacy env var.
+                _staff_phone = _clinic_cfg.get("transfer_phone") or _os.getenv("THEOREM_NOTIFICATION_SMS")
+                _prac        = _clinic_cfg.get("practitioner") or "Mark"
                 _caller      = (
                     self.session.get("twilio_from_local")
                     or self.session.get("twilio_from")
@@ -11381,7 +11915,7 @@ class WebSocketCallHandler:
                     await _send_sms(
                         to=_staff_phone,
                         message=(
-                            f"Hi Mark, a caller just asked to speak to you "
+                            f"Hi {_prac}, a caller just asked to speak to you "
                             f"but didn't get through. Their number is {_caller}. "
                             f"Give them a call back when you get a chance. — Susie"
                         ),

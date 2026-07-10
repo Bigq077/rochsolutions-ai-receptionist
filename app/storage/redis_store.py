@@ -376,6 +376,46 @@ async def complete_pending_name_confirmation(normalized_phone: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Recent-booking context — lets the inbound-SMS handler label a patient's text
+# with the appointment they just booked (any type), so a reply lands on the
+# practitioner tied to the right booking (and a home-visit address can be
+# written back onto the calendar event).
+# ---------------------------------------------------------------------------
+_RECENT_BOOKING_TTL = 60 * 60 * 24 * 7  # 7 days
+
+
+def _recent_booking_key(normalized_phone: str) -> str:
+    return f"recent_booking:{normalized_phone}"
+
+
+async def set_recent_booking_context(normalized_phone: str, ctx: Dict[str, Any]) -> None:
+    """Store the caller's most recent booking context, keyed by normalized phone.
+    Non-blocking; safe no-op if Redis is unavailable."""
+    if not redis_client or not normalized_phone:
+        return
+    try:
+        await redis_client.set(
+            _recent_booking_key(normalized_phone), json.dumps(ctx), ex=_RECENT_BOOKING_TTL
+        )
+    except Exception:
+        pass
+
+
+async def get_recent_booking_context(normalized_phone: str) -> Optional[Dict[str, Any]]:
+    """Retrieve the caller's most recent booking context. None if absent."""
+    if not redis_client or not normalized_phone:
+        return None
+    try:
+        raw = await redis_client.get(_recent_booking_key(normalized_phone))
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 async def acquire_once_lock(key: str, ttl_seconds: int = 300) -> bool:
     """
     Atomically acquire a one-shot processing lock via Redis SET NX.

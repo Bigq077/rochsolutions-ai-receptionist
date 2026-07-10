@@ -149,6 +149,139 @@ def _date_hints_differ_materially(hint_a: str, hint_b: str) -> bool:
     return _extract_week_reference(hint_a) != _extract_week_reference(hint_b)
 
 
+# Words that signal the caller wants a DIFFERENT / new slot (a real reason to
+# re-run check_availability after a slot is already confirmed).  Used by the
+# slot-locked guard so a genuine slot change still searches while a spurious
+# re-search during name collection is blocked.  Matched on whole words only.
+_NEW_SLOT_INTENT_WORDS: frozenset = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "morning", "afternoon", "evening", "noon", "midday", "tonight",
+    "tomorrow", "today", "week", "weekend", "o'clock",
+    "earlier", "later", "sooner", "soonest", "another", "other", "different",
+    "instead", "change", "move", "reschedule", "else", "no", "not", "nope",
+    "wrong", "actually", "next", "following", "available", "slot", "when",
+    "day", "date", "time",
+})
+
+
+def _last_user_text(messages) -> str:
+    """Return the most recent caller TEXT utterance from the message list,
+    skipping tool_result-only user turns (which carry no spoken text)."""
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            if c.strip():
+                return c
+            continue
+        if isinstance(c, list):
+            parts = [
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            joined = " ".join(p for p in parts if p).strip()
+            if joined:
+                return joined
+    return ""
+
+
+def _caller_wants_new_slot(messages) -> bool:
+    """True if the caller's latest utterance signals they want a different slot
+    (a new-date word or any digit) — i.e. a legitimate reason to re-search
+    availability even though a slot is already confirmed."""
+    txt = _last_user_text(messages).lower()
+    if not txt:
+        return False
+    if any(ch.isdigit() for ch in txt):
+        return True
+    words = set(re.findall(r"[a-z']+", txt))
+    return bool(words & _NEW_SLOT_INTENT_WORDS)
+
+
+# Phrases the assistant SPEAKS during the phone step (Step 8) — offering the
+# calling number for confirmation or asking the caller to type a new one.  Used
+# by the phone backstop to tell whether the phone question was ever actually put
+# to the caller.  Matched as substrings against assistant turns in the recent
+# history window; kept broad so any reasonable phrasing of the phone question
+# registers (a false "asked" only relaxes the backstop, never over-blocks).
+_PHONE_STEP_MARKERS: tuple = (
+    "use this number",
+    "best one for your",
+    "best number",
+    "number you're calling on",
+    "number you're calling from",
+    "number you're ringing",
+    "on your keypad",
+    "type the number",
+)
+
+
+def _phone_step_asked(messages) -> bool:
+    """True if the assistant has already put the phone question to the caller
+    (Step 8) anywhere in the recent history — the calling number was offered for
+    confirmation, or a keypad entry was requested.  The phone backstop uses this
+    so it only blocks book_appointment when the phone step was genuinely skipped,
+    and can never loop a legitimate booking: the moment the model asks the phone
+    question this returns True and booking proceeds on the next turn."""
+    for m in messages or []:
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            text = " ".join(
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            continue
+        low = text.lower()
+        if any(mk in low for mk in _PHONE_STEP_MARKERS):
+            return True
+    return False
+
+
+# Phrases the assistant SPEAKS when asking for the caller's surname (Step 7).
+# Used by the surname backstop as an anti-deadlock fallback: if the model DID
+# ask for the surname but capture missed it, booking still proceeds rather than
+# looping. A false "asked" only relaxes the backstop, never over-blocks.
+_SURNAME_STEP_MARKERS: tuple = (
+    "your surname",
+    "and your surname",
+    "surname",
+    "last name",
+    "family name",
+)
+
+
+def _surname_step_asked(messages) -> bool:
+    """True if the assistant has already asked the caller for their surname
+    anywhere in the recent history. The surname backstop uses this so it can
+    never loop a legitimate booking: once the surname question has been put to
+    the caller, booking proceeds even if the capture pipeline missed the word."""
+    for m in messages or []:
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            text = " ".join(
+                b.get("text", "") for b in c
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        else:
+            continue
+        low = text.lower()
+        if any(mk in low for mk in _SURNAME_STEP_MARKERS):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Anthropic client singleton
 # ---------------------------------------------------------------------------
@@ -601,6 +734,10 @@ class LLMStream:
                 session["v3_dtmf_slot_map"] = _slot_map
                 session["v3_awaiting_slot_selection"] = True
                 _slot_map_count = len(_slot_map)
+                # Fresh slots have now been presented for the CURRENT modality,
+                # so the "stale after modality switch" mark no longer applies —
+                # clear it so normal open-availability suppression resumes.
+                session.pop("slots_stale_modality_switch", None)
                 # Save the first offered day's ISO date for FAQ-detour recovery.
                 # If the caller asks a FAQ mid-selection (clearing the slot map),
                 # this lets CALL STATE redirect check_availability to only that day.
@@ -747,6 +884,12 @@ class LLMStream:
             _active_q = tts_text_queue
             _call_system  = system_prompt
             _call_dynamic = dynamic_prompt
+            # Flag the post-check_availability slot-presentation pass so Gate 5a
+            # exempts its (legitimately time-dense) output from the
+            # high_time_density reasoning drop. Tied to _last_check_avail — the
+            # exact condition that arms the slot buffer — so it is True ONLY on
+            # the slot pass and reset on every other iteration (no cross-turn leak).
+            session["_slot_buf_active"] = bool(_last_check_avail)
             if _last_check_avail:
                 _slot_buf = asyncio.Queue()
                 _active_q = _slot_buf
@@ -903,6 +1046,7 @@ class LLMStream:
             # Pass tts_text_queue so filler phrases play during API latency.
             tool_result_blocks = await self._execute_tools(
                 tool_uses, session, call_sid, tts_text_queue=tts_text_queue,
+                messages=messages,
             )
             messages.append({"role": "user", "content": tool_result_blocks})
 
@@ -1118,11 +1262,19 @@ class LLMStream:
             async def _delayed_filler() -> None:
                 await asyncio.sleep(timeout_sec)
                 if not got_first_chunk:
-                    logger.info("[ms_llm] filler phrase triggered (background task)")
                     # Prefix with ACK_FILLER_MARKER so _tts_loop can identify
                     # this chunk and suppress it if a tool-call filler fires
                     # in the same turn and sets _ack_filler_cancelled.
-                    _ack_filler_text = random.choice(FILLER_PHRASES)
+                    # On the turn right after a booking/reschedule "yes", use a
+                    # write-acknowledging filler ("Just locking that in now…")
+                    # instead of the generic "Give me a moment…", which confuses
+                    # a caller who just confirmed and can re-open the readback.
+                    from app.filler_phrases import confirm_write_filler
+                    _ack_filler_text = confirm_write_filler(session) or random.choice(FILLER_PHRASES)
+                    logger.info(
+                        "[ms_llm] filler phrase triggered (background task): %r",
+                        _ack_filler_text[:40],
+                    )
                     await tts_text_queue.put(ACK_FILLER_MARKER + _ack_filler_text)
                     session["_ack_filler_active"] = True
                     self._last_filler_at = time.monotonic()
@@ -1364,6 +1516,7 @@ class LLMStream:
         session: Dict[str, Any],
         call_sid: Optional[str],
         tts_text_queue: Optional[asyncio.Queue] = None,
+        messages: Optional[List[dict]] = None,
     ) -> List[dict]:
         """
         Execute all tool calls and return the tool_result blocks for Anthropic.
@@ -1377,13 +1530,17 @@ class LLMStream:
             with_filler,
             THINKING_FILLERS_PRIMARY,
             BOOKING_WRITE_FILLERS,
+            LOOKUP_FILLERS,
         )
 
         # Tools that get filler phrases → list to draw from
         _FILLER_TOOLS = {
             "check_availability": THINKING_FILLERS_PRIMARY,
             "book_appointment":   BOOKING_WRITE_FILLERS,
-            "lookup_patient":     THINKING_FILLERS_PRIMARY,
+            # lookup_patient uses generic "finding that for you" fillers — it
+            # runs both when finding an appointment AND on the cancel/reschedule
+            # confirmation wait, where "checking the diary" wording is wrong (P17).
+            "lookup_patient":     LOOKUP_FILLERS,
         }
 
         result_blocks: List[dict] = []
@@ -1452,15 +1609,84 @@ class LLMStream:
                         "[ms_llm] check_availability BLOCKED — name+phone already "
                         "collected; forcing booking readback call_sid=%s", call_sid,
                     )
+                    # BUG-14: inject the KNOWN full name + location from session so
+                    # the forced readback can't drop them. The old template left the
+                    # model to reconstruct everything from history and it dropped the
+                    # surname AND the whole slot → "So that's Quentin, —". The slot
+                    # day/date/time is not stored in session on the template path, so
+                    # it still comes from history — but instruct hard it MUST be
+                    # included and never left blank.
+                    _rb_name = (_col.get("full_name") or _col.get("name") or "").strip()
+                    _rb_loc = (session.get("selected_location") or "").strip().title()
+                    _rb_name_txt = _rb_name or "[full name INCLUDING surname]"
+                    _rb_loc_clause = f" at {_rb_loc}" if _rb_loc else ""
+                    # DEFECT-3 fix: the connection layer captures the exact slot the
+                    # caller agreed to (from the name-request readback) into
+                    # v3_confirmed_slot_phrase.  When present, inject it verbatim so
+                    # the model can never dead-end into "I don't have a slot
+                    # confirmed for you yet" (Call 1, 2026-07-07).  Falls back to the
+                    # old reconstruct-from-history template when it is absent, so the
+                    # existing behaviour is unchanged whenever the slot was not
+                    # captured.
+                    _rb_slot = (session.get("v3_confirmed_slot_phrase") or "").strip()
+                    if _rb_slot:
+                        _rb_msg = (
+                            "Name, phone number and the appointment slot are all "
+                            "already confirmed. Do NOT call check_availability and "
+                            "do NOT ask for the day or time again. Say EXACTLY this, "
+                            "then stop: "
+                            f"\"So that's {_rb_name_txt}, {_rb_slot}"
+                            f"{_rb_loc_clause} — shall I go ahead and book that in?\""
+                        )
+                    else:
+                        _rb_msg = (
+                            "Name and phone number are already confirmed. "
+                            "Do NOT call check_availability. Produce the booking "
+                            "summary now, using this EXACT shape and filling the "
+                            "day/date/time from the slot the caller already agreed "
+                            "to earlier in this conversation. You MUST include the "
+                            "specific day, date and time — never leave them blank — "
+                            "and use the full name including surname exactly as "
+                            "confirmed (do NOT shorten to the first name only): "
+                            f"\"So that's {_rb_name_txt}, [day] the [ordinal] of "
+                            f"[month] at [time]{_rb_loc_clause} — shall I go ahead "
+                            "and book that in?\""
+                        )
                     result = {
                         "error": "booking_details_already_complete",
+                        "message": _rb_msg,
+                    }
+                elif (
+                    tool_name == "check_availability"
+                    and session.get("v3_confirmed_slot_phrase")
+                    and not session.get("last_offered_slots")
+                    and not _caller_wants_new_slot(messages or [])
+                ):
+                    # Slot-locked guard: the caller has already agreed a specific
+                    # slot (v3_confirmed_slot_phrase set by the connection layer)
+                    # and we are now collecting the name/number.  A re-run of
+                    # check_availability here is spurious (Call 2, 2026-07-07:
+                    # after "yes that's right" the model re-searched, cancelling
+                    # the surname question and glitching into "Sorry, I didn't
+                    # quite catch that").  Blocked UNLESS the caller signalled a
+                    # new date/time (handled above by _caller_wants_new_slot) or
+                    # fresh slots were offered this turn (last_offered_slots) — a
+                    # real slot change still searches.
+                    logger.warning(
+                        "[ms_llm] check_availability BLOCKED — slot already "
+                        "confirmed (%r), name collection in progress, no new-date "
+                        "intent call_sid=%s",
+                        session.get("v3_confirmed_slot_phrase"), call_sid,
+                    )
+                    result = {
+                        "status": "slot_already_confirmed",
                         "message": (
-                            "Name and phone number are already confirmed. "
-                            "Do NOT call check_availability. "
-                            "Produce the booking summary immediately using the slot "
-                            "already agreed in conversation history: "
-                            "'So that\\'s [Name] — [day] the [ordinal] of [month] at "
-                            "[time] at [location] — shall I go ahead and book that in?'"
+                            "A specific appointment slot is already confirmed with "
+                            "the caller (\""
+                            + str(session.get("v3_confirmed_slot_phrase"))
+                            + "\"). Do NOT call check_availability. Continue "
+                            "collecting the caller's first name, surname and phone "
+                            "number, then read back the booking summary."
                         ),
                     }
                 elif tool_name == "check_availability" and session.get("last_offered_slots"):
@@ -1478,6 +1704,92 @@ class LLMStream:
                             "slots to the caller."
                         ),
                         "available_days": session.get("available_days", {}),
+                    }
+                elif (
+                    tool_name == "book_appointment"
+                    and not session.get("surname_captured")
+                    and " " not in (session.get("patient_name") or "").strip()
+                    and not _surname_step_asked(messages or [])
+                ):
+                    # Surname backstop (JV name redesign, 2026-07-07).
+                    #
+                    # JV requires a surname on the booking, but the capture
+                    # pipeline reads back only the first name and often locks a
+                    # first-name-only record (STT splits "Quentin Rock" across two
+                    # turns). Block book_appointment until a surname word is on
+                    # record so a first-name-only booking never reaches the
+                    # calendar. Placed BEFORE the phone guard so the steer order
+                    # is surname (Step 7) → phone (Step 8) → confirmation.
+                    #
+                    # Signals (all must say "no surname" to block): surname_captured
+                    # flag unset AND no space in patient_name. Anti-deadlock:
+                    # _surname_step_asked yields the moment the model has asked for
+                    # the surname, so a capture miss cannot loop — booking proceeds
+                    # and the next caller word is back-filled as the surname.
+                    # Reschedule/cancel do not call book_appointment, so untouched.
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — surname not captured "
+                        "(patient_name=%r) call_sid=%s",
+                        session.get("patient_name"), call_sid,
+                    )
+                    result = {
+                        "status": "surname_required",
+                        "message": (
+                            "book_appointment cannot fire yet — only the caller's "
+                            "first name is on record and this clinic requires a "
+                            "surname. Do NOT book. Ask for the surname as its own "
+                            "turn: \"And your surname?\" Accept WHATEVER they say "
+                            "silently — do NOT read it back, spell it, confirm it, "
+                            "or ask again. Then read back the booking summary and "
+                            "ask \"Shall I go ahead and book that in?\" before "
+                            "calling book_appointment."
+                        ),
+                    }
+                elif (
+                    tool_name == "book_appointment"
+                    and not session.get("phone_confirmed")
+                    and not _phone_step_asked(messages or [])
+                ):
+                    # Phone backstop (JV regression, 2026-07-07 11:39).
+                    #
+                    # collected["phone"] is ALWAYS pre-filled from the Twilio
+                    # caller-ID at call start, and nothing at code level requires
+                    # the caller to have actually confirmed a number before
+                    # book_appointment fires — phone collection (prompt Step 8)
+                    # is enforced by the prompt alone.  When the caller front-
+                    # loads the booking (e.g. opens with "book me on this
+                    # number"), the model can collapse slot-accept → readback →
+                    # book, skipping Step 8, and book with an UNCONFIRMED caller-
+                    # ID number (and a first-name-only name).
+                    #
+                    # Block ONLY when BOTH signals agree the phone step was
+                    # skipped: phone_confirmed is unset (no verbal "use this
+                    # number" and no DTMF entry ever landed — the authoritative
+                    # flag, also what the SMS router trusts) AND the phone
+                    # question was never asked anywhere in recent history.  This
+                    # cannot loop a legitimate booking — the instant the model
+                    # asks the phone question (as steered below) _phone_step_asked
+                    # flips True and the next book_appointment proceeds even if
+                    # phone_confirmed has not flipped.  Reschedule/cancel do not
+                    # call book_appointment, so those flows are untouched.
+                    logger.warning(
+                        "[ms_llm] book_appointment BLOCKED — phone step skipped "
+                        "(phone_confirmed unset, phone question never asked) "
+                        "call_sid=%s", call_sid,
+                    )
+                    result = {
+                        "status": "phone_confirmation_required",
+                        "message": (
+                            "book_appointment cannot fire yet — the caller's "
+                            "phone number has not been confirmed. Do NOT book "
+                            "and do NOT assume the calling number. Ask the phone "
+                            "question as its own separate turn first: \"Is the "
+                            "number you're calling on the best one for your "
+                            "booking? If so, just say use this number.\" Wait "
+                            "for the caller's answer, then read back the booking "
+                            "summary and ask \"Shall I go ahead and book that "
+                            "in?\" before calling book_appointment."
+                        ),
                     }
                 elif tool_name == "book_appointment" and not (
                     "shall i go ahead" in (session.get("last_bot_prompt") or "").lower()

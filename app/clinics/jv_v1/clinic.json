@@ -8,11 +8,16 @@
     "JV Physiotherapy",
     "JV Physio"
   ],
-  "primary_phone": "+44 7586 605462",
+  "primary_phone": "+44 7367 002651",
   "contact_email": "Jointventurephysiotherapy@gmail.com",
   "websites": [
     "https://jointventurephysiotherapy.co.uk"
   ],
+  "sms_fees_note": "Assessment: £52 (40 mins), card payments taken.\nCancellations with less than 24hrs notice are charged the full appointment fee.\n\n",
+  "sms_assessment_price": "£52",
+  "sms_assessment_duration": "40",
+  "hours_summary": "evenings Mon–Fri and Saturday mornings",
+  "practitioner": "Marcus",
   "company_number": "TBC",
   "locations": [
     {
@@ -46,7 +51,7 @@
     "_note": "Flattened by get_clinic into the legacy clinic contract. working_hours end = last_appointment + slot_minutes so the last slot stays bookable (is_within_working_hours uses start <= t < end).",
     "timezone": "Europe/London",
     "sms_name": "Joint Venture Physiotherapy",
-    "phone": "+44 7586 605462",
+    "phone": "+44 7367 002651",
     "transfer_phone": "+447586605462",
     "owner_notification_sms": "+447586605462",
     "_owner_notify_note": "Marcus's mobile — receives an SMS ping when an insurance booking is made so he can follow up to collect pre-auth/cover details.",
@@ -60,9 +65,15 @@
       "hour": 21,
       "minute": 30
     },
+    "_owner_alerts_note": "Real-time SMS heads-up to Marcus the moment a call books (sent BEFORE the patient confirmation), a booking needs manual entry, or an existing appointment is cancelled/rescheduled. phone falls back to transfer_phone if blank. Transfer/distress callers are already alerted via the transfer_to_human path.",
+    "owner_alerts": {
+      "enabled": true,
+      "phone": "+447586605462",
+      "events": ["booking", "manual_followup", "cancellation", "reschedule"]
+    },
     "slot_minutes": 40,
-    "_slot_increment_note": "Appointments last 40 mins, but offer slots on the hour (every 60 mins) for simplicity. Slots anchor to each day's opening time.",
-    "slot_increment_minutes": 60,
+    "_slot_break_note": "Each service is offered at its own length (services[].typical_duration_minutes) plus a 5-min break between appointments. Slots anchor to each day's opening time; the break is spacing only and is never added to the calendar event.",
+    "slot_break_minutes": 5,
     "days_ahead": 60,
     "_same_day_note": "JV allows same-day booking (onboarding doc Section 6). Today's remaining future slots are offered; the slot generator already excludes past times.",
     "allow_same_day": true,
@@ -153,11 +164,11 @@
   "booking": {
     "system": "Carepatron",
     "booking_url": "book.carepatron.com/Joint-Venture-Physiotherapy/Marcus",
-    "booking_window_months": "TBC with Marcus",
+    "booking_window_months": 2,
     "preferred_handling": "Book directly into Carepatron where possible.",
     "patient_notes_supported": "TBC — Carepatron supports clinical notes",
     "sms_confirmation_on_booking": "TBC with Marcus",
-    "same_day_booking": "TBC with Marcus",
+    "same_day_booking": "Yes — same-day booking available (subject to slot availability)",
     "calendars_by_location": false,
     "calendars_by_service": "TBC — confirm Carepatron appointment type structure with Marcus",
     "never_autobook": [
@@ -310,14 +321,14 @@
     "model": "Self-pay with private health insurance accepted",
     "bupa_accepted": true,
     "other_insurers_accepted": true,
-    "protocol": "Option B handling: confirm referrals accepted, book the appointment normally, note the insurer NAME only, tell the caller Marcus will be in touch to collect the rest of the insurance details, and ping Marcus automatically. Never take a pre-auth/membership/policy code by phone; never confirm cover.",
+    "protocol": "Option B handling: confirm referrals accepted, book the appointment normally, note the insurer NAME only, tell the caller Marcus will be in touch to collect the rest of the insurance details, and pass a followup_note to book_appointment so Marcus is pinged. Never take a pre-auth/membership/policy code by phone; never confirm cover.",
     "what_ai_should_do": [
       "Confirm we accept private health insurance referrals — never turn the caller away.",
       "Book the appointment normally so the slot is secured.",
       "Note the insurer's NAME only — exactly what the caller said; do NOT add insurers they didn't mention.",
       "Do NOT ask for or take a pre-authorisation, membership or policy code over the phone, and do NOT say cover is confirmed or 'all good'.",
       "Tell the caller: 'Okay, that's noted — Marcus will be in touch to collect the rest of your insurance details.'",
-      "Pass the insurer name to book_appointment as insurer_name so Marcus is pinged automatically."
+      "When booking, pass a followup_note to book_appointment summarising it, e.g. followup_note='INSURANCE: Aviva — wants to use private insurance; collect pre-auth and confirm cover'. Marcus is pinged automatically."
     ]
   },
   "call_handling": {

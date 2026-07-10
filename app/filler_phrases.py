@@ -7,6 +7,7 @@ Two lists:
   - THINKING_FILLERS_PRIMARY   — played when check_availability is called
   - THINKING_FILLERS_SECONDARY — played if the API takes > 4 seconds
   - BOOKING_WRITE_FILLERS      — played when book_appointment is called
+  - LOOKUP_FILLERS             — played when lookup_patient is called
 
 Usage:
     from app.filler_phrases import with_filler, THINKING_FILLERS_PRIMARY, BOOKING_WRITE_FILLERS
@@ -17,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any, Callable, Coroutine, List
+from typing import Any, Callable, Coroutine, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,53 @@ THINKING_FILLERS_SECONDARY: List[str] = [
     "Almost got it…",
 ]
 
+# lookup_patient is used both to FIND an appointment and while acting on one
+# (cancel / reschedule confirmation). These must read sensibly in BOTH cases,
+# so they avoid "checking the diary / what's free" phrasing (which is wrong once
+# the appointment is already found and we're cancelling it) — P17.
+LOOKUP_FILLERS: List[str] = [
+    "One moment while I check that for you…",
+    "Just pulling that up for you…",
+    "Let me find that for you…",
+    "Bear with me just a moment…",
+    "Let me sort that for you…",
+]
+
 BOOKING_WRITE_FILLERS: List[str] = [
     "Getting that all booked in for you…",
     "Just locking that in now…",
     "Popping that in the diary…",
 ]
+
+
+def confirm_write_filler(session: dict) -> Optional[str]:
+    """Return an action-acknowledging filler for the turn RIGHT AFTER the caller
+    says "yes" to a booking or reschedule readback — or None.
+
+    The generic ack fillers ("Give me a moment…", "Right with you…") are
+    confusing at this exact moment: the caller has just confirmed, so a
+    "please wait" phrase makes them think they weren't heard, and they speak
+    again — which can re-open the confirmation (the Marcus spiral). Playing a
+    write-acknowledging line instead leaves nothing to respond to.
+
+    Detection is deliberately narrow: it keys off the previous assistant turn
+    being the LOCKED confirm CTA ("book that in for you" / "move it for you").
+    CANCEL is intentionally excluded — its go-ahead is the ambiguous
+    reschedule-or-cancel retention question, and the cancel branch is designed
+    to run with no readback/filler (a cancel readback loops; see prompt).
+    """
+    last = ""
+    for _m in reversed(session.get("conversation_history") or []):
+        if _m.get("role") == "assistant":
+            last = (_m.get("content") or "").lower()
+            break
+    if not last:
+        return None
+    if "book that in for you" in last or "book that in" in last:
+        return "Just locking that in now…"
+    if "move it for you" in last or "move that" in last:
+        return "Just moving that for you now…"
+    return None
 
 
 def pick_filler(filler_list: List[str], used: list) -> str:

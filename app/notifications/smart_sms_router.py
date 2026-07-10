@@ -221,7 +221,7 @@ async def send_smart_followup_sms(
 
     # Clinic branding
     _clinic      = get_clinic(session.get("clinic_id"))
-    clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name")
+    clinic_name  = _clinic.get("sms_name") or _clinic.get("display_name") or _clinic.get("clinic_name")
     clinic_phone = _clinic.get("phone")
     hours_summary = _clinic.get("hours_summary")  # e.g. "Mon–Fri 8:30am–9pm"
 
@@ -294,6 +294,12 @@ async def send_smart_followup_sms(
         logger.info("📩 Confirmation SMS already sent during call — skipping follow-up")
         return False
 
+    # Idempotency: this router can be invoked from two places (the media-stream
+    # cleanup path AND the /twilio/status webhook). Only the first one may send.
+    if session.get("followup_sms_sent"):
+        logger.info("📩 Follow-up SMS already sent — skipping duplicate")
+        return False
+
     # ── CHOOSE TEMPLATE ──────────────────────────────────────────────────────
 
     message = _choose_template(
@@ -317,6 +323,7 @@ async def send_smart_followup_sms(
 
     try:
         await send_sms(to=patient_phone, message=message)
+        session["followup_sms_sent"] = True   # idempotency latch (mirrored to /status)
         logger.info("✅ Smart SMS sent [%s] → ***%s", outcome, patient_phone[-4:] if patient_phone else "????")
         return True
     except Exception as e:
@@ -352,9 +359,24 @@ def _choose_template(
     # Flags
     asked_about_price     = _check_price_question(faq_data, session)
     asked_about_insurance = _check_insurance_question(faq_data, insurance_data, session)
-    bupa_mentioned        = _check_bupa_mention(faq_data, insurance_data)
+    bupa_mentioned        = _check_bupa_mention(faq_data, insurance_data, session)
 
     ck = {"clinic_name": clinic_name, "clinic_phone": clinic_phone}
+
+    # Clinic-specific copy inputs (price/insurance). Defaults reproduce the
+    # original Theorem copy; a clinic overrides via clinic.json. jv: £52/40-min +
+    # no outcome claim, and Option-B insurance (accepts referrals incl. Bupa).
+    _c            = get_clinic(session.get("clinic_id")) or {}
+    _ins_cfg      = _c.get("insurance") or {}
+    _accepts_ref  = bool(_ins_cfg.get("other_insurers_accepted") or _ins_cfg.get("bupa_accepted"))
+    _prac         = _c.get("practitioner")
+    _price        = _c.get("sms_assessment_price")
+    _dur          = _c.get("sms_assessment_duration")
+    _price_line   = (
+        f"An assessment is {_price} for {_dur} minutes. "
+        if (_price and _dur)
+        else "A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+    )
 
     # ── ROUTING ──────────────────────────────────────────────────────────────
 
@@ -399,7 +421,8 @@ def _choose_template(
     # 7. FAQ — BUPA SPECIFICALLY
     if bupa_mentioned:
         return templates.format_insurance_inquiry_sms(
-            patient_name=patient_name, bupa_mentioned=True, **ck)
+            patient_name=patient_name, bupa_mentioned=True,
+            accepts_referrals=_accepts_ref, practitioner=_prac, **ck)
 
     # 8. FAQ — INSURANCE (non-Bupa)
     if asked_about_insurance:
@@ -407,12 +430,15 @@ def _choose_template(
             patient_name=patient_name,
             insurer=insurer or None,
             bupa_mentioned=False,
+            accepts_referrals=_accepts_ref,
+            practitioner=_prac,
             **ck,
         )
 
     # 9. FAQ — PRICE
     if asked_about_price:
         return templates.format_price_inquiry_sms(
+            price_line=_price_line,
             patient_name=patient_name, **ck)
 
     # 10. NO AUDIO — safety net graceful close (connection issue, not abandoned)
@@ -466,16 +492,32 @@ def _choose_template(
 # DETECTION HELPERS
 # ============================================================================
 
+def _recent_user_texts(session: Dict) -> list:
+    """
+    Lowercased recent CALLER utterances, drawn from BOTH conversation records:
+      • session["turns"]                — {"user": ...} (theorem/flow.py)
+      • session["conversation_history"] — {"role": "user", "content": ...} (media
+        streams / template clinics like jv)
+    Without the conversation_history source the price/insurance detectors were
+    blind on the media path, so those calls fell back to the generic template.
+    """
+    texts: list = []
+    for turn in (session.get("turns", []) or [])[-8:]:
+        if isinstance(turn, dict) and turn.get("user"):
+            texts.append(str(turn["user"]).lower())
+    for turn in (session.get("conversation_history", []) or [])[-16:]:
+        if isinstance(turn, dict) and turn.get("role") == "user" and turn.get("content"):
+            texts.append(str(turn["content"]).lower())
+    return texts
+
+
 def _check_price_question(faq_data: list, session: Dict) -> bool:
     """Check if patient asked about pricing."""
     keywords = {"price", "cost", "how much", "fee", "charge", "expensive", "£"}
     for turn in faq_data:
         if isinstance(turn, dict) and any(k in turn.get("question", "").lower() for k in keywords):
             return True
-    for turn in (session.get("turns", []) or [])[-6:]:
-        if isinstance(turn, dict) and any(k in turn.get("user", "").lower() for k in keywords):
-            return True
-    return False
+    return any(any(k in t for k in keywords) for t in _recent_user_texts(session))
 
 
 def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dict) -> bool:
@@ -486,20 +528,17 @@ def _check_insurance_question(faq_data: list, insurance_data: Dict, session: Dic
     for turn in faq_data:
         if isinstance(turn, dict) and any(k in turn.get("question", "").lower() for k in keywords):
             return True
-    for turn in (session.get("turns", []) or [])[-6:]:
-        if isinstance(turn, dict) and any(k in turn.get("user", "").lower() for k in keywords):
-            return True
-    return False
+    return any(any(k in t for k in keywords) for t in _recent_user_texts(session))
 
 
-def _check_bupa_mention(faq_data: list, insurance_data: Dict) -> bool:
+def _check_bupa_mention(faq_data: list, insurance_data: Dict, session: Dict) -> bool:
     """Check if Bupa was specifically mentioned."""
     if ((insurance_data or {}).get("insurer_name") or "").lower() == "bupa":
         return True
     for turn in faq_data:
         if isinstance(turn, dict) and "bupa" in turn.get("question", "").lower():
             return True
-    return False
+    return any("bupa" in t for t in _recent_user_texts(session))
 
 
 def _booking_has_progressed(session: Dict, collected: Dict) -> bool:

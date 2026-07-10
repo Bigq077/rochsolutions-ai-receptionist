@@ -1342,6 +1342,191 @@ _NAME_JUNK = {
     "hi", "hello", "yep", "nope", "sure", "great",
 }
 
+# Carrier opt-out keywords — suppress the automated patient acknowledgement for
+# these (don't text someone who asked to stop). Deliberately does NOT include
+# "cancel"/"end" — a patient texting "cancel" almost certainly means their
+# appointment, which must still reach the practitioner.
+_SMS_OPT_OUT = {"stop", "stopall", "unsubscribe", "quit"}
+
+
+# Rough UK-postcode matcher — used only to decide whether a home-visit patient's
+# reply looks like an address worth writing onto their calendar event.
+_UK_POSTCODE_RE = re.compile(r"\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}\b")
+
+# Street-type words that mark a message as address content even without a
+# postcode (so a split address — street line then postcode on a separate text —
+# is still captured in full onto the calendar).
+_ADDRESS_KEYWORDS = (
+    " road", " street", " lane", " avenue", " ave", " close", " drive",
+    " way", " court", " place", " terrace", " crescent", " flat",
+    " apartment", " house", " gardens", " grove", " hill", " square", " row",
+)
+
+
+def _looks_like_address(body: str) -> bool:
+    """True when an inbound text looks like part of a home-visit address:
+    a UK postcode, OR a numbered line (a digit + at least two words), OR a
+    street-type keyword. Bare acknowledgements ('thanks', 'yes please') do not
+    match, so they still forward to the practitioner but are not written to the
+    calendar."""
+    low = f" {(body or '').lower().strip()} "
+    if _UK_POSTCODE_RE.search(body or ""):
+        return True
+    if any(kw in low for kw in _ADDRESS_KEYWORDS):
+        return True
+    if any(c.isdigit() for c in (body or "")) and len((body or "").split()) >= 2:
+        return True
+    return False
+
+
+_ADDR_LABEL = "Home visit address (via SMS):"
+
+
+async def _attach_address_to_event(
+    ctx: dict, address_body: str, norm_phone: str, finalize: bool = True,
+) -> bool:
+    """Best-effort: append a texted home-visit address onto the booking's calendar
+    event and grow the stored description so a SPLIT address (street on one text,
+    postcode on the next) accumulates in full rather than the last part
+    overwriting the first. The first part is written under the label; later parts
+    append as continuation lines. finalize=True (a postcode arrived → address
+    complete) marks the context done so nothing further is appended; while
+    finalize=False the window stays open for the remaining part(s). Non-fatal."""
+    event_id = ctx.get("event_id")
+    if not event_id or ctx.get("address_captured"):
+        return False
+    try:
+        import asyncio as _asyncio
+        from app.tools.receptionist_tools import _get_tokens
+        from app.tools.calendar_google import update_event
+        from app.storage.redis_store import set_recent_booking_context
+        toks = await _get_tokens()
+        if not toks:
+            return False
+        base = ctx.get("description") or ""
+        if _ADDR_LABEL in base:
+            new_desc = base + f"\n{address_body}"                 # continuation line
+        else:
+            new_desc = base + f"\n\n{_ADDR_LABEL} {address_body}"  # first part
+        await _asyncio.to_thread(
+            update_event, toks, event_id, None, new_desc, ctx.get("calendar_id") or "primary",
+        )
+        # Persist the GROWN description so the next part appends to it (never
+        # overwrites); keep the window open until a postcode finalises it.
+        await set_recent_booking_context(
+            norm_phone,
+            {**ctx, "description": new_desc,
+             "address_captured": bool(finalize),
+             "is_home_visit": (not finalize)},
+        )
+        logger.info(
+            "[SMS_INBOUND] home-visit address %s to event %s",
+            "written" if finalize else "part appended", event_id,
+        )
+        return True
+    except Exception as _ee:
+        logger.warning("[SMS_INBOUND] event address-attach failed (non-fatal): %r", _ee)
+        return False
+
+
+async def _handle_general_inbound_sms(
+    *, sender: str, norm_phone: str, body: str, message_sid: str,
+    clinic: dict, send_sms,
+) -> None:
+    """
+    A general inbound patient text (not an in-flow name reply). NEVER dropped:
+    forward it to the clinic's practitioner so a human can respond, log it, and
+    send the patient a light acknowledgement. Every step is non-fatal and
+    clinic-aware. If the sender recently booked (any appointment type), the
+    forward is labelled with that booking; a home-visit patient replying with an
+    address gets it written onto their calendar event.
+    """
+    sms_name        = (clinic.get("sms_name") or clinic.get("display_name")
+                       or clinic.get("clinic_name") or "the clinic")
+    practitioner    = clinic.get("practitioner") or "the team"
+    staff_phone     = (clinic.get("transfer_phone") or "").strip()
+    reception_phone = (clinic.get("phone") or "").strip()
+    _is_opt_out     = body.strip().lower() in _SMS_OPT_OUT
+
+    # Loop guard: never process a text that came FROM one of our own numbers.
+    _own = {p.replace(" ", "") for p in (staff_phone, reception_phone) if p}
+    if norm_phone and norm_phone.replace(" ", "") in _own:
+        logger.info("[SMS_INBOUND] sender is a clinic number — skipping forward/ack")
+        return
+
+    # Context: did this number recently book? Label the forward accordingly.
+    ctx = None
+    try:
+        from app.storage.redis_store import get_recent_booking_context
+        ctx = await get_recent_booking_context(norm_phone)
+    except Exception:
+        ctx = None
+
+    fwd_msg = None
+    ack_msg = None
+    if ctx:
+        _name    = ctx.get("name") or "A patient"
+        _slot    = ctx.get("slot") or ""
+        _service = ctx.get("service") or "their appointment"
+        _is_home = bool(ctx.get("is_home_visit"))
+        if _is_home and _looks_like_address(body):
+            # Looks like (part of) the home-visit address → forward labelled +
+            # write to event. A postcode marks the address complete (finalise);
+            # a street-only part keeps the window open so the postcode text that
+            # follows appends rather than the last part overwriting the first.
+            _has_postcode = bool(_UK_POSTCODE_RE.search(body))
+            fwd_msg = (f"🏠 Home-visit address from {_name} (visit {_slot}):\n"
+                       f"\"{body}\"\nReply to them on {sender}.")
+            ack_msg = (f"Got it, thanks — we've passed your address to {practitioner} "
+                       f"for your home visit. — {sms_name}")
+            await _attach_address_to_event(ctx, body, norm_phone, finalize=_has_postcode)
+        elif _is_home:
+            fwd_msg = (f"New text from {_name} (home visit {_slot}):\n"
+                       f"\"{body}\"\nReply to them on {sender}.")
+        else:
+            fwd_msg = (f"New text from {_name} (booked {_service}, {_slot}):\n"
+                       f"\"{body}\"\nReply to them on {sender}.")
+    if fwd_msg is None:
+        fwd_msg = (f"New text to {sms_name} from {sender}:\n"
+                   f"\"{body}\"\nReply to them directly on {sender}.")
+
+    # 1. Forward to the practitioner so a human can respond.
+    if staff_phone:
+        try:
+            await send_sms(to=staff_phone, message=fwd_msg)
+            logger.info("[SMS_INBOUND] forwarded to practitioner ***%s", staff_phone[-4:])
+        except Exception as _fe:
+            logger.warning("[SMS_INBOUND] forward-to-practitioner failed (non-fatal): %r", _fe)
+    else:
+        logger.warning("[SMS_INBOUND] no transfer_phone configured — inbound text NOT forwarded")
+
+    # 2. Log to the Sheets Messages tab (best-effort; tab may not exist yet).
+    try:
+        import asyncio as _asyncio
+        from app.tools.handoff import send_to_sheet
+        await _asyncio.to_thread(
+            send_to_sheet, "", sender, "inbound_sms", body, message_sid, sms_name,
+        )
+    except Exception as _le:
+        logger.warning("[SMS_INBOUND] sheet log failed (non-fatal): %r", _le)
+
+    # 3. Light acknowledgement to the patient — no timeframe promise; a phone-
+    #    first nudge for generic texts. Suppressed for opt-out keywords.
+    if _is_opt_out:
+        logger.info("[SMS_INBOUND] opt-out keyword — forwarded but no auto-ack")
+        return
+    if ack_msg is None:
+        ack_msg = "Thanks — we've received your message and passed it to the team."
+        if reception_phone:
+            ack_msg += f" For bookings or anything urgent, please call us on {reception_phone}."
+        ack_msg += f" — {sms_name}"
+    try:
+        await send_sms(to=norm_phone, message=ack_msg)
+        logger.info("[SMS_INBOUND] ack sent to patient ***%s",
+                    norm_phone[-4:] if norm_phone else "????")
+    except Exception as _ae:
+        logger.warning("[SMS_INBOUND] patient ack failed (non-fatal): %r", _ae)
+
 
 @router.post("/sms/inbound")
 async def sms_inbound(request: Request) -> PlainTextResponse:
@@ -1368,6 +1553,18 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         body,
     )
 
+    # Idempotency: Twilio can retry the inbound webhook — process each message
+    # once so we never double-forward to staff or double-ack the patient.
+    if message_sid and not await acquire_once_lock(
+        f"sms_inbound:{message_sid}", ttl_seconds=600
+    ):
+        logger.info("[SMS_INBOUND] duplicate sid=%r — skipping", message_sid)
+        return PlainTextResponse("ok")
+
+    # Resolve which clinic this number belongs to (jv/theorem/…) so forwarding
+    # and branding are clinic-aware.
+    _clinic = get_clinic(clinic_id_from_twilio_to(form.get("To") or "")) or {}
+
     try:
         from app.flows.triage_legacy import normalize_phone
         from app.storage.redis_store import (
@@ -1380,9 +1577,15 @@ async def sms_inbound(request: Request) -> PlainTextResponse:
         pending = await get_pending_name_confirmation(norm_phone)
 
         if not pending:
-            logger.info(
-                "[SMS_INBOUND] no pending record for phone=%r — ignoring",
-                norm_phone,
+            # No in-flow name reply pending — this is a general patient text.
+            # Do NOT drop it: forward to the practitioner, log it, acknowledge.
+            await _handle_general_inbound_sms(
+                sender=sender,
+                norm_phone=norm_phone,
+                body=body,
+                message_sid=message_sid,
+                clinic=_clinic,
+                send_sms=send_sms,
             )
             return PlainTextResponse("ok")
 

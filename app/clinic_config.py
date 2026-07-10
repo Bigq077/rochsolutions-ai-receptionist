@@ -1308,12 +1308,18 @@ def _map_json_to_clinic_contract(loaded: Dict[str, Any]) -> Dict[str, Any]:
     clinic["booking_system"] = op.get("booking_system", "manual_handoff")
     clinic["calendar_id"] = op.get("calendar_id")
     clinic["digest"] = op.get("digest", {})  # end-of-day booking digest config
+    clinic["owner_alerts"] = op.get("owner_alerts", {})  # real-time owner SMS alert config
     clinic["allow_same_day"] = bool(op.get("allow_same_day", False))
     clinic["slot_minutes"] = slot_minutes
-    # Slot-offering increment (spacing between offered start times). Defaults to
-    # slot_minutes; set higher (e.g. 60) to offer hourly slots even though the
-    # appointment itself is shorter.
-    clinic["slot_increment_minutes"] = int(op.get("slot_increment_minutes", slot_minutes))
+    # Slot-offering increment (spacing between offered start times). An EXPLICIT
+    # override only — e.g. 60 to force hourly starts. When unset it stays None so
+    # the generator strides by (service duration + slot_break_minutes); defaulting
+    # it to slot_minutes here would clobber that break.
+    _inc = op.get("slot_increment_minutes")
+    clinic["slot_increment_minutes"] = int(_inc) if _inc is not None else None
+    # Gap between consecutive appointments (spacing only — never added to the
+    # calendar event). Default 0 keeps every clinic that doesn't set it identical.
+    clinic["slot_break_minutes"] = int(op.get("slot_break_minutes", 0))
     clinic["days_ahead"] = int(op.get("days_ahead", 60))
     clinic["working_hours"] = _working_hours_to_tuples(op.get("working_hours", {}), slot_minutes)
 
@@ -1418,6 +1424,25 @@ def clinic_id_from_twilio_to(to_number: Optional[str]) -> str:
     """
     key = (to_number or "").strip()
     return TWILIO_TO_CLINIC.get(key, "demo")
+
+
+def twilio_number_for_clinic(clinic_id: Optional[str]) -> Optional[str]:
+    """The Twilio number assigned to a clinic (reverse of TWILIO_TO_CLINIC).
+
+    Used to send DELAYED/queued outbound SMS (e.g. the home-visit address
+    reminder) FROM the clinic's own line rather than the worker process's
+    ambient TWILIO_PHONE_NUMBER. This matters on a SHARED Redis: the reminder
+    queue is global, so another tenant's worker can pick up this clinic's
+    reminder and would otherwise send it from ITS number — the patient's reply
+    then lands on the wrong line (no inbound webhook) and is lost. Returns None
+    if the clinic has no mapped number (caller falls back to env).
+    """
+    if not clinic_id:
+        return None
+    for _num, _cid in TWILIO_TO_CLINIC.items():
+        if _cid == clinic_id:
+            return _num
+    return None
 
 
 def get_acuity_config(clinic_id: str = "theorem") -> dict:

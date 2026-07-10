@@ -28,6 +28,22 @@ def _cp(clinic_phone: Optional[str]) -> str:
     return clinic_phone or _DEFAULT_CLINIC_PHONE
 
 
+def _first(patient_name: Optional[str]) -> str:
+    """
+    Greeting name — first token only.
+
+    SMS greetings should read "Hi Quentin", not "Hi Quentin Rock". Booking/
+    reminder callers already pass a first name, but the cancel/reschedule paths
+    pass the full name looked up from the calendar, so normalise here at the
+    rendering boundary. Empty / "none" / "unknown" → "there" (preserves the
+    prior fallback behaviour).
+    """
+    name = (patient_name or "").strip()
+    if not name or name.lower() in {"none", "unknown"}:
+        return "there"
+    return name.split()[0]
+
+
 # ============================================================================
 # ✅ BOOKING CONFIRMATION
 # ============================================================================
@@ -198,7 +214,7 @@ def format_reschedule_confirmation(
     phone = _cp(clinic_phone)
     name  = _cn(clinic_name)
 
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     loc_clause = f" at our {loc_str} clinic" if loc_str else ""
     return (
         f"Hi {_greeting}, your appointment has been moved to "
@@ -223,7 +239,7 @@ def format_cancellation_confirmation(
     phone = _cp(clinic_phone)
     name  = _cn(clinic_name)
 
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     msg = (
         f"Hi {_greeting}, your appointment on {day_name} {day_num} {month} "
         f"at {time_str} has been cancelled as requested."
@@ -243,7 +259,7 @@ def format_late_cancellation_warning(
     clinic_phone: Optional[str] = None,
 ) -> str:
     """Late cancellation warning (within 24 hours)."""
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     return (
         f"Hi {_greeting}, your appointment has been cancelled. "
         f"As this was within 24 hours, our £25 cancellation fee applies. "
@@ -323,7 +339,7 @@ def format_reached_confirmation_sms(
 ) -> str:
     """⏸️ Caller reached 'shall I go ahead and book?' but call ended before confirming."""
     phone = _cp(clinic_phone)
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     return (
         f"Hi {_greeting}, it looks like we got cut off just before confirming your "
         f"appointment. Call us back or reply to this message and we'll get it booked "
@@ -342,7 +358,7 @@ def format_no_audio_sms(
 ) -> str:
     """🔇 Safety net graceful close — call ended because system couldn't hear caller."""
     phone = _cp(clinic_phone)
-    _greeting = patient_name if (patient_name and patient_name.lower() not in {"none", "unknown"}) else "there"
+    _greeting = _first(patient_name)
     return (
         f"Hi {_greeting}, we weren't able to hear you during your call — "
         f"it may have been a connection issue on the line. Please call us back "
@@ -381,13 +397,20 @@ def format_price_inquiry_sms(
     service: Optional[str] = None,
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    price_line: str = "A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. ",
 ) -> str:
-    """💰 Price enquiry — didn't book."""
+    """💰 Price enquiry — didn't book.
+
+    price_line is a full clause (with trailing space) so a clinic can override the
+    price/duration AND drop any outcome claim (e.g. jv, whose non-diagnostic rules
+    forbid "see results within N sessions"). Default reproduces the original text
+    for clinics that don't override — byte-identical.
+    """
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
     return (
         f"Hi, you called {name} earlier asking about our prices. "
-        f"A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+        f"{price_line}"
         f"Ready to book? Call us back anytime, we'd love to help. {phone}"
     )
 
@@ -402,10 +425,34 @@ def format_insurance_inquiry_sms(
     bupa_mentioned: bool = False,
     clinic_name:  Optional[str] = None,
     clinic_phone: Optional[str] = None,
+    accepts_referrals: bool = False,
+    practitioner: Optional[str] = None,
 ) -> str:
-    """🏥 Insurance enquiry / 🚫 Bupa — didn't book."""
+    """🏥 Insurance enquiry / 🚫 Bupa — didn't book.
+
+    accepts_referrals=True → clinic accepts private-insurance referrals (incl.
+    Bupa), so use an Option-B message: confirm we accept the referral, no
+    billing-mechanism promise, practitioner follows up to collect details. Used by
+    jv. Default False reproduces the original "can't bill Bupa / pay-and-claim"
+    copy — byte-identical for clinics that don't override.
+    """
     name  = _cn(clinic_name)
     phone = _cp(clinic_phone)
+
+    if accepts_referrals:
+        _who = practitioner or "our team"
+        if insurer:
+            insurer_clause = f", including {insurer},"
+        elif bupa_mentioned:
+            insurer_clause = ", including Bupa,"
+        else:
+            insurer_clause = ""
+        return (
+            f"Hi, you called {name} about using your health insurance. "
+            f"Good news — we accept private health insurance referrals{insurer_clause}. "
+            f"Give us a call back whenever you'd like to book, and {_who} will be in touch "
+            f"to sort out the insurance details with you. {phone}"
+        )
 
     if bupa_mentioned:
         return (
