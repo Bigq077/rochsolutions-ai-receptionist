@@ -903,7 +903,12 @@ def _is_use_this_number(transcript: str) -> bool:
     if not lowered:
         return False
     # Explicit negative intent must never be swallowed as a confirmation.
-    if any(neg in lowered for neg in ("different", "another", "wrong", "not ", "no ")):
+    # ("n't"/"dont" catch "don't/can't/couldn't use this number" — without
+    # them a negated decline was wrongly accepted as "use this number".)
+    if any(
+        neg in lowered
+        for neg in ("different", "another", "wrong", "not ", "no ", "n't", "dont")
+    ):
         return False
     if any(sig in lowered for sig in _USE_THIS_NUMBER_SIGNALS):
         return True
@@ -911,6 +916,48 @@ def _is_use_this_number(transcript: str) -> bool:
     if len(words) <= 3 and (
         lowered in _PHONE_CONFIRM_AFFIRMATIVES
         or any(w in _PHONE_CONFIRM_AFFIRMATIVES for w in words)
+    ):
+        return True
+    return False
+
+
+# Signals that the caller does NOT want their calling number used and would
+# rather supply a different one — routed deterministically to the keypad.
+_DIFFERENT_NUMBER_SIGNALS: tuple = (
+    "different number", "another number", "use a different", "different one",
+    "wrong number", "not that number", "not this number", "change the number",
+    "update the number", "new number", "type it", "use my keypad",
+    "use the keypad", "on the keypad", "on my keypad", "enter it",
+)
+
+
+def _is_decline_calling_number(transcript: str) -> bool:
+    """
+    True when, at the booking phone-confirm step, the caller declines using the
+    number they are calling from and wants to supply a different one.
+
+    Mutually exclusive with _is_use_this_number: that helper returns False the
+    moment a negative token ('different', 'not ', 'no ', …) appears, so a
+    single utterance can never satisfy both.  This is only ever evaluated when
+    CALL STATE proves we are at the phone-offer step (see the booking decline
+    handler), so a liberal match here cannot steal an unrelated 'no' (e.g. a
+    slot rejection): those turns are gated out before this runs.
+    """
+    lowered = transcript.strip().lower().rstrip(".!?")
+    if not lowered:
+        return False
+    if any(sig in lowered for sig in _DIFFERENT_NUMBER_SIGNALS):
+        return True
+    # Bare decline of the offered calling number — only ever evaluated at the
+    # phone-offer step, so "no" there means "don't use that number".
+    if lowered in ("no", "nope", "nah", "no thanks", "no thank you"):
+        return True
+    # Negated decline that names the number: "don't use this", "could you not
+    # use the number I'm calling on".
+    _has_neg = "not " in lowered or "n't" in lowered or "dont" in lowered
+    if _has_neg and (
+        "number" in lowered or "this" in lowered or "that" in lowered
+        or "calling" in lowered or "one" in lowered
     ):
         return True
     return False
@@ -5559,6 +5606,73 @@ class WebSocketCallHandler:
                                 _bk_caller_num, utterance[:60],
                             )
                             # Fall through to run_turn — phone now in CALL STATE.
+
+                    # ── Booking-flow verbal phone DECLINE → keypad ───────────
+                    # Twin of the block above.  When the caller declines the
+                    # calling number at the phone step ("could you not use the
+                    # number I'm calling on", "a different number"), the booking
+                    # flow had no deterministic handler — it fell through to the
+                    # LLM, which improvised straight to the booking readback
+                    # ("shall I go ahead and book that in?") WITHOUT collecting a
+                    # number (phone=no → no SMS → 2026-07-10 abandon).  Mirror the
+                    # reschedule/cancel keypad handler: route to DTMF collection
+                    # deterministically so the LLM never handles the phone answer.
+                    # Gated identically to the positive block (booking, not DTMF,
+                    # not reschedule/cancel) and only at the phone-offer step, so
+                    # a "no" during slot selection can never reach here.
+                    elif (
+                        not self.session.get("v3_phone_dtmf_active")
+                        and not self.session.get("v3_awaiting_phone_confirm")
+                        and self.session.get("booking_flow_active")
+                        and _is_decline_calling_number(utterance)
+                    ):
+                        _dc_lastq = (
+                            self.session.get("last_question", "")
+                            or self.session.get("last_bot_prompt", "")
+                            or ""
+                        ).lower()
+                        _dc_phone_step = (
+                            "use this number" in _dc_lastq
+                            or "number you're calling on" in _dc_lastq
+                            or "number you booked" in _dc_lastq
+                        )
+                        if _dc_phone_step:
+                            _dc_prompt = (
+                                "No problem — go ahead and type the number "
+                                "on your keypad now. You can press the star "
+                                "key to reset at any time."
+                            )
+                            await self.tts_text_queue.put(_dc_prompt)
+                            self.session["last_bot_prompt"] = _dc_prompt
+                            self.session["last_question"] = _dc_prompt
+                            # Bridge the keypad prompt into history so the LLM has
+                            # context when the DTMF digits arrive (mirrors the
+                            # reschedule/cancel keypad handler) — without it the
+                            # history has two consecutive user turns and the LLM
+                            # re-asks for the number instead of using it.
+                            self.session.setdefault(
+                                "conversation_history", []
+                            ).append({"role": "assistant", "content": _dc_prompt})
+                            # Disarm any residual slot DTMF so the first keypad
+                            # digit goes to phone collection, then arm phone DTMF.
+                            self.session.pop("v3_dtmf_slot_map",           None)
+                            self.session.pop("v3_slot_dtmf_active",        None)
+                            self.session.pop("v3_awaiting_slot_selection", None)
+                            self.session.pop("v3_dtmf_slot_context",       None)
+                            self.slot_map_stage = SlotMapStage.NONE
+                            self.session["v3_phone_dtmf_active"] = True
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] booking phone DECLINE — routed to "
+                                "keypad DTMF (no LLM); phone dtmf armed: %r",
+                                utterance[:60],
+                            )
+                            if self._silence_handler is not None:
+                                self._silence_handler.set_state(
+                                    self.session.get("state", "default")
+                                )
+                                self._silence_handler.on_question_asked(_dc_prompt)
+                            continue  # Skip run_turn; wait for keypad digits
 
                     # A2: verbal reset + DTMF mode management (Spec R).
                     # Intercept BEFORE _llm_busy is set.
