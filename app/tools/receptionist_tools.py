@@ -3984,7 +3984,13 @@ async def _book_appointment_provisional(
     patient_name = (args.get("patient_name") or "").strip()
     phone = (args.get("phone") or "").strip()
     service = args.get("service") or "Deep Tissue Massage"
-    notes = (args.get("notes") or "").strip()
+    # The book_appointment tool schema exposes `followup_note`, NOT `notes` — the
+    # prompt tells Susie to put the caller's context there. Reading only `notes`
+    # meant it was always empty, so the caller's reason for booking reached
+    # neither the calendar event nor the owner's SMS. On the provisional model
+    # the owner rings the client back, so that context is the whole point.
+    # `notes` is kept first for any internal caller that does pass it.
+    notes = (args.get("notes") or args.get("followup_note") or "").strip()
 
     # Resolve the friendly service name AND a per-service default duration from
     # clinic.json, so a named massage (e.g. sports_massage → 90 min) lands on the
