@@ -892,6 +892,35 @@ def _is_use_this_number(transcript: str) -> bool:
     return False
 
 
+def _is_clinic_own_number(num: str, clinic: dict) -> bool:
+    """True when an inbound caller-ID is actually one of THIS clinic's own numbers.
+
+    That only happens on a FORWARDED call whose carrier rewrites `From` to the
+    forwarding number (the practitioner's own phone) instead of passing the
+    original caller through. The caller-ID is then an artefact, not the patient:
+    trusting it would pre-fill collected["phone"] with the practitioner's number,
+    so the confirmation SMS + reminders go to them, and — because lookup_patient
+    keys on phone — every forwarded patient's booking would collide under one
+    number (patient B could read back and cancel patient A's appointment).
+
+    Callers that dial the clinic's Twilio line directly can never trip this, so
+    the guard is inert on the normal (non-forwarded) path.
+    """
+    from app.tools.receptionist_tools import _phone_key  # UK-core normaliser
+    target = _phone_key(num)
+    if not target:
+        return False
+    for _cand in (
+        clinic.get("transfer_phone", ""),
+        (clinic.get("owner_alerts")  or {}).get("phone", ""),
+        (clinic.get("call_overflow") or {}).get("dial_phone", ""),
+        clinic.get("phone", ""),
+    ):
+        if _cand and _phone_key(_cand) == target:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Greeting (built at call start from clinic_config.json)
 # ---------------------------------------------------------------------------
@@ -5042,6 +5071,33 @@ class WebSocketCallHandler:
         if "direct_ws" in _account_sid:
             initial["direct_ws_test"] = True
             logger.info("[ms_conn] direct_ws_test mode detected (accountSid=%s)", _account_sid)
+
+        # ── Forwarded-call caller-ID guard ───────────────────────────────
+        # On a call forwarded from the practitioner's own phone, some carriers
+        # rewrite `From` to the forwarding number instead of passing the real
+        # caller through. Trusting that would book every forwarded patient
+        # against the practitioner's number. Treat a clinic-owned caller-ID as
+        # NO caller-ID: `twilio_from` is blanked, so the existing
+        # "will collect manually" path runs and Susie asks for the number on
+        # the keypad. Inert for direct-dial calls (the normal path today).
+        if twilio_from and twilio_to:
+            try:
+                from app.clinic_config import (
+                    clinic_id_from_twilio_to as _cid_from_to,
+                    get_clinic as _get_clinic_cli,
+                )
+                _cli_clinic = _get_clinic_cli(_cid_from_to(twilio_to)) or {}
+                if _is_clinic_own_number(twilio_from, _cli_clinic):
+                    logger.warning(
+                        "[ms_conn] FORWARDED-CALL caller-ID detected: From=%s is this "
+                        "clinic's own number — ignoring it as caller-ID and collecting "
+                        "the patient's number on the keypad instead.",
+                        twilio_from,
+                    )
+                    initial["forwarded_cli_suppressed"] = twilio_from
+                    twilio_from = ""
+            except Exception as _cli_exc:
+                logger.warning("[ms_conn] caller-ID guard check failed: %r", _cli_exc)
 
         if twilio_from:
             initial["twilio_from"] = twilio_from

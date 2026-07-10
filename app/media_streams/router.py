@@ -226,6 +226,19 @@ async def ms_incoming(request: Request) -> Response:
         call_sid      = form.get("CallSid", "")
         caller_number = form.get("From", "") or form.get("from", "")
         to_number     = form.get("To",   "") or form.get("to",   "")
+
+        # Diagnostic: on a FORWARDED call this says, in one line, whether the
+        # carrier passed the original caller through (From = the patient — good)
+        # or rewrote it to the forwarding number (From = the practitioner — the
+        # caller-ID guard in connection.py then suppresses it). Twilio sets
+        # ForwardedFrom when the call reached us via a diversion.
+        logger.info(
+            "[ms_router] inbound params: From=%s To=%s ForwardedFrom=%s CallerName=%s",
+            caller_number or "(none)",
+            to_number or "(none)",
+            form.get("ForwardedFrom", "") or "(none)",
+            form.get("CallerName", "") or "(none)",
+        )
         await _cache_call_ids(call_sid, caller_number, to_number)
 
         # ── Human-first overflow ────────────────────────────────────────────
