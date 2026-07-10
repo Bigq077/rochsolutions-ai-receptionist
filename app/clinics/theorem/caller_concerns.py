@@ -766,8 +766,8 @@ CALLER_CONCERNS: Dict[str, Dict[str, Any]] = {
         "clarify_when": "n/a — route to the team.",
         "escalate_when": "Always: letters/reports are a manual clinician/admin pathway.",
         "answer_style": "'We can usually help with letters, but it's handled by the team "
-                        "rather than something I can promise timings on — can I take your "
-                        "details and get someone to call you back?'",
+                        "rather than something I can promise timings on — do you want me "
+                        "to put you through to Mark?'",
     },
     "home_visit": {
         "messy_phrases": ["do you do home visits", "can someone come to my dad", "my mum's housebound"],
@@ -780,13 +780,13 @@ CALLER_CONCERNS: Dict[str, Dict[str, Any]] = {
                    "not booked like a standard appointment.",
         "must_not_say": ["Don't book it as a standard slot.",
                          "Don't quote home-visit price/area/lead-time (not confirmed)."],
-        "best_next_step": "Explain it's a direct arrangement; take details for a call-back.",
-        "service_route": "enquiry_callback",
+        "best_next_step": "Explain it's a direct arrangement; offer to put them through to Mark.",
+        "service_route": "human_escalation",
         "clarify_when": "If the person is acutely unwell or had a fall and can't get up, screen for emergency.",
         "escalate_when": "Always route to the team; if urgent/emergency, redirect to urgent care.",
         "answer_style": "'We do offer home visits, but they're arranged directly with the "
-                        "team rather than booked online — can I take a few details and get "
-                        "someone to call you back to sort it?'",
+                        "team rather than booked online — do you want me to put you "
+                        "through to Mark to sort it?'",
     },
     "teen_booking": {
         "messy_phrases": ["my daughter's hurt her ankle playing netball", "can I book my teenager in",

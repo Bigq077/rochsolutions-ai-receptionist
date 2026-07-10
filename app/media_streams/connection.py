@@ -3199,8 +3199,8 @@ class SilenceHandler:
                     )
                     continue
                 phrase = (
-                    "I'm sorry, I'm having trouble hearing you right now. "
-                    "Please call again in a moment."
+                    "I'm sorry, I'm having trouble hearing you right now — "
+                    "let me put you through to Mark."
                 )
                 self.currently_reasking = True
                 await self._tts_text_queue.put(phrase)
