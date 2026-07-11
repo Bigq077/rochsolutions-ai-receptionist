@@ -706,6 +706,28 @@ _LOC_RUNG3_DTMF: str = (
 )
 
 
+# Clear booking-REQUEST phrases — the caller is explicitly asking to book,
+# not merely mentioning "book" (e.g. "how much to book?").  Deliberately
+# narrow to avoid false positives.  Used to latch v3_booking_requested so the
+# Redditch redirect fires immediately even when booking intent arrives via the
+# FAQ / location-ladder path (where the Spec-Y v3_booking_intent latch never
+# triggers).  Read ONLY by the Redditch early-redirect condition.
+_BOOKING_REQUEST_PHRASES: tuple = (
+    "book an appointment", "book a appointment", "book an assessment",
+    "book a session", "book a slot", "book me in", "book it in",
+    "like to book", "want to book", "need to book", "wanna book",
+    "love to book", "keen to book", "happy to book", "to get booked",
+    "make an appointment", "make a appointment", "get an appointment",
+    "booking an appointment",
+)
+
+
+def _is_clear_booking_request(text: str) -> bool:
+    """True when the caller clearly asks to BOOK (not just mentions 'book')."""
+    t = (text or "").lower()
+    return any(p in t for p in _BOOKING_REQUEST_PHRASES)
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -5976,6 +5998,25 @@ class WebSocketCallHandler:
                         "[ms_conn v3] transcript: %r", utterance[:120],
                     )
 
+                    # Latch a clear booking REQUEST so the Redditch redirect
+                    # fires the moment the caller confirms Redditch — even when
+                    # booking intent arrives via the messy FAQ / location-ladder
+                    # path where the Spec-Y v3_booking_intent latch never
+                    # triggers (observed 2026-07-11: parking FAQ → ladder →
+                    # "I'd like to book" → Redditch was NOT recognised as a
+                    # booking, so it asked timing before the redirect).  This is
+                    # a SEPARATE, additive flag — it does not touch
+                    # v3_booking_intent or any other routing; only the Redditch
+                    # early-redirect condition reads it.
+                    if not self.session.get("v3_booking_requested") and \
+                            _is_clear_booking_request(utterance):
+                        self.session["v3_booking_requested"] = True
+                        logger.info(
+                            "[ms_conn v3] booking request latched"
+                            " (v3_booking_requested=True): %r",
+                            utterance[:80],
+                        )
+
                     try:
                         # ── THEOREM_V3 LOCATION GATE (FIX 1) ────────────────
                         # If booking intent was flagged but the location
@@ -7267,7 +7308,12 @@ class WebSocketCallHandler:
                                         "v3_caller_intent", "booking"
                                     ) in ("reschedule", "cancel")
                                     if (
-                                        _was_booking
+                                        (
+                                            _was_booking
+                                            or self.session.get(
+                                                "v3_booking_requested"
+                                            )
+                                        )
                                         and not _rc_intent
                                         and self._location_not_bookable(
                                             _confirmed_loc
@@ -7294,6 +7340,14 @@ class WebSocketCallHandler:
                                             "straight through to Mark, who can "
                                             "book you in at Redditch. Which "
                                             "would you prefer?"
+                                        )
+                                        # Booking at Redditch supersedes any
+                                        # deferred FAQ — drop it so it is not
+                                        # re-queued and answered again after the
+                                        # redirect (observed: parking answered
+                                        # twice, 2026-07-11).
+                                        self.session.pop(
+                                            "v3_faq_pending_utterance", None
                                         )
                                         await self.tts_text_queue.put(_redirect)
                                         self.session["last_bot_prompt"] = _redirect
