@@ -728,6 +728,19 @@ def _is_clear_booking_request(text: str) -> bool:
     return any(p in t for p in _BOOKING_REQUEST_PHRASES)
 
 
+# Redditch (not-bookable) redirect — SINGLE source of truth for the spoken
+# text.  Every clinic-confirmation path routes through
+# WebSocketCallHandler._redirect_if_clinic_not_bookable, which speaks this, so
+# the wording stays identical no matter how the clinic was confirmed.  Keep in
+# sync with the prompt REDDITCH block and llm_stream's guard message.
+_REDDITCH_REDIRECT: str = (
+    "Unfortunately I can't book the Redditch clinic myself at the moment — "
+    "but I can book you straight in at our Awlstuh clinic if that suits, or "
+    "I can put you straight through to Mark, who can book you in at Redditch. "
+    "Which would you prefer?"
+)
+
+
 # Patience-phrase guard — if the LLM response is a hold/wait phrase the
 # caller has not expressed booking intent; suppress the booking ack handler.
 _PATIENCE_SIGNALS: frozenset = frozenset({
@@ -4563,7 +4576,11 @@ class WebSocketCallHandler:
                             )
                         )
                 await self.tts_text_queue.put(_ack)
-                if _next_q is not None:
+                if await self._redirect_if_clinic_not_bookable(
+                    _loc_dtmf, intent=_intent
+                ):
+                    pass  # Redditch redirect spoken — skip booking routing
+                elif _next_q is not None:
                     await self.tts_text_queue.put(_next_q)
                     self.session["last_bot_prompt"] = _next_q
                     self.session["last_question"] = _next_q
@@ -5000,6 +5017,47 @@ class WebSocketCallHandler:
         if not entry:
             return False
         return not entry.get("bookable", True)
+
+    async def _redirect_if_clinic_not_bookable(
+        self, loc: str, *, intent: str = "booking"
+    ) -> bool:
+        """SINGLE enforcement point for the Redditch (not-bookable) redirect.
+
+        Call this the MOMENT any path confirms a booking clinic.  Every
+        clinic-confirmation path — the voice location-answer intercept, the
+        DTMF keypad fallback, and the use-this-clinic confirm — routes through
+        it, so the redirect fires identically no matter HOW the clinic was
+        named.  (This removes the class of 2026-07-11 regressions where a fix
+        to one path left the others still booking Redditch.)
+
+        Returns True — and speaks the redirect — only for a NEW booking at a
+        clinic flagged bookable=False.  Returns False for a bookable clinic or
+        a reschedule/cancel (moving/cancelling an existing Redditch booking is
+        still allowed), and the caller path then continues its normal routing.
+        When True, the caller path MUST stop: do not ask timing, do not book.
+        The caller's 'yes' to the transfer offer later runs the LLM, which
+        calls transfer_to_human (the redirect is in conversation_history).
+        """
+        if intent in ("reschedule", "cancel"):
+            return False
+        if not self._location_not_bookable(loc):
+            return False
+        # Drop any deferred FAQ so it is not re-answered after the redirect.
+        self.session.pop("v3_faq_pending_utterance", None)
+        await self.tts_text_queue.put(_REDDITCH_REDIRECT)
+        self.session["last_bot_prompt"] = _REDDITCH_REDIRECT
+        self.session["last_question"] = _REDDITCH_REDIRECT
+        self.session.setdefault("conversation_history", []).append(
+            {"role": "assistant", "content": _REDDITCH_REDIRECT}
+        )
+        if self._silence_handler is not None:
+            self._silence_handler.on_question_asked(_REDDITCH_REDIRECT)
+        logger.info(
+            "[ms_conn v3] Redditch redirect (centralised) — loc=%r not"
+            " bookable; booking routing skipped",
+            loc,
+        )
+        return True
 
     async def _fire_name_reask(self) -> None:
         """
@@ -7148,7 +7206,11 @@ class WebSocketCallHandler:
                                             "v3_awaiting_phone_confirm"
                                         ] = True
                                     await self.tts_text_queue.put(_ack)
-                                    if _next_q is not None:
+                                    if await self._redirect_if_clinic_not_bookable(
+                                        _confirmed, intent=_intent
+                                    ):
+                                        pass  # Redditch redirect — skip booking
+                                    elif _next_q is not None:
                                         await self.tts_text_queue.put(
                                             _next_q
                                         )
@@ -7311,69 +7373,24 @@ class WebSocketCallHandler:
                                     self.session[
                                         "v3_location_asked"
                                     ] = False
-                                    _rc_intent = self.session.get(
-                                        "v3_caller_intent", "booking"
-                                    ) in ("reschedule", "cancel")
-                                    if (
-                                        (
-                                            _was_booking
-                                            or self.session.get(
-                                                "v3_booking_requested"
-                                            )
+                                    _is_booking_a = (
+                                        _was_booking
+                                        or self.session.get(
+                                            "v3_booking_requested"
                                         )
-                                        and not _rc_intent
-                                        and self._location_not_bookable(
-                                            _confirmed_loc
+                                    )
+                                    if _is_booking_a and (
+                                        await self._redirect_if_clinic_not_bookable(
+                                            _confirmed_loc,
+                                            intent=self.session.get(
+                                                "v3_caller_intent", "booking"
+                                            ),
                                         )
                                     ):
-                                        # NEW BOOKING ONLY: redirect a non-bookable
-                                        # clinic (e.g. Redditch) the MOMENT it is
-                                        # picked — never ask timing or reach
-                                        # check_availability.  FAQ questions (the
-                                        # non-booking else-branch below, which
-                                        # re-queues the pending FAQ and answers it)
-                                        # and reschedule/cancel (the elif branch)
-                                        # are unaffected — only new bookings are
-                                        # blocked at Redditch.  The caller's "yes"
-                                        # to the transfer offer then runs the LLM,
-                                        # which calls transfer_to_human (the
-                                        # redirect is in conversation_history).
-                                        _redirect = (
-                                            "Unfortunately I can't book the "
-                                            "Redditch clinic myself at the "
-                                            "moment — but I can book you "
-                                            "straight in at our Awlstuh clinic "
-                                            "if that suits, or I can put you "
-                                            "straight through to Mark, who can "
-                                            "book you in at Redditch. Which "
-                                            "would you prefer?"
-                                        )
-                                        # Booking at Redditch supersedes any
-                                        # deferred FAQ — drop it so it is not
-                                        # re-queued and answered again after the
-                                        # redirect (observed: parking answered
-                                        # twice, 2026-07-11).
-                                        self.session.pop(
-                                            "v3_faq_pending_utterance", None
-                                        )
-                                        await self.tts_text_queue.put(_redirect)
-                                        self.session["last_bot_prompt"] = _redirect
-                                        self.session["last_question"] = _redirect
-                                        self.session.setdefault(
-                                            "conversation_history", []
-                                        ).append({
-                                            "role": "assistant",
-                                            "content": _redirect,
-                                        })
-                                        self._silence_handler.on_question_asked(
-                                            _redirect
-                                        )
-                                        logger.info(
-                                            "[ms_conn v3] location not bookable"
-                                            " (%s) — redirect emitted at clinic"
-                                            " question, timing Q skipped",
-                                            _confirmed_loc,
-                                        )
+                                        # Redditch redirect spoken by the shared
+                                        # helper — same enforcement as the DTMF
+                                        # and use-this-clinic paths.
+                                        pass
                                     # If captured during a booking flow, queue
                                     # next question based on caller intent.
                                     elif _was_booking:
