@@ -2,6 +2,7 @@
   "_notes": "JONATHAN_REVIEW: Items tagged TBC must be confirmed with Jonathan before go-live. Search for 'TBC' to find every gap. Booking model is PROVISIONAL (google_calendar_provisional): Susie offers only slots Jonathan has published to the 'Vital Edge — Available' calendar, books the chosen slot as a PENDING event, and texts Jonathan immediately. Susie must NEVER tell the caller the booking is confirmed.",
   "clinic_id": "vital_edge",
   "clinic_name": "Vital Edge Therapy",
+  "practitioner": "Jonathan",
   "brand_names": [
     "Vital Edge Therapy",
     "Vital Edge",
