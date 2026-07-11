@@ -7290,9 +7290,10 @@ class WebSocketCallHandler:
                                             "Redditch clinic myself at the "
                                             "moment — but I can book you "
                                             "straight in at our Awlstuh clinic "
-                                            "if that suits, or put you through "
-                                            "to Mark for Redditch. Which would "
-                                            "you prefer?"
+                                            "if that suits, or I can put you "
+                                            "straight through to Mark, who can "
+                                            "book you in at Redditch. Which "
+                                            "would you prefer?"
                                         )
                                         await self.tts_text_queue.put(_redirect)
                                         self.session["last_bot_prompt"] = _redirect
