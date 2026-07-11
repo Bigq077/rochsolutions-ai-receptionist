@@ -8376,6 +8376,12 @@ class WebSocketCallHandler:
                                 )
                                 and _faq_needs_clinic(utterance)  # F14: skips
                                 # clinic-independent closure/holiday questions
+                                # CLINIC ALREADY NAMED — if the caller said the
+                                # clinic in the same breath ("the Redditch
+                                # parking"), don't ask "which clinic?" back at
+                                # them; let run_turn answer for that clinic
+                                # (observed 2026-07-11).
+                                and not _v3_extract_location(utterance)
                             ):
                                 _faq_clinic_q = _LOC_RUNG1_OPEN
                                 await self.tts_text_queue.put(_faq_clinic_q)

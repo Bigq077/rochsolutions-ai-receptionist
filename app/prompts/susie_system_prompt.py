@@ -2290,7 +2290,15 @@ def _build_theorem_v3(session: dict) -> str:
         "Practitioners (both qualified prescribers, honour "
         "requests). Mark Dyer at Awlstuh Mon/Tue/Wed/Fri and Redditch "
         "Thu. Leanne (BSc Hons HCPC) at Awlstuh Thursday evenings "
-        "only; not available at Redditch."
+        "only; not available at Redditch.\n\n"
+        "CLINIC-SPECIFIC INFO — ASK WHICH CLINIC FIRST: parking, address, "
+        "directions, and opening hours DIFFER between the two clinics. If a "
+        "caller asks about one of these and you do not yet know which clinic "
+        "they mean, ask \"Which clinic — Awlstuh or Redditch?\" and then "
+        "answer for that clinic. Do NOT read out both clinics' details unless "
+        "the caller explicitly asks to compare them. (Prices and services "
+        "that are identical at both clinics, and Awlstuh-only services, are "
+        "unaffected — never ask which clinic for those.)"
     )
 
     # PRICES (section 11)
