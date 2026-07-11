@@ -1248,6 +1248,10 @@ def _v3_try_persist_name(
 
     # Full name (first + surname) already captured — nothing to do.
     if _existing and _has_full_name:
+        # Name collection is over however the full name was set (readback,
+        # back-fill, or a direct collect_and_store tool call) — drop the
+        # straggler-net latch so it cannot linger past the name phase.
+        session["v3_name_collection_active"] = False
         return False
 
     # ── Stage 2: first name already stored — back-fill the surname ───────────
@@ -1283,6 +1287,7 @@ def _v3_try_persist_name(
             session["patient_name"] = full
             session["surname_captured"] = True
             session["v3_awaiting_surname"] = False
+            session["v3_name_collection_active"] = False
             logger.info(
                 "[ms_conn v3] surname back-filled onto stored first name: %r",
                 full,
@@ -1317,6 +1322,12 @@ def _v3_try_persist_name(
                 full = f"{candidate} {surname}" if surname else candidate
                 session.setdefault("collected", {})["name"] = full
                 session["patient_name"] = full
+                # A first name has now locked, so the straggler-net latch has
+                # done its job: from here the surname straggler is covered by
+                # v3_awaiting_surname (below) when first-name-only, or the name
+                # is already complete.  Clearing it now bounds the latch to
+                # exactly the request→first-name-lock (confirmation) window.
+                session["v3_name_collection_active"] = False
                 if surname:
                     session["surname_captured"] = True
                     session["v3_awaiting_surname"] = False
@@ -5453,6 +5464,22 @@ class WebSocketCallHandler:
                         bool(self.session.get("v3_confirmed_slot_phrase"))
                         and not self.session.get("phone_confirmed")
                         and not self.session.get("v3_phone_dtmf_active")
+                    ) or (
+                        # Name-first parity, 2026-07-11: name-first takes the
+                        # name at call open, so there is NO slot phrase to fall
+                        # back on (the arm above is dead under name-first), and
+                        # when the first name is CONFIRMED before it persists
+                        # ("Did you say Quentin — is that right?") the keyword
+                        # scan misses and v3_awaiting_surname is not set yet — so
+                        # a same-breath surname straggler ("rock") was dropped
+                        # (live call 2026-07-11 15:10).  v3_name_collection_active
+                        # is a durable latch: set when a name is requested, held
+                        # across the confirmation turn, cleared the moment any
+                        # name persists.  Mirrors the slot-phrase arm above, for
+                        # the flow that has no slot.
+                        bool(self.session.get("v3_name_collection_active"))
+                        and not self.session.get("phone_confirmed")
+                        and not self.session.get("v3_phone_dtmf_active")
                     )
                     _short_fragment = 0 < len(utterance.split()) <= 2
                     if (
@@ -8717,6 +8744,18 @@ class WebSocketCallHandler:
                             _last_bot_j = _last_bot.lower()
                             if any(p in _last_bot_j for p in _NAME_REQUEST_PHRASES):
                                 self.post_slot_confirmation_pending = True
+                                # Durable name-collection latch (2026-07-11).
+                                # Unlike post_slot_confirmation_pending, which is
+                                # cleared the moment a turn does not ask for a
+                                # name (e.g. the "Did you say Quentin — is that
+                                # right?" confirmation), this latch is held until
+                                # a name actually persists — see the straggler
+                                # exemption (~5457) and the clears in
+                                # _v3_try_persist_name.  It keeps a same-breath
+                                # surname straggler alive across the confirmation
+                                # turn on the name-first flow, which has no slot
+                                # phrase to fall back on.
+                                self.session["v3_name_collection_active"] = True
                                 logger.info(
                                     "[ms_conn] post_slot_confirmation_pending = True"
                                     " (name request detected in response)"
