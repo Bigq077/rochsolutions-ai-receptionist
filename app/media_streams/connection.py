@@ -4535,6 +4535,10 @@ class WebSocketCallHandler:
                 _disp = _loc_dtmf.capitalize()
                 _ack = f"{_disp}."
                 _intent = self.session.get("v3_caller_intent", "booking")
+                # Whether this clinic confirmation answers a pending FAQ (not a
+                # booking).  Initialised here so the not-bookable redirect gate
+                # below is safe on every branch (incl. reschedule/cancel).
+                _dtmf_faq_requeued = False
                 if _intent in ("reschedule", "cancel"):
                     _next_q = self._resched_phone_q()
                     self.session["v3_awaiting_phone_confirm"] = True
@@ -4549,7 +4553,6 @@ class WebSocketCallHandler:
                     _dtmf_faq_pending = self.session.pop(
                         "v3_faq_pending_utterance", None
                     )
-                    _dtmf_faq_requeued = False
                     if _dtmf_faq_pending and not self.session.get(
                         "v3_booking_intent", False
                     ):
@@ -4587,8 +4590,15 @@ class WebSocketCallHandler:
                             )
                         )
                 await self.tts_text_queue.put(_ack)
-                if await self._redirect_if_clinic_not_bookable(
-                    _loc_dtmf, intent=_intent
+                # Skip the not-bookable redirect when answering a pending FAQ
+                # (no booking intent): a Redditch parking/hours enquiry via the
+                # keypad path must be ANSWERED, not blocked with "I can't book
+                # Redditch".  Mirrors the use-this-clinic and voice-intercept
+                # paths (regression observed 2026-07-11).
+                if not _dtmf_faq_requeued and (
+                    await self._redirect_if_clinic_not_bookable(
+                        _loc_dtmf, intent=_intent
+                    )
                 ):
                     pass  # Redditch redirect spoken — skip booking routing
                 elif _next_q is not None:
@@ -7146,6 +7156,12 @@ class WebSocketCallHandler:
                                     _intent = self.session.get(
                                         "v3_caller_intent", "booking"
                                     )
+                                    # Whether this clinic confirmation answers a
+                                    # pending FAQ (not a booking).  Initialised
+                                    # here so the not-bookable redirect gate below
+                                    # is safe on every branch (incl.
+                                    # reschedule/cancel).
+                                    _utc_faq_requeued = False
                                     if _intent in ("reschedule", "cancel"):
                                         _next_q = self._resched_phone_q()
                                     else:
@@ -7161,7 +7177,6 @@ class WebSocketCallHandler:
                                         _utc_faq_pending = self.session.pop(
                                             "v3_faq_pending_utterance", None
                                         )
-                                        _utc_faq_requeued = False
                                         if _utc_faq_pending and not (
                                             self.session.get(
                                                 "v3_booking_intent", False
@@ -7233,8 +7248,19 @@ class WebSocketCallHandler:
                                             "v3_awaiting_phone_confirm"
                                         ] = True
                                     await self.tts_text_queue.put(_ack)
-                                    if await self._redirect_if_clinic_not_bookable(
-                                        _confirmed, intent=_intent
+                                    # Skip the not-bookable redirect when we are
+                                    # answering a pending FAQ (no booking intent).
+                                    # A Redditch parking/hours enquiry must be
+                                    # ANSWERED, not blocked with "I can't book
+                                    # Redditch" — the redirect only applies to a
+                                    # NEW booking at a not-bookable clinic
+                                    # (regression observed 2026-07-11 16:46: a
+                                    # parking FAQ hit the redirect because _intent
+                                    # defaults to "booking").
+                                    if not _utc_faq_requeued and (
+                                        await self._redirect_if_clinic_not_bookable(
+                                            _confirmed, intent=_intent
+                                        )
                                     ):
                                         pass  # Redditch redirect — skip booking
                                     elif _next_q is not None:
