@@ -8837,6 +8837,60 @@ class WebSocketCallHandler:
                                     " LLM clinic question (name-first path)"
                                     " — re-asks now escalate rung2/rung3 + DTMF"
                                 )
+                                # FAQ MEMORY — parity with the deterministic
+                                # FAQ gate (~8445).  The LLM may ask the clinic
+                                # question because a clinic-specific FAQ
+                                # (parking/hours/address) is still pending: e.g.
+                                # name-first deferred the caller's opening FAQ on
+                                # turn 1, so that gate was skipped for lack of a
+                                # name and never stashed v3_faq_pending_utterance.
+                                # Without it, the caller's clinic answer
+                                # ("Redditch") reaches the ack-only location
+                                # intercept, finds no pending FAQ, and falls
+                                # through to a booking-flow timing question
+                                # ("day or time?") for a pure parking enquiry
+                                # (observed 2026-07-11, Quentin Rock call).
+                                # Recover the held FAQ from history and stash it
+                                # so the intercept re-runs it against the now-
+                                # confirmed clinic.  Booking turns are excluded:
+                                # their clinic question is for the appointment
+                                # and the booking follow-up path handles it.
+                                _is_booking_locq = (
+                                    self.session.get("v3_booking_intent")
+                                    or self.session.get("v3_booking_requested")
+                                    or self.booking_flow_active
+                                )
+                                if (
+                                    not _is_booking_locq
+                                    and not self.session.get(
+                                        "v3_faq_pending_utterance"
+                                    )
+                                ):
+                                    for _h in reversed(
+                                        self.session.get(
+                                            "conversation_history", []
+                                        ) or []
+                                    ):
+                                        if _h.get("role") != "user":
+                                            continue
+                                        _hu = _h.get("content") or ""
+                                        if (
+                                            _faq_needs_clinic(_hu)
+                                            and not _v3_extract_location(_hu)
+                                        ):
+                                            self.session[
+                                                "v3_faq_pending_utterance"
+                                            ] = _hu
+                                            logger.info(
+                                                "[ms_conn v3] FAQ memory"
+                                                " recovered for LLM clinic"
+                                                " question — stashed pending"
+                                                " FAQ %r so the clinic answer"
+                                                " re-runs it (not a booking"
+                                                " timing Q)",
+                                                _hu[:60],
+                                            )
+                                            break
                             # ── BOOKING ACK DETECTION + AUTO-QUEUE ───────────
                             # If the LLM generated a warm booking
                             # acknowledgement (no question), immediately queue
