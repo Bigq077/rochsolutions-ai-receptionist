@@ -1101,6 +1101,18 @@ from app.name_capture import (  # noqa: E402
     backfill_surname as _v3_backfill_surname,
 )
 
+# Time-lead words that must never be mistaken for a caller's name — guards the
+# C1 case where a time-first readback ("So that's quarter to twelve, …") would
+# otherwise be stored as the name. Defined locally: the canonical name_capture
+# module does not export it, and its two references (here + the booking-readback
+# surname upgrade) were left dangling when name capture was centralised (a044e97),
+# which crashed the turn with a NameError on every name-persist path.
+_V3_SLOT_LEAD_WORDS = frozenset({
+    "quarter", "half", "noon", "midday", "midnight", "oclock", "o'clock",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "twenty", "thirty", "forty", "fifty",
+})
+
 def _v3_try_persist_name(
     session: dict,
     last_bot: str,
