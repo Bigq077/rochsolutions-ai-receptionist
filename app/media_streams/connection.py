@@ -6243,8 +6243,15 @@ class WebSocketCallHandler:
                         ).lower()
                         _name_step = (
                             bool(self.session.get("post_slot_confirmation_pending"))
+                            or bool(self.session.get("v3_awaiting_surname"))
                             or "your name" in _lq_ctx
                             or "first name" in _lq_ctx
+                            # The surname prompt ("…and your surname?") contains
+                            # none of the above, so a single-word surname reply
+                            # ("Rock") was dropped as noise and the surname was
+                            # re-asked (observed 2026-07-11).  A single word while
+                            # awaiting the surname IS the expected answer.
+                            or "surname" in _lq_ctx
                         )
                         _yesno_step = any(
                             _m in _lq_ctx
@@ -7915,7 +7922,14 @@ class WebSocketCallHandler:
                                         _loc_escape = _location_ladder_exhausted(
                                             self.session
                                         )
-                                        if _transcript_is_question(utterance) or _loc_escape:
+                                        _loc_booking_req = (
+                                            _is_clear_booking_request(utterance)
+                                        )
+                                        if (
+                                            _transcript_is_question(utterance)
+                                            or _loc_escape
+                                            or _loc_booking_req
+                                        ):
                                             if _loc_escape:
                                                 # v2-2: FULL stand-down (also
                                                 # clears v3_booking_intent) so the
@@ -7929,6 +7943,22 @@ class WebSocketCallHandler:
                                                     " ESCAPE HATCH — keypad"
                                                     " exhausted, standing gate"
                                                     " down and routing to LLM: %r",
+                                                    utterance[:60],
+                                                )
+                                            elif _loc_booking_req:
+                                                # Caller asked to BOOK but named no
+                                                # clinic — never force the keypad on
+                                                # a booking request.  Route to the
+                                                # LLM so it asks the clinic naturally
+                                                # (observed 2026-07-11: "I'd like to
+                                                # book an appointment" → rung-3 DTMF
+                                                # keypad loop).  Location question
+                                                # stays pending; the caller's clinic
+                                                # answer re-enters this intercept.
+                                                logger.info(
+                                                    "[ms_conn v3] booking request"
+                                                    " during location ladder —"
+                                                    " routing to LLM (no keypad): %r",
                                                     utterance[:60],
                                                 )
                                             else:
