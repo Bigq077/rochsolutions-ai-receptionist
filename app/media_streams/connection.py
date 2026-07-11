@@ -8464,6 +8464,40 @@ class WebSocketCallHandler:
                                     "phone DTMF activated (pre-emptive)"
                                 )
 
+                            # Caller-ID-PRESENT phone step: the LLM has just read
+                            # the chosen slot back and asked the caller to confirm
+                            # their number verbally ("…just say use this number" /
+                            # "is the number you're calling on … the best one").
+                            # We have LEFT slot selection.  Unlike the keypad path
+                            # above, this leaves no "keypad" cue, so without this
+                            # the stale slot map survives and the caller's
+                            # "use this number" reply is caught by the slot-
+                            # selection guard as a non-slot fragment → re-armed →
+                            # the watchdog re-offers slots (caller never confirms
+                            # the number).  Clear the slot map so the reply reaches
+                            # the phone-confirm handler / LLM.  Do NOT arm phone
+                            # DTMF here — this is the verbal path (number already
+                            # on file from caller-ID).
+                            elif self.session.get("v3_awaiting_slot_selection") and any(
+                                _pc in _post_lbp for _pc in (
+                                    "use this number",
+                                    "number you're calling on",
+                                    "the best one for you",
+                                    "best number to reach you",
+                                )
+                            ):
+                                self.session.pop("v3_dtmf_slot_map",           None)
+                                self.session.pop("v3_slot_dtmf_active",        None)
+                                self.session.pop("v3_awaiting_slot_selection", None)
+                                self.session.pop("v3_dtmf_slot_context",       None)
+                                if self.slot_map_stage != SlotMapStage.NONE:
+                                    self.slot_map_stage = SlotMapStage.NONE
+                                logger.info(
+                                    "[ms_conn] slot selection cleared — phone "
+                                    "confirm question asked (caller-ID present); "
+                                    "verbal reply routes to the phone handler"
+                                )
+
                             # Soft-context extraction — fire-and-forget,
                             # never raises.  Pull the most recent assistant
                             # message from history (run_turn appended it).
