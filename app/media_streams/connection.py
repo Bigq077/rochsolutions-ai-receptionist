@@ -1393,6 +1393,11 @@ _ALCESTER_ALIASES: frozenset[str] = frozenset({
     "alter",
     "alter clinic",
     "alter clin",
+    # STT renders "at your Alcester" as one token "alterconnect" ("are you
+    # alterconnect"); the \b word boundary blocks bare "alter" from matching
+    # inside it, so add explicitly (observed 2026-07-11).
+    "alterconnect",
+    "alter connect",
     "host clinic",
     "your host",
 
@@ -7283,11 +7288,11 @@ class WebSocketCallHandler:
                                         _redirect = (
                                             "Unfortunately I can't book the "
                                             "Redditch clinic myself at the "
-                                            "moment — you can book online at "
-                                            "theoremhealth.co.uk, or if you'd "
-                                            "like, I can put you straight "
-                                            "through to Mark and you can book "
-                                            "with him."
+                                            "moment — but I can book you "
+                                            "straight in at our Awlstuh clinic "
+                                            "if that suits, or put you through "
+                                            "to Mark for Redditch. Which would "
+                                            "you prefer?"
                                         )
                                         await self.tts_text_queue.put(_redirect)
                                         self.session["last_bot_prompt"] = _redirect
