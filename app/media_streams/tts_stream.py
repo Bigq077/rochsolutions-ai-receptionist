@@ -80,6 +80,48 @@ _TTS_SUBSTITUTIONS_OPENAI: list[tuple] = [
     (_re.compile(r"\bAlcester\b", _re.IGNORECASE), "Awlstuh"),
 ]
 
+# P22b: spell out currency amounts as words before synthesis.
+# eleven_flash_v2_5 ships with text normalization OFF (latency trade-off), so a
+# bare "175 pounds" is read digit-wise / garbled — call logs showed exactly this
+# on the £175 90-min readback. We normalise currency ourselves, deterministically,
+# with no added latency. Scoped to money only (£-prefixed OR "<n> pounds") so dates
+# ("the 15th") and already-spoken times are never touched.
+#   £125          -> "one hundred and twenty-five pounds"
+#   175 pounds    -> "one hundred and seventy-five pounds"
+#   £12.50        -> "twelve pounds fifty"
+_CURRENCY_RE = _re.compile(r"£\s*(\d+)(?:\.(\d{2}))?|\b(\d{1,4})\s+pounds\b")
+
+
+def _int_to_words(n: int) -> str:
+    ones = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "sixteen", "seventeen", "eighteen", "nineteen",
+    ]
+    tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+            "eighty", "ninety"]
+    if n < 20:
+        return ones[n]
+    if n < 100:
+        t, o = divmod(n, 10)
+        return tens[t] + (f"-{ones[o]}" if o else "")
+    if n < 1000:
+        h, rem = divmod(n, 100)
+        return ones[h] + " hundred" + (f" and {_int_to_words(rem)}" if rem else "")
+    th, rem = divmod(n, 1000)
+    return _int_to_words(th) + " thousand" + (f" {_int_to_words(rem)}" if rem else "")
+
+
+def _spell_currency(m: "_re.Match") -> str:
+    if m.group(1) is not None:            # £-prefixed form
+        pounds, pence = int(m.group(1)), m.group(2)
+    else:                                  # "<n> pounds" form
+        pounds, pence = int(m.group(3)), None
+    words = f"{_int_to_words(pounds)} pounds"
+    if pence:
+        words += f" {_int_to_words(int(pence))}"
+    return words
+
 
 def _apply_tts_substitutions_elevenlabs(text: str) -> str:
     """
@@ -87,6 +129,7 @@ def _apply_tts_substitutions_elevenlabs(text: str) -> str:
     """
     for pattern, replacement in _TTS_SUBSTITUTIONS_ELEVENLABS:
         text = pattern.sub(replacement, text)
+    text = _CURRENCY_RE.sub(_spell_currency, text)
     return text
 
 
@@ -99,6 +142,7 @@ def _apply_tts_substitutions_openai(text: str) -> str:
     """
     for pattern, replacement in _TTS_SUBSTITUTIONS_OPENAI:
         text = pattern.sub(replacement, text)
+    text = _CURRENCY_RE.sub(_spell_currency, text)
     return text
 
 
