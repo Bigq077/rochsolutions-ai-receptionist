@@ -1,9 +1,19 @@
 """Tests for app.obs.digest — the once-a-day review summary."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.obs import digest
+from app import config
+from app.obs import digest, emailer
+
+
+def _smtp_configured(monkeypatch):
+    monkeypatch.setattr(config, "OBS_DIGEST_EMAIL_TO", "owner@example.com")
+    monkeypatch.setattr(config, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(config, "SMTP_PORT", 587)
+    monkeypatch.setattr(config, "SMTP_USER", "susie@example.com")
+    monkeypatch.setattr(config, "SMTP_PASSWORD", "app-password")
+    monkeypatch.setattr(config, "SMTP_FROM", "susie@example.com")
 
 
 def test_build_summary_counts_review_calls():
@@ -70,5 +80,78 @@ async def test_digest_no_review_calls_sends_nothing(tmp_path, monkeypatch):
             rc = await digest._run(24)
         assert rc == 0
         mock_sms.assert_not_awaited()
+    finally:
+        store.reset_engine()
+
+
+# ---------------------------------------------------------------------------
+# Email digest
+# ---------------------------------------------------------------------------
+
+def test_emailer_is_configured(monkeypatch):
+    monkeypatch.setattr(config, "OBS_DIGEST_EMAIL_TO", "")
+    assert emailer.is_configured() is False
+    _smtp_configured(monkeypatch)
+    assert emailer.is_configured() is True
+
+
+def test_emailer_send_uses_smtp(monkeypatch):
+    _smtp_configured(monkeypatch)
+    fake_server = MagicMock()
+    smtp_ctx = MagicMock()
+    smtp_ctx.__enter__.return_value = fake_server
+    with patch("app.obs.emailer.smtplib.SMTP", return_value=smtp_ctx) as smtp_cls:
+        ok = emailer.send_email("subj", "body")
+    assert ok is True
+    smtp_cls.assert_called_once_with("smtp.example.com", 587, timeout=20)
+    fake_server.starttls.assert_called_once()
+    fake_server.login.assert_called_once_with("susie@example.com", "app-password")
+    fake_server.send_message.assert_called_once()
+
+
+def test_emailer_noop_when_unconfigured(monkeypatch):
+    monkeypatch.setattr(config, "OBS_DIGEST_EMAIL_TO", "")
+    monkeypatch.setattr(config, "SMTP_HOST", "")
+    assert emailer.send_email("s", "b") is False
+
+
+def test_build_email_lists_calls_worst_first():
+    calls = [
+        {"call_sid": "CAa", "quality_score": 3, "failure_tags": ["loop"], "evidence": "e1"},
+        {"call_sid": "CAb", "quality_score": 1, "failure_tags": ["dead_end"], "evidence": "e2"},
+    ]
+    subject, body = digest.build_email(calls, 24)
+    assert "2 call(s)" in subject
+    # worst (score 1) listed before score 3
+    assert body.index("CAb") < body.index("CAa")
+    assert "python -m app.obs.replay" in body
+
+
+async def test_digest_prefers_email_when_configured(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from app.obs import store
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{tmp_path / 'm.db'}")
+    monkeypatch.setattr(config, "OBS_CAPTURE_ENABLED", True)
+    monkeypatch.setattr(config, "OBS_ALERTS_ENABLED", True)
+    monkeypatch.setattr(config, "OBS_ALERT_SMS_TO", "+440000000000")
+    _smtp_configured(monkeypatch)
+    store.reset_engine(); store.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    rec = {"call_sid": "CArev", "clinic_id": "theorem", "start_utc": now, "end_utc": now,
+           "duration_s": 60, "success": False, "reason": "x", "caller_number": "+440000000000",
+           "dialled_number": "", "final_state": "x", "collected": {}, "booking_confirmed": False,
+           "acuity_booking_id": None, "transfer_attempted": False, "graceful_exit": False,
+           "total_retries": 0, "slot_retry_counts": {}, "turn_count": 4, "tone": "neutral"}
+    store.capture_call(rec, [{"role": "user", "text": "hi"}])
+    store.save_judgement("CArev", {"outcome": "no_booking", "quality_score": 2,
+                                   "intent_resolved": False, "failure_tags": ["loop"],
+                                   "action_needed": "review", "evidence": "x", "rubric_version": "v2"})
+    try:
+        with patch("app.obs.emailer.send_email", return_value=True) as mock_email, \
+             patch("app.obs.alerts.send_sms", new=AsyncMock(return_value="SM1")) as mock_sms:
+            rc = await digest._run(24)
+        assert rc == 0
+        mock_email.assert_called_once()      # emailed
+        mock_sms.assert_not_awaited()        # NOT texted
     finally:
         store.reset_engine()

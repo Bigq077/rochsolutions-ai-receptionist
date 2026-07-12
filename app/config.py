@@ -79,6 +79,18 @@ OBS_ALERTS_ENABLED = os.getenv("OBS_ALERTS_ENABLED", "false").lower() == "true"
 OBS_ALERT_SMS_TO = os.getenv("OBS_ALERT_SMS_TO", "")
 OBS_SLACK_WEBHOOK = os.getenv("OBS_SLACK_WEBHOOK", "")
 
+# Daily digest by email (optional). If OBS_DIGEST_EMAIL_TO and the SMTP_* settings
+# below are all set, the once-a-day review digest is EMAILED instead of texted.
+# Urgent "call this patient back" alerts always stay as SMS. If email is not
+# configured, the digest falls back to the operator SMS. Uses stdlib smtplib over
+# STARTTLS — works with Gmail, SendGrid, Mailgun, or any SMTP provider.
+OBS_DIGEST_EMAIL_TO = os.getenv("OBS_DIGEST_EMAIL_TO", "")
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "") or os.getenv("SMTP_USER", "")
+
 # Phase 3 — LLM-as-judge (see Susie_Call_Observability_Spec_for_Jules.md §5.3).
 # When enabled, each captured call is scored by Claude after teardown against a
 # versioned rubric, and the judgement is stored on the call row. Default OFF, and

@@ -51,16 +51,44 @@ def build_summary(calls: List[dict], hours: int) -> Optional[str]:
     return "\n".join(lines)
 
 
+def build_email(calls: List[dict], hours: int) -> Optional[tuple]:
+    """(subject, body) for the digest email — a fuller, per-call listing. None if empty."""
+    if not calls:
+        return None
+    subject = f"Susie daily review — {len(calls)} call(s) to improve ({hours}h)"
+    head = build_summary(calls, hours) or ""
+    rows = ["", "Calls to review (worst first):"]
+    for c in sorted(calls, key=lambda c: c.get("quality_score") or 5):
+        tags = ", ".join(c.get("failure_tags") or []) or "—"
+        rows.append(f"  [{c.get('quality_score')}/5] {c.get('call_sid')}  ({tags})")
+        if c.get("evidence"):
+            rows.append(f"      {c['evidence']}")
+    rows.append("")
+    rows.append("Replay any with:  python -m app.obs.replay <call_sid>")
+    return subject, "\n".join([head, *rows])
+
+
 async def _run(hours: int) -> int:
     calls = _review_calls(hours)
     summary = build_summary(calls, hours)
     if summary is None:
         print(f"No review-classified calls in the last {hours}h — nothing to send.")
         return 0
-    from app.obs import alerts
-    sent = await alerts.review_alert(summary)
+
+    from app.obs import emailer
+    # Prefer email for the daily digest when configured; fall back to operator SMS.
+    if emailer.is_configured():
+        subject, body = build_email(calls, hours)
+        sent = await asyncio.to_thread(emailer.send_email, subject, body)
+        channel = "email"
+    else:
+        from app.obs import alerts
+        sent = await alerts.review_alert(summary)
+        channel = "SMS"
+
     print(summary)
-    print("\nSent." if sent else "\n(alerts disabled or no recipient — not sent)")
+    print(f"\nSent by {channel}." if sent
+          else f"\n(no {channel} recipient configured / send failed — not sent)")
     return 0
 
 
