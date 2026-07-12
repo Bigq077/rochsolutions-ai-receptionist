@@ -1560,8 +1560,12 @@ class LLMStream:
                             "who can book you in at Redditch. Which would you "
                             "prefer?\" If the caller says yes "
                             "to being put through, call transfer_to_human. If "
-                            "they would rather book at Awlstuh, help them with "
-                            "that instead."
+                            "they would rather book at Awlstuh, treat it as a "
+                            "fresh booking for that clinic: ask them again "
+                            "\"Is there a particular day or time that works best "
+                            "for you?\" and wait for their answer before calling "
+                            "check_availability — do NOT reuse any day or time "
+                            "they mentioned for the Redditch attempt."
                         ),
                     }
                 elif (
