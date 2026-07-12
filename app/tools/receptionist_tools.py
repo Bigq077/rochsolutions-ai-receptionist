@@ -3969,6 +3969,28 @@ async def _check_availability_published(
     )
 
 
+def _uk_when_label(dt) -> str:
+    """British, SMS-friendly datetime label, e.g. 'Wednesday 15 July at 4pm' or
+    'Wednesday 15 July at 10:30am'. Platform-safe (avoids %-d / %-I, which
+    Windows strftime rejects)."""
+    parts = dt.strftime("%A %d %B").split()
+    if len(parts) == 3 and parts[1].startswith("0"):
+        parts[1] = parts[1][1:]  # "05" -> "5"
+    day = " ".join(parts)
+    hour = dt.hour % 12 or 12
+    ampm = "am" if dt.hour < 12 else "pm"
+    label = f"{hour}:{dt.minute:02d}{ampm}" if dt.minute else f"{hour}{ampm}"
+    return f"{day} at {label}"
+
+
+def _provisional_practitioner(clinic: Dict[str, Any]) -> str:
+    return (
+        clinic.get("practitioner")
+        or (clinic.get("prompt_facts") or {}).get("practitioner")
+        or "the practitioner"
+    )
+
+
 async def _book_appointment_provisional(
     args: Dict[str, Any], session: Dict[str, Any], clinic: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -4109,6 +4131,27 @@ async def _book_appointment_provisional(
         )
     except Exception as e:
         logger.warning("provisional owner notify failed (non-fatal): %r", e)
+
+    # Caller acknowledgement — a provisional-worded text (NEVER "confirmed").
+    # confirmation_sms_sent above already suppresses the smart-SMS follow-up, so
+    # this is the single caller text and it must not imply the slot is booked.
+    try:
+        from app.notifications.sms import send_sms as _send_sms_caller
+        _prac = _provisional_practitioner(clinic)
+        _cn = clinic.get("sms_name") or clinic.get("display_name") or "the clinic"
+        _first = patient_name.split()[0] if patient_name.strip() else "there"
+        _line = clinic.get("phone") or ""
+        _msg = (
+            f"Hi {_first}, thanks for your request with {_cn} — a {svc_name} on "
+            f"{_uk_when_label(start_dt)}. This is a request, not yet confirmed: "
+            f"{_prac} will be in touch directly to confirm and arrange payment "
+            f"beforehand, so there's nothing to pay now."
+            + (f" {_line}" if _line else "")
+        )
+        if phone:
+            await _send_sms_caller(to=phone, message=_msg)
+    except Exception as e:
+        logger.warning("provisional caller ack SMS failed (non-fatal): %r", e)
 
     return {
         "success": True,
@@ -4903,32 +4946,50 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
 
     # SMS notification — non-fatal
     try:
-        from app.notifications.booking_sms import send_reschedule_confirmation
         from app.clinic_config import get_clinic as _get_clinic_sms
         _c_sms = _get_clinic_sms(session.get("clinic_id"))
-        old_start_str = (found.get("start") or {}).get("dateTime", "")
-        if old_start_str:
-            old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
-            # Location clause must reflect the appointment's TRUE modality (read
-            # from the event), not the model's arg — a remote/home appointment
-            # must never be labelled "at our Bolton clinic". For remote/home (or
-            # an unknown legacy event) pass "" so the clause is omitted.
-            _evt_loc = _gcal_event_location(found)
-            _sms_location = (
-                "" if _evt_loc.lower() in (
-                    "remote", "video", "phone", "online", "virtual",
-                    "home_visit", "home visit",
-                ) else _evt_loc.title()
+        if _c_sms.get("booking_system") == "google_calendar_provisional":
+            # Provisional model: the new time is a REQUEST, not confirmed. The
+            # caller text must never say "moved / see you then" (the owner also
+            # gets a "please confirm" ping below) — Jonathan confirms directly.
+            from app.notifications.sms import send_sms as _send_sms_caller
+            _prac = _provisional_practitioner(_c_sms)
+            _cn = _c_sms.get("sms_name") or _c_sms.get("display_name") or "the clinic"
+            _first = _appt_name.split()[0] if (_appt_name or "").strip() else "there"
+            _line = _c_sms.get("phone") or ""
+            _pmsg = (
+                f"Hi {_first}, your reschedule request with {_cn} — "
+                f"{_uk_when_label(new_start)} — is with {_prac} to confirm. It "
+                f"isn't finalised until he confirms with you directly."
+                + (f" {_line}" if _line else "")
             )
-            await send_reschedule_confirmation(
-                patient_phone=args.get("phone", ""),
-                patient_name=_appt_name,
-                old_time=old_time,
-                new_time=new_start,
-                location=_sms_location,
-                clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
-                clinic_phone=_c_sms.get("phone"),
-            )
+            if args.get("phone"):
+                await _send_sms_caller(to=args.get("phone", ""), message=_pmsg)
+        else:
+            from app.notifications.booking_sms import send_reschedule_confirmation
+            old_start_str = (found.get("start") or {}).get("dateTime", "")
+            if old_start_str:
+                old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
+                # Location clause must reflect the appointment's TRUE modality (read
+                # from the event), not the model's arg — a remote/home appointment
+                # must never be labelled "at our Bolton clinic". For remote/home (or
+                # an unknown legacy event) pass "" so the clause is omitted.
+                _evt_loc = _gcal_event_location(found)
+                _sms_location = (
+                    "" if _evt_loc.lower() in (
+                        "remote", "video", "phone", "online", "virtual",
+                        "home_visit", "home visit",
+                    ) else _evt_loc.title()
+                )
+                await send_reschedule_confirmation(
+                    patient_phone=args.get("phone", ""),
+                    patient_name=_appt_name,
+                    old_time=old_time,
+                    new_time=new_start,
+                    location=_sms_location,
+                    clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
+                    clinic_phone=_c_sms.get("phone"),
+                )
     except Exception as e:
         logger.warning("reschedule_appointment SMS failed (non-fatal): %r", e)
 

@@ -62,6 +62,10 @@
     "digest": {
       "enabled": true,
       "email_to": "vitaledgetherapy@gmail.com",
+      "_action_line_note": "Vital Edge does NOT use Carepatron. Overrides the default 'enter into Carepatron' footer.",
+      "action_line": "Each of these is a booking REQUEST — confirm the time with the client, arrange payment, then add it to your diary.",
+      "_only_pending_note": "The 'Vital Edge — Available' calendar also holds open, unbooked slots; only_pending lists just the PENDING booking requests, not every published slot.",
+      "only_pending": true,
       "hour": 21,
       "minute": 30
     },
