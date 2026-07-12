@@ -51,7 +51,7 @@
     "_note": "Flattened by get_clinic into the legacy clinic contract. booking_system google_calendar_provisional drives the calendar-read + provisional-write + notify path. working_hours is intentionally all-closed — availability comes from the published calendar, not generated.",
     "timezone": "Europe/London",
     "sms_name": "Vital Edge Therapy",
-    "phone": "+44 7545 862307",
+    "phone": "+44 7426 779875",
     "transfer_phone": "+447545862307",
     "booking_system": "google_calendar_provisional",
     "_calendar_id_note": "Dedicated 'Vital Edge — Available' Google calendar where Jonathan publishes open slots. Susie's google_tokens MUST be OAuthed as Vital Edge's own Google account. GOOGLE_CALENDAR_ID env on the Render service overrides this if set. TBC: confirm the exact calendar address/ID.",
