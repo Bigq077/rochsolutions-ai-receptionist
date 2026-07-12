@@ -4055,7 +4055,35 @@ async def _book_appointment_provisional(
     ).lower().strip()
     calendar_id = _resolve_calendar_id(clinic, location)
 
-    summary = f"PENDING CONFIRMATION — {patient_name} — {svc_name} ({duration} min)"
+    # GUARANTEED home-visit flag. VE books home visits as a normal appointment
+    # with no address taken on the call, so the ONLY thing telling the
+    # practitioner to travel is this flag. Derive it from THREE signals so it can
+    # never silently go missing: (1) a durable session latch set the moment the
+    # caller asked for a home visit (independent of the LLM — see connection.py
+    # _utterance_is_home_visit), (2) the location arg, (3) home-visit keywords in
+    # the note. If any fires, force it into the calendar event, Sheets and owner
+    # SMS regardless of what the model passed in followup_note.
+    _hv_kw = ("home visit", "home-visit", "house visit", "come to me",
+              "at my home", "at my house", "at my place")
+    is_home_visit = (
+        location == "home_visit"
+        or session.get("home_visit_requested") is True
+        or any(k in notes.lower() for k in _hv_kw)
+    )
+    _prac = _provisional_practitioner(clinic)
+    if is_home_visit:
+        _hv_banner = (
+            f"HOME VISIT REQUEST — patient would like {_prac} to travel to them; "
+            "confirm feasibility and get their address on the callback."
+        )
+        owner_notes = f"\U0001F3E0 {_hv_banner}" + (f" {notes}" if notes else "")
+    else:
+        owner_notes = notes
+
+    summary = (
+        f"PENDING CONFIRMATION{' — HOME VISIT' if is_home_visit else ''} — "
+        f"{patient_name} — {svc_name} ({duration} min)"
+    )
     description = "\n".join(
         [
             "PROVISIONAL booking requested via Susie (AI receptionist) — NOT yet confirmed.",
@@ -4064,6 +4092,8 @@ async def _book_appointment_provisional(
             f"Service: {svc_name} ({duration} min)",
             f"Requested: {start_dt.strftime('%A %d %B %Y at %H:%M')}",
         ]
+        + (["HOME VISIT — patient wants the practitioner to travel to them; "
+            "confirm feasibility + address on the callback."] if is_home_visit else [])
         + ([f"Notes: {notes}"] if notes else [])
         + ["Confirm directly with the client (WhatsApp/phone)."]
     )
@@ -4099,8 +4129,9 @@ async def _book_appointment_provisional(
         await asyncio.to_thread(
             send_to_sheet,
             patient_name, phone, "BOOK_PROVISIONAL",
-            f"PROVISIONAL: {svc_name} ({duration} min) on {booked_label}"
-            + (f" | Notes: {notes}" if notes else "")
+            f"PROVISIONAL{' [HOME VISIT]' if is_home_visit else ''}: "
+            f"{svc_name} ({duration} min) on {booked_label}"
+            + (f" | Notes: {owner_notes}" if owner_notes else "")
             + ("" if calendar_written else " | (calendar write FAILED — action manually)"),
             session.get("call_sid", ""),
             "Vital Edge AI Receptionist",
@@ -4126,7 +4157,7 @@ async def _book_appointment_provisional(
             clinic,
             build_booking_request_message(
                 clinic=clinic, patient_name=patient_name, phone=phone,
-                when=start_dt, duration_minutes=duration, service=svc_name, notes=notes,
+                when=start_dt, duration_minutes=duration, service=svc_name, notes=owner_notes,
             ),
         )
     except Exception as e:

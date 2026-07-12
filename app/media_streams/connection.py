@@ -730,6 +730,24 @@ def _transcript_has_booking_intent(text: str) -> bool:
     return any(s in t for s in _BOOKING_INTENT_SIGNALS)
 
 
+# Phrases that signal the caller wants the practitioner to travel to them
+# (a home / outcall visit) rather than come into the clinic. Specific enough to
+# avoid false positives on "come to the clinic" / "I work from home".
+_HOME_VISIT_PHRASES: tuple = (
+    "home visit", "home-visit", "house visit", "house call",
+    "come to me", "come to my", "come to mine", "come round", "come over to",
+    "at my house", "at my home", "at my place", "in my home", "in my house",
+    "to my house", "to my home", "to my place",
+    "visit me at", "mobile massage", "mobile therapist",
+    "travel to me", "you travel to", "come to the house",
+)
+
+
+def _utterance_is_home_visit(text: str) -> bool:
+    t = (text or "").lower()
+    return any(p in t for p in _HOME_VISIT_PHRASES)
+
+
 # Spec K — lifecycle stage for the DTMF slot map.
 # Transitions are strictly one-way within a booking flow:
 #   DAY_SELECTION → TIME_SELECTION → NONE
@@ -7882,6 +7900,27 @@ class WebSocketCallHandler:
                                         self.booking_flow_active, utterance[:80],
                                     )
                             # ── end Spec Y REVISED ────────────────────────────
+
+                            # ── Guaranteed home-visit latch ───────────────────
+                            # Provisional clinics (e.g. Vital Edge) book home
+                            # visits as a normal appointment + a free-text note
+                            # and never take an address on the call, so the note
+                            # is the only home-visit signal — easily dropped by
+                            # the LLM. Latch the intent durably from the caller's
+                            # own words the moment they ask, so the provisional
+                            # booking path can force it into the owner SMS,
+                            # calendar event and Sheets regardless. Additive and
+                            # read only by _book_appointment_provisional; no other
+                            # clinic keys off it, so Theorem/JV are unaffected.
+                            if (
+                                not self.session.get("home_visit_requested")
+                                and _utterance_is_home_visit(utterance)
+                            ):
+                                self.session["home_visit_requested"] = True
+                                logger.info(
+                                    "[ms_conn v3] home-visit intent latched: %r",
+                                    utterance[:80],
+                                )
 
                             # ── Duplicate slot guard ──────────────────────────
                             # Problem: rapid-continuation transcript pairs fire
