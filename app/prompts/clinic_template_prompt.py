@@ -177,6 +177,66 @@ def _render_identity(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     )
 
 
+def _render_persona_character(clinic: Dict[str, Any]) -> str:
+    """Optional premium-persona block. Rendered only when persona_character is
+    set in prompt_facts. Placed near the top of the static prompt to shape
+    every subsequent response."""
+    pf = clinic.get("prompt_facts", {}) or {}
+    char = pf.get("persona_character", "")
+    if not char:
+        return ""
+    return f"PERSONA CHARACTER\n{char}"
+
+
+def _render_treatment_knowledge(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Optional domain-knowledge block that lets Susie give SPECIFIC, informed
+    treatment recommendations ('which do I need for X?') instead of vague,
+    uninformational answers. Rendered only when the clinic supplies a
+    `treatment_guidance` object in clinic.json, so clinics that don't set it are
+    completely unaffected."""
+    tg = clinic.get("treatment_guidance") or {}
+    if not tg:
+        return ""
+    out = ["TREATMENT KNOWLEDGE — GUIDING THE CALLER TO THE RIGHT TREATMENT"]
+    if tg.get("how_to_use"):
+        out.append(tg["how_to_use"])
+    if tg.get("philosophy"):
+        out.append(tg["philosophy"])
+    svcs = tg.get("services") or []
+    if svcs:
+        out.append("")
+        out.append("WHAT EACH TREATMENT IS AND WHO IT SUITS:")
+        for s in svcs:
+            nm = s.get("name", "")
+            feel = s.get("feel", "")
+            best = s.get("best_for", "")
+            line = f"- {nm}"
+            if feel:
+                line += f" — {feel}"
+            if best:
+                line += f" Best for: {best}"
+            out.append(line)
+    recs = tg.get("recommendations") or []
+    if recs:
+        out.append("")
+        out.append("RECOMMENDATION GUIDE — the caller's need → the treatment to suggest:")
+        for r in recs:
+            need = r.get("need", "")
+            book = r.get("book", "")
+            why = r.get("why", "")
+            out.append(f"- {need} → recommend {book}." + (f" {why}" if why else ""))
+    if tg.get("if_unsure"):
+        out.append("")
+        out.append("IF THE CALLER IS UNSURE: " + tg["if_unsure"])
+    if tg.get("pressure_and_comfort"):
+        out.append("")
+        out.append("PRESSURE & COMFORT: " + tg["pressure_and_comfort"])
+    if tg.get("safety"):
+        out.append("")
+        out.append("SAFETY — NON-NEGOTIABLE: " + tg["safety"])
+    return "\n".join(out)
+
+
 def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     lines = [
@@ -607,6 +667,8 @@ def _render_coming_soon(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
 
 def _render_faq(clinic: Dict[str, Any]) -> str:
     faqs = clinic.get("faq") or []
+    pf = clinic.get("prompt_facts", {}) or {}
+    prac = pf.get("practitioner") or clinic.get("practitioner") or "the practitioner"
     out = [
         "FAQ",
         "Answer naturally but BRIEFLY. One to two sentences is right for almost "
@@ -631,21 +693,21 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "booking. Example, immediately after a mid-booking FAQ answer: "
         "'…Anyway, what day or time were you thinking?'",
         "",
-        "Otherwise (no booking in progress yet): you may make a SINGLE booking "
-        "call-to-action — 'Would you like to book an appointment?' — at most "
-        "ONCE in the entire call. Once you have offered to book and the caller "
-        "did not take it up, do NOT offer again unless the caller themselves "
-        "raises booking. NEVER append the booking question to consecutive FAQ "
-        "answers — that reads as relentless and salesy. If there is an active "
-        "slot offer on the table, omit the CTA and continue that flow.\n"
-        "CONVERSION FORM OF THAT SINGLE CTA: when the one CTA follows a "
-        "booking-relevant logistics question (opening hours, price, location/"
-        "parking, whether you take their insurance, home visits), prefer the "
-        "warmer forward-moving wording — 'if you'd like, just tell me a day that "
-        "suits and I'll check what's free' — rather than a flat 'would you like "
-        "to book?'. This is still the SAME single CTA (do not add a second one), "
-        "and it must NOT be used on pure-information questions unrelated to "
-        "booking.",
+        "Otherwise (no booking in progress yet): after answering any factual "
+        "or informational question — location, hours, pricing, parking, "
+        "policies, FAQ — END YOUR REPLY WITH THE ANSWER AND NOTHING ELSE. "
+        "Do NOT append 'Is there anything else I can help with?', 'Would you "
+        "like to book an appointment?', 'Would you like to arrange an "
+        "appointment?', or any generic sign-off. These closers are robotic "
+        "and undermine the warm, unhurried feel of the clinic. Let the caller "
+        "lead — if they want to book, they will say so. Trust the silence.\n\n"
+        "A natural move toward booking is appropriate at most ONCE per call, "
+        "only when the caller has asked two or more questions and seems "
+        "genuinely interested — and even then, phrase it as a warm, unhurried "
+        f"offer rather than a CTA: e.g. 'I'd be happy to check what {prac} has "
+        "available if any of that appeals?' Once offered and not taken up, do "
+        "NOT offer again unless the caller raises it. If there is an active "
+        "slot offer on the table, omit this entirely.",
         "",
         "If genuinely unknown: 'I don't have that exact detail — would you like "
         "me to put you through to the clinic, or take your number for a "
@@ -1815,7 +1877,9 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
     spine = _spine(clinic, tk, dc)
 
     static_blocks: List[str] = [
+        _render_persona_character(clinic),
         _render_service_mapping(clinic, tk),
+        _render_treatment_knowledge(clinic, tk),
         _render_identity(clinic, tk),
         spine["booking_flow"],
         spine["tools"],
