@@ -5523,6 +5523,41 @@ class WebSocketCallHandler:
                             " short fragment — likely surname): %r",
                             utterance[:60],
                         )
+                        # Change A (2026-07-12): silent surname back-fill.
+                        # Under the name-first prompt (6ca8830) turn 1 already
+                        # answered the caller's question AND acknowledged the
+                        # first name, so this trailing surname fragment has
+                        # nothing left to say.  Dispatching it as a full turn
+                        # made the LLM restate "Got it — Quentin Rock. Would you
+                        # like to go ahead and book that assessment?" — a readback
+                        # that (a) violates the never-read-back-the-surname rule
+                        # and (b) is NOT one of _CTA_BOOKING_PHRASES, so it
+                        # overwrote turn 1's matching CTA and the caller's next
+                        # "yes please" failed CTA-affirm → dead air → abandoned
+                        # call (2026-07-12 17:51).  If the first name is already
+                        # locked and this fragment back-fills to a surname,
+                        # capture it silently and drop the turn, leaving turn 1's
+                        # CTA as the standing prompt so the affirm still fires.
+                        # Self-gating: _v3_try_persist_name returns True ONLY when
+                        # a first name is stored AND a plausible surname is
+                        # extracted; a non-surname fragment — or the ordering
+                        # where turn 1 is still in flight and no first name is
+                        # stored yet — returns False and falls through unchanged
+                        # to the Spec N / pending_transcript path below.
+                        if _v3_try_persist_name(
+                            self.session,
+                            self.session.get("last_bot_prompt") or "",
+                            post_slot_pending=self.post_slot_confirmation_pending,
+                            caller_utterance=utterance,
+                        ):
+                            await save_session(self.call_sid, self.session)
+                            logger.info(
+                                "[ms_conn v3] surname straggler back-filled"
+                                " silently — turn suppressed (name=%r): %r",
+                                self.session.get("patient_name"),
+                                utterance[:60],
+                            )
+                            continue
 
                     # Spec N — concurrent LLM guard.
                     # If a turn is already in-flight (from transcript acceptance
