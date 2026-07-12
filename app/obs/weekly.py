@@ -50,11 +50,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     print(f"Bottom-decile calls to review ({len(worst)}):")
-    print(f"  {'score':>5}  {'clinic':<12} {'call_sid':<20} failure_tags")
+    # Print the FULL call_sid (Twilio SIDs are 34 chars) so it can be copied
+    # straight into `replay` / `to_scenario`; tags go last so nothing is cut off.
+    print(f"  {'score':>5}  {'clinic':<12}  {'call_sid':<34}  failure_tags")
     for c in worst:
         tags = ", ".join(c.get("failure_tags") or [])
-        print(f"  {c['quality_score']:>5}  {(c.get('clinic_id') or '')[:12]:<12} "
-              f"{(c.get('call_sid') or '')[:20]:<20} {tags}")
+        print(f"  {c['quality_score']:>5}  {(c.get('clinic_id') or '')[:12]:<12}  "
+              f"{c.get('call_sid') or '':<34}  {tags}")
     print("\nReview each, then: python -m app.obs.to_scenario <call_sid>")
     return 0
 
