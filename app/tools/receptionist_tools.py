@@ -4823,7 +4823,20 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
 
     try:
-        await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
+        if clinic.get("booking_system") == "google_calendar_provisional":
+            # Give the freed slot back to availability instead of deleting it, so
+            # the time Jonathan published becomes bookable again. Falls back to a
+            # delete if the restore write fails, so the pending booking is at least
+            # cleared either way.
+            from app.tools.calendar_google import update_event as _upd
+            _avail = clinic.get("provisional_available_label") or "Available"
+            try:
+                await asyncio.to_thread(_upd, tokens, event_id, _avail, "", calendar_id)
+            except Exception as _e:
+                logger.warning("provisional cancel: restore-to-available failed, deleting instead: %r", _e)
+                await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
+        else:
+            await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -4966,12 +4979,70 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     except Exception as e:
         return {"success": False, "error": f"Invalid new slot datetime: {e}"}
 
-    try:
-        await asyncio.to_thread(
-            patch_event_time, tokens, event_id, new_start, new_end, calendar_id
+    if clinic.get("booking_system") == "google_calendar_provisional":
+        # Clean provisional move: CONSUME the newly-chosen published slot (flip it
+        # to PENDING, carrying the patient's details) and GIVE THE OLD SLOT BACK to
+        # availability — rather than dragging the event onto a time that is still
+        # published as an open slot (which would leave a duplicate at the new time
+        # and a hole at the old one). Mirrors _book_appointment_provisional.
+        from app.tools.calendar_google import update_event as _upd, create_event as _crt
+        _p_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
+        _p_phone = _gcal_event_phone(found) or (args.get("phone") or "")
+        _p_service = _gcal_event_service(found) or "appointment"
+        _was_home = "HOME VISIT" in (
+            (found.get("summary") or "") + " " + (found.get("description") or "")
+        ).upper()
+        _new_summary = (
+            f"PENDING CONFIRMATION{' — HOME VISIT' if _was_home else ''} — "
+            f"{_p_name} — {_p_service}"
         )
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        _new_desc = "\n".join(
+            [
+                "PROVISIONAL booking (rescheduled) via Susie — NOT yet confirmed.",
+                f"Patient: {_p_name}",
+                f"Phone: {_p_phone}",
+                f"Service: {_p_service}",
+                f"Requested: {new_start.strftime('%A %d %B %Y at %H:%M')}",
+            ]
+            + (["HOME VISIT — patient wants the practitioner to travel to them; "
+                "confirm feasibility + address on the callback."] if _was_home else [])
+            + ["Confirm directly with the client (WhatsApp/phone)."]
+        )
+        _avail = clinic.get("provisional_available_label") or "Available"
+        _slot_map = session.get("_provisional_slot_events") or {}
+        _new_src = _slot_map.get(new_start.isoformat())
+        try:
+            if _new_src and _new_src != event_id:
+                # Flip the target published slot to PENDING (consume it)…
+                await asyncio.to_thread(_upd, tokens, _new_src, _new_summary, _new_desc, calendar_id)
+                _new_event_id = _new_src
+                # …then hand the caller's old slot back to availability.
+                try:
+                    await asyncio.to_thread(_upd, tokens, event_id, _avail, "", calendar_id)
+                except Exception as _e:
+                    logger.warning("provisional reschedule: old-slot restore failed (non-fatal): %r", _e)
+            elif _new_src == event_id:
+                # Caller re-picked their own slot — just refresh the labels in place.
+                await asyncio.to_thread(_upd, tokens, event_id, _new_summary, _new_desc, calendar_id)
+                _new_event_id = event_id
+            else:
+                # New time isn't a published slot — move the existing event there
+                # (no open slot to consume, so nothing to duplicate) and leave the
+                # old time freed.
+                await asyncio.to_thread(patch_event_time, tokens, event_id, new_start, new_end, calendar_id)
+                await asyncio.to_thread(_upd, tokens, event_id, _new_summary, _new_desc, calendar_id)
+                _new_event_id = event_id
+            await _save_gcal_tokens(tokens)
+            session["calendar_event_id"] = _new_event_id
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    else:
+        try:
+            await asyncio.to_thread(
+                patch_event_time, tokens, event_id, new_start, new_end, calendar_id
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     session["calendar_status"] = "patched"
 
