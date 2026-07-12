@@ -9441,7 +9441,28 @@ class WebSocketCallHandler:
                                 # produce a 1-2 s gap between the LLM's ack
                                 # phrase and the first booking question.
                                 _faq_q_gen = self._silence_handler._q_gen
-                                if _faq_q_gen >= 5:
+                                # Bridge filler ONLY when we are actually about to
+                                # proceed to the booking's timing/phone question —
+                                # i.e. the clinic is already known AND no question
+                                # is left open this turn.  Previously it fired on
+                                # ANY q_gen>=5 booking ack (before the location
+                                # branch), so "Let me get that sorted for you."
+                                # played straight after "Which clinic — Awlstuh or
+                                # Redditch?" (location not yet known) or after any
+                                # LLM-asked question — an orphaned line with
+                                # nothing to bridge to (observed 2026-07-12 17:29).
+                                # These guards mirror the _next_q suppression
+                                # checks below (v3_awaiting_slot_selection / "?" in
+                                # _last_bot) so the filler is spoken iff a real
+                                # timing/phone question follows it.
+                                if (
+                                    _faq_q_gen >= 5
+                                    and self.session.get("v3_location_confirmed")
+                                    and not self.session.get(
+                                        "v3_awaiting_slot_selection"
+                                    )
+                                    and "?" not in _last_bot
+                                ):
                                     await self.tts_text_queue.put(
                                         "Let me get that sorted for you."
                                     )
