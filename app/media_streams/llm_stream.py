@@ -1253,6 +1253,11 @@ class LLMStream:
             temperature=CLAUDE_TEMPERATURE,
         ) as stream:
 
+            # Reset the Gate 5a reasoning latch at the start of every turn so a
+            # dropped chain-of-thought monologue on one turn can never suppress
+            # the next turn's speech (see turn_handler.sanitise_response).
+            session["_gate5_reasoning_latched"] = False
+
             async for event in stream:
                 # ── Tool-use block opening ────────────────────────────────
                 # Detect check_availability as early as possible (before the

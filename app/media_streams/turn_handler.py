@@ -94,10 +94,16 @@ _BANNED_SENTENCE_RE = [
     # that the LLM occasionally speaks aloud instead of acting silently.
     # Each strips the entire offending sentence, leaving surrounding text intact.
     #
-    # "The caller said/is/was/has/mentioned..." — state narration
+    # "The caller said/saying/likely means/may mean..." — third-person state
+    # narration.  Broadened 2026-07-12 to match "the caller" + ANY continuation
+    # (dropping the old verb allowlist, which missed "The caller saying …"):
+    # Susie addresses the person as "you" and never says "the caller", so any
+    # sentence containing it is reasoning and safe to strip.  Surgical here
+    # (matched sentence only) so a mixed chunk keeps its legitimate text; the
+    # Gate 5a latch handles the continuation fragments.
     ("reasoning_the_caller",
      re.compile(
-         r"[^.!?]*\bThe caller (?:said|is|was|has|mentioned|seems|appears|told me|wants|would like|appears to)\b[^.!?]*[.!?]?",
+         r"[^.!?]*\bthe caller\b[^.!?]*[.!?]?",
          re.IGNORECASE,
      )),
     # "The results within/show/are..." — tool-output narration
@@ -334,6 +340,16 @@ _TIME_DENSITY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Third-person self-narration — the model talking ABOUT "the caller" instead of
+# TO them.  Susie always addresses the person as "you"; she never says "the
+# caller".  So any chunk containing it is chain-of-thought, never speech
+# (observed 2026-07-12: 'The caller saying "…" likely means … or they may mean
+# Redditch … Let me clarify gently.' spoken aloud).  This is the ONLY Gate 5a
+# trigger that arms the reasoning latch (see sanitise_response): it is a
+# categorical reasoning signal, whereas the time/table triggers above can sit
+# next to legitimate slot text and must stay single-chunk.
+_REASONING_THIRD_PERSON_RE = re.compile(r"\bthe caller\b", re.IGNORECASE)
+
 
 def _get_reasoning_drop_reason(text: str) -> str:
     """
@@ -352,6 +368,8 @@ def _get_reasoning_drop_reason(text: str) -> str:
         return "internal_label_word"
     if len(_TIME_DENSITY_RE.findall(text)) > 3:
         return "high_time_density"
+    if _REASONING_THIRD_PERSON_RE.search(text):
+        return "third_person_narration"
     return ""
 
 
@@ -379,6 +397,24 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         return text
 
     # ── Gate 5a: whole-chunk reasoning drop ──────────────────────────────────
+    # Reasoning latch (2026-07-12): a multi-sentence chain-of-thought monologue
+    # is split across several TTS chunks, and the continuation fragments (e.g.
+    # "…or they may mean Redditch…", "Let me clarify gently.") carry no trigger
+    # word of their own — so per-chunk matching alone lets them leak after the
+    # first chunk is caught.  Once a chunk this turn has been dropped by the
+    # high-precision third-person trigger, latch on and drop the remainder of
+    # the turn.  The latch is reset at the start of every turn in llm_stream.py,
+    # so it can never bleed into a later turn.  In the rare event it over-drops,
+    # the failure mode is the watchdog "sorry, could you say that again?" re-ask
+    # — never a wrong action.
+    if session.get("_gate5_reasoning_latched"):
+        _preview = (text[:50] + "...") if len(text) > 50 else text
+        logger.info("[ms_gate5] dropped chunk — reasoning latch active: %r", _preview)
+        session["_gate5_reasoning_drops"] = (
+            int(session.get("_gate5_reasoning_drops") or 0) + 1
+        )
+        return ""
+
     _drop_reason = _get_reasoning_drop_reason(text)
     if _drop_reason:
         _preview = (text[:50] + "...") if len(text) > 50 else text
@@ -390,6 +426,13 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
         session["_gate5_reasoning_drops"] = (
             int(session.get("_gate5_reasoning_drops") or 0) + 1
         )
+        # Arm the latch ONLY on third-person narration — a categorical reasoning
+        # signal that Susie never speaks.  Do NOT latch on the time/table
+        # triggers: a time-dense chunk can sit next to legitimate slot text, and
+        # latching there would revive the 2026-06-18 over-drop ("I should
+        # mention … Number 1, Thursday …" lost its real slots).
+        if _drop_reason == "third_person_narration":
+            session["_gate5_reasoning_latched"] = True
         return ""
 
     # ── Gate 5b: sentence-level stripping ────────────────────────────────────
