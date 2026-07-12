@@ -13,6 +13,7 @@ def _good_json(**over) -> str:
         "quality_score": 5,
         "intent_resolved": True,
         "failure_tags": [],
+        "action_needed": "none",
         "evidence": "Caller booked Monday cleanly.",
         "rubric_version": judge.RUBRIC_VERSION,
     }
@@ -69,22 +70,41 @@ def test_parse_returns_none_without_score(fixture_call):
 
 
 # ---------------------------------------------------------------------------
-# should_review — the §5.3 alert bridge rule
+# Tiered alerting (v2): action_needed parsing + callback/review routing
 # ---------------------------------------------------------------------------
 
-def test_should_review_low_score():
-    assert judge.should_review({"quality_score": 2, "failure_tags": []}) is True
-    assert judge.should_review({"quality_score": 1, "failure_tags": []}) is True
+def test_parse_reads_action_needed(fixture_call):
+    j = judge.parse_and_validate(_good_json(quality_score=1, action_needed="callback"), fixture_call)
+    assert j["action_needed"] == "callback"
 
 
-def test_should_review_serious_tag_even_with_ok_score():
-    assert judge.should_review({"quality_score": 4, "failure_tags": ["missed_escalation"]}) is True
-    assert judge.should_review({"quality_score": 5, "failure_tags": ["wrong_info"]}) is True
+def test_parse_defaults_action_from_score_when_missing(fixture_call):
+    # No action_needed field → low score defaults to review, good score to none.
+    low = json.dumps({"outcome": "abandoned", "quality_score": 2, "failure_tags": ["loop"]})
+    assert judge.parse_and_validate(low, fixture_call)["action_needed"] == "review"
+    good = json.dumps({"outcome": "booked", "quality_score": 5, "failure_tags": []})
+    assert judge.parse_and_validate(good, fixture_call)["action_needed"] == "none"
 
 
-def test_should_not_review_clean_call():
-    assert judge.should_review({"quality_score": 5, "failure_tags": []}) is False
-    assert judge.should_review({"quality_score": 3, "failure_tags": ["loop"]}) is False
+def test_missed_escalation_forces_callback(fixture_call):
+    # Even if the model says "review", a missed escalation is upgraded to callback.
+    text = _good_json(quality_score=4, failure_tags=["missed_escalation"], action_needed="review")
+    assert judge.parse_and_validate(text, fixture_call)["action_needed"] == "callback"
+
+
+def test_needs_callback_and_needs_review_are_exclusive():
+    cb = {"action_needed": "callback", "quality_score": 1, "failure_tags": []}
+    rv = {"action_needed": "review", "quality_score": 2, "failure_tags": ["loop"]}
+    ok = {"action_needed": "none", "quality_score": 5, "failure_tags": []}
+    assert judge.needs_callback(cb) is True and judge.needs_review(cb) is False
+    assert judge.needs_review(rv) is True and judge.needs_callback(rv) is False
+    assert judge.needs_callback(ok) is False and judge.needs_review(ok) is False
+
+
+def test_missed_escalation_never_falls_to_review():
+    esc = {"action_needed": "review", "quality_score": 4, "failure_tags": ["missed_escalation"]}
+    assert judge.needs_callback(esc) is True
+    assert judge.needs_review(esc) is False
 
 
 # ---------------------------------------------------------------------------
@@ -133,17 +153,46 @@ async def test_run_and_store_persists_judgement(sqlite_store, judge_enabled, fix
     assert stored["judged_at"] is not None
 
 
-async def test_run_and_store_bad_call_raises_review_alert(
+async def test_run_and_store_callback_call_texts_immediately(
+    sqlite_store, judge_enabled, alerts_on, fixture_record, fixture_turns
+):
+    """A callback-classified call texts the operator now, with the caller's number."""
+    sqlite_store.capture_call(fixture_record, fixture_turns)
+    cb = _good_json(quality_score=1, outcome="abandoned",
+                    failure_tags=["dead_end"], action_needed="callback", intent_resolved=False)
+    with patch("app.obs.alerts.send_sms", new=AsyncMock(return_value="SM1")) as mock_sms, \
+         patch("app.obs.judge._call_model", new=AsyncMock(return_value=cb)):
+        await judge.run_and_store("CAjudge0001")
+    mock_sms.assert_awaited_once()
+    msg = mock_sms.await_args.kwargs["message"]
+    assert "CALL BACK" in msg
+    assert "+440000000000" in msg  # the caller's number, so Quentin knows who to ring
+    assert sqlite_store.get_call("CAjudge0001")["action_needed"] == "callback"
+
+
+async def test_run_and_store_review_call_stays_silent(
+    sqlite_store, judge_enabled, alerts_on, fixture_record, fixture_turns
+):
+    """A merely-clumsy 'review' call does NOT text — it waits for the daily digest."""
+    sqlite_store.capture_call(fixture_record, fixture_turns)
+    rv = _good_json(quality_score=2, outcome="no_booking",
+                    failure_tags=["loop"], action_needed="review")
+    with patch("app.obs.alerts.send_sms", new=AsyncMock(return_value="SM1")) as mock_sms, \
+         patch("app.obs.judge._call_model", new=AsyncMock(return_value=rv)):
+        await judge.run_and_store("CAjudge0001")
+    mock_sms.assert_not_awaited()
+    assert sqlite_store.get_call("CAjudge0001")["action_needed"] == "review"
+
+
+async def test_run_and_store_missed_escalation_texts_even_if_model_said_review(
     sqlite_store, judge_enabled, alerts_on, fixture_record, fixture_turns
 ):
     sqlite_store.capture_call(fixture_record, fixture_turns)
-    bad = _good_json(quality_score=1, outcome="abandoned",
-                     failure_tags=["missed_escalation"], intent_resolved=False)
+    esc = _good_json(quality_score=3, failure_tags=["missed_escalation"], action_needed="review")
     with patch("app.obs.alerts.send_sms", new=AsyncMock(return_value="SM1")) as mock_sms, \
-         patch("app.obs.judge._call_model", new=AsyncMock(return_value=bad)):
+         patch("app.obs.judge._call_model", new=AsyncMock(return_value=esc)):
         await judge.run_and_store("CAjudge0001")
-    mock_sms.assert_awaited_once()
-    assert "CAjudge0001" in mock_sms.await_args.kwargs["message"]
+    mock_sms.assert_awaited_once()  # safety floor upgraded it to a callback
 
 
 async def test_run_and_store_good_call_no_alert(

@@ -97,6 +97,8 @@ class Call(Base):
     quality_score: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     intent_resolved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     failure_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Tiered alerting (v2): "callback" | "review" | "none".
+    action_needed: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     rubric_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     judged_at: Mapped[datetime | None] = mapped_column(
@@ -132,6 +134,7 @@ class Call(Base):
             "quality_score": self.quality_score,
             "intent_resolved": self.intent_resolved,
             "failure_tags": self.failure_tags,
+            "action_needed": self.action_needed,
             "evidence": self.evidence,
             "rubric_version": self.rubric_version,
             "judged_at": self.judged_at.isoformat() if self.judged_at else None,

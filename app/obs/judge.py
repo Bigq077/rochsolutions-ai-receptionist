@@ -29,16 +29,21 @@ _log = logging.getLogger(__name__)
 
 # Bump whenever the rubric/prompt below changes so scores remain comparable and
 # calibration (app/obs/calibrate.py) is re-run.
-RUBRIC_VERSION = "v1"
+RUBRIC_VERSION = "v2"
 
 ALLOWED_OUTCOMES = {"booked", "resolved", "no_booking", "abandoned", "misrouted"}
 ALLOWED_TAGS = {
     "hallucination", "wrong_info", "dead_end", "caller_frustration",
     "wrong_service_fit", "booking_error", "missed_escalation", "loop",
 }
-# Judge scores <= this, or these tags, raise an immediate review alert (spec §5.3).
+# What needs to happen now (tiered alerting, v2):
+#   callback — a human should ring this caller back (immediate SMS to the operator)
+#   review   — a system issue to fix later (goes into the daily digest, no per-call SMS)
+#   none     — the call was fine
+ALLOWED_ACTIONS = {"callback", "review", "none"}
 REVIEW_SCORE_THRESHOLD = 2
-REVIEW_TAGS = {"missed_escalation", "wrong_info"}
+# A missed clinical/emergency escalation is always callback-worthy — never downgraded.
+CALLBACK_FORCE_TAGS = {"missed_escalation"}
 
 _JUDGE_SYSTEM = (
     "You are a strict but fair quality auditor for Susie, an AI phone receptionist "
@@ -64,6 +69,18 @@ failure_tags — include every one that applies, else an empty list:
 - missed_escalation: a human/clinical escalation was needed (e.g. 999/A&E, red-flag symptom) and not handled.
 - loop: the conversation went in circles on the same point.
 
+action_needed — does a HUMAN need to do something now? This decides whether the operator
+is texted immediately or the call just goes into a daily review digest. Judge it carefully:
+- callback: a real caller was left needing something only a human can now resolve — they
+    wanted to book, asked for help, or asked to speak to a person, and hung up or were left
+    stuck unresolved, and it is genuinely worth someone ringing them back. ALWAYS use
+    callback if a clinical red-flag / emergency was mishandled or an escalation was missed.
+- review: the call had quality problems (clumsy, looped, wrong info, re-asked a detail) but
+    the caller does NOT need a human to follow up — it is a system issue to improve later.
+- none: the call was fine; nothing to do.
+Be conservative: choose "callback" only when a person contacting the caller would genuinely
+help (e.g. a stranded would-be patient, a missed emergency). A merely clumsy call is "review".
+
 Call metadata (context only — judge from the transcript):
 clinic_id: {clinic_id}
 flow-reported reason: {reason}   booking_confirmed: {booking_confirmed}   transfer_attempted: {transfer_attempted}
@@ -74,8 +91,8 @@ Transcript (in order):
 
 Respond with ONLY a single JSON object, no preamble and no code fences, exactly:
 {{"outcome": "booked|resolved|no_booking|abandoned|misrouted", "quality_score": 1-5, \
-"intent_resolved": true|false, "failure_tags": [..], "evidence": "1-2 sentences quoting the turns", \
-"rubric_version": "{rubric_version}"}}
+"intent_resolved": true|false, "failure_tags": [..], "action_needed": "callback|review|none", \
+"evidence": "1-2 sentences quoting the turns", "rubric_version": "{rubric_version}"}}
 """
 
 
@@ -166,6 +183,14 @@ def parse_and_validate(text: str, call: Dict[str, Any]) -> Optional[Dict[str, An
     if not isinstance(evidence, str):
         evidence = None
 
+    action = data.get("action_needed")
+    if action not in ALLOWED_ACTIONS:
+        # Fall back from the score when the model omitted/mangled the field.
+        action = "review" if score <= REVIEW_SCORE_THRESHOLD else "none"
+    # Safety floor: a missed escalation is always callback-worthy, whatever the model said.
+    if CALLBACK_FORCE_TAGS.intersection(tags):
+        action = "callback"
+
     return {
         "call_sid": call.get("call_sid"),
         "clinic_id": call.get("clinic_id"),
@@ -173,19 +198,30 @@ def parse_and_validate(text: str, call: Dict[str, Any]) -> Optional[Dict[str, An
         "quality_score": score,
         "intent_resolved": intent,
         "failure_tags": tags,
+        "action_needed": action,
         "evidence": evidence,
         "rubric_version": RUBRIC_VERSION,
     }
 
 
-def should_review(judgement: Dict[str, Any]) -> bool:
-    """Spec §5.3 alert bridge: low score OR a serious failure tag → review alert."""
-    if judgement is None:
+def needs_callback(judgement: Dict[str, Any]) -> bool:
+    """True when a human should ring the caller back (immediate operator SMS)."""
+    if not judgement:
         return False
-    score = judgement.get("quality_score")
-    if isinstance(score, int) and score <= REVIEW_SCORE_THRESHOLD:
+    if judgement.get("action_needed") == "callback":
         return True
-    return bool(REVIEW_TAGS.intersection(judgement.get("failure_tags") or []))
+    # Belt-and-braces: never let a missed escalation slip to the digest.
+    return bool(CALLBACK_FORCE_TAGS.intersection(judgement.get("failure_tags") or []))
+
+
+def needs_review(judgement: Dict[str, Any]) -> bool:
+    """True when a call is a system issue to batch into the daily digest (not a callback)."""
+    if not judgement or needs_callback(judgement):
+        return False
+    if judgement.get("action_needed") == "review":
+        return True
+    score = judgement.get("quality_score")
+    return isinstance(score, int) and score <= REVIEW_SCORE_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -249,17 +285,22 @@ async def run_and_store(call_sid: str) -> Optional[Dict[str, Any]]:
             return None
         await __import__("asyncio").to_thread(store.save_judgement, call_sid, judgement)
 
-        if should_review(judgement):
+        # Tiered alerting (v2): only "callback" calls text the operator immediately.
+        # "review" calls are stored and surfaced once a day by app/obs/digest.py, so a
+        # merely-clumsy call never buzzes the phone.
+        if needs_callback(judgement):
             try:
                 from app.obs import alerts
-                tags = ", ".join(judgement.get("failure_tags") or []) or "low score"
+                tags = ", ".join(judgement.get("failure_tags") or []) or "unresolved"
+                caller = call.get("caller_number") or "unknown number"
+                evidence = (judgement.get("evidence") or "").strip()
                 await alerts.review_alert(
-                    f"[Susie] Low-quality call {call_sid} "
-                    f"({call.get('clinic_id')}) — score {judgement.get('quality_score')}/5 "
-                    f"[{tags}]. Review the transcript."
+                    f"[Susie] CALL BACK — {call.get('clinic_id')} caller {caller} "
+                    f"was left unresolved (score {judgement.get('quality_score')}/5, {tags}). "
+                    f"{evidence}"
                 )
             except Exception as _al_exc:  # pragma: no cover - defensive
-                _log.error("[obs.judge] review alert failed: %r", _al_exc)
+                _log.error("[obs.judge] callback alert failed: %r", _al_exc)
         return judgement
     except Exception as exc:  # pragma: no cover - defensive
         _log.error("[obs.judge] run_and_store failed call_sid=%s: %r", call_sid, exc)
