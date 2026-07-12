@@ -4745,6 +4745,19 @@ class WebSocketCallHandler:
                             " (stage=%s)",
                             digit, _label, self.slot_map_stage.name,
                         )
+                        # Phase 1 deterministic phone step: mark that a slot was
+                        # just selected (this DTMF path pops
+                        # v3_awaiting_slot_selection above, so the verbal
+                        # marker-set at ~6124 will not see it — set it here).  The
+                        # post-turn injector guarantees the phone-confirm question
+                        # follows even if the LLM's readback skips it.
+                        if (
+                            self.session.get("booking_flow_active")
+                            and not self.session.get("phone_confirmed")
+                            and self.session.get("v3_caller_intent", "booking")
+                            not in ("reschedule", "cancel")
+                        ):
+                            self.session["v3_slot_selected_pending_phone"] = True
                         await self.transcript_queue.put((time.monotonic(), _label))
                     else:
                         logger.info(
@@ -5016,6 +5029,27 @@ class WebSocketCallHandler:
         return (
             "Could you type the number you booked under on your "
             "keypad? You can press the star key to reset at any time."
+        )
+
+    def _booking_phone_q(self) -> str:
+        """Deterministic booking phone-confirm question — caller-ID aware.
+
+        Mirrors _resched_phone_q() but uses the BOOKING wording from the
+        PHONE HAND-OFF prompt block, VERBATIM.  The phrases "use this number"
+        and "keypad" are parsed downstream — the booking verbal-confirm handler
+        (~5603) keys off "number you're calling on" / "use this number", and the
+        keypad auto-activate keys off "keypad" — so this must match exactly.
+        Used by the Phase 1 post-turn injector to guarantee the phone step is
+        asked after a slot is chosen even when the LLM skips it.
+        """
+        if self.session.get("twilio_from_local"):
+            return (
+                "Is the number you're calling on the best one for your "
+                "booking? If so, just say use this number."
+            )
+        return (
+            "Could you type your number on your keypad? "
+            "You can press the star key to reset at any time."
         )
 
     def _location_not_bookable(self, loc: str) -> bool:
@@ -5621,6 +5655,10 @@ class WebSocketCallHandler:
                             self.session.setdefault("collected", {})
                             self.session["collected"]["phone"] = _bk_caller_num
                             self.session["phone_confirmed"] = True
+                            # Phone captured — the Phase 1 slot-selected marker
+                            # has done its job; clear it so it can never re-fire
+                            # the deterministic phone step.
+                            self.session.pop("v3_slot_selected_pending_phone", None)
                             # ── Close the slot-selection window ───────────────
                             # Under full-name-at-start the slot-confirmation turn
                             # ("So that's Wednesday the 15th … just say use this
@@ -6120,6 +6158,23 @@ class WebSocketCallHandler:
                             # Fall through to normal LLM dispatch below
                             # (do NOT continue — slot window stays open until
                             # pop() below clears it after LLM fires).
+                    # Phase 1 deterministic phone step: if the slot window was
+                    # open and this utterance is a genuine slot pick (carries a
+                    # slot signal — not the "non-slot utterance passing to LLM"
+                    # fall-through, which is not a candidate), mark that a slot
+                    # was just selected so the post-turn injector guarantees the
+                    # phone-confirm question follows even when the LLM's readback
+                    # skips it (live call 2026-07-12 19:14).  Read BEFORE the pop
+                    # below, while v3_awaiting_slot_selection is still set.
+                    if (
+                        self.session.get("v3_awaiting_slot_selection")
+                        and _is_slot_selection_candidate(utterance)
+                        and self.session.get("booking_flow_active")
+                        and not self.session.get("phone_confirmed")
+                        and self.session.get("v3_caller_intent", "booking")
+                        not in ("reschedule", "cancel")
+                    ):
+                        self.session["v3_slot_selected_pending_phone"] = True
                     # Caller is responding — slot selection window has closed.
                     self.session.pop("v3_awaiting_slot_selection", None)
                     await save_session(self.call_sid, self.session)
@@ -8618,6 +8673,13 @@ class WebSocketCallHandler:
                                 # produced the map.  Must be set before on_question_asked
                                 # arms the watchdog a few lines below.
                                 self.session["v3_awaiting_slot_selection"] = True
+                                # Slots re-presented — the caller has not settled
+                                # on one, so clear any Phase 1 slot-selected
+                                # marker (a prior pick was superseded by this new
+                                # offer) to avoid injecting the phone step early.
+                                self.session.pop(
+                                    "v3_slot_selected_pending_phone", None
+                                )
                                 if _is_time_map(_new_map):
                                     # Day→time context shift: the new map contains
                                     # time options, not day options.  _flush_slot_buf
@@ -8728,6 +8790,83 @@ class WebSocketCallHandler:
                                     self.session, utterance, _last_bot
                                 )
                             )
+
+                            # ── Phase 1: deterministic booking phone step ─────
+                            # The booking phone-confirm question is otherwise
+                            # LLM-driven (PHONE HAND-OFF prompt block) and the LLM
+                            # sometimes skips straight to "shall I book that in?"
+                            # after a slot is chosen (live call 2026-07-12 19:14),
+                            # forcing the caller to prompt for it.  When a slot
+                            # was just selected (marker set on the pick), phone is
+                            # not yet confirmed, the LLM did NOT present new slots
+                            # and did NOT ask the phone/keypad question itself but
+                            # DID confirm the pick, inject the exact phone line so
+                            # the existing verbal-confirm handler (~5603) resolves
+                            # the caller's "use this number" / "yes".  Uses the
+                            # FULL assistant reply (_last_bot), not the [:200]
+                            # last_bot_prompt, so a phone hand-off at the tail is
+                            # not missed.
+                            _reply_low = (_last_bot or "").lower()
+                            _reply_has_phone_wording = any(
+                                _p in _reply_low for _p in (
+                                    "use this number",
+                                    "number you're calling on",
+                                    "keypad",
+                                    "best number to reach you",
+                                )
+                            )
+                            _reply_has_confirmation = any(
+                                _c in _reply_low for _c in (
+                                    "so that's",
+                                    "shall i go ahead",
+                                    "shall i book",
+                                    "book that in",
+                                    "go ahead and book",
+                                )
+                            )
+                            if (
+                                self.session.get("v3_slot_selected_pending_phone")
+                                and self.session.get("booking_flow_active")
+                                and not self.session.get("phone_confirmed")
+                                and not (self.session.get("collected") or {}).get(
+                                    "phone"
+                                )
+                                and not self.session.get("v3_dtmf_slot_map")
+                                and not _reply_has_phone_wording
+                                and _reply_has_confirmation
+                            ):
+                                _phone_q = self._booking_phone_q()
+                                await self.tts_text_queue.put(_phone_q)
+                                _v3_post_turn_speech = True
+                                self.session["last_bot_prompt"] = _phone_q
+                                self.session["last_question"] = _phone_q
+                                self.session.setdefault(
+                                    "conversation_history", []
+                                ).append({
+                                    "role": "assistant",
+                                    "content": _phone_q,
+                                })
+                                # Slot selection is over — tear the window down
+                                # (mirror ~5637) so the caller's reply reaches the
+                                # phone handler, not the slot guard.
+                                self.session.pop("v3_dtmf_slot_map",           None)
+                                self.session.pop("v3_slot_dtmf_active",        None)
+                                self.session.pop("v3_awaiting_slot_selection", None)
+                                self.session.pop("v3_dtmf_slot_context",       None)
+                                self.slot_map_stage = SlotMapStage.NONE
+                                self.session.pop(
+                                    "v3_slot_selected_pending_phone", None
+                                )
+                                # No caller-ID → keypad path: arm phone DTMF now
+                                # (mirror ~8674) so typed digits are captured.
+                                if not self.session.get("twilio_from_local"):
+                                    self.session["v3_phone_dtmf_active"] = True
+                                await save_session(self.call_sid, self.session)
+                                logger.info(
+                                    "[ms_conn v3] booking phone step injected"
+                                    " (deterministic) — LLM skipped it; q=%r",
+                                    _phone_q[:60],
+                                )
 
                             # ── CTA COUNT TRACKING ────────────────────────────
                             # Count booking CTAs in bot replies so the prompt
