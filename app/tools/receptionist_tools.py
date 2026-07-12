@@ -5556,12 +5556,12 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
             _clinic = get_clinic(session.get("clinic_id"))
             _tp = _clinic.get("transfer_phone", "")
             if _tp:
-                _what = (service or notes or "an enquiry").strip()
+                _what = (notes or service or "an enquiry").strip()
                 asyncio.create_task(send_sms(
                     to=_tp,
                     message=(
-                        f"📋 Waitlist/enquiry — {patient_name} ({phone}): {_what}. "
-                        f"Please follow up."
+                        f"📞 CALLBACK NEEDED — please call {patient_name} back on "
+                        f"{phone}. They asked about: {_what}."
                     ),
                 ))
                 session["_waitlist_pinged"] = True

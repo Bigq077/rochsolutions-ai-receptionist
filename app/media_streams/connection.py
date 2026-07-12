@@ -11658,6 +11658,53 @@ class WebSocketCallHandler:
         # status set earlier wins.
         self.session.setdefault("call_status", "completed")
 
+        # Drop-off callback safety net (provisional-booking clinics only).
+        # A caller who gave their name + number but hung up before
+        # add_to_waitlist / the provisional booking fired would otherwise be
+        # lost — the tool that pings the practitioner never ran (e.g. the call
+        # dropped at the phone-confirm step). For a clinic whose model is "the
+        # practitioner rings the client back", that warm lead MUST still reach
+        # them. Uses ONLY already-captured data, so it can never invent a wrong
+        # number. Deduped, fire-and-forget, non-fatal.
+        try:
+            _dc_collected = self.session.get("collected") or {}
+            _dc_name = (self.session.get("patient_name") or _dc_collected.get("name") or "").strip()
+            _dc_phone = (_dc_collected.get("phone") or self.session.get("twilio_from") or "").strip()
+            _dc_owner_notified = bool(
+                self.session.get("_waitlist_pinged")
+                or self.session.get("provisional_booking")
+                or self.session.get("booking_confirmed")
+                or self.session.get("cancel_confirmed")
+                or self.session.get("transfer_attempted")
+            )
+            from app.clinic_config import get_clinic as _dc_get_clinic
+            _dc_clinic = _dc_get_clinic(self.session.get("clinic_id")) or {}
+            if (
+                _dc_name and _dc_phone
+                and not _dc_owner_notified
+                and not self.session.get("_dropoff_callback_sent")
+                and _dc_clinic.get("booking_system") == "google_calendar_provisional"
+            ):
+                _dc_tp = _dc_clinic.get("transfer_phone", "")
+                if _dc_tp:
+                    self.session["_dropoff_callback_sent"] = True
+                    from app.notifications.sms import send_sms as _dc_send
+                    import asyncio as _dc_aio
+                    _dc_aio.create_task(_dc_send(
+                        to=_dc_tp,
+                        message=(
+                            f"📞 CALLBACK NEEDED — {_dc_name} gave their details but "
+                            f"the call dropped before it was finished. Please call "
+                            f"them back on {_dc_phone}."
+                        ),
+                    ))
+                    logger.info(
+                        "[ms_conn] drop-off callback ping queued to ***%s (lead=%r)",
+                        _dc_tp[-4:] if _dc_tp else "????", _dc_name,
+                    )
+        except Exception as _dc_exc:
+            logger.warning("[ms_conn] drop-off callback safety net failed (non-fatal): %r", _dc_exc)
+
         # End-of-call personalised SMS — parity with theorem's /twilio/status
         # path, fired here (self-contained) so it does NOT depend on the Twilio
         # number's status-callback being configured. Idempotent via
