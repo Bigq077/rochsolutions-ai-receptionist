@@ -433,7 +433,25 @@ async def status(request: Request) -> PlainTextResponse:
     session["twilio_direction"] = (form.get("Direction") or "").strip()
     session["twilio_duration_sec"] = (form.get("CallDuration") or "").strip()
     session["twilio_timestamp"] = (form.get("Timestamp") or "").strip()
-    
+
+    # Caller-ID fallback for the end-of-call follow-up SMS.
+    # Twilio's /status callback always carries the caller's From number, but
+    # the smart_sms router only uses it when phone_from_twilio is set — a flag
+    # armed mid-call ONLY when caller-ID is captured at call start, and lost
+    # when the caller declines "use this number".  So an incomplete call (no
+    # confirmed booking phone) fell through to "No phone number" even though we
+    # know the number they rang from.  Re-arm the flag here from the callback's
+    # From so the follow-up texts that number.  Skips withheld / SIP callers
+    # (From not starting "+") and any number the caller explicitly rejected in
+    # favour of a different one (phone_confirmed is False).
+    _from_raw = session["twilio_from"]
+    if _from_raw.startswith("+") and session.get("phone_confirmed") is not False:
+        session["phone_from_twilio"] = True
+        if not session.get("twilio_from_local"):
+            session["twilio_from_local"] = (
+                "0" + _from_raw[3:] if _from_raw.startswith("+44") else _from_raw
+            )
+
     try:
         session["twilio_status_payload"] = {k: str(v) for k, v in form.items()}
     except Exception:
