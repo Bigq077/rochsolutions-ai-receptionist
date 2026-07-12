@@ -119,7 +119,8 @@
     "closing_practitioner_line": "You're in good hands with Jonathan.",
     "booking_pending_message": "I've noted your preferred time and sent it to Jonathan. Your appointment is subject to his confirmation — it isn't finalised until you hear from him via WhatsApp or phone, and he may suggest a similar time if that one isn't free. He'll also arrange payment with you beforehand, so there's nothing to pay right now.",
     "booking_horizon_note": "Jonathan releases his availability about two weeks in advance, so I can only take bookings up to roughly a fortnight ahead. For anything further out, I can take your details and Jonathan will be in touch when he opens up later dates.",
-    "payment_arrangement_note": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment. Nothing is taken on this call."
+    "payment_arrangement_note": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment. Nothing is taken on this call.",
+    "home_visit_note": "Home visits are something Jonathan can often do — usually doable if you're local to Kingston. Don't promise it outright. Take it as a normal booking and note it's a home-visit request; Jonathan confirms whether he can come to you when he's in touch. Do NOT ask for the caller's address or postcode — Jonathan sorts the location out on the callback."
   },
   "faq": [
     { "q": "When are you open / what are your hours?", "a": "Jonathan's availability varies from week to week — I can check what slots are currently available for you. What days tend to work best?" },
@@ -134,7 +135,7 @@
     { "q": "How long is the session?", "a": "Deep Tissue Massage sessions are either 60 minutes at £125 or 90 minutes at £175. Jonathan can advise which is most appropriate for your needs." },
     { "q": "Do I need a GP referral?", "a": "No — you can book directly with us." },
     { "q": "Do you accept Bupa or insurance?", "a": "Vital Edge Therapy is a self-pay clinic — we do not work with insurance providers directly. If you have private health insurance, you're welcome to check with your insurer, but in most cases this type of treatment will not be covered." },
-    { "q": "Can you come to me?", "a": "We are a clinic-based practice — all sessions are at our Kingston location. If you have specific requirements, I can take your details and Jonathan will call you back to discuss." },
+    { "q": "Can you come to me?", "a": "In many cases, yes — Jonathan can often come to you, especially if you're local to Kingston. The best way is to book the session in the usual way and I'll note that you'd like it as a home visit; Jonathan will then confirm he can come to you when he's in touch. Shall I get that booked in for you?" },
     { "q": "What should I wear?", "a": "Wear loose, comfortable clothing. Jonathan will advise on anything specific depending on the area being treated." },
     { "q": "Can I drive after my appointment?", "a": "Usually yes — Jonathan will advise on the day depending on what treatment you have had." },
     { "q": "How do I pay?", "a": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment, so there's nothing to pay during this call. We accept cash, debit card, and credit card via our secure Worldpay terminal, and receipts are provided." },
@@ -289,7 +290,6 @@
       "Caller is distressed or in crisis",
       "Complex clinical question beyond the AI's scope",
       "Enquiry about a non-massage service (acupuncture, reiki, etc.) — decline politely, do not transfer",
-      "Enquiry about home visits or outcall",
       "Caller under 18 attempting to book"
     ],
     "emergency_message": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",

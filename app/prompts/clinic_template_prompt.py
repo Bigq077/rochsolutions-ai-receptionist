@@ -324,10 +324,25 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     if len(_modalities) <= 1:
         _only = _modalities[0] if _modalities else "in_clinic"
         if _only == "in_clinic":
-            lines.append(
-                "MODALITY: in-clinic only — never ask in-clinic vs remote, never "
-                f"offer remote or home visits. Always location='{tk['primary_location_id']}'."
-            )
+            _hv_note = pf.get("home_visit_note")
+            if _hv_note:
+                lines.append(
+                    "MODALITY: in-clinic by default — never ask in-clinic vs "
+                    "remote, never offer remote. Always "
+                    f"location='{tk['primary_location_id']}'.\n"
+                    "HOME VISITS: " + _hv_note + " When a caller asks for a home "
+                    "or mobile visit, do NOT refuse and do NOT divert them to a "
+                    "callback — take it as a NORMAL booking through the usual "
+                    "flow, and put 'HOME VISIT REQUESTED' in the booking notes "
+                    f"(followup_note) so {tk['practitioner']} sees it and can "
+                    "confirm feasibility when he's in touch. Still pass "
+                    f"location='{tk['primary_location_id']}' to book_appointment."
+                )
+            else:
+                lines.append(
+                    "MODALITY: in-clinic only — never ask in-clinic vs remote, "
+                    f"never offer remote or home visits. Always location='{tk['primary_location_id']}'."
+                )
         else:
             lines.append(
                 f"MODALITY: {_only} only — never ask which modality. "
@@ -931,6 +946,19 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
     if len(modalities) <= 1:
         only = modalities[0] if modalities else "in_clinic"
         label = labels.get(only, only.replace("_", " "))
+        _hv_note = (clinic.get("prompt_facts", {}) or {}).get("home_visit_note")
+        if only == "in_clinic" and _hv_note:
+            return (
+                "MODALITY RULE\n"
+                f"{tk['clinic_name']} runs from one clinic site and never offers "
+                "remote/video/phone appointments — do not ask which modality, and "
+                "proceed straight to timing and availability. HOME VISITS: "
+                + _hv_note + " If a caller asks for a home or mobile visit, do NOT "
+                "refuse and do NOT divert to a callback — book it as a normal "
+                "appointment and add 'HOME VISIT REQUESTED' to the booking notes "
+                f"(followup_note) for {tk['practitioner']}. Still pass "
+                f"location='{tk['primary_location_id']}' to book_appointment."
+            )
         return (
             "MODALITY RULE\n"
             f"{tk['clinic_name']} offers {label} appointments only. Never ask "
