@@ -95,6 +95,7 @@ _ADDED_COLUMNS = {
     "quality_score": "INTEGER",
     "intent_resolved": "BOOLEAN",
     "failure_tags": "JSON",
+    "action_needed": "VARCHAR(16)",
     "evidence": "TEXT",
     "rubric_version": "VARCHAR(16)",
     "judged_at": "TIMESTAMP",
@@ -275,6 +276,7 @@ def save_judgement(call_sid: str, judgement: Dict[str, Any]) -> bool:
         row.quality_score = judgement.get("quality_score")
         row.intent_resolved = judgement.get("intent_resolved")
         row.failure_tags = judgement.get("failure_tags")
+        row.action_needed = judgement.get("action_needed")
         row.evidence = judgement.get("evidence")
         row.rubric_version = judgement.get("rubric_version")
         row.judged_at = datetime.now(timezone.utc)
