@@ -1685,6 +1685,36 @@ class LLMStream:
                             logger.info(
                                 "[ms_llm] slots_presented=True slots_count=%d", n,
                             )
+                            # Deterministic location sync (2026-07-12).  A
+                            # slot-returning check_availability is guaranteed to
+                            # be a BOOKABLE clinic — not-bookable clinics are
+                            # blocked upstream by _location_not_bookable and
+                            # never reach here — so THIS is the clinic the caller
+                            # is now booking.  When the caller switches clinics
+                            # after the Redditch redirect, the LLM drives the
+                            # switch via tool args but nothing updates the
+                            # authoritative session["selected_location"]: it
+                            # stays on the old clinic, so CALL STATE keeps
+                            # reporting it and the final book_appointment reverts
+                            # to it (observed: caller switched Redditch->Awlstuh,
+                            # was shown/agreed Alcester slots, but book_appointment
+                            # fired with location='redditch' -> blocked -> caller
+                            # bounced after a full booking).  Sync selected_location
+                            # to the location just checked so CALL STATE and the
+                            # downstream book_appointment stay consistent with the
+                            # clinic actually being offered.
+                            _av_loc = str(args.get("location") or "").strip().lower()
+                            if _av_loc and _av_loc != str(
+                                session.get("selected_location") or ""
+                            ).strip().lower():
+                                _prev_loc = session.get("selected_location")
+                                session["selected_location"] = _av_loc
+                                session["v3_location_confirmed"] = True
+                                logger.info(
+                                    "[ms_llm] selected_location synced %r -> %r "
+                                    "after successful check_availability "
+                                    "(clinic switch)", _prev_loc, _av_loc,
+                                )
                     else:
                         logger.warning("[ms_llm] unknown tool: %s", tool_name)
                         result = {"error": f"Unknown tool: {tool_name}"}
