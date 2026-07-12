@@ -325,6 +325,10 @@ class LLMStream:
         # ── Step 5: System prompt (two-block caching) ───────────────────
         # static_prompt: large, never changes within a call → cached.
         # dynamic_prompt: small per-turn state → sent uncached each turn.
+        # Stash THIS turn's caller utterance so the prompt builder can inject
+        # the matching physio condition script (it is not yet in
+        # conversation_history — that append happens post-turn at line ~421).
+        session["_v3_current_utterance"] = user_text
         from app.prompts.susie_system_prompt import build_system_prompt_parts
         _static_prompt, _dynamic_prompt = build_system_prompt_parts(session)
         system_prompt = _static_prompt  # kept for any legacy references below

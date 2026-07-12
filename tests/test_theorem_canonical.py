@@ -169,18 +169,19 @@ def test_safety_boundaries():
     assert "999" in saf["emergency_message"]
 
 
-# ── 6. Age policy is flagged for human confirmation (not silently guessed) ────
+# ── 6. Age policy: 7+ confirmed by owner 2026-07-10 ──────────────────────────
 
 def test_age_policy_value_and_confirmation_flag():
     ap = c.AGE_POLICY
     assert ap["min_patient_age"] == 7
-    # Must be flagged for human confirmation given the historical 15+ conflict.
-    assert ap["human_confirmation_required"] is True
+    # Owner confirmed 2026-07-10: 7+ is final; the historical 15+ was stale.
+    assert ap["human_confirmation_required"] is False
     assert "paediatric" in ap["faq_answer"].lower()
 
 
-def test_unconfirmed_facts_lists_age_policy():
-    assert "age_policy.min_patient_age" in c.unconfirmed_facts()
+def test_unconfirmed_facts_empty_after_confirmation():
+    # All age/hours conflicts resolved 2026-07-10 (owner confirmed).
+    assert c.unconfirmed_facts() == []
 
 
 # ── 7. Known conflicts are tracked, not hidden ────────────────────────────────

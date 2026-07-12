@@ -3976,6 +3976,15 @@ def _build_theorem_v3(session: dict) -> str:
     if b7: dynamic_blocks.append(b7)
     if b6: dynamic_blocks.append(b6)
 
+    # Per-turn physio condition cue: inject the one curated, guard-railed script
+    # matching the caller's current utterance (stashed by llm_stream before the
+    # build). Uncached dynamic block, so the static prefix cache is untouched;
+    # returns '' (no injection) when nothing relevant matches.
+    from app.clinics.theorem.caller_concerns import build_condition_injection
+    _cond_block = build_condition_injection(session.get("_v3_current_utterance", ""))
+    if _cond_block:
+        dynamic_blocks.append(_cond_block)
+
     return (
         "\n\n".join(b for b in static_blocks if b),
         "\n\n".join(dynamic_blocks),

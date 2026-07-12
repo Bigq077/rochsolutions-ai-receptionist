@@ -476,12 +476,12 @@ AGE_POLICY: Dict[str, Any] = {
         "clinic directly and we'd also recommend speaking to your GP about a "
         "paediatric physiotherapy referral."
     ),
-    # TODO(human-confirm): confirm 7+ with Mark in writing. Earlier docs said
-    # 15+. Until confirmed, treat this value as provisional.
-    "human_confirmation_required": True,
+    # Confirmed 2026-07-10 (owner): minimum age is 7. Earlier 15+ material was
+    # stale. Treated as final.
+    "human_confirmation_required": False,
     "confirmation_note": (
-        "Mark's latest doc says 7+; earlier materials said 15+. Awaiting written "
-        "sign-off before treating as final."
+        "Confirmed 2026-07-10 (owner): 7+ is final; the earlier 15+ figure was "
+        "stale older-material drift."
     ),
 }
 
@@ -504,25 +504,40 @@ KNOWN_CONFLICTS: Dict[str, Dict[str, Any]] = {
         "canonical": 7,
         "conflicting_value": 15,
         "conflicting_source": "Historical onboarding materials / earlier prompt revisions",
-        "note": "7+ applied per latest doc; 15+ appeared in older materials. Confirm with Mark.",
-        "resolved": False,
-        "human_confirmation_required": True,
+        "note": "RESOLVED 2026-07-10 (owner confirmed): minimum age is 7. The 15+ "
+                "value was stale older-material drift. The live susie prompt (7+) "
+                "is correct; AGE_POLICY.min_patient_age = 7 stands.",
+        "resolved": True,
+        "human_confirmation_required": False,
     },
     "alcester_opening_hours": {
-        "canonical": "08:30-21:00 (per knowledge base / media-streams config)",
-        "conflicting_value": "09:00-19:00, last appointment 18:00 (clinic_config + live susie prompt)",
+        "canonical": "AI-facing bookable hours: Mon-Fri, nine to seven, last appointment six (closed weekends)",
+        "conflicting_value": "08:30-21:00 (earlier knowledge base / media-streams config note)",
         "conflicting_source": "app/clinic_config.py working_hours/hours_summary; app/prompts/susie_system_prompt.py CLINIC block",
-        "note": "Building open-hours vs bookable-slot hours may be conflated. Reference doc did not restate Alcester hours. Confirm with Mark which the AI should quote.",
-        "resolved": False,
-        "human_confirmation_required": True,
+        "note": "RESOLVED 2026-07-10 (owner confirmed): the AI quotes Alcester as "
+                "Monday to Friday, nine to seven, last appointment six, closed "
+                "weekends — the live susie prompt CLINIC block is correct as-is. "
+                "The 08:30-21:00 figure was building-open hours, not the "
+                "bookable/AI-facing hours. LOCATIONS.opening_hours (building "
+                "hours) left unchanged and is NOT read at runtime; if hours are "
+                "ever wired data-driven, add an explicit AI-facing hours field.",
+        "resolved": True,
+        "human_confirmation_required": False,
     },
     "redditch_opening_hours": {
-        "canonical": "Mon-Sat (Mon/Tue/Fri 09-17, Wed/Thu 09-19, Sat 09-17) per knowledge base / clinic.json",
-        "conflicting_value": "'Mondays and Thursdays only, 09-14' (clinic_config) and 'Thursday only' (susie prompt)",
+        "canonical": "AI-facing bookable hours: Thursday only, nine to two, last appointment one",
+        "conflicting_value": "Mon-Sat building hours (knowledge base / clinic.json); 'Mon+Thu 09-14' (clinic_config)",
         "conflicting_source": "app/clinic_config.py location hours/FAQs; app/prompts/susie_system_prompt.py",
-        "note": "Building open-hours (full week) vs practitioner availability (now Mark Thu only, Leanne gone) are conflated across files. Confirm with Mark what hours/days the AI should state for Redditch.",
-        "resolved": False,
-        "human_confirmation_required": True,
+        "note": "RESOLVED 2026-07-10 (owner confirmed): the AI states Redditch as "
+                "Thursday only, nine to two, last appointment one — the live susie "
+                "prompt is correct as-is. This reflects practitioner availability "
+                "(Mark Thu; Leanne gone), which is what a caller can actually "
+                "book, not the building's full-week open hours. "
+                "LOCATIONS.opening_hours left unchanged and is NOT read at "
+                "runtime. (Redditch is also not bookable via Susie — see the "
+                "Redditch redirect.)",
+        "resolved": True,
+        "human_confirmation_required": False,
     },
 }
 

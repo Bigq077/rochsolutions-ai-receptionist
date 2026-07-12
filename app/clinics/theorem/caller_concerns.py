@@ -1034,3 +1034,89 @@ def build_concern_handling_block() -> str:
         f"  GOOD — {ANSWER_STYLE['exemplar_good']}\n"
         f"  BAD — {ANSWER_STYLE['exemplar_bad']}"
     )
+
+
+# ===========================================================================
+# PER-TURN CONDITION INJECTION
+# ===========================================================================
+# The CALLER_CONCERNS table above is rich but was never surfaced to the live
+# prompt (build_concern_handling_block is deliberately lean). These helpers let
+# the prompt inject JUST the one curated, guard-railed condition script that
+# matches the caller's current utterance — deep precision exactly when relevant,
+# near-zero token cost otherwise, and always behind the same must_not_say
+# boundaries. Detection uses the already-authored _CONCERN_KEYWORDS map.
+
+# The MSK/clinical conditions eligible for injection. Service/treatment requests
+# (shockwave, laser, massage, acupuncture, psychotherapy) are deliberately
+# EXCLUDED — they are already handled by the TREATMENT-OVERRIDE rule, and a
+# second, overlapping script would only conflict with it.
+_INJECTABLE_CONDITIONS: frozenset = frozenset({
+    "back_pain", "sciatica", "neck_pain", "shoulder_pain", "rotator_cuff",
+    "frozen_shoulder", "knee_pain", "hip_pain", "achilles", "plantar_fasciitis",
+    "elbow_tendinopathy", "sports_injury", "gym_injury", "running_injury",
+    "golf_tennis_football_injury", "post_op_rehab", "osteoarthritis_stiffness",
+    "chronic_pain", "headaches_tension",
+})
+
+
+def match_condition(utterance: str) -> Optional[str]:
+    """Return the concern key whose keywords appear in the utterance, or None.
+
+    Red-flag keywords take priority and return 'red_flag_urgent' so a caller who
+    describes a red flag can NEVER have a reassuring condition script injected
+    over it. Otherwise the first match in _CONCERN_KEYWORDS insertion order wins
+    — the map is ordered specific-before-generic (sciatica/rotator_cuff before
+    shoulder_pain), so the most specific condition is chosen.
+    """
+    if not utterance:
+        return None
+    low = utterance.lower()
+    if any(k in low for k in _RED_FLAG_KEYWORDS):
+        return "red_flag_urgent"
+    for key, kws in _CONCERN_KEYWORDS.items():
+        if key == "red_flag_urgent":
+            continue
+        if any(kw in low for kw in kws):
+            return key
+    return None
+
+
+def build_condition_injection(utterance: str) -> str:
+    """Per-turn dynamic prompt block for the caller's current utterance.
+
+    Returns the matched MSK condition's curated, guard-railed framing so Susie
+    is precise on that specific problem, or '' when nothing relevant matches
+    (zero token cost on those turns). Never diagnoses; always carries the
+    condition's must_not_say boundaries.
+    """
+    key = match_condition(utterance)
+    if key is None:
+        return ""
+    if key == "red_flag_urgent":
+        # Do NOT inject a reassuring condition script over a possible red flag;
+        # reinforce the safety net that is already in the static block.
+        return (
+            "CALLER CUE — the caller's words may describe a RED-FLAG symptom. Do "
+            "NOT reassure them it's fine and do NOT book: follow the RED-FLAG "
+            "SAFETY NET (advise urgent care now — 999 / A&E, or 111 if unsure), "
+            "then offer to help once they are safe."
+        )
+    if key not in _INJECTABLE_CONDITIONS:
+        return ""  # service/treatment requests handled by TREATMENT-OVERRIDE
+    entry = CALLER_CONCERNS.get(key) or {}
+    ans = entry.get("answer_style", "") or ""
+    if "exemplar_good" in ans.lower():          # pointer form → real exemplar
+        ans = ANSWER_STYLE.get("exemplar_good", "")
+    must_not = "; ".join(entry.get("must_not_say", []))
+    label = key.replace("_", " ")
+    parts = [
+        f"CALLER CONDITION CUE — the caller has mentioned something consistent "
+        f"with {label}. Answer precisely and warmly using this framing, then "
+        f"guide them toward a physiotherapy assessment. Do NOT diagnose or "
+        f"confirm what they have."
+    ]
+    if ans:
+        parts.append(f"Framing to adapt (do not read verbatim): {ans}")
+    if must_not:
+        parts.append(f"Must NOT say: {must_not}")
+    return " ".join(parts)
