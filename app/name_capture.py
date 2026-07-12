@@ -265,7 +265,15 @@ def extract_surname(caller_utterance: str, first_name: str) -> str:
     #    explicitly invites ("Quentin Roch, I'm calling about my knee").
     if first_l:
         m = re.search(
-            r"(?:my name is|name'?s|name is|it'?s|it is|i'?m|i am|this is)\s+"
+            # Intro phrases that precede the caller's name.  "would be" /
+            # "that's" / "that is" cover the very common "that would be Quentin
+            # Rock" / "it would be Quentin Rock" answers, which otherwise fell
+            # through both this pattern and the bare-name pattern (the name sits
+            # too deep for the leading-filler rule) → surname silently dropped
+            # (observed 2026-07-11).  Safe: the token after the intro must be
+            # the first name we already hold, so a wrong word can't be grabbed.
+            r"(?:my name is|name'?s|name is|it'?s|it is|i'?m|i am|this is"
+            r"|that is|that'?s|would be)\s+"
             + re.escape(first_l) + r"\s+(" + _SURNAME_TOKEN
             + r"(?:\s+" + _SURNAME_TOKEN + r")*)",
             text,
