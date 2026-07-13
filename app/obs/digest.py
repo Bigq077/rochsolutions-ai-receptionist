@@ -24,13 +24,46 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from app import config
-from app.obs import store
+from app.obs import redact, store
 
 
 def _review_calls(hours: int) -> List[dict]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     return [c for c in store.list_calls(since=since)
             if c.get("action_needed") == "review"]
+
+
+def _call_names(call: dict) -> List[str]:
+    """Known caller names on the record — the only names redaction can reliably strike."""
+    names: List[str] = []
+    collected = call.get("collected") or {}
+    for key in ("name", "full_name", "first_name", "last_name"):
+        v = collected.get(key)
+        if v:
+            names.append(str(v))
+    return names
+
+
+def _transcript_lines(call: dict) -> List[str]:
+    """Redacted turn-by-turn transcript for one call, indented under its listing.
+
+    Phones/emails are hard-stripped and known caller names struck (app/obs/redact.py).
+    If the safety check still finds a phone/email, the transcript is WITHHELD rather
+    than risk emitting PII — a missing transcript never aborts the digest.
+    """
+    turns = call.get("transcript") or []
+    if not turns:
+        return ["      (no transcript stored)"]
+    redacted = redact.redact_transcript(turns, _call_names(call))
+    try:
+        redact.assert_transcript_clean(redacted)  # HARD: no phone/email survives
+    except redact.PIILeakError:
+        return ["      (transcript withheld — redaction check failed)"]
+    lines = ["      --- transcript (redacted) ---"]
+    for i, t in enumerate(redacted, 1):
+        role = str(t.get("role", "?")).upper()
+        lines.append(f"      [{i:>3}] {role:<9} | {t.get('text', '')}")
+    return lines
 
 
 def build_summary(calls: List[dict], hours: int) -> Optional[str]:
@@ -63,6 +96,9 @@ def build_email(calls: List[dict], hours: int) -> Optional[tuple]:
         rows.append(f"  [{c.get('quality_score')}/5] {c.get('call_sid')}  ({tags})")
         if c.get("evidence"):
             rows.append(f"      {c['evidence']}")
+        if config.OBS_DIGEST_INCLUDE_TRANSCRIPTS:
+            rows.extend(_transcript_lines(c))
+            rows.append("")
     rows.append("")
     rows.append("Replay any with:  python -m app.obs.replay <call_sid>")
     return subject, "\n".join([head, *rows])
