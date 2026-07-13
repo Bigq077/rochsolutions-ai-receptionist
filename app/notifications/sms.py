@@ -62,6 +62,20 @@ class SMSService:
         Returns:
             Message SID if successful, None if failed
         """
+        # Global SMS kill switch (env-gated). Every surface — smart follow-up,
+        # owner alerts, booking SMS — funnels through this method, so this one
+        # gate covers them all.
+        #
+        # ⚑ latency-eval branch: default is OFF (opposite of live branches, where
+        # it defaults to "true"). This branch is an isolated timing-eval service
+        # that must NEVER text a real caller; defaulting off guarantees silence
+        # even if the Render env var is forgotten. To deliberately send SMS from
+        # an eval run, set SMS_ENABLED=true. DO NOT port this default flip to
+        # main/theorem/jv live branches.
+        if os.getenv("SMS_ENABLED", "false").strip().lower() not in ("true", "1", "yes", "on"):
+            logger.info("[sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)")
+            return None
+
         # Normalise to E.164 and validate before sending (#14)
         # Import is lazy (inside the method) to avoid module-load import errors
         # if app.utils is not yet initialised when sms.py is first imported.
