@@ -62,6 +62,8 @@ from .config import (
     F_LAST_BOT_PROMPT,
     F_LAST_QUESTION,
     F_COLLECTED,
+    WS_A_FAST_FIRST_CHUNK,
+    WS_A_MIN_WORDS_FIRST,
 )
 from .chunker import ResponseChunker
 from .fast_path import try_fast_path
@@ -1245,7 +1247,10 @@ class LLMStream:
         Returns (full_text, tool_uses, transfer_initiated).
         tool_uses is non-empty if stop_reason == "tool_use".
         """
-        chunker    = ResponseChunker()
+        chunker    = ResponseChunker(
+            min_words_first=WS_A_MIN_WORDS_FIRST,
+            fast_first=WS_A_FAST_FIRST_CHUNK,
+        )
         full_text  = ""
         tool_uses: List[dict] = []
         timeout_sec          = LLM_FIRST_CHUNK_TIMEOUT_MS / 1000.0

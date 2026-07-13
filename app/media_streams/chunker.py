@@ -115,7 +115,11 @@ class ResponseChunker:
             await tts_text_queue.put(final)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        min_words_first: int = MIN_WORDS,
+        fast_first: bool = False,
+    ) -> None:
         self._buffer: str = ""
         self._word_count: int = 0
         # Hold-and-merge: stores the most recently emitted candidate, releasing
@@ -123,6 +127,13 @@ class ResponseChunker:
         # opening.  If the next candidate starts with a FORBIDDEN_CHUNK_STARTER
         # it is merged into _held_chunk instead of being emitted separately.
         self._held_chunk: str = ""
+        # WS-A (latency-eval, flag-gated): lower the gate for the FIRST chunk of
+        # a turn and release it immediately (skip hold-one-behind), so time-to-
+        # first-audio isn't gated on a second sentence boundary. When
+        # fast_first is False both effects are inert -> byte-identical to live.
+        self._min_words_first: int = min_words_first
+        self._fast_first: bool = fast_first
+        self._emitted_count: int = 0  # chunks released this turn (per-instance)
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,8 +168,16 @@ class ResponseChunker:
         if self._word_count >= MAX_WORDS:
             return self._handle_candidate(self._emit())
 
-        # Condition 2: sentence boundary
-        if self._word_count >= MIN_WORDS:
+        # Condition 2: sentence boundary.  The threshold is lowered for the
+        # first chunk of the turn only (WS-A); every later chunk keeps MIN_WORDS,
+        # so mid-response prosody is unchanged.  fast_first=False => gate is
+        # always MIN_WORDS (identical to live).
+        gate = (
+            self._min_words_first
+            if (self._fast_first and self._emitted_count == 0)
+            else MIN_WORDS
+        )
+        if self._word_count >= gate:
             stripped = self._buffer.rstrip()
             if stripped and stripped[-1] in HARD_SPLIT_CHARS:
                 if not _ends_with_abbreviation(stripped):
@@ -195,6 +214,7 @@ class ResponseChunker:
         self._buffer = ""
         self._word_count = 0
         self._held_chunk = ""
+        self._emitted_count = 0  # re-arm WS-A fast opener for the next turn
 
     @property
     def buffer(self) -> str:
@@ -253,9 +273,24 @@ class ResponseChunker:
                 return to_emit
             return None
         else:
+            # WS-A first-chunk fast release: emit chunk 0 immediately instead of
+            # holding it one behind, so first audio isn't gated on a SECOND
+            # boundary.  Safe here because this branch already means the
+            # candidate's own opening is non-forbidden; the guard on an empty
+            # _held_chunk prevents reordering if anything is already held.
+            if (
+                self._fast_first
+                and self._emitted_count == 0
+                and not self._held_chunk
+            ):
+                self._emitted_count += 1
+                return candidate.strip()
+
             # Valid start — release held chunk, hold this candidate
             to_emit = self._held_chunk or None
             self._held_chunk = candidate
+            if to_emit:
+                self._emitted_count += 1
             return to_emit
 
 

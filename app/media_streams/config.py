@@ -159,13 +159,18 @@ class FastPathTurnType(str, Enum):
 # Text chunker constants
 # ---------------------------------------------------------------------------
 
-# Minimum words in a TTS chunk before it can be emitted
-# (prevents choppy single-sentence fragments)
-# Lowered from 15 → 8: first audio plays as soon as any complete sentence
-# reaches 8 words, reducing time-to-first-audio by ~300-500ms per turn.
-# Still prevents sub-sentence fragments — chunker only emits at sentence
-# boundaries (. ! ?); this threshold gates how soon that boundary fires.
-MIN_CHUNK_WORDS = 8
+# WS-A (latency-eval) — first-chunk fast-emit lever.
+# Replaces the old dead `MIN_CHUNK_WORDS = 8`, which was imported by nobody
+# (the live chunker hardcodes MIN_WORDS=15). This retires that dead-constant
+# class of bug: these values are actually read (passed into ResponseChunker
+# from llm_stream). Default OFF => the chunker behaves byte-identically to live.
+# WS_A_MIN_WORDS_FIRST is only consulted when the flag is ON, so the threshold
+# (4/5/6/8) can be swept from the env without redeploying code.
+# Do NOT port this default-ON to main/theorem/jv live branches.
+WS_A_FAST_FIRST_CHUNK = os.getenv(
+    "WS_A_FAST_FIRST_CHUNK", "false"
+).strip().lower() in ("true", "1", "yes", "on")
+WS_A_MIN_WORDS_FIRST = int(os.getenv("WS_A_MIN_WORDS_FIRST", "6"))
 
 # Maximum words per TTS chunk
 # (ensures forward progress even on run-on sentences)
