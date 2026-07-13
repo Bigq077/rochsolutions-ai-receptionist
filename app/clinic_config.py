@@ -21,6 +21,7 @@ def _hours_tuple(start_hour: float, end_hour: float):
 # Format: "+447XXXXXXXXX": "clinic_id"
 # Any unrecognised number falls back to "demo" automatically.
 TWILIO_TO_CLINIC: Dict[str, str] = {
+    "+447366263180": "jv_v1",         # LATENCY-EVAL test line (repurposed Theorem v3 STAGING/dev number — NOT a patient line). latency-eval branch ONLY. theorem_v3 patients use +447380841468; jv_v1 patients use +447367002651 — both unaffected.
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
     "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
