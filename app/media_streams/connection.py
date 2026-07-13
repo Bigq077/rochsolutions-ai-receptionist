@@ -757,6 +757,11 @@ _V3_RAPID_ARRIVAL_SEC: float = 0.30
 # TTS utterance.  send_loop detects it and fires on_tts_finished() only once
 # all audio for that utterance has actually been sent to Twilio.
 _TTS_DONE_SENTINEL = object()
+# Latency-eval: in-queue marker enqueued (in _tts_loop) immediately before the
+# first REAL content audio of a turn, so _send_loop emits the timing record at
+# content rather than at a preceding filler frame. Only meaningful when
+# LATENCY_TIMING is on; never enqueued otherwise (self._turn_timing is None).
+_CONTENT_AUDIO_MARKER = object()
 
 # Prefix marker prepended to a TTS text chunk by the no-input watchdog when it
 # enqueues a silence-recovery re-ask.  _tts_loop strips the marker and bypasses
@@ -10253,6 +10258,22 @@ class WebSocketCallHandler:
                 self._tts_expected_final_seq = self._tts_chunk_seq
                 self._current_chunk_seq = _this_chunk_seq
 
+                # Latency-eval: mark the first REAL content chunk of the turn so
+                # _send_loop emits the record at content, not at a preceding
+                # filler frame (which would drop the llm_ttft/chunk_gate/
+                # tts_first_byte splits). Background ack-fillers and watchdog
+                # re-asks are excluded; everything else counts as content. The
+                # marker is enqueued in-order so it precedes this chunk's audio.
+                # No-op when LATENCY_TIMING is OFF (self._turn_timing is None).
+                if (
+                    self._turn_timing is not None
+                    and not self._turn_timing._content_marked
+                    and not _ack_filler_chunk
+                    and not _watchdog_reask
+                ):
+                    self._turn_timing._content_marked = True
+                    await self.audio_out_queue.put(_CONTENT_AUDIO_MARKER)
+
                 for sub_text in sub_chunks:
                     # Track current sub-chunk so barge-in resume is accurate.
                     self._current_tts_text = sub_text
@@ -10331,6 +10352,11 @@ class WebSocketCallHandler:
         If the WebSocket closes mid-call, drain the queue and exit.
         """
         _tts_bytes_sent: int = 0  # mulaw bytes sent for the current TTS utterance
+        # Latency-eval: True once the content-boundary marker for the current
+        # turn has been dequeued → the next media frame is the first REAL content
+        # audio. Reset after it's consumed so the next turn's marker re-arms it.
+        _content_frame_pending: bool = False
+        _lat_seen_turn_seq = None  # detect a turn change to clear a leaked pending
 
         try:
             while not self._stop_event.is_set():
@@ -10343,6 +10369,23 @@ class WebSocketCallHandler:
                     continue
 
                 if not b64_payload:
+                    continue
+
+                # Latency-eval: if the turn changed under us (e.g. a barge-in
+                # dropped the previous turn's content frame after its marker was
+                # dequeued), clear any leaked pending so it can't mis-stamp this
+                # turn's first frame as content.
+                _lat_cur_seq = (
+                    self._turn_timing.turn_seq if self._turn_timing is not None else None
+                )
+                if _lat_cur_seq != _lat_seen_turn_seq:
+                    _content_frame_pending = False
+                    _lat_seen_turn_seq = _lat_cur_seq
+
+                # Latency-eval content-boundary marker: the next media frame is
+                # the first real content audio of the turn. Not sent to Twilio.
+                if b64_payload is _CONTENT_AUDIO_MARKER:
+                    _content_frame_pending = True
                     continue
 
                 # TTS-done sentinel: all audio for this utterance has been sent
@@ -10394,12 +10437,15 @@ class WebSocketCallHandler:
                         )
                     continue
 
-                # t3 — first audio frame of the turn ready to send (dequeued).
-                # The send loop normally blocks on an empty queue, so dequeue ≈
-                # enqueue; this isolates EL synth latency into tts_first_byte_ms
-                # (t3−t2) and leaves audio_wire_ms (t4−t3) as the bare send.
-                if self._turn_timing is not None and self._turn_timing.t3 is None:
-                    self._turn_timing.stamp("t3")
+                # Latency-eval stamps (dequeue ≈ enqueue: the send loop normally
+                # blocks on an empty queue). t3 = first audio of ANY kind (filler
+                # or content) → perceived ttfa. content_t3 = first REAL content
+                # audio → isolates EL synth into tts_first_byte_ms (content_t3−t2).
+                if self._turn_timing is not None:
+                    if self._turn_timing.t3 is None:
+                        self._turn_timing.stamp("t3")
+                    if _content_frame_pending and self._turn_timing.content_t3 is None:
+                        self._turn_timing.stamp("content_t3")
 
                 try:
                     await self.websocket.send_json({
@@ -10408,11 +10454,17 @@ class WebSocketCallHandler:
                         "media":     {"payload": b64_payload},
                     })
                     now = time.monotonic()
-                    # t4 — first audio frame sent to Twilio (the number that
-                    # matters); closes and emits the record for this turn.
-                    if self._turn_timing is not None and self._turn_timing.t4 is None:
-                        self._turn_timing.stamp("t4", now)
-                        self._turn_timing.emit()
+                    # t4 = first sound the caller hears (perceived ttfa). The
+                    # record is closed+emitted at content_t4 (first REAL content
+                    # frame) so filler turns still capture the llm/chunk/tts
+                    # splits — a preceding filler frame stamps t4 but does NOT emit.
+                    if self._turn_timing is not None:
+                        if self._turn_timing.t4 is None:
+                            self._turn_timing.stamp("t4", now)
+                        if _content_frame_pending and self._turn_timing.content_t4 is None:
+                            self._turn_timing.stamp("content_t4", now)
+                            self._turn_timing.emit()
+                            _content_frame_pending = False  # consumed; next turn re-arms
                     self._last_audio_at                = now
                     self.session["last_audio_sent_at"] = _iso_now()
                     # Count raw mulaw bytes for play-duration estimate.

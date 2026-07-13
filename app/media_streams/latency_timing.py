@@ -122,6 +122,7 @@ class TurnTiming:
     model: str = ""                      # claude model id (set by the llm path)
     eot_confident: Optional[bool] = None  # WS-C: confidence-driven vs silence fallback
     capture_phase: str = "conversation"  # conversation | phone | name
+    _content_marked: bool = False        # content-boundary marker already enqueued
     _emitted: bool = False
 
     def stamp(self, field_name: str, now: Optional[float] = None) -> None:
@@ -132,9 +133,19 @@ class TurnTiming:
     def emit(self) -> None:
         """Log the one structured ``[LAT]`` line for this turn. Idempotent.
 
+        Two TTFAs are reported:
+          * ``ttfa_ms``         = t4 − t0        — PERCEIVED (first sound the caller
+                                                   hears, filler or content).
+          * ``content_ttfa_ms`` = content_t4 − t0 — REAL content arrival (what the
+                                                   levers actually reduce).
+        The sub-splits use CONTENT timing (content_t3), because on a filler turn
+        the perceived t3 is the filler frame and would make tts_first_byte
+        meaningless. On a no-filler turn content_t3/t4 == t3/t4, so both TTFAs and
+        the splits coincide (and llm_ttft+chunk_gate+tts_first_byte+audio_wire sum
+        to content_ttfa — the built-in correctness check).
+
         Any stage not reached is reported as -1 (never 0) so "missing" can never
-        contaminate an offline sum. Sub-splits sum to ttfa_ms as a correctness
-        check on the instrumentation itself (spec §3).
+        contaminate an offline sum.
         """
         if self._emitted:
             return
@@ -145,23 +156,21 @@ class TurnTiming:
 
         _lat_log.info(
             "[LAT] turn_seq=%d path=%s outcome=%s "
-            "ttfa_ms=%d ep_dispatch_ms=%d llm_ttft_ms=%d "
+            "ttfa_ms=%d content_ttfa_ms=%d ep_dispatch_ms=%d llm_ttft_ms=%d "
             "chunk_gate_ms=%d tts_first_byte_ms=%d audio_wire_ms=%d "
             "flags=%s model=%s stt_model=%s "
             "eot_confident=%s capture_phase=%s",
             self.turn_seq, self.path, self.outcome,
-            d(self.t4, self.t0),            # ttfa_ms — the headline
-            d(self.t_dispatch, self.t0),    # ep_dispatch_ms — queue/scheduling
-            d(self.t1, self.t_dispatch),    # llm_ttft_ms — Claude first token
-            d(self.t2, self.t1),            # chunk_gate_ms — WS-A lever
-            d(self.t3, self.t2),            # tts_first_byte_ms — WS-B lever
-            d(self.t4, self.t3),            # audio_wire_ms — encode/queue/send
+            d(self.t4, self.t0),                    # ttfa_ms — perceived headline
+            d(self.content_t4, self.t0),            # content_ttfa_ms — real content
+            d(self.t_dispatch, self.t0),            # ep_dispatch_ms — queue/scheduling
+            d(self.t1, self.t_dispatch),            # llm_ttft_ms — Claude first token
+            d(self.t2, self.t1),                    # chunk_gate_ms — WS-A lever
+            d(self.content_t3, self.t2),            # tts_first_byte_ms — WS-B lever
+            d(self.content_t4, self.content_t3),    # audio_wire_ms — encode/queue/send
             _active_flags() or "-",
             self.model or "-",
             _STT_MODEL,
             self.eot_confident,
             self.capture_phase,
         )
-        # NOTE: content_t3/content_t4 (true-content TTFA when a filler masks LLM
-        # latency) are deferred — they need filler-marker awareness from _tts_loop.
-        # Fields exist on the record; wire when the filler/WS-B pass lands.
