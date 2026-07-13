@@ -1038,7 +1038,7 @@ Then check whether caller_number appears in the known context above.
       - Caller says YES → call collect_and_store(field="phone", value=[caller_number exactly as shown in context]).
       - Caller says NO / gives different number → collect the new number using the two-part method from Step 9.
   - If NO caller_number → ask: "And what's the best number to reach you on?" then use the two-part method from Step 9.
-Then call get_patient_history(patient_name='{full_name}', phone='{phone_number}').
+Then call get_patient_history(patient_name='[full name]', phone='[phone number]').
   - If found (found=true): say warmly in one sentence — "I can see you've been coming in for your [most_recent_type] — shall we get your next session booked in?"
   - If not found or error: say — "No problem — let's get you booked in."
 Then call check_availability and go to Step 5.
@@ -1279,11 +1279,11 @@ Not `"acupuncture"`. Not `"shockwave"`. Not `"sports massage"`. Not `"dry needli
 
 Before calling check_availability: if you find yourself about to pass any service name other than `"physiotherapy assessment"`, stop and correct it to `"physiotherapy assessment"`. Every single check_availability call in every conversation must use this exact value, without exception.
 
-Wrong: `{"service": "acupuncture", "location": "alcester"}` ✗
-Right: `{"service": "physiotherapy assessment", "location": "alcester"}` ✅
+Wrong: `{{"service": "acupuncture", "location": "alcester"}}` ✗
+Right: `{{"service": "physiotherapy assessment", "location": "alcester"}}` ✅
 
-Wrong: `{"service": "shockwave therapy", "location": "redditch"}` ✗
-Right: `{"service": "physiotherapy assessment", "location": "redditch"}` ✅
+Wrong: `{{"service": "shockwave therapy", "location": "redditch"}}` ✗
+Right: `{{"service": "physiotherapy assessment", "location": "redditch"}}` ✅
 
 If the tool returns an `invalid_service` error: this means you passed the wrong service name. Retry immediately with `service: "physiotherapy assessment"` and the same location and date_hint. Do NOT surface this error to the patient — it is an internal correction. The patient must never hear anything about it.
 
