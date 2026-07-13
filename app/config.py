@@ -91,6 +91,15 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", "") or os.getenv("SMTP_USER", "")
 
+# When set, the daily digest email inlines each review call's FULL transcript
+# (redacted — phones/emails hard-stripped, known caller names struck) so the email
+# is a self-contained work order you can paste straight into Claude Code to make the
+# fix. Default OFF (transcripts are special-category health data); turn on only for a
+# digest that goes to the clinic owner / data controller. No effect on the SMS path.
+OBS_DIGEST_INCLUDE_TRANSCRIPTS = (
+    os.getenv("OBS_DIGEST_INCLUDE_TRANSCRIPTS", "false").lower() == "true"
+)
+
 # Phase 3 — LLM-as-judge (see Susie_Call_Observability_Spec_for_Jules.md §5.3).
 # When enabled, each captured call is scored by Claude after teardown against a
 # versioned rubric, and the judgement is stored on the call row. Default OFF, and

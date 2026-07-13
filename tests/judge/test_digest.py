@@ -155,3 +155,45 @@ async def test_digest_prefers_email_when_configured(tmp_path, monkeypatch):
         mock_sms.assert_not_awaited()        # NOT texted
     finally:
         store.reset_engine()
+
+
+# ---------------------------------------------------------------------------
+# Inlined redacted transcripts (OBS_DIGEST_INCLUDE_TRANSCRIPTS)
+# ---------------------------------------------------------------------------
+
+def _call_with_transcript():
+    return {
+        "call_sid": "CAx", "quality_score": 1, "failure_tags": ["wrong_info"],
+        "evidence": "quoted the wrong price", "collected": {"name": "Quentin Rock"},
+        "transcript": [
+            {"role": "user", "text": "Hi it's Quentin Rock, my number's 07700 900123"},
+            {"role": "assistant", "text": "Thanks Quentin, an assessment is forty five pounds."},
+        ],
+    }
+
+
+def test_build_email_omits_transcript_by_default(monkeypatch):
+    monkeypatch.setattr(config, "OBS_DIGEST_INCLUDE_TRANSCRIPTS", False)
+    _, body = digest.build_email([_call_with_transcript()], 24)
+    assert "transcript (redacted)" not in body
+
+
+def test_build_email_includes_redacted_transcript_when_enabled(monkeypatch):
+    monkeypatch.setattr(config, "OBS_DIGEST_INCLUDE_TRANSCRIPTS", True)
+    _, body = digest.build_email([_call_with_transcript()], 24)
+    # the transcript is present...
+    assert "transcript (redacted)" in body
+    assert "an assessment is forty five pounds" in body
+    # ...but the phone and known name are gone, replaced by placeholders.
+    assert "07700 900123" not in body and "07700900123" not in body
+    assert "[PHONE]" in body
+    assert "Quentin" not in body and "Rock" not in body
+    assert "[NAME]" in body
+
+
+def test_transcript_lines_withholds_on_pii_leak(monkeypatch):
+    # If redaction somehow leaves a phone/email, the transcript is withheld, not emitted.
+    monkeypatch.setattr(digest.redact, "redact_transcript",
+                        lambda turns, names: [{"role": "user", "text": "call 07700 900123"}])
+    lines = digest._transcript_lines({"transcript": [{"role": "user", "text": "x"}]})
+    assert lines == ["      (transcript withheld — redaction check failed)"]
