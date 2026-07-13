@@ -19,6 +19,13 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 SHEET_ID = os.getenv("GOOGLE_SHEETS_ID", "").strip()
 
+# latency-eval isolation: Google Sheets writes are OFF unless explicitly enabled.
+# This guarantees eval calls never pollute a live clinic's Sheet even if
+# GOOGLE_SHEETS_ID is still set in the Render env (autoDeploy is off, so blanking
+# the env var in the dashboard is unreliable). Belt-and-suspenders, mirrors the
+# SMS_ENABLED default-flip. Do NOT port this default to main/theorem/jv live branches.
+SHEETS_ENABLED = os.getenv("SHEETS_ENABLED", "false").strip().lower() == "true"
+
 DEFAULT_MESSAGES_TAB = os.getenv("GOOGLE_SHEETS_MESSAGES_TAB", "Messages").strip()
 DEFAULT_SUMMARY_TAB = os.getenv("GOOGLE_SHEETS_SUMMARY_TAB", "CallSummaries").strip()
 
@@ -35,6 +42,10 @@ def _get_service():
     Safe to call many times.
     """
     global _cached_service
+
+    if not SHEETS_ENABLED:
+        print("Sheets disabled (SHEETS_ENABLED not true) — no write performed")
+        return None
 
     raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if not raw or not SHEET_ID:
