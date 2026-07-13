@@ -295,6 +295,23 @@ _BOOKING_OFFER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Gate 5e — surname re-ask.  Once a first name is on file the caller must never
+# be audibly asked for their surname again; name_capture back-fills it silently
+# (Quentin, 2026-07-13).  Matches surname-only REQUESTS — "and your surname?",
+# "your surname?", "could I take your surname", "what's your surname", "your
+# last/family name?" — but NOT the combined opener "your first name and
+# surname" (no "your surname" bigram there) and NOT a bare acknowledgement.
+# The gate that uses it only fires once a first name is captured, so the
+# opening ask (asked before any name is stored) is never touched.
+_SURNAME_ASK_RE = re.compile(
+    r"(?:\band\b\s+)?"
+    r"(?:(?:could|can|may)\s+i\s+(?:just\s+|also\s+)?(?:take|get|have)\s+|"
+    r"what'?s\s+|what\s+is\s+|do\s+you\s+have\s+)?"
+    r"your\s+(?:surname|last\s+name|family\s+name)"
+    r"(?:\s+please)?\s*\??",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Gate 5a — chunk-level reasoning drop patterns
@@ -470,6 +487,54 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                 logger.info(
                     "[ms_gate5] booking offer KEPT — it is the whole response "
                     "(closing confirmation), not a redundant tail"
+                )
+
+    # ── Gate 5e: never audibly re-ask the surname (2026-07-13) ───────────────
+    # Once a first name is on file, the surname is captured SILENTLY by
+    # name_capture (same-breath extract + later back-fill); the caller must
+    # never be stopped to give it.  Fires only when a first name is already
+    # stored — so the opening ask ("your first name and surname?", asked before
+    # any name is captured) is untouched.  Booking-intent only: the
+    # reschedule/cancel prompt still asks "your first name, then your surname,
+    # and the phone…" (a combined ask containing the "your surname" bigram), so
+    # excluding those intents prevents mangling that request — a no-op if, as
+    # intended, those flows collect phone only.
+    _fn_captured = bool(
+        (session.get("collected") or {}).get("name")
+        or session.get("patient_name")
+    )
+    _intent = session.get("v3_caller_intent") or "booking"
+    if _fn_captured and _intent not in ("reschedule", "cancel"):
+        _surname_stripped = _SURNAME_ASK_RE.sub("", result)
+        if _surname_stripped != result:
+            _rest = _surname_stripped.strip(" \t—–-,.")
+            _has_forward = ("?" in _surname_stripped) or (len(_rest.split()) > 3)
+            if _has_forward:
+                # Other substantive content (a FAQ answer / another question)
+                # carries the turn — just drop the surname clause.
+                logger.info("[ms_gate5] surname re-ask removed (content remains)")
+                result = _surname_stripped
+            elif not session.get("v3_location_confirmed"):
+                # Stripping would leave only an acknowledgement.  Keep forward
+                # motion (Gate 5c rule: never hand the caller a dead-end): a
+                # standalone name-ack + surname-ask only happens on the booking
+                # path (FAQ turns carry their answer), so move to the clinic
+                # question.  Wording matches the location-ladder detector.
+                _clinic_q = (
+                    "Which clinic were you thinking of "
+                    "— Awlstuh or Redditch?"
+                )
+                result = f"{_rest} — {_clinic_q}" if _rest else _clinic_q
+                logger.info(
+                    "[ms_gate5] surname re-ask replaced with clinic question "
+                    "(no dead-end)"
+                )
+            else:
+                # Clinic already known and stripping would strand the turn —
+                # leave the original rather than dead-air (rare edge).
+                logger.info(
+                    "[ms_gate5] surname re-ask kept (would strand turn; "
+                    "clinic already confirmed)"
                 )
 
     result = result.replace("\n", " ")
