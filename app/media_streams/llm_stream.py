@@ -381,6 +381,10 @@ class LLMStream:
 
     def __init__(self) -> None:
         self._last_filler_at: float = 0.0
+        # Latency-eval per-turn timing record, stashed by connection._llm_loop
+        # before each run_turn. None when LATENCY_TIMING is OFF (default) so all
+        # stamp sites short-circuit on a falsy check.
+        self._timing = None
 
     async def run_turn(
         self,
@@ -413,6 +417,12 @@ class LLMStream:
             await tts_text_queue.put(fp_result.response_text)
             _advance_fp_state(session, fp_result.turn_type)
             if not fp_result.needs_llm_followup:
+                # Pure fast-path (no LLM tokens): tag it so it never pollutes
+                # the LLM TTFT / chunk-gate stats. t1==t2 at the queue put.
+                if self._timing is not None:
+                    self._timing.path = "fast_path"
+                    self._timing.stamp("t1")
+                    self._timing.stamp("t2")
                 # Update history with fast-path exchange
                 _append_history(session, user_text, fp_result.response_text)
                 await save_session(call_sid, session)
@@ -424,6 +434,9 @@ class LLMStream:
 
         # ── Step 4: Model selection ──────────────────────────────────────
         model = _pick_model(session)
+        # latency-eval: record the model on the timing record (None when OFF).
+        if self._timing is not None:
+            self._timing.model = model
 
         # ── Step 5: System prompt (two-block caching) ───────────────────
         # static_prompt: large, never changes within a call → cached.
@@ -1365,6 +1378,9 @@ class LLMStream:
 
                             if not got_first_chunk:
                                 got_first_chunk = True
+                                # t1 — first LLM token (latency-eval; None when OFF)
+                                if self._timing is not None:
+                                    self._timing.stamp("t1")
                                 # Cancel background filler task — response arrived in time
                                 if _filler_task and not _filler_task.done():
                                     _filler_task.cancel()
@@ -1383,6 +1399,9 @@ class LLMStream:
                                 # GATE 5: sanitise before TTS
                                 chunk = sanitise_response(chunk, session)
                                 if chunk:
+                                    # t2 — first content chunk to TTS (WS-A gate cost)
+                                    if self._timing is not None:
+                                        self._timing.stamp("t2")
                                     # Prefix with PRE_SLOT_MARKER so the
                                     # tts_loop can drop this chunk if
                                     # check_availability is detected this turn.
@@ -1407,6 +1426,10 @@ class LLMStream:
                 # GATE 5: sanitise flush chunk before TTS
                 final_chunk = sanitise_response(final_chunk, session)
                 if final_chunk:
+                    # t2 fallback — whole reply arrived as a single flush chunk
+                    # (first-write-wins, so a no-op if t2 already stamped above).
+                    if self._timing is not None:
+                        self._timing.stamp("t2")
                     await tts_text_queue.put(PRE_SLOT_MARKER + final_chunk)
                     _any_tts_emitted = True
 

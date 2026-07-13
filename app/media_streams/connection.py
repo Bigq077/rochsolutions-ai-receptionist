@@ -96,6 +96,10 @@ from .session import (
 from .audio_in import AudioInputProcessor
 from .audio_out import AudioOutputProcessor
 from .stt_stream import STTStream
+# Latency-eval instrumentation (latency-eval branch only). new_turn() returns
+# None when LATENCY_TIMING is unset → every stamp site is a single falsy check,
+# so the live/OFF hot path is byte-behaviour-identical.
+from .latency_timing import new_turn as _lat_new_turn, capture_phase as _lat_capture_phase
 
 logger = logging.getLogger(__name__)
 
@@ -3930,6 +3934,11 @@ class WebSocketCallHandler:
         # preventing multiple injections across consecutive TTS chunks.
         self._filler_breath_injected: bool = False
 
+        # ── Latency-eval per-turn timing record ────────────────────────────
+        # Owned by the handler; created at t_dispatch in _llm_loop, read by the
+        # TTS/send loops for t3/t4. None when LATENCY_TIMING is OFF (default).
+        self._turn_timing = None
+
         # ── Control events ─────────────────────────────────────────────────
         self._stop_event    = asyncio.Event()  # set when "stop" received or WS closes
         self._started_event = asyncio.Event()  # set when "start" event is processed
@@ -5326,6 +5335,24 @@ class WebSocketCallHandler:
                     # wait for the next utterance.
                     if await self._resolve_barge_in(utterance):
                         continue
+
+                    # ── Latency-eval: open the per-turn timing record ────────
+                    # The turn is committed past the input guards above; this
+                    # freeform loop hands (almost) every utterance to run_turn.
+                    # Close any prior record that never reached t4 (a superseded
+                    # split-utterance or a deterministic branch) as abandoned,
+                    # then open a fresh one carrying t0 from the enqueue stamp.
+                    # _lat_new_turn() returns None when LATENCY_TIMING is OFF, so
+                    # this whole block is one falsy check + None assign when live.
+                    if self._turn_timing is not None and not self._turn_timing._emitted:
+                        self._turn_timing.outcome = "abandoned"
+                        self._turn_timing.emit()
+                    self._turn_timing = _lat_new_turn(t0=_enqueue_ts)
+                    if self._turn_timing is not None:
+                        self._turn_timing.capture_phase = _lat_capture_phase(self.session)
+                        # Stash on the per-call LLMStream so _stream_claude can
+                        # stamp t1/t2 without threading a param through 5 call sites.
+                        llm._timing = self._turn_timing
 
                     # ── Booking-flow verbal phone confirm ────────────────────
                     # Reschedule/cancel set v3_awaiting_phone_confirm and have a
@@ -10367,6 +10394,13 @@ class WebSocketCallHandler:
                         )
                     continue
 
+                # t3 — first audio frame of the turn ready to send (dequeued).
+                # The send loop normally blocks on an empty queue, so dequeue ≈
+                # enqueue; this isolates EL synth latency into tts_first_byte_ms
+                # (t3−t2) and leaves audio_wire_ms (t4−t3) as the bare send.
+                if self._turn_timing is not None and self._turn_timing.t3 is None:
+                    self._turn_timing.stamp("t3")
+
                 try:
                     await self.websocket.send_json({
                         "event":     "media",
@@ -10374,6 +10408,11 @@ class WebSocketCallHandler:
                         "media":     {"payload": b64_payload},
                     })
                     now = time.monotonic()
+                    # t4 — first audio frame sent to Twilio (the number that
+                    # matters); closes and emits the record for this turn.
+                    if self._turn_timing is not None and self._turn_timing.t4 is None:
+                        self._turn_timing.stamp("t4", now)
+                        self._turn_timing.emit()
                     self._last_audio_at                = now
                     self.session["last_audio_sent_at"] = _iso_now()
                     # Count raw mulaw bytes for play-duration estimate.
