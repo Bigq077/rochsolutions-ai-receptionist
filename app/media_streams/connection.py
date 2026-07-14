@@ -2985,6 +2985,19 @@ class SilenceHandler:
                     _sess_state_w, _wait,
                 )
 
+        # FIRST TURN (opening greeting, before the caller has spoken) — hard
+        # override to 4.5s.  The greeting and its no-input re-asks are the only
+        # prompts containing "how can I help"; nothing after the caller speaks
+        # matches, so the rest of the call keeps its normal timing.  Placed
+        # AFTER the floor blocks so it wins over the 10s phone_confirm_grace that
+        # the initial flow_step=0 otherwise pins on the greeting turn — a silent
+        # line now gets re-prompted promptly instead of after ~10s dead air.
+        if "how can i help" in _last_bot_w:
+            _wait = 4.5
+            logger.info(
+                "[ms_watchdog] greeting first-turn — wait set to %.1fs", _wait
+            )
+
         # Ownership check: yield once so any pending cancellation of a superseded
         # task is delivered before we log WATCHDOG_START.  If a newer watchdog task
         # has already been assigned to _no_input_watchdog_task, this task is stale
