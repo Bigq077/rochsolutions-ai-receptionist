@@ -37,6 +37,7 @@ import asyncio
 import copy
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -102,6 +103,121 @@ SILENCE_RECOVERY_FALLBACK = (
 SLOT_RECOVERY_FALLBACK = (
     "Sorry, could you say that again for me?"
 )
+
+
+# ---------------------------------------------------------------------------
+# Surname-ask suppression gate (theorem_v3 greeting name-first)
+# ---------------------------------------------------------------------------
+# Live-call bug (2026-07-14 22:12): STT splits "Quinton Rock" into two FINALs;
+# Susie answers "quinton" before "rock" lands and asks "…and your surname?" —
+# a surname the caller is already saying.  The prompt already forbids this
+# (6ca8830) but Sonnet ignores it in the split case.  The back-fill (Change A)
+# captures the trailing surname silently, but the redundant *question* still
+# plays.  This gate deterministically drops that standalone surname follow-up
+# in the greeting name-first flow and, when the turn was nothing but a name
+# acknowledgement + surname-ask, carries on with the standard continuation so
+# Susie never dead-ends.  Kill-switch: set V3_SUPPRESS_SURNAME_ASK=0 to disable
+# at deploy without a code change.  Default ON.
+_SUPPRESS_SURNAME_ASK: bool = (
+    os.getenv("V3_SUPPRESS_SURNAME_ASK", "1").strip().lower()
+    not in ("0", "false", "no", "off", "")
+)
+
+# Standalone trailing surname request — the redundant follow-up.  Anchored to
+# the END of the text so it matches "Thanks Quinton — and your surname?" but
+# NOT the opener "…take your first name and surname?" (no "your surname"
+# substring) nor the reschedule/cancel compound ask "…your surname, and the
+# phone number you used when you booked?" (surname is mid-sentence, not final).
+_SURNAME_ASK_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[\s—,:;-])"                    # start or a separator
+    r"(?:and\s+|so\s+|now\s+)?"                # optional lead-in
+    r"(?:can\s+i\s+(?:get|take|have)\s+"
+    r"|could\s+i\s+(?:get|take|have)\s+"
+    r"|may\s+i\s+(?:get|take|have)\s+"
+    r"|what(?:'s|\s+is)\s+"
+    r"|and\s+)?"                               # optional verb phrase
+    r"your\s+(?:surname|last\s+name|family\s+name)"   # the surname noun
+    r"\s*\??\s*$"                              # optional '?' anchored to END
+)
+
+# A bare acknowledgement ("Thanks Quinton", "Lovely —", "Brilliant, Sarah.") —
+# anchored to the WHOLE string so it only matches when nothing substantive
+# remains after the surname-ask was stripped.  A turn that also produced real
+# content (e.g. an answered held question) will NOT match, so its content is
+# kept and only the redundant ask is dropped.
+_BARE_ACK_RE = re.compile(
+    r"(?i)^\s*(?:thanks|thank you|brilliant|lovely|great|perfect|wonderful"
+    r"|of course|certainly|okay|ok)"
+    r"(?:\s+[a-z][a-z'’-]+)?"          # optional single first-name token
+    r"[\s—,.:;-]*$"
+)
+
+
+def _is_bare_acknowledgement(text: str) -> bool:
+    """True when `text` is only an acknowledgement (optionally + a first name)."""
+    return bool(_BARE_ACK_RE.match(text or ""))
+
+# Spoken when the whole turn was just an acknowledgement + surname-ask, so the
+# caller is carried on to the request instead of dead-ending at "Thanks X —".
+_SURNAME_ASK_CONTINUATION = "So, how can I help you today?"
+
+
+def _surname_ask_gate_active(session: Dict[str, Any]) -> bool:
+    """True when the greeting name-first surname-ask suppressor should run.
+
+    Scoped tightly: theorem_v3 only, while name collection is active and the
+    booking is not yet confirmed, and NEVER in the reschedule/cancel lookup
+    flows where the surname is a required lookup key.
+    """
+    if not _SUPPRESS_SURNAME_ASK:
+        return False
+    if session.get("clinic_id") != "theorem_v3":
+        return False
+    if not session.get("v3_name_collection_active"):
+        return False
+    if session.get("booking_confirmed"):
+        return False
+    # Reschedule/cancel: the surname is needed to look up the appointment.
+    if session.get("rc_stage"):
+        return False
+    if session.get("v3_caller_intent") in ("reschedule", "cancel"):
+        return False
+    if session.get("state") in ("LOOKUP_RESCHEDULE", "LOOKUP_CANCEL"):
+        return False
+    return True
+
+
+def _strip_trailing_surname_ask(text: str) -> tuple:
+    """Remove a standalone trailing surname request from an assistant chunk.
+
+    Returns (stripped_text, did_strip).  Only a surname-ask anchored to the end
+    of the text is removed; a leading acknowledgement is preserved.
+    """
+    if not text:
+        return text, False
+    m = _SURNAME_ASK_RE.search(text)
+    if not m:
+        return text, False
+    stripped = text[: m.start()]
+    # Clean any dangling separator/punctuation the cut left behind.
+    stripped = re.sub(r"[\s—,:;-]+$", "", stripped).strip()
+    return stripped, True
+
+
+def _rewrite_surname_ask_reply(text: str) -> tuple:
+    """Whole-response form of the gate, used to keep history in sync with audio.
+
+    Strips a trailing surname-ask and, if only an acknowledgement remains,
+    appends the standard continuation.  Returns (new_text, changed).
+    """
+    stripped, did = _strip_trailing_surname_ask(text or "")
+    if not did:
+        return text, False
+    if _is_bare_acknowledgement(stripped):
+        _sep = "" if (not stripped or stripped[-1] in ".!?") else "."
+        stripped = (stripped + _sep + " " + _SURNAME_ASK_CONTINUATION).strip()
+    return stripped, True
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +536,20 @@ class LLMStream:
                 full_reply = ""
             else:
                 session["_last_llm_response"] = full_reply
+
+        # Surname-ask gate fired mid-stream: rewrite the assembled reply the
+        # same way it was spoken so conversation history and last_bot_prompt
+        # match the audio (Susie never "asked" the surname on the record).  The
+        # "Thanks [first name]" acknowledgement is preserved, so name extraction
+        # and the v3_awaiting_surname back-fill in connection.py are unaffected.
+        if session.pop("_v3_surname_ask_suppressed", False) and full_reply.strip():
+            _rewritten, _changed = _rewrite_surname_ask_reply(full_reply)
+            if _changed:
+                logger.info(
+                    "[ms_llm] full_reply rewritten to match suppressed"
+                    " surname-ask audio: %r", _rewritten[:80]
+                )
+                full_reply = _rewritten
 
         if not transfer_initiated:
             _append_history(session, user_text, full_reply)
@@ -1168,6 +1298,14 @@ class LLMStream:
         _first_tts_emitted   = False  # tracks whether first TTS chunk has been sent
         _any_tts_emitted     = False  # True if ANY sanitised chunk actually reached the queue
 
+        # Surname-ask suppression gate (greeting name-first). Evaluated once per
+        # streaming call; when active, a standalone trailing surname follow-up is
+        # dropped before TTS and — if the turn was only an ack + that ask — the
+        # standard continuation is spoken so Susie carries on. See module header.
+        _surname_gate         = _surname_ask_gate_active(session)
+        _surname_ask_stripped = False
+        _emitted_spoken       = ""    # sanitised text actually queued this turn
+
         # Reset ack-filler state for this turn.  _ack_filler_active is set True
         # by _delayed_filler() below when FILLER_PHRASE is queued; with_filler()
         # reads it and sets _ack_filler_cancelled True when a tool-call filler
@@ -1320,12 +1458,18 @@ class LLMStream:
                                             )
                                 # GATE 5: sanitise before TTS
                                 chunk = sanitise_response(chunk, session)
+                                # Surname-ask gate: drop a standalone trailing
+                                # surname follow-up before it reaches TTS.
+                                if _surname_gate and chunk:
+                                    chunk, _st = _strip_trailing_surname_ask(chunk)
+                                    _surname_ask_stripped = _surname_ask_stripped or _st
                                 if chunk:
                                     # Prefix with PRE_SLOT_MARKER so the
                                     # tts_loop can drop this chunk if
                                     # check_availability is detected this turn.
                                     await tts_text_queue.put(PRE_SLOT_MARKER + chunk)
                                     _any_tts_emitted = True
+                                    _emitted_spoken += " " + chunk
 
                         continue
 
@@ -1344,9 +1488,35 @@ class LLMStream:
                     _first_tts_emitted = True
                 # GATE 5: sanitise flush chunk before TTS
                 final_chunk = sanitise_response(final_chunk, session)
+                # Surname-ask gate: drop a standalone trailing surname follow-up.
+                if _surname_gate and final_chunk:
+                    final_chunk, _st = _strip_trailing_surname_ask(final_chunk)
+                    _surname_ask_stripped = _surname_ask_stripped or _st
                 if final_chunk:
                     await tts_text_queue.put(PRE_SLOT_MARKER + final_chunk)
                     _any_tts_emitted = True
+                    _emitted_spoken += " " + final_chunk
+
+            # ── Surname-ask gate: carry on instead of dead-ending ─────────
+            # If the whole turn was just an acknowledgement + surname-ask, what
+            # remains after stripping ("Thanks Quinton") would dead-end.  Speak
+            # the standard continuation so Susie carries on; the trailing
+            # surname is still back-filled silently by connection.py.  A turn
+            # that produced real content (e.g. an answered held question) keeps
+            # that content — only the redundant ask was dropped.  A session flag
+            # signals run_turn to rewrite full_reply so history matches audio.
+            if _surname_gate and _surname_ask_stripped:
+                if _is_bare_acknowledgement(_emitted_spoken.strip()):
+                    await tts_text_queue.put(_SURNAME_ASK_CONTINUATION)
+                    _any_tts_emitted = True
+                    logger.info(
+                        "[ms_llm] surname-ask suppressed — continuation spoken"
+                    )
+                else:
+                    logger.info(
+                        "[ms_llm] surname-ask clause stripped — kept turn content"
+                    )
+                session["_v3_surname_ask_suppressed"] = True
 
             # ── GATE 5: per-turn reasoning drop count ─────────────────────
             _g5_drops = int(session.pop("_gate5_reasoning_drops", 0) or 0)
