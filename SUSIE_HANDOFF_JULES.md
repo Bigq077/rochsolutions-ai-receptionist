@@ -156,7 +156,7 @@ The eval is deliberately safe to hammer.
 > shipped: it records `endpoint_wait_ms` + `[LAT-EP]` cutoffs. **Phase 2 (the actual
 > semantic endpointing) is NOT built** — there is no env flag today that changes turn-taking
 > behaviour. So you cannot "flip a flag and A/B" yet: you must first **build Phase 2** per
-> `LATENCY_WS-C_MEASUREMENT_AND_PLAN.md`, then A/B. When you build it, gate it behind the env
+> `LATENCY_WS-C.md`, then A/B. When you build it, gate it behind the env
 > name `latency_timing.py:44` already maps to `flags=C` — **`WS_C_SEMANTIC_ENDPOINT`** — so
 > the `[LAT]` tag lights up (the WS-C plan doc calls it `WS_C_PHASE_ENDPOINT`; pick one name
 > and reconcile). Until Phase 2 exists, **every turn is baseline (`flags=-`)** and the only
@@ -213,11 +213,11 @@ True voice-to-voice ≈ **2.65s** (≈600 endpoint + ≈2050 TTFA).
 
 Three latency levers were planned; here's where they landed (full write-ups in the
 `LATENCY_*.md` files):
-- **WS-A (chunk gate)** — `LATENCY_WS-A_RESULT.md`. **NULL result, shelved.** chunk_gate
+- **WS-A (chunk gate)** — `LATENCY.md` §5. **NULL result, shelved.** chunk_gate
   is floored by first-sentence generation time, so the word-gate barely helps. Flag stays
   OFF. Don't reopen this.
 - **WS-B (streaming TTS)** — **skip.** `tts_first_byte` is already ~121ms; nothing to win.
-- **WS-C (endpointing)** — `LATENCY_WS-C_MEASUREMENT_AND_PLAN.md`. **The live lever.** The
+- **WS-C (endpointing)** — `LATENCY_WS-C.md`. **The live lever.** The
   ~600ms silence floor is the only large attackable slice, AND it's the shared root of the
   "didn't understand me" clipping. **Phase-1 measurement is shipped; Phase 2 (the actual
   semantic endpointer) is NOT built yet** — building it (a phase-aware config change) is the
@@ -232,16 +232,13 @@ Three latency levers were planned; here's where they landed (full write-ups in t
 
 ### The `LATENCY_*.md` documents — what they are & reading order
 
-You'll live in these. Read them in this order:
+The latency work lives in **three** docs (consolidated from a larger set). Read in order:
 
 | # | Document | What it is | Read it… |
 |---|---|---|---|
-| 1 | `LATENCY_SIDE_BRANCH_EVAL_PLAN.md` | The master plan: isolation rules, the 3 levers, the "measure first" philosophy. | First — the *why*. |
-| 2 | `LATENCY_BASELINE_LOCKED.md` | The locked baseline numbers (n=28) any lever is judged against. | Second — the *target*. |
-| 3 | **`LATENCY_WS-C_MEASUREMENT_AND_PLAN.md`** | **Your main doc.** Phase-1 endpoint measurement (shipped) + the Phase-2 phase-aware endpointing plan you're building. | Third — and keep open while you work. |
-| 4 | `LATENCY_WS-A_RESULT.md` | Why WS-A was a null result. | To avoid re-running a dead lever. |
-| 5 | `LATENCY_MEASUREMENT_SPEC.md`, `LATENCY_INSTRUMENTATION_WIRING.md`, `LATENCY_HARNESS_SETUP.md` | How the `[LAT]` harness is designed and wired (the 6 timestamps, the `TurnTiming` record). | When you touch the instrumentation itself. |
-| 6 | `LATENCY_WS-A_CHUNK_GATE_SPEC.md` + `_PSEUDOCODE.md` | The WS-A design (shelved; historical). | Only for context. |
+| 1 | `LATENCY.md` | **Master** — the plan, isolation rules, the locked baseline (n=28), the 3-lever status board + "you are here", and the WS-A null verdict (with what was tried). | First — strategy + status. |
+| 2 | **`LATENCY_WS-C.md`** | **Your main doc.** Phase-1 endpoint measurement (shipped) + the Phase-2 phase-aware endpointing plan you're building. | Second — keep open while you work. |
+| 3 | `LATENCY_HARNESS.md` | The `[LAT]`/`[LAT-EP]` measurement system: schema, the 6 timestamps, wiring, `lat_parse.py` usage, and the eval infra/isolation. | When you touch the instrumentation or run the baseline. |
 | — | `lat_parse.py` | The offline analyser you run on grepped `[LAT]`/`[LAT-EP]`. | Every measurement. |
 | — | `lat_baseline_29turns.txt`, `lat_wsA_ON_27turns.txt` | Raw data behind the baseline and the WS-A null — reproduce with `lat_parse.py`. | To sanity-check the numbers. |
 
@@ -249,7 +246,7 @@ You'll live in these. Read them in this order:
 
 | Item | State |
 |---|---|
-| Turn anatomy measured, baseline locked | ✅ done (`LATENCY_BASELINE_LOCKED.md`) |
+| Turn anatomy measured, baseline locked | ✅ done (`LATENCY.md`) |
 | WS-A (chunk gate) | ✅ tried → **null → shelved**, flag OFF. Don't reopen. |
 | WS-B (streaming TTS) | ✅ decided **skip** (ceiling too low) |
 | WS-C **Phase 1** — endpoint + cutoff instrumentation | ✅ **shipped** (`e7f64ff`) — but **not yet measured on calls**. Deploying the code ≠ having the baseline. |
@@ -262,7 +259,7 @@ You'll live in these. Read them in this order:
    lat_parse.py`, and record the **WS-C ENDPOINT** block — `endpoint_wait_ms` p50/p90 and the
    cutoff rate **per capture_phase**. That's the number Phase 2 must beat, and the cutoff
    rate it must not raise.
-2. **Build WS-C Phase 2** per `LATENCY_WS-C_MEASUREMENT_AND_PLAN.md` §3 — turn on the dormant
+2. **Build WS-C Phase 2** per `LATENCY_WS-C.md` §3 — turn on the dormant
    AssemblyAI v3 semantic endpointer (a config change, not a rebuild), **Approach A** (single
    semantic profile) first, gated behind `WS_C_SEMANTIC_ENDPOINT` so `[LAT]` shows `flags=C`.
    ⚠ Open question the plan flags: does v3 support **mid-stream config update**? Verify
@@ -297,7 +294,7 @@ grep -E "\[LAT" render.log | python lat_parse.py
 ```
 It prints TTFA/chunk_gate/tts p50/p90/p95, a per-`capture_phase` breakdown, and (once WS-C
 Phase-1 is deployed) a **WS-C ENDPOINT** block: endpoint dead-time p50/p90 and cutoff rate
-per phase. The locked baseline for comparison is `LATENCY_BASELINE_LOCKED.md`.
+per phase. The locked baseline for comparison is `LATENCY.md`.
 
 ---
 

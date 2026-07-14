@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-13. **Branch:** `latency-eval` (isolated). **Live untouched.**
 **Status:** spec only — measurement built FIRST, no endpointing code until the dead-time numbers are in.
-Companion to `LATENCY_SIDE_BRANCH_EVAL_PLAN.md` (§WS-C), `LATENCY_MEASUREMENT_SPEC.md`, `LATENCY_WS-A_RESULT.md`.
+Companion to `LATENCY.md` (strategy/status/baseline/WS-A verdict) and `LATENCY_HARNESS.md`
+(the `[LAT]`/`[LAT-EP]` measurement system this builds on).
 
 ---
 

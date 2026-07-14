@@ -20,7 +20,7 @@ Sign off only when **all** hold:
 - The 🔴 GLOBAL FAIL list (below) never triggered in the last full day.
 - **Zero open P1** defects (wrong booking, template leakage, or a safety miss). No open P2
   in a core flow (booking/reschedule/cancel/name/phone).
-- Perceived TTFA is within the locked baseline (`LATENCY_BASELINE_LOCKED.md`) — no latency
+- Perceived TTFA is within the locked baseline (`LATENCY.md`) — no latency
   regression from fixes.
 - A WS-C outcome is recorded: at minimum the **Phase-1 endpoint baseline** (dead-time +
   cutoff rate per phase); and *if* Phase 2 was built this campaign, the A/B decision
@@ -182,7 +182,7 @@ Ask each; expect the exact `clinic.json` value. Any invented value = GLOBAL FAIL
 
 > **Reality check:** only WS-C **Phase 1 (measurement)** is shipped. **Phase 2 (the actual
 > semantic endpointing) is NOT built** — there's no flag that changes behaviour yet. So the
-> A/B (LT-2) is a *build task first*: implement Phase 2 per `LATENCY_WS-C_MEASUREMENT_AND_PLAN.md`,
+> A/B (LT-2) is a *build task first*: implement Phase 2 per `LATENCY_WS-C.md`,
 > then compare. Until then every turn is `flags=-` and you're collecting the Phase-1 endpoint
 > baseline (`endpoint_wait_ms`, `[LAT-EP]` cutoffs) — which is itself useful.
 
