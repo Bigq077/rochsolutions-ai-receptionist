@@ -59,6 +59,9 @@ from .config import (
     ASSEMBLYAI_MAX_RECONNECTS,
     NOISE_ONLY_WORDS,
 )
+# WS-C endpoint-latency measurement (latency-eval branch). Read-once flag; when
+# OFF every stamp below is skipped on one falsy check — no hot-path cost.
+from .latency_timing import LATENCY_TIMING as _LAT_ON
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +264,12 @@ class STTStream:
         # Instance-level buffer: persists across reconnects so no audio is
         # lost during the reconnect window.
         self._chunk_buffer:  AudioChunkBuffer   = AudioChunkBuffer()
+        # WS-C endpoint-latency measurement (only touched when _LAT_ON).
+        # _t_last_partial: monotonic time of the most recent non-empty partial;
+        # _last_endpoint_wait_ms: t_end_of_turn - t_last_partial for the last
+        # final, read by connection at turn dispatch. -1 = not yet measured.
+        self._t_last_partial:        float      = 0.0
+        self._last_endpoint_wait_ms: int        = -1
 
     async def start(
         self,
@@ -643,6 +652,10 @@ class STTStream:
                                 await on_partial(text)
                             except Exception as exc:
                                 logger.warning("[ms_stt] on_partial error: %r", exc)
+                        # WS-C: mark the last time the caller was still speaking,
+                        # so the endpoint silence (this → final) can be measured.
+                        if _LAT_ON and text:
+                            self._t_last_partial = time.monotonic()
                     else:
                         # Final — enqueue for LLM
                         if on_final_clear:
@@ -651,6 +664,13 @@ class STTStream:
                             except Exception:
                                 pass
                         self._last_final_at = time.monotonic()
+                        # WS-C: endpoint_wait = silence the endpointer imposed
+                        # after the caller's last word. Reset for the next turn.
+                        if _LAT_ON and self._t_last_partial:
+                            self._last_endpoint_wait_ms = int(
+                                (self._last_final_at - self._t_last_partial) * 1000
+                            )
+                            self._t_last_partial = 0.0
                         if not text:
                             logger.debug("[ms_stt] empty Turn final — ignoring")
                             continue

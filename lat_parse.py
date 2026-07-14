@@ -29,13 +29,25 @@ import math
 # A missing/not-applicable measurement is emitted as -1 and excluded per-metric.
 INT_FIELDS = (
     "turn_seq", "ttfa_ms", "content_ttfa_ms", "ep_dispatch_ms", "llm_ttft_ms",
-    "chunk_gate_ms", "tts_first_byte_ms", "audio_wire_ms",
+    "chunk_gate_ms", "tts_first_byte_ms", "audio_wire_ms", "endpoint_wait_ms",
 )
 STR_FIELDS = ("path", "outcome", "flags", "model", "stt_model", "eot_confident",
               "capture_phase")
 
 LAT_RE = re.compile(r"\[LAT\]\s+(.*)")
+LATEP_RE = re.compile(r"\[LAT-EP\]\s+(.*)")   # WS-C advisory cutoff lines
 KV_RE = re.compile(r"(\w+)=(\S+)")
+
+
+def parse_cutoff(line):
+    """Parse a [LAT-EP] cutoff line -> {turn_seq, reason, capture_phase} or None."""
+    m = LATEP_RE.search(line)
+    if not m:
+        return None
+    rec = {}
+    for k, v in KV_RE.findall(m.group(1)):
+        rec[k] = int(v) if k == "turn_seq" else v
+    return rec if "turn_seq" in rec else None
 
 
 def parse_line(line):
@@ -130,6 +142,7 @@ def main():
         lines = sys.stdin.readlines()
 
     recs = [r for r in (parse_line(l) for l in lines) if r]
+    cutoffs = [c for c in (parse_cutoff(l) for l in lines) if c]
     llm = [r for r in recs if r.get("path") == "llm"]
     if not llm:
         print("No [LAT] path=llm records found.", file=sys.stderr)
@@ -154,6 +167,9 @@ def main():
         "chunk_gate_ms":     [r.get("chunk_gate_ms") for r in completed],
         "tts_first_byte_ms": [r.get("tts_first_byte_ms") for r in completed],
         "ep_dispatch_ms":    [r.get("ep_dispatch_ms") for r in completed],
+        # WS-C: endpoint silence before t0. Measured on ALL llm turns (incl.
+        # abandoned) — it's upstream of the turn outcome.
+        "endpoint_wait_ms":  [r.get("endpoint_wait_ms") for r in llm],
     }
     stats = {k: summarize(v) for k, v in pools.items()}
 
@@ -180,6 +196,7 @@ def main():
     print(f"  chunk_gate  [WS-A]       {fmt(stats['chunk_gate_ms'])}")
     print(f"  tts_first_byte [WS-B]    {fmt(stats['tts_first_byte_ms'])}")
     print(f"  ep_dispatch              {fmt(stats['ep_dispatch_ms'])}")
+    print(f"  endpoint_wait [WS-C]     {fmt(stats['endpoint_wait_ms'])}  (pre-t0 silence; all llm turns)")
     print()
 
     # WS-A histogram
@@ -206,6 +223,28 @@ def main():
         t90 = f"{t['p90']:.0f}" if t else "-"
         g50 = f"{g['p50']:.0f}" if g else "-"
         print(f"    {ph:<14}{len(grp):>4}  {t50:>9}  {t90:>9}  {g50:>9}")
+    print()
+
+    # WS-C: endpoint dead-time + cutoff rate, per phase (the two Phase-1 numbers)
+    ep_phases = sorted({r.get("capture_phase") for r in llm if r.get("capture_phase")})
+    cut_by_phase = {}
+    for c in cutoffs:
+        cut_by_phase[c.get("capture_phase", "?")] = cut_by_phase.get(c.get("capture_phase", "?"), 0) + 1
+    ep_any = any(r.get("endpoint_wait_ms", -1) >= 0 for r in llm)
+    print("  WS-C ENDPOINT (pre-t0 dead-time + cutoff rate), by capture_phase:")
+    if not ep_any and not cutoffs:
+        print("    (no endpoint_wait_ms / [LAT-EP] data — Phase-1 instrumentation not deployed yet)")
+    else:
+        print(f"    {'phase':<14}{'n':>4}  {'ep_wait p50':>11}  {'ep_wait p90':>11}  {'cutoffs':>8}")
+        for ph in ep_phases:
+            grp = [r for r in llm if r.get("capture_phase") == ph]
+            e = summarize([r.get("endpoint_wait_ms") for r in grp])
+            e50 = f"{e['p50']:.0f}" if e else "-"
+            e90 = f"{e['p90']:.0f}" if e else "-"
+            nc = cut_by_phase.get(ph, 0)
+            rate = f"{nc}/{len(grp)} ({nc/len(grp)*100:.0f}%)" if grp else f"{nc}"
+            print(f"    {ph:<14}{len(grp):>4}  {e50:>11}  {e90:>11}  {rate:>8}")
+        print(f"    -> total [LAT-EP] cutoffs: {len(cutoffs)}  (advisory; confirm by listen-back)")
     print("=" * 74)
     print("  NOTE: barge-in rate is NOT a [LAT] field yet (barged_in outcome")
     print("  deferred). Count it from full logs via 'barge-in #N confirmed' if needed.")

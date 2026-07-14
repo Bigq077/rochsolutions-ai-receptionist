@@ -122,6 +122,7 @@ class TurnTiming:
     model: str = ""                      # claude model id (set by the llm path)
     eot_confident: Optional[bool] = None  # WS-C: confidence-driven vs silence fallback
     capture_phase: str = "conversation"  # conversation | phone | name
+    endpoint_wait_ms: int = -1           # WS-C: t_end_of_turn - t_last_partial (pre-t0 dead-time)
     _content_marked: bool = False        # content-boundary marker already enqueued
     _emitted: bool = False
 
@@ -159,7 +160,7 @@ class TurnTiming:
             "ttfa_ms=%d content_ttfa_ms=%d ep_dispatch_ms=%d llm_ttft_ms=%d "
             "chunk_gate_ms=%d tts_first_byte_ms=%d audio_wire_ms=%d "
             "flags=%s model=%s stt_model=%s "
-            "eot_confident=%s capture_phase=%s",
+            "eot_confident=%s capture_phase=%s endpoint_wait_ms=%d",
             self.turn_seq, self.path, self.outcome,
             d(self.t4, self.t0),                    # ttfa_ms — perceived headline
             d(self.content_t4, self.t0),            # content_ttfa_ms — real content
@@ -173,4 +174,35 @@ class TurnTiming:
             _STT_MODEL,
             self.eot_confident,
             self.capture_phase,
+            self.endpoint_wait_ms,                  # WS-C — endpoint silence before t0
         )
+
+
+# ── WS-C cutoff detector (Phase 1, advisory) ─────────────────────────────────
+# A caller turn that opens with a correction lead ("I said…", "I told you…")
+# implies the PRIOR turn's capture was clipped by the endpointer. Emitted as a
+# sibling ``[LAT-EP]`` line keyed by the prior turn_seq; the offline parser joins
+# it to compute a per-phase cutoff rate. Heuristic + advisory — confirm flagged
+# turns by listen-back; it is a relative baseline-vs-WS-C signal, not truth.
+_EP_CORRECTION_LEADS = (
+    "i said", "i told you", "i already said", "like i said",
+    "no i ", "that's not", "that's wrong", "i meant",
+)
+
+
+def is_correction_lead(utterance: str) -> bool:
+    """True if the utterance opens with a correction phrase. No-op/False when OFF."""
+    if not LATENCY_TIMING or not utterance:
+        return False
+    u = utterance.strip().lower()
+    return any(u.startswith(p) for p in _EP_CORRECTION_LEADS)
+
+
+def emit_cutoff(prev_turn_seq: int, reason: str, capture_phase: str) -> None:
+    """Log one advisory ``[LAT-EP]`` cutoff line for the prior turn. No-op when OFF."""
+    if not LATENCY_TIMING:
+        return
+    _lat_log.info(
+        "[LAT-EP] ep_cutoff turn_seq=%d reason=%s capture_phase=%s",
+        prev_turn_seq, reason, capture_phase,
+    )

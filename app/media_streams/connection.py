@@ -99,7 +99,12 @@ from .stt_stream import STTStream
 # Latency-eval instrumentation (latency-eval branch only). new_turn() returns
 # None when LATENCY_TIMING is unset → every stamp site is a single falsy check,
 # so the live/OFF hot path is byte-behaviour-identical.
-from .latency_timing import new_turn as _lat_new_turn, capture_phase as _lat_capture_phase
+from .latency_timing import (
+    new_turn as _lat_new_turn,
+    capture_phase as _lat_capture_phase,
+    is_correction_lead as _lat_is_correction_lead,
+    emit_cutoff as _lat_emit_cutoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3943,6 +3948,10 @@ class WebSocketCallHandler:
         # Owned by the handler; created at t_dispatch in _llm_loop, read by the
         # TTS/send loops for t3/t4. None when LATENCY_TIMING is OFF (default).
         self._turn_timing = None
+        # WS-C cutoff detector: remember the prior turn so a correction-lead
+        # opener on the next turn can flag it as a probable capture cutoff.
+        self._ep_prev_seq: Optional[int] = None
+        self._ep_prev_phase: str = "conversation"
 
         # ── Control events ─────────────────────────────────────────────────
         self._stop_event    = asyncio.Event()  # set when "stop" received or WS closes
@@ -5355,6 +5364,30 @@ class WebSocketCallHandler:
                     self._turn_timing = _lat_new_turn(t0=_enqueue_ts)
                     if self._turn_timing is not None:
                         self._turn_timing.capture_phase = _lat_capture_phase(self.session)
+                        # WS-C: carry the endpoint silence the STT loop measured
+                        # for the final that opened this turn, then clear the slot
+                        # so a synthetic/next turn can't reuse a stale value.
+                        # (Shared-slot: back-to-back real finals — e.g. a name
+                        # straggler — may mis-attribute; those turns are usually
+                        # abandoned/excluded, acceptable noise for measurement.)
+                        self._turn_timing.endpoint_wait_ms = getattr(
+                            self._stt_stream, "_last_endpoint_wait_ms", -1
+                        )
+                        try:
+                            self._stt_stream._last_endpoint_wait_ms = -1
+                        except Exception:
+                            pass
+                        # WS-C cutoff detector: a correction-lead opener implies
+                        # the PRIOR turn's capture was clipped by the endpointer.
+                        if (
+                            self._ep_prev_seq is not None
+                            and _lat_is_correction_lead(utterance)
+                        ):
+                            _lat_emit_cutoff(
+                                self._ep_prev_seq, "correction", self._ep_prev_phase
+                            )
+                        self._ep_prev_seq = self._turn_timing.turn_seq
+                        self._ep_prev_phase = self._turn_timing.capture_phase
                         # Stash on the per-call LLMStream so _stream_claude can
                         # stamp t1/t2 without threading a param through 5 call sites.
                         llm._timing = self._turn_timing
