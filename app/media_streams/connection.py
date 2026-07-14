@@ -577,11 +577,29 @@ _LOCATION_INDIFFERENCE_RE = re.compile(
     r"|\byou (?:pick|choose|decide)\b"
     r"|\byour (?:pick|choice|call)\b"
     r"|\bup to you\b"
-    r"|\b(?:don'?t|do not) (?:mind|care)\b"
+    # "don't mind / care", allowing a bounded set of adverbs to sit between
+    # the negation and the verb — the original regex required them to be
+    # adjacent, so "I don't REALLY care" (Leo, 2026-07-14) matched nothing and
+    # climbed the re-ask ladder instead of resolving to the default clinic.
+    r"|\b(?:don'?t|do not)\s+(?:really\s+|particularly\s+|especially\s+"
+    r"|honestly\s+|overly\s+|much\s+|that\s+)?(?:mind|care)\b"
+    # "don't know" / "no idea" are indifference ("I don't really know" →
+    # Alcester), EXCEPT when a question word follows ("I don't know WHERE they
+    # are" / "no idea WHICH is closer") — those are real questions and the
+    # lookahead lets them fall through to the LLM.
+    r"|\b(?:don'?t|do not)\s+(?:really\s+|particularly\s+|especially\s+"
+    r"|honestly\s+|overly\s+|much\s+|that\s+)?know\b"
+    r"(?!\s+(?:where|which|what|when|who|how|why|if|whether))"
     r"|\bno (?:preference|difference)\b"
+    r"|\bno idea\b(?!\s+(?:where|which|what|when|who|how|why))"
+    # bare "not sure" is indifference, but "not sure IF/WHETHER/ABOUT you do
+    # Saturdays" is a question — exclude those so they route to the LLM.
+    r"|\bnot (?:really\s+)?sure\b(?!\s+(?:if|whether|about))"
+    r"|\bnot (?:really\s+)?(?:fussed|bothered)\b"
     r"|\bdoesn'?t matter\b"
     r"|\bdoes not matter\b"
     r"|\bmakes no difference\b"
+    r"|\bsurprise me\b"
     r"|\bany (?:one|of them|of those|clinic)\b",
     re.IGNORECASE,
 )
@@ -7917,33 +7935,47 @@ class WebSocketCallHandler:
                                     #     pick / I don't mind / both" (v2-1)
                                     #   • deictic: "this clinic / this one / the
                                     #     one I called" (v2-3 / F16)
-                                    # Guarded by `not _transcript_is_question` so a
-                                    # genuine question ("what's the address of this
-                                    # clinic?") still routes to the LLM below.
+                                    # Indifference is checked WITHOUT the
+                                    # question-guard: explicit indifference
+                                    # phrases ("whichever", "whatever's easiest",
+                                    # "makes no difference") contain question-word
+                                    # SUBSTRINGS ("which", "what", "difference")
+                                    # that _transcript_is_question flags on, which
+                                    # used to send a clearly-indifferent caller to
+                                    # the LLM instead of resolving. The
+                                    # indifference regex is specific and
+                                    # self-excludes real questions ("I don't know
+                                    # WHERE…", "no idea WHICH…"), so a genuine
+                                    # question never matches it here.
                                     if (
                                         _resolved == "unknown"
-                                        and not _transcript_is_question(utterance)
+                                        and _is_location_indifference(utterance)
                                     ):
-                                        if _is_location_indifference(utterance):
-                                            _resolved = _DEFAULT_CLINIC
-                                            logger.info(
-                                                "[ms_conn v3] location"
-                                                " indifference — %r → default"
-                                                " clinic %s",
-                                                utterance[:60],
-                                                _resolved,
-                                            )
-                                        elif _is_deictic_current_clinic(
-                                            utterance
-                                        ):
-                                            _resolved = _DEFAULT_CLINIC
-                                            logger.info(
-                                                "[ms_conn v3] deictic 'this"
-                                                " clinic' — %r → default"
-                                                " clinic %s",
-                                                utterance[:60],
-                                                _resolved,
-                                            )
+                                        _resolved = _DEFAULT_CLINIC
+                                        logger.info(
+                                            "[ms_conn v3] location"
+                                            " indifference — %r → default"
+                                            " clinic %s",
+                                            utterance[:60],
+                                            _resolved,
+                                        )
+                                    # Deictic ("this clinic / the one I called")
+                                    # KEEPS the question-guard — "what's the
+                                    # address of this clinic?" must still route to
+                                    # the LLM.
+                                    elif (
+                                        _resolved == "unknown"
+                                        and not _transcript_is_question(utterance)
+                                        and _is_deictic_current_clinic(utterance)
+                                    ):
+                                        _resolved = _DEFAULT_CLINIC
+                                        logger.info(
+                                            "[ms_conn v3] deictic 'this"
+                                            " clinic' — %r → default"
+                                            " clinic %s",
+                                            utterance[:60],
+                                            _resolved,
+                                        )
 
                                     if _resolved != "unknown":
                                         _disp = _resolved.capitalize()
