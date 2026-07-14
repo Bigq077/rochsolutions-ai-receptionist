@@ -32,8 +32,7 @@ _location_short_links = {
 FEES_NOTE = (
     "Fees: £85, credit/debit cards taken.\n"
     "Surcharges: +£45 for Laser or Shockwave Therapy.\n"
-    "Cancellations with less than 24hrs notice are charged.\n"
-    "Evening appointments £10 (from 5pm).\n\n"
+    "Cancellations with less than 24hrs notice are charged.\n\n"
 )
 # Returning-on-plan patients: warm welcome-back, no arrival-time fuss
 RETURNING_PLAN_NOTE = "Great to have you back — see you at your appointment! 🙌\n\n"
