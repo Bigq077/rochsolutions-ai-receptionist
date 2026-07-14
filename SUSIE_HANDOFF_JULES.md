@@ -67,6 +67,11 @@ sequential (a barge-in cancels the current turn before the next dispatches).
 All paths under `app/` unless noted. The two big files (`connection.py` ~12k lines,
 `flow.py` ~20k lines) you navigate by grep, not by reading top-to-bottom.
 
+> **Line numbers everywhere in this doc are approximate anchors, not exact.** They came
+> from a code survey and the files change. Always **grep the described symbol/string**
+> (e.g. `backfill_surname`, `_is_clinic_own_number`, `"non-scheduling single word"`) rather
+> than jumping to a line. If an anchor doesn't match, the symbol is what's authoritative.
+
 | Area | File | What it owns |
 |---|---|---|
 | **Orchestrator** | `media_streams/connection.py` | The whole live call: turn dispatch, barge-in, the silence **watchdog** (re-ask ladder), **DTMF** keypad handling, flow routing, name/phone capture wiring, end-of-call notifications. |
@@ -133,16 +138,29 @@ invent a value):
 
 ## 4. Environment & isolation
 
-The eval is deliberately safe to hammer:
+The eval is deliberately safe to hammer.
+
+- **Dial (test line):** **`+44 7366 263180`** — the isolated eval number (a repurposed
+  staging line, not patient-facing). **This is the only number you call.**
+- **Never dial** the live JV patient line `+44 7367 002651`.
 
 | Env var | Value on eval | Meaning |
 |---|---|---|
 | `LATENCY_TIMING` | `true` | Emits `[LAT]`/`[LAT-EP]` per turn. Keep on all campaign. |
 | `SMS_ENABLED` | unset/false | No outbound SMS. Keep off. |
 | `SHEETS_ENABLED` | unset/false | No Google Sheets writes (code-gated). Keep off. |
-| `WS_A_FAST_FIRST_CHUNK` | **off** | Shelved latency lever. Leave OFF (it's a null result). |
-| `WS_C_PHASE_ENDPOINT` | off (until A/B) | The live latency lever's Phase-2 flag; you toggle it for the endpointing A/B. |
+| `WS_A_FAST_FIRST_CHUNK` | **off** | Shelved latency lever (null result). **Confirm it's OFF before Day 1** — it was flipped on for an earlier A/B. |
 | `MEDIA_STREAMS_CLINIC_ID` | `jv_v1` | Routes the eval to JV. |
+
+> **WS-C latency lever — read before you plan the A/B.** Only **Phase 1 (measurement)** is
+> shipped: it records `endpoint_wait_ms` + `[LAT-EP]` cutoffs. **Phase 2 (the actual
+> semantic endpointing) is NOT built** — there is no env flag today that changes turn-taking
+> behaviour. So you cannot "flip a flag and A/B" yet: you must first **build Phase 2** per
+> `LATENCY_WS-C_MEASUREMENT_AND_PLAN.md`, then A/B. When you build it, gate it behind the env
+> name `latency_timing.py:44` already maps to `flags=C` — **`WS_C_SEMANTIC_ENDPOINT`** — so
+> the `[LAT]` tag lights up (the WS-C plan doc calls it `WS_C_PHASE_ENDPOINT`; pick one name
+> and reconcile). Until Phase 2 exists, **every turn is baseline (`flags=-`)** and the only
+> WS-C data you're collecting is the Phase-1 endpoint baseline.
 
 **Redeploy:** Render → `low-latency-joint-venture` → **Manual Deploy → Deploy latest
 commit**. autoDeploy is OFF, so a `git push` alone does nothing until you deploy.
@@ -158,7 +176,9 @@ Sheets` log line — the write is suppressed; ignore it.)
 
 ## 5. Dev workflow (do this exactly)
 
-1. `cd` into the worktree: `C:\Users\quent\AppData\Local\Temp\claude\latency-eval-wt`.
+1. Clone the repo (`github.com/Bigq077/rochsolutions-ai-receptionist`) somewhere on your
+   own machine and check out the branch: `git checkout latency-eval`. (Don't rely on any
+   pre-existing worktree path from another machine — it won't exist on yours.)
 2. Confirm you're on `latency-eval`: `git branch --show-current`.
 3. Make the fix. Keep diffs tight and additive.
 4. **EOL footgun — this repo will corrupt your commit if you get it wrong.** The repo is
@@ -199,9 +219,10 @@ Three latency levers were planned; here's where they landed (full write-ups in t
 - **WS-B (streaming TTS)** — **skip.** `tts_first_byte` is already ~121ms; nothing to win.
 - **WS-C (endpointing)** — `LATENCY_WS-C_MEASUREMENT_AND_PLAN.md`. **The live lever.** The
   ~600ms silence floor is the only large attackable slice, AND it's the shared root of the
-  "didn't understand me" clipping. Phase-1 measurement is already shipped (§7). Phase 2 is
-  a config change (turn on the dormant AssemblyAI semantic endpointer), phase-aware,
-  behind `WS_C_PHASE_ENDPOINT`.
+  "didn't understand me" clipping. **Phase-1 measurement is shipped; Phase 2 (the actual
+  semantic endpointer) is NOT built yet** — building it (a phase-aware config change) is the
+  main latency task in this campaign. See the §4 box for the flag-name reconciliation before
+  you A/B.
 - **`llm_ttft` (~1225ms, the biggest slice)** is already prompt-cached (`llm_stream.py:443`
   two-block caching) — near its floor for Sonnet+tools. Not a cheap win.
 - **Biggest real lever = response length.** Susie's turns run 10–17s on slot lists and FAQ
@@ -306,7 +327,7 @@ wrong-but-plausible surname is invisible to the caller and flows silently to SMS
 | ID | Failure | Status | Anchor |
 |---|---|---|---|
 | E1 | Emergency → false booking/"which clinic?" pivot | FIXED | `connection.py:8928-8949`, `:10991-11001` |
-| E2 | Emergency line spoken verbatim | Prompt/knowledge | `knowledge.md`; flag `connection.py:11426-11437` |
+| E2 | Emergency safety content spoken (999 / A&E, no diagnosis) — LLM-generated, so exact wording may vary; a fail is *missing/wrong safety content*, not minor rewording | Prompt/knowledge | `knowledge.md`; flag `connection.py:11426-11437` |
 | E3 | Diagnosis/prognosis/medication answered instead of deflected | Prompt only | — |
 | E4 | Corticosteroid request must never book | Prompt | — |
 | E5 | Clinical/empathy reply cut off by echo | FIXED | `connection.py:10991-10997` |
