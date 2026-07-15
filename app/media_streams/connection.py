@@ -1225,6 +1225,72 @@ from app.name_capture import (  # noqa: E402
     backfill_surname as _v3_backfill_surname,
 )
 
+# ── Surname-first STT recovery ───────────────────────────────────────────────
+# STT sometimes clips the FRONT off a compound name answer, delivering only the
+# surname: the caller says "my first name is Quentin, my surname is Rock" but the
+# transcript arrives as "surname is rock".  Rather than discard the surname and
+# re-collect the whole name, _v3_try_persist_name PARKS it in v3_pending_surname
+# (see below) so it attaches to the first name when that lands on the re-ask —
+# the surname is never thrown away and re-requested.  These patterns detect that
+# "bare surname" utterance.  Deliberately narrow: an explicit surname marker with
+# NO first-name clause (so a full "first name X surname Y" answer, and garbled
+# self-corrections like "surname is quench, I said my first name is quincey", are
+# left to the normal path), and the captured token is filtered against the shared
+# NAME_FALSE_POSITIVES set.
+_V3_SURNAME_MARKER_RE = re.compile(
+    r"\b(?:surname|last\s+name|family\s+name|second\s+name)"
+    r"(?:'?s|’s)?"
+    r"(?:\s+(?:is|was|would|will|shall|be|actually|just|now|uh|um|er))*"
+    r"\s+([a-z][a-z'’\-]{1,24})\b",
+    re.IGNORECASE,
+)
+_V3_FIRST_NAME_CLAUSE_RE = re.compile(
+    r"\b(?:first\s+name|forename|christian\s+name)\b",
+    re.IGNORECASE,
+)
+# Politeness / filler / structural tokens that must never be stored as a surname
+# even when they follow a surname marker ("surname is please").  Mirrors the
+# stop-word guard name_capture applies internally to extracted surnames.
+_V3_SURNAME_STOPWORDS = frozenset({
+    "please", "thanks", "thank", "yes", "yeah", "yep", "no", "nope", "ok",
+    "okay", "sure", "right", "well", "so", "but", "and", "the", "a", "um",
+    "uh", "er", "erm", "name", "names", "first", "last", "given", "middle",
+    "second", "surname", "family", "spelt", "spelled", "sorry", "actually",
+    "just", "like", "is", "was", "would", "will", "shall", "be", "it", "its",
+})
+
+
+def _v3_titlecase_surname(s: str) -> str:
+    """Title-case each apostrophe/hyphen segment: o'brien -> O'Brien,
+    smith-jones -> Smith-Jones.  Mirrors the casing name_capture applies to an
+    extracted surname so a parked surname is stored identically to a normal one."""
+    def _seg(seg: str) -> str:
+        return "'".join(p[:1].upper() + p[1:].lower() for p in seg.split("'"))
+    return "-".join(_seg(seg) for seg in s.split("-"))
+
+
+def _v3_surname_only(utterance: str) -> str:
+    """Return a capitalised surname IFF `utterance` is a bare surname statement —
+    an explicit surname marker with NO accompanying first-name clause.  Returns
+    "" when a first name is also present (the normal capture path handles that)
+    or no surname marker is found."""
+    if not utterance:
+        return ""
+    if _V3_FIRST_NAME_CLAUSE_RE.search(utterance):
+        return ""
+    m = _V3_SURNAME_MARKER_RE.search(utterance)
+    if not m:
+        return ""
+    cand = m.group(1).strip()
+    if (
+        not cand
+        or cand.lower() in _V3_NAME_FALSE_POSITIVES
+        or cand.lower() in _V3_SURNAME_STOPWORDS
+    ):
+        return ""
+    return _v3_titlecase_surname(cand)
+
+
 def _v3_try_persist_name(
     session: dict,
     last_bot: str,
@@ -1270,6 +1336,7 @@ def _v3_try_persist_name(
         # back-fill, or a direct collect_and_store tool call) — drop the
         # straggler-net latch so it cannot linger past the name phase.
         session["v3_name_collection_active"] = False
+        session.pop("v3_pending_surname", None)
         return False
 
     # ── Stage 2: first name already stored — back-fill the surname ───────────
@@ -1299,6 +1366,12 @@ def _v3_try_persist_name(
         _sur = _v3_backfill_surname(
             caller_utterance, _first, awaiting_surname=_awaiting
         )
+        # Fall back to a surname parked earlier (STT clipped the first name off
+        # the original answer, so it was stored ahead of the first name).
+        if not _sur:
+            _parked_sur = session.get("v3_pending_surname", "")
+            if _parked_sur and _parked_sur.lower() != _first.lower():
+                _sur = _parked_sur
         if _sur and _sur.lower() != _first.lower():
             full = f"{_first} {_sur}"
             session.setdefault("collected", {})["name"] = full
@@ -1306,6 +1379,7 @@ def _v3_try_persist_name(
             session["surname_captured"] = True
             session["v3_awaiting_surname"] = False
             session["v3_name_collection_active"] = False
+            session.pop("v3_pending_surname", None)
             logger.info(
                 "[ms_conn v3] surname back-filled onto stored first name: %r",
                 full,
@@ -1322,6 +1396,28 @@ def _v3_try_persist_name(
     _name_requested_this_turn = any(
         p in _last_bot_lower for p in _NAME_REQUEST_PHRASES
     )
+
+    # ── Surname-first recovery: park a bare surname whose first name STT clipped.
+    # When we are in the name phase and the caller's utterance is a bare surname
+    # ("surname is rock") with no first name, store the surname so it attaches to
+    # the first name on the re-ask instead of being lost.  Idempotent (only parks
+    # once) and does not itself persist a name — the LLM re-asks the first name,
+    # and Stage 1/2 below consume the parked surname when it arrives.
+    _in_name_phase = (
+        post_slot_pending
+        or _name_requested_this_turn
+        or bool(session.get("v3_name_collection_active"))
+    )
+    if _in_name_phase and not session.get("v3_pending_surname"):
+        _parked = _v3_surname_only(caller_utterance)
+        if _parked:
+            session["v3_pending_surname"] = _parked
+            session["surname_captured"] = True
+            logger.info(
+                "[ms_conn v3] surname parked — first name clipped by STT; "
+                "re-asking first name only (surname kept=%r)", _parked,
+            )
+
     if not post_slot_pending and not _name_requested_this_turn:
         return False
 
@@ -1337,6 +1433,17 @@ def _v3_try_persist_name(
                 # store first-name-only and back-fill the surname when it
                 # arrives on a later turn (Stage 2 above).
                 surname = _v3_extract_surname(caller_utterance, candidate)
+                # Consume a surname parked earlier when STT clipped the first
+                # name off the original answer ("surname is rock" → now
+                # "Quentin" arrives → "Quentin Rock").  A same-breath surname
+                # on THIS turn always wins over the parked one.
+                _parked_sur = session.pop("v3_pending_surname", "")
+                if (
+                    not surname
+                    and _parked_sur
+                    and _parked_sur.lower() != candidate.lower()
+                ):
+                    surname = _parked_sur
                 full = f"{candidate} {surname}" if surname else candidate
                 session.setdefault("collected", {})["name"] = full
                 session["patient_name"] = full
