@@ -159,8 +159,33 @@ def _is_bare_acknowledgement(text: str) -> bool:
     return bool(_BARE_ACK_RE.match(text or ""))
 
 # Spoken when the whole turn was just an acknowledgement + surname-ask, so the
-# caller is carried on to the request instead of dead-ending at "Thanks X —".
+# caller is carried on instead of dead-ending at "Thanks X —".  Fallback only —
+# the live continuation is chosen by _surname_ask_continuation() below.
 _SURNAME_ASK_CONTINUATION = "So, how can I help you today?"
+
+
+def _surname_ask_continuation(session: Dict[str, Any]) -> str:
+    """The line spoken after a suppressed surname-ask.
+
+    Under the end-of-flow name design the name is collected right after the slot
+    and immediately before the phone step, so once the first name is
+    acknowledged Susie must move FORWARD to the phone question — NOT back to
+    "how can I help you today?" (the old name-first continuation, which looped
+    the caller to the greeting; live call 2026-07-15 18:26).  When we are
+    mid-booking with the phone not yet confirmed, drive the phone step: offer the
+    calling number if we have one, otherwise send them to the keypad.
+    """
+    if session.get("booking_flow_active") and not session.get("phone_confirmed"):
+        if session.get("twilio_from_local"):
+            return (
+                "Is the number you're calling on the best one for your "
+                "booking? If so, just say use this number."
+            )
+        return (
+            "Could you type your number on your keypad? You can press the "
+            "star key to reset at any time."
+        )
+    return _SURNAME_ASK_CONTINUATION
 
 
 def _surname_ask_gate_active(session: Dict[str, Any]) -> bool:
@@ -205,18 +230,21 @@ def _strip_trailing_surname_ask(text: str) -> tuple:
     return stripped, True
 
 
-def _rewrite_surname_ask_reply(text: str) -> tuple:
+def _rewrite_surname_ask_reply(
+    text: str, continuation: str = _SURNAME_ASK_CONTINUATION,
+) -> tuple:
     """Whole-response form of the gate, used to keep history in sync with audio.
 
     Strips a trailing surname-ask and, if only an acknowledgement remains,
-    appends the standard continuation.  Returns (new_text, changed).
+    appends `continuation` (the same line that was spoken).  Returns
+    (new_text, changed).
     """
     stripped, did = _strip_trailing_surname_ask(text or "")
     if not did:
         return text, False
     if _is_bare_acknowledgement(stripped):
         _sep = "" if (not stripped or stripped[-1] in ".!?") else "."
-        stripped = (stripped + _sep + " " + _SURNAME_ASK_CONTINUATION).strip()
+        stripped = (stripped + _sep + " " + continuation).strip()
     return stripped, True
 
 
@@ -543,7 +571,10 @@ class LLMStream:
         # "Thanks [first name]" acknowledgement is preserved, so name extraction
         # and the v3_awaiting_surname back-fill in connection.py are unaffected.
         if session.pop("_v3_surname_ask_suppressed", False) and full_reply.strip():
-            _rewritten, _changed = _rewrite_surname_ask_reply(full_reply)
+            _cont = session.pop(
+                "_v3_surname_ask_continuation", _SURNAME_ASK_CONTINUATION,
+            )
+            _rewritten, _changed = _rewrite_surname_ask_reply(full_reply, _cont)
             if _changed:
                 logger.info(
                     "[ms_llm] full_reply rewritten to match suppressed"
@@ -1506,11 +1537,18 @@ class LLMStream:
             # that content — only the redundant ask was dropped.  A session flag
             # signals run_turn to rewrite full_reply so history matches audio.
             if _surname_gate and _surname_ask_stripped:
+                # Choose the continuation from call state: at the end-of-flow
+                # name step this drives the phone question instead of the old
+                # name-first "how can I help you today?".  Stored so the
+                # full_reply rewrite below appends the SAME line that was spoken.
+                _cont = _surname_ask_continuation(session)
+                session["_v3_surname_ask_continuation"] = _cont
                 if _is_bare_acknowledgement(_emitted_spoken.strip()):
-                    await tts_text_queue.put(_SURNAME_ASK_CONTINUATION)
+                    await tts_text_queue.put(_cont)
                     _any_tts_emitted = True
                     logger.info(
-                        "[ms_llm] surname-ask suppressed — continuation spoken"
+                        "[ms_llm] surname-ask suppressed — continuation spoken: %r",
+                        _cont,
                     )
                 else:
                     logger.info(
