@@ -8654,18 +8654,13 @@ class WebSocketCallHandler:
                                 and not self.session.get(
                                     "v3_location_asked", False
                                 )
-                                # NAME FIRST — never pre-empt the opening name
-                                # question.  If no name is on file yet, do NOT
-                                # fire this gate: let run_turn ask for the name
-                                # first (the NAME FIRST prompt rule holds the
-                                # caller's FAQ and answers it right after the
-                                # name).  Once a name is captured, the gate fires
-                                # normally on any later clinic-specific FAQ turn.
-                                and bool(
-                                    (self.session.get("collected") or {}).get(
-                                        "name"
-                                    )
-                                )
+                                # Name is collected at the END of the booking
+                                # flow (after the slot), not first — so this
+                                # clinic-FAQ gate must NOT be gated on a name
+                                # being on file, otherwise a clinic-specific FAQ
+                                # asked before booking would never resolve its
+                                # clinic.  (Previously gated on collected.name
+                                # for the old name-first flow.)
                                 and _faq_needs_clinic(utterance)  # F14: skips
                                 # clinic-independent closure/holiday questions
                                 # CLINIC ALREADY NAMED — if the caller said the
