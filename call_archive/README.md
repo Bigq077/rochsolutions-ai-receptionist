@@ -6,7 +6,9 @@ pseudonymized) per the repo's GDPR rule (harness §9 / handoff §9). Unredacted 
 logs are retained locally under `logs/raw/` (gitignored — never committed/pushed).
 
 **PII policy:** the `[LAT]`/`[LAT-EP]` timing lines are PII-free by design. Everything shared
-upward should come from the `*.redacted.log` files, not `logs/raw/`.
+upward should come from the redacted `.txt` files, not `logs/raw/`. (Redacted archives use a
+`.txt` extension on purpose — the repo's `.gitignore` blocks `*.log`, so raw logs can never be
+committed by accident.)
 
 ---
 
@@ -14,7 +16,7 @@ upward should come from the `*.redacted.log` files, not `logs/raw/`.
 
 | # | Date | Call SID | Scenario | Verdict | Turns (path=llm) | Redacted log |
 |---|---|---|---|---|---|---|
-| 1 | 2026-07-16 | CA9d2343714dee431f87b7b871356218e3 | BK-1 (booking, new patient, in-clinic) | PASS (caveats) | 5 | [2026-07-16_BK-1_CA9d2343.redacted.log](2026-07-16_BK-1_CA9d2343.redacted.log) |
+| 1 | 2026-07-16 | CA9d2343714dee431f87b7b871356218e3 | BK-1 (booking, new patient, in-clinic) | PASS (caveats) | 5 | [2026-07-16_BK-1_CA9d2343.redacted.txt](2026-07-16_BK-1_CA9d2343.redacted.txt) |
 
 ## Accuracy notes (per call)
 

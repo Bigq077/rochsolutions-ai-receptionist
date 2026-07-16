@@ -1,0 +1,268 @@
+INFO:     connection open
+2026-07-16 18:57:54,305 - app.media_streams.connection - INFO - [ms_conn] connected protocol=Call version=1.0.0
+2026-07-16 18:57:54,306 - app.media_streams.connection - INFO - [ms_conn] start call_sid=CA9d2343714dee431f87b7b871356218e3 stream_sid=MZf49fccae387474c56cb44d73e3f3db97 from=[CALLER_MSISDN_REDACTED] to=+447366263180
+2026-07-16 18:57:54,306 - app.media_streams.connection - INFO - [ms_conn] clinic_id resolved: jv_v1 (to=+447366263180)
+2026-07-16 18:57:54,307 - app.media_streams.session - INFO - [ms_session] created call_sid=CA9d2343714dee431f87b7b871356218e3
+2026-07-16 18:57:54,307 - app.media_streams.connection - INFO - [ms_conn] WS session registered sid=CA9d2343714dee431f87b7b871356218e3 total_active=1
+2026-07-16 18:57:54,308 - app.media_streams.connection - INFO - [ms_conn] caller number from Twilio: [CALLER_MSISDN_REDACTED]
+2026-07-16 18:57:54,312 - app.media_streams.stt_stream - INFO - [ms_stt] init — url=wss://streaming.assemblyai.com/v3/ws?speech_model=universal-streaming-english&sample_rate=16000&encoding=pcm_s16le&format_turns=false&min_turn_silence=600&keyterms_prompt=%5B%22Alcester%22%2C%20%22Redditch%22%5D audio=pcm_s16le@16kHz chunk_target=100ms(3200B)
+2026-07-16 18:57:54,312 - app.media_streams.stt_stream - INFO - [ms_stt] connecting attempt=1
+2026-07-16 18:57:55,202 - app.media_streams.connection - INFO - [ms_conn tpl] single-site 'bolton' auto-confirmed at call start — two-clinic location gate suppressed on all paths
+2026-07-16 18:57:55,202 - app.media_streams.connection - INFO - [ms_conn tpl] greeting: "Hi there, I'm Susie, Joint Venture Physiotherapy's AI receptionist — how can I h"
+2026-07-16 18:57:55,211 - app.media_streams.tts_stream - WARNING - [ms_tts] pronunciation_dict.json missing id/version_id — run scripts/setup_pronunciation_dictionary.py
+2026-07-16 18:57:55,211 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=68 text="Hi there, I'm Susie, Joint Venture Physiotherapy's AI recept"
+2026-07-16 18:57:55,288 - app.media_streams.stt_stream - INFO - [ms_stt] TCP+TLS connected attempt=1
+2026-07-16 18:57:55,978 - app.media_streams.stt_stream - INFO - [ms_stt] Begin received — session_id=57ef925d-d78b-4d14-a016-939f2456e421 expires_at=1784239075 — unblocking audio stream
+2026-07-16 18:57:55,978 - app.media_streams.stt_stream - INFO - [ms_stt] send: Begin received — audio stream open
+2026-07-16 18:57:55,978 - app.media_streams.stt_stream - INFO - [ms_stt] first chunk sent: 3200 bytes = 100.0ms
+2026-07-16 18:57:56,571 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:57:56,586 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=25 text='how can I help you today?'
+2026-07-16 18:57:56,697 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:57:56,708 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 5.2s: "Hi there, I'm Susie, Joint Venture Physiotherapy's AI recept"
+2026-07-16 18:58:01,880 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 1 — silence timer starting
+2026-07-16 18:58:01,880 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text="Hi there, I'm Susie, Joint Venture Physiotherapy's AI recept" q_size=0
+2026-07-16 18:58:01,881 - app.media_streams.connection - INFO - [ms_watchdog] restarted after informational response q_gen=1 prompt="Hi there, I'm Susie, Joint Venture Physiotherapy's AI recept" loc_active=False
+2026-07-16 18:58:01,881 - app.media_streams.connection - INFO - [ms_silence] timer restarted: "Hi there, I'm Susie, Joint Venture Physiotherapy's"
+2026-07-16 18:58:01,881 - app.media_streams.connection - INFO - [ms_watchdog] greeting_grace=6.0s
+2026-07-16 18:58:01,881 - app.media_streams.connection - INFO - [ms_watchdog] phone_confirm_grace=10.0s (flow_step=0)
+2026-07-16 18:58:01,884 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_START q_gen=1 wait=10.0s
+2026-07-16 18:58:03,768 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='hi'
+2026-07-16 18:58:03,768 - app.media_streams.connection - INFO - [turn_taking] prompt speech detected source=partial text='hi'
+2026-07-16 18:58:03,769 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_CANCEL q_gen=1
+2026-07-16 18:58:03,848 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd"
+2026-07-16 18:58:03,933 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like"
+2026-07-16 18:58:04,529 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to"
+2026-07-16 18:58:04,858 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book"
+2026-07-16 18:58:04,943 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for"
+2026-07-16 18:58:05,064 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the"
+2026-07-16 18:58:05,191 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the first"
+2026-07-16 18:58:05,995 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the first time"
+2026-07-16 18:58:06,042 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the first time coming"
+2026-07-16 18:58:06,162 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the first time coming into"
+2026-07-16 18:58:06,379 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the first time coming into the"
+2026-07-16 18:58:06,464 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial="hi i'd like to book for the first time coming into the"
+2026-07-16 18:58:07,201 - app.media_streams.connection - INFO - [ms_silence] transcript — timer cancelled
+2026-07-16 18:58:07,201 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: "hi i'd like to book for the first time coming into the clinic"
+2026-07-16 18:58:07,203 - app.media_streams.connection - INFO - [ms_conn v3] transcript: "hi i'd like to book for the first time coming into the clinic"
+2026-07-16 18:58:07,204 - app.media_streams.connection - INFO - [ms_llm] slot cache cleared on new turn (was date_hint=None)
+2026-07-16 18:58:07,268 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-16 18:58:09,129 - app.media_streams.llm_stream - INFO - [ms_llm] filler phrase triggered (background task): 'Right with you…'
+2026-07-16 18:58:09,130 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=15 text='Right with you…'
+2026-07-16 18:58:09,244 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:09,256 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 1.1s: 'Right with you…'
+2026-07-16 18:58:10,336 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 2 — silence timer starting
+2026-07-16 18:58:10,337 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text='Right with you…' q_size=0
+2026-07-16 18:58:12,504 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:12,910 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=64 text="Right — Do you have a preference for when you'd like to come"
+2026-07-16 18:58:13,014 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-16 18:58:13,020 - app.media_streams.connection - INFO - [ms_conn] booking_flow_active = True
+2026-07-16 18:58:13,020 - app.media_streams.connection - INFO - [ms_conn tpl] single-site auto-confirmed location='bolton' — two-clinic location gate + answer-resolver suppressed
+2026-07-16 18:58:13,021 - app.media_streams.connection - INFO - [ms_conn v3] timing Q suppressed — LLM response already contains a question this turn
+2026-07-16 18:58:13,047 - app.media_streams.connection - INFO - [ms_conn v3] booking ack — location known (bolton), intent=booking, queued next Q
+2026-07-16 18:58:13,047 - app.media_streams.connection - INFO - [turn_taking] reset prompt speech guard state=GREETING flow_step=-1
+2026-07-16 18:58:13,047 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED reason=llm_in_flight q_gen=2
+2026-07-16 18:58:13,048 - app.media_streams.connection - INFO - [ms_conn v3] call reached stable state
+2026-07-16 18:58:13,048 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED_CLEAR reason=tts_still_playing q_gen=2
+2026-07-16 18:58:13,048 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:13,051 - susie.latency - INFO - [LAT] turn_seq=1 path=llm outcome=completed ttfa_ms=2044 content_ttfa_ms=5849 ep_dispatch_ms=0 llm_ttft_ms=5525 chunk_gate_ms=182 tts_first_byte_ms=141 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=736
+2026-07-16 18:58:13,127 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 2.9s: "Right — Do you have a preference for when you'd like to come"
+2026-07-16 18:58:14,330 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 3 — silence timer starting
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text="Right — Do you have a preference for when you'd like to come" q_size=0
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_watchdog] restarted after informational response q_gen=3 prompt="Right — Do you have a preference for when you'd like to come" loc_active=False
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_silence] timer restarted: "Right — Do you have a preference for when you'd li"
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_watchdog] greeting_grace=6.0s
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_watchdog] phone_confirm_grace=10.0s (flow_step=0)
+2026-07-16 18:58:16,046 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_START q_gen=3 wait=10.0s
+2026-07-16 18:58:20,059 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='maybe'
+2026-07-16 18:58:20,059 - app.media_streams.connection - INFO - [turn_taking] prompt speech detected source=partial text='maybe'
+2026-07-16 18:58:20,059 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_CANCEL q_gen=3
+2026-07-16 18:58:20,219 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='maybe as'
+2026-07-16 18:58:20,305 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='maybe as soon'
+2026-07-16 18:58:20,400 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='maybe as soon as'
+2026-07-16 18:58:21,297 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='maybe as soon as possible'
+2026-07-16 18:58:21,500 - app.media_streams.connection - INFO - [ms_silence] transcript — timer cancelled
+2026-07-16 18:58:21,500 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'maybe as soon as possible actually'
+2026-07-16 18:58:21,503 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'maybe as soon as possible actually'
+2026-07-16 18:58:21,504 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-16 18:58:23,316 - app.media_streams.llm_stream - INFO - [ms_llm] filler phrase triggered (background task): 'One moment…'
+2026-07-16 18:58:23,316 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=11 text='One moment…'
+2026-07-16 18:58:23,430 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:23,444 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 1.0s: 'One moment…'
+2026-07-16 18:58:23,486 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:23,962 - app.media_streams.turn_handler - INFO - [ms_gate5] removed banned phrase (just_a_moment)
+2026-07-16 18:58:23,969 - app.media_streams.llm_stream - INFO - [ms_gate5] pre-tool TTS output cancelled — slot buffer taking over (check_availability detected)
+2026-07-16 18:58:24,432 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 4 — silence timer starting
+2026-07-16 18:58:24,432 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text='One moment…' q_size=0
+2026-07-16 18:58:25,728 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-16 18:58:25,728 - app.media_streams.llm_stream - INFO - [ms_llm] tool: name=check_availability id=toolu_01PTgESvNy9z4SKhAL3EBRxG args={"service": "msk_initial_assessment", "location": "bolton", "date_hint": "as soon as possible"}
+2026-07-16 18:58:25,728 - app.filler_phrases - INFO - [ms_tts] ack filler cancelled — tool call filler taking over: "Checking what's free for you…"
+2026-07-16 18:58:25,729 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=29 text="Checking what's free for you…"
+2026-07-16 18:58:25,853 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:25,854 - susie.latency - INFO - [LAT] turn_seq=2 path=llm outcome=completed ttfa_ms=1930 content_ttfa_ms=4353 ep_dispatch_ms=0 llm_ttft_ms=2003 chunk_gate_ms=-1 tts_first_byte_ms=-1 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=202
+2026-07-16 18:58:25,925 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 1.5s: "Checking what's free for you…"
+2026-07-16 18:58:26,135 - app.media_streams.llm_stream - INFO - [ms_llm] slots_presented=True slots_count=3
+2026-07-16 18:58:26,136 - app.media_streams.llm_stream - INFO - [ms_llm] tool result: name=check_availability result={"available_days": [{"date": "2026-07-17", "day_label": "Friday 17th July", "slot_times": ["16:30", "18:45", "19:30"], "slot_times_spoken": ["half past four in the afternoon", "quarter to seven in the
+2026-07-16 18:58:26,138 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=2 model=claude-sonnet-4-6
+2026-07-16 18:58:26,138 - app.media_streams.llm_stream - INFO - [ms_llm] slot buffer active (post-check_availability) iter=2 — switched to HAIKU + focused slot prompt
+2026-07-16 18:58:26,981 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:27,431 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 5 — silence timer starting
+2026-07-16 18:58:27,431 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text="Checking what's free for you…" q_size=0
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf complete-response flush: 1 raw chunk(s) from buffer
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf chunk 0: "Here's what we've got coming up — Number 1, Friday 17th July" — len=339 — sending=True
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] v3_last_offered_day_iso='2026-07-17' saved
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] slot map extracted on complete response (3 option(s)) — DTMF standby: {'1': 'Friday 17th July', '2': 'Saturday 18th July', '3': 'Monday 20th July'}
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf sending 3 TTS chunk(s) after Number-boundary re-split
+2026-07-16 18:58:27,858 - app.media_streams.llm_stream - INFO - [ms_gate5] slot inhibit guard armed: 3 chunk(s) tracked
+2026-07-16 18:58:27,859 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf TTS chunk 1/3: "Here's what we've got coming up — Number 1, Friday 17th July" — len=130
+2026-07-16 18:58:27,859 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf TTS chunk 2/3: 'Number 2, Saturday 18th July — quarter to twelve in the morn' — len=101
+2026-07-16 18:58:27,859 - app.media_streams.llm_stream - INFO - [ms_gate5] slot buf TTS chunk 3/3: 'Number 3, Monday 20th July — half past four in the afternoon' — len=106
+2026-07-16 18:58:27,861 - app.media_streams.turn_handler - INFO - [ms_gate5] removed banned phrase (just_a_moment)
+2026-07-16 18:58:27,874 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=62 text="Here's what we've got coming up — Number 1, Friday 17th July"
+2026-07-16 18:58:27,883 - app.media_streams.connection - INFO - [ms_conn v3] slot map active — day_selection (complete-response extraction): {'1': 'Friday 17th July', '2': 'Saturday 18th July', '3': 'Monday 20th July'}
+2026-07-16 18:58:27,884 - app.media_streams.connection - INFO - [turn_taking] reset prompt speech guard state=GREETING flow_step=-1
+2026-07-16 18:58:27,884 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED reason=llm_in_flight q_gen=4
+2026-07-16 18:58:27,884 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED_CLEAR reason=tts_still_playing q_gen=4
+2026-07-16 18:58:27,998 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:28,088 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=67 text='half past four in the afternoon or quarter to seven in the e'
+2026-07-16 18:58:28,206 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:28,303 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 6.8s: "Here's what we've got coming up — Number 1, Friday 17th July"
+2026-07-16 18:58:28,304 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=30 text='Number 2, Saturday 18th July —'
+2026-07-16 18:58:28,422 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:28,498 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=70 text='quarter to twelve in the morning or quarter past one in the '
+2026-07-16 18:58:28,622 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:28,699 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 11.5s: 'Number 2, Saturday 18th July — quarter to twelve in the morn'
+2026-07-16 18:58:28,700 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=83 text='Number 3, Monday 20th July — half past four in the afternoon'
+2026-07-16 18:58:28,800 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:28,827 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:28,924 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=22 text='Any of those suit you?'
+2026-07-16 18:58:29,039 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:29,048 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 16.9s: 'Number 3, Monday 20th July — half past four in the afternoon'
+2026-07-16 18:58:35,123 - app.media_streams.connection - INFO - [ms_tts] tts_finished: non-terminal chunk 6 (expected 8) — silence timer suppressed
+2026-07-16 18:58:40,248 - app.media_streams.connection - INFO - [ms_tts] tts_finished: non-terminal chunk 7 (expected 8) — silence timer suppressed
+2026-07-16 18:58:45,984 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 8 — silence timer starting
+2026-07-16 18:58:45,984 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text='Number 3, Monday 20th July — half past four in the afternoon' q_size=0
+2026-07-16 18:58:45,985 - app.media_streams.connection - INFO - [ms_watchdog] restarted after informational response q_gen=5 prompt='Any of those suit you?' loc_active=False
+2026-07-16 18:58:45,985 - app.media_streams.connection - INFO - [ms_silence] timer restarted: 'Number 3, Monday 20th July — half past four in the'
+2026-07-16 18:58:45,985 - app.media_streams.connection - INFO - [ms_watchdog] greeting_grace=6.0s
+2026-07-16 18:58:45,985 - app.media_streams.connection - INFO - [ms_watchdog] slot_selection_grace=10.0s (v3_awaiting_slot_selection)
+2026-07-16 18:58:45,985 - app.media_streams.connection - INFO - [ms_watchdog] phone_confirm_grace=10.0s (flow_step=0)
+2026-07-16 18:58:45,985 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_START q_gen=5 wait=10.0s
+2026-07-16 18:58:48,250 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes'
+2026-07-16 18:58:48,250 - app.media_streams.connection - INFO - [turn_taking] prompt speech detected source=partial text='takes'
+2026-07-16 18:58:48,250 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_CANCEL q_gen=5
+2026-07-16 18:58:48,521 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a'
+2026-07-16 18:58:48,605 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third'
+2026-07-16 18:58:48,918 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third day'
+2026-07-16 18:58:48,999 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third day at'
+2026-07-16 18:58:49,306 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third day at half'
+2026-07-16 18:58:49,503 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third day at half past'
+2026-07-16 18:58:50,042 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third day at half past four'
+2026-07-16 18:58:50,139 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='takes a third day at half past four'
+2026-07-16 18:58:50,227 - app.media_streams.connection - INFO - [ms_silence] transcript — timer cancelled
+2026-07-16 18:58:50,227 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'takes a third day at half past four please'
+2026-07-16 18:58:50,231 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'takes a third day at half past four please'
+2026-07-16 18:58:50,231 - app.media_streams.connection - INFO - [ms_llm] slot cache cleared on new turn (was date_hint='as soon as possible')
+2026-07-16 18:58:50,231 - app.media_streams.connection - INFO - [ms_llm] slot cache cleared: day iso='2026-07-17' from offered slots
+2026-07-16 18:58:50,232 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-16 18:58:51,780 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:52,508 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=70 text="So that's Monday the 20th of July at half past four in the a"
+2026-07-16 18:58:52,512 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [ms_conn v3] slot map active — day_selection (complete-response extraction): {'1': 'Friday 17th July', '2': 'Saturday 18th July', '3': 'Monday 20th July'}
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [ms_conn] post_slot_confirmation_pending = True (name request detected in response)
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [ms_conn] v3_confirmed_slot_phrase captured: 'Monday the 20th of July at half past four in the afternoon'
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [ms_conn] slot map stage → NONE (name request — advancing beyond slot selection)
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [turn_taking] reset prompt speech guard state=GREETING flow_step=-1
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED reason=llm_in_flight q_gen=6
+2026-07-16 18:58:52,521 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED_CLEAR reason=tts_still_playing q_gen=6
+2026-07-16 18:58:52,634 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:52,636 - susie.latency - INFO - [LAT] turn_seq=3 path=llm outcome=completed ttfa_ms=2408 content_ttfa_ms=2408 ep_dispatch_ms=0 llm_ttft_ms=1553 chunk_gate_ms=726 tts_first_byte_ms=129 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=conversation endpoint_wait_ms=88
+2026-07-16 18:58:52,724 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=41 text='could I take your first name and surname?'
+2026-07-16 18:58:52,840 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:58:52,916 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 5.8s: "So that's Monday the 20th of July at half past four in the a"
+2026-07-16 18:58:53,503 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:58:58,701 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 9 — silence timer starting
+2026-07-16 18:58:58,701 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text="So that's Monday the 20th of July at half past four in the a" q_size=0
+2026-07-16 18:58:58,701 - app.media_streams.connection - INFO - [ms_watchdog] restarted after informational response q_gen=7 prompt="So that's Monday the 20th of July at half past four in the a" loc_active=False
+2026-07-16 18:58:58,701 - app.media_streams.connection - INFO - [ms_silence] timer restarted: "So that's Monday the 20th of July at half past fou"
+2026-07-16 18:58:58,701 - app.media_streams.connection - INFO - [ms_watchdog] greeting_grace=6.0s
+2026-07-16 18:58:58,702 - app.media_streams.connection - INFO - [ms_watchdog] phone_confirm_grace=10.0s (flow_step=0)
+2026-07-16 18:58:58,702 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_START q_gen=7 wait=10.0s
+2026-07-16 18:59:02,026 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='[FIRST]'
+2026-07-16 18:59:02,026 - app.media_streams.connection - INFO - [turn_taking] prompt speech detected source=partial text='[FIRST]'
+2026-07-16 18:59:02,027 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_CANCEL q_gen=7
+2026-07-16 18:59:02,403 - app.media_streams.connection - INFO - [ms_silence] transcript — timer cancelled
+2026-07-16 18:59:02,403 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: '[FIRST] [SURNAME]'
+2026-07-16 18:59:02,405 - app.media_streams.connection - INFO - [ms_conn v3] transcript: '[FIRST] [SURNAME]'
+2026-07-16 18:59:02,407 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-16 18:59:04,237 - app.media_streams.llm_stream - INFO - [ms_llm] filler phrase triggered (background task): 'Right with you…'
+2026-07-16 18:59:04,238 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=15 text='Right with you…'
+2026-07-16 18:59:04,305 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:59:04,354 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:59:04,360 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 1.1s: 'Right with you…'
+2026-07-16 18:59:05,208 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=76 text="Thanks [FIRST] — Is the number you're calling on the best one f"
+2026-07-16 18:59:05,214 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-16 18:59:05,249 - app.media_streams.connection - INFO - [ms_conn v3] name persisted (normal path): '[FIRST] [SURNAME]'
+2026-07-16 18:59:05,250 - app.media_streams.connection - INFO - [ms_conn] v3_phone_dtmf_active = True (name confirmed — phone collection phase)
+2026-07-16 18:59:05,250 - app.media_streams.connection - INFO - [ms_conn] post_slot_confirmation_pending cleared (no name request this turn)
+2026-07-16 18:59:05,250 - app.media_streams.connection - INFO - [turn_taking] reset prompt speech guard state=GREETING flow_step=-1
+2026-07-16 18:59:05,250 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED reason=llm_in_flight q_gen=8
+2026-07-16 18:59:05,250 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED_CLEAR reason=tts_still_playing q_gen=8
+2026-07-16 18:59:05,328 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:59:05,329 - susie.latency - INFO - [LAT] turn_seq=4 path=llm outcome=completed ttfa_ms=1951 content_ttfa_ms=2925 ep_dispatch_ms=0 llm_ttft_ms=1902 chunk_gate_ms=901 tts_first_byte_ms=121 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=name endpoint_wait_ms=376
+2026-07-16 18:59:05,416 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=32 text='If so, just say use this number.'
+2026-07-16 18:59:05,490 - app.media_streams.connection - INFO - [ms_silence] stale tts_finished ignored: callback_q_gen=7 active_q_gen=8 text='Right with you…'
+2026-07-16 18:59:05,535 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:59:05,607 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 5.1s: "Thanks [FIRST] — Is the number you're calling on the best one f"
+2026-07-16 18:59:06,097 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:59:10,733 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 11 — silence timer starting
+2026-07-16 18:59:10,733 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text="Thanks [FIRST] — Is the number you're calling on the best one f" q_size=0
+2026-07-16 18:59:13,108 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='use'
+2026-07-16 18:59:13,108 - app.media_streams.connection - INFO - [turn_taking] prompt speech detected source=partial text='use'
+2026-07-16 18:59:13,228 - app.media_streams.connection - INFO - [ms_conn] barge-in: partial='use this'
+2026-07-16 18:59:13,722 - app.media_streams.connection - INFO - [ms_silence] transcript — timer cancelled
+2026-07-16 18:59:13,722 - app.media_streams.stt_stream - INFO - [ms_stt] FINAL → queue: 'use this number'
+2026-07-16 18:59:13,723 - app.media_streams.connection - INFO - [ms_conn] verbal reset skipped — buffer empty: 'use this number'
+2026-07-16 18:59:13,723 - app.media_streams.connection - INFO - [ms_conn] v3_phone_dtmf_active = False (exited — conversational speech / name correction)
+2026-07-16 18:59:13,725 - app.media_streams.connection - INFO - [ms_conn v3] transcript: 'use this number'
+2026-07-16 18:59:13,726 - app.media_streams.llm_stream - INFO - [ms_llm] iteration=1 model=claude-sonnet-4-6
+2026-07-16 18:59:15,249 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:59:15,869 - app.media_streams.turn_handler - INFO - [ms_gate5] booking offer KEPT — stripping would leave no question (avoid dead-end)
+2026-07-16 18:59:15,873 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=83 text='Just to confirm — [FIRST], Monday the 20th of July at half past'
+2026-07-16 18:59:15,873 - app.media_streams.llm_stream - INFO - [ms_gate5] turn complete: 0 chunk(s) dropped as reasoning
+2026-07-16 18:59:15,878 - app.media_streams.turn_handler - INFO - [ms_gate5] booking offer KEPT — stripping would leave no question (avoid dead-end)
+2026-07-16 18:59:15,882 - app.media_streams.connection - INFO - [turn_taking] reset prompt speech guard state=GREETING flow_step=-1
+2026-07-16 18:59:15,883 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED reason=llm_in_flight q_gen=9
+2026-07-16 18:59:15,883 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_DEFERRED_CLEAR reason=tts_still_playing q_gen=9
+2026-07-16 18:59:16,007 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:59:16,008 - susie.latency - INFO - [LAT] turn_seq=5 path=llm outcome=completed ttfa_ms=2285 content_ttfa_ms=2285 ep_dispatch_ms=0 llm_ttft_ms=1528 chunk_gate_ms=619 tts_first_byte_ms=137 audio_wire_ms=0 flags=A model=claude-sonnet-4-6 stt_model=universal-streaming-english eot_confident=None capture_phase=phone endpoint_wait_ms=494
+2026-07-16 18:59:16,124 - app.media_streams.tts_stream - INFO - [ms_tts] synthesise_chunk: model=eleven_flash_v2_5 len=42 text='Shall I go ahead and book that in for you?'
+2026-07-16 18:59:16,247 - httpx - INFO - HTTP Request: POST https://api.elevenlabs.io/v1/text-to-speech/6fZce9LFNG3iEITDfqZZ/stream?output_format=pcm_16000 "HTTP/1.1 200 OK"
+2026-07-16 18:59:16,328 - app.media_streams.connection - INFO - [ms_silence] tts_finished in 6.3s: 'Just to confirm — [FIRST], Monday the 20th of July at half past'
+2026-07-16 18:59:17,089 - httpx - INFO - HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+2026-07-16 18:59:22,582 - app.media_streams.connection - INFO - [ms_tts] tts_finished: terminal chunk 12 — silence timer starting
+2026-07-16 18:59:22,582 - app.media_streams.connection - INFO - [ms_tts] tts_finished fired: chunk_text='Just to confirm — [FIRST], Monday the 20th of July at half past' q_size=0
+2026-07-16 18:59:22,582 - app.media_streams.connection - INFO - [ms_watchdog] restarted after informational response q_gen=10 prompt='Shall I go ahead and book that in for you?' loc_active=False
+2026-07-16 18:59:22,583 - app.media_streams.connection - INFO - [ms_silence] timer restarted: 'Just to confirm — [FIRST], Monday the 20th of July at'
+2026-07-16 18:59:22,583 - app.media_streams.connection - INFO - [ms_watchdog] greeting_grace=6.0s
+2026-07-16 18:59:22,583 - app.media_streams.connection - INFO - [ms_watchdog] phone_confirm_grace=10.0s (flow_step=0)
+2026-07-16 18:59:22,583 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_START q_gen=10 wait=10.0s
+2026-07-16 18:59:23,357 - app.media_streams.connection - INFO - [ms_conn] stop event stream_sid=MZf49fccae387474c56cb44d73e3f3db97
+2026-07-16 18:59:23,383 - app.media_streams.connection - INFO - [ms_conn] cleanup call_sid=CA9d2343714dee431f87b7b871356218e3 stable=True
+2026-07-16 18:59:23,387 - app.media_streams.connection - INFO - [ms_conn] REMOVE sid=CA9d2343714dee431f87b7b871356218e3 reason=cleanup was_registered=True remaining=0
+2026-07-16 18:59:23,446 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_CANCEL caller=cancel
+2026-07-16 18:59:23,448 - app.call_logger - INFO - [call_logger] flushed call_sid=CA9d2343714dee431f87b7b871356218e3 to logs/calls_2026-07-16.jsonl
+2026-07-16 18:59:23,448 - app.tools.call_summary - INFO - [call_summary] pre-summary reason: collected=None session=None → None
+2026-07-16 18:59:23,448 - app.notifications.smart_sms_router - INFO - [smart_sms] pre-SMS reason: collected=None session=None summary.appointment=None outcome='reached_confirmation'
+2026-07-16 18:59:23,449 - app.notifications.sms - INFO - SMS service initialized with number: +447366263180
+2026-07-16 18:59:23,449 - app.notifications.sms - INFO - [sms] SMS_ENABLED is off — outbound SMS suppressed (not sent)
+2026-07-16 18:59:23,449 - app.notifications.smart_sms_router - INFO - ✅ Smart SMS sent [reached_confirmation] → ***[REDACTED]
+2026-07-16 18:59:23,450 - app.media_streams.connection - INFO - [ms_watchdog] WATCHDOG_CANCEL q_gen=10
+2026-07-16 18:59:23,458 - app.tools.call_summary - INFO - [call_summary] pre-summary reason: collected=None session=None → None
+2026-07-16 18:59:23,495 - app.media_streams.connection - INFO - [ms_conn] mirrored to call: prefix call_sid=CA9d2343714dee431f87b7b871356218e3
+2026-07-16 18:59:23,617 - app.media_streams.router - INFO - [ms_router] inbound params: From=[CALLER_MSISDN_REDACTED] To=+447366263180 ForwardedFrom=(none) CallerName=(none)
+2026-07-16 18:59:23,619 - app.media_streams.router - INFO - [ms_router] cached call_sid=CA9d2343714dee431f87b7b871356218e3 from=[CALLER_MSISDN_REDACTED] to=+447366263180
+2026-07-16 18:59:23,619 - app.media_streams.router - INFO - [ms_router] incoming call — stream URL: wss://low-latency-joint-venture.onrender.com/ms/stream
+INFO:     13.222.174.162:0 - "POST /ms/incoming HTTP/1.1" 200 OK
+INFO:     connection closed
