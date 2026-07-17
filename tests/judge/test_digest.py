@@ -158,6 +158,109 @@ async def test_digest_prefers_email_when_configured(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Whole-system daily email: totals over every call, not just the review ones
+# ---------------------------------------------------------------------------
+
+def _judged(sid, score, action, booked=False, tags=None):
+    return {"call_sid": sid, "clinic_id": "theorem", "quality_score": score,
+            "action_needed": action, "booking_confirmed": booked,
+            "failure_tags": tags or [], "evidence": "", "outcome": "x"}
+
+
+def test_build_email_totals_cover_every_call_not_just_review():
+    calls = [
+        _judged("CAgood1", 5, "none", booked=True),
+        _judged("CAgood2", 4, "none", booked=True),
+        _judged("CAbad", 1, "review", tags=["loop"]),
+    ]
+    subject, body = digest.build_email(calls, 24)
+    # Subject counts the whole window, and flags how many need attention.
+    assert "3 call(s)" in subject
+    assert "1 to review" in subject
+    # Totals header reports volume/bookings/mean across all three.
+    assert "Calls:" in body and "3" in body
+    assert "Booked:" in body
+    # Every call is listed, not only the review one.
+    for sid in ("CAgood1", "CAgood2", "CAbad"):
+        assert sid in body
+
+
+def test_build_email_still_breaks_out_review_calls():
+    calls = [_judged("CAgood", 5, "none", booked=True),
+             _judged("CAbad", 1, "review", tags=["loop"])]
+    _, body = digest.build_email(calls, 24)
+    assert "Calls to review" in body
+    # the review call appears in its own section above the full listing
+    assert body.index("Calls to review") < body.index("All calls")
+
+
+def test_build_email_empty_window_still_renders():
+    """A zero-call day must still produce an email — silence should mean broken."""
+    subject, body = digest.build_email([], 24)
+    assert "0 call(s)" in subject
+    assert "Calls:" in body
+
+
+async def test_digest_emails_even_when_nothing_to_review(tmp_path, monkeypatch):
+    """A clean day still sends the daily email (unlike the SMS fallback)."""
+    from datetime import datetime, timezone
+    from app.obs import store
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{tmp_path / 'clean.db'}")
+    monkeypatch.setattr(config, "OBS_CAPTURE_ENABLED", True)
+    _smtp_configured(monkeypatch)
+    store.reset_engine(); store.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    rec = {"call_sid": "CAok", "clinic_id": "theorem", "start_utc": now, "end_utc": now,
+           "duration_s": 90, "success": True, "reason": "", "caller_number": "+440000000000",
+           "dialled_number": "", "final_state": "done", "collected": {}, "booking_confirmed": True,
+           "acuity_booking_id": "1", "transfer_attempted": False, "graceful_exit": True,
+           "total_retries": 0, "slot_retry_counts": {}, "turn_count": 8, "tone": "neutral"}
+    store.capture_call(rec, [{"role": "user", "text": "hi"}])
+    store.save_judgement("CAok", {"outcome": "booked", "quality_score": 5,
+                                  "intent_resolved": True, "failure_tags": [],
+                                  "action_needed": "none", "evidence": "", "rubric_version": "v2"})
+    try:
+        with patch("app.obs.emailer.send_email", return_value=True) as mock_email:
+            rc = await digest._run(24)
+        assert rc == 0
+        mock_email.assert_called_once()
+        subject = mock_email.call_args.args[0]
+        assert "1 call(s)" in subject
+    finally:
+        store.reset_engine()
+
+
+async def test_digest_sms_fallback_stays_silent_with_nothing_to_review(tmp_path, monkeypatch):
+    """The SMS channel must NOT gain a daily heartbeat — only email always sends."""
+    from datetime import datetime, timezone
+    from app.obs import store
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{tmp_path / 'q.db'}")
+    monkeypatch.setattr(config, "OBS_CAPTURE_ENABLED", True)
+    monkeypatch.setattr(config, "OBS_ALERTS_ENABLED", True)
+    monkeypatch.setattr(config, "OBS_ALERT_SMS_TO", "+440000000000")
+    monkeypatch.setattr(config, "OBS_DIGEST_EMAIL_TO", "")  # force the SMS fallback
+    monkeypatch.setattr(config, "SMTP_HOST", "")
+    store.reset_engine(); store.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    rec = {"call_sid": "CAfine", "clinic_id": "theorem", "start_utc": now, "end_utc": now,
+           "duration_s": 90, "success": True, "reason": "", "caller_number": "+440000000000",
+           "dialled_number": "", "final_state": "done", "collected": {}, "booking_confirmed": True,
+           "acuity_booking_id": "1", "transfer_attempted": False, "graceful_exit": True,
+           "total_retries": 0, "slot_retry_counts": {}, "turn_count": 8, "tone": "neutral"}
+    store.capture_call(rec, [{"role": "user", "text": "hi"}])
+    store.save_judgement("CAfine", {"outcome": "booked", "quality_score": 5,
+                                    "intent_resolved": True, "failure_tags": [],
+                                    "action_needed": "none", "evidence": "", "rubric_version": "v2"})
+    try:
+        with patch("app.obs.alerts.send_sms", new=AsyncMock(return_value="SM1")) as mock_sms:
+            rc = await digest._run(24)
+        assert rc == 0
+        mock_sms.assert_not_awaited()
+    finally:
+        store.reset_engine()
+
+
+# ---------------------------------------------------------------------------
 # Inlined redacted transcripts (OBS_DIGEST_INCLUDE_TRANSCRIPTS)
 # ---------------------------------------------------------------------------
 

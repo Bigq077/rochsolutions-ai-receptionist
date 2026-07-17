@@ -8,3 +8,45 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75 --log-level info
     healthCheckPath: /health
     autoDeploy: true
+
+  # Daily whole-system report → OBS_DIGEST_EMAIL_TO (app/obs/digest.py).
+  # 06:00 UTC (07:00 BST) — a morning read covering the previous 24h. Read-only over
+  # the `calls` table; it cannot touch the live call path. Sends every day, so a
+  # missing email means this cron is broken rather than that the day was clean.
+  #
+  # Env vars are marked sync:false = set them in the Render dashboard, not in git
+  # (SMTP_PASSWORD is a secret, and OBS_DATABASE_URL points at patient data).
+  - type: cron
+    name: susie-daily-digest
+    env: python
+    region: frankfurt          # EU data residency — must match the web service.
+    schedule: "0 6 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.obs.digest --hours 24
+    autoDeploy: true
+    envVars:
+      - key: OBS_DATABASE_URL
+        sync: false
+      - key: OBS_DIGEST_EMAIL_TO
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      # Only needed if the digest ever falls back to SMS (i.e. SMTP not configured).
+      - key: OBS_ALERTS_ENABLED
+        sync: false
+      - key: OBS_ALERT_SMS_TO
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
