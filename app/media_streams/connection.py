@@ -4215,6 +4215,15 @@ class WebSocketCallHandler:
             await self._stop_event.wait()
         except Exception as exc:
             logger.error("[ms_conn] handle(): unexpected error: %r", exc)
+            # Phase 2 (spec §5.2): a pipeline exception → Sentry (technical channel)
+            # AND flag the session so the teardown alert router raises an operator
+            # SMS. Both are no-ops unless SENTRY_DSN / OBS_ALERTS_ENABLED are set.
+            try:
+                self.session["pipeline_error"] = True
+                from app.obs.alerts import capture_exception
+                capture_exception(exc)
+            except Exception:
+                pass
         finally:
             for t in tasks:
                 if not t.done():
@@ -11683,6 +11692,45 @@ class WebSocketCallHandler:
                     reason = "caller_hung_up"
                 call_logger.complete(success=success, reason=reason)
                 await call_logger.flush()
+
+                # Phase 1 — durable capture (spec §5.1). Additive, post-call,
+                # flag-gated (OBS_CAPTURE_ENABLED, default OFF) and no-op when
+                # unconfigured. capture_call_async never raises and runs the DB
+                # write off the event loop, so it adds no latency or failure mode
+                # to the live path. Guarded again here belt-and-braces.
+                try:
+                    from app.obs.store import capture_call_async
+                    # Prefer obs_turns (both sides — see llm_stream._append_history);
+                    # fall back to turns for paths that don't populate it, so a
+                    # one-sided transcript is still better than none.
+                    await capture_call_async(
+                        call_logger.build_record(),
+                        self.session.get("obs_turns") or self.session.get("turns") or [],
+                    )
+                except Exception as _obs_exc:
+                    logger.error("[ms_conn] obs capture error: %r", _obs_exc)
+
+                # Phase 2 — failure alerting (spec §5.2). Same safety profile as
+                # capture: post-call, flag-gated (OBS_ALERTS_ENABLED, default OFF),
+                # never raises, only messages the operator channels. Evaluates the
+                # completed call against the §5.2 conditions and dispatches.
+                try:
+                    from app.obs.alerts import route_call
+                    await route_call(call_logger.build_record(), self.session)
+                except Exception as _al_exc:
+                    logger.error("[ms_conn] obs alert error: %r", _al_exc)
+
+                # Phase 3 — LLM-as-judge (spec §5.3). Fire-and-forget so the
+                # (network-bound) Claude call never delays teardown; gated on
+                # OBS_JUDGE_ENABLED (default OFF) and never raises. Reads the row
+                # capture just wrote, scores it, stores the result, and raises a
+                # review alert on a bad call — all off the teardown critical path.
+                try:
+                    from app.obs import judge as _obs_judge
+                    if _obs_judge.is_enabled() and self.call_sid:
+                        asyncio.create_task(_obs_judge.run_and_store(self.call_sid))
+                except Exception as _jd_exc:
+                    logger.error("[ms_conn] obs judge error: %r", _jd_exc)
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 

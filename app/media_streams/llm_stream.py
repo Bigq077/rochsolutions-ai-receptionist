@@ -2093,6 +2093,25 @@ def _append_history(
         session["conversation_history"] = history[-MAX_HISTORY_TURNS:]
     session.setdefault("turns", []).append({"role": "assistant", "text": assistant_text})
 
+    # Both sides of the exchange, for the observability capture/judge (app/obs/**).
+    # The judge cannot score a call it can only half-hear, and session["turns"] on
+    # this branch holds the assistant side only.
+    #
+    # This is deliberately a SEPARATE key rather than a fix to session["turns"]:
+    # that list feeds the owner-facing actionable summary (_format_turns, max_turns=10)
+    # and the SMS router (last-8 window), which have always been tuned against the
+    # assistant-only shape. Adding caller turns there would halve those windows' real
+    # coverage and change a live clinic's summaries as a side effect of an
+    # observability port. Upstream `main` does fix session["turns"] in place; porting
+    # that here is its own change with its own testing — see the note in the PR.
+    #
+    # Caller turn first, then the reply, preserving order. Skip empty/whitespace
+    # caller text (e.g. silence turns).
+    obs_turns = session.setdefault("obs_turns", [])
+    if user_text and user_text.strip():
+        obs_turns.append({"role": "user", "text": user_text})
+    obs_turns.append({"role": "assistant", "text": assistant_text})
+
 
 # ---------------------------------------------------------------------------
 # Interim-phrase duplicate suppression (BUG 2)
