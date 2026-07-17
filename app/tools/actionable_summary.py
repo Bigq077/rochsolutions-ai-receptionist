@@ -145,6 +145,20 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
             "saturday", "sunday",
             "january", "february", "march", "april", "may", "june",
             "july", "august", "september", "october", "november", "december",
+            # body parts — the unanchored "Right <word>" branch matches phrases
+            # like "your right ankle" in a physio context; block them so a body
+            # part is never mistaken for a name.
+            "ankle", "knee", "hip", "back", "shoulder", "neck", "wrist",
+            "elbow", "foot", "leg", "arm", "hand", "calf", "thigh",
+            "hamstring", "groin", "spine",
+            # generic words seen trailing a lead-in mid-sentence
+            # ("the right STARTING point" → name='Starting', JV 2026-07-17)
+            "starting", "ending", "beginning",
+            "the", "then", "just", "in", "still", "not", "one", "this", "your",
+            # practitioner names — "Right, Marcus will assess…" must not be
+            # read as the patient's name (trade-off: a patient truly named
+            # Marcus/Mark is blocked here, acceptable on this fallback path).
+            "marcus", "mark",
         })
         for _msg in _history:
             if _msg.get("role") == "assistant":
