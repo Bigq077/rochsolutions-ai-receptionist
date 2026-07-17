@@ -17,6 +17,8 @@ from app.routes.tts_eleven import router as tts_eleven_router
 from app.routes.admin import router as admin_router
 # OpenAI Realtime API WebSocket bridge (active when REALTIME_ENABLED=true)
 from app.routes.realtime import router as realtime_router
+# Public live-transcript feed for the website demo call
+from app.routes.demo import router as demo_router
 
 # Parallel Media Streams pipeline (active when MEDIA_STREAMS_ENABLED=true)
 # Routes: POST /ms/incoming (TwiML), WS /ms/stream (WebSocket handler)
@@ -69,10 +71,10 @@ app = FastAPI(
 # CORS MIDDLEWARE
 # ============================================================================
 
-# ✅ CORS — allow ALL Netlify domains + local dev
+# ✅ CORS — allow ALL Netlify domains + Vercel (Roch Solutions website) + local dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https://.*\.netlify\.app$",
+    allow_origin_regex=r"^(https://.*\.(netlify\.app|vercel\.app)|http://localhost:\d+)$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -248,6 +250,7 @@ app.include_router(redis_debug_router)
 app.include_router(avatar_router)
 app.include_router(admin_router)   # temporary admin router
 app.include_router(realtime_router)  # OpenAI Realtime WebSocket bridge
+app.include_router(demo_router)  # public live-transcript feed for the website demo
 
 # Media Streams pipeline — always registered so Twilio routing works regardless of flag
 app.include_router(media_streams_router)
