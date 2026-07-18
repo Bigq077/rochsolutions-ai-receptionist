@@ -76,6 +76,16 @@ class CallLogger:
         except OSError as exc:
             _log.error("[call_logger] flush failed call_sid=%s: %r", self.call_sid, exc)
 
+    def build_record(self) -> Dict[str, Any]:
+        """
+        Public accessor for the structured per-call record.
+
+        Same dict that flush() writes to JSONL — reused by the operator
+        failure-alerting layer (app/obs/alerts.py) so what triggers an alert and
+        what lands in the log never diverge. Read-only; does not mutate state.
+        """
+        return self._build_record()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
