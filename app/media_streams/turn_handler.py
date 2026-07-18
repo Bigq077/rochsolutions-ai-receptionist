@@ -310,6 +310,28 @@ _BOOKING_OFFER_RE = re.compile(
 )
 
 
+# Gate 5e — diagnostic assertions about the CALLER'S OWN case. Standard-tier
+# template clinics are non-diagnostic; if the model asserts what the caller
+# HAS, strip that sentence. Deliberately conservative: matches second-person
+# case assertions ("you've probably got a disc bulge", "it sounds like you
+# have sciatica") — never general education ("sciatica is very common") and
+# never the screening questions themselves ("do you have any numbness…?",
+# which is a question, not an assertion; the trailing [.!] excludes '?').
+_DIAGNOSIS_LEAK_RE = re.compile(
+    r"[^.!?]*\b(?:"
+    r"you (?:probably|likely|definitely|almost certainly) have"
+    r"|you(?:'ve| have) (?:probably |likely |definitely )?got a"
+    r"|it sounds like you(?:'ve| have)"
+    r"|sounds like you(?:'ve| have) got"
+    r"|that(?:'s| is) (?:probably|likely|definitely) (?:a|an|your)"
+    r"|you must have (?:a|an|torn|pulled|slipped)"
+    r"|my diagnosis"
+    r"|i(?:'d| would) diagnose"
+    r")\b[^.!?]*[.!]?",
+    re.IGNORECASE,
+)
+
+
 # ---------------------------------------------------------------------------
 # Gate 5a — chunk-level reasoning drop patterns
 # If ANY of these match, the ENTIRE chunk is discarded and never reaches TTS.
@@ -513,6 +535,35 @@ def sanitise_response(text: str, session: Dict[str, Any]) -> str:
                     _canon_date,
                 )
                 result = _date_corrected
+
+    # ── Gate 5e: diagnosis-leak strip (standard clinical tier only) ─────────
+    # Template clinics on clinical_depth='standard' are clinically fluent but
+    # NON-diagnostic: the model must never assert what the caller HAS. If a
+    # diagnostic sentence leaks past the prompt rules, strip that sentence
+    # (conservative patterns — assertions about the caller's own case only,
+    # never general education like "sciatica is common"). Deep tier ('deep',
+    # post sign-off) is exempt — naming the likely cause is its whole point.
+    # The depth lookup is resolved once per session and cached on the session
+    # dict so this per-chunk hot path never re-reads clinic config.
+    _depth_cached = session.get("_clinical_depth_cache")
+    if _depth_cached is None:
+        _depth_cached = ""
+        try:
+            from app.clinic_config import get_clinic as _g5e_get_clinic
+            from app.prompts.clinic_template_prompt import (
+                _clinical_depth as _g5e_depth,
+            )
+            _g5e_clinic = _g5e_get_clinic(session.get("clinic_id"))
+            if _g5e_clinic.get("prompt_engine") == "template_v1":
+                _depth_cached = _g5e_depth(_g5e_clinic)
+        except Exception:
+            _depth_cached = ""
+        session["_clinical_depth_cache"] = _depth_cached
+    if _depth_cached == "standard":
+        _diag_cleaned = _DIAGNOSIS_LEAK_RE.sub("", result)
+        if _diag_cleaned != result and _diag_cleaned.strip():
+            logger.info("[ms_gate5] removed diagnostic assertion (standard tier)")
+            result = _diag_cleaned
 
     result = result.replace("\n", " ")
     result = _MULTI_SPACE_RE.sub(" ", result)

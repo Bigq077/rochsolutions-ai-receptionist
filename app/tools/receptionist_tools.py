@@ -4293,6 +4293,26 @@ async def _ping_owner_insurance(
 
 
 async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # ── Clinical-screening backstop (Layer 3) ─────────────────────────────
+    # A caller must never be booked over an un-run (or positive) red-flag
+    # screen, even if the model tries. clinical_screening.py arms
+    # session['pending_screen'] deterministically; this gate holds the
+    # tool boundary. No-op for clinics without clinical_screening enabled.
+    try:
+        from app.clinic_config import get_clinic as _scr_get_clinic
+        from app.media_streams.clinical_screening import booking_blocked_reason
+        _scr_reason = booking_blocked_reason(
+            session, _scr_get_clinic(session.get("clinic_id"))
+        )
+        if _scr_reason:
+            logger.info(
+                "[book] blocked by clinical screening backstop: %s",
+                (session.get("pending_screen") or session.get("screen_red_flag")),
+            )
+            return {"success": False, "error": _scr_reason}
+    except Exception:
+        logger.exception("[book] clinical screening backstop failed — failing open")
+
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
         return await _book_appointment_acuity(args, session)

@@ -244,6 +244,179 @@ def _render_treatment_knowledge(clinic: Dict[str, Any], tk: Dict[str, str]) -> s
     return "\n".join(out)
 
 
+def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Per-condition clinical fluency, rendered from `condition_knowledge` in
+    clinic.json. This is what makes Susie's clinical responses SPECIFIC: each
+    entry carries the condition's hallmark features (the 'first steps in the
+    morning' of plantar fasciitis, the 'cinema sign' of kneecap pain) so she
+    demonstrates genuine understanding instead of a generic 'that's common'.
+    All content is educational about the condition in general — the caller is
+    never told what THEY have (that stays with the clinical_depth tier).
+    Clinics without the block are unaffected."""
+    ck = clinic.get("condition_knowledge") or {}
+    conds = ck.get("conditions") or []
+    if not conds:
+        return ""
+    out = ["CONDITION FLUENCY — PRECISE, SPECIALIST UNDERSTANDING (never generic)"]
+    if ck.get("how_to_use"):
+        out.append(ck["how_to_use"])
+    out.append("")
+    out.append(
+        "THE STANDARD: a caller who names a condition must hear, in your first "
+        "reply, that you genuinely know that condition — one or two of its "
+        "hallmark features reflected naturally, woven together with THEIR "
+        "specifics (their sport, job, duration, what it's stopping them doing). "
+        "Banned as a complete answer: 'that's very common', 'we see that a "
+        "lot', or any reply that would fit every condition equally."
+    )
+    out.append("")
+    out.append("CONDITION LIBRARY (hallmarks → pathway → best-fit service):")
+    for c in conds:
+        nm = c.get("name", "")
+        und = c.get("understanding", "")
+        path = c.get("pathway", "")
+        svc = c.get("service", "")
+        line = f"- {nm}: {und}"
+        if path:
+            line += f" PATHWAY: {path}"
+        if svc:
+            line += f" BOOK: {svc}."
+        out.append(line)
+    out.append("")
+    out.append(
+        "If the condition is not in the library, apply the same standard from "
+        "your general knowledge: acknowledge its recognised features "
+        f"specifically, stay non-diagnostic about the caller's own case, and "
+        f"offer the {tk['first_appt_noun']} as the pathway. The CLINICAL "
+        "SAFETY SCREENING block always takes precedence when a screen matches."
+    )
+    return "\n".join(out)
+
+
+def _clinical_depth(clinic: Dict[str, Any]) -> str:
+    """Resolve the clinical-engagement tier for a clinic: 'standard' (default —
+    clinically fluent but NON-diagnostic) or 'deep' (names likely cause,
+    recovery timelines, safe self-care).
+
+    The env var JV_CLINICAL_DEPTH is authoritative when set to 'standard' or
+    'deep' — this is the production kill-switch that keeps a live number on
+    'standard' (or, post practitioner sign-off, deliberately enables 'deep' on a
+    test number) regardless of what the committed config says. When unset, the
+    clinic's clinical_depth field is used, defaulting to 'standard'."""
+    import os
+    env = (os.getenv("JV_CLINICAL_DEPTH") or "").strip().lower()
+    if env in ("standard", "deep"):
+        return env
+    d = str(clinic.get("clinical_depth") or "standard").strip().lower()
+    return d if d in ("standard", "deep") else "standard"
+
+
+def _render_clinical_screening(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Proactive red-flag SCREENING protocol, rendered from the clinic's
+    `clinical_screening` config. Screening is safety-positive and NON-diagnostic:
+    it asks the standard MSK safety question for a presentation BEFORE booking and
+    routes red flags to urgent care. Rendered only when the clinic enables it, so
+    clinics without the block are unaffected. The per-turn enforcement (which
+    specific screen to run now) is injected by _b7_call_state via
+    session['pending_screen']; the deterministic detector lives in
+    app/media_streams/clinical_screening.py."""
+    cs = clinic.get("clinical_screening") or {}
+    if not cs.get("enabled"):
+        return ""
+    screens = cs.get("screens") or []
+    if not screens:
+        return ""
+    out = ["CLINICAL SAFETY SCREENING — PROACTIVE RED-FLAG CHECKS (run BEFORE booking)"]
+    if cs.get("how_to_use"):
+        out.append(cs["how_to_use"])
+    out.append("")
+    out.append(
+        "SCREENS — match the caller's presentation to a row, then ask that "
+        "screen's question, on its own, before moving to booking:"
+    )
+    for s in screens:
+        label = s.get("label") or s.get("id", "")
+        pres = s.get("presentation", "")
+        q = s.get("screen_question", "")
+        esc = s.get("escalation", "")
+        out.append(f"- {label} — when the caller describes {pres}:")
+        if q:
+            out.append(f"    ASK: \"{q}\"")
+        if esc:
+            out.append(f"    IF ANY YES / positive → do NOT book; say calmly and warmly: \"{esc}\"")
+        out.append("    IF clearly NO → reassure briefly ('that's reassuring') and continue to booking.")
+    out.append("")
+    out.append(
+        "Ask each screen at most once per call. A screen is a safety check, "
+        "never a diagnosis. If the caller volunteers an emergency (chest pain, "
+        "breathing difficulty, stroke signs, collapse), give the emergency "
+        "response immediately and offer to put them through — do not screen or book."
+    )
+    return "\n".join(out)
+
+
+def _render_clinical_depth(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Optional DEEP-CLINICAL engagement block (Tier 3). Rendered only when the
+    clinic's clinical_depth resolves to 'deep'. Ported and discipline-parametrised
+    from the theorem-v4 `_V4_DEEP_CLINICAL_BLOCK`. In 'standard' (default) this
+    renders nothing and Susie stays non-diagnostic.
+
+    SAFETY: 'deep' uses open-model medical knowledge and a loosened diagnosis
+    line, which raises hallucination / clinical-liability exposure on a recorded
+    line. It MUST NOT run on a live number until the practitioner has reviewed
+    call behaviour and signed off in writing (kept 'standard' in prod via config
+    default + the JV_CLINICAL_DEPTH kill-switch)."""
+    if _clinical_depth(clinic) != "deep":
+        return ""
+    disc = tk["discipline"]
+    prac = tk["practitioner"]
+    return (
+        "=== DEEP-CLINICAL MODE — HOW SUSIE ENGAGES ===\n"
+        f"You have genuine {disc} fluency and you USE it. When a caller asks "
+        "about a condition, an injury, a surgery, recovery, what to expect, or "
+        f"whether {disc} can help them, do NOT deflect to 'speak to {prac}'. "
+        "Engage properly:\n"
+        "1. Acknowledge with real warmth — name what they're dealing with.\n"
+        f"2. Give substantive, specific detail: how {disc} addresses that kind of "
+        "problem, what the recovery path usually looks like, and what they can "
+        "expect. You may name the most likely cause and suggest gentle, safe "
+        "things to do in the meantime. Speak like someone who knows the field, "
+        "not a script.\n"
+        f"3. Frame anything diagnostic lightly: '{prac} will confirm exactly "
+        "what's going on when he assesses you' — said once, as reassurance, "
+        "never as a brush-off.\n"
+        "4. Then, naturally, offer to get them booked in.\n\n"
+        "POST-OP / POST-SURGERY TRACK — this is why people really call. If a "
+        "caller is recovering from surgery (joint replacement, ACL "
+        "reconstruction, rotator cuff repair, back surgery, any operation):\n"
+        "- Lead with genuine reassurance — recovery is a process and it's normal "
+        "to feel unsure or frustrated at this stage.\n"
+        "- Set realistic expectations: post-surgical rehab moves in stages "
+        "(protect and settle, restore movement, rebuild strength, return to "
+        f"activity), and {disc} guides each stage so they progress safely.\n"
+        "- Make them feel looked-after, not processed. Be specific to their "
+        "operation where you can.\n"
+        "- Then offer an assessment so a proper, personalised rehab plan can be "
+        "built.\n\n"
+        "GUARDRAILS (absolute, even in deep-clinical mode):\n"
+        "- EMERGENCIES override everything — chest pain, breathing difficulty, "
+        "stroke signs, severe head injury, loss of consciousness, sudden "
+        "numbness one side, sudden vision loss → give the emergency response and "
+        "offer to put them through. Do not engage clinically.\n"
+        "- The CLINICAL SAFETY SCREENING above still runs in full — always "
+        "complete the relevant red-flag screen before booking.\n"
+        "- No medication names or doses. Never give advice that contradicts a "
+        "doctor or surgeon already treating them — defer to their surgeon's "
+        "protocol where relevant.\n"
+        "- Never invent clinic-specific facts (prices, staff, services) — only "
+        "the clinical/educational content is open knowledge; clinic facts come "
+        "from your clinic data above.\n"
+        "- Keep the phone-call rules: warm, British English, max two sentences "
+        "before a natural pause, one question per turn.\n"
+        "=== END DEEP-CLINICAL MODE ==="
+    )
+
+
 def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     lines = [
@@ -877,27 +1050,60 @@ def _render_faq(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
 def _render_fixed_responses(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     emergency = pf.get("emergency_response") or clinic.get("call_handling", {}).get("emergency_message", "")
+
+    # The clinical-deflection fixed response and its scope paragraph vary by
+    # clinical_depth. In 'standard' (default) they are byte-identical to the
+    # original non-diagnostic wording; in 'deep' they switch to the engaging
+    # variant that is consistent with DEEP-CLINICAL MODE (rendered separately).
+    if _clinical_depth(clinic) == "deep":
+        clinical_line = (
+            "- Caller asks for diagnosis, prognosis, or clinical advice → engage "
+            "properly (see DEEP-CLINICAL MODE): give genuinely useful, specific "
+            f"detail about what that kind of issue usually involves and how "
+            f"{tk['discipline']} approaches it; you may name the most likely "
+            "cause and suggest gentle, safe self-care, then add lightly "
+            f"'{tk['practitioner']} will confirm exactly what's going on when he "
+            "assesses you.' Do NOT shut it down with a deflection.\n"
+        )
+        scope_para = (
+            "SCOPE OF CLINICAL ENGAGEMENT — definitional questions ('what is that "
+            "treatment?', 'what happens in a session?', 'how does it work?') are "
+            "always answered directly and factually in ONE or two short "
+            "sentences, then offer to book. Questions about the caller's OWN case "
+            "(diagnosis, prognosis, what's causing it) are engaged per "
+            f"DEEP-CLINICAL MODE, always framed as '{tk['practitioner']} will "
+            "confirm this properly when he assesses you'. The red-flag SAFETY "
+            "SCREENING always runs first.\n\n"
+        )
+    else:
+        clinical_line = (
+            "- Caller asks for diagnosis, prognosis, or clinical advice → "
+            f"'{pf.get('clinical_deflection_response','')}'\n"
+        )
+        scope_para = (
+            "SCOPE OF THE CLINICAL DEFLECTION — the deflection above is ONLY for "
+            "questions about the CALLER'S OWN case: their diagnosis, prognosis, what "
+            "is causing their symptoms, or whether a treatment is right for THEM. It "
+            "does NOT apply to general, definitional questions about what a service "
+            "is or how it works in principle ('what is that treatment?', 'what "
+            "happens in a session?', 'how does it work?'). Answer those directly and "
+            "factually in ONE or two short sentences, then offer to book — never "
+            f"deflect a definitional question to {tk['practitioner']}. If the caller "
+            "then asks whether it would help THEIR specific problem, that IS a "
+            f"clinical question: do not endorse it — say {tk['practitioner']} will "
+            "advise what's most appropriate after assessing.\n\n"
+        )
+
     return (
         "FIXED RESPONSES\n"
         f"Open every call with exactly: '{pf.get('greeting','')}'\n\n"
         "Three fixed responses that must be said verbatim:\n"
         f"- Caller asks if you're AI → '{pf.get('ai_self_response','')}'\n"
-        f"- Caller asks for diagnosis, prognosis, or clinical advice → "
-        f"'{pf.get('clinical_deflection_response','')}'\n"
-        f"- Caller describes a medical emergency → '{emergency}' Then offer "
+        + clinical_line
+        + f"- Caller describes a medical emergency → '{emergency}' Then offer "
         "to transfer or end the call.\n\n"
-        "SCOPE OF THE CLINICAL DEFLECTION — the deflection above is ONLY for "
-        "questions about the CALLER'S OWN case: their diagnosis, prognosis, what "
-        "is causing their symptoms, or whether a treatment is right for THEM. It "
-        "does NOT apply to general, definitional questions about what a service "
-        "is or how it works in principle ('what is that treatment?', 'what "
-        "happens in a session?', 'how does it work?'). Answer those directly and "
-        "factually in ONE or two short sentences, then offer to book — never "
-        f"deflect a definitional question to {tk['practitioner']}. If the caller "
-        "then asks whether it would help THEIR specific problem, that IS a "
-        f"clinical question: do not endorse it — say {tk['practitioner']} will "
-        "advise what's most appropriate after assessing.\n\n"
-        "URGENT-CARE SAFETY NET — red-flag symptoms only: if a caller's symptoms "
+        + scope_para
+        + "URGENT-CARE SAFETY NET — red-flag symptoms only: if a caller's symptoms "
         "sound severe, are rapidly worsening, follow a major injury or trauma, "
         "or they say they feel very unwell (e.g. chest pain, sudden severe "
         "weakness or numbness, loss of bladder or bowel control, can't bear any "
@@ -1420,6 +1626,109 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "that to the team? I've just sent you a confirmation text — take "
             "care.'"
         )
+    # Clinics that ship a condition_knowledge library get the FLUENT variants
+    # of (a) the clinical-complaint reassurance step and (b) the special-case
+    # clinical questions: specific, educational, still non-diagnostic. Clinics
+    # without the library keep the original generic-reassurance + deflection
+    # wording byte-for-byte.
+    _has_fluency = bool((clinic.get("condition_knowledge") or {}).get("conditions"))
+    if _has_fluency:
+        _step2_clinical = (
+            "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
+            "if the caller named a SPECIFIC complaint (a knee / shoulder / neck / "
+            "back / ankle problem, sciatica, a sports injury, any named body part "
+            "or condition) OR asked a clinical question ('what do you think', 'is "
+            "it serious'), you MUST include one or two sentences of SPECIFIC "
+            "understanding here using the CONDITION FLUENCY library — reflect "
+            "that condition's hallmark features and the caller's own details "
+            "(their sport, job, duration) in natural spoken words. NEVER the "
+            "one-size-fits-all 'physiotherapy is well-suited to that kind of "
+            "problem' template on its own — a reply that would fit every "
+            "condition equally is a failure. Still NO diagnosis of the CALLER'S "
+            "own case ('that kind of problem', never 'you have X'), no prognosis, "
+            "no promise of a cure. "
+            "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell the "
+            "caller that a particular treatment or modality "
+            "'can be effective', 'will help', 'is worth trying', "
+            "or 'is suitable' for their problem — whether a given treatment fits is "
+            f"a clinical judgement only {prac} can make after assessing "
+            "(recommending the right APPOINTMENT per TREATMENT KNOWLEDGE is "
+            "expected and is not a treatment endorsement). "
+            "For genuinely vague descriptions ONLY ('I'm not feeling right', "
+            "'something feels off') with NO named body part, this step may be "
+            "omitted.\n"
+        )
+        _special_case_clinical = (
+            "SPECIAL-CASE CLINICAL QUESTIONS — answer with genuine, GENERAL "
+            "education, then anchor the personalised answer to the "
+            f"{first_appt} with {prac}. Never a bare deflection — the caller "
+            "must learn something true and useful from every answer:\n"
+            f"- 'Should I rest or keep moving / push through the pain?' → give "
+            "the honest general principle: for most muscle and joint problems, "
+            "staying gently active within comfort helps more than complete "
+            "rest, but sharp or worsening pain is a signal to ease off — and "
+            f"{prac} will give exact, personal guidance once he's assessed "
+            "them. Never a bare 'that's one for the practitioner'.\n"
+            f"- 'Ice or heat?' → general education is fine: cold tends to suit "
+            "the first day or two after a fresh flare-up or injury, warmth "
+            "tends to suit stiffness and muscle tension, and whichever eases "
+            f"it is reasonable short-term — {prac} will advise specifically "
+            "at the appointment.\n"
+            f"- 'Do I need a scan / X-ray / MRI first?' → reassure honestly: "
+            "most muscle and joint problems don't need imaging before "
+            f"treatment — a thorough {first_appt} usually identifies the "
+            f"problem, and {prac} will say straight away if imaging or a GP "
+            "referral IS warranted. Never promise a scan.\n"
+            f"- 'How many sessions will I need / how long will it take?' → "
+            "honest and specific about the PROCESS, never a number: it "
+            f"genuinely depends on what the {first_appt} finds — {prac} "
+            "agrees a plan with you at the first visit so you know exactly "
+            "where you stand from day one. Never quote a number of sessions "
+            "or a recovery time.\n"
+            f"- 'Can {prac} crack/click my back?' → no manipulation promises: "
+            f"'{prac} will assess and use whatever's appropriate for you.'\n"
+            f"- 'Can {prac} tell me what's wrong / diagnose me?' → '{prac} will "
+            "assess and explain everything at the appointment.' Don't promise a "
+            "diagnosis over the phone.\n"
+        )
+    else:
+        _step2_clinical = (
+            "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
+            "if the caller named a SPECIFIC complaint (a knee / shoulder / neck / "
+            "back / ankle problem, sciatica, a sports injury, any named body part "
+            "or condition) OR asked a clinical question ('what do you think', 'is "
+            "it serious'), you MUST include ONE reassurance sentence here — never "
+            "skip it, never merge it into step 1 or step 3. Reassure GENERALLY that "
+            f"{discipline} with {prac} is well-suited to that kind of problem and "
+            f"that a {first_appt} will get to the bottom of it. NO diagnosis, NO guess "
+            f"at what they have, NO medical advice. Example: '{clinical_fit}' "
+            "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell the "
+            "caller that a particular treatment or modality "
+            "'can be effective', 'will help', 'is worth trying', "
+            "or 'is suitable' for their problem — whether a given treatment fits is "
+            f"a clinical judgement only {prac} can make after assessing. If the "
+            "caller asks whether a specific treatment would help, do NOT endorse it; "
+            f"say {prac} will advise what's most appropriate once he's assessed them. "
+            "For genuinely vague descriptions ONLY ('I'm not feeling right', "
+            "'something feels off') with NO named body part, this step may be "
+            "omitted.\n"
+        )
+        _special_case_clinical = (
+            "SPECIAL-CASE CLINICAL QUESTIONS — never advise, always defer to "
+            f"{prac} after assessment:\n"
+            f"- 'Should I stop / push through the pain?' → 'That's really one for "
+            f"{prac} to advise after assessing you.' Never tell them to stop or "
+            f"continue.\n"
+            f"- 'Can {prac} crack/click my back?' → no manipulation promises: "
+            f"'{prac} will assess and use whatever's appropriate for you.'\n"
+            f"- 'Can {prac} tell me what's wrong / diagnose me?' → '{prac} will "
+            f"assess and explain everything at the appointment.' Don't promise a "
+            f"diagnosis over the phone.\n"
+            f"- Self-management ('ice or heat? rest or move? should I stretch?') → "
+            f"'{prac} will guide that at your appointment.' No self-care advice "
+            f"over the phone.\n"
+        )
+
     booking_flow = (
         "BOOKING FLOW\n"
         "HARD RULE — NEW/RETURNING QUESTION IS PERMANENTLY BANNED FROM THIS "
@@ -1437,25 +1746,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "1. ONE empathy sentence. Lead with: 'I'm sorry to hear that — that "
         "sounds really painful.' Vary the wording naturally but always open "
         "with genuine sympathy.\n"
-        "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
-        "if the caller named a SPECIFIC complaint (a knee / shoulder / neck / "
-        "back / ankle problem, sciatica, a sports injury, any named body part "
-        "or condition) OR asked a clinical question ('what do you think', 'is "
-        "it serious'), you MUST include ONE reassurance sentence here — never "
-        "skip it, never merge it into step 1 or step 3. Reassure GENERALLY that "
-        f"{discipline} with {prac} is well-suited to that kind of problem and "
-        f"that a {first_appt} will get to the bottom of it. NO diagnosis, NO guess "
-        f"at what they have, NO medical advice. Example: '{clinical_fit}' "
-        "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell the "
-        "caller that a particular treatment or modality "
-        "'can be effective', 'will help', 'is worth trying', "
-        "or 'is suitable' for their problem — whether a given treatment fits is "
-        f"a clinical judgement only {prac} can make after assessing. If the "
-        "caller asks whether a specific treatment would help, do NOT endorse it; "
-        f"say {prac} will advise what's most appropriate once he's assessed them. "
-        "For genuinely vague descriptions ONLY ('I'm not feeling right', "
-        "'something feels off') with NO named body part, this step may be "
-        "omitted.\n"
+        f"{_step2_clinical}"
         f"3. ONE offer to book — a single question: 'Would you like to {offer}?' "
         "Do not say 'Of course' "
         "or 'Absolutely' before it. Steps 2 and 3 must be two distinct "
@@ -1466,19 +1757,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "mentions a condition AND explicitly asks to book in the same "
         "utterance, treat it as booking intent and proceed directly.\n\n"
         f"{_condition_families}"
-        "SPECIAL-CASE CLINICAL QUESTIONS — never advise, always defer to "
-        f"{prac} after assessment:\n"
-        f"- 'Should I stop / push through the pain?' → 'That's really one for "
-        f"{prac} to advise after assessing you.' Never tell them to stop or "
-        f"continue.\n"
-        f"- 'Can {prac} crack/click my back?' → no manipulation promises: "
-        f"'{prac} will assess and use whatever's appropriate for you.'\n"
-        f"- 'Can {prac} tell me what's wrong / diagnose me?' → '{prac} will "
-        f"assess and explain everything at the appointment.' Don't promise a "
-        f"diagnosis over the phone.\n"
-        f"- Self-management ('ice or heat? rest or move? should I stretch?') → "
-        f"'{prac} will guide that at your appointment.' No self-care advice "
-        f"over the phone.\n"
+        f"{_special_case_clinical}"
         "RED FLAGS OVERRIDE THIS ENTIRELY: if red-flag language is present, "
         "give the urgent-care response from the safety net and STOP booking — "
         "the acknowledgement patterns above do NOT apply.\n\n"
@@ -1972,6 +2251,33 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
     if known:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
 
+    # SCREEN REQUIRED — per-turn enforcement of proactive red-flag screening.
+    #
+    # The deterministic detector (app/media_streams/clinical_screening.py) sets
+    # session['pending_screen'] to a screen id when the caller's presentation
+    # matches a row in clinical_screening. While that flag is set, the model
+    # MUST ask that exact screen's question before any booking step — this makes
+    # the screen fire consistently rather than relying on the model noticing the
+    # presentation. The book_appointment tool is gated on the same flag as the
+    # hard backstop, so a caller can never be booked over an un-run screen.
+    _pending = session.get("pending_screen")
+    if _pending:
+        _cs = clinic.get("clinical_screening") or {}
+        _screen = next(
+            (s for s in (_cs.get("screens") or []) if s.get("id") == _pending),
+            None,
+        )
+        if _screen and _screen.get("screen_question"):
+            state.append(
+                "SCREEN REQUIRED — before booking, this safety screen MUST be "
+                "asked now, on its own, as your single question this turn: "
+                f"\"{_screen['screen_question']}\" Acknowledge the caller warmly "
+                "first, then ask it. If they answer no / none of those, reassure "
+                "briefly and continue. If they answer yes to any part, do NOT "
+                "book — give the urgent-care guidance. Do NOT read a booking back "
+                "or ask 'shall I book that in' until this screen is answered."
+            )
+
     # PHONE STEP OUTSTANDING steer (2026-07-07 JV regression).
     #
     # Step 8 (phone) is prompt-only; the sole code enforcement is the
@@ -2030,6 +2336,8 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
         _render_persona_character(clinic),
         _render_service_mapping(clinic, tk),
         _render_treatment_knowledge(clinic, tk),
+        _render_condition_fluency(clinic, tk),
+        _render_clinical_screening(clinic, tk),
         _render_identity(clinic, tk),
         _render_provisional_booking(clinic, tk),
         spine["booking_flow"],
@@ -2052,6 +2360,9 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
         _render_faq(clinic, tk),
         _render_stt(clinic, tk),
         _render_fixed_responses(clinic, tk),
+        # Tier-3 deep-clinical engagement — appended last so its overrides land
+        # after the fixed responses. Renders nothing in the 'standard' default.
+        _render_clinical_depth(clinic, tk),
     ]
     static = "\n\n".join(b for b in static_blocks if b)
 

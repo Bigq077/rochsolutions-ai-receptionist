@@ -5588,6 +5588,64 @@ class WebSocketCallHandler:
                     # within-turn dedup still works (sentinel precedes this turn's
                     # chunks in the FIFO queue).
                     await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
+
+                    # ── Clinical screening (Layer 1 — deterministic) ─────────
+                    # Config-driven red-flag layer (clinical_screening in
+                    # clinic.json; no-op for clinics without it). Volunteered
+                    # emergencies and positive screen answers are answered with
+                    # the scripted line deterministically — the life-safety
+                    # path never depends on the model. Presentation triggers
+                    # arm session['pending_screen'], which _b7_call_state turns
+                    # into the SCREEN REQUIRED steer and book_appointment's
+                    # backstop enforces at the tool boundary.
+                    try:
+                        from app.clinic_config import get_clinic as _cs_get_clinic
+                        from app.media_streams import clinical_screening as _cs
+                        _cs_clinic = _cs_get_clinic(clinic_id)
+                        if _cs.screening_enabled(_cs_clinic):
+                            _cs_result = _cs.update_screening_state(
+                                self.session, _cs_clinic, utterance
+                            )
+                            if _cs_result["action"] in ("emergency", "escalate"):
+                                _cs_line = _cs_result["speak"] or ""
+                                if _cs_result["action"] == "emergency":
+                                    _cs_line = (
+                                        _cs_line
+                                        + " Would you like me to put you "
+                                        "through to someone now?"
+                                    )
+                                await self.tts_text_queue.put(_cs_line)
+                                self.session["last_bot_prompt"] = _cs_line
+                                self.session["last_question"] = _cs_line
+                                self.session.setdefault(
+                                    "conversation_history", []
+                                ).append(
+                                    {"role": "user", "content": utterance}
+                                )
+                                self.session["conversation_history"].append(
+                                    {"role": "assistant", "content": _cs_line}
+                                )
+                                await save_session(self.call_sid, self.session)
+                                if self._silence_handler is not None:
+                                    self._silence_handler.on_question_asked(
+                                        _cs_line
+                                    )
+                                    self._silence_handler.on_llm_finished()
+                                self.llm_in_flight = False
+                                self._llm_busy = False
+                                self.session["llm_generation_active"] = False
+                                logger.info(
+                                    "[ms_conn] clinical screening %s — scripted "
+                                    "response spoken deterministically: %r",
+                                    _cs_result["action"], utterance[:80],
+                                )
+                                continue
+                    except Exception:
+                        logger.exception(
+                            "[ms_conn] clinical screening layer failed — "
+                            "failing open to normal LLM dispatch"
+                        )
+
                     # ── Slot-selection day-alias normalisation ────────────────
                     # Apply STT mishearing correction BEFORE the pop so the flag
                     # is still True here.  Rewrites e.g. "first year" → "thursday"
