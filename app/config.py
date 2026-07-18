@@ -41,3 +41,68 @@ TRANSFER_FALLBACK_NUMBER = os.getenv("TRANSFER_FALLBACK_NUMBER", "+447502211207"
 # Sentry DSN — set to enable error reporting to Sentry.io.
 # Leave unset (or empty) to disable Sentry entirely.
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
+# Phase 1 — durable call capture (see Susie_Call_Observability_Spec_for_Jules.md §5.1).
+# When enabled AND DATABASE_URL is set, each completed call is persisted to a
+# Postgres `calls` table (transcript + metadata) in the teardown path, additively
+# and after the call ends. Default OFF so production behaviour is unchanged until
+# a store is provisioned. With the flag OFF or DATABASE_URL empty, capture is a
+# fast no-op — no new latency or failure modes on the live call path.
+OBS_CAPTURE_ENABLED = os.getenv("OBS_CAPTURE_ENABLED", "false").lower() == "true"
+
+# Connection string for the durable observability store (managed Postgres, EU
+# region — see spec §7). Empty until provisioned; capture no-ops while unset.
+# SQLAlchemy URL form, e.g. postgresql+psycopg2://user:pass@host:5432/dbname
+#
+# Prefer the dedicated OBS_DATABASE_URL so this never collides with an existing
+# DATABASE_URL already set on the host for another purpose. Falls back to
+# DATABASE_URL when OBS_DATABASE_URL is unset (backwards-compatible).
+DATABASE_URL = os.getenv("OBS_DATABASE_URL") or os.getenv("DATABASE_URL", "")
+
+# Phase 2 — failure alerting (see Susie_Call_Observability_Spec_for_Jules.md §5.2).
+# When enabled, completed calls matching a failure condition alert the operator
+# (Quentin) via SMS and/or Slack, and pipeline exceptions are captured to Sentry.
+# Default OFF so production behaviour is unchanged. With the flag OFF the alert
+# router is a fast no-op — no messages are ever sent — so it cannot affect any
+# clinic or ping anyone until explicitly turned on.
+OBS_ALERTS_ENABLED = os.getenv("OBS_ALERTS_ENABLED", "false").lower() == "true"
+
+# Where immediate operator alerts go. SMS reuses the existing Twilio path; the
+# Slack webhook is optional. If neither is set, immediate alerts no-op even when
+# the flag is on (nothing to send to).
+OBS_ALERT_SMS_TO = os.getenv("OBS_ALERT_SMS_TO", "")
+OBS_SLACK_WEBHOOK = os.getenv("OBS_SLACK_WEBHOOK", "")
+
+# Daily digest by email. Where the once-a-day whole-system report goes; if unset,
+# the digest falls back to the operator SMS (review calls only).
+#
+# NOTE (this deployment): the SMTP transport itself is NOT configured here. Susie
+# already has a transactional email sender — app/notifications/email.py, used by
+# the end-of-day booking digest — which reads SMTP_HOST / SMTP_USERNAME /
+# SMTP_PASSWORD / SMTP_PORT / SMTP_FROM / SMTP_FROM_NAME / SMTP_USE_SSL straight
+# from env. app/obs/emailer.py delegates to it, so there is exactly ONE set of SMTP
+# credentials on this service. Do not re-declare SMTP_* here: upstream `main` uses
+# SMTP_USER while this branch uses SMTP_USERNAME, and having both would silently
+# half-configure the sender.
+OBS_DIGEST_EMAIL_TO = os.getenv("OBS_DIGEST_EMAIL_TO", "")
+
+# When set, the daily digest email inlines each review call's FULL transcript
+# (redacted — phones/emails hard-stripped, known caller names struck) so the email
+# is a self-contained work order you can paste straight into Claude Code to make the
+# fix. Default OFF (transcripts are special-category health data); turn on only for a
+# digest that goes to the clinic owner / data controller. No effect on the SMS path.
+OBS_DIGEST_INCLUDE_TRANSCRIPTS = (
+    os.getenv("OBS_DIGEST_INCLUDE_TRANSCRIPTS", "false").lower() == "true"
+)
+
+# Phase 3 — LLM-as-judge (see Susie_Call_Observability_Spec_for_Jules.md §5.3).
+# When enabled, each captured call is scored by Claude after teardown against a
+# versioned rubric, and the judgement is stored on the call row. Default OFF, and
+# a no-op without an ANTHROPIC_API_KEY — production behaviour is unchanged until a
+# store (Phase 1) is provisioned and this is turned on. Depends on Phase 1 capture.
+OBS_JUDGE_ENABLED = os.getenv("OBS_JUDGE_ENABLED", "false").lower() == "true"
+
+# Model used by the judge. Defaults to the most capable model; an operator can set
+# a cheaper model (e.g. claude-sonnet-5 / claude-haiku-4-5) to trade some judgement
+# quality for cost at high call volume. Re-run calibration if this changes.
+OBS_JUDGE_MODEL = os.getenv("OBS_JUDGE_MODEL", "claude-opus-4-8")

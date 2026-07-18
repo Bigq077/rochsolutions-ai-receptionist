@@ -2,6 +2,7 @@
   "_notes": "JONATHAN_REVIEW: Items tagged TBC must be confirmed with Jonathan before go-live. Search for 'TBC' to find every gap. Booking model is PROVISIONAL (google_calendar_provisional): Susie offers only slots Jonathan has published to the 'Vital Edge — Available' calendar, books the chosen slot as a PENDING event, and texts Jonathan immediately. Susie must NEVER tell the caller the booking is confirmed.",
   "clinic_id": "vital_edge",
   "clinic_name": "Vital Edge Therapy",
+  "practitioner": "Jonathan",
   "brand_names": [
     "Vital Edge Therapy",
     "Vital Edge",
@@ -15,13 +16,16 @@
     "https://vitaledgetherapy.com"
   ],
   "company_number": "TBC",
+  "_sms_price_line_note": "Full clause used by the end-of-call price-enquiry SMS. Without it the router falls back to Theorem's '50-min physio appointment is £75' copy. No outcome claims (treatment_guidance.safety forbids promising results or a session count).",
+  "sms_price_line": "A 60-minute deep tissue massage with Jonathan is £125, and a 90-minute session is £175. ",
   "locations": [
     {
       "location_id": "kingston",
       "name": "Vital Edge Therapy (Kingston)",
       "address_full": "Crescent Road, Kingston upon Thames, KT2 7RD",
       "postcode": "KT2 7RD",
-      "access_instructions": "TBC — confirm entry/buzzer details with Jonathan",
+      "_access_instructions_note": "Deliberately EMPTY. The engine renders 'Entry: <access_instructions>' verbatim into the clinic-info block, so a placeholder here is spoken to callers (it read 'Entry: TBC — confirm entry/buzzer details with Jonathan'). The onboarding doc lists no entry code or buzzer for Kingston. Fill in only with real, caller-safe wording.",
+      "access_instructions": "",
       "parking": "Paid parking available close by",
       "wheelchair_accessible": false,
       "serves_areas": ["Kingston upon Thames", "Kingston", "Norbiton", "South West London"],
@@ -47,24 +51,29 @@
     "_note": "Flattened by get_clinic into the legacy clinic contract. booking_system google_calendar_provisional drives the calendar-read + provisional-write + notify path. working_hours is intentionally all-closed — availability comes from the published calendar, not generated.",
     "timezone": "Europe/London",
     "sms_name": "Vital Edge Therapy",
-    "phone": "+44 7545 862307",
+    "phone": "+44 7426 779875",
     "transfer_phone": "+447545862307",
     "booking_system": "google_calendar_provisional",
     "_calendar_id_note": "Dedicated 'Vital Edge — Available' Google calendar where Jonathan publishes open slots. Susie's google_tokens MUST be OAuthed as Vital Edge's own Google account. GOOGLE_CALENDAR_ID env on the Render service overrides this if set. TBC: confirm the exact calendar address/ID.",
     "calendar_id": "vitaledgetherapy@gmail.com",
-    "_owner_notification_note": "Susie texts this number the moment she takes a provisional booking (name/phone/time/duration/notes). SMS now; WhatsApp is a fast-follow. TBC: confirm this is the right number to receive booking pings.",
+    "_owner_notification_note": "CONFIRMED 2026-07-10: +447545862307 is Jonathan's actual mobile, so the provisional-booking ping reaches him. Susie texts it the moment she takes a provisional booking (name/phone/time/duration/notes). SMS now; WhatsApp is a fast-follow. NOTE this is deliberately the same as transfer_phone and the caller-facing primary_phone — the AI itself answers on a separate Twilio line (see clinic_config.py NUMBER->clinic map).",
     "owner_notification_sms": "+447545862307",
     "_digest_note": "End-of-day email of the day's PENDING bookings so Jonathan/the agency can action them. Set email_to (or env DIGEST_EMAIL_TO) before go-live.",
     "digest": {
       "enabled": true,
       "email_to": "vitaledgetherapy@gmail.com",
+      "_action_line_note": "Vital Edge does NOT use Carepatron. Overrides the default 'enter into Carepatron' footer.",
+      "action_line": "Each of these is a booking REQUEST — confirm the time with the client, arrange payment, then add it to your diary.",
+      "_only_pending_note": "The 'Vital Edge — Available' calendar also holds open, unbooked slots; only_pending lists just the PENDING booking requests, not every published slot.",
+      "only_pending": true,
       "hour": 21,
       "minute": 30
     },
     "slot_minutes": 60,
     "_slot_increment_note": "Not used for slot generation — availability is read from the published calendar. Kept for contract compatibility.",
     "slot_increment_minutes": 60,
-    "days_ahead": 21,
+    "_days_ahead_note": "Jonathan releases availability ~2 weeks ahead and will not take bookings further out. Hard ceiling enforced in _check_availability_published.",
+    "days_ahead": 14,
     "_same_day_note": "Same-day allowed if a published slot exists (doc Section 6). The read path excludes past times.",
     "allow_same_day": true,
     "primary_location": "kingston",
@@ -90,11 +99,15 @@
   },
   "prompt_facts": {
     "identity_descriptor": "a deep tissue massage therapy clinic in Kingston upon Thames",
+    "discipline": "massage therapy",
+    "first_appt_noun": "session",
     "sole_practitioner": true,
     "practitioner": "Jonathan",
     "practitioner_credentials": "VTCT Level 3 in Soft Tissue Therapy, accredited Sports Massage Therapist",
     "persona_tone": "Professional, restorative, warm British",
     "persona_descriptor": "a warm, professional receptionist",
+    "persona_character": "You are warm, calm, and quietly assured — the kind of receptionist a high-end private clinic employs, not a call centre. When someone asks a question, you answer it fully and naturally, then stop. You do not fill the silence after an answer with generic closers or booking pushes. You trust the caller to lead — if they want to book, they will say so. You are unhurried, attentive, and never salesy. Think less scripted agent, more personal concierge. You know Vital Edge's treatments inside out and can advise which one is the right fit with genuine, specific insight — never a vague 'they're all good' or 'they're basically the same'. When a caller is unsure, you give a confident, informed recommendation and briefly say why, the way a knowledgeable therapist's front desk would.",
+    "payment_timing_note": "Payment is arranged before the appointment — Jonathan will confirm the details when he gets in touch to confirm the booking.",
     "pricing_default_line": "Default to the 60-minute Deep Tissue Massage fee (£125) when a caller asks 'how much is an appointment'.",
     "default_price_summary": "A 60-minute Deep Tissue Massage is £125, and a 90-minute session is £175.",
     "tagline": "Relax, Rejuvenate, and Restore Your Body",
@@ -104,30 +117,40 @@
     "emergency_response": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
     "booking_offer_line": "book a session with Jonathan",
     "clinical_fit_line": "A deep tissue massage with Jonathan is really well-suited to that kind of tension — he tailors every session to what's going on for you.",
-    "other_services_line": "Jonathan also offers a range of other therapies including acupuncture, psychotherapy, reiki and energy healing. You do NOT book these. If a caller asks about any service other than Deep Tissue Massage, acknowledge warmly, explain you handle Deep Tissue Massage bookings, and take their name and number for Jonathan to call back (use add_to_waitlist with a note).",
+    "other_services_line": "NON-MASSAGE ENQUIRIES ONLY. Vital Edge is a massage-only clinic — Jonathan does NOT offer acupuncture, reiki, psychotherapy, energy healing, physiotherapy, or any non-massage therapy. If a caller asks for any of those, politely say it's not something the clinic offers — Jonathan is a massage therapist — and do not book or take a callback for it. IMPORTANT: every MASSAGE type in the SERVICE MAPPING above (Deep Tissue, Stress Buster, Muscle / Nerve Injury, Sports, Facial Release) IS fully bookable by you through the normal booking flow — they are NOT 'other services'. If a caller names a specific massage (e.g. a sports massage), book THAT one normally and pass its service ID to book_appointment so it lands on Jonathan's calendar. NEVER divert a massage to a 'I'll take your details and Jonathan will call you back' callback — that is only for non-massage enquiries, which are simply declined.",
     "modality_question": "",
     "hours_summary_spoken": "Jonathan's availability varies from week to week — let me check what slots are currently available for you.",
     "closing_practitioner_line": "You're in good hands with Jonathan.",
-    "booking_pending_message": "I've noted your preferred time. This has been sent to Jonathan for confirmation — he'll be in touch shortly via WhatsApp or phone to confirm your appointment. Your booking isn't finalised until you hear from him, and he may suggest a similar time if that one isn't free."
+    "booking_pending_message": "I've noted your preferred time and sent it to Jonathan. Your appointment is subject to his confirmation — it isn't finalised until you hear from him via WhatsApp or phone, and he may suggest a similar time if that one isn't free. He'll also arrange payment with you beforehand, so there's nothing to pay right now.",
+    "booking_horizon_note": "Jonathan releases his availability about two weeks in advance, so I can only take bookings up to roughly a fortnight ahead. For anything further out, I can take your details and Jonathan will be in touch when he opens up later dates.",
+    "payment_arrangement_note": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment. Nothing is taken on this call.",
+    "home_visit_note": "Home visits are something Jonathan can often do — usually doable if you're local to Kingston. Don't promise it outright. Take it as a normal booking and note it's a home-visit request; Jonathan confirms whether he can come to you when he's in touch. Do NOT ask for the caller's address or postcode — Jonathan sorts the location out on the callback."
   },
   "faq": [
     { "q": "When are you open / what are your hours?", "a": "Jonathan's availability varies from week to week — I can check what slots are currently available for you. What days tend to work best?" },
     { "q": "How do I book an appointment?", "a": "I can check availability and note your preferred time right now. Once you've chosen a slot, Jonathan will receive a notification and will confirm your appointment with you directly via WhatsApp or phone." },
     { "q": "How will I know my booking is confirmed?", "a": "Once you've requested a time, Jonathan will be notified immediately. He'll confirm your appointment directly with you — your booking isn't finalised until you receive that confirmation. If you don't hear back within a few hours, please feel free to call again." },
-    { "q": "Does it hurt?", "a": "Most people find it well tolerated. Jonathan adjusts pressure throughout the session based on your feedback and comfort level." },
+    { "q": "Does it hurt?", "a": "Most people find it well tolerated. Deep or targeted work can feel firm over tight areas, but it should never be unbearable — Jonathan builds the pressure up sensibly and adjusts it throughout based on your comfort. It doesn't have to hurt to be effective, and you're always in control." },
+    { "q": "What's the difference between deep tissue and sports massage?", "a": "Deep tissue is firm, slow work into the deeper layers of muscle — it's the versatile choice for general tension, posture-related tightness and stubborn knots. Sports massage is more targeted around training and recovery, focusing on the specific muscles you load and helping with mobility and injury prevention. If you're unsure, deep tissue is usually the best first booking." },
+    { "q": "Which massage should I book for neck and shoulder tension from desk work?", "a": "For desk-related neck, shoulder and upper-back tension, a 60-minute deep tissue massage is usually the best fit — Jonathan can work into the deeper tightness that builds up from sitting and focus right on those areas." },
+    { "q": "Which massage is best after training, running or the gym?", "a": "For recovery from training, running or the gym, a sports massage is usually the better fit — it's targeted around the muscles you work hardest, to aid recovery, keep you mobile and help prevent injury. You don't need to be an athlete to book it." },
+    { "q": "I'm stressed and not sleeping well — which massage should I book?", "a": "The Stress Buster is a good fit for that — it's a slower, full-body treatment designed to release overall tension and help you switch off and reset, while still being properly therapeutic." },
+    { "q": "I'm not sure which massage I need — which should I choose?", "a": "No problem at all — if you tell me what's bothering you most, I can point you to the best fit. If you'd rather keep it simple, a 60-minute deep tissue is the most versatile first booking, and Jonathan will tailor it to you on the day." },
     { "q": "How long is the session?", "a": "Deep Tissue Massage sessions are either 60 minutes at £125 or 90 minutes at £175. Jonathan can advise which is most appropriate for your needs." },
     { "q": "Do I need a GP referral?", "a": "No — you can book directly with us." },
-    { "q": "Do you accept Bupa or insurance?", "a": "Vital Edge Therapy is a self-pay clinic — we do not work with insurance providers directly. If you have private health insurance, you're welcome to check with your insurer, but in most cases this type of treatment will not be covered. Payment is made directly by you on the day." },
-    { "q": "Can you come to me?", "a": "We are a clinic-based practice — all sessions are at our Kingston location. If you have specific requirements, I can take your details and Jonathan will call you back to discuss." },
+    { "q": "Do you accept Bupa or insurance?", "a": "Vital Edge Therapy is a self-pay clinic — we do not work with insurance providers directly. If you have private health insurance, you're welcome to check with your insurer, but in most cases this type of treatment will not be covered." },
+    { "q": "Can you come to me?", "a": "In many cases, yes — Jonathan can often come to you, especially if you're local to Kingston. The best way is to book the session in the usual way and I'll note that you'd like it as a home visit; Jonathan will then confirm he can come to you when he's in touch. Shall I get that booked in for you?" },
     { "q": "What should I wear?", "a": "Wear loose, comfortable clothing. Jonathan will advise on anything specific depending on the area being treated." },
     { "q": "Can I drive after my appointment?", "a": "Usually yes — Jonathan will advise on the day depending on what treatment you have had." },
-    { "q": "How do I pay?", "a": "We accept cash, debit card, and credit card via our secure Worldpay terminal. Receipts are provided." },
+    { "q": "How do I pay?", "a": "Payment is arranged in advance — Jonathan will sort that out with you directly when he confirms your appointment, so there's nothing to pay during this call. We accept cash, debit card, and credit card via our secure Worldpay terminal, and receipts are provided." },
+    { "q": "How far in advance can I book?", "a": "Jonathan releases his availability about two weeks ahead, so I can take bookings up to roughly a fortnight in advance. If you'd like something further out, I can take your details and he'll be in touch when he opens up later dates." },
     { "q": "Is there parking?", "a": "There is paid parking available close by. Kingston station is about a 20-minute walk away, and there are bus stops and tube connections nearby." },
     { "q": "What happens in the first session?", "a": "Jonathan will take a brief consultation at the start to understand your goals and any areas of concern, then tailor the session to your needs from the outset." },
     { "q": "How many sessions will I need?", "a": "That varies depending on your individual needs. Jonathan will advise after your first session whether a regular treatment plan would benefit you. Many clients see meaningful results after just one session." },
     { "q": "What is your cancellation policy?", "a": "We require at least 24 hours' notice to cancel or rearrange. Cancellations made with less than 24 hours' notice, or no-shows, are charged the full session fee." },
     { "q": "Can I speak to Jonathan before booking?", "a": "Yes — Jonathan is happy to offer a brief complimentary phone call to discuss your needs before your first appointment. I can note your details and he will call you back." },
-    { "q": "Do you offer other treatments beyond Deep Tissue Massage?", "a": "Jonathan offers a range of specialist therapies. Bookings for those are arranged directly with Jonathan — I can take your details and he will call you back to discuss what is right for you." }
+    { "q": "Do you offer other treatments beyond Deep Tissue Massage?", "a": "Yes — Jonathan offers a few massage types: Deep Tissue, Stress Buster, Muscle and Nerve Injury, Sports, and Facial Release. I can book any of them for you, just let me know which you'd like." },
+    { "q": "Do you offer acupuncture, reiki or physiotherapy?", "a": "That's not something we offer — Vital Edge is a massage therapy clinic, so Jonathan focuses on massage treatments like deep tissue and sports massage." }
   ],
   "team_and_availability": {
     "practitioners": [
@@ -147,7 +170,7 @@
     "admin_staff": [],
     "booking_notes": [
       "Single practitioner — all appointments are with Jonathan.",
-      "Only Deep Tissue Massage (60 or 90 min) is bookable by the AI. All other therapies are arranged directly with Jonathan — take name and number for a callback.",
+      "Vital Edge is a massage-only clinic. ALL massage types are bookable by the AI through the same normal flow: Deep Tissue (60/90 min, £125/£175), Stress Buster (75 min), Muscle/Nerve Injury (30 min), Sports (90 min), Facial Release (45 min). The specific massage requested is named on the calendar event + Jonathan's SMS. Jonathan does NOT offer acupuncture, reiki, psychotherapy or any non-massage therapy — those are declined, not booked. Pricing is held only for Deep Tissue; for the other massages Jonathan confirms the price (payment is arranged beforehand).",
       "Bookings are PROVISIONAL — Jonathan confirms each one directly with the client. Susie must never tell the caller the appointment is confirmed."
     ]
   },
@@ -157,7 +180,7 @@
     "preferred_handling": "Offer only slots published to the 'Vital Edge — Available' calendar. Book the chosen slot as a PENDING event and notify Jonathan immediately. Jonathan confirms with the client directly.",
     "calendars_by_location": false,
     "never_autobook": [
-      "Any service other than Deep Tissue Massage (take name and number for Jonathan)",
+      "Any non-massage service (acupuncture, reiki, psychotherapy, etc.) — these are declined, not booked",
       "Anyone under 18"
     ]
   },
@@ -174,8 +197,71 @@
         "90min_in_clinic_gbp": 175
       },
       "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "stress_buster_massage",
+      "name": "Stress Buster Massage",
+      "typical_duration_minutes": 75,
+      "for_patients": "Both",
+      "description": "A deep but slow full-body massage with a relaxing rhythm to soothe away muscle tension, leaving the body invigorated and relaxed.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "muscle_nerve_injury_massage",
+      "name": "Muscle / Nerve Injury Massage",
+      "typical_duration_minutes": 30,
+      "for_patients": "Both",
+      "description": "A gentle, relaxing massage that enhances circulation and reduces stress, supporting recovery from muscle and nerve injury.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "sports_massage",
+      "name": "Sports Massage",
+      "typical_duration_minutes": 90,
+      "for_patients": "Both",
+      "description": "A targeted therapy ideal for athletes and active individuals to enhance performance, aid recovery, and help prevent injuries.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
+    },
+    {
+      "service_id": "facial_release_massage",
+      "name": "Facial Release Massage",
+      "typical_duration_minutes": 45,
+      "for_patients": "Both",
+      "description": "A specialised technique to release tension in the facial muscles and promote relaxation.",
+      "pre_booking_notes": "Wear loose, comfortable clothing. No special preparation required.",
+      "_pricing_note": "Price confirmed by Jonathan — not held by the AI. Payment is arranged before the appointment.",
+      "available_as": ["in_clinic"]
     }
   ],
+  "treatment_guidance": {
+    "_note": "Domain knowledge that lets Susie recommend the RIGHT massage with genuine, specific insight instead of vague answers. Rendered into the prompt by _render_treatment_knowledge. Non-diagnostic: guides treatment CHOICE, never diagnoses or promises a cure.",
+    "how_to_use": "When a caller asks 'which massage is best', 'what's the difference', or describes what's bothering them, give a genuinely informed, specific recommendation — recommend the ONE best-fit treatment and briefly say why, then let them decide. You may mention a close second if it is a real toss-up. NEVER say 'they're all good', 'they're basically the same', or defer a treatment-choice question to Jonathan — choosing the right treatment is exactly what you're here to help with. Keep it warm and unhurried, never a sales pitch. Never diagnose and never promise a cure or a set number of sessions.",
+    "philosophy": "Every session is fully tailored. Jonathan takes a brief review at the start, then adapts pressure, pace and focus to what's going on for that person on the day — so no two treatments are identical. Recommend confidently and specifically, but keep it human.",
+    "services": [
+      { "name": "Deep Tissue Massage (60 or 90 min)", "feel": "Firm, slow, focused pressure that works into the deeper layers of muscle and connective tissue.", "best_for": "chronic muscular tension, posture-related tightness from desk work, stubborn knots, long-standing stiffness, and general muscular pain. The most versatile, all-round choice." },
+      { "name": "Sports Massage (90 min)", "feel": "Targeted, often firm work focused on the specific muscle groups you load, combined with movement and recovery techniques.", "best_for": "active people and athletes — recovery from training, running, cycling, gym or a specific sport, improving mobility, and helping prevent injury. Not just for athletes: it's the right call whenever the focus is targeted, performance- or recovery-led work." },
+      { "name": "Stress Buster Massage (75 min)", "feel": "A deep but slow, flowing full-body treatment with a calming rhythm — therapeutic, but designed to help you switch off.", "best_for": "stress, poor sleep, feeling wound up, and overall body tension when the caller wants to properly relax and reset rather than have concentrated deep work on one area." },
+      { "name": "Muscle / Nerve Injury Massage (30 min)", "feel": "Gentler, lighter, circulation-focused work over a shorter session.", "best_for": "supporting recovery from a muscle or nerve injury, or when someone wants something shorter and gentler focused on one problem area. Note: anything acute, severe, or medically unclear should be reviewed first, not booked straight in." },
+      { "name": "Facial Release Massage (45 min)", "feel": "Precise, gentle work releasing tension in the muscles of the face, jaw and head.", "best_for": "jaw and facial tightness, clenching or TMJ-type tension, tension headaches, and facial relaxation." }
+    ],
+    "recommendations": [
+      { "need": "Desk / posture tension — neck, shoulders, upper back from long hours at a laptop", "book": "a 60-minute Deep Tissue Massage", "why": "It works into the deeper layers where posture-related tightness builds up, and Jonathan can focus it right on the neck, shoulders and upper back." },
+      { "need": "Recovery from training, running, cycling, the gym or a specific sport — or prepping for it", "book": "a Sports Massage", "why": "It's targeted around the muscles you load in training, to aid recovery, keep you mobile and help prevent injury." },
+      { "need": "Stress, poor sleep, feeling run-down or wound up, wants to switch off and reset", "book": "a Stress Buster Massage", "why": "It's a slower, full-body treatment designed to release overall tension and help you properly relax, while still being therapeutic." },
+      { "need": "Chronic pain, stubborn knots or long-standing stiffness across several areas", "book": "a 90-minute Deep Tissue Massage", "why": "The extra time lets Jonathan work thoroughly into the deeper tissue across more than one area." },
+      { "need": "Recovering from a muscle or nerve injury, or wants something shorter and gentler on one area", "book": "a Muscle / Nerve Injury Massage", "why": "It's gentler, circulation-focused work that supports recovery — though anything severe or recent should be reviewed by Jonathan first." },
+      { "need": "Jaw or facial tension, clenching, TMJ-type tightness or tension headaches", "book": "a Facial Release Massage", "why": "It's precise, gentle work that releases tension held in the face, jaw and head." }
+    ],
+    "if_unsure": "If the caller is genuinely between options, recommend a 60-minute Deep Tissue Massage as the sensible first booking and note their main concern so Jonathan can tailor it on the day — deep tissue is the most versatile starting point.",
+    "pressure_and_comfort": "The pressure is always adjustable — firmer or lighter at any point, and the caller stays in control throughout. Deep tissue and sports work can feel firm or intense over tight areas, but it should never be unbearable and it does not have to hurt to be effective. If a caller is worried about pain, reassure them warmly that Jonathan builds the pressure up sensibly and checks in as he goes.",
+    "safety": "Guide treatment CHOICE, never diagnose and never promise a cure or a fixed number of sessions to 'fix' something. If the caller mentions anything acute or severe — a recent injury or fall, recent surgery, sudden or rapidly worsening pain, numbness, tingling, weakness, one-sided calf swelling, chest pain, or feeling generally unwell — do NOT book it straight in: say it's best reviewed first, offer to take their details for Jonathan or suggest they seek medical advice, and for a genuine emergency give the fixed emergency response."
+  },
   "pricing_and_policies": {
     "u18_student_discount": "",
     "payment_methods": ["cash", "debit_card", "credit_card"],
@@ -195,11 +281,11 @@
     "self_pay_only": true,
     "bupa_accepted": false,
     "other_insurers_accepted": false,
-    "self_pay_message": "Vital Edge Therapy is a self-pay clinic and does not work with any insurance providers. Clients with private health insurance should check with their own insurer, but in most cases this treatment will not be covered. Payment is made directly by the client at the time of the appointment.",
+    "self_pay_message": "Vital Edge Therapy is a self-pay clinic and does not work with any insurance providers. Clients with private health insurance should check with their own insurer, but in most cases this treatment will not be covered.",
     "what_ai_should_do": [
       "Explain Vital Edge Therapy is self-pay only and does not work with insurers.",
       "Suggest the caller checks with their own insurer if they have private cover, but note it is usually not covered.",
-      "Confirm payment is made directly on the day."
+      "Confirm payment is arranged before the appointment — Jonathan will sort the details when he confirms the booking."
     ]
   },
   "call_handling": {
@@ -207,8 +293,7 @@
       "Caller requests to speak to Jonathan directly",
       "Caller is distressed or in crisis",
       "Complex clinical question beyond the AI's scope",
-      "Enquiry about any service other than Deep Tissue Massage (take name and number)",
-      "Enquiry about home visits or outcall",
+      "Enquiry about a non-massage service (acupuncture, reiki, etc.) — decline politely, do not transfer",
       "Caller under 18 attempting to book"
     ],
     "emergency_message": "If you are experiencing a medical emergency, please hang up and call 999 immediately, or go to your nearest A&E.",
@@ -221,7 +306,7 @@
       "Whether a specific condition is safe to treat without assessment",
       "Specific medication or supplement advice",
       "Prognosis or recovery timescales",
-      "Pricing for any service other than Deep Tissue Massage"
+      "An invented price for any massage other than Deep Tissue (Deep Tissue is £125/60min, £175/90min; for the other massages say Jonathan confirms the price — never guess a figure)"
     ]
   },
   "brand_and_tone": {
@@ -255,7 +340,11 @@
       "jonathern"
     ],
     "services": {
-      "deep_tissue_massage": ["deep tissue", "deep tissue massage", "deep tissue sports massage", "deep tishoo massage", "deep-tissue"],
+      "deep_tissue_massage": ["deep tissue", "deep tissue massage", "deep tishoo massage", "deep-tissue"],
+      "stress_buster_massage": ["stress buster", "stress buster massage", "stressbuster"],
+      "muscle_nerve_injury_massage": ["muscle injury massage", "nerve injury massage", "muscle and nerve massage", "muscle nerve massage"],
+      "sports_massage": ["sports massage", "sport massage", "deep tissue sports massage"],
+      "facial_release_massage": ["facial release", "facial release massage", "facial massage"],
       "worldpay": ["world pay", "world-pay"],
       "crescent_road": ["crescent rode", "cresent road"]
     }

@@ -66,6 +66,19 @@ def _digest_config(clinic: Dict[str, Any]) -> Dict[str, Any]:
         "recipients": recipients,
         "hour": int(os.getenv("DIGEST_HOUR", cfg.get("hour", 21))),
         "minute": int(os.getenv("DIGEST_MINUTE", cfg.get("minute", 30))),
+        # Closing instruction line. Defaults to the original Carepatron wording so
+        # the JV/Carepatron digest is byte-identical; a clinic overrides it (e.g.
+        # Vital Edge, which doesn't use Carepatron).
+        "action_line": (
+            os.getenv("DIGEST_ACTION_LINE")
+            or cfg.get("action_line")
+            or "Please enter each of these into Carepatron as an appointment."
+        ),
+        # only_pending=True lists ONLY booking requests (events whose summary is a
+        # PENDING/booking row or that carry a Phone line), not every event on the
+        # calendar. Needed for provisional clinics whose availability calendar also
+        # holds open, unbooked slots. Off by default → JV unaffected.
+        "only_pending": bool(cfg.get("only_pending", False)),
     }
 
 
@@ -97,6 +110,7 @@ def build_digest(
     events: List[Dict[str, Any]],
     clinic_name: str,
     day: datetime,
+    action_line: str = "Please enter each of these into Carepatron as an appointment.",
 ) -> tuple[str, str, str]:
     """Return (subject, text_body, html_body) for the day's events."""
     day_label = day.strftime("%A %-d %B %Y") if os.name != "nt" else day.strftime("%A %d %B %Y")
@@ -135,7 +149,7 @@ def build_digest(
     text = (
         f"{clinic_name}\nBookings for {day_label} ({count})\n\n"
         + "\n".join(text_rows)
-        + "\n\nPlease enter each of these into Carepatron as an appointment.\n"
+        + f"\n\n{action_line}\n"
     )
     html = (
         f"<h2>{clinic_name}</h2>"
@@ -143,8 +157,7 @@ def build_digest(
         "<table style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;'>"
         + "".join(html_rows)
         + "</table>"
-        "<p style='color:#666;font-size:13px;'>Please enter each of these into "
-        "Carepatron as an appointment.</p>"
+        f"<p style='color:#666;font-size:13px;'>{action_line}</p>"
     )
     return subject, text, html
 
@@ -197,7 +210,18 @@ async def send_daily_digest(clinic_id: str, day: Optional[datetime] = None) -> b
         logger.error("[DIGEST] failed to read calendar for %s: %r", clinic_id, e, exc_info=True)
         return False
 
-    subject, text, html = build_digest(events, clinic.get("sms_name") or clinic_id, day)
+    # Provisional/availability calendars also hold open, unbooked slots — only
+    # list actual booking requests when the clinic asks for it.
+    if cfg["only_pending"]:
+        events = [
+            ev for ev in events
+            if str(ev.get("summary") or "").strip().upper().startswith("PENDING")
+            or _extract_field(ev.get("description") or "", "Phone")
+        ]
+
+    subject, text, html = build_digest(
+        events, clinic.get("sms_name") or clinic_id, day, action_line=cfg["action_line"]
+    )
     return await send_email(cfg["recipients"], subject, text, html)
 
 

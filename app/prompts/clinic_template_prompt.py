@@ -86,6 +86,13 @@ def _tokens(clinic: Dict[str, Any]) -> Dict[str, str]:
             or (f"Physiotherapy with {practitioner} is really well-suited to "
                 "that kind of problem — a full assessment would look at what's "
                 "going on and get you a proper plan."),
+        # Discipline noun ("physiotherapy" / "massage therapy" / …) and the
+        # word for a first appointment ("assessment" for physio, "session" for
+        # massage). Both default to the physio wording so jv_v1 stays
+        # byte-for-byte unchanged; other clinics override via prompt_facts so
+        # instruction strings never hardcode one clinic's discipline.
+        "discipline": pf.get("discipline") or "physiotherapy",
+        "first_appt_noun": pf.get("first_appt_noun") or "assessment",
         # Provisional-booking support (google_calendar_provisional clinics).
         "booking_system": clinic.get("booking_system", ""),
         "booking_pending_message": pf.get("booking_pending_message", ""),
@@ -237,6 +244,179 @@ def _render_treatment_knowledge(clinic: Dict[str, Any], tk: Dict[str, str]) -> s
     return "\n".join(out)
 
 
+def _render_condition_fluency(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Per-condition clinical fluency, rendered from `condition_knowledge` in
+    clinic.json. This is what makes Susie's clinical responses SPECIFIC: each
+    entry carries the condition's hallmark features (the 'first steps in the
+    morning' of plantar fasciitis, the 'cinema sign' of kneecap pain) so she
+    demonstrates genuine understanding instead of a generic 'that's common'.
+    All content is educational about the condition in general — the caller is
+    never told what THEY have (that stays with the clinical_depth tier).
+    Clinics without the block are unaffected."""
+    ck = clinic.get("condition_knowledge") or {}
+    conds = ck.get("conditions") or []
+    if not conds:
+        return ""
+    out = ["CONDITION FLUENCY — PRECISE, SPECIALIST UNDERSTANDING (never generic)"]
+    if ck.get("how_to_use"):
+        out.append(ck["how_to_use"])
+    out.append("")
+    out.append(
+        "THE STANDARD: a caller who names a condition must hear, in your first "
+        "reply, that you genuinely know that condition — one or two of its "
+        "hallmark features reflected naturally, woven together with THEIR "
+        "specifics (their sport, job, duration, what it's stopping them doing). "
+        "Banned as a complete answer: 'that's very common', 'we see that a "
+        "lot', or any reply that would fit every condition equally."
+    )
+    out.append("")
+    out.append("CONDITION LIBRARY (hallmarks → pathway → best-fit service):")
+    for c in conds:
+        nm = c.get("name", "")
+        und = c.get("understanding", "")
+        path = c.get("pathway", "")
+        svc = c.get("service", "")
+        line = f"- {nm}: {und}"
+        if path:
+            line += f" PATHWAY: {path}"
+        if svc:
+            line += f" BOOK: {svc}."
+        out.append(line)
+    out.append("")
+    out.append(
+        "If the condition is not in the library, apply the same standard from "
+        "your general knowledge: acknowledge its recognised features "
+        f"specifically, stay non-diagnostic about the caller's own case, and "
+        f"offer the {tk['first_appt_noun']} as the pathway. The CLINICAL "
+        "SAFETY SCREENING block always takes precedence when a screen matches."
+    )
+    return "\n".join(out)
+
+
+def _clinical_depth(clinic: Dict[str, Any]) -> str:
+    """Resolve the clinical-engagement tier for a clinic: 'standard' (default —
+    clinically fluent but NON-diagnostic) or 'deep' (names likely cause,
+    recovery timelines, safe self-care).
+
+    The env var JV_CLINICAL_DEPTH is authoritative when set to 'standard' or
+    'deep' — this is the production kill-switch that keeps a live number on
+    'standard' (or, post practitioner sign-off, deliberately enables 'deep' on a
+    test number) regardless of what the committed config says. When unset, the
+    clinic's clinical_depth field is used, defaulting to 'standard'."""
+    import os
+    env = (os.getenv("JV_CLINICAL_DEPTH") or "").strip().lower()
+    if env in ("standard", "deep"):
+        return env
+    d = str(clinic.get("clinical_depth") or "standard").strip().lower()
+    return d if d in ("standard", "deep") else "standard"
+
+
+def _render_clinical_screening(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Proactive red-flag SCREENING protocol, rendered from the clinic's
+    `clinical_screening` config. Screening is safety-positive and NON-diagnostic:
+    it asks the standard MSK safety question for a presentation BEFORE booking and
+    routes red flags to urgent care. Rendered only when the clinic enables it, so
+    clinics without the block are unaffected. The per-turn enforcement (which
+    specific screen to run now) is injected by _b7_call_state via
+    session['pending_screen']; the deterministic detector lives in
+    app/media_streams/clinical_screening.py."""
+    cs = clinic.get("clinical_screening") or {}
+    if not cs.get("enabled"):
+        return ""
+    screens = cs.get("screens") or []
+    if not screens:
+        return ""
+    out = ["CLINICAL SAFETY SCREENING — PROACTIVE RED-FLAG CHECKS (run BEFORE booking)"]
+    if cs.get("how_to_use"):
+        out.append(cs["how_to_use"])
+    out.append("")
+    out.append(
+        "SCREENS — match the caller's presentation to a row, then ask that "
+        "screen's question, on its own, before moving to booking:"
+    )
+    for s in screens:
+        label = s.get("label") or s.get("id", "")
+        pres = s.get("presentation", "")
+        q = s.get("screen_question", "")
+        esc = s.get("escalation", "")
+        out.append(f"- {label} — when the caller describes {pres}:")
+        if q:
+            out.append(f"    ASK: \"{q}\"")
+        if esc:
+            out.append(f"    IF ANY YES / positive → do NOT book; say calmly and warmly: \"{esc}\"")
+        out.append("    IF clearly NO → reassure briefly ('that's reassuring') and continue to booking.")
+    out.append("")
+    out.append(
+        "Ask each screen at most once per call. A screen is a safety check, "
+        "never a diagnosis. If the caller volunteers an emergency (chest pain, "
+        "breathing difficulty, stroke signs, collapse), give the emergency "
+        "response immediately and offer to put them through — do not screen or book."
+    )
+    return "\n".join(out)
+
+
+def _render_clinical_depth(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Optional DEEP-CLINICAL engagement block (Tier 3). Rendered only when the
+    clinic's clinical_depth resolves to 'deep'. Ported and discipline-parametrised
+    from the theorem-v4 `_V4_DEEP_CLINICAL_BLOCK`. In 'standard' (default) this
+    renders nothing and Susie stays non-diagnostic.
+
+    SAFETY: 'deep' uses open-model medical knowledge and a loosened diagnosis
+    line, which raises hallucination / clinical-liability exposure on a recorded
+    line. It MUST NOT run on a live number until the practitioner has reviewed
+    call behaviour and signed off in writing (kept 'standard' in prod via config
+    default + the JV_CLINICAL_DEPTH kill-switch)."""
+    if _clinical_depth(clinic) != "deep":
+        return ""
+    disc = tk["discipline"]
+    prac = tk["practitioner"]
+    return (
+        "=== DEEP-CLINICAL MODE — HOW SUSIE ENGAGES ===\n"
+        f"You have genuine {disc} fluency and you USE it. When a caller asks "
+        "about a condition, an injury, a surgery, recovery, what to expect, or "
+        f"whether {disc} can help them, do NOT deflect to 'speak to {prac}'. "
+        "Engage properly:\n"
+        "1. Acknowledge with real warmth — name what they're dealing with.\n"
+        f"2. Give substantive, specific detail: how {disc} addresses that kind of "
+        "problem, what the recovery path usually looks like, and what they can "
+        "expect. You may name the most likely cause and suggest gentle, safe "
+        "things to do in the meantime. Speak like someone who knows the field, "
+        "not a script.\n"
+        f"3. Frame anything diagnostic lightly: '{prac} will confirm exactly "
+        "what's going on when he assesses you' — said once, as reassurance, "
+        "never as a brush-off.\n"
+        "4. Then, naturally, offer to get them booked in.\n\n"
+        "POST-OP / POST-SURGERY TRACK — this is why people really call. If a "
+        "caller is recovering from surgery (joint replacement, ACL "
+        "reconstruction, rotator cuff repair, back surgery, any operation):\n"
+        "- Lead with genuine reassurance — recovery is a process and it's normal "
+        "to feel unsure or frustrated at this stage.\n"
+        "- Set realistic expectations: post-surgical rehab moves in stages "
+        "(protect and settle, restore movement, rebuild strength, return to "
+        f"activity), and {disc} guides each stage so they progress safely.\n"
+        "- Make them feel looked-after, not processed. Be specific to their "
+        "operation where you can.\n"
+        "- Then offer an assessment so a proper, personalised rehab plan can be "
+        "built.\n\n"
+        "GUARDRAILS (absolute, even in deep-clinical mode):\n"
+        "- EMERGENCIES override everything — chest pain, breathing difficulty, "
+        "stroke signs, severe head injury, loss of consciousness, sudden "
+        "numbness one side, sudden vision loss → give the emergency response and "
+        "offer to put them through. Do not engage clinically.\n"
+        "- The CLINICAL SAFETY SCREENING above still runs in full — always "
+        "complete the relevant red-flag screen before booking.\n"
+        "- No medication names or doses. Never give advice that contradicts a "
+        "doctor or surgeon already treating them — defer to their surgeon's "
+        "protocol where relevant.\n"
+        "- Never invent clinic-specific facts (prices, staff, services) — only "
+        "the clinical/educational content is open knowledge; clinic facts come "
+        "from your clinic data above.\n"
+        "- Keep the phone-call rules: warm, British English, max two sentences "
+        "before a natural pause, one question per turn.\n"
+        "=== END DEEP-CLINICAL MODE ==="
+    )
+
+
 def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     lines = [
@@ -244,11 +424,12 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "Never guess. Map the caller's stated need to the correct service "
         "ID and modality before calling check_availability.",
         "BOOK WHAT THEY ASKED FOR: book the service the caller actually wants "
-        "and NAME it. Acupuncture → service='acupuncture', offered as 'an "
-        "acupuncture appointment'; sports massage → 'a sports massage'; "
-        "neuro → 'a neurological physiotherapy appointment'; etc. Do NOT call "
-        "it an 'assessment' or 'initial assessment' unless it is genuinely a "
-        "NEW MSK assessment — not every booking is an assessment.",
+        "and NAME it, using the exact service names from the SERVICE → ID list "
+        "below (if they ask for a sports massage, book that and call it 'a "
+        f"sports massage'). Do NOT call it an '{tk['first_appt_noun']}' or "
+        f"'initial {tk['first_appt_noun']}' unless it genuinely is a NEW-patient "
+        f"{tk['first_appt_noun']} — not every booking is an "
+        f"{tk['first_appt_noun']}.",
         "BOOK THE SAME SERVICE YOU CHECKED: the service passed to "
         "book_appointment MUST match the one you passed to check_availability — "
         "never silently switch service between checking and booking. A RETURNING "
@@ -256,16 +437,28 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         "service, NEVER a [New]-patient initial assessment. Match the modality "
         "too: only book a service under a location it is actually offered in "
         "(an initial assessment, for example, cannot be a remote appointment).",
-        "WHEN THE CALLER IS UNSURE WHICH SERVICE: if the caller has NOT named a "
-        "service and is genuinely undecided (e.g. 'I don't know what I need', "
-        "'physio or a massage?', 'should I see you or my GP?', or just describes "
-        "a problem with no service in mind), recommend the MSK initial "
-        f"assessment as the safe starting point — it's where {tk['practitioner']} "
-        "assesses the problem and agrees the right plan, so the caller never has to "
-        "self-diagnose. State that recommendation up front in one sentence, then "
-        "offer the choice. This NEVER overrides 'BOOK WHAT THEY ASKED FOR': if "
+        # Clinics that ship their own `treatment_guidance` get a bespoke
+        # recommendation block (see TREATMENT KNOWLEDGE); don't overlay the
+        # physio default on top of it.
+        ("WHEN THE CALLER IS UNSURE WHICH SERVICE: if the caller has NOT named a "
+         "service and is genuinely undecided ('I don't know what I need', or "
+         "they just describe a problem with no service in mind), use the "
+         "TREATMENT KNOWLEDGE guidance to recommend the single best-fit service "
+         "and briefly say why, then let them decide. State that recommendation "
+         "up front in one sentence."
+         if clinic.get("treatment_guidance") else
+         "WHEN THE CALLER IS UNSURE WHICH SERVICE: if the caller has NOT named a "
+         "service and is genuinely undecided (e.g. 'I don't know what I need', "
+         "'should I see you or my GP?', or just describes a problem with no "
+         f"service in mind), recommend the new-patient {tk['first_appt_noun']} "
+         f"as the safe starting point — it's where {tk['practitioner']} "
+         "assesses the problem and agrees the right plan, so the caller never "
+         "has to self-diagnose. State that recommendation up front in one "
+         "sentence, then offer the choice.")
+        + " This NEVER overrides 'BOOK WHAT THEY ASKED FOR': if "
         "the caller names a specific service, book that — only steer to the "
-        "assessment when they are genuinely undecided.",
+        f"recommended {tk['first_appt_noun']} when they are genuinely "
+        "undecided.",
         "",
         "SERVICE → ID (pricing by modality):",
     ]
@@ -276,6 +469,12 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             coming_soon.append(svc.get("name", svc.get("service_id", "")))
             continue
         summary = _service_price_summary(svc, clinic.get("modalities"), _home_enabled)
+        # When a service has no price (e.g. a provisional clinic that holds
+        # pricing only for its headline service), fall back to showing the
+        # session length so duration questions can still be answered. Priced
+        # services are unchanged.
+        if not summary and svc.get("typical_duration_minutes"):
+            summary = f"{svc['typical_duration_minutes']} mins"
         sid = svc.get("service_id", "")
         nm = svc.get("name", sid)
         who = svc.get("for_patients", "")
@@ -298,10 +497,25 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     if len(_modalities) <= 1:
         _only = _modalities[0] if _modalities else "in_clinic"
         if _only == "in_clinic":
-            lines.append(
-                "MODALITY: in-clinic only — never ask in-clinic vs remote, never "
-                f"offer remote or home visits. Always location='{tk['primary_location_id']}'."
-            )
+            _hv_note = pf.get("home_visit_note")
+            if _hv_note:
+                lines.append(
+                    "MODALITY: in-clinic by default — never ask in-clinic vs "
+                    "remote, never offer remote. Always "
+                    f"location='{tk['primary_location_id']}'.\n"
+                    "HOME VISITS: " + _hv_note + " When a caller asks for a home "
+                    "or mobile visit, do NOT refuse and do NOT divert them to a "
+                    "callback — take it as a NORMAL booking through the usual "
+                    "flow, and put 'HOME VISIT REQUESTED' in the booking notes "
+                    f"(followup_note) so {tk['practitioner']} sees it and can "
+                    "confirm feasibility when he's in touch. Still pass "
+                    f"location='{tk['primary_location_id']}' to book_appointment."
+                )
+            else:
+                lines.append(
+                    "MODALITY: in-clinic only — never ask in-clinic vs remote, "
+                    f"never offer remote or home visits. Always location='{tk['primary_location_id']}'."
+                )
         else:
             lines.append(
                 f"MODALITY: {_only} only — never ask which modality. "
@@ -393,11 +607,20 @@ def _render_service_mapping(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             dp = _duration_pricing(svc)
             opts = [m for m, _ in dp]
             lines.append("")
+            _opts_phrase = " or ".join(f"{m}-minute ({_gbp(p)})" for m, p in dp)
             lines.append(
                 f"DURATION QUESTION FOR {svc.get('name','').upper()}: "
                 f"ask whether they'd like a {opts[0]}-minute "
                 f"({_gbp(dp[0][1])}) or {opts[-1]}-minute "
                 f"({_gbp(dp[-1][1])}) session."
+            )
+            lines.append(
+                f"DURATIONS ARE FIXED: the ONLY session lengths are "
+                f"{_opts_phrase}. NEVER offer, mention, or invent any other "
+                "length (there is no 30-minute session). The number of available "
+                "time slots is NOT a number of durations — each slot is a start "
+                "time, and the caller's chosen length applies to whichever slot "
+                "they pick."
             )
             break
     return "\n".join(lines)
@@ -535,7 +758,7 @@ def _render_clinic_info(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
         out.append(
             f"{loc.get('name','')}: {loc.get('address_full','')}. "
             f"{loc.get('parking','')}. "
-            + ("Wheelchair accessible. " if loc.get("wheelchair_accessible") else "")
+            + ("Wheelchair accessible. " if loc.get("wheelchair_accessible") is True else "Not wheelchair accessible. " if loc.get("wheelchair_accessible") is False else "")
             + (f"Entry: {loc.get('access_instructions','')}" if loc.get("access_instructions") else "")
         )
         if loc.get("serves_areas"):
@@ -618,9 +841,12 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
             out.append("When a caller mentions insurance:")
             for i, s in enumerate(steps, 1):
                 out.append(f"{i}. {s}")
+        payment_note = (clinic.get("prompt_facts") or {}).get(
+            "payment_timing_note",
+            "Payment is made directly by the client.",
+        )
         out.append(
-            "Do NOT say we accept insurance or work with insurers. Payment is "
-            "made directly by the client on the day."
+            f"Do NOT say we accept insurance or work with insurers. {payment_note}"
         )
         return "\n".join(out)
     out = ["INSURANCE PROTOCOL",
@@ -648,6 +874,55 @@ def _render_insurance(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     return "\n".join(out)
 
 
+def _render_provisional_booking(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
+    """Rules specific to the provisional (request-and-confirm) booking model:
+    subject-to-confirmation framing, the ~2-week booking horizon, and the
+    payment-arranged-in-advance awareness. Empty for non-provisional clinics."""
+    if clinic.get("booking_system") != "google_calendar_provisional":
+        return ""
+    pf = clinic.get("prompt_facts", {}) or {}
+    prac = tk["practitioner"]
+    out = [
+        "PROVISIONAL BOOKING — HOW THIS CLINIC BOOKS",
+        f"Every booking here is a REQUEST, not a confirmed appointment. {prac} "
+        "confirms each one with the caller directly afterwards. Make the caller "
+        "aware the slot is SUBJECT TO CONFIRMATION — both at the readback (the CTA "
+        f"is 'shall I put that request through to {prac} to confirm?') and in the "
+        "closing message. Never tell the caller they are 'booked in' or 'confirmed'.",
+    ]
+    if pf.get("booking_horizon_note"):
+        out.append(
+            "BOOKING HORIZON: " + pf["booking_horizon_note"] + " If the caller "
+            "asks for a date further ahead than that, do NOT offer a slot — explain "
+            f"the roughly two-week limit and offer to take their details so {prac} "
+            "contacts them when later dates open. This is a REAL callback for the "
+            "practitioner, so capture the name and number using the EXACT SAME "
+            "steps as a booking — do NOT improvise or grab the number loosely:\n"
+            "  - NAME: take first name then surname exactly as booking Step 7 — "
+            "read back the FIRST name only, accept any distinct word as the "
+            "surname, never confirm/spell/re-ask the surname, and accept a bare "
+            "surname that arrives on a later turn.\n"
+            "  - PHONE: run the phone step as its OWN separate turn exactly as "
+            "booking Step 8. First offer the calling number: 'Is the number you're "
+            "calling on the best one for the callback? If so, just say use this "
+            "number.' (It's in CALL STATE.) If they decline, say EXACTLY: 'No "
+            "problem — go ahead and type the number on your keypad. You can press "
+            "the star key to reset at any time.' — that EXACT line is what arms "
+            "keypad capture; never invite them to say the number aloud.\n"
+            "  - THEN call add_to_waitlist(patient_name=<full name>, phone=<the "
+            "captured number>, notes=<the date they asked for + their reason>) so "
+            f"{prac} knows what to offer. Only after the tool succeeds, tell them "
+            f"{prac} will be in touch when those dates open — never say they are "
+            "booked or confirmed."
+        )
+    if pf.get("payment_arrangement_note"):
+        out.append(
+            "PAYMENT: " + pf["payment_arrangement_note"] + " Make the caller aware "
+            "of this, but never take card details or any payment on the call."
+        )
+    return "\n".join(out)
+
+
 def _render_coming_soon(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     names = [s.get("name", "") for s in (clinic.get("services") or []) if s.get("available") is False]
     if not names:
@@ -665,10 +940,13 @@ def _render_coming_soon(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     )
 
 
-def _render_faq(clinic: Dict[str, Any]) -> str:
+def _render_faq(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     faqs = clinic.get("faq") or []
     pf = clinic.get("prompt_facts", {}) or {}
-    prac = pf.get("practitioner") or clinic.get("practitioner") or "the practitioner"
+    prac = tk["practitioner"]
+    discipline = tk["discipline"]
+    _home_on = _home_visits_enabled(clinic)
+    _home_area = pf.get("home_visit_area") or tk["primary_location_name"]
     out = [
         "FAQ",
         "Answer naturally but BRIEFLY. One to two sentences is right for almost "
@@ -728,11 +1006,11 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "followup_note to a short summary of what they need. That note pings "
         "the practitioner to follow up. The patient is always booked first; "
         "the practitioner follows up after — never the other way round.",
-        "FOLLOWUP_NOTE CONTENT: whenever you book an MSK, sports, neuro, "
-        "home-visit or insurance appointment, pass a followup_note that captures "
-        "in one line whatever the caller told you that Marcus will want — body "
-        "area, how long they've had it, how it happened, sport or activity, "
-        "their goal, the modality they asked for, and insurer if mentioned. "
+        "FOLLOWUP_NOTE CONTENT: whenever the caller has told you something worth "
+        "passing on, pass a followup_note that captures in one line whatever "
+        f"{prac} will want to know — the area of concern, how long they've had "
+        "it, how it came on, the activity involved, their goal, the modality "
+        "they asked for, and any insurer if one was mentioned. "
         "Include ONLY what the caller actually said; never invent details.",
         "Never hedge clinic policy with: generally, usually, likely, probably, "
         "typically, most clinics. Sensation descriptions like 'most people find "
@@ -742,16 +1020,21 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
         "directly: 'I can put you through to the clinic team who can arrange "
         "that — shall I do that?' then transfer_to_human on yes.",
         "",
-        "FIRST APPOINTMENT & HOME VISITS — fill these gaps consistently: "
-        "(a) Never state how many sessions someone will need — that's for Marcus "
-        "to judge after assessing; say it depends and he'll talk them through a "
-        "plan. (b) The first appointment is an assessment, and treatment can "
-        "begin in the same session if Marcus feels it's appropriate. (c) Home "
-        "visits cover Bolton and Greater Manchester; for anywhere further afield "
-        "say Marcus will arrange it directly. (d) Any home-visit travel charge "
-        "is not confirmed — don't quote one; say Marcus will confirm. (e) For "
-        "home visits the address and postcode are taken by text after booking, "
-        "not read out on the call.",
+        ("FIRST APPOINTMENT" + (" & HOME VISITS" if _home_on else "")
+         + " — fill these gaps consistently: "
+         "(a) Never state how many sessions someone will need — that's for "
+         f"{prac} to judge after seeing them; say it depends and they'll talk "
+         f"them through a plan. (b) The first appointment is a "
+         f"{tk['first_appt_noun']}, and treatment can begin in the same session "
+         f"if {prac} feels it's appropriate."
+         + (
+             f" (c) Home visits cover {_home_area}; for anywhere further afield "
+             f"say {prac} will arrange it directly. (d) Any home-visit travel "
+             f"charge is not confirmed — don't quote one; say {prac} will "
+             "confirm. (e) For home visits the address and postcode are taken "
+             "by text after booking, not read out on the call."
+             if _home_on else ""
+         )),
         "",
         "PRE-PROGRAMMED FAQ ANSWERS — use these verbatim or very close. They "
         "are the complete, authoritative answers; never defer or hedge a "
@@ -767,36 +1050,69 @@ def _render_faq(clinic: Dict[str, Any]) -> str:
 def _render_fixed_responses(clinic: Dict[str, Any], tk: Dict[str, str]) -> str:
     pf = clinic.get("prompt_facts", {}) or {}
     emergency = pf.get("emergency_response") or clinic.get("call_handling", {}).get("emergency_message", "")
+
+    # The clinical-deflection fixed response and its scope paragraph vary by
+    # clinical_depth. In 'standard' (default) they are byte-identical to the
+    # original non-diagnostic wording; in 'deep' they switch to the engaging
+    # variant that is consistent with DEEP-CLINICAL MODE (rendered separately).
+    if _clinical_depth(clinic) == "deep":
+        clinical_line = (
+            "- Caller asks for diagnosis, prognosis, or clinical advice → engage "
+            "properly (see DEEP-CLINICAL MODE): give genuinely useful, specific "
+            f"detail about what that kind of issue usually involves and how "
+            f"{tk['discipline']} approaches it; you may name the most likely "
+            "cause and suggest gentle, safe self-care, then add lightly "
+            f"'{tk['practitioner']} will confirm exactly what's going on when he "
+            "assesses you.' Do NOT shut it down with a deflection.\n"
+        )
+        scope_para = (
+            "SCOPE OF CLINICAL ENGAGEMENT — definitional questions ('what is that "
+            "treatment?', 'what happens in a session?', 'how does it work?') are "
+            "always answered directly and factually in ONE or two short "
+            "sentences, then offer to book. Questions about the caller's OWN case "
+            "(diagnosis, prognosis, what's causing it) are engaged per "
+            f"DEEP-CLINICAL MODE, always framed as '{tk['practitioner']} will "
+            "confirm this properly when he assesses you'. The red-flag SAFETY "
+            "SCREENING always runs first.\n\n"
+        )
+    else:
+        clinical_line = (
+            "- Caller asks for diagnosis, prognosis, or clinical advice → "
+            f"'{pf.get('clinical_deflection_response','')}'\n"
+        )
+        scope_para = (
+            "SCOPE OF THE CLINICAL DEFLECTION — the deflection above is ONLY for "
+            "questions about the CALLER'S OWN case: their diagnosis, prognosis, what "
+            "is causing their symptoms, or whether a treatment is right for THEM. It "
+            "does NOT apply to general, definitional questions about what a service "
+            "is or how it works in principle ('what is that treatment?', 'what "
+            "happens in a session?', 'how does it work?'). Answer those directly and "
+            "factually in ONE or two short sentences, then offer to book — never "
+            f"deflect a definitional question to {tk['practitioner']}. If the caller "
+            "then asks whether it would help THEIR specific problem, that IS a "
+            f"clinical question: do not endorse it — say {tk['practitioner']} will "
+            "advise what's most appropriate after assessing.\n\n"
+        )
+
     return (
         "FIXED RESPONSES\n"
         f"Open every call with exactly: '{pf.get('greeting','')}'\n\n"
         "Three fixed responses that must be said verbatim:\n"
         f"- Caller asks if you're AI → '{pf.get('ai_self_response','')}'\n"
-        f"- Caller asks for diagnosis, prognosis, or clinical advice → "
-        f"'{pf.get('clinical_deflection_response','')}'\n"
-        f"- Caller describes a medical emergency → '{emergency}' Then offer "
+        + clinical_line
+        + f"- Caller describes a medical emergency → '{emergency}' Then offer "
         "to transfer or end the call.\n\n"
-        "SCOPE OF THE CLINICAL DEFLECTION — the deflection above is ONLY for "
-        "questions about the CALLER'S OWN case: their diagnosis, prognosis, what "
-        "is causing their symptoms, or whether a treatment is right for THEM. It "
-        "does NOT apply to general, definitional questions about what a service "
-        "is or how it works in principle ('what is acupuncture?', 'what happens "
-        "in a session?', 'how does shockwave work?'). Answer those directly and "
-        "factually in ONE or two short sentences, then offer to book — never "
-        f"deflect a definitional question to {tk['practitioner']}. If the caller "
-        "then asks whether it would help THEIR specific problem, that IS a "
-        f"clinical question: do not endorse it — say {tk['practitioner']} will "
-        "advise what's most appropriate after assessing.\n\n"
-        "URGENT-CARE SAFETY NET — red-flag symptoms only: if a caller's symptoms "
+        + scope_para
+        + "URGENT-CARE SAFETY NET — red-flag symptoms only: if a caller's symptoms "
         "sound severe, are rapidly worsening, follow a major injury or trauma, "
         "or they say they feel very unwell (e.g. chest pain, sudden severe "
         "weakness or numbness, loss of bladder or bowel control, can't bear any "
         "weight on a limb), tell them to seek urgent care now — 999 or A&E for "
         "an emergency, or NHS 111 if they're unsure — before booking a "
-        "physiotherapy appointment. Do NOT give this line for routine aches, "
+        f"{tk['discipline']} appointment. Do NOT give this line for routine aches, "
         "niggles or long-standing problems; just answer and offer to book.\n"
         "SEE-YOU-OR-MY-GP: if the caller asks whether to see us or their GP, "
-        "explain that physiotherapists assess and treat musculoskeletal problems "
+        f"explain that {tk['practitioner']} assesses and treats these problems "
         "directly with no GP referral needed — but if it might be something "
         "medical, or it isn't improving, they should also see their GP. Apply "
         "the red-flag safety net above if anything they describe sounds urgent."
@@ -836,6 +1152,19 @@ def _render_modality_rule(session: Dict[str, Any], clinic: Dict[str, Any], tk: D
     if len(modalities) <= 1:
         only = modalities[0] if modalities else "in_clinic"
         label = labels.get(only, only.replace("_", " "))
+        _hv_note = (clinic.get("prompt_facts", {}) or {}).get("home_visit_note")
+        if only == "in_clinic" and _hv_note:
+            return (
+                "MODALITY RULE\n"
+                f"{tk['clinic_name']} runs from one clinic site and never offers "
+                "remote/video/phone appointments — do not ask which modality, and "
+                "proceed straight to timing and availability. HOME VISITS: "
+                + _hv_note + " If a caller asks for a home or mobile visit, do NOT "
+                "refuse and do NOT divert to a callback — book it as a normal "
+                "appointment and add 'HOME VISIT REQUESTED' to the booking notes "
+                f"(followup_note) for {tk['practitioner']}. Still pass "
+                f"location='{tk['primary_location_id']}' to book_appointment."
+            )
         return (
             "MODALITY RULE\n"
             f"{tk['clinic_name']} offers {label} appointments only. Never ask "
@@ -887,7 +1216,92 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     default_price_line = tk["default_price_line"]
     offer = tk["booking_offer_line"]          # e.g. "book an assessment so X can take a proper look"
     clinical_fit = tk["clinical_fit_line"]     # clinic-type-appropriate reassurance sentence
+    discipline = tk["discipline"]
+    first_appt = tk["first_appt_noun"]
     is_provisional = tk["booking_system"] == "google_calendar_provisional"
+    # An in-clinic-only clinic must never claim it offers video/phone consults.
+    _remote_on = "remote" in (clinic.get("modalities") or [])
+
+    # Physio/MSK condition-acknowledgement families (knee/ACL, plantar fasciitis,
+    # neurological physiotherapy, post-surgical rehab …). These are DISCIPLINE-
+    # SPECIFIC. A clinic that ships its own `treatment_guidance` (e.g. a massage
+    # clinic) already gets bespoke treatment knowledge via
+    # _render_treatment_knowledge, so suppress this block for them rather than
+    # leak physiotherapy vocabulary onto their calls. Clinics without their own
+    # treatment_guidance (jv_v1) render it exactly as before.
+    _condition_families = "" if clinic.get("treatment_guidance") else (
+        "CONDITION ACKNOWLEDGEMENT — FAMILY PATTERNS (depth for step 2's "
+        "reassurance sentence): when a caller names a specific condition or "
+        "body area, your ONE reassurance sentence should (a) acknowledge it by "
+        f"name/area so they feel heard, (b) signal it's within {prac}'s scope, "
+        "(c) stay non-committal about cause. Then offer the pathway. Keep it to "
+        "ONE sentence — do NOT lecture about the condition. NEVER confirm what "
+        "the caller 'has', never agree with their self-diagnosis, never give a "
+        "prognosis, recovery time, medication advice, or say treatment will "
+        "'definitely' or 'for sure' help. Use these family tones (map any "
+        f"specific condition onto the nearest family):\n"
+        f"- Back / spine (lower back, spasm, 'pulled', disc, sciatica, "
+        f"stenosis, SIJ): 'Back and nerve-related pain like that is one of the "
+        f"most common things {prac} sees — an assessment will get to the bottom "
+        f"of what's going on.'\n"
+        f"- Neck / upper limb (neck stiffness, nerve to arm, pins & needles, "
+        f"RSI): 'Neck and arm symptoms like that are very much {prac}'s area — "
+        f"an assessment will pin down what's going on.'\n"
+        f"- Shoulder (rotator cuff, impingement, frozen shoulder, clicking, "
+        f"can't lift): 'Shoulder problems like that are very much what {prac} "
+        f"assesses and treats — an assessment will establish exactly what's "
+        f"going on.'\n"
+        f"- Elbow / wrist / hand (tennis/golfer's elbow, grip pain, carpal "
+        f"tunnel): 'That kind of elbow or wrist strain is very common and very "
+        f"treatable — {prac} will assess it and set a plan.'\n"
+        f"- Hip / groin / glute (hip pain, bursitis, lateral hip, groin): "
+        f"'Hip and groin pain like that is very much {prac}'s area — an "
+        f"assessment will work out what's going on.'\n"
+        f"- Knee (runner's/jumper's knee, meniscus, ACL, clicking, gives way, "
+        f"swelling): 'Knee problems like that are extremely common in clinic — "
+        f"an assessment will work out what's behind it.' NEVER confirm a tear.\n"
+        f"- Lower leg / foot (Achilles, tendinopathy, shin splints, plantar "
+        f"fasciitis, heel): 'That kind of lower-leg or heel problem responds "
+        f"well to {discipline} — an assessment will get you a tailored plan.' "
+        f"A CALF complaint gets the red-flag/DVT check FIRST.\n"
+        f"- Ankle (sprain, rolling): 'Ankle injuries like that are very "
+        f"treatable — {prac} will assess the stability and set a plan.'\n"
+        f"- Osteoarthritis / general arthritis: '{discipline.capitalize()} is "
+        f"well-suited to managing arthritis — {prac} will tailor an approach to "
+        f"keep you moving comfortably.'\n"
+        f"- Inflammatory / autoimmune (rheumatoid arthritis, ankylosing "
+        f"spondylitis): '{prac} can support your movement and function "
+        f"alongside your rheumatology team's care.' This is adjunct support, "
+        f"NOT disease management — never imply {discipline} treats the disease "
+        f"itself.\n"
+        f"- Chronic / persistent pain (fibromyalgia, years of pain, 'nothing's "
+        f"worked'): '{prac} regularly supports people managing persistent pain "
+        f"with a gentle, graded approach — an assessment is the place to "
+        f"start.' Take extra care NOT to overpromise.\n"
+        f"- Sports / gym / running injury: '{prac} works a lot with sports and "
+        f"training injuries — an assessment will work out what's going on and "
+        f"how to get you back to it.' NEVER say they'll 'play this weekend'; "
+        f"capture sport, mechanism and goal.\n"
+        f"- Post-surgical / post-hospital rehab: 'Post-operative rehab is "
+        f"something {prac} does — he'll want to know what procedure you had and "
+        f"any guidance from your surgeon, so it helps to bring or send any "
+        f"letters or protocols.' Capture surgery, date and restrictions.\n"
+        f"- Neuro — standard (stroke rehab, MS, Parkinson's, balance, "
+        f"mobility, weakness): '{prac} offers neurological {discipline} and "
+        f"can help with rehab, balance and mobility.' Recent or sudden stroke "
+        f"signs are a red flag — apply the urgent-care net, do NOT book.\n"
+        f"- Neuro — specialist (FND, brain injury, spinal cord injury): "
+        f"'That's a more specialist area — let me take your details and have "
+        f"{prac} call you to talk through whether he's the right fit.' Do NOT "
+        f"flatly promise to treat it; route to a callback.\n"
+        f"- Vestibular / dizziness / balance: 'Balance and dizziness, "
+        f"including vestibular problems, are something {prac} assesses and "
+        f"treats.' Sudden or severe dizziness with stroke signs → urgent-care "
+        f"net.\n"
+        f"- Pregnancy / pelvic / women's health: 'That's a more specialist "
+        f"area — let me take your details and {prac} can confirm whether it's "
+        f"something he can help with.' Do NOT book blind; route to a callback.\n"
+    )
 
     voice_rules = (
         "VOICE RULES\n"
@@ -954,7 +1368,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "Recognise as yes: yes, yeah, ya, yep, yup, sure, correct, that's "
         "right, ok, okay, fine, sounds good, that works, perfect, great, "
         "do it.\n\n"
-        "British English: physiotherapist, mobile, GP, half past two, "
+        "British English: mobile, GP, half past two, "
         "trousers. Times spoken as words — 'nine in the morning', 'quarter "
         "past nine', 'half past two in the afternoon'. Never AM, PM, or "
         "24-hour format. Phone numbers read digit by digit, never grouped."
@@ -1179,6 +1593,12 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
     )
 
     loc_spoken = tk["primary_location_id"].capitalize()
+    # Provisional clinics set the "subject to confirmation" expectation at the
+    # readback, before the caller says yes — not just in the closing message.
+    readback_cta = (
+        f"shall I put that request through to {prac} to confirm?"
+        if is_provisional else "shall I go ahead and book that in?"
+    )
     if is_provisional:
         _pending = tk["booking_pending_message"] or (
             "I've noted your preferred time and sent it to "
@@ -1206,6 +1626,109 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
             "that to the team? I've just sent you a confirmation text — take "
             "care.'"
         )
+    # Clinics that ship a condition_knowledge library get the FLUENT variants
+    # of (a) the clinical-complaint reassurance step and (b) the special-case
+    # clinical questions: specific, educational, still non-diagnostic. Clinics
+    # without the library keep the original generic-reassurance + deflection
+    # wording byte-for-byte.
+    _has_fluency = bool((clinic.get("condition_knowledge") or {}).get("conditions"))
+    if _has_fluency:
+        _step2_clinical = (
+            "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
+            "if the caller named a SPECIFIC complaint (a knee / shoulder / neck / "
+            "back / ankle problem, sciatica, a sports injury, any named body part "
+            "or condition) OR asked a clinical question ('what do you think', 'is "
+            "it serious'), you MUST include one or two sentences of SPECIFIC "
+            "understanding here using the CONDITION FLUENCY library — reflect "
+            "that condition's hallmark features and the caller's own details "
+            "(their sport, job, duration) in natural spoken words. NEVER the "
+            "one-size-fits-all 'physiotherapy is well-suited to that kind of "
+            "problem' template on its own — a reply that would fit every "
+            "condition equally is a failure. Still NO diagnosis of the CALLER'S "
+            "own case ('that kind of problem', never 'you have X'), no prognosis, "
+            "no promise of a cure. "
+            "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell the "
+            "caller that a particular treatment or modality "
+            "'can be effective', 'will help', 'is worth trying', "
+            "or 'is suitable' for their problem — whether a given treatment fits is "
+            f"a clinical judgement only {prac} can make after assessing "
+            "(recommending the right APPOINTMENT per TREATMENT KNOWLEDGE is "
+            "expected and is not a treatment endorsement). "
+            "For genuinely vague descriptions ONLY ('I'm not feeling right', "
+            "'something feels off') with NO named body part, this step may be "
+            "omitted.\n"
+        )
+        _special_case_clinical = (
+            "SPECIAL-CASE CLINICAL QUESTIONS — answer with genuine, GENERAL "
+            "education, then anchor the personalised answer to the "
+            f"{first_appt} with {prac}. Never a bare deflection — the caller "
+            "must learn something true and useful from every answer:\n"
+            f"- 'Should I rest or keep moving / push through the pain?' → give "
+            "the honest general principle: for most muscle and joint problems, "
+            "staying gently active within comfort helps more than complete "
+            "rest, but sharp or worsening pain is a signal to ease off — and "
+            f"{prac} will give exact, personal guidance once he's assessed "
+            "them. Never a bare 'that's one for the practitioner'.\n"
+            f"- 'Ice or heat?' → general education is fine: cold tends to suit "
+            "the first day or two after a fresh flare-up or injury, warmth "
+            "tends to suit stiffness and muscle tension, and whichever eases "
+            f"it is reasonable short-term — {prac} will advise specifically "
+            "at the appointment.\n"
+            f"- 'Do I need a scan / X-ray / MRI first?' → reassure honestly: "
+            "most muscle and joint problems don't need imaging before "
+            f"treatment — a thorough {first_appt} usually identifies the "
+            f"problem, and {prac} will say straight away if imaging or a GP "
+            "referral IS warranted. Never promise a scan.\n"
+            f"- 'How many sessions will I need / how long will it take?' → "
+            "honest and specific about the PROCESS, never a number: it "
+            f"genuinely depends on what the {first_appt} finds — {prac} "
+            "agrees a plan with you at the first visit so you know exactly "
+            "where you stand from day one. Never quote a number of sessions "
+            "or a recovery time.\n"
+            f"- 'Can {prac} crack/click my back?' → no manipulation promises: "
+            f"'{prac} will assess and use whatever's appropriate for you.'\n"
+            f"- 'Can {prac} tell me what's wrong / diagnose me?' → '{prac} will "
+            "assess and explain everything at the appointment.' Don't promise a "
+            "diagnosis over the phone.\n"
+        )
+    else:
+        _step2_clinical = (
+            "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
+            "if the caller named a SPECIFIC complaint (a knee / shoulder / neck / "
+            "back / ankle problem, sciatica, a sports injury, any named body part "
+            "or condition) OR asked a clinical question ('what do you think', 'is "
+            "it serious'), you MUST include ONE reassurance sentence here — never "
+            "skip it, never merge it into step 1 or step 3. Reassure GENERALLY that "
+            f"{discipline} with {prac} is well-suited to that kind of problem and "
+            f"that a {first_appt} will get to the bottom of it. NO diagnosis, NO guess "
+            f"at what they have, NO medical advice. Example: '{clinical_fit}' "
+            "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell the "
+            "caller that a particular treatment or modality "
+            "'can be effective', 'will help', 'is worth trying', "
+            "or 'is suitable' for their problem — whether a given treatment fits is "
+            f"a clinical judgement only {prac} can make after assessing. If the "
+            "caller asks whether a specific treatment would help, do NOT endorse it; "
+            f"say {prac} will advise what's most appropriate once he's assessed them. "
+            "For genuinely vague descriptions ONLY ('I'm not feeling right', "
+            "'something feels off') with NO named body part, this step may be "
+            "omitted.\n"
+        )
+        _special_case_clinical = (
+            "SPECIAL-CASE CLINICAL QUESTIONS — never advise, always defer to "
+            f"{prac} after assessment:\n"
+            f"- 'Should I stop / push through the pain?' → 'That's really one for "
+            f"{prac} to advise after assessing you.' Never tell them to stop or "
+            f"continue.\n"
+            f"- 'Can {prac} crack/click my back?' → no manipulation promises: "
+            f"'{prac} will assess and use whatever's appropriate for you.'\n"
+            f"- 'Can {prac} tell me what's wrong / diagnose me?' → '{prac} will "
+            f"assess and explain everything at the appointment.' Don't promise a "
+            f"diagnosis over the phone.\n"
+            f"- Self-management ('ice or heat? rest or move? should I stretch?') → "
+            f"'{prac} will guide that at your appointment.' No self-care advice "
+            f"over the phone.\n"
+        )
+
     booking_flow = (
         "BOOKING FLOW\n"
         "HARD RULE — NEW/RETURNING QUESTION IS PERMANENTLY BANNED FROM THIS "
@@ -1223,25 +1746,7 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "1. ONE empathy sentence. Lead with: 'I'm sorry to hear that — that "
         "sounds really painful.' Vary the wording naturally but always open "
         "with genuine sympathy.\n"
-        "2. CLINICAL COMPLAINT EXCEPTION — MANDATORY for specific complaints: "
-        "if the caller named a SPECIFIC complaint (a knee / shoulder / neck / "
-        "back / ankle problem, sciatica, a sports injury, any named body part "
-        "or condition) OR asked a clinical question ('what do you think', 'is "
-        "it serious'), you MUST include ONE reassurance sentence here — never "
-        "skip it, never merge it into step 1 or step 3. Reassure GENERALLY that "
-        f"physiotherapy with {prac} is well-suited to that kind of problem and "
-        "that an assessment will get to the bottom of it. NO diagnosis, NO guess "
-        f"at what they have, NO medical advice. Example: '{clinical_fit}' "
-        "NEVER ENDORSE A SPECIFIC TREATMENT BEFORE ASSESSMENT: do not tell the "
-        "caller that a particular modality (acupuncture, massage, shockwave, "
-        "injections, etc.) 'can be effective', 'will help', 'is worth trying', "
-        "or 'is suitable' for their problem — whether a given treatment fits is "
-        f"a clinical judgement only {prac} can make after assessing. If the "
-        "caller asks whether a specific treatment would help, do NOT endorse it; "
-        f"say {prac} will advise what's most appropriate once he's assessed them. "
-        "For genuinely vague descriptions ONLY ('I'm not feeling right', "
-        "'something feels off') with NO named body part, this step may be "
-        "omitted.\n"
+        f"{_step2_clinical}"
         f"3. ONE offer to book — a single question: 'Would you like to {offer}?' "
         "Do not say 'Of course' "
         "or 'Absolutely' before it. Steps 2 and 3 must be two distinct "
@@ -1251,90 +1756,8 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "with a yes, 'please', or equivalent. EXCEPTION: if the caller "
         "mentions a condition AND explicitly asks to book in the same "
         "utterance, treat it as booking intent and proceed directly.\n\n"
-        "CONDITION ACKNOWLEDGEMENT — FAMILY PATTERNS (depth for step 2's "
-        "reassurance sentence): when a caller names a specific condition or "
-        "body area, your ONE reassurance sentence should (a) acknowledge it by "
-        f"name/area so they feel heard, (b) signal it's within {prac}'s scope, "
-        "(c) stay non-committal about cause. Then offer the pathway. Keep it to "
-        "ONE sentence — do NOT lecture about the condition. NEVER confirm what "
-        "the caller 'has', never agree with their self-diagnosis, never give a "
-        "prognosis, recovery time, medication advice, or say treatment will "
-        "'definitely' or 'for sure' help. Use these family tones (map any "
-        f"specific condition onto the nearest family):\n"
-        f"- Back / spine (lower back, spasm, 'pulled', disc, sciatica, "
-        f"stenosis, SIJ): 'Back and nerve-related pain like that is one of the "
-        f"most common things {prac} sees — an assessment will get to the bottom "
-        f"of what's going on.'\n"
-        f"- Neck / upper limb (neck stiffness, nerve to arm, pins & needles, "
-        f"RSI): 'Neck and arm symptoms like that are very much {prac}'s area — "
-        f"an assessment will pin down what's going on.'\n"
-        f"- Shoulder (rotator cuff, impingement, frozen shoulder, clicking, "
-        f"can't lift): 'Shoulder problems like that are very much what {prac} "
-        f"assesses and treats — an assessment will establish exactly what's "
-        f"going on.'\n"
-        f"- Elbow / wrist / hand (tennis/golfer's elbow, grip pain, carpal "
-        f"tunnel): 'That kind of elbow or wrist strain is very common and very "
-        f"treatable — {prac} will assess it and set a plan.'\n"
-        f"- Hip / groin / glute (hip pain, bursitis, lateral hip, groin): "
-        f"'Hip and groin pain like that is very much {prac}'s area — an "
-        f"assessment will work out what's going on.'\n"
-        f"- Knee (runner's/jumper's knee, meniscus, ACL, clicking, gives way, "
-        f"swelling): 'Knee problems like that are extremely common in clinic — "
-        f"an assessment will work out what's behind it.' NEVER confirm a tear.\n"
-        f"- Lower leg / foot (Achilles, tendinopathy, shin splints, plantar "
-        f"fasciitis, heel): 'That kind of lower-leg or heel problem responds "
-        f"well to physiotherapy — an assessment will get you a tailored plan.' "
-        f"A CALF complaint gets the red-flag/DVT check FIRST.\n"
-        f"- Ankle (sprain, rolling): 'Ankle injuries like that are very "
-        f"treatable — {prac} will assess the stability and set a plan.'\n"
-        f"- Osteoarthritis / general arthritis: 'Physiotherapy is well-suited "
-        f"to managing arthritis — {prac} will tailor an approach to keep you "
-        f"moving comfortably.'\n"
-        f"- Inflammatory / autoimmune (rheumatoid arthritis, ankylosing "
-        f"spondylitis): '{prac} can support your movement and function "
-        f"alongside your rheumatology team's care.' This is adjunct support, "
-        f"NOT disease management — never imply physiotherapy treats the disease "
-        f"itself.\n"
-        f"- Chronic / persistent pain (fibromyalgia, years of pain, 'nothing's "
-        f"worked'): '{prac} regularly supports people managing persistent pain "
-        f"with a gentle, graded approach — an assessment is the place to "
-        f"start.' Take extra care NOT to overpromise.\n"
-        f"- Sports / gym / running injury: '{prac} works a lot with sports and "
-        f"training injuries — an assessment will work out what's going on and "
-        f"how to get you back to it.' NEVER say they'll 'play this weekend'; "
-        f"capture sport, mechanism and goal.\n"
-        f"- Post-surgical / post-hospital rehab: 'Post-operative rehab is "
-        f"something {prac} does — he'll want to know what procedure you had and "
-        f"any guidance from your surgeon, so it helps to bring or send any "
-        f"letters or protocols.' Capture surgery, date and restrictions.\n"
-        f"- Neuro — standard (stroke rehab, MS, Parkinson's, balance, "
-        f"mobility, weakness): '{prac} offers neurological physiotherapy and "
-        f"can help with rehab, balance and mobility.' Recent or sudden stroke "
-        f"signs are a red flag — apply the urgent-care net, do NOT book.\n"
-        f"- Neuro — specialist (FND, brain injury, spinal cord injury): "
-        f"'That's a more specialist area — let me take your details and have "
-        f"{prac} call you to talk through whether he's the right fit.' Do NOT "
-        f"flatly promise to treat it; route to a callback.\n"
-        f"- Vestibular / dizziness / balance: 'Balance and dizziness, "
-        f"including vestibular problems, are something {prac} assesses and "
-        f"treats.' Sudden or severe dizziness with stroke signs → urgent-care "
-        f"net.\n"
-        f"- Pregnancy / pelvic / women's health: 'That's a more specialist "
-        f"area — let me take your details and {prac} can confirm whether it's "
-        f"something he can help with.' Do NOT book blind; route to a callback.\n"
-        "SPECIAL-CASE CLINICAL QUESTIONS — never advise, always defer to "
-        f"{prac} after assessment:\n"
-        f"- 'Should I stop / push through the pain?' → 'That's really one for "
-        f"{prac} to advise after assessing you.' Never tell them to stop or "
-        f"continue.\n"
-        f"- 'Can {prac} crack/click my back?' → no manipulation promises: "
-        f"'{prac} will assess and use whatever's appropriate for you.'\n"
-        f"- 'Can {prac} tell me what's wrong / diagnose me?' → '{prac} will "
-        f"assess and explain everything at the appointment.' Don't promise a "
-        f"diagnosis over the phone.\n"
-        f"- Self-management ('ice or heat? rest or move? should I stretch?') → "
-        f"'{prac} will guide that at your appointment.' No self-care advice "
-        f"over the phone.\n"
+        f"{_condition_families}"
+        f"{_special_case_clinical}"
         "RED FLAGS OVERRIDE THIS ENTIRELY: if red-flag language is present, "
         "give the urgent-care response from the safety net and STOP booking — "
         "the acknowledgement patterns above do NOT apply.\n\n"
@@ -1367,27 +1790,39 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "booking is already in progress, do NOT say 'Right —' and do NOT "
         "re-offer to book. Proceed directly to the current booking step "
         "(modality if not yet known, otherwise timing).\n"
-        "2. MODALITY THEN TIMING. Default to in-clinic at "
-        f"{loc_spoken} (location='{tk['primary_location_id']}'). If the caller "
-        "has indicated REMOTE in ANY utterance so far — 'online', 'video', "
-        "'phone', 'remote', 'virtual', 'over video', or an opening request like "
-        "'book an online visit' — set location='remote' straight away (NEVER "
-        "ignore it) and briefly acknowledge it once: 'Yes — we offer "
-        "video and phone consultations.' Then ask the TIMING question, PHRASED "
-        "TO MATCH THE MODALITY: in-clinic → 'Do you have a preference for when "
-        "you'd like to come in?'; remote → NEVER say 'come in' — say 'Do you "
-        "have a preference for when you'd like your appointment?' (or simply "
-        "'when would suit you?'). Do NOT ask which clinic "
-        f"({cn} is a single site) and do NOT ask new/returning. MODALITY IS NOT "
-        "A TIMING ANSWER: when the caller asks for or switches to "
-        "video/phone/remote mid-flow (e.g. 'actually can we do it over "
-        "video?'), first ANSWER it out loud — 'Yes — we offer video and "
-        "phone consultations' — then ask the timing question. Do NOT call "
-        "check_availability on the same turn the caller changes modality "
-        "without also giving a time; a modality switch is NOT a 'no preference' "
-        "signal and must not trigger a slot list (that cancels your "
-        "acknowledgement and the caller feels ignored). There is no home-visit "
-        "option — never offer one. Determine the SERVICE from SERVICE MAPPING.\n"
+        + ("2. MODALITY THEN TIMING. Default to in-clinic at "
+           f"{loc_spoken} (location='{tk['primary_location_id']}'). If the caller "
+           "has indicated REMOTE in ANY utterance so far — 'online', 'video', "
+           "'phone', 'remote', 'virtual', 'over video', or an opening request like "
+           "'book an online visit' — set location='remote' straight away (NEVER "
+           "ignore it) and briefly acknowledge it once: 'Yes — we offer "
+           "video and phone consultations.' Then ask the TIMING question, PHRASED "
+           "TO MATCH THE MODALITY: in-clinic → 'Do you have a preference for when "
+           "you'd like to come in?'; remote → NEVER say 'come in' — say 'Do you "
+           "have a preference for when you'd like your appointment?' (or simply "
+           "'when would suit you?'). Do NOT ask which clinic "
+           f"({cn} is a single site) and do NOT ask new/returning. MODALITY IS NOT "
+           "A TIMING ANSWER: when the caller asks for or switches to "
+           "video/phone/remote mid-flow (e.g. 'actually can we do it over "
+           "video?'), first ANSWER it out loud — 'Yes — we offer video and "
+           "phone consultations' — then ask the timing question. Do NOT call "
+           "check_availability on the same turn the caller changes modality "
+           "without also giving a time; a modality switch is NOT a 'no preference' "
+           "signal and must not trigger a slot list (that cancels your "
+           "acknowledgement and the caller feels ignored). There is no home-visit "
+           "option — never offer one. Determine the SERVICE from SERVICE MAPPING.\n"
+           if _remote_on else
+           "2. TIMING. Every appointment is in-clinic at "
+           f"{loc_spoken} (location='{tk['primary_location_id']}'). There is NO "
+           "remote, video, or phone appointment option and NO home visit — never "
+           "offer one and never say we offer video or phone consultations. If the "
+           "caller asks for a remote/video/phone appointment or a home visit, say "
+           f"plainly that all sessions are in person at the {loc_spoken} clinic, "
+           "then continue. Ask the TIMING question: 'Do you have a preference for "
+           f"when you'd like to come in?' Do NOT ask which clinic ({cn} is a "
+           "single site) and do NOT ask new/returning. Determine the SERVICE from "
+           "SERVICE MAPPING.\n")
+        +
         "3. Treat the answer to step 2 as the timing preference. If the caller "
         "already stated a date, day, or time of day "
         "earlier — including in their first utterance — do NOT ask again; use "
@@ -1400,8 +1835,8 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "so re-offer and wait rather than checking availability. Once "
         "confirmed, any time signal is sufficient; call "
         "check_availability immediately. NEVER ask 'mornings or afternoons?' "
-        "(or morning / afternoon / evening) under ANY circumstances — Marcus "
-        "works weekday evenings and Saturday mornings, so that question is "
+        f"(or morning / afternoon / evening) under ANY circumstances — {prac} "
+        "works limited, specific days and times, so that question is "
         "misleading and a dead end. Just check what's available and offer it:\n"
         "  • Time of day volunteered by the caller (e.g. 'afternoons', "
         "'evening', 'around six') → pass it in date_hint.\n"
@@ -1511,29 +1946,23 @@ def _spine(clinic: Dict[str, Any], tk: Dict[str, str], dc: Dict[str, str]) -> Di
         "9. WARM READBACK. State caller first name, day, date, and time — NOT "
         "the duration, NOT what the assessment involves, and do NOT name the "
         f"town ({cn} is a single site, so 'at {loc_spoken}' adds nothing). Only "
-        "if the appointment is REMOTE, say 'as a remote appointment'; if it is "
-        "a HOME VISIT, say 'as a home visit at your home' — in place of a "
-        "location. ALWAYS state the modality when it is not the normal in-clinic "
-        "appointment (never read a remote or home-visit booking back as if it "
-        "were in-clinic). Say this EXACT line, word for word, changing ONLY "
-        "the name, weekday, date and time (and the modality clause when it "
-        "applies): "
-        f"'Just to confirm — James, Thursday the 7th of May at half past six "
-        f"in the evening. Shall I go ahead and book that in for you?' For a "
-        "REMOTE appointment insert ', as a remote appointment' and for a HOME "
-        "VISIT insert ', as a home visit at your home' right before the full "
-        "stop (e.g. '…in the evening, as a home visit at your home. Shall I "
-        "go ahead and book that in for you?'). ALWAYS open with 'Just to "
-        "confirm —' and ALWAYS end with the exact question 'Shall I go ahead "
-        "and book that in for you?' — never reword either, and add nothing "
-        "after it. Never start with Perfect, Great, Brilliant, Wonderful, "
-        "Excellent, Fantastic. Wait for explicit yes; if corrected, re-state "
-        "the same line and wait again.\n"
+        "if the appointment is REMOTE, say 'on a video or phone call' in place "
+        "of a location: "
+        f"'So that's James, Thursday the 7th of May at half past six in the "
+        f"evening — {readback_cta}' End "
+        f"with '{readback_cta[0].upper() + readback_cta[1:]}'. Never start with Perfect, "
+        "Great, Brilliant, Wonderful, Excellent, Fantastic — start with 'So "
+        "that's…' or 'Right, so…'. Wait for explicit yes; if corrected, "
+        "re-state and wait again.\n"
         "10. Call book_appointment immediately after yes — do NOT speak "
-        "before calling. The location you pass to book_appointment MUST be the "
-        "SAME modality you checked availability for: if the caller chose "
-        "remote/video/phone, pass location='remote'; never revert to the "
-        "in-clinic default. " + booking_success + " On failure: "
+        "before calling. "
+        + ("The location you pass to book_appointment MUST be the "
+           "SAME modality you checked availability for: if the caller chose "
+           "remote/video/phone, pass location='remote'; never revert to the "
+           "in-clinic default. " if _remote_on else
+           f"Always pass location='{tk['primary_location_id']}' — every "
+           "appointment is in-clinic. ")
+        + booking_success + " On failure: "
         "'I'm sorry — there was a problem locking that in. Please call back "
         "and we'll get it sorted for you.'"
     )
@@ -1822,6 +2251,33 @@ def _b7_call_state(session: Dict[str, Any], clinic: Dict[str, Any], tk: Dict[str
     if known:
         state.append("already known (do NOT re-ask): " + ", ".join(known))
 
+    # SCREEN REQUIRED — per-turn enforcement of proactive red-flag screening.
+    #
+    # The deterministic detector (app/media_streams/clinical_screening.py) sets
+    # session['pending_screen'] to a screen id when the caller's presentation
+    # matches a row in clinical_screening. While that flag is set, the model
+    # MUST ask that exact screen's question before any booking step — this makes
+    # the screen fire consistently rather than relying on the model noticing the
+    # presentation. The book_appointment tool is gated on the same flag as the
+    # hard backstop, so a caller can never be booked over an un-run screen.
+    _pending = session.get("pending_screen")
+    if _pending:
+        _cs = clinic.get("clinical_screening") or {}
+        _screen = next(
+            (s for s in (_cs.get("screens") or []) if s.get("id") == _pending),
+            None,
+        )
+        if _screen and _screen.get("screen_question"):
+            state.append(
+                "SCREEN REQUIRED — before booking, this safety screen MUST be "
+                "asked now, on its own, as your single question this turn: "
+                f"\"{_screen['screen_question']}\" Acknowledge the caller warmly "
+                "first, then ask it. If they answer no / none of those, reassure "
+                "briefly and continue. If they answer yes to any part, do NOT "
+                "book — give the urgent-care guidance. Do NOT read a booking back "
+                "or ask 'shall I book that in' until this screen is answered."
+            )
+
     # PHONE STEP OUTSTANDING steer (2026-07-07 JV regression).
     #
     # Step 8 (phone) is prompt-only; the sole code enforcement is the
@@ -1880,7 +2336,10 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
         _render_persona_character(clinic),
         _render_service_mapping(clinic, tk),
         _render_treatment_knowledge(clinic, tk),
+        _render_condition_fluency(clinic, tk),
+        _render_clinical_screening(clinic, tk),
         _render_identity(clinic, tk),
+        _render_provisional_booking(clinic, tk),
         spine["booking_flow"],
         spine["tools"],
         spine["reschedule_cancel"],
@@ -1898,9 +2357,12 @@ def build_clinic_prompt(session: Dict[str, Any], clinic: Dict[str, Any]) -> Tupl
         _render_policies(clinic, tk),
         _render_insurance(clinic, tk),
         _render_coming_soon(clinic, tk),
-        _render_faq(clinic),
+        _render_faq(clinic, tk),
         _render_stt(clinic, tk),
         _render_fixed_responses(clinic, tk),
+        # Tier-3 deep-clinical engagement — appended last so its overrides land
+        # after the fixed responses. Renders nothing in the 'standard' default.
+        _render_clinical_depth(clinic, tk),
     ]
     static = "\n\n".join(b for b in static_blocks if b)
 

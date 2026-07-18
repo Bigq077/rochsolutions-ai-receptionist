@@ -23,9 +23,11 @@ import logging
 import os
 import re as _re
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
+
+from app.clinic_config import get_clinic
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,9 @@ _ANTHROPIC_URL   = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_MODEL = "claude-sonnet-4-6"
 _ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Last-resort fallback, used only when a clinic cannot be resolved from the
+# session (e.g. clinic_id missing). Real clinics get a prompt built per-tenant
+# by _build_system_prompt() below.
 _SYSTEM_PROMPT = """\
 You are a clinical receptionist assistant for Theorem Health, a physiotherapy clinic in the UK.
 You summarise AI receptionist call logs so the clinic owner (Mark) can quickly scan a spreadsheet and know what happened and what to do next.
@@ -78,6 +83,107 @@ Clinic context:
 - Locations: Alcester (Mon–Fri 8:30am–9pm) and Redditch (flexible)
 - Owner direct line: 07870 166861
 """
+
+# Fixed preamble shared by every clinic — only the clinic-context block below it
+# varies per tenant.
+_SYSTEM_PROMPT_PREAMBLE = """\
+You are a receptionist assistant for {clinic_name}, {identity_descriptor}.
+You summarise AI receptionist call logs so the clinic owner ({owner_name}) can quickly scan a spreadsheet and know what happened and what to do next.
+
+Tone: concise, professional, practical. Written for someone scanning rows in Google Sheets.
+Never use filler like "it appears that" or "the patient seemed to". State facts directly.
+Always use the patient's first name if known. If unknown, say "Caller"."""
+
+
+def _resolve_owner_name(clinic: Dict[str, Any]) -> str:
+    """
+    Best-effort owner/practitioner name from the clinic contract, across both
+    the legacy CLINICS shape (Theorem) and the data-driven clinic.json shape
+    (Vital Edge etc.). Never invents a name — falls back to a generic label.
+    """
+    prompt_facts = clinic.get("prompt_facts") or {}
+    avatar = (clinic.get("avatar_preferences") or {}).get("clinic_avatar") or {}
+    return (
+        prompt_facts.get("practitioner")
+        or clinic.get("practitioner")
+        or avatar.get("owner_name")
+        or "the clinic owner"
+    )
+
+
+def _resolve_pricing_line(clinic: Dict[str, Any]) -> str:
+    """Human-readable pricing summary from whichever field the clinic carries."""
+    prompt_facts = clinic.get("prompt_facts") or {}
+    return (
+        clinic.get("pricing_summary")
+        or prompt_facts.get("default_price_summary")
+        or (clinic.get("sms_price_line") or "").strip()
+        or ""
+    )
+
+
+def _resolve_locations_line(clinic: Dict[str, Any]) -> str:
+    """One-line locations summary. Empty string if the clinic lists none."""
+    locs = clinic.get("locations") or []
+    labels = []
+    for loc in locs:
+        if not isinstance(loc, dict):
+            continue
+        name = (loc.get("name") or loc.get("short_name") or "").strip()
+        hint = (
+            (loc.get("hours_summary") or "").strip()
+            or (loc.get("postcode") or "").strip()
+        )
+        if name and hint:
+            labels.append(f"{name} ({hint})")
+        elif name:
+            labels.append(name)
+    return "; ".join(labels)
+
+
+def _build_system_prompt(clinic: Dict[str, Any]) -> str:
+    """
+    Build the call-summary system prompt for a specific clinic from its
+    contract. Keeps the fixed preamble and appends a clinic-context block with
+    only the facts the clinic actually provides.
+    """
+    prompt_facts = clinic.get("prompt_facts") or {}
+    clinic_name = (
+        clinic.get("display_name")
+        or clinic.get("sms_name")
+        or clinic.get("clinic_name")
+        or "the clinic"
+    )
+    owner_name = _resolve_owner_name(clinic)
+    identity = (
+        prompt_facts.get("identity_descriptor")
+        or "a UK clinic"
+    )
+
+    preamble = _SYSTEM_PROMPT_PREAMBLE.format(
+        clinic_name=clinic_name,
+        identity_descriptor=identity,
+        owner_name=owner_name,
+    )
+
+    context_lines = []
+    pricing = _resolve_pricing_line(clinic)
+    if pricing:
+        context_lines.append(f"- Pricing: {pricing.strip()}")
+    insurance = (clinic.get("insurance_note") or "").strip()
+    if insurance:
+        context_lines.append(f"- Insurance: {insurance}")
+    locations = _resolve_locations_line(clinic)
+    if locations:
+        context_lines.append(f"- Locations: {locations}")
+    owner_line = (clinic.get("transfer_phone") or clinic.get("phone") or "").strip()
+    if owner_line:
+        context_lines.append(f"- Owner/clinic direct line: {owner_line}")
+
+    if not context_lines:
+        return preamble + "\n"
+
+    return preamble + "\n\nClinic context:\n" + "\n".join(context_lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +319,7 @@ async def build_actionable_summary_row(summary: Dict[str, Any]) -> List[Any]:
         asked_price    = asked_price,
         duration       = duration,
         handoff_reason = handoff_info.get("reason", ""),
+        clinic_id      = raw_session.get("clinic_id"),
     )
 
     # ── Assemble final row ─────────────────────────────────────────────────
@@ -262,6 +369,7 @@ async def _llm_enhance(
     asked_price: str,
     duration: Any,
     handoff_reason: str,
+    clinic_id: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Call Claude Sonnet 4.6 to generate the summary one-liner and followup notes.
@@ -271,6 +379,19 @@ async def _llm_enhance(
     if not _ANTHROPIC_KEY:
         logger.warning("ANTHROPIC_API_KEY not set — using rule-based fallback for summary")
         return _fallback(outcome, patient_name, service, duration, handoff_reason)
+
+    # Per-tenant system prompt + owner name. Falls back to the Theorem-shaped
+    # default if the clinic can't be resolved, so a config gap never breaks the
+    # summary row.
+    system_prompt = _SYSTEM_PROMPT
+    owner_name = "Mark"
+    try:
+        if clinic_id:
+            clinic = get_clinic(clinic_id)
+            system_prompt = _build_system_prompt(clinic)
+            owner_name = _resolve_owner_name(clinic)
+    except Exception as e:
+        logger.warning("actionable_summary: clinic prompt build failed (%r) — using default", e)
 
     faq_turns   = summary.get("faq", []) or []
     convo_stats = summary.get("conversation", {}) or {}
@@ -304,7 +425,7 @@ Return ONLY a JSON object with exactly these two keys — no markdown, no explan
 
 {{
   "summary_text": "<emoji> <name> – <specific one-liner, max 120 chars>",
-  "followup_notes": "<2–3 sentence actionable note for Mark, or empty string>"
+  "followup_notes": "<2–3 sentence actionable note for {owner_name}, or empty string>"
 }}
 
 Rules for summary_text:
@@ -317,7 +438,7 @@ Rules for summary_text:
 - Max 120 characters
 
 Rules for followup_notes:
-- Write directly to Mark, not in third person
+- Write directly to {owner_name}, not in third person
 - If booked: confirm what was booked and any clinical notes mentioned
 - If abandoned / faq_only: state what blocked the booking and suggest the best next action
 - If manual_followup: state exactly what needs doing and any urgency
@@ -339,7 +460,7 @@ Rules for followup_notes:
                     json={
                         "model":      _ANTHROPIC_MODEL,
                         "max_tokens": 300,
-                        "system":     _SYSTEM_PROMPT,
+                        "system":     system_prompt,
                         "messages":   [{"role": "user", "content": user_prompt}],
                     },
                 )

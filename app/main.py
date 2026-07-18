@@ -381,6 +381,18 @@ async def startup():
     except Exception as e:
         logger.warning(f"⚠️  Booking digest worker not started: {e}")
 
+    # Daily call-quality digest worker (app/obs/worker.py). Self-gates on
+    # OBS_DIGEST_ENABLED + OBS_DATABASE_URL and returns immediately when either is
+    # unset, so it costs nothing until turned on. Read-only over the `calls` table.
+    try:
+        import asyncio
+        from app.obs.worker import start_obs_digest_worker
+
+        asyncio.create_task(start_obs_digest_worker(interval_seconds=300))
+        logger.info("✅ Call digest worker started (checks every 5 minutes)")
+    except Exception as e:
+        logger.warning(f"⚠️  Call digest worker not started: {e}")
+
     logger.info("=" * 60)
     logger.info("✅ Startup complete - ready to accept requests")
     logger.info("=" * 60)

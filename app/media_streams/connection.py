@@ -739,6 +739,24 @@ def _transcript_has_booking_intent(text: str) -> bool:
     return any(s in t for s in _BOOKING_INTENT_SIGNALS)
 
 
+# Phrases that signal the caller wants the practitioner to travel to them
+# (a home / outcall visit) rather than come into the clinic. Specific enough to
+# avoid false positives on "come to the clinic" / "I work from home".
+_HOME_VISIT_PHRASES: tuple = (
+    "home visit", "home-visit", "house visit", "house call",
+    "come to me", "come to my", "come to mine", "come round", "come over to",
+    "at my house", "at my home", "at my place", "in my home", "in my house",
+    "to my house", "to my home", "to my place",
+    "visit me at", "mobile massage", "mobile therapist",
+    "travel to me", "you travel to", "come to the house",
+)
+
+
+def _utterance_is_home_visit(text: str) -> bool:
+    t = (text or "").lower()
+    return any(p in t for p in _HOME_VISIT_PHRASES)
+
+
 # Spec K — lifecycle stage for the DTMF slot map.
 # Transitions are strictly one-way within a booking flow:
 #   DAY_SELECTION → TIME_SELECTION → NONE
@@ -1129,8 +1147,8 @@ _V3_NAME_CONFIRM_PATTERNS = [
 # Surname extraction lives in app/name_capture.py — ONE pure module, kept
 # BYTE-IDENTICAL on origin/main, jv-v1-onboarding and vitaledge-onboarding so a
 # fix can never land on one clinic and not the others.  That divergence is
-# exactly how "my surname would be X" was fixed on theorem and left broken here
-# for weeks.
+# exactly how "my surname would be X" was fixed on theorem and left broken on
+# JV + Vital Edge for weeks.
 #
 # Verify the invariant — all three hashes must match:
 #   git rev-parse origin/main:app/name_capture.py
@@ -1208,8 +1226,8 @@ def _v3_try_persist_name(
         # phone-confirm step.  phone_confirmed is too early: the caller can
         # confirm the phone ("use this number") BEFORE the surname is spoken,
         # and a trailing surname ("… my surname's Roch") still needs to land.
-        # The explicit-cue requirement in backfill_surname keeps this window
-        # safe.  (Theorem parity, 2026-07-10.)
+        # The explicit-cue requirement in backfill_surname is what keeps this
+        # wide window safe.  (Theorem parity, 2026-07-10.)
         if session.get("booking_confirmed"):
             return False
         _first = _existing.split()[0]
@@ -2835,6 +2853,19 @@ class SilenceHandler:
                     _sess_state_w, _wait,
                 )
 
+        # FIRST TURN (opening greeting, before the caller has spoken) — hard
+        # override to 4.5s.  The greeting and its no-input re-asks are the only
+        # prompts containing "how can I help"; nothing after the caller speaks
+        # matches, so the rest of the call keeps its normal timing.  Placed
+        # AFTER the floor blocks so it wins over the 10s phone_confirm_grace that
+        # the initial flow_step=0 otherwise pins on the greeting turn — a silent
+        # line now gets re-prompted promptly instead of after ~10s dead air.
+        if "how can i help" in _last_bot_w:
+            _wait = 4.5
+            logger.info(
+                "[ms_watchdog] greeting first-turn — wait set to %.1fs", _wait
+            )
+
         # Ownership check: yield once so any pending cancellation of a superseded
         # task is delivered before we log WATCHDOG_START.  If a newer watchdog task
         # has already been assigned to _no_input_watchdog_task, this task is stale
@@ -4236,6 +4267,15 @@ class WebSocketCallHandler:
             await self._stop_event.wait()
         except Exception as exc:
             logger.error("[ms_conn] handle(): unexpected error: %r", exc)
+            # Phase 2 (spec §5.2): a pipeline exception → Sentry (technical channel)
+            # AND flag the session so the teardown alert router raises an operator
+            # SMS. Both are no-ops unless SENTRY_DSN / OBS_ALERTS_ENABLED are set.
+            try:
+                self.session["pipeline_error"] = True
+                from app.obs.alerts import capture_exception
+                capture_exception(exc)
+            except Exception:
+                pass
         finally:
             for t in tasks:
                 if not t.done():
@@ -5282,6 +5322,8 @@ class WebSocketCallHandler:
                         # Theorem parity, 2026-07-10: the first name locked
                         # first-name-only, so we are PROVABLY awaiting the
                         # surname regardless of what the bot prompt now says.
+                        # Covers the name-first clinics, where the slot-based
+                        # fallback below has not happened yet.
                         self.session.get("v3_awaiting_surname")
                     ) or (
                         # State-based fallback: by the time this straggler is
@@ -5667,6 +5709,64 @@ class WebSocketCallHandler:
                     # within-turn dedup still works (sentinel precedes this turn's
                     # chunks in the FIFO queue).
                     await self.tts_text_queue.put("\x00DEDUP_RESET\x00")
+
+                    # ── Clinical screening (Layer 1 — deterministic) ─────────
+                    # Config-driven red-flag layer (clinical_screening in
+                    # clinic.json; no-op for clinics without it). Volunteered
+                    # emergencies and positive screen answers are answered with
+                    # the scripted line deterministically — the life-safety
+                    # path never depends on the model. Presentation triggers
+                    # arm session['pending_screen'], which _b7_call_state turns
+                    # into the SCREEN REQUIRED steer and book_appointment's
+                    # backstop enforces at the tool boundary.
+                    try:
+                        from app.clinic_config import get_clinic as _cs_get_clinic
+                        from app.media_streams import clinical_screening as _cs
+                        _cs_clinic = _cs_get_clinic(clinic_id)
+                        if _cs.screening_enabled(_cs_clinic):
+                            _cs_result = _cs.update_screening_state(
+                                self.session, _cs_clinic, utterance
+                            )
+                            if _cs_result["action"] in ("emergency", "escalate"):
+                                _cs_line = _cs_result["speak"] or ""
+                                if _cs_result["action"] == "emergency":
+                                    _cs_line = (
+                                        _cs_line
+                                        + " Would you like me to put you "
+                                        "through to someone now?"
+                                    )
+                                await self.tts_text_queue.put(_cs_line)
+                                self.session["last_bot_prompt"] = _cs_line
+                                self.session["last_question"] = _cs_line
+                                self.session.setdefault(
+                                    "conversation_history", []
+                                ).append(
+                                    {"role": "user", "content": utterance}
+                                )
+                                self.session["conversation_history"].append(
+                                    {"role": "assistant", "content": _cs_line}
+                                )
+                                await save_session(self.call_sid, self.session)
+                                if self._silence_handler is not None:
+                                    self._silence_handler.on_question_asked(
+                                        _cs_line
+                                    )
+                                    self._silence_handler.on_llm_finished()
+                                self.llm_in_flight = False
+                                self._llm_busy = False
+                                self.session["llm_generation_active"] = False
+                                logger.info(
+                                    "[ms_conn] clinical screening %s — scripted "
+                                    "response spoken deterministically: %r",
+                                    _cs_result["action"], utterance[:80],
+                                )
+                                continue
+                    except Exception:
+                        logger.exception(
+                            "[ms_conn] clinical screening layer failed — "
+                            "failing open to normal LLM dispatch"
+                        )
+
                     # ── Slot-selection day-alias normalisation ────────────────
                     # Apply STT mishearing correction BEFORE the pop so the flag
                     # is still True here.  Rewrites e.g. "first year" → "thursday"
@@ -8001,6 +8101,27 @@ class WebSocketCallHandler:
                                         self.booking_flow_active, utterance[:80],
                                     )
                             # ── end Spec Y REVISED ────────────────────────────
+
+                            # ── Guaranteed home-visit latch ───────────────────
+                            # Provisional clinics (e.g. Vital Edge) book home
+                            # visits as a normal appointment + a free-text note
+                            # and never take an address on the call, so the note
+                            # is the only home-visit signal — easily dropped by
+                            # the LLM. Latch the intent durably from the caller's
+                            # own words the moment they ask, so the provisional
+                            # booking path can force it into the owner SMS,
+                            # calendar event and Sheets regardless. Additive and
+                            # read only by _book_appointment_provisional; no other
+                            # clinic keys off it, so Theorem/JV are unaffected.
+                            if (
+                                not self.session.get("home_visit_requested")
+                                and _utterance_is_home_visit(utterance)
+                            ):
+                                self.session["home_visit_requested"] = True
+                                logger.info(
+                                    "[ms_conn v3] home-visit intent latched: %r",
+                                    utterance[:80],
+                                )
 
                             # ── Duplicate slot guard ──────────────────────────
                             # Problem: rapid-continuation transcript pairs fire
@@ -11809,6 +11930,45 @@ class WebSocketCallHandler:
                     reason = "caller_hung_up"
                 call_logger.complete(success=success, reason=reason)
                 await call_logger.flush()
+
+                # Phase 1 — durable capture (spec §5.1). Additive, post-call,
+                # flag-gated (OBS_CAPTURE_ENABLED, default OFF) and no-op when
+                # unconfigured. capture_call_async never raises and runs the DB
+                # write off the event loop, so it adds no latency or failure mode
+                # to the live path. Guarded again here belt-and-braces.
+                try:
+                    from app.obs.store import capture_call_async
+                    # Prefer obs_turns (both sides — see llm_stream._append_history);
+                    # fall back to turns for paths that don't populate it, so a
+                    # one-sided transcript is still better than none.
+                    await capture_call_async(
+                        call_logger.build_record(),
+                        self.session.get("obs_turns") or self.session.get("turns") or [],
+                    )
+                except Exception as _obs_exc:
+                    logger.error("[ms_conn] obs capture error: %r", _obs_exc)
+
+                # Phase 2 — failure alerting (spec §5.2). Same safety profile as
+                # capture: post-call, flag-gated (OBS_ALERTS_ENABLED, default OFF),
+                # never raises, only messages the operator channels. Evaluates the
+                # completed call against the §5.2 conditions and dispatches.
+                try:
+                    from app.obs.alerts import route_call
+                    await route_call(call_logger.build_record(), self.session)
+                except Exception as _al_exc:
+                    logger.error("[ms_conn] obs alert error: %r", _al_exc)
+
+                # Phase 3 — LLM-as-judge (spec §5.3). Fire-and-forget so the
+                # (network-bound) Claude call never delays teardown; gated on
+                # OBS_JUDGE_ENABLED (default OFF) and never raises. Reads the row
+                # capture just wrote, scores it, stores the result, and raises a
+                # review alert on a bad call — all off the teardown critical path.
+                try:
+                    from app.obs import judge as _obs_judge
+                    if _obs_judge.is_enabled() and self.call_sid:
+                        asyncio.create_task(_obs_judge.run_and_store(self.call_sid))
+                except Exception as _jd_exc:
+                    logger.error("[ms_conn] obs judge error: %r", _jd_exc)
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 
@@ -11835,6 +11995,53 @@ class WebSocketCallHandler:
         # sends the wrong "sorry, technical issue" SMS). setdefault so any explicit
         # status set earlier wins.
         self.session.setdefault("call_status", "completed")
+
+        # Drop-off callback safety net (provisional-booking clinics only).
+        # A caller who gave their name + number but hung up before
+        # add_to_waitlist / the provisional booking fired would otherwise be
+        # lost — the tool that pings the practitioner never ran (e.g. the call
+        # dropped at the phone-confirm step). For a clinic whose model is "the
+        # practitioner rings the client back", that warm lead MUST still reach
+        # them. Uses ONLY already-captured data, so it can never invent a wrong
+        # number. Deduped, fire-and-forget, non-fatal.
+        try:
+            _dc_collected = self.session.get("collected") or {}
+            _dc_name = (self.session.get("patient_name") or _dc_collected.get("name") or "").strip()
+            _dc_phone = (_dc_collected.get("phone") or self.session.get("twilio_from") or "").strip()
+            _dc_owner_notified = bool(
+                self.session.get("_waitlist_pinged")
+                or self.session.get("provisional_booking")
+                or self.session.get("booking_confirmed")
+                or self.session.get("cancel_confirmed")
+                or self.session.get("transfer_attempted")
+            )
+            from app.clinic_config import get_clinic as _dc_get_clinic
+            _dc_clinic = _dc_get_clinic(self.session.get("clinic_id")) or {}
+            if (
+                _dc_name and _dc_phone
+                and not _dc_owner_notified
+                and not self.session.get("_dropoff_callback_sent")
+                and _dc_clinic.get("booking_system") == "google_calendar_provisional"
+            ):
+                _dc_tp = _dc_clinic.get("transfer_phone", "")
+                if _dc_tp:
+                    self.session["_dropoff_callback_sent"] = True
+                    from app.notifications.sms import send_sms as _dc_send
+                    import asyncio as _dc_aio
+                    _dc_aio.create_task(_dc_send(
+                        to=_dc_tp,
+                        message=(
+                            f"📞 CALLBACK NEEDED — {_dc_name} gave their details but "
+                            f"the call dropped before it was finished. Please call "
+                            f"them back on {_dc_phone}."
+                        ),
+                    ))
+                    logger.info(
+                        "[ms_conn] drop-off callback ping queued to ***%s (lead=%r)",
+                        _dc_tp[-4:] if _dc_tp else "????", _dc_name,
+                    )
+        except Exception as _dc_exc:
+            logger.warning("[ms_conn] drop-off callback safety net failed (non-fatal): %r", _dc_exc)
 
         # End-of-call personalised SMS — parity with theorem's /twilio/status
         # path, fired here (self-contained) so it does NOT depend on the Twilio

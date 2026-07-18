@@ -369,13 +369,24 @@ def _choose_template(
     _c            = get_clinic(session.get("clinic_id")) or {}
     _ins_cfg      = _c.get("insurance") or {}
     _accepts_ref  = bool(_ins_cfg.get("other_insurers_accepted") or _ins_cfg.get("bupa_accepted"))
-    _prac         = _c.get("practitioner")
+    # Self-pay-only clinics (vital_edge) must never be told we work with insurers.
+    _self_pay     = bool(_ins_cfg.get("self_pay_only")) or (
+        _ins_cfg.get("bupa_accepted") is False
+        and _ins_cfg.get("other_insurers_accepted") is False
+        and bool(_ins_cfg)
+    )
+    # practitioner lives top-level for some clinics, under prompt_facts for others.
+    _prac         = _c.get("practitioner") or (_c.get("prompt_facts") or {}).get("practitioner")
     _price        = _c.get("sms_assessment_price")
     _dur          = _c.get("sms_assessment_duration")
+    # `sms_price_line` is a full clause a clinic can set verbatim — needed where
+    # "An assessment is £X for Y minutes" is the wrong shape (e.g. a massage
+    # clinic with two session lengths). Falls back to the assessment form, then
+    # to the original Theorem copy (byte-identical for clinics that set neither).
     _price_line   = (
-        f"An assessment is {_price} for {_dur} minutes. "
-        if (_price and _dur)
-        else "A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
+        _c.get("sms_price_line")
+        or (f"An assessment is {_price} for {_dur} minutes. " if (_price and _dur) else None)
+        or "A 50-min physio appointment is £75 — most patients see results within 2–3 sessions. "
     )
 
     # ── ROUTING ──────────────────────────────────────────────────────────────
@@ -422,7 +433,8 @@ def _choose_template(
     if bupa_mentioned:
         return templates.format_insurance_inquiry_sms(
             patient_name=patient_name, bupa_mentioned=True,
-            accepts_referrals=_accepts_ref, practitioner=_prac, **ck)
+            accepts_referrals=_accepts_ref, practitioner=_prac,
+            self_pay_only=_self_pay, **ck)
 
     # 8. FAQ — INSURANCE (non-Bupa)
     if asked_about_insurance:
@@ -432,6 +444,7 @@ def _choose_template(
             bupa_mentioned=False,
             accepts_referrals=_accepts_ref,
             practitioner=_prac,
+            self_pay_only=_self_pay,
             **ck,
         )
 

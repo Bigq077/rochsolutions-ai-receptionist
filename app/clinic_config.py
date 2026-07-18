@@ -23,16 +23,16 @@ def _hours_tuple(start_hour: float, end_hour: float):
 TWILIO_TO_CLINIC: Dict[str, str] = {
     "+447366263180": "jv_v1",         # LATENCY-EVAL test line (repurposed Theorem v3 STAGING/dev number — NOT a patient line). latency-eval branch ONLY. theorem_v3 patients use +447380841468; jv_v1 patients use +447367002651 — both unaffected.
     "+447367002651": "jv_v1",         # Joint Venture Physiotherapy (Bolton) — reassigned from Theorem's retired legacy-pipeline line (confirmed retired 2026-06-23)
-    "+447426779875": "theorem",       # Theorem Health and Wellness (Media Streams pipeline)
+    # +447426779875 belongs to VITAL EDGE (operator confirmed 2026-07-10). Theorem
+    # has no claim on it — Theorem's live lines are +447380841468 (v3) and
+    # +447366530580 (v2), both mapped below and unaffected.
+    # ⚠️ HOUSEKEEPING: main / jv-v1-onboarding / theorem-canonical-source still
+    # carry a STALE `"+447426779875": "theorem"` entry. Clean that up on main as
+    # its own change — don't rely on merging this branch to do it, and don't
+    # "restore" the theorem mapping here.
+    "+447426779875": "vital_edge",    # Vital Edge Therapy (Kingston) — provisional booking model
     "+447366530580": "theorem_v2",    # Theorem test line — two-clinic guards active
     "+447380841468": "theorem_v3",    # Theorem v3 line — copy of theorem_v2
-
-    # Vital Edge Therapy (Kingston) — provisional booking model.
-    # TBC: the inbound Twilio number that forwards to Susie is not yet
-    # provisioned (the call rings Jonathan's mobile +447545862307 first, then
-    # falls back to the AI). Replace the placeholder below with the real Twilio
-    # "To" number before go-live, then uncomment.
-    # "+44XXXXXXXXXX": "vital_edge",
 
     # ---------------------------------------------------------------
     # ADD NEW CLIENT HERE

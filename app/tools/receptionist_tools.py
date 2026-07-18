@@ -935,6 +935,15 @@ TOOL_BOOK_APPOINTMENT = {
                 "type": "integer",
                 "description": "Appointment length in minutes. Defaults to 50.",
             },
+            "insurer_name": {
+                "type": "string",
+                "description": (
+                    "Name of the caller's private health insurer if they mentioned "
+                    "one (e.g. 'Aviva', 'Bupa'). Pass the insurer NAME the caller "
+                    "actually said. Do NOT pass any pre-authorisation, membership or "
+                    "policy code — the clinic collects those later, never by phone."
+                ),
+            },
             "followup_note": {
                 "type": "string",
                 "description": (
@@ -3858,9 +3867,13 @@ async def _check_availability_published(
     location = (args.get("location") or session.get("selected_location", "")).lower().strip()
     _pref = (args.get("date_hint") or args.get("preference") or "").strip()
     calendar_id = _resolve_calendar_id(clinic, location)
-    days_ahead = int(clinic.get("days_ahead") or 21)
+    days_ahead = int(clinic.get("days_ahead") or 14)
 
     now = datetime.now(LONDON_TZ)
+    # Hard booking horizon: the practitioner only releases availability ~2 weeks
+    # ahead and will not take bookings further out. Enforce it here so a specific
+    # far-future after_date can't slip past the window.
+    horizon = now + timedelta(days=days_ahead)
     w_start = now
     after_date_str = (args.get("after_date") or "").strip()
     if after_date_str:
@@ -3871,8 +3884,24 @@ async def _check_availability_published(
                 w_start = _ad
         except Exception as e:
             logger.warning("_check_availability_published: bad after_date=%r — ignoring: %r", after_date_str, e)
+    if w_start > horizon:
+        return {
+            "error": "beyond_booking_horizon",
+            "message": (
+                f"That date is more than {days_ahead} days away. Jonathan only "
+                "releases his availability about two weeks ahead, so you can only "
+                "offer bookings up to roughly a fortnight from today. Explain this "
+                "to the caller, and offer to take their details (add_to_waitlist) "
+                "so Jonathan can be in touch when he opens up later dates. Do NOT "
+                "offer any slot beyond the two-week horizon."
+            ),
+            "slots": [],
+        }
     day_window = args.get("day_window")
-    w_end = (w_start + timedelta(days=int(day_window))) if day_window else (now + timedelta(days=days_ahead))
+    w_end = (w_start + timedelta(days=int(day_window))) if day_window else horizon
+    # Never let an explicit day_window push the window past the 2-week horizon.
+    if w_end > horizon:
+        w_end = horizon
 
     tokens = await _get_tokens()
     if not tokens:
@@ -3889,6 +3918,7 @@ async def _check_availability_published(
 
     candidates = []
     slot_event_map: Dict[str, str] = {}
+    seen_starts: set = set()
     for ev in events or []:
         start_raw = (ev.get("start") or {}).get("dateTime")
         if not start_raw:
@@ -3904,9 +3934,17 @@ async def _check_availability_published(
             continue
         if s_dt <= now or s_dt < w_start or s_dt > w_end:
             continue
+        # Collapse multiple published events that share the same start time into
+        # ONE offerable slot. Two identical starts made Susie invent a fake
+        # "30-minute vs an hour" distinction — the duration is the caller's
+        # 60/90 choice, not a property of the published slot.
+        start_iso = s_dt.isoformat()
+        if start_iso in seen_starts:
+            continue
+        seen_starts.add(start_iso)
         candidates.append((s_dt, e_dt))
         if ev.get("id"):
-            slot_event_map[s_dt.isoformat()] = ev["id"]
+            slot_event_map[start_iso] = ev["id"]
 
     candidates.sort(key=lambda t: t[0])
     # Remember which published event backs each offered slot, so book_appointment
@@ -3931,6 +3969,28 @@ async def _check_availability_published(
     )
 
 
+def _uk_when_label(dt) -> str:
+    """British, SMS-friendly datetime label, e.g. 'Wednesday 15 July at 4pm' or
+    'Wednesday 15 July at 10:30am'. Platform-safe (avoids %-d / %-I, which
+    Windows strftime rejects)."""
+    parts = dt.strftime("%A %d %B").split()
+    if len(parts) == 3 and parts[1].startswith("0"):
+        parts[1] = parts[1][1:]  # "05" -> "5"
+    day = " ".join(parts)
+    hour = dt.hour % 12 or 12
+    ampm = "am" if dt.hour < 12 else "pm"
+    label = f"{hour}:{dt.minute:02d}{ampm}" if dt.minute else f"{hour}{ampm}"
+    return f"{day} at {label}"
+
+
+def _provisional_practitioner(clinic: Dict[str, Any]) -> str:
+    return (
+        clinic.get("practitioner")
+        or (clinic.get("prompt_facts") or {}).get("practitioner")
+        or "the practitioner"
+    )
+
+
 async def _book_appointment_provisional(
     args: Dict[str, Any], session: Dict[str, Any], clinic: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -3946,8 +4006,28 @@ async def _book_appointment_provisional(
     patient_name = (args.get("patient_name") or "").strip()
     phone = (args.get("phone") or "").strip()
     service = args.get("service") or "Deep Tissue Massage"
-    duration = int(args.get("duration_minutes") or clinic.get("slot_minutes") or 60)
-    notes = (args.get("notes") or "").strip()
+    # The book_appointment tool schema exposes `followup_note`, NOT `notes` — the
+    # prompt tells Susie to put the caller's context there. Reading only `notes`
+    # meant it was always empty, so the caller's reason for booking reached
+    # neither the calendar event nor the owner's SMS. On the provisional model
+    # the owner rings the client back, so that context is the whole point.
+    # `notes` is kept first for any internal caller that does pass it.
+    notes = (args.get("notes") or args.get("followup_note") or "").strip()
+
+    # Resolve the friendly service name AND a per-service default duration from
+    # clinic.json, so a named massage (e.g. sports_massage → 90 min) lands on the
+    # calendar with the right length even when the LLM doesn't pass
+    # duration_minutes. Falls back to the clinic slot length.
+    svc_name = service
+    svc_default_dur = None
+    for s in (clinic.get("services") or []):
+        if s.get("service_id") == service or (s.get("name") or "").lower() == (service or "").lower():
+            svc_name = s.get("name") or service
+            svc_default_dur = s.get("typical_duration_minutes")
+            if not svc_default_dur and s.get("typical_duration_minutes_options"):
+                svc_default_dur = s["typical_duration_minutes_options"][0]
+            break
+    duration = int(args.get("duration_minutes") or svc_default_dur or clinic.get("slot_minutes") or 60)
 
     if not patient_name or not phone:
         return {"success": False, "error": "patient_name and phone are required."}
@@ -3975,14 +4055,35 @@ async def _book_appointment_provisional(
     ).lower().strip()
     calendar_id = _resolve_calendar_id(clinic, location)
 
-    # Caller-facing service name for a readable event.
-    svc_name = service
-    for s in (clinic.get("services") or []):
-        if s.get("service_id") == service or (s.get("name") or "").lower() == (service or "").lower():
-            svc_name = s.get("name") or service
-            break
+    # GUARANTEED home-visit flag. VE books home visits as a normal appointment
+    # with no address taken on the call, so the ONLY thing telling the
+    # practitioner to travel is this flag. Derive it from THREE signals so it can
+    # never silently go missing: (1) a durable session latch set the moment the
+    # caller asked for a home visit (independent of the LLM — see connection.py
+    # _utterance_is_home_visit), (2) the location arg, (3) home-visit keywords in
+    # the note. If any fires, force it into the calendar event, Sheets and owner
+    # SMS regardless of what the model passed in followup_note.
+    _hv_kw = ("home visit", "home-visit", "house visit", "come to me",
+              "at my home", "at my house", "at my place")
+    is_home_visit = (
+        location == "home_visit"
+        or session.get("home_visit_requested") is True
+        or any(k in notes.lower() for k in _hv_kw)
+    )
+    _prac = _provisional_practitioner(clinic)
+    if is_home_visit:
+        _hv_banner = (
+            f"HOME VISIT REQUEST — patient would like {_prac} to travel to them; "
+            "confirm feasibility and get their address on the callback."
+        )
+        owner_notes = f"\U0001F3E0 {_hv_banner}" + (f" {notes}" if notes else "")
+    else:
+        owner_notes = notes
 
-    summary = f"PENDING CONFIRMATION — {patient_name} — {svc_name} ({duration} min)"
+    summary = (
+        f"PENDING CONFIRMATION{' — HOME VISIT' if is_home_visit else ''} — "
+        f"{patient_name} — {svc_name} ({duration} min)"
+    )
     description = "\n".join(
         [
             "PROVISIONAL booking requested via Susie (AI receptionist) — NOT yet confirmed.",
@@ -3991,6 +4092,8 @@ async def _book_appointment_provisional(
             f"Service: {svc_name} ({duration} min)",
             f"Requested: {start_dt.strftime('%A %d %B %Y at %H:%M')}",
         ]
+        + (["HOME VISIT — patient wants the practitioner to travel to them; "
+            "confirm feasibility + address on the callback."] if is_home_visit else [])
         + ([f"Notes: {notes}"] if notes else [])
         + ["Confirm directly with the client (WhatsApp/phone)."]
     )
@@ -4026,8 +4129,9 @@ async def _book_appointment_provisional(
         await asyncio.to_thread(
             send_to_sheet,
             patient_name, phone, "BOOK_PROVISIONAL",
-            f"PROVISIONAL: {svc_name} ({duration} min) on {booked_label}"
-            + (f" | Notes: {notes}" if notes else "")
+            f"PROVISIONAL{' [HOME VISIT]' if is_home_visit else ''}: "
+            f"{svc_name} ({duration} min) on {booked_label}"
+            + (f" | Notes: {owner_notes}" if owner_notes else "")
             + ("" if calendar_written else " | (calendar write FAILED — action manually)"),
             session.get("call_sid", ""),
             "Vital Edge AI Receptionist",
@@ -4053,11 +4157,32 @@ async def _book_appointment_provisional(
             clinic,
             build_booking_request_message(
                 clinic=clinic, patient_name=patient_name, phone=phone,
-                when=start_dt, duration_minutes=duration, service=svc_name, notes=notes,
+                when=start_dt, duration_minutes=duration, service=svc_name, notes=owner_notes,
             ),
         )
     except Exception as e:
         logger.warning("provisional owner notify failed (non-fatal): %r", e)
+
+    # Caller acknowledgement — a provisional-worded text (NEVER "confirmed").
+    # confirmation_sms_sent above already suppresses the smart-SMS follow-up, so
+    # this is the single caller text and it must not imply the slot is booked.
+    try:
+        from app.notifications.sms import send_sms as _send_sms_caller
+        _prac = _provisional_practitioner(clinic)
+        _cn = clinic.get("sms_name") or clinic.get("display_name") or "the clinic"
+        _first = patient_name.split()[0] if patient_name.strip() else "there"
+        _line = clinic.get("phone") or ""
+        _msg = (
+            f"Hi {_first}, thanks for your request with {_cn} — a {svc_name} on "
+            f"{_uk_when_label(start_dt)}. This is a request, not yet confirmed: "
+            f"{_prac} will be in touch directly to confirm and arrange payment "
+            f"beforehand, so there's nothing to pay now."
+            + (f" {_line}" if _line else "")
+        )
+        if phone:
+            await _send_sms_caller(to=phone, message=_msg)
+    except Exception as e:
+        logger.warning("provisional caller ack SMS failed (non-fatal): %r", e)
 
     return {
         "success": True,
@@ -4129,7 +4254,65 @@ async def _send_practitioner_followup_ping(
 # Executor: book_appointment
 # ---------------------------------------------------------------------------
 
+async def _ping_owner_insurance(
+    clinic: Dict[str, Any],
+    patient_name: str,
+    phone: str,
+    start_dt: "datetime",
+    service: str,
+    insurer: str,
+) -> None:
+    """
+    SMS-ping the clinic owner (Marcus) when an INSURANCE booking is made, so they
+    can follow up to collect the pre-auth / membership details and confirm cover.
+    Non-fatal; no-op if no owner_notification_sms is configured. We deliberately
+    do NOT include any code (Susie never takes one by phone) — the owner collects
+    it directly. (Option B insurance handling.)
+    """
+    try:
+        from app.notifications.owner_notify import notify_owner
+        svc_name = service
+        for _s in (clinic.get("services") or []):
+            if _s.get("service_id") == service or (_s.get("name") or "").lower() == (service or "").lower():
+                svc_name = _s.get("name") or service
+                break
+        name = clinic.get("sms_name") or clinic.get("display_name") or "Clinic"
+        when_str = start_dt.strftime("%a %d %b at %H:%M")
+        msg = (
+            f"\U0001F3E5 {name} — INSURANCE booking, please follow up\n"
+            f"Name: {patient_name or '—'}\n"
+            f"Phone: {phone or '—'}\n"
+            f"Insurer: {insurer or '—'}\n"
+            f"Appointment: {when_str} — {svc_name}\n"
+            "Action: collect the pre-authorisation / membership details and confirm "
+            "cover before the appointment. (Susie did NOT take any code by phone.)"
+        )
+        await notify_owner(clinic, msg)
+    except Exception as e:
+        logger.warning("insurance owner ping failed (non-fatal): %r", e)
+
+
 async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    # ── Clinical-screening backstop (Layer 3) ─────────────────────────────
+    # A caller must never be booked over an un-run (or positive) red-flag
+    # screen, even if the model tries. clinical_screening.py arms
+    # session['pending_screen'] deterministically; this gate holds the
+    # tool boundary. No-op for clinics without clinical_screening enabled.
+    try:
+        from app.clinic_config import get_clinic as _scr_get_clinic
+        from app.media_streams.clinical_screening import booking_blocked_reason
+        _scr_reason = booking_blocked_reason(
+            session, _scr_get_clinic(session.get("clinic_id"))
+        )
+        if _scr_reason:
+            logger.info(
+                "[book] blocked by clinical screening backstop: %s",
+                (session.get("pending_screen") or session.get("screen_red_flag")),
+            )
+            return {"success": False, "error": _scr_reason}
+    except Exception:
+        logger.exception("[book] clinical screening backstop failed — failing open")
+
     # Theorem clinic (both numbers) uses Acuity Scheduling; demo clinic uses Google Calendar
     if _resolve_clinic_id(session) in ("theorem", "theorem_v2", "theorem_v3"):
         return await _book_appointment_acuity(args, session)
@@ -4363,6 +4546,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
             except Exception as e:
                 logger.warning("book_appointment (no calendar) address reminder failed (non-fatal): %r", e)
 
+        # Insurance booking — ping the owner so they can collect pre-auth/cover details (Option B).
+        if insurer:
+            await _ping_owner_insurance(clinic, patient_name, phone, start_dt, service, insurer)
+
         # Ping the practitioner if this booking needs follow-up (home visit or a
         # flagged note) — patient is booked in directly regardless.
         await _send_practitioner_followup_ping(
@@ -4517,6 +4704,10 @@ async def _exec_book_appointment(args: Dict[str, Any], session: Dict[str, Any]) 
         except Exception as e:
             logger.warning("book_appointment address reminder scheduling failed (non-fatal): %r", e)
 
+    # Insurance booking — ping the owner so they can collect pre-auth/cover details (Option B).
+    if insurer:
+        await _ping_owner_insurance(clinic, patient_name, phone, start_dt, service, insurer)
+
     # Remember this booking (any type) keyed by the caller's phone, so that if
     # the patient later TEXTS the clinic, the inbound-SMS handler can label the
     # forward with their appointment — and, for a home visit, write a texted
@@ -4652,7 +4843,20 @@ async def _exec_cancel_appointment(args: Dict[str, Any], session: Dict[str, Any]
     _appt_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
 
     try:
-        await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
+        if clinic.get("booking_system") == "google_calendar_provisional":
+            # Give the freed slot back to availability instead of deleting it, so
+            # the time Jonathan published becomes bookable again. Falls back to a
+            # delete if the restore write fails, so the pending booking is at least
+            # cleared either way.
+            from app.tools.calendar_google import update_event as _upd
+            _avail = clinic.get("provisional_available_label") or "Available"
+            try:
+                await asyncio.to_thread(_upd, tokens, event_id, _avail, "", calendar_id)
+            except Exception as _e:
+                logger.warning("provisional cancel: restore-to-available failed, deleting instead: %r", _e)
+                await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
+        else:
+            await asyncio.to_thread(delete_event, tokens, event_id, calendar_id)
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -4795,43 +4999,119 @@ async def _exec_reschedule_appointment(args: Dict[str, Any], session: Dict[str, 
     except Exception as e:
         return {"success": False, "error": f"Invalid new slot datetime: {e}"}
 
-    try:
-        await asyncio.to_thread(
-            patch_event_time, tokens, event_id, new_start, new_end, calendar_id
+    if clinic.get("booking_system") == "google_calendar_provisional":
+        # Clean provisional move: CONSUME the newly-chosen published slot (flip it
+        # to PENDING, carrying the patient's details) and GIVE THE OLD SLOT BACK to
+        # availability — rather than dragging the event onto a time that is still
+        # published as an open slot (which would leave a duplicate at the new time
+        # and a hole at the old one). Mirrors _book_appointment_provisional.
+        from app.tools.calendar_google import update_event as _upd, create_event as _crt
+        _p_name = _gcal_event_patient_name(found) or session.get("_lookup_patient_name") or ""
+        _p_phone = _gcal_event_phone(found) or (args.get("phone") or "")
+        _p_service = _gcal_event_service(found) or "appointment"
+        _was_home = "HOME VISIT" in (
+            (found.get("summary") or "") + " " + (found.get("description") or "")
+        ).upper()
+        _new_summary = (
+            f"PENDING CONFIRMATION{' — HOME VISIT' if _was_home else ''} — "
+            f"{_p_name} — {_p_service}"
         )
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        _new_desc = "\n".join(
+            [
+                "PROVISIONAL booking (rescheduled) via Susie — NOT yet confirmed.",
+                f"Patient: {_p_name}",
+                f"Phone: {_p_phone}",
+                f"Service: {_p_service}",
+                f"Requested: {new_start.strftime('%A %d %B %Y at %H:%M')}",
+            ]
+            + (["HOME VISIT — patient wants the practitioner to travel to them; "
+                "confirm feasibility + address on the callback."] if _was_home else [])
+            + ["Confirm directly with the client (WhatsApp/phone)."]
+        )
+        _avail = clinic.get("provisional_available_label") or "Available"
+        _slot_map = session.get("_provisional_slot_events") or {}
+        _new_src = _slot_map.get(new_start.isoformat())
+        try:
+            if _new_src and _new_src != event_id:
+                # Flip the target published slot to PENDING (consume it)…
+                await asyncio.to_thread(_upd, tokens, _new_src, _new_summary, _new_desc, calendar_id)
+                _new_event_id = _new_src
+                # …then hand the caller's old slot back to availability.
+                try:
+                    await asyncio.to_thread(_upd, tokens, event_id, _avail, "", calendar_id)
+                except Exception as _e:
+                    logger.warning("provisional reschedule: old-slot restore failed (non-fatal): %r", _e)
+            elif _new_src == event_id:
+                # Caller re-picked their own slot — just refresh the labels in place.
+                await asyncio.to_thread(_upd, tokens, event_id, _new_summary, _new_desc, calendar_id)
+                _new_event_id = event_id
+            else:
+                # New time isn't a published slot — move the existing event there
+                # (no open slot to consume, so nothing to duplicate) and leave the
+                # old time freed.
+                await asyncio.to_thread(patch_event_time, tokens, event_id, new_start, new_end, calendar_id)
+                await asyncio.to_thread(_upd, tokens, event_id, _new_summary, _new_desc, calendar_id)
+                _new_event_id = event_id
+            await _save_gcal_tokens(tokens)
+            session["calendar_event_id"] = _new_event_id
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    else:
+        try:
+            await asyncio.to_thread(
+                patch_event_time, tokens, event_id, new_start, new_end, calendar_id
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     session["calendar_status"] = "patched"
 
     # SMS notification — non-fatal
     try:
-        from app.notifications.booking_sms import send_reschedule_confirmation
         from app.clinic_config import get_clinic as _get_clinic_sms
         _c_sms = _get_clinic_sms(session.get("clinic_id"))
-        old_start_str = (found.get("start") or {}).get("dateTime", "")
-        if old_start_str:
-            old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
-            # Location clause must reflect the appointment's TRUE modality (read
-            # from the event), not the model's arg — a remote/home appointment
-            # must never be labelled "at our Bolton clinic". For remote/home (or
-            # an unknown legacy event) pass "" so the clause is omitted.
-            _evt_loc = _gcal_event_location(found)
-            _sms_location = (
-                "" if _evt_loc.lower() in (
-                    "remote", "video", "phone", "online", "virtual",
-                    "home_visit", "home visit",
-                ) else _evt_loc.title()
+        if _c_sms.get("booking_system") == "google_calendar_provisional":
+            # Provisional model: the new time is a REQUEST, not confirmed. The
+            # caller text must never say "moved / see you then" (the owner also
+            # gets a "please confirm" ping below) — Jonathan confirms directly.
+            from app.notifications.sms import send_sms as _send_sms_caller
+            _prac = _provisional_practitioner(_c_sms)
+            _cn = _c_sms.get("sms_name") or _c_sms.get("display_name") or "the clinic"
+            _first = _appt_name.split()[0] if (_appt_name or "").strip() else "there"
+            _line = _c_sms.get("phone") or ""
+            _pmsg = (
+                f"Hi {_first}, your reschedule request with {_cn} — "
+                f"{_uk_when_label(new_start)} — is with {_prac} to confirm. It "
+                f"isn't finalised until he confirms with you directly."
+                + (f" {_line}" if _line else "")
             )
-            await send_reschedule_confirmation(
-                patient_phone=args.get("phone", ""),
-                patient_name=_appt_name,
-                old_time=old_time,
-                new_time=new_start,
-                location=_sms_location,
-                clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
-                clinic_phone=_c_sms.get("phone"),
-            )
+            if args.get("phone"):
+                await _send_sms_caller(to=args.get("phone", ""), message=_pmsg)
+        else:
+            from app.notifications.booking_sms import send_reschedule_confirmation
+            old_start_str = (found.get("start") or {}).get("dateTime", "")
+            if old_start_str:
+                old_time = datetime.fromisoformat(old_start_str.replace("Z", "+00:00"))
+                # Location clause must reflect the appointment's TRUE modality (read
+                # from the event), not the model's arg — a remote/home appointment
+                # must never be labelled "at our Bolton clinic". For remote/home (or
+                # an unknown legacy event) pass "" so the clause is omitted.
+                _evt_loc = _gcal_event_location(found)
+                _sms_location = (
+                    "" if _evt_loc.lower() in (
+                        "remote", "video", "phone", "online", "virtual",
+                        "home_visit", "home visit",
+                    ) else _evt_loc.title()
+                )
+                await send_reschedule_confirmation(
+                    patient_phone=args.get("phone", ""),
+                    patient_name=_appt_name,
+                    old_time=old_time,
+                    new_time=new_start,
+                    location=_sms_location,
+                    clinic_name=_c_sms.get("sms_name") or _c_sms.get("display_name"),
+                    clinic_phone=_c_sms.get("phone"),
+                )
     except Exception as e:
         logger.warning("reschedule_appointment SMS failed (non-fatal): %r", e)
 
@@ -5459,12 +5739,12 @@ async def _exec_add_to_waitlist(args: dict, session: dict) -> dict:
             _clinic = get_clinic(session.get("clinic_id"))
             _tp = _clinic.get("transfer_phone", "")
             if _tp:
-                _what = (service or notes or "an enquiry").strip()
+                _what = (notes or service or "an enquiry").strip()
                 asyncio.create_task(send_sms(
                     to=_tp,
                     message=(
-                        f"📋 Waitlist/enquiry — {patient_name} ({phone}): {_what}. "
-                        f"Please follow up."
+                        f"📞 CALLBACK NEEDED — please call {patient_name} back on "
+                        f"{phone}. They asked about: {_what}."
                     ),
                 ))
                 session["_waitlist_pinged"] = True

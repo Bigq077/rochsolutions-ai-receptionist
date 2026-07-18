@@ -49,7 +49,12 @@ def _get_service():
 
     raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if not raw or not SHEET_ID:
-        print("Sheets not configured: missing GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SHEETS_ID")
+        logger.warning(
+            "Sheets not configured — append will be skipped: "
+            "GOOGLE_SERVICE_ACCOUNT_JSON %s, GOOGLE_SHEETS_ID %s",
+            "MISSING" if not raw else "present",
+            "MISSING" if not SHEET_ID else "present",
+        )
         return None
 
     with _service_lock:
@@ -59,7 +64,7 @@ def _get_service():
         try:
             info = json.loads(raw)
         except Exception as e:
-            print("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON:", repr(e))
+            logger.warning("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON: %r", e)
             return None
 
         try:
@@ -67,7 +72,7 @@ def _get_service():
             _cached_service = build("sheets", "v4", credentials=creds, cache_discovery=False)
             return _cached_service
         except Exception as e:
-            print("Failed to build Google Sheets client:", repr(e))
+            logger.warning("Failed to build Google Sheets client: %r", e)
             return None
 
 
@@ -78,6 +83,12 @@ def _append_values(values: List[List[Any]], tab_name: str) -> bool:
     """
     service = _get_service()
     if not service:
+        logger.warning(
+            "Sheets append SKIPPED (no client) tab=%r rows=%d — see the "
+            "'Sheets not configured' / 'invalid JSON' / 'Failed to build' "
+            "warning above for the reason",
+            tab_name, len(values),
+        )
         return False
 
     body = {"values": values}
