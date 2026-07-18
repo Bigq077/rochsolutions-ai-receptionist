@@ -41,3 +41,14 @@ TRANSFER_FALLBACK_NUMBER = os.getenv("TRANSFER_FALLBACK_NUMBER", "+447502211207"
 # Sentry DSN — set to enable error reporting to Sentry.io.
 # Leave unset (or empty) to disable Sentry entirely.
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
+# --- Operator failure alerting (app/obs/alerts.py) ---
+# When enabled, a completed call that matches a failure condition (pipeline /
+# STT-TTS error, booking API error, undelivered human-escalation) sends an
+# immediate SMS to the operator. Default OFF: with the flag off, route_call is a
+# no-op and nothing is ever sent. Only messages the operator channels below —
+# never a clinic. OBS_ALERT_SMS_TO must be the operator's own mobile, NOT the
+# clinic's Twilio line (that would text the AI's own number).
+OBS_ALERTS_ENABLED = os.getenv("OBS_ALERTS_ENABLED", "false").lower() == "true"
+OBS_ALERT_SMS_TO = os.getenv("OBS_ALERT_SMS_TO", "")
+OBS_SLACK_WEBHOOK = os.getenv("OBS_SLACK_WEBHOOK", "")

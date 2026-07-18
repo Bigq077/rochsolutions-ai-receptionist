@@ -11701,6 +11701,17 @@ class WebSocketCallHandler:
             except Exception as _cl_exc:
                 logger.error("[ms_conn] call_logger flush error: %r", _cl_exc)
 
+        # Operator failure alerting (obs, spec §5.2). Post-call, flag-gated
+        # (OBS_ALERTS_ENABLED, default OFF), never raises, and only messages the
+        # configured operator channels — never a clinic. A no-op until enabled,
+        # so it adds no latency or failure mode to the live teardown path.
+        try:
+            if call_logger is not None:
+                from app.obs.alerts import route_call
+                await route_call(call_logger.build_record(), self.session)
+        except Exception as _al_exc:
+            logger.error("[ms_conn] obs alert error: %r", _al_exc)
+
         # Persist final call outcome to session for post-call reporting.
         # Additive — used by theorem_v3 free-form loop and any downstream
         # reporting; legacy FlowEngine paths are unaffected.
